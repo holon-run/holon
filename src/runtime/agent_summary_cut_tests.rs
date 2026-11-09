@@ -2,6 +2,72 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
+async fn get_agent_retries_a_pending_target_without_reconciling_its_owner() -> Result<()> {
+    let (_home, host, parent) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    host.create_named_agent("summary-target", None).await?;
+    let target = host.get_or_create_agent("summary-target").await?;
+    target.await_initial_resources().await;
+    let refresh = target.hold_resource_refresh_for_test().await?;
+    let mut owner = target.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-get-agent-target".into())?;
+    let error = parent
+        .agent_summary_for("summary-target")
+        .await
+        .err()
+        .context("a pending target must not return a summary")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    let wire = crate::tool::ToolError::from_anyhow(&error);
+    assert_eq!(wire.kind, "runtime_db_busy");
+    assert!(wire.retryable);
+    let call = crate::tool::ToolCall {
+        id: "pending-target".into(),
+        name: "GetAgent".into(),
+        input: serde_json::json!({"agent_id":"summary-target", "detail":"full"}),
+    };
+    let mut read = Box::pin(crate::tool::tools::execute_builtin_tool(
+        &parent,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    ));
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut read)
+        .await
+        .is_err());
+    assert!(target.inner.mutation_owner.capture().is_err());
+    owner.definitely_not_committed()?;
+    drop(owner);
+    let result = tokio::time::timeout(Duration::from_secs(5), read).await??;
+    assert!(!result.is_error());
+    assert_eq!(
+        result.envelope.result.unwrap()["agent"]["identity"]["agent_id"],
+        "summary-target"
+    );
+
+    let mut owner = target.inner.mutation_owner.reserve().await?;
+    owner.begin("get-agent-retry-exhaustion".into())?;
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::tool::tools::execute_builtin_tool(
+            &parent,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        ),
+    )
+    .await?
+    .err()
+    .context("pending target must exhaust the retry budget")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(crate::tool::ToolError::from_anyhow(&error).retryable);
+    assert!(target.inner.mutation_owner.capture().is_err());
+    owner.definitely_not_committed()?;
+    drop(owner);
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn pinned_summary_and_child_cut_survive_a_new_pending_mutation() -> Result<()> {
     use crate::{
         diagnostics::io_probe::DenyResourceReaders, runtime::mutation_owner::MutationReservation,

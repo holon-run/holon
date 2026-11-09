@@ -26,6 +26,12 @@ unfinished operation. Pending responsibility returns a retryable unavailable
 result. An already captured complete root remains usable for its in-flight
 response; it never authorizes a command or a later read.
 
+`GetAgent` retains the typed observer error across the Host bridge and may retry
+transient reads within a one-second retry budget. This tool adapter never
+reserves or reconciles an execution owner. Exhaustion preserves the retryable
+error; protection failures and unknown write outcomes are not retried. HTTP
+observers continue to return unavailable immediately.
+
 With Scheduling prepared, child observability keeps its existing published
 Task/Work/Input selection. Missing Current needs only pooled Queue/error scalar
 reads and generation validation, without decoding canonical State or Task bodies.

@@ -11543,7 +11543,10 @@ impl RuntimeHostBridge {
         self.host()?
             .local_agent_summary(agent_id)
             .await
-            .map_err(Into::into)
+            .map_err(|error| match error {
+                PublicAgentError::Runtime(error) => error,
+                error => error.into(),
+            })
     }
 
     pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {

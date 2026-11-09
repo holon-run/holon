@@ -15,3 +15,9 @@ terminal commits.
 
 This combines the durability boundary; it does not acknowledge a result early or
 send its required records to a background best-effort writer.
+
+Observer HTTP requests return a retryable error while publication is pending.
+`GetAgent` preserves that typed error across the Host bridge and retries reads
+for up to one second before returning it to the model. This adapter retry never
+reserves an execution owner or reconciles another operation; cancellation drops
+the read future without leaving a retry worker behind.
