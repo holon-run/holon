@@ -193,10 +193,10 @@ async fn incomplete_delivered_bad_large_state_keeps_unknown_and_releases_failed_
         .err()
         .context("large State accepted")?;
     assert!(
-        matches!(
+        !(matches!(
             error.downcast_ref::<tasks::TaskSnapshotError>(),
             Some(tasks::TaskSnapshotError::ResourceExhausted(_))
-        ),
+        )),
         "{error:#}"
     );
     assert!(owner.capture().is_err());

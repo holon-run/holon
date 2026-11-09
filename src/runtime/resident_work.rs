@@ -385,9 +385,6 @@ impl ResidentWorkDomain {
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_budget_views()?;
-        if let Some(budget) = &self.budget {
-            budget.check_history_budget()?;
-        }
         Ok(self)
     }
     fn metadata_bytes(
@@ -573,9 +570,6 @@ impl ResidentWorkDomain {
         next.coverage = delta.coverage.clone();
         next.trim_and_validate()?;
         next.refresh_budget_views()?;
-        if let Some(budget) = &next.budget {
-            budget.check_history_budget()?;
-        }
         Ok(next)
     }
     pub(crate) fn capture(&self, request: &WorkCaptureRequest) -> Result<CapturedWork> {

@@ -281,7 +281,7 @@ async fn message_wait_terminal_projection_commits_above_legacy_size_hint() -> Re
     assert_eq!(updated.status, TaskStatus::Failed);
     assert_eq!(
         updated.detail.as_ref().unwrap()["waiting_on"],
-        detail["waiting_on"]
+        crate::runtime_db::repositories::slim_task_detail_value(&detail)["waiting_on"]
     );
     Ok(())
 }

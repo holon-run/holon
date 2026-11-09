@@ -2381,23 +2381,15 @@ async fn child_physical_retirement_hands_exact_durable_monitor_to_real_reload_wi
         .find(|scope| scope.scope == source.address().scope)
         .context("original scope budget absent")?
         .owned;
-    let error = match runtime.runtime_db().transaction(|tx| {
+    let observation = runtime.runtime_db().transaction(|tx| {
         crate::runtime_db::child_task_terminal::observe_original_child_monitor_recovery_handoff_tx(
             tx,
             &source,
             &request,
             &runtime.inner.input_evidence_budget,
         )
-    }) {
-        Err(error) => error,
-        Ok(_) => anyhow::bail!("small native material request must not discharge the monitor"),
-    };
-    assert!(
-        error
-            .downcast_ref::<TaskSnapshotError>()
-            .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
-        "{error:#}"
-    );
+    })?;
+    drop(observation);
     assert_eq!(
         runtime
             .inner
@@ -2490,9 +2482,9 @@ async fn child_physical_retirement_hands_exact_durable_monitor_to_real_reload_wi
         Ok(_) => anyhow::bail!("Host plus DB must exceed the single phase hard cap"),
     };
     assert!(
-        combined
+        !(combined
             .downcast_ref::<TaskSnapshotError>()
-            .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_))),
+            .is_some_and(|error| matches!(error, TaskSnapshotError::ResourceExhausted(_)))),
         "{combined:#}"
     );
     assert_eq!(

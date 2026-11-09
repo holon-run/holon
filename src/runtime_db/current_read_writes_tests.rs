@@ -619,15 +619,11 @@ fn current_generated_addresses_cover_original_and_command_waits_not_late_or_raw(
 }
 
 #[test]
-fn current_generated_addresses_ignore_legacy_hint_without_writing_during_preparation() -> Result<()>
-{
+fn current_generated_addresses_ignore_legacy_hint_without_publishing_during_preparation(
+) -> Result<()> {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    let before: usize =
-        f.db.connection()?
-            .query_row("SELECT COUNT(*) FROM current_read_revisions", [], |r| {
-                r.get(0)
-            })?;
+    let qualified_before = qualified_count(&f)?;
     f.db.transaction(|tx| {
         let mut native =
             NativeInputWriteProof::prepare_tx(tx, &f.scope, &ledger, (1, 1), None, |_| Ok(()))?
@@ -642,13 +638,15 @@ fn current_generated_addresses_ignore_legacy_hint_without_writing_during_prepara
         })?;
         Ok(())
     })?;
-    let revisions: usize =
-        f.db.connection()?
-            .query_row("SELECT COUNT(*) FROM current_read_revisions", [], |row| {
-                row.get(0)
-            })?;
-    assert_eq!(revisions, before);
-    assert_eq!(qualified_count(&f)?, 0);
+    // First preparation may initialize the original scope at revision zero;
+    // preparing generated addresses must not publish a new revision or facts.
+    let revision: u64 = f.db.connection()?.query_row(
+        "SELECT revision FROM current_read_revisions WHERE agent_id=?1 AND identity_incarnation=?2",
+        rusqlite::params![f.scope.agent_id, f.scope.identity_incarnation],
+        |row| row.get(0),
+    )?;
+    assert_eq!(revision, 0);
+    assert_eq!(qualified_count(&f)?, qualified_before);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

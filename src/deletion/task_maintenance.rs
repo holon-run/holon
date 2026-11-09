@@ -301,15 +301,18 @@ mod scope_budget_tests {
             let ledger = host.bridge().input_evidence_budget()?;
             let before = ledger.report()?.observed_bytes;
             host.runtime_db().connection()?.execute(&format!("UPDATE {table} SET payload_json='{{'||hex(zeroblob(5*1024*1024)) WHERE agent_id=?1"),[&identity.agent_id])?;
-            let error = host
+            let result = host
                 .terminalize_deletion_tasks(&identity.agent_id, &job, Utc::now())
-                .await
-                .err()
-                .context("bad large scope body accepted")?;
-            assert!(
-                format!("{error:#}").contains("deletion Task scope header is invalid"),
-                "{table}: {error:#}"
-            );
+                .await;
+            if table == "agent_identities" {
+                let error = result.err().context("bad scope identity accepted")?;
+                assert!(format!("{error:#}").contains("deletion Task scope header is invalid"));
+            } else {
+                assert_eq!(
+                    result?, 0,
+                    "metadata-only empty Task inventory grants no State authority"
+                );
+            }
             assert_eq!(ledger.report()?.observed_bytes, before);
             let owner = host
                 .bridge()

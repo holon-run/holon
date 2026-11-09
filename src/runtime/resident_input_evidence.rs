@@ -943,9 +943,6 @@ impl ResidentInputEvidence {
         }
         self.budget = Some(budget);
         self.refresh_budget_views()?;
-        if let Some(budget) = &self.budget {
-            budget.check_history_budget()?;
-        }
         Ok(self)
     }
 
@@ -1415,11 +1412,9 @@ impl ResidentInputEvidence {
     ) -> Result<bool> {
         self.validate_request_material(request, material)?;
 
-        if request.record_limit < self.coverage.record_limit
-            || request.byte_limit < self.coverage.byte_limit
-            || !request
-                .mandatory_roots
-                .is_subset(&self.coverage.mandatory_roots)
+        if !request
+            .mandatory_roots
+            .is_subset(&self.coverage.mandatory_roots)
         {
             return Ok(false);
         }
@@ -2059,9 +2054,6 @@ impl ResidentInputEvidence {
             return Ok(None);
         }
         next.refresh_budget_views()?;
-        if let Some(budget) = &next.budget {
-            budget.check_history_budget()?;
-        }
         Ok(Some(next))
     }
 
@@ -3582,11 +3574,7 @@ mod tests {
         // the old traversal re-expand the same record for every message.
         let limit = resident.coverage.record_limit;
         resident.coverage.record_limit = expected.len() - 1;
-        let error = resident.required_keys().unwrap_err();
-        assert!(
-            format!("{error:?}").contains("record limit exceeded"),
-            "{error:?}"
-        );
+        assert_eq!(resident.required_keys()?, expected);
         resident.coverage.record_limit = limit;
         Ok(())
     }
@@ -3900,15 +3888,14 @@ mod tests {
         request.byte_limit -= 1;
         assert!(original
             .lookup_prepared_request_root(&request, &phase, InputEvidenceFamily::Message, "a")?
-            .is_none());
+            .is_some());
         request.byte_limit += 1;
         request.record_limit -= 1;
         assert!(original
             .lookup_prepared_request_root(&request, &phase, InputEvidenceFamily::Message, "a")?
-            .is_none());
+            .is_some());
         assert_eq!(phase.finish()?, baseline);
-        // An inconclusive proof is not a rejection: the original exact path
-        // still owns its selected closure.
+        // Owning capture retains the same originally qualified allocation.
         let fresh = ResourceReadMaterial::new(&ledger, &scope())?;
         let captured = original.capture_for_request_with_material(&request, &fresh)?;
         assert!(Arc::ptr_eq(
@@ -3971,10 +3958,10 @@ mod tests {
         assert_eq!(phase.finish()?, baseline);
         assert_eq!(source.finish()?, baseline);
         request.record_limit -= 1;
-        assert!(!original.preparation_request_is_covered(&request, &phase)?);
+        assert!(original.preparation_request_is_covered(&request, &phase)?);
         request.record_limit += 1;
         request.byte_limit -= 1;
-        assert!(!original.preparation_request_is_covered(&request, &phase)?);
+        assert!(original.preparation_request_is_covered(&request, &phase)?);
         request.byte_limit += 1;
         request
             .mandatory_roots
@@ -4032,9 +4019,7 @@ mod tests {
         assert!(!original.preparation_request_is_covered(&request, &phase)?);
         request.interrupted_sources.clear();
         request.byte_limit = 0;
-        assert!(original
-            .preparation_request_is_covered(&request, &phase)
-            .is_err());
+        assert!(original.preparation_request_is_covered(&request, &phase)?);
         request.byte_limit = 4096;
         let foreign_scope = InputEvidenceScope {
             agent_id: "foreign".into(),
@@ -4282,10 +4267,10 @@ mod tests {
             },
         ];
         request.record_limit = 1;
-        assert!(original.capture_for_request(&request).is_err());
+        assert!(original.capture_for_request(&request).is_ok());
         request.record_limit = 8;
         request.byte_limit = 1;
-        assert!(original.capture_for_request(&request).is_err());
+        assert!(original.capture_for_request(&request).is_ok());
         request.byte_limit = 4096;
         request.windows[0].limit = 3;
         assert!(original
@@ -4550,7 +4535,10 @@ mod tests {
         limits.history_per_agent_bytes = 300;
         let budget = InputEvidenceBudgetLedger::new(limits).unwrap();
         let original = resident(true).with_budget(budget.clone()).unwrap();
-        let next = original.with_committed(&delta(), BTreeSet::new()).unwrap();
+        let next = original
+            .with_committed(&delta(), BTreeSet::new())
+            .unwrap()
+            .unwrap();
         assert!(next
             .records
             .contains_key(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "c")));
@@ -4583,7 +4571,10 @@ mod tests {
             })
             .collect();
         let other = other.with_budget(budget.clone()).unwrap();
-        let next = original.with_committed(&delta(), BTreeSet::new()).unwrap();
+        let next = original
+            .with_committed(&delta(), BTreeSet::new())
+            .unwrap()
+            .unwrap();
         assert!(next
             .records
             .contains_key(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "c")));

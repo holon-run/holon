@@ -31,3 +31,13 @@ Preserve source qualification, canonical hashes, execution ownership, source
 generations, structural recursion checks, publication fences, accounting
 ownership and arithmetic overflow checks. No larger threshold or opt-out flag
 replaces the removed quotas.
+
+Ordinary view publication and capture do not construct a full history report.
+Removing cumulative admission also removes those implicit report scans and their
+host-wide ledger lock. Registration and last-holder release still update the
+exact allocation memberships; test audits build the complete report on demand.
+Final-view release also reaps weak-only allocations incrementally so removing
+implicit scans does not retain
+dead allocation identities indefinitely. This cleanup quantum is a traversal
+choice, never a capacity or admission limit. Reporting cost must not gate runtime
+or control-plane availability.

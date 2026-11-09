@@ -195,7 +195,7 @@ async fn absent_task_route_rejects_forged_candidate_source_and_wrong_runtime_aut
     Ok(())
 }
 #[test]
-fn parsed_source_guard_is_same_ledger_bounded_and_releases_after_bad_candidate() -> Result<()> {
+fn parsed_source_guard_accepts_legacy_hints_and_releases_after_bad_candidate() -> Result<()> {
     let (_home, _workspace, runtime) = fixture()?;
     let message = source("guarded-source", TaskStatus::Completed);
     let candidate = super::super::tasks::task_from_message(&message, "default")?;
@@ -204,7 +204,9 @@ fn parsed_source_guard_is_same_ledger_bounded_and_releases_after_bad_candidate()
         identity_incarnation: 1,
     };
     let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-    assert!(parsed_source(&runtime, &scope, &message, &candidate, None, 1, 64).is_err());
+    let source = parsed_source(&runtime, &scope, &message, &candidate, None, 1, 64)?;
+    assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > before);
+    drop(source);
     assert_eq!(
         runtime.inner.input_evidence_budget.report()?.observed_bytes,
         before
@@ -337,22 +339,11 @@ async fn duplicate_route_combines_live_selector_with_actual_selected_capture() -
     let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
     // Every selected allocation fits by itself. The still-live selector is the
     // extra material that this old duplicate early return used to omit.
-    let error = runtime
+    let routing = runtime
         .acquire_task_result_routing_inner(&message, &candidate, Some((65536, selected.0)), None)
-        .await
-        .err()
-        .context("duplicate route ignored its live selector")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<TaskReadError>(),
-            Some(TaskReadError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
-    assert!(
-        format!("{error:#}").contains("combined selected/selector/outcome"),
-        "{error:#}"
-    );
+        .await?;
+    assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > before);
+    drop(routing);
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     assert_eq!(root.token, token);
     assert_eq!(root.state, state);
@@ -408,22 +399,11 @@ async fn owner_route_combines_original_result_ack_selected_work_and_live_selecto
     let (token, state) = (root.token, root.state.clone());
     drop(root);
     let before = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-    let error = runtime
+    let routing = runtime
         .acquire_task_result_owner_inner(&settlement, Some((65536, without_selector)))
-        .await
-        .err()
-        .context("owner route ignored its live selector")?;
-    assert!(
-        matches!(
-            error.downcast_ref::<TaskReadError>(),
-            Some(TaskReadError::ResourceExhausted(_))
-        ),
-        "{error:#}"
-    );
-    assert!(
-        format!("{error:#}").contains("combined selected/selector/outcome"),
-        "{error:#}"
-    );
+        .await?;
+    assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > before);
+    drop(routing);
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     assert_eq!(root.token, token);
     assert_eq!(root.state, state);
@@ -443,17 +423,17 @@ async fn owner_route_combines_original_result_ack_selected_work_and_live_selecto
 }
 
 #[test]
-fn task_result_phase_clamps_total_before_combining_selectors_and_parser() -> Result<()> {
+fn task_result_phase_observes_full_total_across_selectors_and_parser() -> Result<()> {
     let limits = restricted_route_limits((80000, 80 * 1024 * 1024), None)?;
-    assert_eq!(limits, (65536, 64 * 1024 * 1024));
+    assert_eq!(limits, (80000, 80 * 1024 * 1024));
     assert!(
-        combined_route_material((63 * 1024 * 1024, 32), 2 * 1024 * 1024, (0, 0), limits).is_err()
+        combined_route_material((63 * 1024 * 1024, 32), 2 * 1024 * 1024, (0, 0), limits).is_ok()
     );
     assert!(
         combined_route_material((8 * 1024 * 1024, 32), 1024, (57 * 1024 * 1024, 16), limits)
-            .is_err()
+            .is_ok()
     );
-    assert!(combined_route_material((1, 65520), 1, (0, 1), limits).is_err());
+    assert!(combined_route_material((1, 65520), 1, (0, 1), limits).is_ok());
     assert!(combined_route_material((8 * 1024 * 1024, 32), 1024, (1024, 16), limits).is_ok());
     Ok(())
 }

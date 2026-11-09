@@ -190,7 +190,8 @@ fn bootstrap_retains_actual_backlog_and_does_not_rewrite_unknown() {
     assert_eq!(report.pending.count, 3);
     assert_eq!(report.pending.body_bytes, 15);
     assert_eq!(report.pending.unresolved_count, 0);
-    assert!(ledger.reserve_pending(&scope, "new", 0).is_err());
+    let extra = ticket(&ledger, &scope, "new", 1000);
+    ledger.definitely_not_committed(&extra).unwrap();
     ledger.install_actual_pending(&scope, &actual[..1]).unwrap();
     assert_eq!(ledger.report().unwrap().pending.count, 1);
     let pending = ticket(&ledger, &scope, "inflight", 1);
@@ -282,7 +283,7 @@ fn shared_allocations_are_physical_once_categories_overlap_and_pins_prevent_recl
             report.scopes[0].reclaimable_history, reclaimable,
             "mask={mask}"
         );
-        ledger.check_history_budget().unwrap();
+        ledger.report().unwrap();
         drop(guards);
         assert_eq!(ledger.report().unwrap().retained_unclassified, physical);
         drop(item);
@@ -351,7 +352,7 @@ fn view_registration_preserves_identity_until_report_reaps_dead_allocations() {
         .unwrap();
     // Registration touches incoming identities, not unrelated dead entries.
     assert_eq!(ledger.inner.state.lock().unwrap().allocations.len(), 2);
-    ledger.check_history_budget().unwrap();
+    ledger.report().unwrap();
     let report = ledger.report().unwrap();
     assert_eq!(report.physical_records.allocations, 1);
     assert_eq!(report.physical_records.bytes, 70);
@@ -404,7 +405,7 @@ fn view_release_reaps_only_touched_allocations_before_exact_budget_observation()
         assert!(!state.allocations.contains_key(&released_id));
         assert!(state.allocations[&retained_id].memberships.is_empty());
     }
-    ledger.check_history_budget().unwrap();
+    ledger.report().unwrap();
     let report = ledger.report().unwrap();
     assert_eq!(report.physical_records.allocations, 1);
     assert_eq!(report.physical_records.bytes, 70);
@@ -438,7 +439,7 @@ fn new_root_does_not_remove_old_root_membership_and_reports_do_not_pin_records()
         ledger.report().unwrap().categories[&InputMemoryCategory::History].bytes,
         130
     );
-    ledger.check_history_budget().unwrap();
+    ledger.report().unwrap();
     let report = ledger.report().unwrap();
     let weak = Arc::downgrade(&old);
     drop(old);
@@ -466,7 +467,7 @@ fn host_history_observation_deduplicates_shared_views_and_remains_separate_from_
     let _shared = ledger
         .register_view(&a, InputMemoryCategory::History, &[ar.clone()])
         .unwrap();
-    ledger.check_history_budget().unwrap();
+    ledger.report().unwrap();
     let current = record(&a, "current", 1_000_000);
     let _current = ledger
         .register_view(&a, InputMemoryCategory::Current, &[current.clone()])
@@ -738,5 +739,71 @@ fn host_owned_metadata_does_not_change_scoped_pending_or_history_responsibility(
         )
         .is_err());
     assert_eq!(ledger.report()?.host_owned.total()?, 0);
+    Ok(())
+}
+
+#[test]
+fn publishing_and_capturing_views_do_not_scan_the_full_history_ledger() -> anyhow::Result<()> {
+    use crate::runtime::resident_scheduling::{
+        ResidentSchedulingDomain, SchedulingCaptureRequest, SchedulingCoverage, SchedulingFamily,
+        SchedulingHistory,
+    };
+    let ledger = InputEvidenceBudgetLedger::new(limits())?;
+    let mut coverage = SchedulingCoverage::empty(1);
+    for family in [
+        SchedulingFamily::Timer,
+        SchedulingFamily::TimerWake,
+        SchedulingFamily::ExternalTrigger,
+    ] {
+        coverage.history.insert(
+            family,
+            SchedulingHistory {
+                keys: Vec::new(),
+                loaded_keys: Vec::new(),
+                is_exhaustive: true,
+            },
+        );
+    }
+    let view = ResidentSchedulingDomain::bootstrap(
+        scope("report-on-demand", 1),
+        coverage,
+        Vec::new(),
+        1,
+        1,
+    )?
+    .with_budget(ledger.clone())?;
+    let captured = view.capture(&SchedulingCaptureRequest::current())?;
+    assert_eq!(ledger.inner.state.lock().unwrap().report_scans, 0);
+    drop((captured, view));
+    let report = ledger.report()?;
+    assert_eq!(ledger.inner.state.lock().unwrap().report_scans, 1);
+    assert_eq!(report.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn last_view_release_eventually_reaps_later_dead_allocations_without_a_report() -> Result<()> {
+    let ledger = InputEvidenceBudgetLedger::new(limits())?;
+    let scope = scope("incremental-release", 1);
+    let records = (0..129)
+        .map(|n| record(&scope, &format!("turn-{n}"), 10))
+        .collect::<Vec<_>>();
+    let view = ledger.register_view(&scope, InputMemoryCategory::History, &records)?;
+    drop(view);
+    assert_eq!(
+        ledger.inner.state.lock().unwrap().allocations.len(),
+        records.len()
+    );
+    drop(records);
+    for _ in 0..130 {
+        drop(ledger.register_owned_bytes(
+            &scope,
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate::default(),
+        )?);
+    }
+    let state = ledger.inner.state.lock().unwrap();
+    assert!(state.allocations.is_empty());
+    assert_eq!(state.report_scans, 0);
     Ok(())
 }

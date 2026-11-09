@@ -548,7 +548,6 @@ impl ResidentSchedulingDomain {
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_views()?;
-        self.budget.as_ref().unwrap().check_history_budget()?;
         Ok(self)
     }
     pub(crate) fn with_context_material(mut self, material: Option<Arc<BudgetViewGuard>>) -> Self {

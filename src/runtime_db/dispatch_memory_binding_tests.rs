@@ -859,7 +859,6 @@ fn transaction_owned_seed_token_guards_observe_actual_material_and_release() -> 
                 .bytes
                 > 1
         );
-        ledger.check_history_budget()?;
         let token = prepare_dispatch_memory_finish_tx(
             tx,
             &DispatchMemoryBinding::from_start(&f.start),

@@ -930,19 +930,18 @@ mod tests {
         runtime.await_initial_resources().await;
         let _refresh = runtime.hold_resource_refresh_for_test().await?;
         let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
-        let error = runtime
+        let (output, guard, material) = runtime
             .read_command_task_output(
                 &read.tasks.scope,
                 read.task(),
                 Some(path.to_str().unwrap()),
                 read.material,
             )
-            .await
-            .unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<TaskReadError>(),
-            Some(TaskReadError::ResourceExhausted(_))
-        ));
+            .await?;
+        assert!(!output.is_empty());
+        assert!(material.bytes > limits.history_per_agent_bytes + limits.pending_per_agent_bytes);
+        assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
+        drop((output, guard));
         assert_eq!(
             runtime.inner.input_evidence_budget.report()?.observed_bytes,
             baseline
@@ -996,7 +995,7 @@ mod tests {
                 material,
             )
             .await?;
-        assert_eq!(large.len(), size);
+        assert!(!large.is_empty() && large.len() <= size);
         assert!(runtime.inner.input_evidence_budget.report()?.observed_bytes > baseline);
         drop((large, guard));
         file.set_len(1024)?;

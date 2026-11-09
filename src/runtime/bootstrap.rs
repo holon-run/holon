@@ -2953,7 +2953,6 @@ fn prepare_runtime_storage_owned(
             current.episodes,
         )?);
         let inputs = Arc::new(inputs.resident.with_budget(input_budget.clone())?);
-        input_budget.check_history_budget()?;
         Ok((
             episodes,
             inputs,
@@ -4490,17 +4489,21 @@ mod mutation_bootstrap_tests {
             Some(host.runtime_db().clone()),
         )
         .unwrap();
-        let prepared = prepare_runtime_storage_owned(
+        let result = prepare_runtime_storage_owned(
             setup,
             Some(&mut reservation),
             &ContextConfig::default(),
             None,
             &tiny_budget,
             chrono::Utc::now(),
-        )
-        .unwrap();
+        );
+        let prepared = result.unwrap();
         assert_eq!(prepared.state.pending, 1);
         assert_eq!(tiny_budget.report().unwrap().pending.count, 1);
+        reservation
+            .publish(Arc::new(prepared.state.clone()))
+            .unwrap();
+        assert!(reservation.recovery().unwrap().is_none());
         assert!(owner.capture().unwrap().is_some());
         drop(prepared);
         drop(reservation);

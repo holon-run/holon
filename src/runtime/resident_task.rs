@@ -592,7 +592,6 @@ impl ResidentTaskDomain {
     pub(crate) fn with_budget(mut self, budget: InputEvidenceBudgetLedger) -> Result<Self> {
         self.budget = Some(budget);
         self.refresh_views()?;
-        self.budget.as_ref().unwrap().check_history_budget()?;
         Ok(self)
     }
     pub(crate) fn with_committed(&self, delta: &CommittedTaskDelta) -> Result<Self> {
@@ -658,9 +657,6 @@ impl ResidentTaskDomain {
         }
         next.trim_and_validate()?;
         next.refresh_views()?;
-        if let Some(b) = &next.budget {
-            b.check_history_budget()?;
-        }
         Ok(next)
     }
     fn observe_candidate(&self, delta: &CommittedTaskDelta) -> Result<Vec<Arc<BudgetViewGuard>>> {
