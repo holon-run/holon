@@ -205,6 +205,21 @@ Light/dark cases also set and read back the simulator system appearance; launch
 arguments alone are not accepted as dark-mode evidence. Both preferences are
 restored after each case, including failed tests.
 
+CI splits iOS verification into a default per-PR tier and an on-demand simulator
+UI tier. PRs changing the iOS app keep the core gates — build-tooling
+contracts, wire and SDK checks, the app build, the hosted native tests and the
+real-daemon contract probe. Runtime-only compatibility changes keep the wire,
+SDK and real-daemon probes without the simulator. The full simulator UI sweep
+(21 cases; roughly 30–80 minutes on shared macOS runners) runs on demand instead:
+dispatch the CI workflow on the branch to verify, or use the scheduled nightly
+full-sweep safety net. Ordinary PR and push runs skip UI. Run the same sweep
+locally with `IOS_SHARE_ACCEPTANCE=1 IOS_TASK_RESULT_ACCEPTANCE=1 make ios-ui-test`.
+Useful knobs: `IOS_UI_CASES` takes a
+comma-separated subset of UI test case names, `HOLON_UI_WAIT_SCALE` scales wait
+budgets on a slow machine, and the `IOS_SHARE_ACCEPTANCE` /
+`IOS_TASK_RESULT_ACCEPTANCE` flags enable the extended cross-layer
+acceptance evidence the CI sweep collects.
+
 ## Boundaries
 
 - `Sources`: connection coordinator, SwiftUI login/settings and native credential

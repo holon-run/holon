@@ -78,7 +78,7 @@ ios-ci: ## Run all iOS SDK, daemon, application and UI gates sequentially
 	$(MAKE) ios-app-test
 	$(MAKE) ios-ui-test
 
-ios-ui-test: ## Run the isolated simulator UI gate
+ios-ui-test: ## Run the on-demand isolated simulator UI sweep (CI dispatch or nightly)
 	./scripts/test-ios-ui.sh
 
 ios-archive: ## Prepare a local signed archive with an explicitly supplied team

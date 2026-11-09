@@ -355,10 +355,13 @@ jobs:
     timeout-minutes: 130
     needs: changes
     # Tiered iOS gating: iOS-relevant paths (ios_app) and full sweeps run
-    # every gate below; Rust-base changes (ios_compat) run only the
-    # real-daemon contract probe — the compatibility surface Rust code can
-    # actually break — and skip the simulator, app and UI gates. Changes
-    # that touch neither surface skip this job entirely.
+    # every gate below except the UI sweep; Rust-base changes (ios_compat)
+    # run only the real-daemon contract probe — the compatibility surface
+    # Rust code can actually break — and skip the simulator, app and UI
+    # gates. The simulator UI sweep is an on-demand tier (workflow_dispatch
+    # or nightly full sweep): it is the slowest and least deterministic
+    # iOS gate. App changes keep build, unit and daemon-contract gates. Changes
+    # that touch none of these surfaces skip this job entirely.
     if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true' || needs.changes.outputs.ios_compat == 'true'
     steps:
       - uses: actions/checkout@v4
@@ -413,7 +416,9 @@ jobs:
         # tail while still ending a hung sweep far sooner than the job
         # bound.
         timeout-minutes: 90
-        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true'
+        # On-demand tier: workflow_dispatch and the nightly full sweep run
+        # this step; ordinary PR and push runs keep the non-UI gates.
+        if: needs.changes.outputs.full_sweep == 'true'
         run: make ios-ui-test
         env:
           IOS_SHARE_ACCEPTANCE: "1"
@@ -426,7 +431,7 @@ jobs:
           IOS_DERIVED_DATA_PATH: ${{ runner.temp }}/holon-ios-ui
           IOS_RESULT_BUNDLE_PATH: ${{ runner.temp }}/holon-ios-ui.xcresult
       - name: Preserve the UI sweep telemetry
-        if: always() && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true')
+        if: always() && needs.changes.outputs.full_sweep == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ios-ui-sweep-telemetry
