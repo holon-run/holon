@@ -1,0 +1,139 @@
+{
+  "version": 1,
+  "defaults": {
+    "lifecycle": "",
+    "posture": "",
+    "currentRunId": null,
+    "pending": 0,
+    "activeTaskCount": 0,
+    "waitingCount": 0,
+    "stateIsCurrent": true
+  },
+  "cases": [
+    {
+      "name": "stopped",
+      "input": { "posture": "stopped" },
+      "expected": { "kind": "stopped", "icon": "circle-x", "tone": "muted" }
+    },
+    {
+      "name": "operator-wait",
+      "input": { "posture": "waiting_for_operator" },
+      "expected": { "kind": "needs-input", "icon": "circle-alert", "tone": "attention" }
+    },
+    {
+      "name": "active-turn-with-queued-input",
+      "input": { "posture": "active_turn", "pending": 2 },
+      "expected": { "kind": "running", "icon": "spinner", "tone": "accent" }
+    },
+    {
+      "name": "queued-input-is-not-a-request-for-input",
+      "input": { "posture": "has_queued_input", "pending": 2 },
+      "expected": { "kind": "runnable", "icon": "circle-arrow-right", "tone": "accent" }
+    },
+    {
+      "name": "runnable-work",
+      "input": { "posture": "has_runnable_work" },
+      "expected": { "kind": "runnable", "icon": "circle-arrow-right", "tone": "accent" }
+    },
+    {
+      "name": "task-result-wait",
+      "input": { "posture": "waiting_for_task", "activeTaskCount": 1 },
+      "expected": { "kind": "waiting", "icon": "clock", "tone": "muted" }
+    },
+    {
+      "name": "external-wait",
+      "input": { "posture": "waiting_for_external" },
+      "expected": { "kind": "waiting", "icon": "clock", "tone": "muted" }
+    },
+    {
+      "name": "blocked-is-not-waiting",
+      "input": { "posture": "blocked", "waitingCount": 2 },
+      "expected": { "kind": "blocked", "icon": "lock", "tone": "danger" }
+    },
+    {
+      "name": "idle",
+      "input": { "posture": "idle" },
+      "expected": { "kind": "ready", "icon": "circle-check", "tone": "muted" }
+    },
+    {
+      "name": "unknown",
+      "input": { "posture": "unknown" },
+      "expected": { "kind": "unknown", "icon": "circle-help", "tone": "muted" }
+    },
+    {
+      "name": "stopped-lifecycle-overrides-stale-active-turn",
+      "input": { "lifecycle": "stopped", "posture": "active_turn", "currentRunId": "stale-run" },
+      "expected": { "kind": "stopped", "icon": "circle-x", "tone": "muted" }
+    },
+    {
+      "name": "archived-alias-overrides-stale-run",
+      "input": { "posture": "archived", "currentRunId": "stale-run" },
+      "expected": { "kind": "stopped", "icon": "circle-x", "tone": "muted" }
+    },
+    {
+      "name": "operator-wait-overrides-stale-run",
+      "input": { "posture": "waiting_for_operator", "lifecycle": "awake_running", "currentRunId": "stale-run" },
+      "expected": { "kind": "needs-input", "icon": "circle-alert", "tone": "attention" }
+    },
+    {
+      "name": "known-idle-overrides-stale-hints",
+      "input": { "posture": "idle", "currentRunId": "stale-run", "pending": 3, "waitingCount": 2 },
+      "expected": { "kind": "ready", "icon": "circle-check", "tone": "muted" }
+    },
+    {
+      "name": "background-tasks-do-not-prove-activity-or-wait",
+      "input": { "lifecycle": "asleep", "posture": "idle", "activeTaskCount": 2 },
+      "expected": { "kind": "ready", "icon": "circle-check", "tone": "muted" }
+    },
+    {
+      "name": "legacy-normalized-spelling",
+      "input": { "posture": " Waiting-For-Operator " },
+      "expected": { "kind": "needs-input", "icon": "circle-alert", "tone": "attention" }
+    },
+    {
+      "name": "fallback-active-run",
+      "input": { "currentRunId": "run-1", "pending": 1 },
+      "expected": { "kind": "running", "icon": "spinner", "tone": "accent" }
+    },
+    {
+      "name": "fallback-running-lifecycle",
+      "input": { "posture": "unknown", "lifecycle": "awake-running" },
+      "expected": { "kind": "running", "icon": "spinner", "tone": "accent" }
+    },
+    {
+      "name": "fallback-queued-before-wait",
+      "input": { "pending": 1, "waitingCount": 1 },
+      "expected": { "kind": "runnable", "icon": "circle-arrow-right", "tone": "accent" }
+    },
+    {
+      "name": "fallback-wait-is-not-operator-attention",
+      "input": { "waitingCount": 1 },
+      "expected": { "kind": "waiting", "icon": "clock", "tone": "muted" }
+    },
+    {
+      "name": "fallback-ready",
+      "input": { "lifecycle": "awake_idle" },
+      "expected": { "kind": "ready", "icon": "circle-check", "tone": "muted" }
+    },
+    {
+      "name": "unrecognized-posture-uses-compatibility-hints",
+      "input": { "posture": "future_posture", "lifecycle": "ready" },
+      "expected": { "kind": "ready", "icon": "circle-check", "tone": "muted" }
+    },
+    {
+      "name": "background-task-without-other-evidence-is-unknown",
+      "input": { "activeTaskCount": 1 },
+      "expected": { "kind": "unknown", "icon": "circle-help", "tone": "muted" }
+    },
+    {
+      "name": "cached-running-is-not-live",
+      "input": { "posture": "active_turn", "currentRunId": "old-run", "stateIsCurrent": false },
+      "expected": { "kind": "unknown", "icon": "circle-help", "tone": "muted" }
+    },
+    {
+      "name": "cached-operator-wait-is-not-live",
+      "input": { "posture": "waiting_for_operator", "stateIsCurrent": false },
+      "expected": { "kind": "unknown", "icon": "circle-help", "tone": "muted" }
+    }
+  ]
+}
