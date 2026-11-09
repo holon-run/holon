@@ -2045,7 +2045,15 @@ fn expand_episode_root_refs(
                     record.agent_id == agent_id && record.id == id,
                     "tool continuity projection mismatch"
                 );
-                collector.work_item(record.work_item_id.as_deref());
+                let historical_annotation = match tables {
+                    Some(tables) => upgrade::tool_work_is_terminal_annotation(
+                        connection, agent_id, &record, tables,
+                    )?,
+                    None => false,
+                };
+                if !historical_annotation {
+                    collector.work_item(record.work_item_id.as_deref());
+                }
                 collector.optional_ref("turn", record.turn_id.as_deref());
             }
             "episode" => {
@@ -2731,6 +2739,81 @@ mod tests {
             _ => panic!("retired scope must not return any State or Episode payload"),
         }
         assert!(fixture.current("agent-a", 2, 12).episodes.is_empty());
+    }
+
+    #[test]
+    fn upgrade_keeps_terminal_tool_annotation_without_adopting_foreign_work() {
+        let fixture = Fixture::legacy(|tx| {
+            upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
+            upsert_agent_state_tx(tx, &state("agent-a")).unwrap();
+            let mut foreign =
+                WorkItemRecord::new("agent-b", "completed work", WorkItemState::Completed);
+            foreign.id = "foreign-work".into();
+            insert_work(tx, &foreign);
+            let mut turn = TurnRecord::new("agent-a", "historical-turn", 1);
+            turn.owner = Some(crate::types::TurnOwner::AgentLifecycle {
+                agent_id: "agent-a".into(),
+            });
+            turn.terminal = Some(crate::types::TurnTerminalSummary {
+                kind: crate::types::TurnTerminalKind::Completed,
+                reason: None,
+                no_brief_reason: None,
+                completed_at: time(),
+                duration_ms: 0,
+            });
+            super::super::repositories::upsert_turn_record_tx(tx, &turn).unwrap();
+            let tool: ToolExecutionRecord = serde_json::from_value(serde_json::json!({
+                "id":"historical-tool", "agent_id":"agent-a", "work_item_id":"foreign-work",
+                "turn_id":"historical-turn", "tool_name":"fixture", "created_at":time(),
+                "authority_class":"runtime_instruction", "status":"success", "input":{}, "output":{}, "summary":"completed"
+            })).unwrap();
+            super::super::evidence::insert_tool_evidence_tx(tx, &tool).unwrap();
+            let mut message = MessageEnvelope::new(
+                "agent-a",
+                crate::types::MessageKind::InternalFollowup,
+                crate::types::MessageOrigin::System {
+                    subsystem: "fixture".into(),
+                },
+                crate::types::AuthorityClass::RuntimeInstruction,
+                crate::types::Priority::Normal,
+                crate::types::MessageBody::Text {
+                    text: "pending".into(),
+                },
+            );
+            message.id = "tool-reference".into();
+            message.source_refs.insert(
+                "original_tool".into(),
+                "tool_execution:historical-tool:output".into(),
+            );
+            upsert_message_tx(tx, &message).unwrap();
+            let entry = crate::types::QueueEntryRecord {
+                message_id: message.id,
+                agent_id: "agent-a".into(),
+                priority: crate::types::Priority::Normal,
+                status: crate::types::QueueEntryStatus::Interjected,
+                created_at: time(),
+                updated_at: time(),
+            };
+            tx.execute("INSERT INTO queue_entries(message_id,agent_id,priority,status,created_at,updated_at,payload_json) VALUES(?1,'agent-a','normal','interjected',?2,?2,?3)",
+                params![entry.message_id,super::super::repositories::timestamp(time()),serde_json::to_string(&entry).unwrap()]).unwrap();
+            import_complete(tx);
+        });
+        fixture.db.transaction(|tx| {
+            let roots: String = tx.query_row("SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'", [], |row|row.get(0))?;
+            let roots: EpisodeContinuityRoots = serde_json::from_str(&roots)?;
+            assert!(roots.record_digests.contains_key("tool_execution:historical-tool"));
+            assert!(!roots.work_item_ids.contains("foreign-work"));
+            assert!(!roots.record_digests.contains_key("work_item:foreign-work"));
+            let tables = tx.prepare("SELECT name FROM sqlite_master WHERE type='table'")?
+                .query_map([], |row|row.get::<_,String>(0))?.collect::<rusqlite::Result<BTreeSet<_>>>()?;
+            // This compatibility rule never applies to ordinary current closures.
+            assert!(collect_live_episode_roots(tx,"agent-a").is_err());
+            // Nor does it excuse an independent current Work ownership claim.
+            tx.execute("UPDATE agent_states SET payload_json=json_set(payload_json,'$.current_work_item_id','foreign-work') WHERE agent_id='agent-a'", [])?;
+            let error = collect_live_episode_roots_with_schema(tx,"agent-a",Some(&tables)).unwrap_err();
+            assert!(error.to_string().contains("belongs to another agent"));
+            Ok(())
+        }).unwrap();
     }
 
     #[test]

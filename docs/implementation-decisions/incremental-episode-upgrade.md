@@ -27,3 +27,11 @@ millisecond projection remains valid. This preserves the original stored
 fingerprint and payload; a different sub-millisecond instant is still rejected.
 Offline upgrade verification exposed this compatibility issue only after the
 cumulative history rejection was removed.
+
+A fixed upgrade can retain a completed Tool trace whose Work ID names another
+agent's completed Work. Treat that ID as a historical annotation only when the
+Tool is nondeferred, its own AgentLifecycle Turn is terminal with no Work owner,
+and the Turn is not current or bound to the current execution. Retain the Tool
+and Turn evidence without adopting the foreign Work. This exception is confined
+to the original upgrade; ordinary closures and independent current ownership
+claims still reject foreign Work IDs.
