@@ -462,6 +462,8 @@ class UIFixtureSetupContracts(unittest.TestCase):
                     runs.append(command)
                     bundle.mkdir(exist_ok=True)  # xcodebuild materializes the bundle
                     return Mock(returncode=65 if len(runs) <= failures else 0)
+                if "get_app_container" in command and "data" in command:
+                    return Mock(returncode=1)  # Verified clean-install removal.
                 if "groups" in command:
                     # The App Group container holds the persisted sharing
                     # consent; a retry must clear it before the next attempt.
@@ -628,7 +630,9 @@ class UIFixtureSetupContracts(unittest.TestCase):
             simulator_text_size=lambda *args: nullcontext(),
             simulator_appearance=lambda *args: nullcontext(),
             runtime_text_size_control=lambda *args: nullcontext(("fixture", "fixture")),
-            subprocess=mocked_subprocess(lambda *args, **keywords: Mock(returncode=0, stdout="")))
+            subprocess=mocked_subprocess(lambda command, **keywords: Mock(
+                returncode=1 if "get_app_container" in command and "data" in command else 0,
+                stdout="")))
         with patch.dict(os.environ, {"IOS_UI_RETRY": "0"}, clear=True), \
                 patch("builtins.print") as output:
             try:
@@ -891,14 +895,35 @@ class UIFixtureSetupContracts(unittest.TestCase):
         self.assertTrue(uninstall_calls, "The sweep must uninstall the app")
         self.assertLess(min(reset_calls), min(uninstall_calls),
                         "The consent reset must run while the app is still installed")
-        # The browser case's own clean install needs the same order.
-        browser = text[:text.index('if method == "testRuntimeBrowserWorkflow":')].count("\n") + 1
-        browser_reset = [line for line in reset_calls if line > browser]
-        browser_uninstall = [line for line in uninstall_calls if line > browser]
-        self.assertTrue(browser_reset and browser_uninstall,
-                        "The browser case must reset consent and uninstall the app")
-        self.assertLess(min(browser_reset), min(browser_uninstall),
-                        "The browser case must reset consent before its uninstall")
+        # Execute the clean-install branch itself: auth and browser need the
+        # same reset order, while cases exercising restoration keep their state.
+        clean_install = next(
+            node for node in ast.walk(tree) if isinstance(node, ast.If)
+            and isinstance(node.test, ast.Compare)
+            and isinstance(node.test.left, ast.Name) and node.test.left.id == "method"
+            and any(isinstance(statement, ast.Expr)
+                    and isinstance(statement.value, ast.Call)
+                    and isinstance(statement.value.func, ast.Name)
+                    and statement.value.func.id == "ensure_uninstalled"
+                    for statement in node.body))
+        code = compile(ast.Module(body=[clean_install], type_ignores=[]), str(source), "exec")
+        for method, expected in [
+            ("testAuthenticatedNativeWorkflow", True),
+            ("testRuntimeBrowserWorkflow", True),
+            ("testSavedProfileLaunchOffersChangeAddress", False),
+            ("testOfflineReadingCacheColdLaunchAndRetry", False),
+        ]:
+            with self.subTest(method=method):
+                operations = Mock()
+                exec(code, {
+                    "method": method, "simulator": UUID,
+                    "reset_app_group_consent": operations.reset,
+                    "ensure_uninstalled": operations.uninstall,
+                })
+                self.assertEqual(operations.mock_calls, [
+                    call.reset(UUID, "run.holon.ios", "group.run.holon.ios"),
+                    call.uninstall(UUID, "run.holon.ios"),
+                ] if expected else [])
 
     def test_failed_initialization_prevents_share_install(self):
         install = Mock()

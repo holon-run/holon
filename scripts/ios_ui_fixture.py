@@ -1441,20 +1441,21 @@ with fixture_directory(repo) as root:
                             test_env["TEST_RUNNER_HOLON_UI_TEXT_SIZE_TOKEN"] = control_token
                             test_env["TEST_RUNNER_HOLON_UI_CONTENT_SIZE"] = content_size
                             test_env["TEST_RUNNER_HOLON_UI_APPEARANCE"] = appearance
-                            if method == "testRuntimeBrowserWorkflow":
-                                # This case asserts the post-login sharing gate on a
-                                # fresh sign-in. Sharing-consent approval persists
-                                # across the prior sign-out case for the same host, so
-                                # a full sweep must reset to the clean-install state a
-                                # subset run uses. The case pairs through its own fresh
-                                # ticket, and the trailing network-management case
-                                # re-establishes its own connection.
+                            if method in {
+                                "testAuthenticatedNativeWorkflow",
+                                "testRuntimeBrowserWorkflow",
+                            }:
+                                # Match the physical clean-install boundary of a
+                                # standalone sweep, not just cleared app-owned
+                                # profiles/session/consent. Keep restore/cache cases
+                                # on the existing installation they exercise.
                                 # The App Group container outlives the uninstall, so
                                 # the consent must be cleared while the app is still
                                 # installed for the container to be reachable.
                                 reset_app_group_consent(
                                     simulator, "run.holon.ios", "group.run.holon.ios")
                                 ensure_uninstalled(simulator, "run.holon.ios")
+                            if method == "testRuntimeBrowserWorkflow":
                                 # A full sweep stacks seeded history turns (history-window,
                                 # automatic-read cases) on the shared agent, burying the
                                 # populated app-link brief. Enqueue a fresh reply so the
