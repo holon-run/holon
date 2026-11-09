@@ -44,12 +44,8 @@ async fn full_fleet_summary_refuses_unproved_no_state_without_partial_return_or_
     let error = host.list_agents().await.unwrap_err();
     assert!(
         matches!(
-            error.downcast_ref::<PublicAgentError>(),
-            Some(PublicAgentError::Runtime(error))
-                if matches!(
-                    error.downcast_ref::<rusqlite::Error>(),
-                    Some(rusqlite::Error::QueryReturnedNoRows)
-                )
+            error.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::QueryReturnedNoRows)
         ),
         "{error:#}"
     );

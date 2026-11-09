@@ -976,19 +976,34 @@ async fn summary_re_prepares_after_the_published_source_moves_during_a_refresh()
     Ok(())
 }
 
-async fn resource_preparation_waits_for_publication(summary: bool) -> Result<()> {
+#[tokio::test]
+async fn summary_resource_preparation_returns_retryable_for_an_in_flight_publication() -> Result<()>
+{
+    let (_home, host, runtime) = fixture().await?;
+    let mut mutation = runtime.inner.mutation_owner.reserve().await?;
+    mutation.begin("summary-resource-publication-race".into())?;
+    let denied = DenyResourceReaders::new();
+    let error = tokio::time::timeout(Duration::from_secs(1), runtime.agent_summary())
+        .await?
+        .err()
+        .context("pending publication must not return a summary")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert_eq!(denied.attempts(), 0);
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    mutation.definitely_not_committed()?;
+    drop(mutation);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn context_resource_preparation_waits_for_an_in_flight_publication() -> Result<()> {
     let (_home, host, runtime) = fixture().await?;
     let mut mutation = runtime.inner.mutation_owner.reserve().await?;
     mutation.begin("resource-preparation-publication-race".into())?;
     let mut read = tokio::spawn({
         let runtime = runtime.clone();
-        async move {
-            if summary {
-                runtime.agent_summary().await.map(|_| ())
-            } else {
-                runtime.ensure_context_resources().await.map(|_| ())
-            }
-        }
+        async move { runtime.ensure_context_resources().await.map(|_| ()) }
     });
     let early = tokio::time::timeout(std::time::Duration::from_millis(50), &mut read).await;
     mutation.definitely_not_committed()?;
@@ -1000,16 +1015,6 @@ async fn resource_preparation_waits_for_publication(summary: bool) -> Result<()>
     tokio::time::timeout(std::time::Duration::from_secs(10), read).await???;
     host.shutdown().await?;
     Ok(())
-}
-
-#[tokio::test]
-async fn summary_resource_preparation_waits_for_an_in_flight_publication() -> Result<()> {
-    resource_preparation_waits_for_publication(true).await
-}
-
-#[tokio::test]
-async fn context_resource_preparation_waits_for_an_in_flight_publication() -> Result<()> {
-    resource_preparation_waits_for_publication(false).await
 }
 
 #[tokio::test]

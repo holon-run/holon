@@ -754,7 +754,11 @@ impl RuntimeHandle {
     pub(crate) async fn lightweight_agent_state_projection(
         &self,
     ) -> Result<LightweightAgentStateProjection> {
-        let mut read = self.acquire_scheduler_projection().await?;
+        let root = self
+            .capture_observer_root_async(&self.inner.runtime_db)
+            .await?;
+        let (mut read, identity, _) = self.roster_scheduler_from_root(&root)?;
+        drop(root);
         let (work_queue, work_budget) =
             read.full_state_work_queue(&self.inner.input_evidence_budget)?;
         let mut agent = read.state.as_ref().clone();
@@ -778,9 +782,6 @@ impl RuntimeHandle {
             Vec::new()
         };
         drop(children_timer);
-        let identity_timer = attribution::IDENTITY.start();
-        let identity = self.agent_identity_view().await?;
-        drop(identity_timer);
         let tasks_timer = attribution::ACTIVE_TASKS.start();
         let active_task_count = read.projection.active_tasks.len();
         drop(tasks_timer);
@@ -1120,67 +1121,14 @@ impl RuntimeHandle {
     pub(crate) async fn child_agent_summary_observation(
         &self,
     ) -> Result<ChildAgentSummaryObservation> {
-        let read = self.capture_child_observability_projection().await?;
-        let material = read.acquisition.clone();
-        material.read(|| {
-            let active_task_count = super::task_reads::active_task_count(&read.tasks)?;
-            anyhow::ensure!(
-                active_task_count == read.projection.active_tasks.len(),
-                "child summary Task metadata differs from selected active facts"
-            );
-            let agent = read.state.as_ref();
-            let closure = Self::closure_decision_from_projection(
-                agent,
-                &read.projection,
-                None,
-                &read.acquisition,
-            )?;
-            let metadata_bytes = std::mem::size_of::<Vec<&TaskRecord>>()
-                .checked_add(
-                    read.projection
-                        .active_tasks
-                        .len()
-                        .checked_mul(std::mem::size_of::<&TaskRecord>())
-                        .context("child Task reference slots overflow")?,
-                )
-                .context("child Task metadata overflow")?;
-            crate::diagnostics::resource_io::charge_owned_metadata(
-                u64::try_from(metadata_bytes)?,
-                read.projection.active_tasks.len(),
-            )?;
-            let _references = self.inner.input_evidence_budget.register_owned_bytes(
-                &read.tasks.scope,
-                super::input_evidence_budget::InputMemoryCategory::Pins,
-                super::input_evidence_budget::OwnedBytesEstimate {
-                    payload_bytes: 0,
-                    metadata_estimate_bytes: u64::try_from(metadata_bytes)?,
-                },
-            )?;
-            let active_tasks = read.projection.active_tasks.iter().collect::<Vec<_>>();
-            let briefs =
-                read.observability_briefs
-                    .iter()
-                    .filter_map(|record| match &record.record {
-                        super::resident_input_evidence::PreparedInputEvidence::Brief(brief) => {
-                            Some(brief)
-                        }
-                        _ => None,
-                    });
-            // All internal Task bodies and Brief Arcs remain pinned until this
-            // synchronous conversion to the public observability DTO returns.
-            let observability = build_child_agent_observability_with_active_tasks(
-                agent,
-                closure.waiting_reason,
-                &active_tasks,
-                briefs,
-            )?;
-            Ok(ChildAgentSummaryObservation {
-                state: read.state.clone(),
-                active_task_count,
-                observability,
-                acquisition: material.clone(),
-            })
-        })
+        let root = self.observer_ready_root(&self.inner.runtime_db)?;
+        let root = if root.scheduling.is_none() {
+            self.capture_observer_root_async(&self.inner.runtime_db)
+                .await?
+        } else {
+            root
+        };
+        self.child_summary_from_root(&root, &self.inner.runtime_db)
     }
 
     #[cfg(test)]
@@ -2550,7 +2498,7 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn agent_id(&self) -> Result<String> {
-        Ok(self.inner.agent.lock().await.state.id.clone())
+        Ok(self.inner.mutation_owner.agent_id().to_owned())
     }
 }
 

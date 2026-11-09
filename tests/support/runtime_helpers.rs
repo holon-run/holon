@@ -20,6 +20,24 @@ use tokio::time::sleep;
 // Import from parent mod.rs
 use super::{eventually, eventually_async, TestConfigBuilder};
 
+pub async fn ready_agent_summary(
+    runtime: &RuntimeHandle,
+) -> Result<holon::runtime::OwnedAgentSummaryRead> {
+    let deadline = tokio::time::Instant::now() + StdDuration::from_secs(3);
+    loop {
+        match tokio::time::timeout_at(deadline, runtime.agent_summary()).await? {
+            Ok(summary) => return Ok(summary),
+            Err(error)
+                if error.is::<holon::runtime_db::RuntimeDbRetryableError>()
+                    && holon::runtime_error::describe_runtime_error(&error).retryable =>
+            {
+                sleep(StdDuration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// Parse a tool result content as JSON value
 pub fn parse_tool_result_value(result: &ToolResult) -> Result<serde_json::Value> {
     Ok(serde_json::from_str(&result.content_text()?)?)

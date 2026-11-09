@@ -114,9 +114,11 @@ impl PreparedSchedulerRead {
 
 // The original command preparation still checks its durable adapter view.
 // Ordinary child observability already holds one published owner root.
-enum SchedulerAdapterRoot {
+#[derive(Clone, Copy)]
+enum SchedulerAdapterRoot<'a> {
     Revalidate,
     HeldPublication,
+    ObservedPublication(&'a RuntimeDb),
     PublishedCurrent,
 }
 
@@ -461,7 +463,7 @@ impl RuntimeMutation {
         &self,
         request: &WorkCaptureRequest,
         now: chrono::DateTime<Utc>,
-        adapter_root: SchedulerAdapterRoot,
+        adapter_root: SchedulerAdapterRoot<'_>,
     ) -> Result<PreparedSchedulerRead> {
         let scope = self.input_evidence_scope();
         let material = crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(
@@ -486,7 +488,7 @@ impl RuntimeMutation {
         input_request: Option<&InputEvidenceLoadRequest>,
         recovery_source_ids: Option<&BTreeSet<String>>,
         now: chrono::DateTime<Utc>,
-        adapter_root: SchedulerAdapterRoot,
+        adapter_root: SchedulerAdapterRoot<'_>,
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<PreparedSchedulerRead> {
         let root = self.capture_published_root()?;
@@ -521,6 +523,28 @@ impl RuntimeHandle {
         root: &super::super::resident_state::AgentSnapshot,
         now: chrono::DateTime<Utc>,
     ) -> Result<PreparedSchedulerRead> {
+        self.capture_observer_scheduler_from_root(root, now, SchedulerAdapterRoot::PublishedCurrent)
+    }
+
+    pub(in crate::runtime) fn capture_child_observer_scheduler_from_root(
+        &self,
+        root: &super::super::resident_state::AgentSnapshot,
+        now: chrono::DateTime<Utc>,
+        db: &RuntimeDb,
+    ) -> Result<PreparedSchedulerRead> {
+        self.capture_observer_scheduler_from_root(
+            root,
+            now,
+            SchedulerAdapterRoot::ObservedPublication(db),
+        )
+    }
+
+    fn capture_observer_scheduler_from_root(
+        &self,
+        root: &super::super::resident_state::AgentSnapshot,
+        now: chrono::DateTime<Utc>,
+        adapter_root: SchedulerAdapterRoot<'_>,
+    ) -> Result<PreparedSchedulerRead> {
         let scope = root
             .work
             .as_ref()
@@ -530,7 +554,7 @@ impl RuntimeHandle {
             &self.inner.input_evidence_budget,
             scope,
         )?;
-        material.read(|| {
+        let read = material.read(|| {
             let inputs = root
                 .input_evidence
                 .as_ref()
@@ -543,10 +567,30 @@ impl RuntimeHandle {
                 Some(&input_request),
                 None,
                 now,
-                SchedulerAdapterRoot::PublishedCurrent,
+                adapter_root,
                 &material,
             )
-        })
+        })?;
+        if let SchedulerAdapterRoot::ObservedPublication(db) = adapter_root {
+            db.check_read_scope()?;
+            if root
+                .current
+                .as_ref()
+                .and_then(|current| current.query.as_ref())
+                .is_none()
+            {
+                let current = self.observer_ready_root(db)?;
+                anyhow::ensure!(
+                    current.token == root.token,
+                    crate::runtime_db::RuntimeDbRetryableError::new(
+                        "child observer publication",
+                        db.path(),
+                        "publication changed during read",
+                    )
+                );
+            }
+        }
+        Ok(read)
     }
 
     fn scheduler_input_limits(&self) -> Result<(BTreeSet<Key>, usize, usize)> {
@@ -593,7 +637,7 @@ impl RuntimeHandle {
         input_request: Option<&InputEvidenceLoadRequest>,
         recovery_source_ids: Option<&BTreeSet<String>>,
         now: chrono::DateTime<Utc>,
-        adapter_root: SchedulerAdapterRoot,
+        adapter_root: SchedulerAdapterRoot<'_>,
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<PreparedSchedulerRead> {
         crate::diagnostics::resource_io::admit_cloned_value(&self.inner.mutation_owner.agent_id())?;
@@ -649,10 +693,18 @@ impl RuntimeHandle {
             scheduling.state == state && scheduling.scheduling.scope == scope,
             "scheduler Scheduling publication differs"
         );
+        let cached_observation =
+            matches!(adapter_root, SchedulerAdapterRoot::ObservedPublication(_))
+                && root
+                    .current
+                    .as_ref()
+                    .and_then(|current| current.query.as_ref())
+                    .is_some();
         let (has_interrupted_replay, has_queued_input, latest_error) = if matches!(
             adapter_root,
             SchedulerAdapterRoot::PublishedCurrent
-        ) {
+        ) || cached_observation
+        {
             let query = root
                 .current
                 .as_ref()
@@ -666,48 +718,58 @@ impl RuntimeHandle {
                 metadata.latest_runtime_error,
             )
         } else {
-            self.inner.runtime_db.read_for_preparation(|tx| {
-            let durable = ContextDurableRead::new(tx, &state.id);
-            if matches!(adapter_root, SchedulerAdapterRoot::Revalidate) {
-                let scope_read = durable.scope_read()?;
-                let facts = scope_read.facts();
-                anyhow::ensure!(
-                    facts.state.as_deref() == Some(state.as_ref())
-                        && facts.control_revision.is_some(),
-                    "scheduler adapter State changed"
-                );
-                let identity = facts
-                    .identity
-                    .as_ref()
-                    .context("scheduler adapter identity missing")?;
-                anyhow::ensure!(
-                    identity.agent_id == scope.agent_id
-                        && identity.incarnation == scope.identity_incarnation
-                        && identity.status == AgentRegistryStatus::Active,
-                    "scheduler adapter identity differs"
-                );
-                crate::runtime_db::work_snapshot::validate_work_domain_observation_with_scope_tx(
-                    tx,
-                    &scope,
-                    work.revision,
-                    &scope_read,
+            let read_metadata = |tx: &rusqlite::Transaction<'_>| {
+                let durable = ContextDurableRead::new(tx, &state.id);
+                if matches!(adapter_root, SchedulerAdapterRoot::Revalidate) {
+                    let scope_read = durable.scope_read()?;
+                    let facts = scope_read.facts();
+                    anyhow::ensure!(
+                        facts.state.as_deref() == Some(state.as_ref())
+                            && facts.control_revision.is_some(),
+                        "scheduler adapter State changed"
+                    );
+                    let identity = facts
+                        .identity
+                        .as_ref()
+                        .context("scheduler adapter identity missing")?;
+                    anyhow::ensure!(
+                        identity.agent_id == scope.agent_id
+                            && identity.incarnation == scope.identity_incarnation
+                            && identity.status == AgentRegistryStatus::Active,
+                        "scheduler adapter identity differs"
+                    );
+                    crate::runtime_db::work_snapshot::validate_work_domain_observation_with_scope_tx(
+                        tx,
+                        &scope,
+                        work.revision,
+                        &scope_read,
+                    )?;
+                    crate::runtime_db::task_snapshot::validate_task_domain_observation_with_scope_tx(
+                        tx,
+                        &scope,
+                        tasks.revision,
+                        &scope_read,
+                    )?;
+                }
+                let interrupted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')", [&state.id], |row| row.get(0))?;
+                let queued: bool = tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
+                    [&state.id],
+                    |row| row.get(0),
                 )?;
-                crate::runtime_db::task_snapshot::validate_task_domain_observation_with_scope_tx(
-                    tx,
-                    &scope,
-                    tasks.revision,
-                    &scope_read,
-                )?;
+                let latest_error = scheduler_latest_runtime_error_on(tx, &state.id)?;
+                Ok((interrupted, queued, latest_error))
+            };
+            if let SchedulerAdapterRoot::ObservedPublication(db) = adapter_root {
+                db.with_read(|connection| {
+                    let tx = connection.transaction()?;
+                    let metadata = read_metadata(&tx)?;
+                    tx.commit()?;
+                    Ok(metadata)
+                })?
+            } else {
+                self.inner.runtime_db.read_for_preparation(read_metadata)?
             }
-            let interrupted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')", [&state.id], |row| row.get(0))?;
-            let queued: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
-                [&state.id],
-                |row| row.get(0),
-            )?;
-            let latest_error = scheduler_latest_runtime_error_on(tx, &state.id)?;
-            Ok((interrupted, queued, latest_error))
-            })?
         };
         derive_scheduler_read(
             SchedulerReadDomains {
@@ -750,29 +812,6 @@ impl RuntimeHandle {
                 .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
                 .await
                 .map(Some)
-        })
-    }
-
-    #[inline(never)]
-    pub(in crate::runtime) fn acquire_scheduler_projection(
-        &self,
-    ) -> std::pin::Pin<
-        Box<impl std::future::Future<Output = Result<PreparedSchedulerRead>> + Send + '_>,
-    > {
-        Box::pin(async move {
-            let mut owner = self.begin_mutation().await?;
-            let root = owner.capture_published_root()?;
-            let needs_preparation = root.scheduling.is_none()
-                || root
-                    .current
-                    .as_ref()
-                    .and_then(|current| current.query.as_ref())
-                    .is_none();
-            drop(root);
-            if needs_preparation {
-                owner.prepare_current_scheduler_query(None).await?;
-            }
-            owner.capture_scheduler_read(&WorkCaptureRequest::current(), self.now())
         })
     }
 

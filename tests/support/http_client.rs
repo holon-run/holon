@@ -46,10 +46,10 @@ use tokio::{
 };
 
 use super::{
-    attach_default_workspace, callback_path, connect_addr, git, init_git_repo, parse_sse_frame,
-    read_next_sse_event, spawn_server, spawn_server_for_host, spawn_server_with_config,
-    spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
-    test_config_with_paths, wait_until, ParsedSseEvent,
+    attach_default_workspace, callback_path, connect_addr, get_ready_observer_response, git,
+    init_git_repo, parse_sse_frame, read_next_sse_event, spawn_server, spawn_server_for_host,
+    spawn_server_with_config, spawn_server_with_runtime_config, spawn_unix_server, tempdir,
+    test_config, test_config_with_paths, wait_until, ParsedSseEvent,
 };
 
 async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<AgentStreamEvent> {
@@ -62,6 +62,32 @@ async fn next_message_admitted_event(stream: &mut LocalEventStream) -> Result<Ag
         }
     })
     .await?
+}
+
+async fn ready_observer<T, F, Fut>(mut read: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        match tokio::time::timeout_at(deadline, read()).await? {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if error
+                    .downcast_ref::<holon::client::LocalHttpError>()
+                    .is_some_and(|wire| {
+                        wire.status_code == 503
+                            && (wire.has_code("runtime_db_busy")
+                                || wire.has_code("projection_stale_unhandled"))
+                            && wire.retryable == Some(true)
+                    }) =>
+            {
+                sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 pub async fn github_rate_limit_envelope_decodes_and_displays_recovery_guidance() -> Result<()> {
@@ -121,7 +147,7 @@ pub async fn agent_summary_routes_default_to_compact_and_allow_full_detail() -> 
         "/api/agents/default/status",
         "/api/status",
     ] {
-        let response = client.get(format!("{base}{path}")).send().await?;
+        let response = get_ready_observer_response(&client, format!("{base}{path}")).await?;
         assert_eq!(response.status(), reqwest::StatusCode::OK, "{path}");
         let compact: serde_json::Value = response.json().await?;
         assert!(compact["identity"]["agent_id"].is_string(), "{path}");
@@ -133,24 +159,24 @@ pub async fn agent_summary_routes_default_to_compact_and_allow_full_detail() -> 
         );
     }
 
-    let full: serde_json::Value = client
-        .get(format!("{base}/api/agents/default?detail=full"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let full: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/default?detail=full"))
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
     assert!(full["identity"]["agent_id"].is_string());
     assert!(full["skills"].is_object());
     assert!(full["execution"].is_object());
 
-    let explicit_compact: serde_json::Value = client
-        .get(format!("{base}/api/agents/default/status?detail=compact"))
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
+    let explicit_compact: serde_json::Value = get_ready_observer_response(
+        &client,
+        format!("{base}/api/agents/default/status?detail=compact"),
+    )
+    .await?
+    .error_for_status()?
+    .json()
+    .await?;
     assert_eq!(
         explicit_compact.get("skills"),
         None,
@@ -177,11 +203,11 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
     let (_host, _socket_path, server) = spawn_unix_server(config.clone()).await?;
     let client = LocalClient::new(config)?;
 
-    let agents = client.list_agent_entries().await?;
+    let agents = ready_observer(|| client.list_agent_entries()).await?;
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].identity.agent_id, "default");
 
-    let status = client.agent_status("default").await?;
+    let status = ready_observer(|| client.agent_status("default")).await?;
     assert_eq!(status.identity.agent_id, "default");
 
     server.abort();
@@ -291,12 +317,11 @@ pub async fn agent_list_parent_filter_is_not_served_from_foreign_query_cache() -
     let (_host, base, _server) = spawn_server().await?;
     let client = reqwest::Client::new();
 
-    let unfiltered: Vec<serde_json::Value> = client
-        .get(format!("{base}/api/agents/list"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let unfiltered: Vec<serde_json::Value> =
+        get_ready_observer_response(&client, format!("{base}/api/agents/list"))
+            .await?
+            .json()
+            .await?;
     assert!(
         !unfiltered.is_empty(),
         "spawn_server should expose at least one agent entry"
@@ -304,12 +329,13 @@ pub async fn agent_list_parent_filter_is_not_served_from_foreign_query_cache() -
 
     // Regression: /agents/list projections must be cached per parent filter.
     // The unfiltered request above must not be served to a different query.
-    let unknown_parent: Vec<serde_json::Value> = client
-        .get(format!("{base}/api/agents/list?parent=__no_such_parent__"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let unknown_parent: Vec<serde_json::Value> = get_ready_observer_response(
+        &client,
+        format!("{base}/api/agents/list?parent=__no_such_parent__"),
+    )
+    .await?
+    .json()
+    .await?;
     assert!(
         unknown_parent.is_empty(),
         "agents/list with an unknown parent filter must not be served from another query's cached projection"
@@ -343,12 +369,11 @@ pub async fn http_success_response_shapes_follow_route_class_policy() -> Result<
     );
     assert!(models["available_models"].is_array());
 
-    let agents: serde_json::Value = client
-        .get(format!("{base}/api/agents/list"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let agents: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/list"))
+            .await?
+            .json()
+            .await?;
     assert!(
         agents.as_array().is_some(),
         "read-model list routes should return direct arrays"
@@ -546,12 +571,11 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
     );
 
     let client = reqwest::Client::new();
-    let payload: serde_json::Value = client
-        .get(format!("{base}/api/agents/list"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let payload: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/list"))
+            .await?
+            .json()
+            .await?;
     let entry = payload
         .as_array()
         .and_then(|entries| entries.first())
@@ -613,7 +637,7 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
     let mut config = test_config();
     config.http_addr = base.trim_start_matches("http://").to_string();
     let local_client = LocalClient::new(config)?;
-    let entries = local_client.list_agent_entries().await?;
+    let entries = ready_observer(|| local_client.list_agent_entries()).await?;
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0].identity.agent_id, "default");
     assert!(entries[0]
@@ -627,13 +651,15 @@ pub async fn agent_list_entries_are_slim_for_tui_bootstrap() -> Result<()> {
 
 pub async fn json_responses_support_gzip_without_compressing_sse() -> Result<()> {
     let (_host, base, server) = spawn_server().await?;
-    let client = reqwest::Client::builder().no_gzip().build()?;
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(reqwest::header::ACCEPT_ENCODING, "gzip".parse()?);
+    let client = reqwest::Client::builder()
+        .no_gzip()
+        .default_headers(headers)
+        .build()?;
 
-    let response = client
-        .get(format!("{base}/api/agents/list"))
-        .header(reqwest::header::ACCEPT_ENCODING, "gzip")
-        .send()
-        .await?;
+    let response = get_ready_observer_response(&client, format!("{base}/api/agents/list")).await?;
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
     assert_eq!(
         response
             .headers()
@@ -789,7 +815,7 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .await?;
     wait_for_event_type(&runtime, "operator_notification_requested").await?;
 
-    let snapshot = client.agent_state_snapshot("default").await?;
+    let snapshot = ready_observer(|| client.agent_state_snapshot("default")).await?;
     assert_eq!(snapshot.agent.identity.agent_id, "default");
     assert!(snapshot.session.pending_count <= snapshot.agent.agent.pending);
     let events_page = client
@@ -808,12 +834,13 @@ pub async fn local_client_over_http_can_read_agent_state_snapshot() -> Result<()
         .iter()
         .any(|event| event.event_type == "operator_notification_requested"));
 
-    let raw_state: serde_json::Value = reqwest::Client::new()
-        .get(format!("{base}/api/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let raw_state: serde_json::Value = get_ready_observer_response(
+        &reqwest::Client::new(),
+        format!("{base}/api/agents/default/state"),
+    )
+    .await?
+    .json()
+    .await?;
     let raw_agent = raw_state["agent"]
         .as_object()
         .expect("state snapshot should include an agent object");
@@ -929,7 +956,7 @@ pub async fn local_client_over_unix_socket_can_read_agent_state_snapshot() -> Re
     let (_host, _socket_path, server) = spawn_unix_server(config.clone()).await?;
     let client = LocalClient::new(config)?;
 
-    let snapshot = client.agent_state_snapshot("default").await?;
+    let snapshot = ready_observer(|| client.agent_state_snapshot("default")).await?;
     assert_eq!(snapshot.agent.identity.agent_id, "default");
     assert!(snapshot.agent.agent.active_workspace_entry.is_some());
 

@@ -10,6 +10,7 @@ pub(super) struct HeldColdSchedulingRead {
     pub material: crate::runtime::SchedulingReadMaterial,
     pub acquisition: crate::diagnostics::resource_io::ResourceReadMaterial,
     pub reservations: Vec<MutationReservation>,
+    pub observation: Option<super::cold_summary::ColdObserverCut>,
 }
 impl RuntimeHost {
     /// Sources and retained scheduler material share the caller's allowance.
@@ -185,9 +186,7 @@ impl RuntimeHost {
             agent_id: identity.agent_id.clone(),
             identity_incarnation: identity.incarnation,
         };
-        let reservations = self
-            .reserve_mutation_scopes_in(&[(scope.agent_id.clone(), scope.identity_incarnation)], db)
-            .await?;
+        let observation = super::cold_summary::ColdObserverCut::capture(self, identity, db)?;
         let ledger = &self.inner.input_evidence_budget;
         let limits = ledger.limits();
         let request = SchedulingDomainLoadRequest {
@@ -200,12 +199,40 @@ impl RuntimeHost {
             )?,
             record_limit: usize::try_from(limits.record_limit)?,
         };
-        // All work below is synchronous. Never carry the TLS entry across the
-        // reservation await above; the original response retains the guard.
+        // Enter the allowance only for synchronous work, outside reservation awaits.
         let acquisition =
             crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(ledger, &scope)?;
+        let read = acquisition.read(|| {
+            db.with_read(|connection| {
+                let tx = connection.transaction()?;
+                let read = crate::runtime_db::scheduling_snapshot::load_cold_scheduling_query_tx(
+                    &tx, &scope, &request, ledger,
+                )?;
+                tx.commit()?;
+                Ok(read)
+            })
+        });
+        let (reservations, observation, ready, loaded) = match read {
+            Ok(read) => {
+                observation.validate_state(match &read {
+                    ColdSchedulingQuery::Current(current) => current.facts.state.as_deref(),
+                    ColdSchedulingQuery::ProvenEmptyNoState { .. } => None,
+                })?;
+                (Vec::new(), Some(observation), None, Some(read))
+            }
+            Err(error) if super::cold_summary::needs_query_preparation(&error) => {
+                let reservations = self
+                    .reserve_mutation_scopes_in(
+                        &[(scope.agent_id.clone(), scope.identity_incarnation)],
+                        db,
+                    )
+                    .await?;
+                let ready = reservations[0].capture_ready_snapshot()?;
+                (reservations, None, ready, None)
+            }
+            Err(error) => return Err(error),
+        };
         let _entry = acquisition.enter();
-        let ready = reservations[0].capture_ready_snapshot()?;
         let (identity, state, timers, triggers, material) = if let Some(root) = ready {
             anyhow::ensure!(
                 root.state.id == scope.agent_id
@@ -246,11 +273,14 @@ impl RuntimeHost {
                 material,
             )
         } else {
-            let read = db.transaction(|tx| {
-                crate::runtime_db::scheduling_snapshot::prepare_cold_scheduling_query_tx(
-                    tx, &scope, &request, ledger,
-                )
-            })?;
+            let read = match loaded {
+                Some(read) => read,
+                None => db.transaction(|tx| {
+                    crate::runtime_db::scheduling_snapshot::prepare_cold_scheduling_query_tx(
+                        tx, &scope, &request, ledger,
+                    )
+                })?,
+            };
             match read {
                 ColdSchedulingQuery::Current(current) => {
                     let crate::runtime_db::scheduling_snapshot::SchedulingCurrentSnapshot {
@@ -310,6 +340,7 @@ impl RuntimeHost {
             material: material.with_acquisition_material(acquisition.guard()?)?,
             acquisition,
             reservations,
+            observation,
         })
     }
 }

@@ -564,3 +564,87 @@ async fn independent_audit_turn_barrier_keeps_turn_ack_when_later_audit_fails() 
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn tool_result_has_one_receipt_and_publishes_both_audits_with_the_barrier() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let (_, _session) = runtime.begin_task_birth_session().await?;
+    let (turn_id, _) = runtime
+        .begin_interactive_turn_with_provenance(None, None, None, None)
+        .await?;
+    runtime
+        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+        .await?;
+    let bus = crate::storage::EventBus::new(16);
+    runtime.storage().enable_event_bus(bus.clone())?;
+    let mut rx = bus.subscribe();
+    let state = runtime
+        .inner
+        .mutation_owner
+        .capture()?
+        .unwrap()
+        .state
+        .clone();
+    let record = ToolExecutionRecord {
+        id: "settled-tool".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_id: Some(turn_id.clone()),
+        turn_index: state.turn_index,
+        tool_name: crate::tool::names::EXEC_COMMAND.into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 1,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({}),
+        output: serde_json::json!({}),
+        summary: "done".into(),
+        invocation_surface: None,
+    };
+    let event = AuditEvent::legacy(
+        "tool_executed",
+        serde_json::json!({
+            "agent_id":"default", "tool_execution_id":record.id,
+        }),
+    );
+    let receipt_count = || -> Result<i64> {
+        Ok(runtime.runtime_db().connection()?.query_row(
+            "SELECT COUNT(*) FROM input_mutation_receipts",
+            [],
+            |row| row.get(0),
+        )?)
+    };
+    let before = receipt_count()?;
+    runtime.persist_tool_result_evidence(&record, event).await?;
+    assert_eq!(receipt_count()? - before, 1);
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(root.state, state);
+    assert!(
+        !runtime
+            .runtime_db()
+            .turn_records()
+            .by_id(Some("default"), &turn_id)?
+            .unwrap()
+            .external_side_effect_possible
+    );
+    let captured = root.input_evidence.as_ref().unwrap().capture()?;
+    let tool = captured.lookup(&resident_input_evidence::InputEvidenceKey::new(
+        resident_input_evidence::InputEvidenceFamily::ToolExecution,
+        &record.id,
+    ))?;
+    assert!(tool.is_some());
+    let mut kinds = Vec::new();
+    while let Ok(published) = rx.try_recv() {
+        assert!(published.qualified.is_some());
+        kinds.push(published.event.kind.clone());
+    }
+    assert_eq!(
+        kinds,
+        ["tool_executed", "external_command_checkpoint_durable"]
+    );
+    Ok(())
+}

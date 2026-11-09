@@ -31,7 +31,7 @@ async fn summary_prepares_invalidated_instructions_after_initial_resources() -> 
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     let material = runtime.context_resource_material()?;
     runtime.capture_instruction_resources(
-        &root.state,
+        &root,
         &runtime.inner.config_snapshot.load_full(),
         &material,
     )?;
@@ -176,6 +176,9 @@ async fn summary_and_get_agent_wire_hold_original_material_without_scheduling_bo
         .await?;
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
     drop(runtime.agent_summary().await?);
     let baseline = runtime.inner.input_evidence_budget.report()?.observed_bytes;
     runtime.runtime_db().transaction(|tx| {

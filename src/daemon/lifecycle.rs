@@ -358,7 +358,7 @@ where
                         let client = LocalClient::remote(
                             plan.config.clone(), web_url(&status.http_addr), token.clone(),
                         )?;
-                        let authenticated = tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_status()).await;
+                        let authenticated = tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_readiness()).await;
                         if !matches!(authenticated, Ok(Ok(ref observed))
                             if observed.pid == status.pid
                                 && observed.home_dir == status.home_dir

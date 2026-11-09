@@ -8,6 +8,64 @@ use crate::runtime_db::{
 };
 
 impl RuntimeMutation {
+    pub(super) async fn tool_result_barrier(
+        &mut self,
+        record: &ToolExecutionRecord,
+    ) -> Result<Option<TurnRecord>> {
+        if !matches!(
+            record.status,
+            ToolExecutionStatus::Success | ToolExecutionStatus::Error
+        ) || !matches!(
+            record.tool_name.as_str(),
+            crate::tool::names::EXEC_COMMAND
+                | crate::tool::names::EXEC_COMMAND_BATCH
+                | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
+        ) {
+            return Ok(None);
+        }
+        let Some(turn_id) = self.state.current_turn_id.as_deref() else {
+            return Ok(None);
+        };
+        anyhow::ensure!(
+            record.turn_id.as_deref() == Some(turn_id)
+                && record.turn_index == self.state.turn_index,
+            "Tool result does not belong to the current Turn"
+        );
+        let (_, record_limit, byte_limit) = self.context_input_evidence_policy()?;
+        let request = InputEvidenceLoadRequest {
+            query: None,
+            windows: Vec::new(),
+            mandatory_roots: std::collections::BTreeSet::from([Key::new(Family::Turn, turn_id)]),
+            interrupted_sources: Default::default(),
+            selected_completion_brief_ids: Default::default(),
+            record_limit,
+            byte_limit,
+        };
+        self.prepare_owner_input_request(&request, 0).await?;
+        let inputs = self
+            .input_evidence
+            .as_ref()
+            .context("Tool result has no prepared Input")?
+            .capture_for_request(&request)?;
+        let Some(prior) = inputs.lookup(
+            request
+                .mandatory_roots
+                .first()
+                .context("Tool result Turn selector missing")?,
+        )?
+        else {
+            return Ok(None);
+        };
+        let Fact::Turn(prior) = &prior.record else {
+            anyhow::bail!("Tool result prior is not a Turn");
+        };
+        if prior.terminal.is_some() || !prior.external_side_effect_possible {
+            return Ok(None);
+        }
+        crate::diagnostics::resource_io::admit_cloned_value(prior)?;
+        Ok(Some(prior.clone()))
+    }
+
     #[inline(never)]
     pub(in crate::runtime) fn set_current_turn_external_side_effect_possible<'a>(
         &'a mut self,

@@ -131,7 +131,7 @@ async fn unloaded_roster_acquisition_does_not_read_on_the_async_worker() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn loaded_roster_cancellation_and_deadline_release_capacity_with_busy_owner() {
+async fn loaded_roster_ready_cut_does_not_wait_for_reserved_owner() {
     let (_home, host) = control_token_test_host();
     let runtime = host.default_runtime().await.unwrap();
     runtime.await_initial_resources_for_test().await;
@@ -143,7 +143,7 @@ async fn loaded_roster_cancellation_and_deadline_release_capacity_with_busy_owne
         .unwrap()
         .unwrap()
         .incarnation;
-    for cancel in [true, false] {
+    {
         let owner = host
             .reserve_mutation_scopes(&[(agent_id.clone(), incarnation)])
             .await
@@ -152,36 +152,21 @@ async fn loaded_roster_cancellation_and_deadline_release_capacity_with_busy_owne
         let mut state = AppState::for_tcp(host.clone());
         state.projection_gate = gate.clone();
         let state = Arc::new(state);
-        let request = tokio::spawn(roster_request(state.clone()));
-        tokio::time::timeout(Duration::from_secs(5), async {
-            loop {
-                // Register acquisition before waiting on the busy owner.
-                if gate.state.lock().unwrap().tasks.len() >= 2 {
-                    break;
-                }
-                assert!(!request.is_finished());
-                tokio::task::yield_now().await;
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(gate.leaders.available_permits(), 0);
-        if cancel {
-            request.abort();
-            assert!(request.await.unwrap_err().is_cancelled());
-        } else {
-            let response =
-                tokio::time::timeout(DEFAULT_BUILD_BUDGET + Duration::from_secs(5), request)
-                    .await
-                    .unwrap()
-                    .unwrap();
-            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        }
+        let response = tokio::time::timeout(Duration::from_secs(5), roster_request(state.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let entries: Vec<crate::types::AgentListEntry> = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].identity.agent_id, agent_id);
         tokio::time::timeout(Duration::from_secs(5), gate.drain_tasks())
             .await
             .unwrap();
         assert_eq!(gate.leaders.available_permits(), 1);
-        // Neither interruption needs the unrelated writer to finish first.
+        // The response and capacity release do not require the owner to finish.
         drop(owner);
         let response = tokio::time::timeout(Duration::from_secs(5), roster_request(state))
             .await

@@ -67,6 +67,15 @@ pub(crate) fn prepare_task_domain_snapshot_with_budget_tx(
     load(tx, scope, request, true, false, false, Some(budget))
 }
 
+pub(crate) fn load_task_domain_snapshot_with_budget_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &TaskDomainLoadRequest,
+    budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+) -> Result<TaskBootstrapSnapshot> {
+    load(tx, scope, request, false, false, false, Some(budget))
+}
+
 /// A finite read reuses its unchanged transaction's already qualified scope
 /// without replacing published coverage.
 pub(crate) fn preflight_named_task_snapshot_tx(
@@ -314,7 +323,9 @@ fn load_selected_with_scope_material(
     );
     observe_material(0, 0, Some(request))?;
     let seed = binding(tx, scope)?;
-    query_sources::initialize_fresh_source_inventory_tx(tx, scope)?;
+    if prepare {
+        query_sources::initialize_fresh_source_inventory_tx(tx, scope)?;
+    }
     material.charge_checkpoint_metadata(tx, seed.as_deref())?;
     let fixed = manifests(tx, seed.as_deref())?;
     let mut previous = material.read_current_metadata(tx)?;
@@ -683,7 +694,7 @@ fn load_selected_with_scope_material(
         if !prepare && !preflight && previous != &coverage {
             // A changed selector/metadata view at the same revision needs
             // named preparation; it is not the concurrent-revision retry case.
-            anyhow::bail!("Task coverage needs explicit preparation at unchanged revision");
+            return Err(TaskSnapshotError::CoverageNeedsPreparation.into());
         }
     }
     // Explicit absence is acquired only after global canonical + every-scope membership checks.

@@ -143,6 +143,9 @@ impl RuntimeMutation {
                             PreparedEvidenceValue::TurnBarrierDone => {}
                             PreparedEvidenceValue::Transcript(actual) => drop(actual),
                             PreparedEvidenceValue::ToolDone => {}
+                            PreparedEvidenceValue::ToolResult(events) => {
+                                effects.audit_events.extend(events)
+                            }
                         }
                         Ok(TransitionCommit {
                             applied: receipt.outcome.applied,
@@ -190,6 +193,9 @@ impl RuntimeMutation {
 
 impl RuntimeHandle {
     pub(crate) async fn persist_prepared_evidence(&self, write: InputEvidenceWrite) -> Result<()> {
+        if matches!(write, InputEvidenceWrite::ToolResult { .. }) {
+            self.inner.storage.event_log().ensure_writable()?;
+        }
         let admission = self.execution_admission_lease()?;
         let runtime = self.clone();
         let (send, receive) = tokio::sync::oneshot::channel();
@@ -197,6 +203,13 @@ impl RuntimeHandle {
             let _admission = admission;
             let result = async {
                 let mut mutation = runtime.begin_mutation().await?;
+                let mut write = write;
+                if let InputEvidenceWrite::ToolResult {
+                    record, barrier, ..
+                } = &mut write
+                {
+                    *barrier = mutation.tool_result_barrier(record).await?;
+                }
                 let prepared = runtime.inner.storage.prepare_input_evidence(
                     mutation.input_evidence_scope(),
                     crate::ids::audit_event_id(),

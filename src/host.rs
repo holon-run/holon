@@ -4642,6 +4642,7 @@ impl RuntimeHost {
             material: scheduling_material,
             acquisition,
             reservations,
+            observation,
             ..
         } = self
             .acquire_cold_scheduling_query(&identity, 0)
@@ -4690,6 +4691,9 @@ impl RuntimeHost {
             })
             .map_err(PublicAgentError::Runtime)?;
 
+        if let Some(observation) = observation {
+            observation.check().map_err(PublicAgentError::Runtime)?;
+        }
         drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
@@ -5185,6 +5189,7 @@ impl RuntimeHost {
             material: scheduling_material,
             acquisition,
             reservations,
+            observation,
         } = self
             .acquire_cold_scheduling_query(&identity, timer_limit)
             .await
@@ -5239,6 +5244,9 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
         // Parent facts are frozen. Release before another agent's summary await.
+        if let Some(observation) = observation {
+            observation.check().map_err(PublicAgentError::Runtime)?;
+        }
         drop(reservations);
         let active_children = self
             .child_agent_summaries(agent_id)
@@ -7173,7 +7181,10 @@ impl RuntimeHost {
             let summary = self
                 .local_agent_summary(&identity.agent_id)
                 .await
-                .map_err(anyhow::Error::from)?
+                .map_err(|error| match error {
+                    PublicAgentError::Runtime(error) => error,
+                    error => error.into(),
+                })?
                 .with_fleet_inventory(&inventory)?;
             inventory.read(|| {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut summaries)?;
@@ -7734,13 +7745,12 @@ impl RuntimeHost {
                 && record.visibility == AgentVisibility::Public
         }) {
             if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
-                let state = runtime.agent_state().await?;
-                let active_task_count = runtime.active_tasks(usize::MAX).await?.len();
+                let observation = runtime.child_agent_summary_observation().await?;
                 snapshots.push(PublicAgentActivitySnapshot {
                     agent_id: identity.agent_id,
-                    status: state.status.clone(),
-                    active_task_count,
-                    last_runtime_failure: state.last_runtime_failure,
+                    status: observation.state.status.clone(),
+                    active_task_count: observation.active_task_count,
+                    last_runtime_failure: observation.state.last_runtime_failure.clone(),
                 });
                 continue;
             }
@@ -11535,7 +11545,10 @@ impl RuntimeHostBridge {
         self.host()?
             .local_agent_summary(agent_id)
             .await
-            .map_err(Into::into)
+            .map_err(|error| match error {
+                PublicAgentError::Runtime(error) => error,
+                error => error.into(),
+            })
     }
 
     pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {
@@ -12065,6 +12078,30 @@ mod tests {
         _home: tempfile::TempDir,
         _workspace: tempfile::TempDir,
         config: AppConfig,
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    async fn ready_observer<T, F, Fut>(mut read: F) -> T
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            match tokio::time::timeout_at(deadline, read())
+                .await
+                .expect("observer deadline")
+            {
+                Ok(value) => return value,
+                Err(error)
+                    if error.is::<crate::runtime_db::RuntimeDbRetryableError>()
+                        && crate::runtime_error::describe_runtime_error(&error).retryable =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("observer read failed: {error:#}"),
+            }
+        }
     }
 
     fn test_host() -> (tempfile::TempDir, RuntimeHost) {
@@ -14651,7 +14688,19 @@ mod tests {
 
         let before = host.inner.runtimes.read().await.agents.len();
         assert!(before >= 1);
-        let entries = host.list_agent_entries().await.unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let entries = loop {
+            match host.list_agent_entries().await {
+                Ok(entries) => break entries,
+                Err(error)
+                    if error.is::<crate::runtime_db::RuntimeDbRetryableError>()
+                        && std::time::Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("{error:#}"),
+            }
+        };
         let after = host.inner.runtimes.read().await.agents.len();
         assert_eq!(before, after);
         assert!(entries
@@ -15542,13 +15591,8 @@ mod tests {
         assert!(!reused.created);
         assert_eq!(reused.agent_id, created.agent_id);
         let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
-        let parent_agent_id = parent
-            .agent_summary()
-            .await
-            .unwrap()
-            .identity
-            .agent_id
-            .clone();
+        // This needs only identity while the parent is processing the result.
+        let parent_agent_id = host.config().default_agent_id.clone();
         wait_for_agent_inputs_settled(&child).await;
         send_agent_message(
             &child,
@@ -15827,7 +15871,11 @@ mod tests {
             .find(|task| task.kind == TaskKind::CommandTask)
             .expect("ExecCommand must promote to a real command task");
         let command = wait_for_terminal_task(&child, &command.id).await;
-        assert_eq!(command.status, TaskStatus::Completed);
+        assert_eq!(
+            command.status,
+            TaskStatus::Completed,
+            "background command failed: {command:?}"
+        );
         tokio::time::timeout(Duration::from_secs(10), async {
             while parent
                 .storage()
@@ -18710,7 +18758,7 @@ mod tests {
         let child_agent_id = spawned.agent_id.clone();
         assert!(!spawned.task_handle.task_id.is_empty());
 
-        let tree = host.operator_agent_tree().await.unwrap();
+        let tree = ready_observer(|| host.operator_agent_tree()).await;
         assert_eq!(
             tree.roots.len(),
             1,
@@ -18780,7 +18828,7 @@ mod tests {
         .await
         .unwrap();
 
-        let tree = host.operator_agent_tree().await.unwrap();
+        let tree = ready_observer(|| host.operator_agent_tree()).await;
         assert_eq!(tree.roots.len(), 1);
         let root = &tree.roots[0];
         assert_eq!(root.agent.identity.agent_id, parent_agent_id);
@@ -18817,7 +18865,7 @@ mod tests {
             .unwrap();
         host.execute_deletion_job(job).await.unwrap();
 
-        let tree = host.operator_agent_tree().await.unwrap();
+        let tree = ready_observer(|| host.operator_agent_tree()).await;
         assert!(
             !tree
                 .into_agent_entries()
@@ -25835,7 +25883,7 @@ mod tests {
             "legacy age is not an expiry"
         );
         assert_eq!(
-            parent.subagent_cleanup_candidates().await.unwrap()[0].agent_id,
+            ready_observer(|| parent.subagent_cleanup_candidates()).await[0].agent_id,
             child.agent_id
         );
         assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());

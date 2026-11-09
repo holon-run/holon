@@ -67,12 +67,25 @@ enum EvidenceCommand {
         record: ToolExecutionRecord,
         index_changes: Vec<RuntimeIndexChange>,
     },
+    ToolResult {
+        record: ToolExecutionRecord,
+        index_changes: Vec<RuntimeIndexChange>,
+        event: AuditEvent,
+        barrier: Option<ToolResultBarrier>,
+    },
     BriefCreated {
         record: BriefRecord,
         event: AuditEvent,
         index_changes: Vec<RuntimeIndexChange>,
     },
 }
+#[derive(Debug, serde::Serialize)]
+struct ToolResultBarrier {
+    record: TurnRecord,
+    prior_digest: String,
+    event: AuditEvent,
+}
+
 impl EvidenceCommand {
     fn identity(&self) -> (&str, &str, Family, ResultFamily) {
         match self {
@@ -102,7 +115,7 @@ impl EvidenceCommand {
                 Family::Transcript,
                 ResultFamily::Transcript,
             ),
-            Self::Tool { record, .. } => (
+            Self::Tool { record, .. } | Self::ToolResult { record, .. } => (
                 &record.agent_id,
                 &record.id,
                 Family::ToolExecution,
@@ -123,6 +136,11 @@ impl EvidenceCommand {
 pub(crate) enum InputEvidenceWrite {
     Transcript(TranscriptEntry),
     Tool(ToolExecutionRecord),
+    ToolResult {
+        record: ToolExecutionRecord,
+        event: AuditEvent,
+        barrier: Option<TurnRecord>,
+    },
     BriefCreated {
         brief: BriefRecord,
         event: AuditEvent,
@@ -386,6 +404,83 @@ impl PreparedInputEvidence {
             },
         )
     }
+    pub(crate) fn tool_result(
+        scope: InputEvidenceScope,
+        nonce: String,
+        at: DateTime<Utc>,
+        record: ToolExecutionRecord,
+        index_changes: Vec<RuntimeIndexChange>,
+        event: AuditEvent,
+        prior: Option<TurnRecord>,
+    ) -> Result<Self> {
+        ensure!(
+            event.kind == "tool_executed"
+                && event
+                    .data
+                    .get("tool_execution_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(record.id.as_str())
+                && event
+                    .data
+                    .get("agent_id")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(scope.agent_id.as_str()),
+            "Tool result requires its original execution audit"
+        );
+        let barrier = prior
+            .map(|mut prior| -> Result<_> {
+                ensure!(
+                    prior.agent_id == scope.agent_id
+                        && record.agent_id == scope.agent_id
+                        && record.turn_id.as_deref() == Some(prior.turn_id.as_str())
+                        && record.turn_index == prior.turn_index
+                        && prior.terminal.is_none()
+                        && prior.external_side_effect_possible
+                        && matches!(
+                            record.status,
+                            crate::types::ToolExecutionStatus::Success
+                                | crate::types::ToolExecutionStatus::Error
+                        )
+                        && matches!(
+                            record.tool_name.as_str(),
+                            crate::tool::names::EXEC_COMMAND
+                                | crate::tool::names::EXEC_COMMAND_BATCH
+                                | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
+                        ),
+                    "Tool result barrier differs from its original command Turn"
+                );
+                let prior_digest = admitted_canonical_digest(&prior)?;
+                prior.external_side_effect_possible = false;
+                let event = AuditEvent::legacy(
+                    "external_command_checkpoint_durable",
+                    serde_json::json!({
+                        "agent_id": scope.agent_id,
+                        "turn_id": prior.turn_id,
+                        "tool_name": record.tool_name,
+                        "recovery_policy": "resume_from_durable_tool_result",
+                    }),
+                );
+                Ok(ToolResultBarrier {
+                    record: prior,
+                    prior_digest,
+                    event,
+                })
+            })
+            .transpose()?;
+        Self::new_with_digest(
+            scope,
+            nonce,
+            at,
+            EvidenceCommand::ToolResult {
+                record,
+                index_changes,
+                event,
+                barrier,
+            },
+            admitted_canonical_digest,
+        )
+    }
+
     pub(crate) fn brief_created(
         scope: InputEvidenceScope,
         nonce: String,
@@ -457,6 +552,7 @@ pub(crate) enum PreparedEvidenceValue {
     TurnBarrierDone,
     Transcript(TranscriptEntry),
     ToolDone,
+    ToolResult(Vec<super::transitions::AuditEventAck>),
     BriefCreated(BriefCreatedCommit),
 }
 
@@ -562,7 +658,13 @@ impl EvidenceRepository<'_> {
                     ledger,
                     super::input_evidence_snapshot::native_birth::original_material_limits(ledger)?,
                     None,
-                    |visit| visit(family, id),
+                    |visit| {
+                        visit(family, id)?;
+                        if let EvidenceCommand::ToolResult { barrier: Some(barrier), .. } = prepared.command.as_ref() {
+                            visit(Family::Turn, &barrier.record.turn_id)?;
+                        }
+                        Ok(())
+                    },
                 )?;
             if let Some(native) = &mut native_input {
                 native.bind_query_source(input_query_source, ledger)?;
@@ -578,6 +680,12 @@ impl EvidenceRepository<'_> {
                                 prepared.command.as_ref()
                             {
                                 visit(super::current_read_writes::CurrentFamily::Event, &event.id)?;
+                            }
+                            if let EvidenceCommand::ToolResult { event, barrier, .. } = prepared.command.as_ref() {
+                                visit(super::current_read_writes::CurrentFamily::Event, &event.id)?;
+                                if let Some(barrier) = barrier {
+                                    visit(super::current_read_writes::CurrentFamily::Event, &barrier.event.id)?;
+                                }
                             }
                             Ok(())
                         },
@@ -632,7 +740,7 @@ impl EvidenceRepository<'_> {
             validate_existing_input_evidence_tx(tx, scope, &InputEvidenceKey::new(family, id))?;
             let before = canonical_marker_tx(tx, agent, id, family)?;
             let before_index = index_frontier_tx(tx, agent)?;
-            let (record, fact, actual_seq, created_event_seq, audit_events) =
+            let (record, fact, actual_seq, created_event_seq, mut audit_events) =
                 match prepared.command.as_ref() {
                     #[cfg(test)]
                     EvidenceCommand::Message {
@@ -702,10 +810,8 @@ impl EvidenceRepository<'_> {
                             Vec::new(),
                         )
                     }
-                    EvidenceCommand::Tool {
-                        record,
-                        index_changes,
-                    } => {
+                    EvidenceCommand::Tool { record, index_changes }
+                    | EvidenceCommand::ToolResult { record, index_changes, .. } => {
                         insert_tool_evidence_tx(tx, record)?;
                         insert_runtime_index_changes_tx(tx, index_changes)?;
                         let actual = committed_tool_tx(tx, agent, id)?;
@@ -745,10 +851,36 @@ impl EvidenceRepository<'_> {
                         )
                     }
                 };
+            let mut facts = vec![fact];
+            if let EvidenceCommand::ToolResult { event, barrier, .. } = prepared.command.as_ref() {
+                let (actual, _) = super::evidence::append_audit_event_tx(tx, Some(agent), event)?;
+                audit_events.push(actual);
+                if let Some(barrier) = barrier {
+                    let turn_id = &barrier.record.turn_id;
+                    validate_existing_input_evidence_tx(tx, scope, &InputEvidenceKey::new(Family::Turn, turn_id))?;
+                    let prior = committed_turn_record_tx(tx, agent, turn_id)?;
+                    ensure!(prior.record.terminal.is_none()
+                        && canonical_command_digest(&prior.record)? == barrier.prior_digest,
+                        "Tool result Turn barrier changed outside its original transaction");
+                    let current: bool = tx.query_row(
+                        "SELECT EXISTS(SELECT 1 FROM agent_states WHERE agent_id=?1 AND turn_index=?2 AND json_extract(payload_json,'$.current_turn_id')=?3 AND json_extract(payload_json,'$.current_run_id') IS ?4)",
+                        params![agent, barrier.record.turn_index, turn_id, barrier.record.run_id],
+                        |row| row.get(0),
+                    )?;
+                    ensure!(current, "Tool result Turn barrier is no longer current");
+                    upsert_turn_record_tx(tx, &barrier.record)?;
+                    facts.push(Fact::Turn(committed_turn_record_tx(tx, agent, turn_id)?.record));
+                    let (actual, _) = super::evidence::append_audit_event_tx(tx, Some(agent), &barrier.event)?;
+                    audit_events.push(actual);
+                }
+            }
             let audit_events = super::transitions::AuditEventAck::from_events(audit_events)?;
             // Original acknowledgement closes qualification and actual Message
             // count before the receipt. These are never reconstructed late.
-            let mut value = acknowledge_input_evidence_tx(tx, scope, record, &[fact])?;
+            let mut value = acknowledge_input_evidence_tx(tx, scope, record, &facts)?;
+            if matches!(prepared.command.as_ref(), EvidenceCommand::ToolResult { .. }) {
+                value.record = PreparedEvidenceValue::ToolResult(super::transitions::AuditEventAck::clone_batch(&audit_events)?);
+            }
             let mut result_work_ids = std::collections::BTreeSet::new();
             if let Some(completion) = completion {
                 let mut brief_ids = std::collections::BTreeSet::new();
@@ -826,6 +958,9 @@ impl EvidenceRepository<'_> {
                         let primary = reserved_scope == scope;
                         InputMutationScopeOutcome {
                             install_keys: super::input_recovery_install::InputMutationInstallKeys {
+                                input_roots: if primary && matches!(prepared.command.as_ref(), EvidenceCommand::ToolResult { .. }) {
+                                    facts.iter().map(Fact::key).collect()
+                                } else { Default::default() },
                                 work_items: if primary {
                                     result_work_ids.clone()
                                 } else {

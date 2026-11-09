@@ -3393,14 +3393,6 @@ impl RuntimeHandle {
             .await
     }
 
-    pub(super) async fn begin_scoped_projection_preparation(
-        &self,
-        db: &RuntimeDb,
-    ) -> Result<RuntimeMutation> {
-        self.begin_mutation_with_owners_in(vec![self.inner.mutation_owner.clone()], None, Some(db))
-            .await
-    }
-
     async fn begin_mutation_with_owners_in(
         &self,
         owners: Vec<mutation_owner::MutationOwner>,

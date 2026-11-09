@@ -2,6 +2,224 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
+async fn default_get_agent_does_not_read_mutable_state_for_cleanup_identity() -> Result<()> {
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.await_initial_resources().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-default-get-agent".into())?;
+    let agent = runtime.inner.agent.lock().await;
+    let tree_error = tokio::time::timeout(Duration::from_secs(1), host.operator_agent_tree())
+        .await?
+        .err()
+        .context("pending tree summary must remain typed")?;
+    assert!(tree_error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(crate::tool::ToolError::from_anyhow(&tree_error).retryable);
+    let list_error = tokio::time::timeout(Duration::from_secs(1), host.list_agents())
+        .await?
+        .err()
+        .context("pending list summary must remain typed")?;
+    assert!(list_error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    let call = crate::tool::ToolCall {
+        id: "pending-self".into(),
+        name: "GetAgent".into(),
+        input: serde_json::json!({}),
+    };
+    let registry = crate::tool::ToolRegistry::new(runtime.workspace_root());
+    let mut read = Box::pin(registry.execute(
+        &runtime,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    ));
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut read)
+        .await
+        .is_err());
+    drop(agent);
+    owner.definitely_not_committed()?;
+    drop(owner);
+    let (result, _) = tokio::time::timeout(Duration::from_secs(5), read).await??;
+    assert!(!result.is_error());
+    assert_eq!(
+        result.envelope.result.unwrap()["agent"]["identity"]["agent_id"],
+        runtime.inner.mutation_owner.agent_id()
+    );
+
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-default-get-agent-exhaustion".into())?;
+    let agent = runtime.inner.agent.lock().await;
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        registry.execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        ),
+    )
+    .await?
+    .err()
+    .context("pending default summary must remain retryable")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    drop(agent);
+    owner.definitely_not_committed()?;
+    drop(owner);
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn runtime_activity_uses_one_observer_cut_without_execution_locks() -> Result<()> {
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.await_initial_resources().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
+    let expected = runtime.child_agent_summary_observation().await?;
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    let agent = runtime.inner.agent.lock().await;
+    let activity = tokio::time::timeout(
+        Duration::from_secs(1),
+        host.public_agent_activity_snapshots(),
+    )
+    .await??;
+    let current = activity
+        .iter()
+        .find(|entry| entry.agent_id == expected.state.id)
+        .context("default activity must be visible")?;
+    assert_eq!(current.status, expected.state.status);
+    assert_eq!(current.active_task_count, expected.active_task_count);
+    assert_eq!(
+        current.last_runtime_failure,
+        expected.state.last_runtime_failure
+    );
+    owner.begin("pending-runtime-activity".into())?;
+    let error = tokio::time::timeout(
+        Duration::from_secs(1),
+        host.public_agent_activity_snapshots(),
+    )
+    .await?
+    .err()
+    .context("pending activity must not wait or reconcile")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    drop(agent);
+    owner.definitely_not_committed()?;
+    drop(owner);
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn get_agent_retries_a_pending_target_without_reconciling_its_owner() -> Result<()> {
+    let (_home, host, parent) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    host.create_named_agent("summary-target", None).await?;
+    let target = host.get_or_create_agent("summary-target").await?;
+    target.await_initial_resources().await;
+    let refresh = target.hold_resource_refresh_for_test().await?;
+    let mut owner = target.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-get-agent-target".into())?;
+    let error = parent
+        .agent_summary_for("summary-target")
+        .await
+        .err()
+        .context("a pending target must not return a summary")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    let wire = crate::tool::ToolError::from_anyhow(&error);
+    assert_eq!(wire.kind, "runtime_db_busy");
+    assert!(wire.retryable);
+    let call = crate::tool::ToolCall {
+        id: "pending-target".into(),
+        name: "GetAgent".into(),
+        input: serde_json::json!({"agent_id":"summary-target", "detail":"full"}),
+    };
+    let mut read = Box::pin(crate::tool::tools::execute_builtin_tool(
+        &parent,
+        "default",
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    ));
+    assert!(tokio::time::timeout(Duration::from_millis(50), &mut read)
+        .await
+        .is_err());
+    assert!(target.inner.mutation_owner.capture().is_err());
+    owner.definitely_not_committed()?;
+    drop(owner);
+    let result = tokio::time::timeout(Duration::from_secs(5), read).await??;
+    assert!(!result.is_error());
+    assert_eq!(
+        result.envelope.result.unwrap()["agent"]["identity"]["agent_id"],
+        "summary-target"
+    );
+
+    let mut owner = target.inner.mutation_owner.reserve().await?;
+    owner.begin("get-agent-retry-exhaustion".into())?;
+    let error = tokio::time::timeout(
+        Duration::from_secs(2),
+        crate::tool::tools::execute_builtin_tool(
+            &parent,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        ),
+    )
+    .await?
+    .err()
+    .context("pending target must exhaust the retry budget")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert!(crate::tool::ToolError::from_anyhow(&error).retryable);
+    assert!(target.inner.mutation_owner.capture().is_err());
+    owner.definitely_not_committed()?;
+    drop(owner);
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pinned_summary_and_child_cut_survive_a_new_pending_mutation() -> Result<()> {
+    use crate::{
+        diagnostics::io_probe::DenyResourceReaders, runtime::mutation_owner::MutationReservation,
+        runtime_db::RuntimeDbReadScope,
+    };
+    use std::time::{Duration, Instant};
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let (_, _, _, original_resources) = runtime.summary_scheduler_from_root(&root)?;
+    let mut owners = vec![runtime.inner.mutation_owner.reserve().await?];
+    MutationReservation::begin_all(&mut owners, "pending-after-summary-capture".into())?;
+    let denied = DenyResourceReaders::new();
+
+    let (_, identity, _, resources) = runtime.summary_scheduler_from_root(&root)?;
+    assert_eq!(identity.agent_id, root.state.id);
+    assert!(original_resources
+        .observation_weak()
+        .ptr_eq(&resources.observation_weak()));
+    let child = runtime.child_summary_from_root(&root, runtime.runtime_db())?;
+    assert_eq!(child.state, root.state);
+    assert_eq!(denied.attempts(), 0);
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+
+    let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(5));
+    scope.cancel();
+    let cancelled = runtime.runtime_db().with_read_scope(scope);
+    assert!(runtime.child_summary_from_root(&root, &cancelled).is_err());
+    MutationReservation::definitely_not_committed_all(&mut owners)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn fleet_state_decided_posture_still_requires_the_original_current_binding() -> Result<()> {
     use crate::diagnostics::resource_io::ResourceReadMaterial;
 
@@ -62,6 +280,9 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
     let runtime = harness.runtime();
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
     drop(runtime.agent_summary().await?);
     let expected = runtime.agent_list_entry().await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
@@ -120,16 +341,15 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
 }
 
 #[tokio::test]
-async fn fleet_loaded_entry_owner_wait_observes_cancellation_and_deadline() -> Result<()> {
+async fn fleet_loaded_entry_ignores_reserved_owner_but_observes_cancellation_and_deadline(
+) -> Result<()> {
     use crate::{diagnostics::resource_io::ResourceReadMaterial, runtime_db::RuntimeDbReadScope};
-    use std::{future::poll_fn, future::Future, task::Poll, time::Duration};
-
+    use std::time::{Duration, Instant};
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
-    drop(runtime.agent_summary().await?);
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let root = runtime.capture_observer_root(runtime.runtime_db())?;
     let identity = root
         .current
         .as_ref()
@@ -139,40 +359,35 @@ async fn fleet_loaded_entry_owner_wait_observes_cancellation_and_deadline() -> R
         .unwrap()
         .identity
         .clone();
-    drop(root);
     let phase = ResourceReadMaterial::current_or_new_for_identity(
         &runtime.inner.input_evidence_budget,
         &identity.agent_id,
         identity.incarnation,
     )?;
     let owner = runtime.inner.mutation_owner.reserve().await?;
+    let _agent = runtime.inner.agent.lock().await;
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.agent_list_entry_read(&identity, &phase, runtime.runtime_db()),
+    )
+    .await??;
     for cancel in [true, false] {
-        let budget = if cancel {
-            Duration::from_secs(30)
+        let deadline = if cancel {
+            Instant::now() + Duration::from_secs(30)
         } else {
-            Duration::from_millis(100)
+            Instant::now() - Duration::from_millis(1)
         };
-        let scope = RuntimeDbReadScope::new(std::time::Instant::now() + budget);
-        let db = runtime.runtime_db().with_read_scope(scope.clone());
-        let mut read = Box::pin(runtime.agent_list_entry_read(&identity, &phase, &db));
-        poll_fn(|cx| {
-            assert!(read.as_mut().poll(cx).is_pending());
-            Poll::Ready(())
-        })
-        .await;
+        let scope = RuntimeDbReadScope::new(deadline);
         if cancel {
             scope.cancel();
         }
-        assert!(tokio::time::timeout(Duration::from_secs(5), read)
-            .await?
+        let db = runtime.runtime_db().with_read_scope(scope);
+        assert!(runtime
+            .agent_list_entry_read(&identity, &phase, &db)
+            .await
             .is_err());
-        assert!(scope.is_cancelled());
     }
-    // Neither interruption needs the unrelated writer to publish or release.
     drop(owner);
-    runtime
-        .agent_list_entry_read(&identity, &phase, runtime.runtime_db())
-        .await?;
     Ok(())
 }
 
@@ -182,6 +397,9 @@ async fn full_summary_ready_cut_avoids_body_sql_agent_lock_and_root_retention() 
     let runtime = harness.runtime();
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut prepare = runtime.begin_mutation().await?;
+    prepare.prepare_current_scheduler_query(None).await?;
+    drop(prepare);
     let first = runtime.agent_summary().await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     let old_root = Arc::downgrade(&root);
@@ -209,6 +427,7 @@ async fn full_summary_ready_cut_avoids_body_sql_agent_lock_and_root_retention() 
         )?;
         Ok(())
     })?;
+    let _owner = runtime.inner.mutation_owner.reserve().await?;
     let _agent = runtime.inner.agent.lock().await;
     let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
     let next =
@@ -281,7 +500,7 @@ async fn full_summary_counts_raw_event_metadata_without_decoding_or_qualifying_b
         (summary.recent_brief_count, summary.recent_event_count),
         counts
     );
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let root = runtime.capture_observer_root(runtime.runtime_db())?;
     let query = root.current.as_ref().unwrap().query.as_ref().unwrap();
     assert!(query
         .capture(

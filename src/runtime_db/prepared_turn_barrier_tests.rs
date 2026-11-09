@@ -237,3 +237,153 @@ fn turn_barrier_sql_failure_rolls_back_native_qualification_and_original_receipt
     ));
     Ok(())
 }
+
+fn prepared_tool_result(f: &Fixture, prior: Option<TurnRecord>) -> Result<PreparedInputEvidence> {
+    let mut record = f.tool();
+    if let Some(turn) = &prior {
+        record.turn_index = turn.turn_index;
+        record.turn_id = Some(turn.turn_id.clone());
+    }
+    let event = AuditEvent::legacy(
+        "tool_executed",
+        serde_json::json!({
+            "agent_id": record.agent_id, "tool_execution_id": record.id,
+        }),
+    );
+    PreparedInputEvidence::tool_result(
+        f.scope.clone(),
+        "tool-result-original".into(),
+        f.at,
+        record,
+        Vec::new(),
+        event,
+        prior,
+    )
+}
+
+#[test]
+fn tool_result_commits_evidence_audits_and_barrier_once_and_replays_after_later_turn() -> Result<()>
+{
+    let f = Fixture::new()?;
+    let mut prior = start_turn(&f, true)?;
+    f.db.evidence()
+        .commit_prepared_input_evidence(&prepare(&f, &prior)?)?;
+    prior.external_side_effect_possible = true;
+    let prepared = prepared_tool_result(&f, Some(prior.clone()))?;
+    let InputMutationExecution::Committed { value, receipt } =
+        f.db.evidence().commit_prepared_input_evidence(&prepared)?
+    else {
+        panic!("original commit")
+    };
+    let PreparedEvidenceValue::ToolResult(events) = &value.record else {
+        panic!("tool result ACK")
+    };
+    assert_eq!(events.len(), 2);
+    assert_eq!(events[0].kind, "tool_executed");
+    assert_eq!(events[1].kind, "external_command_checkpoint_durable");
+    assert!(events[0].event_seq < events[1].event_seq);
+    assert_eq!(receipt.outcome.scopes[0].audit_events.len(), 2);
+    assert!(value
+        .input_delta
+        .records
+        .iter()
+        .any(|r| r.locator.key == InputEvidenceKey::new(Family::Turn, &prior.turn_id)));
+    assert!(value
+        .input_delta
+        .records
+        .iter()
+        .any(|r| r.locator.key == InputEvidenceKey::new(Family::ToolExecution, "tool:original")));
+    assert!(value.current_read_writes.is_some());
+    let mut changed = prior.clone();
+    changed.external_side_effect_possible = false;
+    assert_eq!(
+        f.db.turn_records()
+            .by_id(Some(&f.scope.agent_id), &prior.turn_id)?,
+        Some(changed.clone())
+    );
+    changed.tool_execution_ids.push("later-tool".into());
+    f.db.evidence()
+        .commit_prepared_input_evidence(&PreparedInputEvidence::turn(
+            f.scope.clone(),
+            "later-tool-turn".into(),
+            f.at,
+            changed.clone(),
+        )?)?;
+    let InputMutationExecution::Replayed {
+        receipt: replay, ..
+    } = f.db.evidence().commit_prepared_input_evidence(&prepared)?
+    else {
+        panic!("exact replay")
+    };
+    assert_eq!(replay, receipt);
+    assert_eq!(f.count("tool_executions")?, 1);
+    assert_eq!(f.count("audit_events")?, 2);
+    assert_eq!(
+        f.db.turn_records()
+            .by_id(Some(&f.scope.agent_id), &prior.turn_id)?,
+        Some(changed)
+    );
+    Ok(())
+}
+
+#[test]
+fn tool_result_failures_roll_back_evidence_audit_barrier_and_receipt() -> Result<()> {
+    for phase in ["audit_events", "turn_records", "input_mutation_receipts"] {
+        let f = Fixture::new()?;
+        let mut prior = start_turn(&f, true)?;
+        f.db.evidence()
+            .commit_prepared_input_evidence(&prepare(&f, &prior)?)?;
+        prior.external_side_effect_possible = true;
+        let prepared = prepared_tool_result(&f, Some(prior.clone()))?;
+        let operation = if phase == "turn_records" {
+            "UPDATE"
+        } else {
+            "INSERT"
+        };
+        f.db.transaction(|tx| { tx.execute_batch(&format!(
+            "CREATE TRIGGER reject_tool_result BEFORE {operation} ON {phase} BEGIN SELECT RAISE(ABORT,'tool result rejected'); END;"))?; Ok(()) })?;
+        let error =
+            f.db.evidence()
+                .commit_prepared_input_evidence(&prepared)
+                .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("tool result rejected"),
+            "{error:#}"
+        );
+        assert_eq!(f.count("tool_executions")?, 0);
+        assert_eq!(f.count("audit_events")?, 0);
+        assert_eq!(
+            f.db.turn_records()
+                .by_id(Some(&f.scope.agent_id), &prior.turn_id)?,
+            Some(prior)
+        );
+        f.db.transaction(|tx| {
+            assert!(lookup_input_mutation_receipt_tx(tx, prepared.descriptor())?.is_none());
+            tx.execute_batch("DROP TRIGGER reject_tool_result")?;
+            Ok(())
+        })?;
+        assert!(matches!(
+            f.db.evidence().commit_prepared_input_evidence(&prepared)?,
+            InputMutationExecution::Committed { .. }
+        ));
+    }
+    Ok(())
+}
+
+#[test]
+fn tool_result_without_command_barrier_still_has_one_original_audit() -> Result<()> {
+    let f = Fixture::new()?;
+    let prepared = prepared_tool_result(&f, None)?;
+    let InputMutationExecution::Committed { value, receipt } =
+        f.db.evidence().commit_prepared_input_evidence(&prepared)?
+    else {
+        panic!("original commit")
+    };
+    let PreparedEvidenceValue::ToolResult(events) = value.record else {
+        panic!("tool ACK")
+    };
+    assert_eq!(events.len(), 1);
+    assert_eq!(receipt.outcome.scopes[0].audit_events.len(), 1);
+    assert_eq!(f.count("tool_executions")?, 1);
+    Ok(())
+}

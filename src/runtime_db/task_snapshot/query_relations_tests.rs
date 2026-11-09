@@ -423,3 +423,45 @@ fn exact_initialized_query_inventory_never_rescans_fixed_members_or_revives_old_
         Ok(())
     })
 }
+
+#[test]
+fn readonly_task_load_does_not_initialize_missing_source_inventory() -> Result<()> {
+    let (_home, db) = fresh()?;
+    db.transaction(|tx| {
+        tx.execute("DELETE FROM task_message_source_inventory WHERE agent_id=?1 AND identity_incarnation=?2",
+            params![scope().agent_id, scope().identity_incarnation])?;
+        Ok(())
+    })?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    db.with_read(|connection| {
+        let tx = connection.transaction()?;
+        assert!(!query_sources::source_inventory_complete_tx(&tx, &scope())?);
+        let error = load_task_domain_snapshot_with_budget_tx(&tx, &scope(), &request(), &ledger)
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskSnapshotError>(),
+            Some(TaskSnapshotError::CoverageNeedsPreparation)
+        ));
+        let markers: usize = tx.query_row(
+            "SELECT COUNT(*) FROM task_message_source_inventory",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(markers, 0);
+        tx.commit()?;
+        Ok(())
+    })?;
+    db.transaction(|tx| {
+        prepare_task_domain_snapshot_tx(tx, &scope(), &request())?.require_current()?;
+        Ok(())
+    })?;
+    db.with_read(|connection| {
+        let tx = connection.transaction()?;
+        assert!(query_sources::source_inventory_complete_tx(&tx, &scope())?);
+        load_task_domain_snapshot_with_budget_tx(&tx, &scope(), &request(), &ledger)?
+            .require_current()?;
+        tx.commit()?;
+        Ok(())
+    })?;
+    Ok(())
+}

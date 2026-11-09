@@ -9,6 +9,58 @@ issue:
 
 # Agent Runtime State and Context Snapshots
 
+## Tool-result settlement and observer reads
+
+An ordinary tool result commits its Tool evidence, `tool_executed` Audit and,
+for a completed external command, the original Turn's side-effect barrier and
+checkpoint Audit in one typed Evidence transaction and one publication ACK.
+The command freezes the prior Turn digest and exact Audit addresses before SQL.
+The transaction validates the qualified prior and current Turn, registers every
+Input/Current delta, and saves one idempotent receipt. Failure rolls back the
+whole result; receipt replay cannot rewrite a later Turn. Prepared Wait and
+Work completion retain their existing terminal transaction boundaries.
+
+Loaded State, summary, child summary, runtime activity and roster observations
+capture a Ready immutable root without acquiring its mutation reservation or reconciling an
+unfinished operation. Pending responsibility returns a retryable unavailable
+result. An already captured complete root remains usable for its in-flight
+response; it never authorizes a command or a later read.
+Execution consumers keep their existing synchronized State helpers; observer
+adapters select publication cuts without changing those execution semantics.
+
+`GetAgent` retains the typed observer error across the Host bridge and may retry
+transient reads within a one-second retry budget. This tool adapter never
+reserves or reconciles an execution owner. Exhaustion preserves the retryable
+error; protection failures and unknown write outcomes are not retried. HTTP
+observers continue to return unavailable immediately.
+Default `GetAgent` cleanup inspection uses the runtime's fixed scoped identity,
+not a mutable State read merely to retrieve its ID.
+Daemon identity/authentication probes use readiness metadata, keeping agent
+publication availability separate from service identity verification.
+
+With Scheduling prepared, child observability keeps its existing published
+Task/Work/Input selection. Missing Current needs only pooled Queue/error scalar
+reads and generation validation, without decoding canonical State or Task bodies.
+
+If a metadata ACK leaves Current/Scheduling unprepared, the observer may derive
+response-local material through a pooled, query-only deferred transaction. It
+validates existing qualification and canonical State, then verifies that the
+original publication is still current. A changed publication or pending recovery
+rejects the derived result. The observer does not publish these domains, write
+qualification, repair canonical state, or promote its response into execution
+authority. Incarnation, owner epoch, read deadline, cancellation, protection and
+last-holder material ownership remain required.
+
+Cold State, summary and roster observations prefer pooled query-only
+reconstruction and validate the original owner epoch and generation after
+freezing their facts, including
+metadata ACKs that leave no resident root. Previously prepared qualification is
+reused without a mutation reservation or writer admission.
+Only explicit missing-preparation errors may enter the existing first-query
+qualification path under its original reservation; corruption, cancellation,
+retirement and reader exhaustion cannot fall back to that writer. Read-only
+reconstruction never activates an unloaded runtime.
+
 ## Operator input and generated Timer events
 
 Operator input admitted before tool execution has not yet been observed by the

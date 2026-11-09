@@ -8,6 +8,7 @@
 // provider implementations and shared harness helpers have been moved to
 // runtime_providers.rs and runtime_helpers.rs respectively.
 
+use crate::support::runtime_helpers::ready_agent_summary;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -394,7 +395,7 @@ pub async fn background_task_rejoins_main_session() -> Result<()> {
         )
         .await?;
 
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert_ne!(summary.agent.status, AgentStatus::AwaitingTask);
     assert_eq!(summary.closure.outcome, ClosureOutcome::Completed);
     assert_eq!(summary.closure.waiting_reason, None);
@@ -735,7 +736,7 @@ pub async fn late_terminal_task_wait_fast_path_wakes_agent_with_durable_wait() -
         for task in runtime.storage().latest_task_records()? {
             eprintln!("DIAG task {} {:?}", task.id, task.status);
         }
-        let summary = runtime.agent_summary().await?;
+        let summary = ready_agent_summary(&runtime).await?;
         eprintln!(
             "DIAG closure {:?} waiting {:?}",
             summary.closure.outcome, summary.closure.waiting_reason
@@ -920,7 +921,7 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
     assert_eq!(session.total_input_tokens, 200);
     assert_eq!(session.total_output_tokens, 100);
     assert_eq!(session.total_model_rounds, 2);
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert_eq!(summary.token_usage.total.input_tokens, 200);
     assert_eq!(summary.token_usage.total.output_tokens, 100);
     assert_eq!(summary.token_usage.total.total_tokens, 300);
@@ -1784,7 +1785,7 @@ pub async fn runtime_provider_failure_surfaces_failure_brief_and_transcript_entr
                 == Some(false)
     }));
 
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert_eq!(summary.closure.outcome, ClosureOutcome::Failed);
     let state = runtime.agent_state().await?;
     let last_failure = state
@@ -3122,7 +3123,7 @@ pub async fn command_terminal_reentry_does_not_set_awaiting_task_closure() -> Re
         )
         .await?;
 
-    let summary = runtime.agent_summary().await?;
+    let summary = ready_agent_summary(&runtime).await?;
     assert_ne!(summary.agent.status, AgentStatus::AwaitingTask);
     assert_eq!(summary.closure.outcome, ClosureOutcome::Completed);
     assert_eq!(summary.closure.waiting_reason, None);

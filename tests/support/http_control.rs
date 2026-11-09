@@ -33,12 +33,14 @@ use tokio::net::TcpListener;
 use tokio::net::UnixListener;
 use tokio::time::{sleep, Duration, Instant};
 
+use super::ready_observer_get;
 use super::runtime_helpers::wait_until_async_for;
 use super::{
-    attach_default_workspace, connect_addr, git, init_git_repo, spawn_server,
-    spawn_server_for_host, spawn_server_with_config, spawn_server_with_runtime_config,
-    spawn_unix_server, tempdir, test_config, test_config_with_paths, test_work_item, unix_request,
-    wait_until, RuntimeFailureProvider, TestConfigBuilder,
+    attach_default_workspace, connect_addr, get_ready_observer_response, git, init_git_repo,
+    spawn_server, spawn_server_for_host, spawn_server_with_config,
+    spawn_server_with_runtime_config, spawn_unix_server, tempdir, test_config,
+    test_config_with_paths, test_work_item, unix_request, wait_until, RuntimeFailureProvider,
+    TestConfigBuilder,
 };
 
 pub async fn control_prompt_is_open_on_loopback_auto_without_token() -> Result<()> {
@@ -1099,12 +1101,11 @@ pub async fn control_agent_name_validation_and_default_rename_are_applied() -> R
         .await?;
     assert_eq!(created["identity"]["status"], "active");
 
-    let list: serde_json::Value = client
-        .get(format!("{base}/api/agents/list"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let list: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/list"))
+            .await?
+            .json()
+            .await?;
     let identities = list
         .as_array()
         .expect("agents list array")
@@ -1217,12 +1218,11 @@ pub async fn agent_state_route_returns_aggregated_snapshot() -> Result<()> {
         .await?;
     wait_until(|| Ok(runtime.storage().read_recent_events(1)?.first().is_some())).await?;
 
-    let state_payload: serde_json::Value = client
-        .get(format!("{base}/api/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let state_payload: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/default/state"))
+            .await?
+            .json()
+            .await?;
 
     assert!(state_payload["agent"].is_object());
     assert!(state_payload["agent"]["scheduling_posture"]["posture"].is_string());
@@ -1640,18 +1640,16 @@ pub async fn agent_state_route_scopes_work_items_to_requested_agent() -> Result<
     let (base, server) = spawn_server_for_host(host.clone()).await?;
     let client = reqwest::Client::new();
 
-    let alpha_state: serde_json::Value = client
-        .get(format!("{base}/api/agents/alpha/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
-    let beta_state: serde_json::Value = client
-        .get(format!("{base}/api/agents/beta/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let alpha_state: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/alpha/state"))
+            .await?
+            .json()
+            .await?;
+    let beta_state: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/beta/state"))
+            .await?
+            .json()
+            .await?;
 
     let alpha_ids: Vec<String> = alpha_state["work_items"]
         .as_array()
@@ -1702,10 +1700,11 @@ pub async fn agent_state_route_does_not_prune_stale_workspaces() -> Result<()> {
         .filter(|event| event.kind == "workspace_detached")
         .count();
 
-    let response = reqwest::Client::new()
-        .get(format!("{base}/api/agents/default/state"))
-        .send()
-        .await?;
+    let response = get_ready_observer_response(
+        &reqwest::Client::new(),
+        format!("{base}/api/agents/default/state"),
+    )
+    .await?;
     assert_eq!(response.status(), reqwest::StatusCode::OK);
 
     let state = runtime.agent_state().await?;
@@ -1797,12 +1796,11 @@ pub async fn agent_state_route_includes_bootstrap_projection_fields_when_present
         runtime_work_items
     );
 
-    let raw_snapshot: serde_json::Value = client
-        .get(format!("{base}/api/agents/default/state"))
-        .send()
-        .await?
-        .json()
-        .await?;
+    let raw_snapshot: serde_json::Value =
+        get_ready_observer_response(&client, format!("{base}/api/agents/default/state"))
+            .await?
+            .json()
+            .await?;
     assert!(
         raw_snapshot["work_items"]
             .as_array()
@@ -2992,15 +2990,13 @@ pub async fn control_runtime_status_is_open_over_unix_socket_when_auth_required(
         Ok::<_, anyhow::Error>(())
     });
 
-    let response = unix_request(
-        &socket_path,
-        "GET",
-        "/api/control/runtime/status",
-        &[],
-        None,
+    let client = Client::builder().unix_socket(socket_path).build()?;
+    let response = get_ready_observer_response(
+        &client,
+        "http://localhost/api/control/runtime/status".into(),
     )
     .await?;
-    assert_eq!(response.status, 200);
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
 
     server.abort();
     Ok(())
@@ -3143,11 +3139,12 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
     assert_eq!(handshake["auth"]["mode"], "bearer");
     assert_eq!(handshake["runtime"]["default_agent"], "default");
 
-    let agents = client
-        .get(format!("{base}/api/agents/list"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let agents = ready_observer_get(
+        client
+            .get(format!("{base}/api/agents/list"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(agents.status().is_success());
 
     let removed_agents = client
@@ -3176,11 +3173,12 @@ pub async fn remote_tcp_surfaces_require_bearer_token_when_required() -> Result<
         .unwrap_or_default()
         .contains("invalid control token"));
 
-    let runtime_status = client
-        .get(format!("{base}/api/control/runtime/status"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let runtime_status = ready_observer_get(
+        client
+            .get(format!("{base}/api/control/runtime/status"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(runtime_status.status().is_success());
 
     let denied_enqueue = client
@@ -3864,11 +3862,12 @@ pub async fn runtime_status_route_reports_runtime_metadata() -> Result<()> {
     });
 
     let client = reqwest::Client::new();
-    let response = client
-        .get(format!("http://{addr}/api/control/runtime/status"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let response = ready_observer_get(
+        client
+            .get(format!("http://{addr}/api/control/runtime/status"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(response.status().is_success());
     let payload: serde_json::Value = response.json().await?;
     assert_eq!(payload["healthy"], true);
@@ -4661,11 +4660,12 @@ pub async fn runtime_status_route_reports_waiting_activity_summary() -> Result<(
         sleep(Duration::from_millis(50)).await;
     }
 
-    let response = client
-        .get(format!("http://{addr}/api/control/runtime/status"))
-        .bearer_auth("secret")
-        .send()
-        .await?;
+    let response = ready_observer_get(
+        client
+            .get(format!("http://{addr}/api/control/runtime/status"))
+            .bearer_auth("secret"),
+    )
+    .await?;
     assert!(response.status().is_success());
     let payload: serde_json::Value = response.json().await?;
     assert_eq!(payload["activity"]["state"], "waiting");
@@ -4724,11 +4724,12 @@ pub async fn runtime_status_route_reports_last_runtime_failure_summary() -> Resu
     let client = reqwest::Client::new();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let response = client
-            .get(format!("http://{addr}/api/control/runtime/status"))
-            .bearer_auth("secret")
-            .send()
-            .await?;
+        let response = ready_observer_get(
+            client
+                .get(format!("http://{addr}/api/control/runtime/status"))
+                .bearer_auth("secret"),
+        )
+        .await?;
         let payload: serde_json::Value = response.json().await?;
         if payload.get("last_failure").is_some() && !payload["last_failure"].is_null() {
             assert_eq!(payload["last_failure"]["phase"], "runtime_turn");

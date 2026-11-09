@@ -499,12 +499,26 @@ impl MutationOwner {
     }
 
     pub(crate) fn capture(&self) -> Result<Option<Arc<PostureObservation>>, MutationOwnerError> {
+        self.capture_with_token().map(|(_, root)| root)
+    }
+
+    /// Cold observations also need the generation when no Root is published.
+    pub(crate) fn capture_with_token(
+        &self,
+    ) -> Result<(PublicationToken, Option<Arc<PostureObservation>>), MutationOwnerError> {
         let publication = self.slot.publication.lock().expect("publication poisoned");
         self.validate_publication(&publication)?;
         if let Some(recovery) = &publication.recovery {
             return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
         }
-        Ok(self.slot.root.load_full())
+        Ok((
+            PublicationToken {
+                identity_incarnation: self.incarnation,
+                owner_epoch: self.epoch,
+                generation: publication.generation,
+            },
+            self.slot.root.load_full(),
+        ))
     }
 
     fn validate_publication(&self, publication: &Publication) -> Result<(), MutationOwnerError> {

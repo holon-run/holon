@@ -45,6 +45,58 @@ pub fn init_test_tracing() {
     });
 }
 
+pub async fn get_ready_observer_response(
+    client: &reqwest::Client,
+    url: String,
+) -> Result<reqwest::Response> {
+    ready_observer_get(client.get(url)).await
+}
+
+pub async fn ready_observer_get(request: reqwest::RequestBuilder) -> Result<reqwest::Response> {
+    let preview = request
+        .try_clone()
+        .context("observer GET must be cloneable")?
+        .build()?;
+    anyhow::ensure!(
+        preview.method() == reqwest::Method::GET,
+        "observer retry requires GET"
+    );
+    let url = preview.url().clone();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let response = tokio::time::timeout_at(
+            deadline,
+            request
+                .try_clone()
+                .context("observer GET must be cloneable")?
+                .send(),
+        )
+        .await??;
+        if response.status() != reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            return Ok(response);
+        }
+        let gzip = response
+            .headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .is_some_and(|value| value == "gzip");
+        let bytes = tokio::time::timeout_at(deadline, response.bytes()).await??;
+        let error: serde_json::Value = if gzip {
+            serde_json::from_reader(flate2::read::GzDecoder::new(&bytes[..]))?
+        } else {
+            serde_json::from_slice(&bytes)?
+        };
+        anyhow::ensure!(
+            matches!(
+                error["code"].as_str(),
+                Some("runtime_db_busy" | "projection_stale_unhandled")
+            ) && error["retryable"] == true
+                && Instant::now() < deadline,
+            "observer GET {url} failed: {error}"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 pub struct TestConfigBuilder {
     data_dir: Option<PathBuf>,
     workspace_dir: Option<PathBuf>,
@@ -347,10 +399,10 @@ pub async fn attach_default_workspace(host: &RuntimeHost) -> Result<()> {
                         == "context resource source differs from its observation"
                         || error
                             .to_string()
-                            .starts_with("context resources are not ready: Dirty") =>
+                            .starts_with("context resources are not ready: Dirty")
+                        || error.is::<holon::runtime_db::RuntimeDbRetryableError>() =>
                 {
-                    // Summary reserves the mutation owner. Leave a real gap for
-                    // the observer's non-blocking publication reservation.
+                    // Let the workspace/resource writer finish its publication.
                     tokio::time::sleep(Duration::from_millis(50)).await;
                 }
                 Err(error) => return Err(error),

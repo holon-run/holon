@@ -43,9 +43,9 @@ const TOKEN: &str = "provider-recovery-test-secret-not-an-operator-token";
 const AGENT_ID: &str = "main";
 const DEADLINE: Duration = Duration::from_secs(120);
 const PARK_WINDOW: Duration = Duration::from_secs(6);
-/// A daemon restart can tear the listener down between the readiness probe and
-/// the next request, so the status probe retries inside this budget. The
-/// budget is bounded: once it is spent the transport error still fails the
+/// A daemon restart can remove the listener or leave a publication pending
+/// between readiness and the next request. Both retry within this budget.
+/// Once it is spent the probe failure still fails the
 /// test loudly, so a real regression is never hidden by the retry. The HTTP
 /// client times one request out after 10s, so a loaded CI runner needs room
 /// for several consecutive slow attempts; 60s stays well below the test-wide
@@ -554,9 +554,10 @@ struct ParkedInput {
 
 /// Why one agent status probe did not produce a payload.
 enum StatusProbeFailure {
-    /// The listener was unreachable. The daemon may be inside a restart
-    /// window, so this is the only failure worth retrying.
+    /// The listener was unreachable during a possible restart window.
     Transport(String),
+    /// A declared transient observer publication is not ready yet.
+    Publication,
     /// The daemon answered, but not with a usable status payload. This is a
     /// deterministic answer and must stay loud.
     Response(String),
@@ -912,7 +913,14 @@ impl Fixture {
             .unwrap();
         let task: Value = serde_json::from_str(&task).unwrap();
         assert_eq!(task["agent_id"], AGENT_ID);
-        assert_eq!(task["status"], "completed");
+        assert_eq!(
+            task["status"],
+            "completed",
+            "mock command task error: {}; output failure: {}; {}",
+            task["detail"]["error"],
+            task["detail"]["output_capture"]["failure_code"],
+            bounded(&self.all_diagnostics())
+        );
         let mut query = db
             .prepare("SELECT payload_json FROM task_result_settlements WHERE task_id = ?1")
             .unwrap();
@@ -1098,7 +1106,7 @@ impl Fixture {
     ///
     /// A daemon restart can tear the listener down between the readiness probe
     /// and this request, so a transport error here is a timing race rather
-    /// than a wrong answer. Every other failure is a deterministic answer.
+    /// than a wrong answer. Declared pending publications are also retryable.
     fn probe_agent_status(&self, address: &str) -> Result<Value, StatusProbeFailure> {
         let path = agent_status_path();
         let response = self
@@ -1117,6 +1125,18 @@ impl Fixture {
         let body = response
             .text()
             .map_err(|error| StatusProbeFailure::Response(format!("body read error: {error}")))?;
+        if http_status == reqwest::StatusCode::SERVICE_UNAVAILABLE {
+            if let Ok(error) = serde_json::from_str::<Value>(&body) {
+                if error["retryable"] == true
+                    && matches!(
+                        error["code"].as_str(),
+                        Some("runtime_db_busy" | "projection_stale_unhandled")
+                    )
+                {
+                    return Err(StatusProbeFailure::Publication);
+                }
+            }
+        }
         if !http_status.is_success() {
             return Err(StatusProbeFailure::Response(format!(
                 "status={http_status}, body={}",
@@ -1130,7 +1150,7 @@ impl Fixture {
 
     /// Read the agent status across a daemon restart window.
     ///
-    /// Only transport errors are retried; the budget is bounded so an
+    /// Only transport errors and declared pending publications are retried; an
     /// exhausted retry still fails the test with the daemon diagnostics.
     fn wait_for_agent_status(&self, address: &str, budget: Duration) -> Value {
         let deadline = Instant::now() + budget;
@@ -1140,6 +1160,9 @@ impl Fixture {
                 Ok(status) => return status,
                 Err(StatusProbeFailure::Transport(error)) => {
                     last_error = format!("transport error: {error}");
+                }
+                Err(StatusProbeFailure::Publication) => {
+                    last_error = "observer publication is pending".to_string();
                 }
                 Err(StatusProbeFailure::Response(error)) => panic!(
                     "GET {} failed: {error}\n{}",

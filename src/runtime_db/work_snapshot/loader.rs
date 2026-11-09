@@ -1,7 +1,6 @@
 use super::*;
 use qualification::{eligible_digest, manifests, validate_member};
 
-#[cfg(test)]
 pub(crate) fn load_work_domain_snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -412,7 +411,7 @@ fn load_with_scope_facts(
     } else if !preflight {
         ensure!(
             previous.as_ref() == Some(&coverage),
-            "Work selected coverage requires preparation"
+            WorkSnapshotError::CoverageNeedsPreparation
         );
     }
     let owning_input_roots = owning_input_roots(&resident)?;

@@ -184,50 +184,10 @@ impl RuntimeHandle {
         crate::runtime_db::current_query::CurrentSchedulerMetadata,
         super::resource_observation::InstructionResourceRead,
     )> {
-        let mut reservations = super::mutation_owner::MutationOwner::reserve_all(vec![self
-            .inner
-            .mutation_owner
-            .clone()])
-        .await?;
-        self.reconcile_reserved_mutations(&mut reservations).await?;
         let root = self
-            .inner
-            .mutation_owner
-            .capture()?
-            .context("Summary root needs publication")?;
-        if root.scheduling.is_none()
-            || root
-                .current
-                .as_ref()
-                .and_then(|current| current.query.as_ref())
-                .is_none()
-        {
-            drop(root);
-            drop(reservations);
-            tracing::debug!(
-                target: "holon::agent_summary",
-                agent_id = self.inner.mutation_owner.agent_id(),
-                phase = "prepare_current_start",
-                "full agent summary read"
-            );
-            let mut owner = self.begin_mutation().await?;
-            tracing::debug!(
-                target: "holon::agent_summary",
-                agent_id = self.inner.mutation_owner.agent_id(),
-                phase = "prepare_current_owner_ready",
-                "full agent summary read"
-            );
-            owner.prepare_current_scheduler_query(None).await?;
-            tracing::debug!(
-                target: "holon::agent_summary",
-                agent_id = self.inner.mutation_owner.agent_id(),
-                phase = "prepare_current_done",
-                "full agent summary read"
-            );
-            self.summary_scheduler_from_root(owner.capture_published_root()?.as_ref())
-        } else {
-            self.summary_scheduler_from_root(&root)
-        }
+            .capture_observer_root_async(&self.inner.runtime_db)
+            .await?;
+        self.summary_scheduler_from_root(&root)
     }
 
     fn summary_scheduler_from_root(
@@ -241,14 +201,14 @@ impl RuntimeHandle {
     )> {
         let (read, identity, metadata) = self.roster_scheduler_from_root(root)?;
         let resources = self.capture_instruction_resources(
-            &read.state,
+            root,
             &self.inner.config_snapshot.load_full(),
             &read.acquisition,
         )?;
         Ok((read, identity, metadata, resources))
     }
 
-    fn roster_scheduler_from_root(
+    pub(super) fn roster_scheduler_from_root(
         &self,
         root: &super::resident_state::AgentSnapshot,
     ) -> Result<(
@@ -335,36 +295,9 @@ impl RuntimeHandle {
                 && expected_identity.incarnation == self.inner.identity_incarnation,
             "roster identity differs from loaded owner"
         );
-        let mut reservations = db
-            .wait_for_memory_lock(super::mutation_owner::MutationOwner::reserve_all(vec![
-                self.inner.mutation_owner.clone(),
-            ]))
-            .await??;
-        self.reconcile_reserved_mutations(&mut reservations).await?;
-        db.check_read_scope()?;
-        let root = self
-            .inner
-            .mutation_owner
-            .capture()?
-            .context("roster root needs publication")?;
-        let (agent, identity, scheduling_posture) = if root.scheduling.is_none()
-            || root
-                .current
-                .as_ref()
-                .and_then(|current| current.query.as_ref())
-                .is_none()
-        {
-            drop(root);
-            drop(reservations);
-            let mut owner = self.begin_scoped_projection_preparation(db).await?;
-            owner.prepare_current_scheduler_query(Some(db)).await?;
-            db.check_read_scope()?;
-            material.read(|| {
-                self.roster_list_fields_from_root(owner.capture_published_root()?.as_ref())
-            })?
-        } else {
-            material.read(|| self.roster_list_fields_from_root(&root))?
-        };
+        let root = self.capture_observer_root_async(db).await?;
+        let (agent, identity, scheduling_posture) =
+            material.read(|| self.roster_list_fields_from_root(&root))?;
         material.read(|| {
             use crate::diagnostics::resource_io;
             let agent = &agent;

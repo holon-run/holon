@@ -50,6 +50,7 @@ impl RuntimeHost {
             material: scheduling_material,
             acquisition,
             reservations,
+            observation,
         } = handle
             .block_on(self.acquire_cold_scheduling_query_in(&identity, timer_limit, db))
             .map_err(PublicAgentError::Runtime)?;
@@ -103,6 +104,9 @@ impl RuntimeHost {
             .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
         // Parent facts are frozen. Release before another agent's summary await.
+        if let Some(observation) = observation {
+            observation.check().map_err(PublicAgentError::Runtime)?;
+        }
         drop(reservations);
         let active_children = self
             .child_agent_summaries_scoped(agent_id, db, handle)
@@ -311,5 +315,102 @@ mod tests {
             .unwrap()
         );
         host.shutdown().await.unwrap();
+    }
+    #[tokio::test]
+    async fn cold_observer_rejects_a_completed_metadata_ack_without_a_root() -> Result<()> {
+        use crate::runtime::mutation_owner::{
+            IdentityMutationFacts, KnownCommit, MutationReservation,
+        };
+        let (_home, host, _runtime) = host_backed_test_runtime().await;
+        let identity = AgentIdentityRecord::new(
+            "cold-observer-generation",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            crate::types::AgentOwnership::SelfOwned,
+            crate::types::AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&identity)?;
+        let observation = crate::host::cold_summary::ColdObserverCut::capture(
+            &host,
+            &identity,
+            host.runtime_db(),
+        )?;
+        observation.check()?;
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&identity.agent_id, identity.incarnation)?;
+        assert!(owner.capture()?.is_none());
+        let mut reservations = vec![owner.reserve().await?];
+        MutationReservation::begin_all(&mut reservations, "cold-metadata-ack".into())?;
+        MutationReservation::committed_all(
+            &mut reservations,
+            vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                identity: Some(Arc::new(identity)),
+                state: None,
+            }))],
+        )?;
+        MutationReservation::publish_all_known(&mut reservations)?;
+        assert!(owner.capture()?.is_none());
+        let error = observation.check().unwrap_err();
+        assert!(error
+            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+            .is_some());
+        Ok(())
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn prepared_cold_summary_uses_readers_while_execution_owner_and_writer_are_held(
+    ) -> Result<()> {
+        let (_home, host, _runtime) = host_backed_test_runtime().await;
+        let identity = AgentIdentityRecord::new(
+            "cold-observer-reader",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            crate::types::AgentOwnership::SelfOwned,
+            crate::types::AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        host.append_agent_identity(&identity)?;
+        let state = AgentState::new(&identity.agent_id);
+        host.runtime_db()
+            .agent_states()
+            .upsert_for_fixture(&state)?;
+        // Only the first accepted query may initialize missing qualification.
+        drop(host.acquire_cold_summary(&identity).await?);
+        let owner = host
+            .inner
+            .mutation_owners
+            .current_owner(&identity.agent_id, identity.incarnation)?;
+        let reservation = owner.reserve().await?;
+        let (start, ready) = tokio::sync::oneshot::channel();
+        let mut start = Some(start);
+        let (release, resume) = std::sync::mpsc::channel();
+        let db = host.runtime_db().clone();
+        let writer = tokio::task::spawn_blocking(move || {
+            db.transaction(|_| {
+                if let Some(start) = start.take() {
+                    let _ = start.send(());
+                }
+                resume.recv()?;
+                Ok(())
+            })
+        });
+        ready.await?;
+        let summary =
+            tokio::time::timeout(Duration::from_secs(5), host.acquire_cold_summary(&identity))
+                .await??;
+        assert_eq!(summary.state.id, identity.agent_id);
+        assert!(host
+            .try_get_loaded_runtime(&identity.agent_id)
+            .await
+            .is_none());
+        release.send(())?;
+        writer.await??;
+        drop(reservation);
+        Ok(())
     }
 }

@@ -1,3 +1,4 @@
+use crate::support::runtime_helpers::ready_agent_summary;
 use std::path::Path;
 use std::process::Command;
 use std::sync::Arc;
@@ -344,7 +345,7 @@ async fn assert_task_stop_child_worktree_cleanup(deleted_before_stop: bool) -> R
         .context("original child identity")?;
     assert_eq!(child.status, AgentRegistryStatus::Active);
     assert_eq!(Some(child.incarnation), target.incarnation);
-    let incarnation = runtime.agent_summary().await?.identity.incarnation;
+    let incarnation = ready_agent_summary(&runtime).await?.identity.incarnation;
     assert!(expected_worktree.exists());
     assert!(!git(
         &workspace,

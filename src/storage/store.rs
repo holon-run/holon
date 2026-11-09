@@ -401,6 +401,14 @@ impl RuntimeStore {
                 let changes = self.index_outbox.changes_for_tool_execution(&record);
                 Prepared::tool(scope, nonce, at, record, changes)
             }
+            Write::ToolResult {
+                record,
+                event,
+                barrier,
+            } => {
+                let changes = self.index_outbox.changes_for_tool_execution(&record);
+                Prepared::tool_result(scope, nonce, at, record, changes, event, barrier)
+            }
             Write::BriefCreated { brief, event } => {
                 anyhow::ensure!(
                     self.agent_id.as_deref() == Some(scope.agent_id.as_str()),
