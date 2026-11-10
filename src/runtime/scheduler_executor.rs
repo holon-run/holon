@@ -1,6 +1,7 @@
 use super::message_dispatch::MessageDispatchPlan;
 use super::*;
 use crate::domain::execution_protocol::ExecutionBinding;
+use crate::host::context_resources::ContextResourceWritersActive;
 use crate::runtime_db::RuntimeStateTransitionConflict;
 use crate::types::ExecutionAdmissionProvenance;
 
@@ -133,6 +134,7 @@ pub(super) enum RunLoopPoll {
     Idle,
     AuthorityBlocked,
     ContextPreparationInterrupted,
+    ContextResourcesPending,
 }
 
 impl RunLoopPoll {
@@ -144,6 +146,7 @@ impl RunLoopPoll {
             RunLoopPoll::Idle => "idle",
             RunLoopPoll::AuthorityBlocked => "authority_blocked",
             RunLoopPoll::ContextPreparationInterrupted => "context_preparation_interrupted",
+            RunLoopPoll::ContextResourcesPending => "context_resources_pending",
         }
     }
 }
@@ -1559,6 +1562,21 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             {
                 Ok(projection) => projection,
                 Err(error) if error.is::<crate::context::ContextPlanningError>() => None,
+                Err(error)
+                    if super::resource_refresh::is_resource_preparation_conflict(&error)
+                        || error
+                            .chain()
+                            .any(|cause| cause.is::<ContextResourceWritersActive>()) =>
+                {
+                    // No Claim exists yet. Leave the original input queued and
+                    // release preparation before the run loop waits for resources.
+                    tracing::debug!(agent_id = %candidate.message.agent_id,
+                        message_id = %candidate.message.id, error = %error,
+                        "deferring unclaimed input for context resource preparation");
+                    return Ok(PrepareMessageOutcome::Poll(
+                        RunLoopPoll::ContextResourcesPending,
+                    ));
+                }
                 Err(error)
                     if error.is::<super::context_capture::ContextPreparationRetryExhausted>() =>
                 {

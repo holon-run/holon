@@ -432,7 +432,6 @@ pub(crate) struct ResourceObservation {
     _material: Arc<BudgetViewGuard>,
 }
 impl ResourceObservation {
-    #[cfg(test)]
     pub(crate) fn source(&self) -> &ContextResourceSource {
         &self.source.key
     }

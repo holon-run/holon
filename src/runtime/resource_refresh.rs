@@ -123,6 +123,8 @@ enum RefreshFailure {
 /// and the capture. The bound matches the writer-conflict re-entry that the
 /// Context preparation path already allows.
 pub(super) const RESOURCE_SOURCE_CHANGE_REPREPARES: usize = 2;
+pub(super) const CONTEXT_RESOURCE_RETRY_MIN: Duration = Duration::from_millis(50);
+pub(super) const CONTEXT_RESOURCE_RETRY_MAX: Duration = Duration::from_secs(1);
 /// Preparation retries only resource conflicts; closed and foreign scopes fail.
 pub(super) fn is_resource_preparation_conflict(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
@@ -284,6 +286,32 @@ impl Drop for ResourceOwnerWake {
     }
 }
 impl RuntimeHandle {
+    pub(super) async fn wait_context_resource_retry(&self, delay: Duration) {
+        let notified = self.inner.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        let refreshed = self.inner.resources.refresh_finished.notified();
+        tokio::pin!(refreshed);
+        refreshed.as_mut().enable();
+        if !self.accepts_execution_admission() {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        tokio::select! {
+            _ = notified => {}
+            _ = self.inner.resources.closed() => {}
+            _ = async {
+                // Even a failed refresh completes a flight. Debounce repeated
+                // completions, with a deadline for an already missed event.
+                tokio::time::sleep_until(now + CONTEXT_RESOURCE_RETRY_MIN.min(delay)).await;
+                tokio::select! {
+                    _ = refreshed => {}
+                    _ = tokio::time::sleep_until(now + delay) => {}
+                }
+            } => {}
+        }
+    }
+
     fn trace_resource_refresh(&self, phase: &'static str) {
         tracing::debug!(
             target: "holon::resource_refresh",
@@ -1453,6 +1481,47 @@ mod tests {
             attempts
         );
         drop(refresh);
+        runtime.close_execution_admission();
+        runtime.join_retiring_resources().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn resource_retry_wait_debounces_refresh_and_recovers_missed_notifications() -> Result<()>
+    {
+        use futures_util::FutureExt;
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("resource-retry-wait", home.path())?;
+        while runtime.inner.notify.notified().now_or_never().is_some() {}
+        tokio::time::pause();
+        let delay = Duration::from_secs(1);
+        let wait = runtime.wait_context_resource_retry(delay);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        runtime.inner.resources.refresh_finished.notify_waiters();
+        tokio::time::advance(Duration::from_millis(49)).await;
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+        assert!(futures_util::poll!(&mut wait).is_ready());
+
+        // A refresh completed before registration must not park the queue forever.
+        runtime.inner.resources.refresh_finished.notify_waiters();
+        let wait = runtime.wait_context_resource_retry(delay);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_millis(999)).await;
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        tokio::time::advance(Duration::from_millis(2)).await;
+        tokio::task::yield_now().await;
+        assert!(futures_util::poll!(&mut wait).is_ready());
+
+        let wait = runtime.wait_context_resource_retry(delay);
+        tokio::pin!(wait);
+        assert!(futures_util::poll!(&mut wait).is_pending());
+        runtime.inner.notify.notify_one();
+        assert!(futures_util::poll!(&mut wait).is_ready());
+        tokio::time::resume();
         runtime.close_execution_admission();
         runtime.join_retiring_resources().await?;
         Ok(())

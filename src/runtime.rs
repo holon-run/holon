@@ -6834,6 +6834,7 @@ impl RuntimeHandle {
             }
         }
 
+        let mut resource_retry_delay = resource_refresh::CONTEXT_RESOURCE_RETRY_MIN;
         loop {
             #[cfg(test)]
             let loop_gate = self.inner.run_loop_test_gate.read().await;
@@ -6851,6 +6852,12 @@ impl RuntimeHandle {
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
                 .poll()
                 .await?;
+            if !matches!(
+                poll,
+                scheduler_executor::RunLoopPoll::ContextResourcesPending
+            ) {
+                resource_retry_delay = resource_refresh::CONTEXT_RESOURCE_RETRY_MIN;
+            }
 
             let scheduled = match poll {
                 scheduler_executor::RunLoopPoll::Shutdown => return Ok(()),
@@ -6868,6 +6875,14 @@ impl RuntimeHandle {
                     return Ok(());
                 }
                 scheduler_executor::RunLoopPoll::Message(scheduled) => scheduled,
+                scheduler_executor::RunLoopPoll::ContextResourcesPending => {
+                    #[cfg(test)]
+                    drop(loop_gate);
+                    self.wait_context_resource_retry(resource_retry_delay).await;
+                    resource_retry_delay = (resource_retry_delay * 2)
+                        .min(resource_refresh::CONTEXT_RESOURCE_RETRY_MAX);
+                    continue;
+                }
                 scheduler_executor::RunLoopPoll::AuthorityBlocked => {
                     let retry_at =
                         self.now() + chrono::Duration::seconds(AUTHORITY_BLOCKED_RETRY_SECONDS);
