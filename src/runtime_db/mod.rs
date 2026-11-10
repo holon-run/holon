@@ -244,6 +244,12 @@ pub(crate) fn is_reader_checkout_pressure(error: &anyhow::Error) -> bool {
     })
 }
 
+pub(crate) fn is_observer_publication_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<RuntimeDbRetryableError>()
+        .is_some_and(|error| error.operation() == "observer publication")
+}
+
 /// Retry read preparation only. Never wrap a business write or a provider call.
 pub(crate) async fn retry_reader_checkout<T, F, Fut>(mut read: F) -> Result<T>
 where
