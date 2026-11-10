@@ -134,8 +134,11 @@ A prearmed gate acknowledges and pins its first canonical result; reusing the
 request cannot bind a later generation or epoch. The controller requires that
 full-identity ACK and freezes the winning claim before release, never inferring
 order from a sleep. Sixth-source injection additionally requires all pinned
-fences. Only the feature binary polls the control file during runtime idle
-awaits (25ms); the ordinary binary contains neither the protocol nor that branch.
+fences. Only the feature binary services the control file, both during runtime
+idle awaits (25ms) and once inside the canonical result dispatch itself, because
+the dispatch parks the run loop on the winner's provider request and an idle
+pass cannot run mid-turn; the ordinary binary contains neither the protocol nor
+those branches.
 
 Per-case evidence includes pre-terminal/captured identity, atomic read-only DB
 snapshots, provider request-to-activation/root joins, policy, restart before/after

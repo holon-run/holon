@@ -1153,6 +1153,12 @@ impl RuntimeHandle {
                     .await?;
             }
         }
+        // A prearmed scanner gate must attest before this dispatch parks the
+        // run loop on the winner's provider request: idle control servicing
+        // only runs between turns, so the dispatch itself publishes the
+        // scanner-held ACK while the controlled-order window is still open.
+        #[cfg(feature = "recovery-acceptance")]
+        super::recovery_acceptance::service(self).await?;
         if let Some(settlement) = settlement.as_ref() {
             let owner = self.acquire_task_result_owner(settlement).await?;
             let unavailable = owner.disposition()?;

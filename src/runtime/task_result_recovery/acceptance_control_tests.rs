@@ -240,6 +240,32 @@ async fn recovery_acceptance_prearmed_scanner_ack_precedes_due_without_charging(
 }
 
 #[tokio::test(start_paused = true)]
+async fn recovery_acceptance_scanner_gate_ack_is_published_by_the_dispatch_itself() {
+    let harness = LifecycleHarness::with_provider(Arc::new(FailureProvider::default()));
+    let runtime = harness.runtime();
+    let owner = ready_owner(runtime).await;
+    let (task, result) =
+        completed_command_with_delivery(runtime, Some(&owner), "dispatch-time-ack", true).await;
+    control(runtime, &task, "dispatch", true, false, Value::Null);
+    // No idle servicing pass has run since the gate was armed.
+    assert!(!recovery_acceptance::directory(runtime)
+        .join("dispatch.scanner-held.json")
+        .exists());
+
+    // The winner dispatch runs inline in the runtime loop and parks it on the
+    // provider request, so idle control servicing cannot run mid-turn. The
+    // dispatch itself must publish the scanner-held ACK, or the controller
+    // observes it only after the provider deadline already replaced the winner.
+    let scheduled = Box::pin(claim_model(runtime)).await;
+    process(runtime, scheduled).await;
+    let held = event(runtime, "dispatch", "scanner-held");
+    assert_eq!(held["task_id"], task.id);
+    assert_eq!(held["fence"]["result_message_id"], result.id);
+    assert_eq!(held["recovery_attempts"], 0);
+    assert!(held["last_recovery_root_attempt_id"].is_null());
+}
+
+#[tokio::test(start_paused = true)]
 async fn recovery_acceptance_controls_real_first_source_order_without_blocking_exact_wait() {
     assert!(env!("HOLON_VERSION").contains("[recovery-acceptance-test]"));
     for scanner_first in [false, true] {
