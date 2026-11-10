@@ -25,7 +25,9 @@ use super::{
     evidence::EvidenceKind,
     repositories::{self, decode_agent_identity_payload, decode_agent_state_payload},
     task_result_settlement::{context_admitted_settlements_on, TaskResultSettlementRecord},
+    task_snapshot::validate_task_observation_revision_tx,
     transitions::execution_protocol_repository::context_execution_protocol_on,
+    work_snapshot::validate_work_domain_observation_with_scope_tx,
 };
 
 /// Root compatibility is checked by the caller against these exact read-view facts.
@@ -98,6 +100,21 @@ impl ContextScopeRead<'_> {
             "context scope read belongs to another transaction or scope"
         );
         self.validate_identity_scope(tx, scope)
+    }
+
+    pub(crate) fn validate_work_and_task_observations(
+        &self,
+        tx: &Transaction<'_>,
+        (work_scope, work_revision): (&InputEvidenceScope, u64),
+        (task_scope, task_revision): (&InputEvidenceScope, u64),
+    ) -> Result<()> {
+        validate_work_domain_observation_with_scope_tx(tx, work_scope, work_revision, self)?;
+        ensure!(
+            task_scope == work_scope,
+            "context scope read belongs to another transaction or scope"
+        );
+        // Work validated the active scope, and both revision checks are read-only.
+        validate_task_observation_revision_tx(tx, task_scope, task_revision)
     }
 
     // Native birth can precede the first State. Its identity proof still
