@@ -552,6 +552,31 @@ impl RuntimeHandle {
         context_config: ContextConfig,
         clock: Arc<dyn Clock>,
     ) -> Result<Self> {
+        Self::new_with_clock_and_runtime_db(
+            agent_id,
+            data_dir,
+            initial_workspace,
+            callback_base_url,
+            provider,
+            default_agent_id,
+            context_config,
+            clock,
+            None,
+        )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_with_clock_and_runtime_db(
+        agent_id: impl Into<String>,
+        data_dir: PathBuf,
+        initial_workspace: impl Into<InitialWorkspaceBinding>,
+        callback_base_url: String,
+        provider: Arc<dyn AgentProvider>,
+        default_agent_id: String,
+        context_config: ContextConfig,
+        clock: Arc<dyn Clock>,
+        runtime_db: Option<RuntimeDb>,
+    ) -> Result<Self> {
         let base_context_config = context_config.clone();
         // Same hermetic rule as `new`: no ambient user-home binding here.
         let user_home_dir = None;
@@ -571,7 +596,7 @@ impl RuntimeHandle {
             crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS,
             crate::web::WebConfig::default(),
             None,
-            None,
+            runtime_db,
             None,
             None,
             clock,

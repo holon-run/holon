@@ -9497,7 +9497,20 @@ impl RuntimeHost {
                             {
                                 // Resolve cancellation on the next iteration; no replacement was activated.
                             }
-                            Err(error) => return Err(error),
+                            Err(error) => {
+                                // A reader wait can span deletion during cold construction.
+                                // The original target's durable fence still proves cancellation.
+                                if let Some(result) = self
+                                    .deleted_task_target_result(
+                                        child_agent_id,
+                                        Some(identity.incarnation),
+                                    )
+                                    .await?
+                                {
+                                    return Ok(result);
+                                }
+                                return Err(error);
+                            }
                         }
                     }
                 }
@@ -20739,6 +20752,26 @@ mod tests {
     }
 
     #[cfg(holon_lib_test_shard = "d")]
+    fn saturate_runtime_preparation_reader(host: &RuntimeHost) -> SaturatedRuntimeReaders {
+        let db = host.runtime_db().clone();
+        let (ready, acquired) = std::sync::mpsc::channel();
+        let (release, released) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            db.read_for_preparation(|_| {
+                ready.send(()).unwrap();
+                let _ = released.recv();
+                Ok(())
+            })
+            .unwrap();
+        });
+        acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+        SaturatedRuntimeReaders {
+            release: vec![release],
+            workers: vec![worker],
+        }
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn runtime_constructor_cancellation_retains_activation_guards() {
         let (_home, host, _task) = source_bound_invocation_fixture();
@@ -21201,9 +21234,9 @@ mod tests {
         let heartbeat = started.elapsed();
 
         // Memory-first activation takes over asynchronously: saturated runtime
-        // readers neither block nor fail the cold handoff. Background
-        // bootstrap may already have hit saturation and handed this generation
-        // to recovery, so handoff does not imply loaded-handle availability.
+        // readers neither block nor fail the cold handoff. Database bootstrap
+        // can still be waiting for a reader, so handoff does not imply a
+        // completed bootstrap.
         let runtime = tokio::time::timeout(Duration::from_secs(3), activation)
             .await
             .expect("activation must take over while runtime readers are saturated")
@@ -21223,9 +21256,8 @@ mod tests {
         // Read saturation defers the takeover's database bootstrap instead of
         // failing it: once readers are released, the takeover converges to a
         // completed bootstrap, either on this handle or through a retryable
-        // recovery rebuild. Retryable saturation errors still surface at the
-        // real reader-consumption boundaries covered by the invocation and
-        // monitor saturation tests.
+        // recovery rebuild. Explicit read deadlines remain covered by the
+        // scoped reader-pool tests.
         let converged = 'converge: {
             match tokio::time::timeout(Duration::from_secs(2), runtime.wait_for_bootstrap()).await {
                 Ok(Ok(())) => break 'converge true,
@@ -21372,6 +21404,10 @@ mod tests {
             .unwrap();
             if saturated {
                 let held = saturate_runtime_readers(&host);
+                // Ordinary saturation permits memory-first cold takeover.
+                // Hold its preparation reader to keep construction pending
+                // until the target's deletion fence is durable.
+                let preparation = saturate_runtime_preparation_reader(&host);
                 drop(handoff);
                 tokio::time::sleep(Duration::from_millis(600)).await;
                 if monitor.is_finished() {
@@ -21379,11 +21415,12 @@ mod tests {
                     panic!("invocation monitor completed under reader pressure: {completed:?}");
                 }
                 assert!(!monitor.is_finished());
-                assert!(
+                assert_eq!(
                     host.runtime_db()
                         .reader_pool_stats_for_tests()
-                        .checkout_timeouts
-                        > 0
+                        .checkout_timeouts,
+                    0,
+                    "unscoped activation waits instead of exhausting an implicit checkout budget"
                 );
                 let (deleting_identity, _, _) = host
                     .runtime_db()
@@ -21391,6 +21428,7 @@ mod tests {
                     .begin(child_id, identity.revision, "test", false)
                     .unwrap();
                 host.cache_agent_identity(&deleting_identity).unwrap();
+                drop(preparation);
                 drop(held);
             } else {
                 let (deleting_identity, _, _) = host
@@ -21415,12 +21453,12 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
-    async fn supervised_invocation_saturation_is_retryable_and_does_not_block_async() {
+    async fn supervised_invocation_waits_for_readers_and_does_not_block_async() {
         let (_home, host, task) = source_bound_invocation_fixture();
         let held = saturate_runtime_readers(&host);
         let read_host = host.clone();
         let read_task = task.clone();
-        let resolution = tokio::spawn(async move {
+        let mut resolution = tokio::spawn(async move {
             read_host
                 .resolve_supervised_invocation(&read_task, "source-bound-child", false)
                 .await
@@ -21428,25 +21466,22 @@ mod tests {
         let started = std::time::Instant::now();
         tokio::time::sleep(Duration::from_millis(20)).await;
         let heartbeat = started.elapsed();
-        let result = tokio::time::timeout(Duration::from_secs(3), resolution).await;
+        let pending = tokio::time::timeout(Duration::from_millis(350), &mut resolution).await;
         drop(held);
         assert!(
             heartbeat < saturation_heartbeat_budget(),
             "{heartbeat:?} exceeds saturation heartbeat budget"
         );
-        let error = result.unwrap().unwrap().unwrap_err();
         assert!(
-            error
-                .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-                .is_some(),
-            "{error:#}"
+            pending.is_err(),
+            "unscoped invocation must remain pending while readers are held"
         );
-        assert!(matches!(
-            host.resolve_supervised_invocation(&task, "source-bound-child", false)
-                .await
-                .unwrap(),
-            ChildInvocationResolution::Ready(_)
-        ));
+        let result = tokio::time::timeout(Duration::from_secs(3), resolution)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert!(matches!(result, ChildInvocationResolution::Ready(_)));
     }
 
     #[cfg(holon_lib_test_shard = "d")]

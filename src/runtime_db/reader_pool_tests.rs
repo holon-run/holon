@@ -26,6 +26,169 @@ fn read_one(db: &RuntimeDb) -> Result<i64> {
     db.with_read(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get(0))?))
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unscoped_preparation_waits_past_old_checkout_limit_but_scope_still_expires() -> Result<()>
+{
+    let directory = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        directory.path().join("runtime.sqlite"),
+        directory.path().join("runtime.lock"),
+    )?;
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, held) = mpsc::channel();
+    let holder_db = db.clone();
+    let holder = tokio::task::spawn_blocking(move || {
+        holder_db.read_for_preparation(|_| {
+            let _ = started.send(());
+            held.recv_timeout(Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    running.await?;
+    let waiter_db = db.clone();
+    let waiter = tokio::task::spawn_blocking(move || waiter_db.read_for_preparation(|_| Ok(42)));
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let premature = waiter.is_finished();
+    let scoped = db.with_read_scope(RuntimeDbReadScope::new(
+        Instant::now() + Duration::from_millis(30),
+    ));
+    let error = tokio::task::spawn_blocking(move || scoped.read_for_preparation(|_| Ok(())))
+        .await?
+        .unwrap_err();
+    release.send(())?;
+    holder.await??;
+    assert!(!premature, "unscoped wait inherited the old 250ms limit");
+    assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), waiter).await???,
+        42
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unscoped_async_reader_waits_for_capacity_without_old_admission_limit() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        directory.path().join("runtime.sqlite"),
+        directory.path().join("runtime.lock"),
+    )?;
+    let (started, mut running) = tokio::sync::mpsc::unbounded_channel();
+    let mut releases = Vec::new();
+    let mut holders = Vec::new();
+    for _ in 0..4 {
+        let reader = db.clone();
+        let started = started.clone();
+        let (release, held) = mpsc::channel();
+        releases.push(release);
+        holders.push(tokio::spawn(async move {
+            reader
+                .with_read_async(move |_| {
+                    let _ = started.send(());
+                    held.recv_timeout(Duration::from_secs(10))?;
+                    Ok(())
+                })
+                .await
+        }));
+    }
+    for _ in 0..4 {
+        running.recv().await.unwrap();
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().available_admission, 0);
+    let reader = db.clone();
+    let waiting = tokio::spawn(async move { reader.with_read_async(|_| Ok(42)).await });
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let premature = waiting.is_finished();
+    for release in releases {
+        release.send(())?;
+    }
+    for holder in holders {
+        holder.await??;
+    }
+    assert!(
+        !premature,
+        "unscoped async read inherited the old 250ms limit"
+    );
+    assert_eq!(
+        tokio::time::timeout(Duration::from_secs(5), waiting).await???,
+        42
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_prompt_waits_for_preparation_reader_and_is_admitted_once() -> Result<()> {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let home = tempfile::tempdir()?;
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )?;
+    let mut config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+    config.control_token = Some("secret".into());
+    config.control_auth_mode = crate::config::ControlAuthMode::Required;
+    let host = crate::host::RuntimeHost::new_with_provider(
+        config,
+        Arc::new(crate::provider::StubProvider::new("done")),
+    )?;
+    let runtime = host.default_runtime_bootstrapped_observed(None).await?;
+    let agent = host.config().default_agent_id.clone();
+    let db = host.runtime_db().clone();
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, held) = mpsc::channel();
+    let holder = tokio::task::spawn_blocking(move || {
+        db.read_for_preparation(|_| {
+            let _ = started.send(());
+            held.recv_timeout(Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    running.await?;
+    let app = crate::http::router(crate::http::AppState::for_tcp(host.clone()));
+    let prompt = move || {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/control/agents/{agent}/prompt"))
+            .header("authorization", "Bearer secret")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"text":"reader wait regression","client_request_id":"reader-wait-input"}"#,
+            ))
+            .unwrap()
+    };
+    let request = app.clone().oneshot(prompt());
+    let pending = tokio::spawn(request);
+    tokio::time::sleep(Duration::from_millis(350)).await;
+    let premature = pending.is_finished();
+    release.send(())?;
+    holder.await??;
+    let response = tokio::time::timeout(Duration::from_secs(10), pending)
+        .await??
+        .unwrap();
+    let status = response.status();
+    let first: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await?)?;
+    assert!(
+        !premature,
+        "operator prompt failed before the preparation reader was released: {first}"
+    );
+    assert_eq!(status, StatusCode::OK, "{first}");
+    let replay = app.oneshot(prompt()).await.unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay: serde_json::Value =
+        serde_json::from_slice(&to_bytes(replay.into_body(), usize::MAX).await?)?;
+    assert_eq!(first["message_id"], replay["message_id"]);
+    assert_eq!(replay["disposition"], "duplicate");
+    drop(runtime);
+    host.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn advanced_runtime_clock_preserves_original_reader_acquisition_budget() -> Result<()> {
     let (_directory, db) = fixture(1)?;

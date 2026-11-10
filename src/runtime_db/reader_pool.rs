@@ -18,7 +18,7 @@ use super::{read_block, RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbR
 
 const DEFAULT_CAPACITY: u32 = 4;
 pub(super) const PREPARATION_CAPACITY: u32 = 1;
-const DEFAULT_BUDGET: Duration = Duration::from_millis(250);
+const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LOG_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
@@ -30,7 +30,7 @@ pub(crate) struct RuntimeDbReaderPool {
 struct ReaderPoolShared {
     pool: Mutex<Option<Pool<ReaderManager>>>,
     admission: Arc<Semaphore>,
-    budget: Duration,
+    budget: Option<Duration>,
     control: Arc<ReaderPoolControl>,
 }
 
@@ -130,11 +130,11 @@ impl r2d2::HandleError<ConnectError> for QuietConnectErrors {
 
 impl RuntimeDbReaderPool {
     pub(crate) fn new(writer: Arc<RuntimeDbWriterState>) -> Self {
-        Self::with_role(writer, DEFAULT_CAPACITY, DEFAULT_BUDGET, "ordinary")
+        Self::with_role(writer, DEFAULT_CAPACITY, None, "ordinary")
     }
 
     pub(crate) fn for_preparation(writer: Arc<RuntimeDbWriterState>) -> Self {
-        Self::with_role(writer, PREPARATION_CAPACITY, DEFAULT_BUDGET, "preparation")
+        Self::with_role(writer, PREPARATION_CAPACITY, None, "preparation")
     }
 
     #[cfg(test)]
@@ -143,13 +143,13 @@ impl RuntimeDbReaderPool {
         capacity: u32,
         budget: Duration,
     ) -> Self {
-        Self::with_role(writer, capacity, budget, "test")
+        Self::with_role(writer, capacity, Some(budget), "test")
     }
 
     fn with_role(
         writer: Arc<RuntimeDbWriterState>,
         capacity: u32,
-        budget: Duration,
+        budget: Option<Duration>,
         role: &'static str,
     ) -> Self {
         assert!(capacity > 0, "reader pool capacity must be positive");
@@ -213,31 +213,13 @@ impl RuntimeDbReaderPool {
         let mut readers = Vec::with_capacity(capacity as usize);
         for _ in 0..capacity {
             self.check_read_scope()?;
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                self.shared
-                    .control
-                    .timeout(read_block::ReadOrigin::UNKNOWN, "warmup");
-                return Err(RuntimeDbRetryableError::new(
-                    "fixture reader warmup",
-                    &self.shared.control.writer.path,
-                    "reader pool acquisition budget exhausted",
-                )
-                .into());
-            }
-            let mut reader = pool.get_timeout(remaining).map_err(|error| {
-                self.shared
-                    .control
-                    .timeout(read_block::ReadOrigin::UNKNOWN, "warmup");
-                self.check_read_scope().err().unwrap_or_else(|| {
-                    RuntimeDbRetryableError::new(
-                        "fixture reader warmup",
-                        &self.shared.control.writer.path,
-                        error,
-                    )
-                    .into()
-                })
-            })?;
+            let mut reader = self.checkout_connection(
+                &pool,
+                deadline,
+                &self.effective_scope(),
+                read_block::ReadOrigin::UNKNOWN,
+                "warmup",
+            )?;
             self.check_read_scope()?;
             if let Err(error) = reader.connection.as_ref().expect("live reader").query_row(
                 "SELECT count(*) FROM sqlite_schema",
@@ -253,11 +235,57 @@ impl RuntimeDbReaderPool {
         Ok(capacity)
     }
 
-    fn acquisition_deadline(&self) -> Instant {
-        let deadline = Instant::now() + self.shared.budget;
-        self.effective_scope()
-            .as_ref()
-            .map_or(deadline, |scope| deadline.min(scope.deadline()))
+    fn acquisition_deadline(&self) -> Option<Instant> {
+        let budget = self.shared.budget.map(|budget| Instant::now() + budget);
+        let scope = self.effective_scope().map(|scope| scope.deadline());
+        match (budget, scope) {
+            (Some(budget), Some(scope)) => Some(budget.min(scope)),
+            (budget, scope) => budget.or(scope),
+        }
+    }
+
+    fn checkout_connection(
+        &self,
+        pool: &Pool<ReaderManager>,
+        deadline: Option<Instant>,
+        scope: &Option<RuntimeDbReadScope>,
+        origin: read_block::ReadOrigin,
+        stage: &'static str,
+    ) -> Result<PooledConnection<ReaderManager>> {
+        loop {
+            self.shared.control.ensure_protected()?;
+            self.check_scope(scope)?;
+            let remaining =
+                deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
+            if remaining.is_some_and(|remaining| remaining.is_zero()) {
+                self.shared.control.timeout(origin, stage);
+                return Err(RuntimeDbRetryableError::new(
+                    "reader pool checkout",
+                    &self.shared.control.writer.path,
+                    "admission/checkout deadline exhausted before execution",
+                )
+                .into());
+            }
+            let interval =
+                remaining.map_or(CHECK_INTERVAL, |remaining| remaining.min(CHECK_INTERVAL));
+            match pool.get_timeout(interval) {
+                Ok(connection) => return Ok(connection),
+                Err(error) => {
+                    self.shared.control.ensure_protected()?;
+                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+                        self.shared.control.timeout(origin, stage);
+                        self.check_scope(scope)?;
+                        return Err(RuntimeDbRetryableError::new(
+                            "reader pool checkout",
+                            &self.shared.control.writer.path,
+                            error,
+                        )
+                        .into());
+                    }
+                    self.check_scope(scope)?;
+                }
+            }
+        }
     }
 
     /// Explicitly scoped handles win over the deadline of the enclosing
@@ -332,7 +360,7 @@ impl RuntimeDbReaderPool {
 
     fn read_until<T>(
         &self,
-        deadline: Instant,
+        deadline: Option<Instant>,
         scope: Option<RuntimeDbReadScope>,
         origin: read_block::ReadOrigin,
         f: impl FnOnce(&mut Connection) -> Result<T>,
@@ -349,33 +377,7 @@ impl RuntimeDbReaderPool {
             .map_err(|_| anyhow!("runtime db reader pool mutex poisoned"))?
             .clone()
             .ok_or_else(|| anyhow!("runtime db reader pool is closed"))?;
-        let remaining = deadline.saturating_duration_since(Instant::now());
-        if remaining.is_zero() {
-            self.check_scope(&scope)?;
-            control.timeout(origin, "checkout");
-            return Err(RuntimeDbRetryableError::new(
-                "reader pool checkout",
-                &control.writer.path,
-                "admission/checkout budget exhausted before execution",
-            )
-            .into());
-        }
-        let connection = pool.get_timeout(remaining).map_err(|error| {
-            control.timeout(origin, "checkout");
-            // In particular, do not turn quarantine evidence into a timeout string.
-            control
-                .ensure_protected()
-                .and_then(|_| self.check_scope(&scope))
-                .err()
-                .unwrap_or_else(|| {
-                    RuntimeDbRetryableError::new(
-                        "reader pool checkout",
-                        &control.writer.path,
-                        error,
-                    )
-                    .into()
-                })
-        })?;
+        let connection = self.checkout_connection(&pool, deadline, &scope, origin, "checkout")?;
         drop(checkout);
         let checkout_elapsed = started.elapsed();
         // Declare the timer first so the lease is returned before it stops.
@@ -450,29 +452,36 @@ impl RuntimeDbReaderPool {
         let deadline = self.acquisition_deadline();
         // Read scopes use the real clock; Tokio's clock can have a different
         // origin (notably after a paused runtime advances). Keep one allowance.
-        let async_deadline =
-            tokio::time::Instant::now() + deadline.saturating_duration_since(Instant::now());
+        let async_deadline = deadline.map(|deadline| {
+            tokio::time::Instant::now() + deadline.saturating_duration_since(Instant::now())
+        });
         let scope = self.scope.as_ref().map(RuntimeDbReadScope::child);
         self.shared.control.ensure_protected()?;
         self.check_scope(&scope)?;
-        let admitted = tokio::select! {
-            result = tokio::time::timeout_at(
-                async_deadline,
-                Arc::clone(&self.shared.admission).acquire_owned(),
-            ) => result,
-            () = RuntimeDbReadScope::cancelled(&scope) => {
-                self.shared.control.ensure_protected()?;
-                self.check_scope(&scope)?;
-                unreachable!("cancelled scope must reject the read");
+        let pending = Arc::clone(&self.shared.admission).acquire_owned();
+        tokio::pin!(pending);
+        let admitted = loop {
+            tokio::select! {
+                result = &mut pending => break Some(result),
+                () = wait_for_deadline(async_deadline) => break None,
+                () = RuntimeDbReadScope::cancelled(&scope) => {
+                    self.shared.control.ensure_protected()?;
+                    self.check_scope(&scope)?;
+                    unreachable!("cancelled scope must reject the read");
+                }
+                () = tokio::time::sleep(CHECK_INTERVAL) => {
+                    self.shared.control.ensure_protected()?;
+                    self.check_scope(&scope)?;
+                }
             }
         };
         let permit = match admitted {
-            Ok(Ok(permit)) => permit,
-            Ok(Err(_)) => {
+            Some(Ok(permit)) => permit,
+            Some(Err(_)) => {
                 self.shared.control.ensure_protected()?;
                 bail!("runtime db reader pool is closed");
             }
-            Err(_) => {
+            None => {
                 self.shared.control.timeout(origin, "admission");
                 self.shared.control.ensure_protected()?;
                 self.check_scope(&scope)?;
@@ -510,9 +519,8 @@ impl RuntimeDbReaderPool {
             scope: scope.clone(),
         };
         let joined = tokio::select! {
-            result = tokio::time::timeout_at(
-                async_deadline, &mut task,
-            ) => result.ok(),
+            result = &mut task => Some(result),
+            () = wait_for_deadline(async_deadline) => None,
             () = RuntimeDbReadScope::cancelled(&scope) => None,
         };
         let joined = match joined {
@@ -578,6 +586,13 @@ impl RuntimeDbReaderPool {
     #[cfg(test)]
     pub(crate) fn writer_weak(&self) -> Weak<RuntimeDbWriterState> {
         Arc::downgrade(&self.shared.control.writer)
+    }
+}
+
+async fn wait_for_deadline(deadline: Option<tokio::time::Instant>) {
+    match deadline {
+        Some(deadline) => tokio::time::sleep_until(deadline).await,
+        None => std::future::pending().await,
     }
 }
 
@@ -1041,7 +1056,7 @@ mod tests {
         for _ in 0..3 {
             let error = pool
                 .read_until(
-                    Instant::now() + Duration::from_millis(30),
+                    Some(Instant::now() + Duration::from_millis(30)),
                     None,
                     read_block::ReadOrigin::UNKNOWN,
                     |_| {
@@ -1074,7 +1089,7 @@ mod tests {
         release_tx.send(())?;
         assert_eq!(
             pool.read_until(
-                Instant::now() + Duration::from_secs(4),
+                Some(Instant::now() + Duration::from_secs(4)),
                 None,
                 read_block::ReadOrigin::UNKNOWN,
                 |connection| {
@@ -1214,7 +1229,7 @@ mod tests {
         // Checkout times out, but an already-started pool connect still owns protection.
         assert!(pool
             .read_until(
-                Instant::now() + Duration::from_millis(100),
+                Some(Instant::now() + Duration::from_millis(100)),
                 None,
                 read_block::ReadOrigin::UNKNOWN,
                 |_| Ok(())

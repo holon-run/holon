@@ -31,6 +31,9 @@ boundaries; daemon outbox enumeration uses asynchronous reader admission.
 Pool saturation must propagate before interpreting missing/consumed records.
 Invocation and message monitors retain responsibility on retryable reader
 failure instead of producing a terminal failure or initiating child cleanup.
+After a delayed cold-construction failure, invocation monitoring checks the
+original target's durable deletion fence before reporting failure. Deletion
+during a capacity wait still resolves to cancellation for that same incarnation.
 Activation preserves the underlying retryable error type and constructs its
 runtime storage on a blocking worker. Retained-claims bootstrap loads its initial
 execution-protocol snapshot through asynchronous reader admission with the same
@@ -80,8 +83,9 @@ Owner-held preparation reads, including bootstrap metadata and identity reads,
 use a reserved query-only pool bounded to one reader. Ordinary queries retain
 their separate four-reader pool: observer saturation must not fail cold runtime
 construction before its asynchronous bootstrap handoff. Preparation saturation
-still returns a retryable error within its acquisition budget; it cannot open
-an overflow connection or fall back to the writer. Each preparation read keeps
+waits for existing capacity unless an explicit read scope expires or is
+cancelled; it cannot open an overflow connection or fall back to the writer.
+Each preparation read keeps
 one Deferred snapshot and returns owned facts before another checkout or writer
 transaction. Neither pool reserves a writer ticket or borrows its connection.
 
@@ -108,8 +112,13 @@ mutation witnesses while allowing other async work to progress. It is not an
 enqueue-only acknowledgement or a second detached recovery worker.
 
 Clones of a RuntimeDb share both lazily used reader pools: four ordinary readers
-and one preparation reader, with a 250 ms acquisition budget for each role.
-Scoped deadlines, cancellation, cleanup and sidecar protection apply to both.
+and one preparation reader. Neither role imposes an implicit acquisition
+deadline: a valid internal admission must not fail merely because a different
+agent holds a reader longer than 250 ms. Explicit scoped deadlines and
+cancellation still bound request reads, including pool and blocking-queue waits.
+Waiting checkouts recheck scope and protection periodically without rerunning
+the business closure; the check interval is not an acquisition limit.
+Cleanup and sidecar protection apply to both roles.
 These bounds are not a claim of optimal sizing. Independently opened RuntimeDb
 handles and raw maintenance connections are separate owners and must not be
 counted as part of the same pool limit. There is no overflow connection or
@@ -129,8 +138,9 @@ JSON proof.
 
 Internal closure APIs return owned values, never a lease, transaction, or cursor.
 The synchronous API is for synchronous/blocking boundaries. The async API waits
-for bounded, cancellable admission before `spawn_blocking`. The same acquisition
-deadline covers unstarted blocking-queue work, which returns a retryable error
+for bounded, cancellable admission before `spawn_blocking`. An explicit read
+deadline also covers unstarted blocking-queue work, which returns a retryable
+error
 without running its read closure after expiration. The started closure
 retains admission and its connection until it actually finishes, even if its
 awaiting caller is cancelled. Checkout budget does not bound SQLite execution
@@ -138,8 +148,8 @@ or change the writer's busy timeout. Recursive checkout, awaiting with a lease,
 or writing while holding a read transaction is prohibited.
 
 Read scopes use the real monotonic clock. Async admission translates the
-remaining allowance once to the executor's clock and shares that deadline
-between permit acquisition and blocking-queue admission; a shifted executor
+remaining allowance, when present, once to the executor's clock and shares that
+deadline between permit acquisition and blocking-queue admission; a shifted executor
 clock must not reinterpret an absolute real-clock timestamp as already expired.
 
 Readers use the established opener and protection checks, followed by
@@ -239,7 +249,7 @@ connection creation may retry at pool scope, independently of the request's
 checkout timeout. Existing plus pending connections remain bounded by pool
 capacity. This never retries business SQL, repairs data, or bypasses protection.
 
-Set the pool's connection timeout separately from each request's 250 ms checkout
+Set the pool's connection timeout separately from each request's explicit checkout
 budget: r2d2 also uses half that pool timeout as its creation-backoff ceiling.
 Keep the pool timeout at 30 seconds, with no minimum idle reserve, no idle
 timeout, no maximum lifetime, and no checkout schema probe. These settings

@@ -337,7 +337,11 @@ async fn bootstrap_claim_read_yields_while_runtime_readers_are_saturated() {
         std::task::Poll::Ready(std::future::Future::poll(recovery.as_mut(), cx).is_pending())
     })
     .await;
-    let timed_out = if yielded { Some(recovery.await) } else { None };
+    let pending = if yielded {
+        Some(tokio::time::timeout(std::time::Duration::from_millis(350), &mut recovery).await)
+    } else {
+        None
+    };
     drop(releases);
     for reader in readers {
         reader.join().unwrap();
@@ -346,12 +350,16 @@ async fn bootstrap_claim_read_yields_while_runtime_readers_are_saturated() {
         yielded,
         "bootstrap claim reads must yield under read saturation"
     );
-    let error = timed_out.unwrap().unwrap_err();
     assert!(
-        error
-            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-            .is_some(),
-        "bootstrap read saturation must remain retryable: {error:#}"
+        pending.unwrap().is_err(),
+        "unscoped bootstrap reads must wait for reader capacity"
+    );
+    assert_eq!(
+        tokio::time::timeout(std::time::Duration::from_secs(3), recovery)
+            .await
+            .unwrap()
+            .unwrap(),
+        0
     );
     assert_eq!(
         runtime.recover_scheduler_bootstrap_claims().await.unwrap(),
