@@ -1,3 +1,4 @@
+use super::resource_observation::ResourceObservation;
 use super::*;
 use crate::{
     config::AppConfig, diagnostics::io_probe::DenyResourceReaders, host::RuntimeHost,
@@ -269,6 +270,65 @@ async fn shared_guidance_write_invalidates_consumers_and_preserves_held_snapshot
         .unwrap()
         .content
         .contains("PATCHED_SHARED_GUIDANCE"));
+    host.shutdown().await
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn patch_through_linked_skill_refreshes_peer_without_mutating_held_observation() -> Result<()>
+{
+    let (home, host, first) = fixture().await?;
+    host.create_named_agent("linked-skill-peer", None).await?;
+    let peer = host.get_or_create_agent("linked-skill-peer").await?;
+    peer.await_initial_resources().await;
+    // Outside both AgentHomes and without configured user-global skill roots.
+    let library = home.path().join("shared/demo");
+    std::fs::create_dir_all(&library)?;
+    std::fs::write(
+        library.join("SKILL.md"),
+        "---\nname: LinkedDemo\ndescription: OLD_LINKED_SKILL\n---\nShared skill\n",
+    )?;
+    for runtime in [&first, &peer] {
+        let _writer = runtime.begin_context_resource_write()?;
+        std::fs::create_dir_all(runtime.agent_home().join("skills"))?;
+        std::os::unix::fs::symlink(&library, runtime.agent_home().join("skills/demo"))?;
+    }
+    first.refresh_context_resources().await?;
+    peer.refresh_context_resources().await?;
+    // A pending observer notification must not erase aliases on its cache hit.
+    peer.observe_context_resources_for_test().await?;
+    let old = peer.ensure_context_resources().await?;
+    let description = |observation: &ResourceObservation| {
+        observation
+            .body()
+            .skills
+            .discoverable_skills
+            .iter()
+            .find(|entry| entry.name == "LinkedDemo")
+            .unwrap()
+            .description
+            .clone()
+    };
+    assert_eq!(description(&old), "OLD_LINKED_SKILL");
+    let preparation = peer.hold_resource_preparation_for_test().await?;
+    let before = peer.inner.resources.registry.generation_for_test()?;
+    let target = first.agent_home().join("skills/demo/SKILL.md");
+    crate::tool::tools::apply_patch_tool::execute(
+        &first, first.instance_agent_id(), &AuthorityClass::OperatorInstruction,
+        &serde_json::json!({"patch": format!("--- {0}\n+++ {0}\n@@ -1,5 +1,5 @@\n ---\n name: LinkedDemo\n-description: OLD_LINKED_SKILL\n+description: NEW_LINKED_SKILL\n ---\n Shared skill\n", target.display())}),
+    ).await?;
+    assert!(peer.inner.resources.registry.generation_for_test()? > before);
+    assert_eq!(description(&old), "OLD_LINKED_SKILL");
+    drop(preparation);
+    let changed = peer.ensure_context_resources().await?;
+    assert_eq!(description(&changed), "NEW_LINKED_SKILL");
+    assert!(!Arc::ptr_eq(&old, &changed));
+    {
+        let denied = DenyResourceReaders::new();
+        let current = peer.ensure_context_resources().await?;
+        assert!(Arc::ptr_eq(&current, &changed));
+        assert_eq!(denied.attempts(), 0);
+    }
     host.shutdown().await
 }
 

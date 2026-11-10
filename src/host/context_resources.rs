@@ -7,8 +7,8 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use tokio::sync::Notify;
 
-#[derive(Default)]
 pub(crate) struct ContextResources {
+    base_dir: PathBuf,
     state: Mutex<State>,
     pub(super) drained: Notify,
     #[cfg(test)]
@@ -28,6 +28,7 @@ struct Subscription {
     paths: Vec<PathBuf>,
 }
 
+#[derive(PartialEq, Eq)]
 pub(crate) enum ResourceWriteScope {
     Shared,
     Paths(Vec<PathBuf>),
@@ -73,6 +74,37 @@ fn normalize(path: &Path) -> PathBuf {
     }
     result
 }
+
+fn resolve_missing_path(path: &Path) -> std::io::Result<PathBuf> {
+    match std::fs::canonicalize(path) {
+        Ok(resolved) => Ok(resolved),
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::NotFound | std::io::ErrorKind::NotADirectory
+            ) =>
+        {
+            // canonicalize cannot resolve a dangling link. Its target may still
+            // become a resource later, so resolve the missing target's parent.
+            if std::fs::symlink_metadata(path).is_ok_and(|meta| meta.is_symlink()) {
+                let target = std::fs::read_link(path)?;
+                return resolve_missing_path(&path.parent().unwrap().join(target));
+            }
+            match (path.parent(), path.file_name()) {
+                (Some(parent), Some(name)) => Ok(resolve_missing_path(parent)?.join(name)),
+                _ => Err(error),
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(test)]
+impl Default for ContextResources {
+    fn default() -> Self {
+        Self::new().expect("resource coordinator current directory")
+    }
+}
 pub(crate) struct ReadyFence<'a> {
     _state: MutexGuard<'a, State>,
 }
@@ -82,6 +114,46 @@ pub(crate) struct ReadyFence<'a> {
 pub(crate) struct ContextResourceWritersActive;
 
 impl ContextResources {
+    pub(crate) fn new() -> Result<Self> {
+        Ok(Self::with_base_dir(std::env::current_dir()?))
+    }
+    fn with_base_dir(base_dir: PathBuf) -> Self {
+        Self {
+            base_dir,
+            state: Mutex::new(State::default()),
+            drained: Notify::new(),
+            #[cfg(test)]
+            physical_checkpoint: Mutex::new(None),
+        }
+    }
+    fn absolute(&self, path: &Path) -> PathBuf {
+        normalize(&self.base_dir.join(path))
+    }
+    pub(crate) fn path_scope(&self, paths: Vec<PathBuf>) -> ResourceWriteScope {
+        ResourceWriteScope::paths(paths.into_iter().map(|path| self.absolute(&path)).collect())
+    }
+    /// Physical preparation only: keep lexical paths as well as symlink targets,
+    /// including missing leaves below an existing symlinked directory.
+    pub(crate) fn resolve_paths(&self, paths: Vec<PathBuf>) -> Result<Vec<PathBuf>> {
+        let mut aliases = Vec::new();
+        for path in paths {
+            let path = self.absolute(&path);
+            let resolved = resolve_missing_path(&path)?;
+            aliases.push(path);
+            aliases.push(resolved);
+        }
+        aliases.sort();
+        aliases.dedup();
+        Ok(aliases)
+    }
+    pub(crate) fn resolve_scope(&self, scope: &ResourceWriteScope) -> Result<ResourceWriteScope> {
+        match scope {
+            ResourceWriteScope::Shared => Ok(ResourceWriteScope::Shared),
+            ResourceWriteScope::Paths(paths) => Ok(ResourceWriteScope::Paths(
+                self.resolve_paths(paths.clone())?,
+            )),
+        }
+    }
     pub(super) fn lock(&self) -> Result<MutexGuard<'_, State>> {
         self.state
             .lock()
@@ -116,7 +188,7 @@ impl ContextResources {
             .iter_mut()
             .find(|entry| entry.registry.ptr_eq(&Arc::downgrade(registry)))
             .ok_or_else(|| anyhow!("context resource subscription missing"))?;
-        subscription.paths = paths.into_iter().map(|path| normalize(&path)).collect();
+        subscription.paths = paths.into_iter().map(|path| self.absolute(&path)).collect();
         self.drained.notify_waiters();
         Ok(())
     }
@@ -322,6 +394,64 @@ mod tests {
         gate.begin_close()?;
         assert!(gate.ready_for(&second).is_err());
         assert!(gate.begin_path_write(vec!["/unrelated".into()]).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn relative_dependencies_match_absolute_writes_from_the_captured_base() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let gate = Arc::new(ContextResources::with_base_dir(home.path().to_path_buf()));
+        let (peer, _notify) = subscriber(&gate, &["./state/agents/peer"])?;
+        let (other, _notify_other) = subscriber(&gate, &["state/agents/other"])?;
+        let writer = gate.begin_path_write(vec![home
+            .path()
+            .join("state/agents/peer/memory/operator.md")])?;
+        assert!(gate.ready_for(&peer).is_err());
+        drop(gate.ready_for(&other)?);
+        assert_eq!(peer.generation_for_test()?, 1);
+        drop(writer);
+        assert_eq!(peer.generation_for_test()?, 2);
+        assert_eq!(other.generation_for_test()?, 0);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn physical_aliases_fence_shared_missing_targets_until_writer_exit() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let base = std::fs::canonicalize(home.path())?;
+        let gate = Arc::new(ContextResources::with_base_dir(base.clone()));
+        std::fs::create_dir_all(base.join("first/skills"))?;
+        std::fs::create_dir_all(base.join("peer/skills"))?;
+        // The shared library and its entrypoint do not exist at subscription time.
+        for agent in ["first", "peer"] {
+            std::os::unix::fs::symlink("../../library/demo", base.join(agent).join("skills/demo"))?;
+        }
+        let (peer, _notify) = subscriber(&gate, &["peer/skills"])?;
+        gate.set_paths(
+            &peer,
+            gate.resolve_paths(vec!["peer/skills/demo/SKILL.md".into()])?,
+        )?;
+        let writer = gate.begin_path_write(vec!["first/skills/demo/SKILL.md".into()])?;
+        drop(gate.ready_for(&peer)?);
+        assert_eq!(peer.generation_for_test()?, 0);
+        writer.enter_physical()?;
+        assert!(gate.ready_for(&peer).is_err());
+        assert_eq!(peer.generation_for_test()?, 1);
+        std::fs::create_dir_all(base.join("library/demo"))?;
+        std::fs::write(base.join("first/skills/demo/SKILL.md"), "new shared skill")?;
+        let (late, _late_notify) = subscriber(&gate, &["library/demo"])?;
+        assert!(gate.ready_for(&late).is_err());
+        gate.begin_close()?;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), gate.join_writers())
+                .await
+                .is_err()
+        );
+        drop(writer);
+        gate.join_writers().await?;
+        assert_eq!(peer.generation_for_test()?, 2);
+        assert_eq!(late.generation_for_test()?, 1);
         Ok(())
     }
 }

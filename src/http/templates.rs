@@ -198,7 +198,7 @@ pub async fn install_template(
         .begin_path_write(vec![user_home.join(".agents/agent_templates")])
         .map_err(error_response)?;
     let template_id = tokio::task::spawn_blocking(move || {
-        writer.enter_physical();
+        writer.enter_physical()?;
         let _writer = writer;
         crate::agent_template::install_template_from_github(&user_home, &url)
     })
@@ -236,7 +236,7 @@ pub async fn remove_template(
         .begin_path_write(vec![user_home.join(".agents/agent_templates")])
         .map_err(error_response)?;
     tokio::task::spawn_blocking(move || {
-        writer.enter_physical();
+        writer.enter_physical()?;
         let _writer = writer;
         crate::agent_template::remove_user_template(&user_home, &id)
     })

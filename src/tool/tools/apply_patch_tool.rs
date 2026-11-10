@@ -106,7 +106,7 @@ pub(crate) async fn execute(
                 &input_material,
                 |paths| {
                     let writer = resource_runtime.begin_context_resource_write_for_paths(paths)?;
-                    writer.enter_physical();
+                    writer.enter_physical()?;
                     Ok(writer)
                 },
             );

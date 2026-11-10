@@ -1,15 +1,35 @@
 //! Responsibility belongs to the admitted physical writer, not its waiter.
 use super::context_resources::{ContextResources, ResourceWriteScope};
 use anyhow::{ensure, Result};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 pub(crate) struct ResourceWrite {
     resources: Arc<ContextResources>,
     scope: Arc<ResourceWriteScope>,
+    physical_scope: OnceLock<Arc<ResourceWriteScope>>,
 }
 impl ResourceWrite {
     /// Called inside the original blocking kernel, never in its waiter.
-    pub(crate) fn enter_physical(&self) {
+    pub(crate) fn enter_physical(&self) -> Result<()> {
+        if self.physical_scope.get().is_none() {
+            let resolved = self.resources.resolve_scope(&self.scope)?;
+            let mut state = self.resources.lock()?;
+            if self.physical_scope.get().is_none() {
+                let scope = if resolved == *self.scope {
+                    self.scope.clone()
+                } else {
+                    ContextResources::changed(&mut state, &resolved)?;
+                    let scope = Arc::new(resolved);
+                    for active in &mut state.active {
+                        if Arc::ptr_eq(active, &self.scope) {
+                            *active = scope.clone();
+                        }
+                    }
+                    scope
+                };
+                let _ = self.physical_scope.set(scope);
+            }
+        }
         #[cfg(test)]
         if let Some(barrier) = self.resources.physical_checkpoint.lock().unwrap().take() {
             barrier.reached.notify_one();
@@ -18,6 +38,7 @@ impl ResourceWrite {
                 released = barrier.release.wait(released).unwrap();
             }
         }
+        Ok(())
     }
 }
 #[cfg(test)]
@@ -58,7 +79,7 @@ impl ContextResources {
         self: &Arc<Self>,
         paths: Vec<std::path::PathBuf>,
     ) -> Result<ResourceWrite> {
-        self.begin_scoped_write(ResourceWriteScope::paths(paths))
+        self.begin_scoped_write(self.path_scope(paths))
     }
     /// Call only after the original authorization and operation admission.
     pub(crate) fn begin_write(self: &Arc<Self>) -> Result<ResourceWrite> {
@@ -79,18 +100,18 @@ impl ContextResources {
         Ok(ResourceWrite {
             resources: self.clone(),
             scope,
+            physical_scope: OnceLock::new(),
         })
     }
 }
 impl Drop for ResourceWrite {
     fn drop(&mut self) {
         if let Ok(mut state) = self.resources.lock() {
-            state
-                .active
-                .retain(|scope| !Arc::ptr_eq(scope, &self.scope));
+            let scope = self.physical_scope.get().unwrap_or(&self.scope);
+            state.active.retain(|active| !Arc::ptr_eq(active, scope));
             state.failed |= std::thread::panicking();
             // Failure, panic and cancellation are dirty too.
-            if let Err(error) = ContextResources::changed(&mut state, &self.scope) {
+            if let Err(error) = ContextResources::changed(&mut state, scope) {
                 tracing::warn!(%error, "resource writer exit invalidation failed");
             }
             self.resources.drained.notify_waiters();

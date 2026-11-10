@@ -1515,8 +1515,14 @@ writers. Source preparation registers AgentHome, workspace guidance and executio
 root skill paths, plus configured user guidance, template and skill-library paths,
 including absent paths. User skill-library writes conservatively invalidate all
 subscribers of that library because non-default Agents can attach library skills
-by symlink. Registration uses lexical path normalization without filesystem I/O
-under the mutation owner; workspace and configuration changes rebind paths before
+by symlink. Registration normalizes paths against the coordinator's absolute base,
+captured at construction, without filesystem I/O under the mutation owner.
+Physical preparation adds resolved symlink targets before resource body reads,
+under the original refresh ticket. Skill and template discovery follows only
+catalogue entrypoints, not arbitrary AgentHome history or skill assets. Lexical
+paths and missing leaves remain subscribed, including missing targets below
+symlinked parents. Physical writers resolve the same aliases before effects and
+retain them through exit. Workspace and configuration changes rebind paths before
 the next physical refresh. An active writer also fences consumers that subscribe
 after its admission.
 
