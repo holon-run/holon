@@ -6,9 +6,11 @@
 //! SQL text, file paths, parameters, and credentials are never retained.
 
 use std::{
+    cell::Cell,
     collections::BTreeMap,
     ffi::{c_int, c_void, CStr},
     fs::File,
+    future::Future,
     io::{self, Read},
     path::Path,
     sync::{
@@ -129,12 +131,116 @@ impl IoProbeCounters {
 pub enum TimingKind {
     ContextPreparationToRequest,
     CommitPublication,
+    ContextCaptureStage,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCaptureMode {
+    Preview,
+    Admission,
+    Execution,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextCaptureStage {
+    OwnerAcquisition,
+    TaskPreparation,
+    WorkPreparation,
+    IdentityLookup,
+    SchedulingPreparation,
+    InputPreparation,
+    DurableCapture,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct ContextCaptureSample {
+    pub mode: ContextCaptureMode,
+    pub stage: ContextCaptureStage,
+    pub sql_read_statements: u64,
+    pub sql_write_statements: u64,
+    pub sql_control_statements: u64,
+    /// Subset of OwnerAcquisition. The rest includes identity and recovery work.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_reservation_wait_micros: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TimingSample {
     pub kind: TimingKind,
     pub elapsed_micros: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_capture: Option<ContextCaptureSample>,
+}
+
+tokio::task_local! {
+    // Scoped to each poll of a measured future. Unrelated work on the same
+    // Tokio thread is excluded, as are separately spawned workers.
+    static CONTEXT_CAPTURE: Cell<ContextCaptureSample>;
+}
+
+impl ContextCaptureMode {
+    fn sample(self, stage: ContextCaptureStage) -> Cell<ContextCaptureSample> {
+        Cell::new(ContextCaptureSample {
+            mode: self,
+            stage,
+            sql_read_statements: 0,
+            sql_write_statements: 0,
+            sql_control_statements: 0,
+            owner_reservation_wait_micros: None,
+        })
+    }
+
+    pub(crate) async fn measure<T>(
+        self,
+        stage: ContextCaptureStage,
+        future: impl Future<Output = T>,
+    ) -> T {
+        let Some(started) = start_timer() else {
+            return future.await;
+        };
+        CONTEXT_CAPTURE
+            .scope(self.sample(stage), async {
+                let result = future.await;
+                record_context_capture(started);
+                result
+            })
+            .await
+    }
+
+    pub(crate) fn measure_sync<T>(self, stage: ContextCaptureStage, f: impl FnOnce() -> T) -> T {
+        let Some(started) = start_timer() else {
+            return f();
+        };
+        CONTEXT_CAPTURE.sync_scope(self.sample(stage), || {
+            let result = f();
+            record_context_capture(started);
+            result
+        })
+    }
+}
+
+fn record_context_capture(started: Instant) {
+    push_timing(
+        TimingKind::ContextCaptureStage,
+        started.elapsed(),
+        Some(CONTEXT_CAPTURE.with(Cell::get)),
+    );
+}
+
+pub(crate) fn record_context_owner_reserved(started: Option<Instant>) {
+    if let Some(started) = started {
+        let _ = CONTEXT_CAPTURE.try_with(|current| {
+            let mut sample = current.get();
+            if sample.stage == ContextCaptureStage::OwnerAcquisition
+                && sample.owner_reservation_wait_micros.is_none()
+            {
+                sample.owner_reservation_wait_micros = Some(elapsed_micros(started.elapsed()));
+                current.set(sample);
+            }
+        });
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -244,13 +350,27 @@ unsafe extern "C" fn sql_statement(
         .iter()
         .any(|keyword| first.eq_ignore_ascii_case(keyword))
     };
-    if control {
-        SQL_CONTROL.fetch_add(1, Ordering::Relaxed);
-    } else if unsafe { ffi::sqlite3_stmt_readonly(statement) } != 0 {
-        SQL_READS.fetch_add(1, Ordering::Relaxed);
+    let readonly = !control && unsafe { ffi::sqlite3_stmt_readonly(statement) } != 0;
+    let total = if control {
+        &SQL_CONTROL
+    } else if readonly {
+        &SQL_READS
     } else {
-        SQL_WRITES.fetch_add(1, Ordering::Relaxed);
-    }
+        &SQL_WRITES
+    };
+    total.fetch_add(1, Ordering::Relaxed);
+    let _ = CONTEXT_CAPTURE.try_with(|current| {
+        let mut sample = current.get();
+        let count = if control {
+            &mut sample.sql_control_statements
+        } else if readonly {
+            &mut sample.sql_read_statements
+        } else {
+            &mut sample.sql_write_statements
+        };
+        *count = count.saturating_add(1);
+        current.set(sample);
+    });
     0
 }
 
@@ -370,6 +490,14 @@ pub(crate) fn read_to_end(reader: &mut impl Read, buffer: &mut Vec<u8>) -> io::R
 }
 
 pub(crate) fn record_timing(kind: TimingKind, elapsed: Duration) {
+    push_timing(kind, elapsed, None);
+}
+
+fn elapsed_micros(elapsed: Duration) -> u64 {
+    elapsed.as_micros().min(u64::MAX as u128) as u64
+}
+
+fn push_timing(kind: TimingKind, elapsed: Duration, context_capture: Option<ContextCaptureSample>) {
     if !enabled() {
         return;
     }
@@ -379,7 +507,8 @@ pub(crate) fn record_timing(kind: TimingKind, elapsed: Duration) {
     } else {
         timings.push(TimingSample {
             kind,
-            elapsed_micros: elapsed.as_micros().min(u64::MAX as u128) as u64,
+            elapsed_micros: elapsed_micros(elapsed),
+            context_capture,
         });
     }
 }
@@ -429,6 +558,55 @@ impl Drop for ContextPreparationGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn attributes_context_sql_across_await_without_counting_unrelated_statements() {
+        let probe = IoProbe::start();
+        let measured_db = Connection::open_in_memory().unwrap();
+        let unrelated_db = Connection::open_in_memory().unwrap();
+        observe_sql_connection(&measured_db).unwrap();
+        observe_sql_connection(&unrelated_db).unwrap();
+        let (started, in_scope) = tokio::sync::oneshot::channel();
+        let (resume, continue_scope) = tokio::sync::oneshot::channel();
+        let measured =
+            ContextCaptureMode::Preview.measure(ContextCaptureStage::OwnerAcquisition, async {
+                measured_db.execute_batch("SELECT 1").unwrap();
+                started.send(()).unwrap();
+                continue_scope.await.unwrap();
+                measured_db
+                    .execute_batch("BEGIN; CREATE TABLE measured (id INTEGER); COMMIT")
+                    .unwrap();
+                record_context_owner_reserved(Some(Instant::now()));
+                let sample = CONTEXT_CAPTURE.with(Cell::get);
+                assert_eq!(sample.sql_read_statements, 1);
+                assert_eq!(sample.sql_write_statements, 1);
+                assert_eq!(sample.sql_control_statements, 2);
+                assert!(sample.owner_reservation_wait_micros.is_some());
+            });
+        let unrelated = async {
+            in_scope.await.unwrap();
+            assert!(CONTEXT_CAPTURE.try_with(Cell::get).is_err());
+            unrelated_db.execute_batch("SELECT 2").unwrap();
+            resume.send(()).unwrap();
+        };
+        tokio::join!(measured, unrelated);
+        ContextCaptureMode::Execution.measure_sync(ContextCaptureStage::DurableCapture, || {
+            measured_db.execute_batch("SELECT 3").unwrap();
+            assert_eq!(CONTEXT_CAPTURE.with(Cell::get).sql_read_statements, 1);
+        });
+        assert!(CONTEXT_CAPTURE.try_with(Cell::get).is_err());
+        let report = probe.snapshot();
+        assert!(report.timing_samples.iter().any(|timing| {
+            timing.kind == TimingKind::ContextCaptureStage
+                && timing.context_capture.is_some_and(|sample| {
+                    sample.mode == ContextCaptureMode::Preview
+                        && sample.stage == ContextCaptureStage::OwnerAcquisition
+                        && sample.sql_read_statements == 1
+                        && sample.sql_write_statements == 1
+                        && sample.sql_control_statements == 2
+                })
+        }));
+    }
 
     #[test]
     fn observes_runtime_connection_configuration() {

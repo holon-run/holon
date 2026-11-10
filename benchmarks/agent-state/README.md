@@ -141,6 +141,33 @@ request construction, excluding network. `CommitPublication` starts at
 wait, candidate preparation, SQL and publication; it is not SQL-ACK-to-publication
 latency.
 
+The preview report and each scripted group also report `context_capture_stages`.
+These are per-call samples from the loaded context capture path, grouped by
+capture mode (preview, admission planning, or execution) and stage:
+
+| Stage | Measured boundary |
+| --- | --- |
+| `owner_acquisition` | `begin_mutation`, including reservation, identity validation, and any reconciliation |
+| `task_preparation` | Each of the two Task preparation requests |
+| `work_preparation` | Work preparation request |
+| `identity_lookup` | Identity read before the final durable transaction |
+| `scheduling_preparation` | Scheduling preparation request, including Input preparation it invokes |
+| `input_preparation` | Input preparation request for the selected context |
+| `durable_capture` | Final SQLite connection and transaction, including scope and revision validation, workspace and execution roots, remaining source reads, and snapshot assembly |
+
+`owner_reservation_wait` measures acquisition through the reservation return
+and is included in `owner_acquisition` latency. It is absent when the
+reservation fails. Elapsed time includes waits. SQL counts come from the same
+SQLite statement callback, scoped to the measured task polls and synchronous
+calls. Separately spawned work, SQL outside these spans, and statements executed
+on unobserved connections remain outside the stage counts. The process totals
+continue to include concurrent work. Samples count completed calls, including
+errors and retries, so sample counts need not match constructed requests.
+`samples_without_sql` counts calls with no attributed statement of any kind.
+The final transaction's stage includes connection configuration and transaction
+control statements. This attribution establishes a baseline for removing
+loaded context reads and reservations.
+
 Memory reports instrumented System-allocator requested live/phase-peak bytes
 and process lifetime peak RSS (`getrusage`). SQLite native allocations and
 allocator overhead are excluded from the former; OS page cache is uncontrolled.

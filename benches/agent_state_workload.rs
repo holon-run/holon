@@ -845,6 +845,39 @@ fn timing_summary(report: &IoProbeReport) -> Value {
     })
 }
 
+fn context_capture_stage_summary(report: &IoProbeReport) -> Vec<Value> {
+    let mut stages = BTreeMap::<_, Vec<_>>::new();
+    for timing in &report.timing_samples {
+        if let Some(sample) = timing.context_capture {
+            stages
+                .entry((sample.mode, sample.stage))
+                .or_default()
+                .push((timing.elapsed_micros, sample));
+        }
+    }
+    stages
+        .into_iter()
+        .map(|((mode, stage), samples)| {
+            json!({
+                "mode": mode,
+                "stage": stage,
+                "latency": quantiles(samples.iter().map(|(elapsed, _)| u128::from(*elapsed) * 1000)),
+                "owner_reservation_wait": quantiles(samples.iter()
+                    .filter_map(|(_, sample)| sample.owner_reservation_wait_micros)
+                    .map(|elapsed| u128::from(elapsed) * 1000)),
+                "sql_read_statements": samples.iter().map(|(_, sample)| sample.sql_read_statements).sum::<u64>(),
+                "sql_write_statements": samples.iter().map(|(_, sample)| sample.sql_write_statements).sum::<u64>(),
+                "sql_control_statements": samples.iter().map(|(_, sample)| sample.sql_control_statements).sum::<u64>(),
+                "samples_without_sql": samples.iter().filter(|(_, sample)|
+                    sample.sql_read_statements == 0
+                        && sample.sql_write_statements == 0
+                        && sample.sql_control_statements == 0
+                ).count(),
+            })
+        })
+        .collect()
+}
+
 fn memory_snapshot() -> Value {
     // SAFETY: getrusage initializes the supplied plain C value on success.
     let peak_rss_bytes = unsafe {
@@ -942,7 +975,8 @@ async fn measure_preview(fixture: &Fixture, case: Case, probe: &mut IoProbe) -> 
         "wall_ns": elapsed.as_nanos(), "operations": samples.len(),
         "operations_per_second": samples.len() as f64 / elapsed.as_secs_f64(),
         "latency": quantiles(samples.iter().map(|sample| sample.wall_ns)), "samples": samples,
-        "actual_io": io, "memory_before": before_memory, "memory_after": after_memory,
+        "actual_io": io, "context_capture_stages": context_capture_stage_summary(&io),
+        "memory_before": before_memory, "memory_after": after_memory,
         "logical_stages_before": before_diagnostics, "logical_stages_after": performance_snapshot(),
     }))
 }
@@ -1057,6 +1091,7 @@ async fn measure_scripted(
             "constructed_requests_per_second": measured_constructed as f64 / elapsed.as_secs_f64(),
             "scripted_response_count": ids.len() * sampling.measured_responses_per_agent,
             "actual_io": io, "timings": timing_summary(&io), "provider_arrivals": arrivals,
+            "context_capture_stages": context_capture_stage_summary(&io),
             "memory_before": before_memory, "memory_at_hold": memory_at_hold,
             "memory_after_stop": memory_snapshot(),
         }));
