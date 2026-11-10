@@ -135,7 +135,7 @@ async fn task_read_facades_yield_until_reader_capacity_is_released() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn reply_reconciliation_yields_and_reader_timeout_preserves_pending_task() {
-    let harness = LifecycleHarness::new();
+    let harness = LifecycleHarness::new_with_reader_budget(Duration::from_millis(100));
     let runtime = harness.runtime();
     let owner = runtime
         .create_work_item("reader pressure reply".into(), None, None, Vec::new())
@@ -257,7 +257,7 @@ async fn reply_reconciliation_yields_and_reader_timeout_preserves_pending_task()
 
 #[tokio::test(flavor = "current_thread")]
 async fn wait_preparation_yields_and_reader_timeout_preserves_durable_state() {
-    let harness = LifecycleHarness::new();
+    let harness = LifecycleHarness::new_with_reader_budget(Duration::from_millis(100));
     let runtime = harness.runtime();
     let owner = runtime
         .create_work_item("reader pressure wait".into(), None, None, Vec::new())

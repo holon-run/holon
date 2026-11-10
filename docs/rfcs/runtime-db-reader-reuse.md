@@ -31,6 +31,9 @@ boundaries; daemon outbox enumeration uses asynchronous reader admission.
 Pool saturation must propagate before interpreting missing/consumed records.
 Invocation and message monitors retain responsibility on retryable reader
 failure instead of producing a terminal failure or initiating child cleanup.
+After a delayed cold-construction failure, invocation monitoring checks the
+original target's durable deletion fence before reporting failure. Deletion
+during a capacity wait still resolves to cancellation for that same incarnation.
 Activation preserves the underlying retryable error type and constructs its
 runtime storage on a blocking worker. Retained-claims bootstrap loads its initial
 execution-protocol snapshot through asynchronous reader admission with the same

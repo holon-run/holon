@@ -83,10 +83,27 @@ impl LifecycleHarness {
     }
 
     pub(crate) fn with_provider(provider: Arc<dyn AgentProvider>) -> Self {
+        Self::with_provider_and_reader_budget(provider, None)
+    }
+
+    pub(crate) fn new_with_reader_budget(budget: std::time::Duration) -> Self {
+        Self::with_provider_and_reader_budget(Arc::new(StubProvider::new("unused")), Some(budget))
+    }
+
+    fn with_provider_and_reader_budget(
+        provider: Arc<dyn AgentProvider>,
+        reader_budget: Option<std::time::Duration>,
+    ) -> Self {
         let data_dir = tempdir().expect("create lifecycle data dir");
         let workspace = tempdir().expect("create lifecycle workspace");
         let clock = controlled_clock();
-        let runtime = Self::open_runtime(&data_dir, &workspace, clock.clone(), provider.clone());
+        let runtime = Self::open_runtime_with_reader_budget(
+            &data_dir,
+            &workspace,
+            clock.clone(),
+            provider.clone(),
+            reader_budget,
+        );
         Self {
             data_dir,
             workspace,
@@ -102,7 +119,27 @@ impl LifecycleHarness {
         clock: Arc<crate::runtime::clock::TestClock>,
         provider: Arc<dyn AgentProvider>,
     ) -> RuntimeHandle {
-        let runtime = RuntimeHandle::new_with_clock(
+        Self::open_runtime_with_reader_budget(data_dir, workspace, clock, provider, None)
+    }
+
+    fn open_runtime_with_reader_budget(
+        data_dir: &TempDir,
+        workspace: &TempDir,
+        clock: Arc<crate::runtime::clock::TestClock>,
+        provider: Arc<dyn AgentProvider>,
+        reader_budget: Option<std::time::Duration>,
+    ) -> RuntimeHandle {
+        let runtime_db = reader_budget.map(|budget| {
+            let mut db = crate::runtime_db::RuntimeDb::open_and_migrate(
+                data_dir.path().join(".holon/state/runtime.sqlite"),
+                data_dir.path().join(".holon/state/runtime.lock"),
+            )
+            .expect("open bounded-reader lifecycle database");
+            db.configure_reader_pool_for_tests(4, budget)
+                .expect("configure explicit test reader budget");
+            db
+        });
+        let runtime = RuntimeHandle::new_with_clock_and_runtime_db(
             "default",
             data_dir.path().to_path_buf(),
             workspace.path().to_path_buf(),
@@ -111,6 +148,7 @@ impl LifecycleHarness {
             "default".into(),
             context_config(),
             clock,
+            runtime_db,
         )
         .expect("open lifecycle runtime");
         super::isolate_test_user_home(&runtime);

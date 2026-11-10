@@ -81,17 +81,20 @@ async fn unscoped_async_reader_waits_for_capacity_without_old_admission_limit() 
         let started = started.clone();
         let (release, held) = mpsc::channel();
         releases.push(release);
-        holders.push(tokio::task::spawn_blocking(move || {
-            reader.with_read(|_| {
-                let _ = started.send(());
-                held.recv_timeout(Duration::from_secs(10))?;
-                Ok(())
-            })
+        holders.push(tokio::spawn(async move {
+            reader
+                .with_read_async(move |_| {
+                    let _ = started.send(());
+                    held.recv_timeout(Duration::from_secs(10))?;
+                    Ok(())
+                })
+                .await
         }));
     }
     for _ in 0..4 {
         running.recv().await.unwrap();
     }
+    assert_eq!(db.reader_pool_stats_for_tests().available_admission, 0);
     let reader = db.clone();
     let waiting = tokio::spawn(async move { reader.with_read_async(|_| Ok(42)).await });
     tokio::time::sleep(Duration::from_millis(350)).await;
