@@ -562,3 +562,78 @@ async fn observer_pending_publication_fails_without_waiting_or_reconciling() -> 
     MutationReservation::definitely_not_committed_all(&mut owners)?;
     Ok(())
 }
+
+#[tokio::test(start_paused = true)]
+async fn observer_publication_window_converges_for_bounded_async_reads() -> Result<()> {
+    use crate::runtime::mutation_owner::{MutationOwner, MutationReservation};
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owners = MutationOwner::reserve_all(vec![runtime.inner.mutation_owner.clone()]).await?;
+    MutationReservation::begin_all(&mut owners, "bounded-observer-convergence".into())?;
+    let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+    let reader = runtime.clone();
+    let db = runtime.inner.runtime_db.clone();
+    let observed = tokio::task::spawn(async move { reader.observer_ready_root_bounded(&db).await });
+    let started = tokio::time::Instant::now();
+    // Let the bounded read observe the open window once and arm its retry.
+    tokio::task::yield_now().await;
+    MutationReservation::definitely_not_committed_all(&mut owners)?;
+    let root = observed.await??;
+    assert_eq!(root.state.id, "scheduling-reader");
+    // Paused time only advances across the retry delay, so the read converged
+    // through the window instead of never observing it.
+    assert!(
+        tokio::time::Instant::now().duration_since(started) >= std::time::Duration::from_millis(20)
+    );
+    assert_eq!(denied.attempts(), 0);
+    Ok(())
+}
+
+#[tokio::test(start_paused = true)]
+async fn bounded_observer_read_returns_original_busy_when_window_outlives_bound() -> Result<()> {
+    use crate::runtime::mutation_owner::{MutationOwner, MutationReservation};
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owners = MutationOwner::reserve_all(vec![runtime.inner.mutation_owner.clone()]).await?;
+    MutationReservation::begin_all(&mut owners, "bounded-observer-exhausted".into())?;
+    let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+    let error = runtime
+        .observer_ready_root_bounded(&runtime.inner.runtime_db)
+        .await
+        .unwrap_err();
+    let busy = error
+        .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+        .expect("window error keeps its retryable storage contract");
+    assert_eq!(
+        busy.operation(),
+        RuntimeHandle::OBSERVER_PUBLICATION_OPERATION
+    );
+    assert_eq!(denied.attempts(), 0);
+    MutationReservation::definitely_not_committed_all(&mut owners)?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn task_status_child_observation_crosses_transient_publication_window() -> Result<()> {
+    use crate::runtime::mutation_owner::{MutationOwner, MutationReservation};
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owners = MutationOwner::reserve_all(vec![runtime.inner.mutation_owner.clone()]).await?;
+    MutationReservation::begin_all(&mut owners, "task-status-observer-window".into())?;
+    let reader = runtime.clone();
+    let observed =
+        tokio::task::spawn(async move { reader.child_agent_summary_observation().await });
+    // Give the observation its first failed attempt so the bounded wait is
+    // armed before the transient window closes.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    MutationReservation::definitely_not_committed_all(&mut owners)?;
+    let child = tokio::time::timeout(std::time::Duration::from_secs(5), observed).await???;
+    assert_eq!(child.state.id, "scheduling-reader");
+    Ok(())
+}
