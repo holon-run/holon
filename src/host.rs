@@ -27,6 +27,7 @@ mod input_evidence;
 mod original_child_spawn;
 mod pending_budget;
 pub(crate) mod resource_writes;
+mod startup_dispatch;
 mod startup_dispatch_memory;
 mod task_monitor_read;
 #[cfg(holon_lib_test_shard = "d")]
@@ -476,6 +477,7 @@ pub(crate) struct HostInner {
     pub(crate) agent_home_cleanup_lock: AsyncMutex<()>,
     runtime_db_maintenance_lock: Mutex<Option<crate::runtime_db::RuntimeDbLock>>,
     startup_recovery_report: Mutex<startup_dispatch_memory::RetainedStartupRecoveryReport>,
+    startup_dispatch: startup_dispatch::StartupDispatch,
     task_stop_supervisor: task_stop_supervisor::TaskStopSupervisor,
     skills_registry: Arc<RwLock<SkillsRegistry>>,
     context_resources: Arc<context_resources::ContextResources>,
@@ -1287,6 +1289,7 @@ impl RuntimeHost {
                 agent_home_cleanup_lock: AsyncMutex::new(()),
                 runtime_db_maintenance_lock: Mutex::new(None),
                 startup_recovery_report: Mutex::new(Default::default()),
+                startup_dispatch: Default::default(),
                 task_stop_supervisor: Default::default(),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
                 context_resources: Arc::new(context_resources::ContextResources::default()),
@@ -3681,6 +3684,7 @@ impl RuntimeHost {
         let mut completed = 0usize;
         let mut skipped = 0usize;
         let mut failed = 0usize;
+        let mut dispatch = None;
         let result = async {
         let recovery_report = observation.observe("durable_reconcile", async {
         self.reconcile_control_obligations_at_startup_inner(Some(admission))
@@ -3794,6 +3798,7 @@ impl RuntimeHost {
         Ok((recovery_agent_ids, queue_recovery_candidate_ids, active_task_owner_ids, active_timer_owner_ids))
         })?;
         candidates = recovery_agent_ids.len();
+        dispatch = Some(self.inner.startup_dispatch.begin()?);
         for agent_id in recovery_agent_ids {
             let agent_observation = observation.for_agent(&agent_id, None);
             let agent_result = async {
@@ -3843,6 +3848,9 @@ impl RuntimeHost {
         self.start_task_stop_supervisor();
         Ok(recovered_queue_agent_ids)
         }.await;
+        if let Some(dispatch) = dispatch {
+            dispatch.finish(result.is_ok());
+        }
         tracing::info!(
             startup_id = %observation.startup_id,
             candidates,
@@ -11477,6 +11485,10 @@ impl RuntimeHostBridge {
         self.host()?.wait_for_bootstrap_ready().await
     }
 
+    pub(crate) async fn wait_for_startup_dispatch(&self) -> Result<bool> {
+        self.host()?.inner.startup_dispatch.wait().await
+    }
+
     pub(crate) fn skills_registry(&self) -> Result<Arc<RwLock<SkillsRegistry>>> {
         Ok(self.host()?.skills_registry())
     }
@@ -12018,6 +12030,9 @@ mod tests {
     mod projection_storage_view_tests;
     #[path = "projection_work_queue_material_tests.rs"]
     mod projection_work_queue_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
+    #[path = "startup_dispatch_tests.rs"]
+    mod startup_dispatch_tests;
     #[cfg(holon_lib_test_shard = "d")]
     #[path = "task_stop_cold_tests.rs"]
     mod task_stop_cold_tests;

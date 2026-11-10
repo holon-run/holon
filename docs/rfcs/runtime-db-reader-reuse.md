@@ -58,6 +58,18 @@ observation only: no sidecar protection or cache change is authorized here.
 
 ## Read contract
 
+During host startup, each recovered runtime completes its own bootstrap before
+the next candidate is opened, but ordinary dispatch waits until the complete
+recovery batch succeeds. This prevents already recovered agents from occupying
+the reader pools while later agents still need them for construction/bootstrap.
+Failure or cancellation closes that batch's dispatch gate; it cannot release
+ordinary work. Waiting runtimes retire locally without recording another
+owner's bootstrap failure as their business failure. Bootstrap completion remains
+observable to the recovery owner,
+so waiting for the batch cannot deadlock candidate recovery. Normal activation
+outside startup and the existing reader capacities/deadlines retain their
+contracts.
+
 Owner-held preparation reads, including bootstrap metadata and identity reads,
 use a reserved query-only pool bounded to one reader. Ordinary queries retain
 their separate four-reader pool: observer saturation must not fail cold runtime

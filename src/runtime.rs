@@ -6775,6 +6775,28 @@ impl RuntimeHandle {
     ) -> Result<()> {
         self.bootstrap_with_startup_observation(observation.as_ref())
             .await?;
+        if let Some(bridge) = self.inner.host_bridge.as_ref() {
+            let startup = bridge.wait_for_startup_dispatch();
+            tokio::pin!(startup);
+            loop {
+                let notified = self.inner.notify.notified();
+                tokio::pin!(notified);
+                notified.as_mut().enable();
+                if !self.accepts_execution_admission() {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = &mut startup => {
+                        if !result? {
+                            self.retire_instance_locally("startup_recovery_failed").await;
+                            return Ok(());
+                        }
+                        break;
+                    }
+                    _ = notified => {}
+                }
+            }
+        }
 
         loop {
             #[cfg(test)]
