@@ -920,15 +920,18 @@ impl RuntimeDb {
                     .trigger
                     .as_ref()
                     .and_then(|trigger| trigger.message_id.clone());
-                let (reason, reason_class) = if replacement_sources
-                    .contains(&(turn.agent_id.clone(), turn.turn_id.clone()))
-                {
+                let superseded = replacement_sources
+                    .contains(&(turn.agent_id.clone(), turn.turn_id.clone()));
+                let operator_dispatch_uncertain = !superseded
+                    && !turn.external_side_effect_possible
+                    && startup_operator_dispatch_uncertain_tx(tx, &turn, &terminal_sources)?;
+                let (reason, reason_class) = if superseded {
                     report.superseded_turns += 1;
                     (
                         "startup_recovery/superseded_by_replay",
                         "superseded_by_replay",
                     )
-                } else if turn.external_side_effect_possible {
+                } else if turn.external_side_effect_possible || operator_dispatch_uncertain {
                     if let Some(message_id) = trigger_message_id.as_deref() {
                         let queue = tx
                             .query_row(
@@ -945,10 +948,17 @@ impl RuntimeDb {
                             .transpose()?;
                         if let Some(mut queue) = queue {
                             let expected = queue.clone();
-                            queue.status = QueueEntryStatus::Aborted;
+                            queue.status = if operator_dispatch_uncertain {
+                                QueueEntryStatus::Quarantined
+                            } else {
+                                QueueEntryStatus::Aborted
+                            };
                             queue.updated_at = recovered_at;
                             if compare_and_set_queue_entry_tx(tx, &expected, &queue)? {
-                                current_queue_writes.insert(queue.message_id.clone(), queue);
+                                let previous = current_queue_writes.insert(queue.message_id.clone(), queue);
+                                if operator_dispatch_uncertain && previous.is_none() {
+                                    report.queue_entries_changed += 1;
+                                }
                             }
                         }
                     }
@@ -1023,7 +1033,7 @@ impl RuntimeDb {
                         &event.id,
                     )?;
                 }
-                if turn.external_side_effect_possible {
+                if turn.external_side_effect_possible || operator_dispatch_uncertain {
                     let (event, _) = append_audit_event_tx(
                         tx,
                         Some(&turn.agent_id),
@@ -1485,6 +1495,43 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
         }
     }
     Ok(writes)
+}
+
+/// A cold boot also owns the original dispatch. Check before the open-attempt
+/// recovery can make its Dequeued source runnable.
+fn startup_operator_dispatch_uncertain_tx(
+    tx: &Transaction<'_>,
+    turn: &TurnRecord,
+    terminal_sources: &BTreeMap<(String, String), QueueEntryStatus>,
+) -> Result<bool> {
+    let Some(source) = turn
+        .trigger
+        .as_ref()
+        .filter(|trigger| trigger.kind == crate::types::MessageKind::OperatorPrompt)
+        .and_then(|trigger| trigger.message_id.as_deref())
+    else {
+        return Ok(false);
+    };
+    let actual_dispatch = turn.operator_dispatch_fenced
+        || tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM dispatch_memory_checkpoints
+          WHERE agent_id=?1 AND turn_id=?2 AND source_message_id=?3)",
+            params![turn.agent_id, turn.turn_id, source],
+            |row| row.get::<_, bool>(0),
+        )?;
+    if !actual_dispatch
+        || super::dispatch_memory::operator_dispatch_can_replay_tx(tx, turn)?
+        || terminal_sources.contains_key(&(turn.agent_id.clone(), source.to_owned()))
+    {
+        return Ok(false);
+    }
+    // A persisted result or failure already owns settlement for this source.
+    Ok(tx.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM briefs
+          WHERE agent_id=?1 AND message_id=?2 AND kind IN ('result', 'failure'))",
+        params![turn.agent_id, source],
+        |row| row.get(0),
+    )?)
 }
 
 fn startup_claim_recovery_tx(

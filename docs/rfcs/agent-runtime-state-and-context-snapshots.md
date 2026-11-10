@@ -31,8 +31,10 @@ adapters select publication cuts without changing those execution semantics.
 `GetAgent` retains the typed observer error across the Host bridge and may retry
 transient reads within a one-second retry budget. This tool adapter never
 reserves or reconciles an execution owner. Exhaustion preserves the retryable
-error; protection failures and unknown write outcomes are not retried. HTTP
-observers continue to return unavailable immediately.
+error. `TaskStatus` uses the same one-second budget when its child observation
+hits a transient publication. Each retry rechecks the target incarnation.
+Protection failures and unknown write outcomes are not retried. HTTP observers
+continue to return unavailable immediately.
 Default `GetAgent` cleanup inspection uses the runtime's fixed scoped identity,
 not a mutable State read merely to retrieve its ID.
 Daemon identity/authentication probes use readiness metadata, keeping agent

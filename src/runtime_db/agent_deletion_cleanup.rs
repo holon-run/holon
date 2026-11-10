@@ -240,11 +240,47 @@ const TASK_INVENTORY_OWNER: &str =
     "inventory_id IN (SELECT inventory_id FROM task_query_fixed_manifests WHERE agent_id = ?1)";
 const SCHEDULING_INVENTORY_OWNER: &str =
     "inventory_id IN (SELECT inventory_id FROM scheduling_fixed_manifests WHERE agent_id = ?1)";
-const RECEIPT_MEMBER: &str =
-    "EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1)";
+// Normal single-agent receipts can be looked up without decoding the receipt
+// ledger. Other shapes still use the original membership and ownership proof.
+macro_rules! single_receipt_scope_agent {
+    () => {
+        "CASE WHEN json_valid(scopes_json)=0 THEN NULL
+          WHEN json_type(scopes_json)='array'
+          AND json_array_length(scopes_json)=1
+          AND json_type(scopes_json,'$[0]')='object'
+          THEN json_extract(scopes_json,'$[0].agent_id') END"
+    };
+}
+
+pub(super) const RECEIPT_SCOPE_INDEX_SCHEMA: &str = concat!(
+    "CREATE INDEX IF NOT EXISTS idx_input_mutation_receipt_single_agent
+     ON input_mutation_receipts ((",
+    single_receipt_scope_agent!(),
+    "));"
+);
+
+macro_rules! receipt_member {
+    () => {
+        concat!(
+            "((",
+            single_receipt_scope_agent!(),
+            ") = ?1 OR ((",
+            single_receipt_scope_agent!(),
+            ") IS NULL AND EXISTS(SELECT 1 FROM json_each(scopes_json) s
+                WHERE json_extract(s.value,'$.agent_id') = ?1)))"
+        )
+    };
+}
+
+const RECEIPT_MEMBER: &str = receipt_member!();
 // Exact readonly Stop groups are validated by assert_command_ownership_tx in
 // the same transaction. Their whole receipt stays with the parent writer.
-const RECEIPT_OWNER: &str = "EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1) AND NOT COALESCE(json_extract(outcome_json,'$.result.kind')='task' AND json_type(outcome_json,'$.result.stop')='object' AND json_extract(outcome_json,'$.result.stop.scope.agent_id') != ?1,0)";
+const RECEIPT_OWNER: &str = concat!(
+    receipt_member!(),
+    " AND NOT COALESCE(json_extract(outcome_json,'$.result.kind')='task'
+      AND json_type(outcome_json,'$.result.stop')='object'
+      AND json_extract(outcome_json,'$.result.stop.scope.agent_id') != ?1,0)"
+);
 
 // Private dependent projections, child-before-source for both archive/purge.
 // Original seed ownership, not today's binding, owns legacy/unbound captures.
@@ -290,7 +326,11 @@ const DOMAIN_DEPENDENT_TABLES: &[(&str, &str)] = &[
 const COMMAND_DEPENDENT_TABLES: &[(&str, &str)] = &[
     (
         "dispatch_memory_auto_commands",
-        "command_nonce IN (SELECT command_nonce FROM input_mutation_receipts WHERE EXISTS(SELECT 1 FROM json_each(scopes_json) s WHERE json_extract(s.value,'$.agent_id') = ?1))",
+        concat!(
+            "command_nonce IN (SELECT command_nonce FROM input_mutation_receipts WHERE ",
+            receipt_member!(),
+            ")"
+        ),
     ),
     ("input_mutation_receipts", RECEIPT_OWNER),
 ];
@@ -1869,6 +1909,48 @@ mod tests {
             }
             Ok(snapshot)
         })
+    }
+
+    #[test]
+    fn receipt_scope_lookup_uses_index_and_preserves_multi_scope_membership() -> Result<()> {
+        let connection = rusqlite::Connection::open_in_memory()?;
+        connection.execute_batch(
+            "CREATE TABLE input_mutation_receipts(
+                command_nonce TEXT PRIMARY KEY,
+                scopes_json TEXT NOT NULL,
+                outcome_json TEXT NOT NULL
+             );",
+        )?;
+        for (nonce, scopes) in [
+            ("single", r#"[{"agent_id":"child"}]"#),
+            ("multi", r#"[{"agent_id":"parent"},{"agent_id":"child"}]"#),
+            ("unrelated", r#"[{"agent_id":"other"}]"#),
+        ] {
+            connection.execute(
+                "INSERT INTO input_mutation_receipts VALUES(?1,?2,'{}')",
+                (nonce, scopes),
+            )?;
+        }
+        connection.execute_batch(RECEIPT_SCOPE_INDEX_SCHEMA)?;
+        let sql =
+            format!("SELECT command_nonce FROM input_mutation_receipts WHERE {RECEIPT_MEMBER}");
+        let mut selected = connection
+            .prepare(&sql)?
+            .query_map(["child"], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        selected.sort();
+        assert_eq!(selected, ["multi", "single"]);
+        let plan = connection
+            .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?
+            .query_map(["missing"], |row| row.get::<_, String>(3))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        assert!(plan
+            .iter()
+            .any(|step| step.contains("idx_input_mutation_receipt_single_agent")));
+        assert!(!plan
+            .iter()
+            .any(|step| step.contains("SCAN input_mutation_receipts")));
+        Ok(())
     }
 
     #[test]

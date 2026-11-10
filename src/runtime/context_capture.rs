@@ -222,6 +222,15 @@ impl RuntimeHandle {
                         "retrying context acquisition after a frozen dependency changed");
                     tokio::task::yield_now().await;
                 }
+                Err(error)
+                    if require_execution
+                        && attempt < 2
+                        && crate::runtime_db::is_reader_checkout_pressure(&error) =>
+                {
+                    // The failed acquisition released the snapshot's reservation
+                    // and reader before this backoff. Rebuild only preparation.
+                    tokio::time::sleep(std::time::Duration::from_millis(50 << attempt)).await;
+                }
                 Err(error) => return Err(error),
             }
         }

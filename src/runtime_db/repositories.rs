@@ -3484,6 +3484,27 @@ impl QueueEntryRepository<'_> {
             .with_read(|connection| Self::recent_on(&connection, agent_id, limit))
     }
 
+    pub(crate) fn dequeued_for_preparation(&self, agent_id: &str) -> Result<Vec<QueueEntryRecord>> {
+        self.db.read_for_preparation(|tx| {
+            let mut statement = tx.prepare(
+                "SELECT payload_json FROM queue_entries
+                 WHERE agent_id=?1 AND status='dequeued'
+                 ORDER BY updated_at ASC, created_at ASC, message_id DESC",
+            )?;
+            let rows = statement.query_map([agent_id], |row| row.get::<_, String>(0))?;
+            rows.map(|row| {
+                let entry = decode_queue_entry_payload(&row?)?;
+                anyhow::ensure!(
+                    entry.agent_id == agent_id && entry.status == QueueEntryStatus::Dequeued,
+                    "retained queue claim differs from its normalized row"
+                );
+                Ok(entry)
+            })
+            .collect()
+        })
+    }
+
+    #[cfg(test)]
     pub(crate) fn recent_for_preparation(
         &self,
         agent_id: Option<&str>,
@@ -5030,6 +5051,7 @@ impl TurnRecordRepository<'_> {
             .with_read(|connection| context_recent_turns_on(&connection, agent_id, limit))
     }
 
+    #[cfg(test)]
     pub(crate) fn recent_for_agent_for_preparation(
         &self,
         agent_id: &str,

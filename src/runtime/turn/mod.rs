@@ -386,7 +386,9 @@ impl RuntimeHandle {
                 "cannot build turn record for terminal without turn_id"
             ));
         }
-        let read = self.prepare_turn_record_read(turn_id).await?;
+        let read =
+            crate::runtime_db::retry_reader_checkout(|| self.prepare_turn_record_read(turn_id))
+                .await?;
         Self::build_turn_record_from_inputs(read, terminal)
     }
 

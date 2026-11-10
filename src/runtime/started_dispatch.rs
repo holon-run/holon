@@ -12,7 +12,7 @@ use super::{
     RuntimeHandle,
 };
 use crate::{
-    domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding},
+    domain::execution_protocol::{ExecutionAttempt, ExecutionAttemptState, ExecutionBinding},
     runtime_db::{
         dispatch_memory::load_dispatch_memory_binding_tx,
         input_evidence_snapshot::validate_existing_input_evidence_tx,
@@ -76,6 +76,69 @@ fn dispatch_owner_matches(
             },
         }
 }
+/// A retired operator dispatch can fail before recording a canonical input
+/// batch. The original Start, rather than the ingress Turn hint, proves its
+/// actual Turn. The provider-entry receipt survives audit-prefix retention.
+pub(super) fn retired_operator_dispatch_can_replay(
+    tx: &Transaction<'_>,
+    scope: &super::resident_input_evidence::InputEvidenceScope,
+    state: &AgentState,
+    attempt: &ExecutionAttempt,
+    source: &MessageEnvelope,
+    owner: &TurnOwner,
+    turn: &TurnRecord,
+) -> Result<Option<bool>> {
+    let Some(binding) = state.current_execution_binding.as_ref() else {
+        return Ok(None);
+    };
+    if source.kind != MessageKind::OperatorPrompt
+        || state.current_run_id.is_some()
+        || binding.source_message_id != source.id
+        || binding.activation_id.as_deref() != Some(attempt.attempt_id.as_str())
+        || !crate::runtime_db::dispatch_memory::has_dispatch_memory_checkpoint_on(
+            tx,
+            scope,
+            &binding.turn_id,
+        )?
+    {
+        return Ok(None);
+    }
+    ensure!(
+        state.current_turn_id.as_deref() == Some(turn.turn_id.as_str())
+            && binding.turn_id == turn.turn_id
+            && turn.turn_index == state.turn_index
+            && turn.agent_id == scope.agent_id
+            && attempt.agent_id == scope.agent_id
+            && attempt.source_message_id.as_deref() == Some(source.id.as_str())
+            && turn.run_id.is_some()
+            && attempt
+                .run_id
+                .as_ref()
+                .is_none_or(|run| turn.run_id.as_ref() == Some(run))
+            && binding.owner.as_ref() == Some(owner)
+            && dispatch_owner_matches(binding, turn, &scope.agent_id)
+            && matches!(&binding.admission_provenance,
+                Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. })
+                    if activation_id == &attempt.attempt_id)
+            && turn
+                .trigger
+                .as_ref()
+                .and_then(|trigger| trigger.message_id.as_deref())
+                == Some(source.id.as_str())
+            && turn.input_message_ids.contains(&source.id),
+        StartedDispatchConflict("retired operator dispatch differs from its original claim")
+    );
+    // Both pending and completed checkpoints validate their original receipt.
+    crate::runtime_db::dispatch_memory::load_dispatch_memory_binding_by_turn_tx(
+        tx,
+        scope,
+        &turn.turn_id,
+    )?;
+    Ok(Some(
+        crate::runtime_db::dispatch_memory::operator_dispatch_can_replay_tx(tx, turn)?,
+    ))
+}
+
 impl OriginalDispatchClaim {
     pub(crate) fn proof_material_tx(&self, tx: &Transaction<'_>) -> Result<(usize, usize)> {
         let bytes: usize = tx.query_row(
