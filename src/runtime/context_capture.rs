@@ -526,6 +526,18 @@ impl RuntimeHandle {
         let observation =
             self.capture_context_resources(state, &config_version, &resource_material)?;
 
+        let execution = capture_mode.measure_sync(Stage::WorkspacePublication, || {
+            let _resource_io = resource_material.enter();
+            self.inner.runtime_db.with_workspace_context(|context| {
+                workspace::execution_snapshot_from_workspace_context(
+                    &state.execution_profile,
+                    &workspace,
+                    &state.attached_workspaces,
+                    context,
+                )
+            })
+        })?;
+
         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
         let capture_durable = || {
             let _resource_io = resource_material.enter();
@@ -581,32 +593,6 @@ impl RuntimeHandle {
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
             }
-            let entries = durable_inputs.workspace_entries()?;
-            let mut execution = workspace::execution_snapshot_from_workspace_entries(
-                &state.execution_profile,
-                &workspace,
-                &state.attached_workspaces,
-                entries,
-            )?;
-            let roots =
-                durable_inputs.execution_roots_for_workspaces(&state.attached_workspaces)?;
-            crate::diagnostics::resource_io::charge_owned_metadata(
-                u64::try_from(
-                    roots
-                        .len()
-                        .checked_mul(std::mem::size_of::<crate::system::ExecutionRootRef>())
-                        .ok_or_else(|| anyhow!("ResourceExhausted: execution root slots"))?,
-                )?,
-                roots.len(),
-            )?;
-            execution.execution_roots = roots
-                .into_iter()
-                .map(|entry| crate::system::ExecutionRootRef {
-                    execution_root_id: entry.execution_root_id,
-                    workspace_id: entry.workspace_id,
-                    filesystem_path: entry.filesystem_path,
-                })
-                .collect();
             let durable = acquire_durable_context_with_work_queue(
                 &inputs,
                 state,

@@ -77,6 +77,7 @@ pub mod types;
 pub mod unread;
 pub mod work_item_source_revision_repair;
 pub(crate) mod work_snapshot;
+pub(crate) mod workspace_context;
 pub mod write_queue;
 
 pub mod observer_sync;

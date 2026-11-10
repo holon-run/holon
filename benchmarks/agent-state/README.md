@@ -152,7 +152,8 @@ capture mode (preview, admission planning, or execution) and stage:
 | `work_preparation` | Work preparation request |
 | `scheduling_preparation` | Scheduling preparation request, including Input preparation it invokes |
 | `input_preparation` | Input preparation request for the selected context |
-| `durable_capture` | Final SQLite connection and transaction, including scope and revision validation, workspace and execution roots, remaining source reads, and snapshot assembly |
+| `workspace_publication` | Capture of selected workspace anchors and execution roots from the shared memory view |
+| `durable_capture` | Final SQLite connection and transaction, including scope and revision validation, remaining source reads, and snapshot assembly |
 
 `owner_reservation_wait` measures acquisition through the reservation return
 and is included in `owner_acquisition` latency. It is absent when the

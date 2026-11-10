@@ -6,10 +6,11 @@ use std::{
 use anyhow::{anyhow, Result};
 
 use crate::{
+    runtime_db::workspace_context::WorkspaceContext,
     storage::AppStorage,
     system::{
-        EffectiveExecution, ExecutionProfile, ExecutionScopeKind, ExecutionSnapshot,
-        WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
+        EffectiveExecution, ExecutionProfile, ExecutionRootRef, ExecutionScopeKind,
+        ExecutionSnapshot, WorkspaceAccessMode, WorkspaceProjectionKind, WorkspaceView,
     },
     types::{
         agent_home_workspace_id, ActiveWorkspaceEntry, AgentState, ExecutionRootEntry,
@@ -336,12 +337,12 @@ pub(crate) fn execution_snapshot_for_view(
     execution_snapshot_with_attached_entries(profile, workspace, attached_workspaces)
 }
 
-/// Pure construction from one already materialized registry view.
-pub(crate) fn execution_snapshot_from_workspace_entries(
+/// Copy only this Agent's execution material from one committed registry view.
+pub(crate) fn execution_snapshot_from_workspace_context(
     profile: &ExecutionProfile,
     workspace: &WorkspaceView,
     attached_workspace_ids: &[String],
-    mut entries: Vec<WorkspaceEntry>,
+    context: &WorkspaceContext,
 ) -> Result<ExecutionSnapshot> {
     let active_id = workspace.workspace_id().filter(|active| {
         attached_workspace_ids.is_empty() || attached_workspace_ids.iter().any(|id| id == active)
@@ -387,23 +388,47 @@ pub(crate) fn execution_snapshot_from_workspace_entries(
         if attached.iter().any(|(selected, _)| selected == id) {
             continue;
         }
-        // Match the registry's last-value semantics without cloning a map.
-        if let Some(index) = entries.iter().rposition(|entry| entry.workspace_id == id) {
-            let entry = entries.remove(index);
-            attached.push((entry.workspace_id, entry.workspace_anchor));
-        } else if workspace.workspace_id() == Some(id) {
+        let anchor = context.anchor(id)?.or_else(|| {
+            (workspace.workspace_id() == Some(id)).then(|| workspace.workspace_anchor())
+        });
+        if let Some(anchor) = anchor {
             crate::diagnostics::resource_io::charge_owned_metadata(
-                u64::try_from(id.len() + workspace.workspace_anchor().as_os_str().len())?,
+                u64::try_from(id.len() + anchor.as_os_str().len())?,
                 2,
             )?;
-            attached.push((id.to_owned(), workspace.workspace_anchor().to_path_buf()));
+            attached.push((id.to_owned(), anchor.to_path_buf()));
         }
     }
-    Ok(execution_snapshot_with_attached_entries(
-        profile.clone(),
-        workspace,
-        attached,
-    ))
+
+    let mut root_bytes = 0usize;
+    let mut root_count = 0usize;
+    for id in attached_workspace_ids {
+        let roots = context.roots(id)?;
+        root_count = root_count
+            .checked_add(roots.len())
+            .ok_or_else(|| anyhow!("ResourceExhausted: execution root records"))?;
+        for root in roots {
+            root_bytes = root_bytes
+                .checked_add(std::mem::size_of::<ExecutionRootRef>())
+                .and_then(|bytes| bytes.checked_add(root.execution_root_id.len()))
+                .and_then(|bytes| bytes.checked_add(root.workspace_id.len()))
+                .and_then(|bytes| bytes.checked_add(root.filesystem_path.as_os_str().len()))
+                .ok_or_else(|| anyhow!("ResourceExhausted: execution root material"))?;
+        }
+    }
+    crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(root_bytes)?, root_count)?;
+    let mut execution =
+        execution_snapshot_with_attached_entries(profile.clone(), workspace, attached);
+    execution
+        .execution_roots
+        .try_reserve_exact(root_count)
+        .map_err(|_| anyhow!("ResourceExhausted: execution root allocation"))?;
+    for id in attached_workspace_ids {
+        execution
+            .execution_roots
+            .extend_from_slice(context.roots(id)?);
+    }
+    Ok(execution)
 }
 
 fn execution_snapshot_with_attached_entries(

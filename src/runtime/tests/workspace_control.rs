@@ -38,6 +38,101 @@ fn init_git_repo() -> TempDir {
     repo
 }
 
+#[tokio::test]
+async fn loaded_context_observes_shared_worktree_registration_and_removal() -> Result<()> {
+    let home = tempdir()?;
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )?;
+    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+    config.user_home_dir = None;
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
+    let writer = host.default_runtime_bootstrapped_observed(None).await?;
+    host.create_named_agent("workspace-observer", None).await?;
+    let reader = host.get_public_agent("workspace-observer").await?;
+    reader.wait_for_bootstrap().await?;
+    let repo = init_git_repo();
+    let workspace = writer
+        .attach_workspace_path(repo.path().canonicalize()?)
+        .await?
+        .workspace;
+    reader.attach_workspace(&workspace).await?;
+
+    let capture = || {
+        reader.preview_prompt(
+            "inspect workspace".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+    };
+    let before = capture().await?;
+    assert!(before
+        .execution
+        .attached_workspaces
+        .iter()
+        .any(|(id, anchor)| {
+            id == &workspace.workspace_id && anchor == &workspace.workspace_anchor
+        }));
+
+    let worktree = writer
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "context-shared-root",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Error,
+        )
+        .await?;
+    assert!(worktree.created);
+    let root_id = worktree.execution_root_id.unwrap();
+    let root_path = worktree.worktree_path.unwrap();
+    let captured = capture().await?;
+    assert!(captured.execution.execution_roots.iter().any(|root| {
+        root.execution_root_id == root_id
+            && root.workspace_id == workspace.workspace_id
+            && root.filesystem_path == root_path
+    }));
+    assert!(!before
+        .execution
+        .execution_roots
+        .iter()
+        .any(|root| root.execution_root_id == root_id));
+
+    reader.detach_workspace(&workspace.workspace_id).await?;
+    let detached = capture().await?;
+    assert!(!detached
+        .execution
+        .attached_workspaces
+        .iter()
+        .any(|(id, _)| id == &workspace.workspace_id));
+    assert!(!detached
+        .execution
+        .execution_roots
+        .iter()
+        .any(|root| root.execution_root_id == root_id));
+    reader.attach_workspace(&workspace).await?;
+
+    let removal = writer
+        .remove_registered_worktree(&root_id, None, WorktreeBranchPolicy::Keep, None)
+        .await?;
+    assert!(removal.removed);
+    assert!(!capture()
+        .await?
+        .execution
+        .execution_roots
+        .iter()
+        .any(|root| root.execution_root_id == root_id));
+    assert!(captured
+        .execution
+        .execution_roots
+        .iter()
+        .any(|root| root.execution_root_id == root_id));
+
+    host.shutdown().await?;
+    Ok(())
+}
+
 struct WorktreeLifecycleProvider {
     steps: Mutex<std::collections::VecDeque<ModelBlock>>,
 }

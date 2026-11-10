@@ -2,6 +2,8 @@
 
 use std::{borrow::Cow, collections::BTreeSet, sync::Arc};
 
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+use crate::types::{ExecutionRootEntry, WorkspaceEntry};
 use anyhow::{ensure, Context, Result};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 
@@ -15,9 +17,8 @@ use crate::{
     },
     types::{
         AgentIdentityRecord, AgentState, BriefContentSource, BriefRecord, DeliverySummaryRecord,
-        ExecutionRootEntry, ExternalTriggerRecord, MessageEnvelope, TaskRecord,
-        ToolExecutionRecord, TranscriptEntry, TurnOwner, TurnRecord, WaitConditionRecord,
-        WorkItemRecord, WorkspaceEntry,
+        ExternalTriggerRecord, MessageEnvelope, TaskRecord, ToolExecutionRecord, TranscriptEntry,
+        TurnOwner, TurnRecord, WaitConditionRecord, WorkItemRecord,
     },
 };
 
@@ -404,10 +405,12 @@ impl<'a> ContextDurableRead<'a> {
         Ok(Some((decode(payload)?, revision)))
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "b"))]
     pub(crate) fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
         repositories::context_workspace_entries_on(self.connection)
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "b"))]
     pub(crate) fn execution_roots_for_workspaces(
         &self,
         ids: &[String],
