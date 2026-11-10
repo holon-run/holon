@@ -323,6 +323,13 @@ AgentStateStore
 These are responsibility boundaries, not a requirement for one large struct,
 one global mutex, or a new public API.
 
+Loaded context captures identity with the same published root as State.
+Bootstrap and identity mutations publish their exact committed records.
+A rename preserves prepared Scheduling when State is unchanged and invalidates
+Current query coverage because it appends an audit event. The original event and
+identity revision share a transaction and allow recovery to publish the rename
+without repeating it.
+
 ### Immutable sharing and publication
 
 Each agent has a single writer and an `ArcSwap<AgentSnapshot>` publication

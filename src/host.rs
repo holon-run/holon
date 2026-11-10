@@ -2807,6 +2807,13 @@ impl RuntimeHost {
         persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
     ) -> Result<T> {
         MutationReservation::begin_all(reservations, operation_id)?;
+        Self::acknowledge_started_external_metadata(reservations, persist)
+    }
+
+    fn acknowledge_started_external_metadata<T>(
+        reservations: &mut [MutationReservation],
+        persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
+    ) -> Result<T> {
         let (result, facts) = match persist() {
             Ok(committed) => committed,
             Err(error) => {
@@ -2836,6 +2843,14 @@ impl RuntimeHost {
         persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
     ) -> Result<T> {
         let result = self.acknowledge_external_metadata(reservations, operation_id, persist)?;
+        self.publish_external_metadata(reservations).await?;
+        Ok(result)
+    }
+
+    async fn publish_external_metadata(
+        &self,
+        reservations: &mut [MutationReservation],
+    ) -> Result<()> {
         #[cfg(test)]
         if self
             .inner
@@ -2844,8 +2859,7 @@ impl RuntimeHost {
         {
             bail!("external mutation committed but publication requires reconciliation");
         }
-        self.reconcile_external_mutations(reservations).await?;
-        Ok(result)
+        self.reconcile_external_mutations(reservations).await
     }
 
     #[cfg(test)]
@@ -2859,6 +2873,9 @@ impl RuntimeHost {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<()> {
+        for reservation in reservations.iter_mut() {
+            reservation.resolve_identity_rename(self.runtime_db())?;
+        }
         let task_queries = self.task_recovery_queries_for_group(reservations).await?;
         crate::runtime::input_recovery::resolve_input_recovery_with_queries(
             &self.inner.runtime_db,
@@ -5116,58 +5133,90 @@ impl RuntimeHost {
         })
     }
 
-    pub fn rename_public_agent(
+    pub async fn rename_public_agent(
         &self,
         agent_id: &str,
         requested_name: &str,
         actor: &str,
     ) -> std::result::Result<AgentDetail, PublicAgentError> {
-        let existing_identity = self
-            .agent_identity_record(agent_id)
-            .map_err(PublicAgentError::Runtime)?
-            .ok_or_else(|| PublicAgentError::NotFound {
-                agent_id: agent_id.to_string(),
-            })?;
+        let mut reservations = self
+            .reserve_agent_mutations(&[agent_id.to_owned()])
+            .await
+            .map_err(PublicAgentError::Runtime)?;
+        let existing_identity = Arc::new(
+            self.runtime_db()
+                .agent_identities()
+                .latest_for_mutation(agent_id)
+                .map_err(PublicAgentError::Runtime)?
+                .ok_or_else(|| PublicAgentError::NotFound {
+                    agent_id: agent_id.to_owned(),
+                })?,
+        );
         if existing_identity.visibility != AgentVisibility::Public
             || existing_identity.ownership() != AgentOwnership::SelfOwned
         {
             return Err(PublicAgentError::Private {
-                agent_id: agent_id.to_string(),
+                agent_id: agent_id.to_owned(),
             });
         }
         normalize_agent_name(requested_name).map_err(|error| PublicAgentError::InvalidName {
-            agent_id: agent_id.to_string(),
+            agent_id: agent_id.to_owned(),
             reason: error.to_string(),
         })?;
-        let identity = self
-            .runtime_db()
-            .agent_identities()
-            .rename(agent_id, requested_name, actor)
-            .map_err(|error| {
-                if error.to_string().contains("agent_name_conflict")
-                    || error.to_string().contains("UNIQUE constraint failed")
-                {
-                    PublicAgentError::NameConflict {
-                        agent_id: agent_id.to_string(),
-                        name: requested_name.trim().to_string(),
-                    }
-                } else if error.to_string().contains("cannot be renamed while it is") {
-                    match existing_identity.status {
-                        AgentRegistryStatus::Deleting => PublicAgentError::Deleting {
-                            agent_id: agent_id.to_string(),
-                        },
-                        AgentRegistryStatus::Deleted => PublicAgentError::Deleted {
-                            agent_id: agent_id.to_string(),
-                        },
-                        AgentRegistryStatus::Active => PublicAgentError::Runtime(error),
-                    }
-                } else {
-                    PublicAgentError::Runtime(error)
+        match existing_identity.status {
+            AgentRegistryStatus::Deleting => {
+                return Err(PublicAgentError::Deleting {
+                    agent_id: agent_id.to_owned(),
+                });
+            }
+            AgentRegistryStatus::Deleted => {
+                return Err(PublicAgentError::Deleted {
+                    agent_id: agent_id.to_owned(),
+                });
+            }
+            AgentRegistryStatus::Active => {}
+        }
+        let operation_id = ids::audit_event_id();
+        let [reservation] = reservations.as_mut_slice() else {
+            return Err(PublicAgentError::Runtime(anyhow!(
+                "rename requires one owner"
+            )));
+        };
+        reservation
+            .begin_identity_rename(operation_id.clone(), existing_identity.clone())
+            .map_err(PublicAgentError::Runtime)?;
+        let identity = Self::acknowledge_started_external_metadata(&mut reservations, || {
+            let facts = self.runtime_db().agent_identities().rename(
+                &existing_identity,
+                requested_name,
+                actor,
+                &operation_id,
+            )?;
+            let identity = facts
+                .identity
+                .expect("rename transaction returns its identity");
+            Ok((
+                identity.clone(),
+                vec![IdentityMutationFacts {
+                    identity: Some(Arc::new(identity)),
+                    state: facts.state,
+                }],
+            ))
+        })
+        .map_err(|error| {
+            if error.to_string().contains("agent_name_conflict")
+                || error.to_string().contains("UNIQUE constraint failed")
+            {
+                PublicAgentError::NameConflict {
+                    agent_id: agent_id.to_owned(),
+                    name: requested_name.trim().to_string(),
                 }
-            })?;
-        self.inner
-            .registry
-            .cache_agent_identity(&identity)
+            } else {
+                PublicAgentError::Runtime(error)
+            }
+        })?;
+        self.publish_external_metadata(&mut reservations)
+            .await
             .map_err(PublicAgentError::Runtime)?;
         self.agent_detail_from_identity(identity)
             .map_err(PublicAgentError::Runtime)
@@ -14999,6 +15048,7 @@ mod tests {
 
         let renamed = host
             .rename_public_agent("receipt-bot", "Receipt Worker", "test-operator")
+            .await
             .unwrap();
         assert_eq!(renamed.identity.agent_id, "receipt-bot");
         assert_eq!(renamed.name.as_deref(), Some("Receipt Worker"));
@@ -15122,6 +15172,7 @@ mod tests {
 
         let rename_error = host
             .rename_public_agent("delete-named", "New Name", "test-operator")
+            .await
             .expect_err("deleting agent must not be renamed");
         assert!(matches!(
             rename_error,
@@ -15147,6 +15198,7 @@ mod tests {
 
         let rename_error = host
             .rename_public_agent("delete-named", "New Name", "test-operator")
+            .await
             .expect_err("deleted agent must not be renamed");
         assert!(matches!(
             rename_error,

@@ -799,6 +799,7 @@ impl RuntimeHandle {
                 (owner, reservation)
             }
         };
+        bootstrap_reservation.resolve_identity_rename(&runtime_db)?;
         super::control_recovery::resolve_unloaded_control_recovery(
             &runtime_db,
             std::slice::from_mut(&mut bootstrap_reservation),
@@ -2772,7 +2773,15 @@ fn prepare_runtime_storage_owned(
     // This receipt proves the canonical posture only. Derived cache
     // failure remains retryable without treating the whole bootstrap as atomic.
     if let Some(reservation) = reservation.as_deref_mut() {
-        reservation.committed(Arc::new(state.clone()), None)?;
+        super::mutation_owner::MutationReservation::committed_all(
+            std::slice::from_mut(reservation),
+            vec![super::mutation_owner::KnownCommit::Metadata(Arc::new(
+                super::mutation_owner::IdentityMutationFacts {
+                    identity: Some(Arc::new(durable_identity.clone())),
+                    state: Some(Arc::new(state.clone())),
+                },
+            ))],
+        )?;
     }
     runtime_db.validate_expected_storage_domains(RuntimeDb::expected_storage_domains())?;
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;

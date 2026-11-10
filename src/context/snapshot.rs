@@ -1709,6 +1709,7 @@ mod coherent_acquisition_tests {
                 owner_epoch: 1,
                 generation: 1,
             },
+            identity: None,
             state: Arc::new(agent.clone()),
             episode_candidate_limit: limit,
             episodes: vec![],

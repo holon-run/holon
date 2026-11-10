@@ -28,6 +28,7 @@ async fn cold_fixture(
             .await?;
         assert!(created);
         host.rename_public_agent("cold-identity", "冷 identity 汉🦀", "fixture")
+            .await
             .map_err(|error| anyhow!("{error}"))?;
         host.active_agent_identity("cold-identity")
             .map_err(|error| anyhow!("{error}"))?
