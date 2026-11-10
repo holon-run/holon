@@ -261,9 +261,8 @@ pub(crate) fn resolve_input_recovery_with_queries(
             }
         }
         let mut readonly_proofs = Vec::new();
-        let mut connection = db.connection()?;
         let current = with_fresh_input_mutation_preparation_and_preflight(
-            &mut connection,
+            db,
             attempt,
             |tx| {
                 use crate::runtime_db::{

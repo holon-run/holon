@@ -62,6 +62,7 @@ pub(crate) fn prepare_input_domains_tx(
         None,
         None,
         None,
+        true,
     )
 }
 
@@ -90,6 +91,7 @@ pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
         None,
         None,
         None,
+        true,
     )
 }
 
@@ -120,6 +122,7 @@ pub(crate) fn prepare_original_input_recovery_with_work_tx(
         None,
         None,
         None,
+        true,
     )
 }
 
@@ -148,6 +151,7 @@ pub(crate) fn prepare_original_input_recovery_with_queries_tx(
         query,
         None,
         None,
+        true,
     )
 }
 
@@ -176,6 +180,7 @@ pub(crate) fn prepare_control_recovery_with_queries_tx(
         query,
         None,
         None,
+        true,
     )
 }
 
@@ -214,6 +219,7 @@ pub(crate) fn prepare_partial_task_stop_input_recovery_tx(
         None,
         None,
         None,
+        true,
     )
 }
 
@@ -241,6 +247,7 @@ pub(crate) fn prepare_input_with_scheduling_tx(
         None,
         None,
         Some(scheduling),
+        true,
     )
 }
 pub(crate) fn prepare_original_input_with_scheduling_tx(
@@ -266,6 +273,7 @@ pub(crate) fn prepare_original_input_with_scheduling_tx(
         None,
         None,
         Some(scheduling),
+        true,
     )
 }
 
@@ -306,6 +314,36 @@ pub(in crate::runtime_db) fn prepare_child_terminal_input_recovery_tx(
         query,
         Some(material),
         None,
+        true,
+    )
+}
+
+/// Rebuild from existing qualifications without reserving SQLite's writer.
+pub(crate) fn load_input_with_scheduling_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    scheduling: &crate::runtime::resident_scheduling::SchedulingCaptureRequest,
+    original_recovery: bool,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        original_recovery,
+        None,
+        false,
+        None,
+        None,
+        None,
+        Some(scheduling),
+        false,
     )
 }
 
@@ -323,6 +361,7 @@ fn prepare_input_domains_inner_tx(
     query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
     task_material: Option<&mut super::task_snapshot::read_preparation::TaskReadMaterial<'_>>,
     scheduling_capture: Option<&crate::runtime::resident_scheduling::SchedulingCaptureRequest>,
+    prepare: bool,
 ) -> Result<PreparedInputRead> {
     let scope_read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
     let decoded_state = scope_read.decoded_state();
@@ -487,7 +526,11 @@ fn prepare_input_domains_inner_tx(
     } else {
         None
     };
-    let scheduling = super::scheduling_snapshot::prepare_scheduling_with_context_scope_tx(
+    let scheduling = (if prepare {
+        super::scheduling_snapshot::prepare_scheduling_with_context_scope_tx
+    } else {
+        super::scheduling_snapshot::load_scheduling_with_context_scope_tx
+    })(
         tx,
         scope,
         &scheduling_request.request,
@@ -506,13 +549,11 @@ fn prepare_input_domains_inner_tx(
         request.insert_admitted_root(key.family, &key.id)?;
     }
     let scheduling = std::sync::Arc::new(scheduling.resident);
-    let prepared = prepare_input_evidence_with_scope_read_tx(
-        tx,
-        scope,
-        request,
-        original_recovery,
-        scope_read,
-    )?;
+    let prepared = (if prepare {
+        prepare_input_evidence_with_scope_read_tx
+    } else {
+        super::input_evidence_snapshot::load_existing_input_evidence_with_scope_read_tx
+    })(tx, scope, request, original_recovery, scope_read)?;
     let input = match prepared {
         InputEvidenceBootstrapSnapshot::Current(input) => input,
         InputEvidenceBootstrapSnapshot::Retired {

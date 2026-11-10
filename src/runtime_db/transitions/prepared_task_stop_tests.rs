@@ -822,9 +822,8 @@ fn task_and_stop_receipt_preflight_bounds_all_material_before_direct_and_fresh_l
             prepared.descriptor().clone(),
         );
         attempt.finish_original_attempt();
-        let mut connection = f.db.connection()?;
         let error = crate::runtime_db::input_mutation_receipts::with_fresh_input_mutation_resolution_and_preflight(
-            &mut connection, &attempt,
+            &f.db, &attempt,
             |tx| crate::runtime_db::transitions::task_result_receipt_budget_tx(tx,prepared.descriptor(),&f.scope,&tiny,&ledger),
             |_,_| -> Result<()> { panic!("Task/Stop budget must reject before receipt lookup/callback") },
         ).unwrap_err();

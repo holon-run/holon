@@ -39,8 +39,7 @@ impl RuntimeDb {
         &self,
         scope: &InputEvidenceScope,
     ) -> Result<ContextScopeFacts> {
-        self.writer
-            .read_deferred(|tx| current_scope_facts_tx(tx, scope))
+        self.read_for_preparation(|tx| current_scope_facts_tx(tx, scope))
     }
 
     pub(crate) fn bootstrap_pending_metadata(
@@ -48,8 +47,7 @@ impl RuntimeDb {
         scope: &InputEvidenceScope,
         budget: &InputEvidenceBudgetLedger,
     ) -> Result<BootstrapPendingMetadata> {
-        self.writer
-            .read_deferred(|tx| pending_metadata_tx(tx, scope, budget))
+        self.read_for_preparation(|tx| pending_metadata_tx(tx, scope, budget))
     }
 }
 

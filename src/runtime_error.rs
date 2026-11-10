@@ -7,8 +7,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     provider::{provider_attempt_timeline, provider_transport_diagnostics, ProviderTransportError},
     runtime_db::{
-        PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
-        RuntimeDbProtectionError, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
+        PersistenceCertainty, PersistenceFailure, RuntimeDbProtectionError,
+        RuntimeDbRetryableError, RuntimeStateTransitionConflict,
     },
     tool::ToolError,
 };
@@ -214,19 +214,16 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         .downcast_ref::<PersistenceFailure>()
         .filter(|failure| failure.certainty() == PersistenceCertainty::Indeterminate)
     {
-        let phase = match failure.phase() {
-            PersistenceFailurePhase::BeforeBegin => "before_begin",
-            PersistenceFailurePhase::Begin => "begin",
-            PersistenceFailurePhase::Callback => "callback",
-            PersistenceFailurePhase::Rollback => "rollback",
-            PersistenceFailurePhase::Commit => "commit",
-        };
+        let phase = failure.phase().as_str();
         let mut safe_context = BTreeMap::from([
             ("certainty".into(), "indeterminate".into()),
             ("phase".into(), phase.into()),
         ]);
+        safe_context.extend(runtime_db_failure_context(error));
         if let Some(db_error) = error.downcast_ref::<RuntimeDbRetryableError>() {
-            safe_context.insert("operation".into(), db_error.operation().to_string());
+            safe_context
+                .entry("operation".into())
+                .or_insert_with(|| db_error.operation().to_string());
         }
         return RuntimeErrorDescriptor {
             domain: RuntimeErrorDomain::Storage,
@@ -369,14 +366,19 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         };
     }
 
-    if let Some(db_error) = error
-        .chain()
-        .find_map(|source| source.downcast_ref::<RuntimeDbRetryableError>())
-    {
+    if let Some(db_error) = error.downcast_ref::<RuntimeDbRetryableError>().or_else(|| {
+        error
+            .chain()
+            .find_map(|source| source.downcast_ref::<RuntimeDbRetryableError>())
+    }) {
         let source_chain = vec![format!(
             "runtime database operation {} is temporarily unavailable",
             db_error.operation()
         )];
+        let mut safe_context = runtime_db_failure_context(error);
+        safe_context
+            .entry("operation".into())
+            .or_insert_with(|| db_error.operation().to_string());
         return RuntimeErrorDescriptor {
             domain: RuntimeErrorDomain::Storage,
             code: "runtime_db_busy".into(),
@@ -386,7 +388,37 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
                 db_error.operation()
             ),
             recovery_hint: Some("retry the operation".into()),
-            safe_context: BTreeMap::from([("operation".into(), db_error.operation().to_string())]),
+            safe_context,
+            source_chain,
+        };
+    }
+
+    if error.chain().any(|source| {
+        source
+            .downcast_ref::<rusqlite::Error>()
+            .is_some_and(crate::runtime_db::connection::is_sqlite_locked)
+    }) {
+        let retryable = crate::runtime_db::persistence_certainty(error)
+            == Some(PersistenceCertainty::DefinitelyNotCommitted);
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Storage,
+            code: if retryable {
+                "runtime_db_busy"
+            } else {
+                "runtime_db_locked"
+            }
+            .into(),
+            retryable,
+            operator_message: "runtime database is locked".into(),
+            recovery_hint: Some(
+                if retryable {
+                    "retry the operation after the confirmed rollback"
+                } else {
+                    "inspect the original operation's transaction outcome before retrying"
+                }
+                .into(),
+            ),
+            safe_context: runtime_db_failure_context(error),
             source_chain,
         };
     }
@@ -476,6 +508,32 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         safe_context: BTreeMap::new(),
         source_chain,
     }
+}
+
+fn runtime_db_failure_context(error: &AnyhowError) -> BTreeMap<String, String> {
+    let mut context = BTreeMap::new();
+    if let Some(failure) = error.downcast_ref::<PersistenceFailure>() {
+        context.insert("phase".into(), failure.phase().as_str().into());
+        context.insert(
+            "certainty".into(),
+            match failure.certainty() {
+                PersistenceCertainty::DefinitelyNotCommitted => "definitely_not_committed",
+                PersistenceCertainty::Indeterminate => "indeterminate",
+            }
+            .into(),
+        );
+        if let Some(operation) = failure.operation() {
+            context.insert("operation".into(), operation.into());
+        }
+        if let Some(table) = failure.table() {
+            context.insert("table".into(), table.into());
+        }
+    }
+    if let Some(code) = crate::runtime_db::persistence::sqlite_extended_code(error) {
+        context.insert("sqlite_code".into(), (code & 0xff).to_string());
+        context.insert("sqlite_extended_code".into(), code.to_string());
+    }
+    context
 }
 
 pub fn collect_runtime_error_source_chain(error: &AnyhowError) -> Vec<String> {
@@ -721,6 +779,44 @@ fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime_db::PersistenceFailurePhase;
+
+    #[test]
+    fn sqlite_lock_classification_requires_a_known_transaction_outcome() {
+        use crate::runtime_db::persistence::mark_persistence_failure;
+        fn locked() -> AnyhowError {
+            AnyhowError::new(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY_SNAPSHOT),
+                Some("database is locked".into()),
+            ))
+        }
+        let unknown = describe_runtime_error(&locked());
+        assert_eq!(unknown.domain, RuntimeErrorDomain::Storage);
+        assert_eq!(unknown.code, "runtime_db_locked");
+        assert!(!unknown.retryable);
+        assert_eq!(unknown.safe_context["sqlite_code"], "5");
+        assert_eq!(unknown.safe_context["sqlite_extended_code"], "517");
+        let rolled_back = mark_persistence_failure(
+            locked(),
+            PersistenceCertainty::DefinitelyNotCommitted,
+            PersistenceFailurePhase::Callback,
+            None,
+        );
+        let known = describe_runtime_error(&rolled_back);
+        assert_eq!(known.code, "runtime_db_busy");
+        assert!(known.retryable);
+        let ambiguous = mark_persistence_failure(
+            locked(),
+            PersistenceCertainty::Indeterminate,
+            PersistenceFailurePhase::Commit,
+            None,
+        );
+        let unknown = describe_runtime_error(&ambiguous);
+        assert_eq!(unknown.code, "runtime_db_outcome_unknown");
+        assert!(!unknown.retryable);
+        assert_eq!(unknown.safe_context["phase"], "commit");
+        assert_eq!(unknown.safe_context["sqlite_extended_code"], "517");
+    }
 
     #[test]
     fn context_budget_descriptor_preserves_typed_numeric_evidence_without_input() {

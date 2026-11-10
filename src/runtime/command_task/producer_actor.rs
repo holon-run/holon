@@ -246,7 +246,7 @@ impl RuntimeHandle {
         let read = match result {
             Ok(read) => read,
             Err(error) => {
-                if crate::runtime_db::persistence_certainty(&error)
+                if crate::runtime_db::original_input_attempt_certainty(&error)
                     == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
                 {
                     pending.take();

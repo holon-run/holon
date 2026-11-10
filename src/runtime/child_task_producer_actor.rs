@@ -512,7 +512,7 @@ impl RuntimeHandle {
             };
             match result {
                 Err(error) if crate::runtime_db::retryable_state_transition_conflict(&error).is_some()
-                    && crate::runtime_db::persistence_certainty(&error)
+                    && crate::runtime_db::original_input_attempt_certainty(&error)
                         == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted) => {
                     // Refresh only CAS/material after the rolled-back whole
                     // attempt dropped its owners and released pending tickets.
@@ -524,7 +524,7 @@ impl RuntimeHandle {
                 }
                 Err(error) if crate::runtime_db::repositories::is_terminal_child_deletion_admission_rejected(&error)
                     && source.original_deletion_requested()
-                    && (pending.is_none() || crate::runtime_db::persistence_certainty(&error)==Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)) => {
+                    && (pending.is_none() || crate::runtime_db::original_input_attempt_certainty(&error)==Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)) => {
                     #[cfg(test)]
                     {
                         source.record_terminal_deletion_rejection_for_test(&error);
@@ -539,7 +539,7 @@ impl RuntimeHandle {
         let read = match result {
             Ok(read) => read,
             Err(error) => {
-                if crate::runtime_db::persistence_certainty(&error)
+                if crate::runtime_db::original_input_attempt_certainty(&error)
                     == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
                 {
                     pending.take();

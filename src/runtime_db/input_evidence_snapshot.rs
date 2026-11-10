@@ -1324,6 +1324,16 @@ pub(crate) fn load_input_evidence_with_scope_read_tx(
     snapshot_request_tx(tx, scope, request, false, false, Some(read))
 }
 
+pub(crate) fn load_existing_input_evidence_with_scope_read_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: InputEvidenceLoadRequestView<'_>,
+    original_recovery: bool,
+    read: ContextScopeRead<'_>,
+) -> Result<InputEvidenceBootstrapSnapshot> {
+    snapshot_request_tx(tx, scope, request, false, original_recovery, Some(read))
+}
+
 fn snapshot_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -1480,6 +1490,7 @@ fn prepare_input_records_tx(
                 &query.selection,
                 &query.ledger,
                 (request.byte_limit, request.record_limit),
+                prepare,
             )
         })
         .transpose()?;

@@ -21173,6 +21173,12 @@ mod tests {
             .expect("activation must take over while runtime readers are saturated")
             .unwrap()
             .expect("cold activation must return a handle under read saturation");
+        let ordinary = host.runtime_db().reader_pool_stats_for_tests();
+        assert_eq!(ordinary.current_connections, 4);
+        assert_eq!(ordinary.idle_connections, 0);
+        let preparation = host.runtime_db().preparation_pool_stats_for_tests();
+        assert_eq!(preparation.capacity, 1);
+        assert_eq!(preparation.current_connections, 1);
         assert!(
             heartbeat < saturation_heartbeat_budget(),
             "{heartbeat:?} exceeds saturation heartbeat budget"

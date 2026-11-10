@@ -101,10 +101,9 @@ impl crate::runtime_db::RuntimeDb {
             "Stop sparse recovery requires its original parent group"
         );
         let scope = &attempt.prepared().scopes()[0];
-        let mut connection = self.connection()?;
         let receipt_view = std::cell::RefCell::new(None);
         with_fresh_input_mutation_preparation_and_preflight(
-            &mut connection,
+            self,
             attempt,
             |tx| {
                 let guard = super::super::transitions::task_result_receipt_budget_tx(

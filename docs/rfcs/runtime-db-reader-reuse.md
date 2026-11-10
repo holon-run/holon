@@ -58,11 +58,44 @@ observation only: no sidecar protection or cache change is authorized here.
 
 ## Read contract
 
-Clones of a RuntimeDb share one lazily used reader pool. Independently opened
-RuntimeDb handles and raw maintenance connections are separate owners and must
-not be counted as part of the same pool limit. The initial candidate capacity is
-four readers with a 250 ms acquisition budget, not a claim of optimal sizing.
-There is no overflow connection or fallback to unbounded raw opens.
+Owner-held preparation reads, including bootstrap metadata and identity reads,
+use a reserved query-only pool bounded to one reader. Ordinary queries retain
+their separate four-reader pool: observer saturation must not fail cold runtime
+construction before its asynchronous bootstrap handoff. Preparation saturation
+still returns a retryable error within its acquisition budget; it cannot open
+an overflow connection or fall back to the writer. Each preparation read keeps
+one Deferred snapshot and returns owned facts before another checkout or writer
+transaction. Neither pool reserves a writer ticket or borrows its connection.
+
+Input/Scheduling reconstruction first loads existing qualification through that
+pool. Only an explicit missing-qualification result permits the already-held
+owner to enter the existing initialization transaction. Corruption, changed
+canonical facts, retired scopes and reader admission failures propagate without
+initialization. Query birth cursors are read as stored; a pure read cannot create
+an empty cursor or infer completeness from its absence. First initialization
+still commits its complete qualification atomically.
+
+Receipt recovery that can write qualification uses the same writer FIFO and
+connection as ordinary writes. It reserves the writer before its receipt read,
+retains one Immediate transaction through preparation and commit, and executes
+its callback once. BEGIN contention may wait without replaying that callback;
+an uncertain COMMIT still requires original-receipt reconciliation. Owner,
+group, epoch, attempt identity and publication checks remain mandatory.
+Recovery rollback certainty never releases or re-prepares the original business
+capsule; only that original attempt's receipt/owner protocol may resolve it.
+
+Borrowed preparation/recovery callbacks remain on their calling thread inside
+the existing Tokio blocking boundary. This preserves thread-local material and
+mutation witnesses while allowing other async work to progress. It is not an
+enqueue-only acknowledgement or a second detached recovery worker.
+
+Clones of a RuntimeDb share both lazily used reader pools: four ordinary readers
+and one preparation reader, with a 250 ms acquisition budget for each role.
+Scoped deadlines, cancellation, cleanup and sidecar protection apply to both.
+These bounds are not a claim of optimal sizing. Independently opened RuntimeDb
+handles and raw maintenance connections are separate owners and must not be
+counted as part of the same pool limit. There is no overflow connection or
+fallback to unbounded raw opens.
 
 Internal closure APIs return owned values, never a lease, transaction, or cursor.
 The synchronous API is for synchronous/blocking boundaries. The async API waits

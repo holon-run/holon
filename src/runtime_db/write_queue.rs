@@ -268,62 +268,18 @@ impl RuntimeDbWriter {
         Ok(Self { state, append_tx })
     }
 
+    #[cfg(test)]
+    pub(crate) fn outstanding_writes_for_tests(&self) -> u64 {
+        let queue = self.state.queue.state.lock().unwrap();
+        queue.next_ticket - queue.serving_ticket
+    }
+
     pub(crate) fn activate_sidecar_protection(&self) -> Result<()> {
         self.state.activate_sidecar_protection()
     }
 
     pub(crate) fn open_connection(&self) -> Result<Connection> {
         self.state.open_connection()
-    }
-
-    /// A short canonical read outside a transaction. The callback must neither
-    /// control transactions nor reenter the writer.
-    pub(crate) fn read_committed<T>(&self, f: impl FnOnce(&Connection) -> Result<T>) -> Result<T> {
-        at_blocking_boundary(|| {
-            let _turn = self.state.queue.wait_turn()?;
-            let connection = self
-                .state
-                .connection
-                .lock()
-                .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
-            self.state.ensure_protected()?;
-            anyhow::ensure!(
-                connection.is_autocommit(),
-                "runtime db committed read requires an idle writer connection"
-            );
-            f(&connection)
-        })
-    }
-
-    /// A short read in its own deferred transaction. The callback must neither
-    /// write, control transactions, nor reenter this writer.
-    pub(crate) fn read_deferred<T>(
-        &self,
-        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
-    ) -> Result<T> {
-        at_blocking_boundary(|| {
-            let _turn = self.state.queue.wait_turn()?;
-            let connection = self
-                .state
-                .connection
-                .lock()
-                .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
-            self.state.ensure_protected()?;
-            anyhow::ensure!(
-                connection.is_autocommit(),
-                "runtime db deferred read requires an idle writer connection"
-            );
-            let result = (|| {
-                let tx = Transaction::new_unchecked(
-                    &connection,
-                    rusqlite::TransactionBehavior::Deferred,
-                )?;
-                let value = f(&tx)?;
-                tx.commit()?;
-                Ok(value)
-            })();
-            self.state.finish_transaction_attempt(&connection, result)
-        })
     }
 
     pub(crate) fn protection_status(&self) -> RuntimeDbProtectionStatus {
@@ -393,7 +349,18 @@ impl RuntimeDbWriter {
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        at_blocking_boundary(|| self.state.append_wait_once(f))
+        self.append_wait_once_with_context(
+            RuntimeDbWriteContext::sync("runtime_db.transaction_once", "unknown"),
+            f,
+        )
+    }
+
+    pub(crate) fn append_wait_once_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        at_blocking_boundary(|| self.state.append_wait_once(context, f))
     }
 }
 
@@ -577,7 +544,11 @@ impl RuntimeDbWriterState {
         }
     }
 
-    fn append_wait_once<T>(&self, f: impl FnOnce(&Transaction<'_>) -> Result<T>) -> Result<T> {
+    fn append_wait_once<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
         let queue_wait_started_at = Instant::now();
         let _turn = self.queue.wait_turn().map_err(before_begin_failure)?;
         let queue_wait = queue_wait_started_at.elapsed();
@@ -591,7 +562,7 @@ impl RuntimeDbWriterState {
         let result = run_transaction_on_connection(
             &connection,
             &self.path,
-            RuntimeDbWriteContext::sync("runtime_db.transaction_once", "unknown"),
+            context,
             queue_wait,
             mutex_wait,
             f,
@@ -724,94 +695,23 @@ mod persistence_tests {
     use crate::runtime_db::{persistence_certainty, PersistenceFailure};
 
     #[test]
-    fn committed_read_reuses_writer_connection_and_releases_it_on_error() -> Result<()> {
+    fn preparation_read_returns_the_lease_after_callback_failure() -> Result<()> {
         let temp = tempfile::tempdir()?;
-        let path = temp.path().join("runtime.sqlite");
-        let connection = open_connection(&path)?;
-        connection.execute_batch(
-            "CREATE TEMP TABLE connection_marker (value INTEGER);
-             INSERT INTO connection_marker VALUES (7);",
+        let mut db = crate::runtime_db::RuntimeDb::open_and_migrate(
+            temp.path().join("runtime.sqlite"),
+            temp.path().join("runtime.lock"),
         )?;
-        let writer = RuntimeDbWriter::open_starting(path, connection)?;
-        let clone = writer.clone();
-        for reader in [&writer, &clone] {
-            let value: i64 = reader.read_committed(|connection| {
-                assert!(connection.is_autocommit());
-                Ok(connection
-                    .query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
-            })?;
-            assert_eq!(value, 7);
-        }
-        assert!(writer
-            .read_committed::<()>(|_| anyhow::bail!("read failed"))
-            .is_err());
-        let value: i64 = writer.append_wait(|tx| {
-            Ok(tx.query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
-        })?;
-        assert_eq!(value, 7);
-        Ok(())
-    }
-
-    #[test]
-    fn deferred_read_reuses_writer_connection_and_cleans_up_on_error() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let path = temp.path().join("runtime.sqlite");
-        let connection = open_connection(&path)?;
-        connection.execute_batch(
-            "CREATE TEMP TABLE connection_marker (value INTEGER);
-             INSERT INTO connection_marker VALUES (7);",
-        )?;
-        let writer = RuntimeDbWriter::open_starting(path, connection)?;
-        let clone = writer.clone();
-        for reader in [&writer, &clone] {
-            let value: i64 = reader.read_deferred(|tx| {
-                assert!(!tx.is_autocommit());
-                Ok(tx.query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
-            })?;
-            assert_eq!(value, 7);
-        }
-        let error = writer
-            .read_deferred::<()>(|_| anyhow::bail!("deferred read failed"))
-            .expect_err("callback error must propagate");
-        assert_eq!(error.to_string(), "deferred read failed");
-        writer.read_committed(|connection| {
-            assert!(connection.is_autocommit());
-            Ok(())
-        })?;
-        let value: i64 = writer.append_wait(|tx| {
-            Ok(tx.query_row("SELECT value FROM connection_marker", [], |row| row.get(0))?)
-        })?;
-        assert_eq!(value, 7);
-        Ok(())
-    }
-
-    #[test]
-    fn deferred_read_keeps_its_snapshot_without_blocking_an_independent_writer() -> Result<()> {
-        let temp = tempfile::tempdir()?;
-        let path = temp.path().join("runtime.sqlite");
-        let connection = open_connection(&path)?;
-        crate::runtime_db::connection::configure_persistent_database(&connection)?;
-        connection.execute_batch(
-            "CREATE TABLE values_seen (value INTEGER);
-             INSERT INTO values_seen VALUES (1);",
-        )?;
-        let writer = RuntimeDbWriter::open(path, connection)?;
-        let other = writer.open_connection()?;
-        other.busy_timeout(Duration::from_millis(100))?;
-        writer.read_deferred(|tx| {
-            let before: i64 =
-                tx.query_row("SELECT COUNT(*) FROM values_seen", [], |row| row.get(0))?;
-            assert_eq!(before, 1);
-            other.execute("INSERT INTO values_seen VALUES (2)", [])?;
-            let after: i64 =
-                tx.query_row("SELECT COUNT(*) FROM values_seen", [], |row| row.get(0))?;
-            assert_eq!(after, before);
-            Ok(())
-        })?;
-        let count: i64 = writer.read_deferred(|tx| {
-            Ok(tx.query_row("SELECT COUNT(*) FROM values_seen", [], |row| row.get(0))?)
-        })?;
-        assert_eq!(count, 2);
+        db.configure_reader_pool_for_tests(1, Duration::from_millis(250))?;
+        let error = db
+            .read_for_preparation::<()>(|_| anyhow::bail!("preparation read failed"))
+            .expect_err("callback failure must propagate");
+        assert_eq!(error.to_string(), "preparation read failed");
+        db.read_for_preparation(|tx| {
+            assert!(!tx.is_autocommit());
+            Ok(tx.query_row("SELECT 7", [], |row| row.get::<_, i64>(0))?)
+        })
+        .map(|value| assert_eq!(value, 7))?;
+        assert_eq!(db.preparation_pool_stats_for_tests().connections_opened, 1);
         Ok(())
     }
 
@@ -1011,18 +911,6 @@ mod tests {
         let wal_path = sidecar_path(&db_path, "-wal");
 
         fs::remove_file(&wal_path)?;
-        let read_error = writer
-            .read_committed::<()>(|_| panic!("quarantined writer must not read"))
-            .expect_err("deleted-open WAL must quarantine committed reads");
-        assert!(read_error
-            .chain()
-            .any(|source| source.is::<RuntimeDbProtectionError>()));
-        let deferred_error = writer
-            .read_deferred::<()>(|_| panic!("quarantined writer must not begin a read"))
-            .expect_err("deleted-open WAL must quarantine deferred reads");
-        assert!(deferred_error
-            .chain()
-            .any(|source| source.is::<RuntimeDbProtectionError>()));
         let first_error = writer
             .append_wait_once::<()>(|_| panic!("quarantined writer must not begin a transaction"))
             .expect_err("deleted-open WAL must quarantine the writer");
@@ -1058,8 +946,8 @@ mod async_worker_tests {
     ) -> Result<()> {
         for mode in [
             "pooled",
-            "committed",
-            "deferred",
+            "preparation",
+            "recovery",
             "append",
             "context",
             "once",
@@ -1088,8 +976,8 @@ mod async_worker_tests {
                 };
                 match mode {
                     "pooled" => db.with_read(|_| progress()),
-                    "committed" => writer.read_committed(|_| progress()),
-                    "deferred" => writer.read_deferred(|_| progress()),
+                    "preparation" => db.read_for_preparation(|_| progress()),
+                    "recovery" => db.recovery_transaction_once(|_| progress()),
                     "append" => writer.append_wait(|_| progress()),
                     "context" => writer.append_wait_with_context(
                         RuntimeDbWriteContext::sync("worker_probe", "probe"),

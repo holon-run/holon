@@ -49,10 +49,9 @@ impl crate::runtime_db::RuntimeDb {
             "Command recovery requires its original Task receipt group"
         );
         let scope = &attempt.prepared().scopes()[0];
-        let mut connection = self.connection()?;
         let material = std::cell::RefCell::new(None);
         with_fresh_input_mutation_resolution_and_preflight(
-            &mut connection,
+            self,
             attempt,
             |tx| {
                 let view = crate::runtime_db::transitions::task_result_receipt_budget_tx(

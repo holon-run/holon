@@ -144,9 +144,7 @@ impl Fixture {
 
 #[tokio::test]
 async fn preparation_request_sql_clone_rejects_before_sidecar_commit() -> Result<()> {
-    use crate::diagnostics::resource_io::{
-        admit_cloned_value, charge_owned_metadata, ResourceReadMaterial,
-    };
+    use crate::diagnostics::resource_io::{admit_cloned_value, ResourceReadMaterial};
     let fixture = Fixture::new().await?;
     let reservation = fixture.owner.reserve().await?;
     let original = fixture.owner.capture()?.unwrap();
@@ -171,7 +169,11 @@ async fn preparation_request_sql_clone_rejects_before_sidecar_commit() -> Result
             Err(error) => error,
             Ok(_) => anyhow::bail!("SQL preparation bypassed its request-copy gate"),
         };
-        assert!(error.to_string().contains("ResourceExhausted"), "{error:#}");
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).code,
+            "context_resource_exhausted",
+            "{error:#}"
+        );
     }
     assert!(phase.finish().is_err());
     assert_eq!(fixture.owner.capture()?.unwrap().token, original.token);
@@ -179,7 +181,6 @@ async fn preparation_request_sql_clone_rejects_before_sidecar_commit() -> Result
     // Successful preparation also owns the loader's two key copies and
     // resident coverage. Keep the earlier SQL-copy and pending-key pressure.
     let ample = ResourceReadMaterial::new(&fixture.budget, &fixture.scope)?;
-    let saved_bytes;
     {
         let _active = ample.enter();
         let InputPreparation::Prepared(prepared) = fixture
@@ -198,28 +199,22 @@ async fn preparation_request_sql_clone_rejects_before_sidecar_commit() -> Result
         assert!(coverage.history.values().all(|history| {
             history.keys.is_empty() && history.loaded_keys.is_empty() && history.is_exhaustive
         }));
-        saved_bytes = serde_json::to_vec(coverage)?.len();
     }
     let cold_total = ample.finish()?;
     drop(ample);
-    // The first success commits coverage. A replay reads that row plus its
-    // three empty history collections; account independently, not by replaying.
-    let saved = ResourceReadMaterial::new(&fixture.budget, &fixture.scope)?;
-    let saved_header = saved.finish()?;
+    // Existing qualification follows the pooled read path. Measure its own
+    // allocation footprint instead of assuming it repeats cold initialization.
+    let warm = ResourceReadMaterial::new(&fixture.budget, &fixture.scope)?;
     {
-        let _active = saved.enter();
-        let metadata = fixture.scope.agent_id.len() + 128;
-        charge_owned_metadata((saved_bytes + 32 + metadata) as u64, 1)?;
-        charge_owned_metadata((3 * 128 + metadata) as u64, 3)?;
+        let _active = warm.enter();
+        assert!(matches!(
+            fixture.prepare(&reservation, &original, &request)?,
+            InputPreparation::Prepared(_)
+        ));
     }
-    let saved_total = saved.finish()?;
-    // The replay already owns the same phase header as the cold preparation.
-    let saved_cost = (
-        saved_total.0 - saved_header.0,
-        saved_total.1 - saved_header.1,
-    );
-    drop(saved);
-    let total = (cold_total.0 + saved_cost.0, cold_total.1 + saved_cost.1);
+    let total = warm.finish()?;
+    assert!(total.0 < cold_total.0 && total.1 < cold_total.1);
+    drop(warm);
     assert!(total.0 > bytes && total.1 > records);
     let exact =
         ResourceReadMaterial::with_test_limits(&fixture.budget, &fixture.scope, total.0, total.1)?;
@@ -234,6 +229,28 @@ async fn preparation_request_sql_clone_rejects_before_sidecar_commit() -> Result
     }
     assert_eq!(exact.finish()?, total);
     drop(exact);
+    for (byte_limit, record_limit) in [(total.0 - 1, total.1), (total.0, total.1 - 1)] {
+        let short = ResourceReadMaterial::with_test_limits(
+            &fixture.budget,
+            &fixture.scope,
+            byte_limit,
+            record_limit,
+        )?;
+        {
+            let _active = short.enter();
+            let error = fixture
+                .prepare(&reservation, &original, &request)
+                .err()
+                .context("insufficient warm material must reject preparation")?;
+            assert_eq!(
+                crate::runtime_error::describe_runtime_error(&error).code,
+                "context_resource_exhausted",
+                "{error:#}"
+            );
+        }
+        assert!(short.finish().is_err());
+        assert_eq!(fixture.owner.capture()?.unwrap().token, original.token);
+    }
     drop(reservation);
     // A Message alone is history, not a pending queue input. Seed a fresh
     // owner before its first preparation so qualification covers the queue.
@@ -269,7 +286,11 @@ async fn preparation_request_sql_clone_rejects_before_sidecar_commit() -> Result
             Err(error) => error,
             Ok(_) => anyhow::bail!("pending key bypassed its insertion gate"),
         };
-        assert!(error.to_string().contains("ResourceExhausted"), "{error:#}");
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).code,
+            "context_resource_exhausted",
+            "{error:#}"
+        );
     }
     assert!(key_pressure.finish().is_err());
     assert_eq!(fixture.owner.capture()?.unwrap().token, original.token);
@@ -543,5 +564,100 @@ async fn malformed_pending_provider_recovery_survives_restart_without_hydration_
     assert!(inputs
         .lookup(&Key::new(Family::Turn, "untrusted-source-turn"))
         .is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn qualified_preparation_reads_while_the_writer_is_occupied() -> Result<()> {
+    use std::{sync::mpsc, time::Duration};
+    let fixture = Fixture::new().await?;
+    let reservation = fixture.owner.reserve().await?;
+    let original = fixture.owner.capture()?.unwrap();
+    let mut request = fixture.request();
+    request.query = Some(crate::runtime::resident_input_evidence::InputQueryRead {
+        selection: Default::default(),
+        ledger: fixture.budget.clone(),
+    });
+    // Populate qualification, but retain the original unpublished domain cut.
+    let initial = fixture.prepare(&reservation, &original, &request)?;
+    assert!(matches!(initial, InputPreparation::Prepared(_)));
+    drop(initial);
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    std::thread::scope(|threads| -> Result<()> {
+        let db = fixture.db.clone();
+        let writer = threads.spawn(move || {
+            db.transaction(|_| {
+                entered_tx.send(())?;
+                release_rx.recv_timeout(Duration::from_secs(5))?;
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5))?;
+        let (read_tx, read_rx) = mpsc::channel();
+        let fixture_ref = &fixture;
+        let reservation_ref = &reservation;
+        let original_ref = &original;
+        let request_ref = &request;
+        let reader = threads.spawn(move || {
+            let result = fixture_ref.prepare(reservation_ref, original_ref, request_ref);
+            read_tx.send(()).unwrap();
+            result
+        });
+        let completed_before_writer = read_rx.recv_timeout(Duration::from_secs(3)).is_ok();
+        release_tx.send(())?;
+        writer.join().expect("writer panicked")?;
+        let prepared = match reader.join().expect("reader panicked")? {
+            InputPreparation::Prepared(prepared) => prepared,
+            InputPreparation::AlreadyPrepared => {
+                anyhow::bail!("original root has no prepared domains")
+            }
+        };
+        assert!(
+            completed_before_writer,
+            "qualified reconstruction must not wait for writer admission"
+        );
+        assert_eq!(prepared.state.as_ref(), original.state.as_ref());
+        assert_eq!(prepared.original_token, original.token);
+        assert!(fixture.owner.capture()?.unwrap().input_evidence.is_none());
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn expired_preparation_read_does_not_initialize_qualification() -> Result<()> {
+    use std::time::Instant;
+    let fixture = Fixture::new().await?;
+    let reservation = fixture.owner.reserve().await?;
+    let original = fixture.owner.capture()?.unwrap();
+    let rows = || {
+        fixture.db.read_for_preparation(|tx| {
+            Ok(tx.query_row(
+                "SELECT (SELECT COUNT(*) FROM scheduling_domain_current WHERE agent_id=?1),
+                    (SELECT COUNT(*) FROM input_query_birth_cursors WHERE agent_id=?1)",
+                [&fixture.scope.agent_id],
+                |row| Ok((row.get::<_, usize>(0)?, row.get::<_, usize>(1)?)),
+            )?)
+        })
+    };
+    let before = rows()?;
+    let scoped = fixture
+        .db
+        .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(Instant::now()));
+    let error = prepare_reserved_input_domains(
+        &scoped,
+        &reservation,
+        &original,
+        InputPreparationCause::ValidatedRecovery,
+        &fixture.request(),
+        12,
+        &fixture.budget,
+    )
+    .err()
+    .context("expired read must propagate before initialization")?;
+    assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
+    assert_eq!(rows()?, before);
+    assert_eq!(fixture.owner.capture()?.unwrap().token, original.token);
     Ok(())
 }

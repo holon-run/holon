@@ -109,7 +109,9 @@ pub use crate::runtime_db::index_outbox::{
 pub use crate::runtime_db::observer_sync::{
     AgentEventRecoveryWindow, AgentRosterLatestBriefRow, AgentRosterRow, AgentRosterSnapshotRows,
 };
-pub(crate) use crate::runtime_db::persistence::retryable_state_transition_conflict;
+pub(crate) use crate::runtime_db::persistence::{
+    original_input_attempt_certainty, retryable_state_transition_conflict,
+};
 pub use crate::runtime_db::persistence::{
     persistence_certainty, PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
 };
@@ -426,6 +428,7 @@ pub struct RuntimeDb {
     lock_path: PathBuf,
     // Readers close before the append sender; physical readers also retain state.
     readers: reader_pool::RuntimeDbReaderPool,
+    preparation_readers: reader_pool::RuntimeDbReaderPool,
     writer: RuntimeDbWriter,
     /// Unix millis of the last observer-sync read-side self-heal attempt.
     /// Throttles the heal so a failing capability gate does not re-run the
@@ -472,6 +475,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), open_connection(&path)?)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             lock_path: lock_path.into(),
@@ -505,6 +511,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -548,6 +557,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -603,6 +615,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -658,6 +673,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -685,7 +703,8 @@ impl RuntimeDb {
     /// unchanged; Rust closures must cooperate outside SQLite execution.
     pub fn with_read_scope(&self, scope: RuntimeDbReadScope) -> Self {
         let mut db = self.clone();
-        db.readers = db.readers.with_scope(scope);
+        db.readers = db.readers.with_scope(scope.clone());
+        db.preparation_readers = db.preparation_readers.with_scope(scope);
         db
     }
 
@@ -755,6 +774,11 @@ impl RuntimeDb {
             capacity,
             budget,
         );
+        self.preparation_readers = reader_pool::RuntimeDbReaderPool::with_config(
+            std::sync::Arc::clone(&self.writer.state),
+            reader_pool::PREPARATION_CAPACITY,
+            budget,
+        );
         Ok(())
     }
 
@@ -764,19 +788,35 @@ impl RuntimeDb {
     }
 
     #[cfg(test)]
+    pub(crate) fn preparation_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+        self.preparation_readers.stats()
+    }
+
+    #[cfg(test)]
     pub(crate) fn reader_pool_writer_weak_for_tests(
         &self,
     ) -> std::sync::Weak<write_queue::RuntimeDbWriterState> {
         self.readers.writer_weak()
     }
 
-    /// Short canonical preparation only. The callback must not write, control
-    /// transactions, reenter this writer, or retain the connection across await.
+    /// Canonical preparation has reserved bounded query-only reader capacity.
+    /// Ordinary query saturation must not fail cold runtime construction.
+    /// Callbacks must not write, nest checkouts, or retain a lease across await.
+    #[track_caller]
     pub(crate) fn read_for_preparation<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.writer.read_deferred(f)
+        let origin = read_block::ReadOrigin::from_location(std::panic::Location::caller());
+        blocking::at_blocking_boundary(|| {
+            self.preparation_readers.with_read_at(origin, |connection| {
+                let tx = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                Ok(value)
+            })
+        })
     }
 
     pub fn record_provider_quota_failure(
@@ -1083,7 +1123,7 @@ impl RuntimeDb {
         self.writer.append_wait(f)
     }
 
-    fn transaction_with_context<T>(
+    pub(crate) fn transaction_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
@@ -1096,6 +1136,16 @@ impl RuntimeDb {
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.writer.append_wait_once(f)
+    }
+
+    pub(crate) fn recovery_transaction_once<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_once_with_context(
+            RuntimeDbWriteContext::sync("runtime_db.input_recovery", "input_mutation_receipts"),
+            f,
+        )
     }
 
     /// Enqueue a background transaction. Success means queue acceptance, not commit.

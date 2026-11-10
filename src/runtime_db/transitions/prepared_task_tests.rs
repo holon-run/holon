@@ -185,7 +185,7 @@ fn task_child_whole_receipt_returns_exact_ack_and_replay_keeps_later_identity() 
         .audit_events
         .is_empty());
     attempt.finish_original_attempt();
-    with_fresh_input_mutation_resolution(&mut f.db.connection()?, &attempt, |_, resolution| {
+    with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
         assert!(
             matches!(resolution, InputMutationResolution::Present(ref actual) if actual == &receipt)
         );
@@ -253,7 +253,7 @@ fn task_child_fault_rolls_back_parent_queue_work_child_job_audit_and_receipt() -
         f.db.agent_identities().latest(&child.agent_id)?,
         Some(child)
     );
-    with_fresh_input_mutation_resolution(&mut f.db.connection()?, &attempt, |_, resolution| {
+    with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
         assert!(matches!(resolution, InputMutationResolution::Absent));
         Ok(())
     })?;

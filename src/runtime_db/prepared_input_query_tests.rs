@@ -293,3 +293,48 @@ fn original_query_publication_receipt_fault_rolls_back_and_preserves_prepared_ba
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
+
+#[test]
+fn prepared_birth_query_loads_on_a_query_only_reader_without_initializing_missing_metadata(
+) -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let (_original, request) = prepared_query(&f, &ledger)?;
+    let read = f.db.read_for_preparation(|tx| {
+        crate::runtime_db::input_evidence_snapshot::load_input_evidence_snapshot_tx(
+            tx, &f.scope, &request,
+        )
+    })?;
+    let InputEvidenceBootstrapSnapshot::Current(read) = read else {
+        anyhow::bail!("expected qualified current input")
+    };
+    assert_eq!(read.resident.query_coverage()?.birth_cursor, 0);
+    f.db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM input_query_birth_cursors WHERE agent_id=?1 AND identity_incarnation=?2",
+            rusqlite::params![f.scope.agent_id, f.scope.identity_incarnation],
+        )?;
+        Ok(())
+    })?;
+    let error =
+        f.db.read_for_preparation(|tx| {
+            crate::runtime_db::input_evidence_snapshot::load_input_evidence_snapshot_tx(
+                tx, &f.scope, &request,
+            )
+        })
+        .err()
+        .context("pure query load must refuse missing birth metadata")?;
+    assert!(matches!(
+        error.downcast_ref::<crate::runtime::resident_input_evidence::InputQueryError>(),
+        Some(crate::runtime::resident_input_evidence::InputQueryError::NeedsPreparation)
+    ));
+    let remaining: usize = f.db.read_for_preparation(|tx| {
+        Ok(tx.query_row(
+            "SELECT COUNT(*) FROM input_query_birth_cursors WHERE agent_id=?1",
+            [&f.scope.agent_id],
+            |r| r.get(0),
+        )?)
+    })?;
+    assert_eq!(remaining, 0);
+    Ok(())
+}

@@ -98,13 +98,12 @@ impl super::super::RuntimeDb {
                     .contains(&source.address().scope),
             "child terminal recovery lacks original Task scope"
         );
-        let mut connection = self.connection()?;
         let material = std::cell::RefCell::new(
             super::super::task_status_metadata::PhaseMaterial::new(request),
         );
         let guards = std::cell::RefCell::new(Vec::new());
         with_fresh_input_mutation_preparation_and_preflight(
-            &mut connection,
+            self,
             attempt,
             |tx| {
                 let mut phase = material.borrow_mut();
