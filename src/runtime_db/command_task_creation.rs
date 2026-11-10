@@ -14,12 +14,10 @@ pub(super) const SCHEMA: &str = include_str!("command_task_creation/schema.sql")
 pub(in crate::runtime_db) fn has_result_source_column(
     connection: &rusqlite::Connection,
 ) -> Result<bool> {
-    Ok(connection.query_row(
-        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('task_result_settlements')
-         WHERE name='command_creation_id')",
-        [],
-        |r| r.get(0),
-    )?)
+    // Pooled readers deny table-valued PRAGMAs. Preparing a zero-row SELECT
+    // exposes the columns on both reader and writer connections.
+    let statement = connection.prepare("SELECT * FROM main.task_result_settlements LIMIT 0")?;
+    Ok(statement.column_names().contains(&"command_creation_id"))
 }
 
 #[derive(Debug, serde::Serialize)]

@@ -10,6 +10,75 @@ use crate::{
 };
 
 #[tokio::test]
+async fn get_agent_reads_unloaded_peer_with_task_result_settlement() -> Result<()> {
+    let (_home, host) = canonical_test_host();
+    let caller = host.default_runtime().await?;
+    let agent_id = "summary-peer";
+    host.create_named_agent(agent_id, None).await?;
+    let target = host.get_or_create_agent(agent_id).await?;
+    let pause = target.pause_run_loop_for_monitor_test().await;
+    let task = target
+        .schedule_command_task(
+            "Produce a task result".into(),
+            crate::types::CommandTaskSpec {
+                cmd: "printf summary-result".into(),
+                workdir: None,
+                shell: Some("sh".into()),
+                login: false,
+                tty: false,
+                yield_time_ms: 100,
+                max_output_tokens: None,
+                accepts_input: false,
+                terminal_reentry: true,
+            },
+            AuthorityClass::RuntimeInstruction,
+        )
+        .await?;
+    let task = wait_for_terminal_task(&target, &task.id).await;
+    assert_eq!(task.status, TaskStatus::Completed);
+    let message_id = task
+        .parent_message_id
+        .as_deref()
+        .context("task result message")?;
+    let settlements = host.runtime_db().task_result_settlements();
+    host.drain_runtime_incarnation(agent_id, None).await?;
+    drop(pause);
+    assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+    let settlement = settlements
+        .latest_for_message(message_id)?
+        .context("task result settlement")?;
+    let storage = host.agent_storage_read_only(agent_id)?;
+    let queue = storage.latest_queue_entries()?;
+
+    let call = crate::tool::ToolCall {
+        id: "get-cold-peer".into(),
+        name: "GetAgent".into(),
+        input: json!({"agent_id": agent_id, "detail": "full"}),
+    };
+    let registry = crate::tool::ToolRegistry::new(caller.workspace_root());
+    let (result, _) = registry
+        .execute(
+            &caller,
+            caller.instance_agent_id(),
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        )
+        .await?;
+    assert_eq!(
+        result.envelope.result.context("target summary")?["agent"]["identity"]["agent_id"],
+        agent_id
+    );
+    assert!(host.try_get_loaded_runtime(agent_id).await.is_none());
+    assert_eq!(storage.latest_queue_entries()?, queue);
+    assert_eq!(
+        settlements.latest_for_message(message_id)?,
+        Some(settlement)
+    );
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn cold_summary_skills_uses_captured_state_without_state_sql_and_latches_allowance(
 ) -> Result<()> {
     let (_home, host) = test_host();
