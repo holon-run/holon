@@ -35,6 +35,10 @@ error. `TaskStatus` uses the same one-second budget when its child observation
 hits a transient publication. Each retry rechecks the target incarnation.
 Protection failures and unknown write outcomes are not retried. HTTP observers
 continue to return unavailable immediately.
+The operator State GET returns `503 agent_reconciliation_pending` with
+`retryable=true` when a required Agent publication is fenced by reconciliation.
+After a fresh cache entry expires, State returns the current build failure.
+Retrying the read carries no authority to repeat the original mutation.
 Default `GetAgent` cleanup inspection uses the runtime's fixed scoped identity,
 not a mutable State read merely to retrieve its ID.
 Daemon identity/authentication probes use readiness metadata, keeping agent

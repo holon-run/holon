@@ -20,13 +20,9 @@ impl ColdObserverCut {
             .inner
             .mutation_owners
             .current_owner(&identity.agent_id, identity.incarnation)?;
-        let (token, root) = owner.capture_with_token().map_err(|error| {
-            crate::runtime_db::RuntimeDbRetryableError::new(
-                "cold observer publication",
-                db.path(),
-                error,
-            )
-        })?;
+        let (token, root) = owner
+            .capture_with_token()
+            .map_err(|error| error.into_observer_busy("cold observer publication", db))?;
         Ok(Self {
             owner,
             token,
@@ -48,13 +44,10 @@ impl ColdObserverCut {
     }
     pub(super) fn check(&self) -> Result<()> {
         self.db.check_read_scope()?;
-        let (token, current) = self.owner.capture_with_token().map_err(|error| {
-            crate::runtime_db::RuntimeDbRetryableError::new(
-                "cold observer publication",
-                self.db.path(),
-                error,
-            )
-        })?;
+        let (token, current) = self
+            .owner
+            .capture_with_token()
+            .map_err(|error| error.into_observer_busy("cold observer publication", &self.db))?;
         let same = match (&self.root, &current) {
             (None, None) => true,
             (Some(prior), Some(current)) => Arc::ptr_eq(prior, current),

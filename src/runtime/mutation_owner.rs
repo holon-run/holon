@@ -204,6 +204,17 @@ pub(crate) enum MutationOwnerError {
     TicketMismatch,
 }
 
+impl MutationOwnerError {
+    pub(crate) fn into_observer_busy(
+        self,
+        operation: &'static str,
+        db: &crate::runtime_db::RuntimeDb,
+    ) -> anyhow::Error {
+        let busy = crate::runtime_db::RuntimeDbRetryableError::new(operation, db.path(), &self);
+        anyhow::Error::new(self).context(busy)
+    }
+}
+
 #[derive(Debug, Default)]
 struct Publication {
     epoch: u64,

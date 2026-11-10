@@ -383,13 +383,16 @@ impl<'a> LeaderGuard<'a> {
                     diagnostics::record_projection_gate_stale_expired_by(
                         (before - state.stale.len()) as u64,
                     );
-                    state.stale.insert(
-                        self.key.clone(),
-                        StaleEntry {
-                            bytes: bytes.clone(),
-                            built_at,
-                        },
-                    );
+                    // The State route returns the typed failure on an unavailable cut.
+                    if !matches!(self.key, ProjectionKey::AgentState(_)) {
+                        state.stale.insert(
+                            self.key.clone(),
+                            StaleEntry {
+                                bytes: bytes.clone(),
+                                built_at,
+                            },
+                        );
+                    }
                     state.entries.insert(
                         self.key.clone(),
                         Entry::Ready {

@@ -3586,6 +3586,90 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
+    async fn operator_state_route_reports_pending_reconciliation() {
+        use crate::runtime::mutation_owner::{MutationOwnerError, MutationReservation};
+        use crate::types::{
+            AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+        };
+
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        runtime.await_initial_resources_for_test().await;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        let parent_id = runtime.instance_agent_id();
+        let child = AgentIdentityRecord::new(
+            "cold-state-child",
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent_id.to_owned()),
+            None,
+        );
+        host.append_agent_identity(&child).unwrap();
+        let mut state = AppState::for_tcp(host.clone());
+        // Expire fresh entries immediately while exercising a previously built projection.
+        state.projection_gate = Arc::new(ProjectionGate::new(4, Duration::ZERO));
+        let app = router(state);
+        let get_state = |agent_id: &str| {
+            app.clone().oneshot(
+                Request::builder()
+                    .uri(format!("/api/agents/{agent_id}/state"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        for agent_id in [parent_id, child.agent_id.as_str()] {
+            assert_eq!(
+                get_state(agent_id).await.unwrap().status(),
+                StatusCode::OK,
+                "{agent_id}"
+            );
+        }
+
+        for (agent_id, incarnation, requested_ids) in [
+            (parent_id, runtime.instance_incarnation(), vec![parent_id]),
+            (
+                child.agent_id.as_str(),
+                child.incarnation,
+                vec![child.agent_id.as_str(), parent_id],
+            ),
+        ] {
+            let owner = host
+                .bridge()
+                .mutation_owner_for(agent_id, incarnation)
+                .unwrap();
+            let mut reservation = owner.reserve().await.unwrap();
+            let key = reservation.begin("private-recovery-ticket".into()).unwrap();
+            for requested_id in requested_ids {
+                let response = get_state(requested_id).await.unwrap();
+                let status = response.status();
+                assert!(response.headers().contains_key(header::RETRY_AFTER));
+                let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+                assert_eq!(body["code"], "agent_reconciliation_pending", "{body}");
+                assert_eq!(body["retryable"], true);
+                assert!(!body.to_string().contains("private-recovery-ticket"));
+                assert!(matches!(
+                    owner.capture(),
+                    Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key
+                ));
+            }
+            MutationReservation::definitely_not_committed_all(std::slice::from_mut(
+                &mut reservation,
+            ))
+            .unwrap();
+            drop(reservation);
+            assert_eq!(get_state(parent_id).await.unwrap().status(), StatusCode::OK);
+        }
+        assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
+        drop(run_loop);
+        host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
     async fn operator_state_route_preserves_large_inventory_with_default_material_limits() {
         let (_home, host, runtime) =
             crate::runtime::tests::support::host_backed_test_runtime().await;
