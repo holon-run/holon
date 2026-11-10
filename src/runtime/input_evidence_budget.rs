@@ -109,7 +109,6 @@ pub(crate) enum InputMemoryCategory {
     History,
     Candidate,
     Pins,
-    PreparedPrompt,
 }
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
@@ -1480,14 +1479,13 @@ impl InputEvidenceBudgetLedger {
                 .or_insert_with(|| empty_scope(&entry.scope));
             add_usage(&mut scope.physical_records, entry.bytes)?;
             add_usage(&mut report.physical_records, entry.bytes)?;
-            let mut categories = [false; 5];
+            let mut categories = [false; 4];
             for category in entry.memberships.values() {
                 let index = match category {
                     InputMemoryCategory::Current => 0,
                     InputMemoryCategory::History => 1,
                     InputMemoryCategory::Candidate => 2,
                     InputMemoryCategory::Pins => 3,
-                    InputMemoryCategory::PreparedPrompt => 4,
                 };
                 categories[index] = true;
             }
@@ -1500,7 +1498,6 @@ impl InputEvidenceBudgetLedger {
                 InputMemoryCategory::History,
                 InputMemoryCategory::Candidate,
                 InputMemoryCategory::Pins,
-                InputMemoryCategory::PreparedPrompt,
             ]
             .into_iter()
             .zip(categories)
@@ -1510,7 +1507,7 @@ impl InputEvidenceBudgetLedger {
                     add_usage(report.categories.entry(category).or_default(), entry.bytes)?;
                 }
             }
-            if categories == [false, true, false, false, false] {
+            if categories == [false, true, false, false] {
                 add_usage(&mut scope.reclaimable_history, entry.bytes)?;
                 add_usage(&mut report.reclaimable_history, entry.bytes)?;
             }

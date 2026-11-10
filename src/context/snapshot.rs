@@ -13,7 +13,7 @@ use crate::{
     runtime::provider_recovery::ProviderRecoverySource,
     runtime_db::task_result_settlement::TaskResultSettlementRecord, types::WorkItemPlanArtifact,
 };
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde::Serialize;
 use std::{
     borrow::Cow,
@@ -197,11 +197,6 @@ impl ContextSnapshotSkills {
 
 #[derive(Debug)]
 pub(super) struct ContextSnapshotData {
-    input_budget: Option<(
-        crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
-        crate::runtime::resident_input_evidence::InputEvidenceScope,
-    )>,
-    input_budget_guard: Option<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     pub agent: Arc<AgentState>,
     pub admission_planning: bool,
     pub execution: ExecutionSnapshot,
@@ -232,76 +227,6 @@ pub(super) struct ContextSnapshotData {
 
 pub(super) type RecoveredOperatorInput = ContextHistoryMessage;
 
-impl ContextSnapshotData {
-    fn observe_owned_input_bytes(&mut self) -> Result<()> {
-        use crate::runtime::input_evidence_budget::{
-            serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
-        };
-        let Some((budget, scope)) = &self.input_budget else {
-            return Ok(());
-        };
-        let mut payload_bytes = self.history.input_payload_bytes()?;
-        if let Some(scoped) = &self.scoped_history {
-            payload_bytes = payload_bytes
-                .checked_add(scoped.history.input_payload_bytes()?)
-                .ok_or_else(|| anyhow::anyhow!("owned context input byte count overflow"))?;
-        }
-        let recovery = self.recovery_source.as_ref().map(|source| {
-            (
-                &source.predecessor,
-                &source.predecessors,
-                &source.source_turns,
-                &source.root_message,
-            )
-        });
-        payload_bytes = payload_bytes
-            .checked_add(serialized_bytes(&(
-                &self.current_message,
-                &self.continuation_anchor_messages,
-                recovery,
-                &self.current_turn,
-                &self.current_input_projection,
-                &self.operator_inputs,
-                &self.pending_excluded_messages,
-            ))?)
-            .ok_or_else(|| anyhow::anyhow!("owned context input byte count overflow"))?;
-        let queue = &self.work_queue_projection;
-        let completion_reports = self
-            .completion_reports
-            .iter()
-            .map(|(id, report)| (id, &report.text, &report.brief_id, &report.source_brief))
-            .collect::<Vec<_>>();
-        payload_bytes = payload_bytes
-            .checked_add(serialized_bytes(&(
-                &self.current_work_item,
-                &self.active_wait_conditions,
-                &queue.current,
-                &queue.current_runnable,
-                &queue.triggered_blocked,
-                &queue.queued_runnable,
-                &queue.yielded,
-                &queue.waiting_for_operator,
-                &queue.blocked,
-                &queue.completing,
-                &queue.completed_recent,
-                completion_reports,
-            ))?)
-            .ok_or_else(|| anyhow::anyhow!("owned context Work byte count overflow"))?;
-        // Owned D3/D4 values, including their distinct by-value queue copies.
-        // Task/Trigger/resource and provider/tool temporaries remain separate.
-        let metadata_estimate_bytes = std::mem::size_of::<Self>() as u64;
-        self.input_budget_guard = Some(budget.register_owned_bytes(
-            scope,
-            InputMemoryCategory::PreparedPrompt,
-            OwnedBytesEstimate {
-                payload_bytes,
-                metadata_estimate_bytes,
-            },
-        )?);
-        Ok(())
-    }
-}
-
 #[derive(Debug, Clone, Default)]
 pub(super) struct HistorySnapshot {
     pub turn_records: Vec<ContextHistoryTurn>,
@@ -311,32 +236,7 @@ pub(super) struct HistorySnapshot {
     pub transcript: Vec<ContextHistoryTranscript>,
     pub observations: HistoryObservations,
 }
-impl HistorySnapshot {
-    pub(in crate::context) fn input_payload_bytes(&self) -> Result<u64> {
-        use crate::runtime::input_evidence_budget::serialized_bytes;
-
-        // Keep the original tuple/list delimiters without serializing shared
-        // Message bodies again. Owned legacy Messages keep their exact charge.
-        let message_delimiters = u64::try_from(self.messages.len().saturating_sub(1))?
-            .checked_add(3)
-            .context("context history list byte count overflow")?;
-        let bytes = serialized_bytes(&(
-            &self.turn_records,
-            &self.briefs,
-            &self.tools,
-            &self.transcript,
-            &self.observations,
-        ))?
-        .checked_add(message_delimiters)
-        .context("context history byte count overflow")?;
-        self.messages.iter().try_fold(bytes, |bytes, message| {
-            bytes
-                .checked_add(message.budget_payload_bytes()?)
-                .context("context history Message byte count overflow")
-        })
-    }
-}
-#[derive(Debug, Clone, Default, Serialize)]
+#[derive(Debug, Clone, Default)]
 pub(super) struct HistoryObservations {
     brief_text: BTreeMap<String, ContextHistoryBriefText>,
     valid_trigger_summary: BTreeMap<String, bool>,
@@ -958,9 +858,7 @@ fn acquire_durable_context_inputs(
         }),
         _ => None,
     };
-    let mut data = ContextSnapshotData {
-        input_budget: inputs.input_budget(),
-        input_budget_guard: None,
+    let data = ContextSnapshotData {
         agent,
         admission_planning: admission.is_some(),
         execution: execution.into_owned(),
@@ -988,7 +886,6 @@ fn acquire_durable_context_inputs(
         operator_inputs,
         pending_excluded_messages,
     };
-    data.observe_owned_input_bytes()?;
     Ok(DurableContextInputs {
         data,
         acquisition: report,
@@ -1493,50 +1390,6 @@ mod tests {
     };
 
     #[test]
-    fn history_message_budget_preserves_legacy_json_bytes() -> Result<()> {
-        use crate::runtime::input_evidence_budget::serialized_bytes;
-        use crate::types::{AuthorityClass, MessageBody, MessageKind, MessageOrigin};
-
-        for texts in [
-            Vec::new(),
-            vec![""],
-            vec!["ascii", "汉🦀\n\"\\", "last\tmessage"],
-        ] {
-            let history = HistorySnapshot {
-                messages: texts
-                    .into_iter()
-                    .map(|text| {
-                        ContextHistoryMessage::owned(MessageEnvelope::new(
-                            "default",
-                            MessageKind::OperatorPrompt,
-                            MessageOrigin::Operator {
-                                actor_id: None,
-                                actor_display_name: None,
-                            },
-                            AuthorityClass::OperatorInstruction,
-                            Priority::Normal,
-                            MessageBody::Text { text: text.into() },
-                        ))
-                    })
-                    .collect::<Result<_>>()?,
-                ..Default::default()
-            };
-            assert_eq!(
-                history.input_payload_bytes()?,
-                serialized_bytes(&(
-                    &history.turn_records,
-                    &history.messages,
-                    &history.briefs,
-                    &history.tools,
-                    &history.transcript,
-                    &history.observations,
-                ))?
-            );
-        }
-        Ok(())
-    }
-
-    #[test]
     fn completion_selector_admits_unique_allocations_and_preserves_both_axis_refusals() -> Result<()>
     {
         use crate::{
@@ -1592,11 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn copied_brief_source_is_metered_until_last_snapshot_clone_drops() {
-        use crate::runtime::{
-            input_evidence_budget::{InputEvidenceBudgetLedger, InputMemoryCategory},
-            resident_input_evidence::InputEvidenceScope,
-        };
+    fn copied_brief_source_survives_in_snapshot_clone() {
         let dir = tempfile::tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let agent = AgentState::new("default");
@@ -1648,8 +1497,6 @@ mod tests {
             None,
         )
         .unwrap();
-        let budget =
-            InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default()).unwrap();
         let data = Arc::get_mut(&mut snapshot.data).unwrap();
         let history = Arc::get_mut(&mut data.history).unwrap();
         assert!(history.observations.brief_text[&brief.id]
@@ -1658,37 +1505,17 @@ mod tests {
         // The resolved holder retains its source even when the transcript
         // record is no longer in the selected history.
         history.transcript.clear();
-        data.input_budget = Some((
-            budget.clone(),
-            InputEvidenceScope {
-                agent_id: "default".into(),
-                identity_incarnation: 1,
-            },
-        ));
-        data.observe_owned_input_bytes().unwrap();
-        let usage = budget.report().unwrap();
-        assert!(usage.owned.payload_bytes >= source_text.len() as u64);
-        assert_eq!(
-            usage.categories[&InputMemoryCategory::PreparedPrompt].allocations,
-            1
-        );
         let clone = snapshot.clone();
         assert!(Arc::ptr_eq(&snapshot.data, &clone.data));
         drop((snapshot, storage));
         assert_eq!(
-            budget.report().unwrap().owned.payload_bytes,
-            usage.owned.payload_bytes
+            clone.data.history.observations.brief_text[&brief.id].as_str(),
+            source_text
         );
-        drop(clone);
-        assert_eq!(budget.report().unwrap().observed_bytes, 0);
     }
 
     #[test]
-    fn copied_work_payload_is_metered_until_the_snapshot_releases_it() {
-        use crate::runtime::{
-            input_evidence_budget::InputEvidenceBudgetLedger,
-            resident_input_evidence::InputEvidenceScope,
-        };
+    fn captured_work_payload_survives_after_storage_drops() {
         let dir = tempfile::tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let objective = "resident-work-body".repeat(8192);
@@ -1712,7 +1539,7 @@ mod tests {
         );
         let config = ContextConfig::default();
         let execution = super::super::tests::execution_snapshot_for(&agent);
-        let mut snapshot = capture_context_from_storage(
+        let snapshot = capture_context_from_storage(
             &storage,
             &agent,
             &execution,
@@ -1724,24 +1551,11 @@ mod tests {
             None,
         )
         .unwrap();
-        let budget =
-            InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default()).unwrap();
-        let data = Arc::get_mut(&mut snapshot.data).unwrap();
+        drop(storage);
         assert_eq!(
-            data.current_work_item.as_ref().unwrap().objective,
+            snapshot.data.current_work_item.as_ref().unwrap().objective,
             objective
         );
-        data.input_budget = Some((
-            budget.clone(),
-            InputEvidenceScope {
-                agent_id: "default".into(),
-                identity_incarnation: 1,
-            },
-        ));
-        data.observe_owned_input_bytes().unwrap();
-        assert!(budget.report().unwrap().owned.payload_bytes >= objective.len() as u64);
-        drop((storage, snapshot));
-        assert_eq!(budget.report().unwrap().observed_bytes, 0);
     }
 
     #[test]

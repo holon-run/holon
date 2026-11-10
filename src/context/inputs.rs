@@ -2257,10 +2257,7 @@ mod resident_tests {
         };
         let source = message(&format!("{}\n\"汉🦀\\\\", "history-message".repeat(32_768)));
         let id = source.id.clone();
-        let mut record = evidence(PreparedInputEvidence::Message(source));
-        let resident_bytes = serde_json::to_vec(&record.record)?.len()
-            + serde_json::to_vec(&record.attempt_turn_keys)?.len();
-        Arc::get_mut(&mut record).unwrap().resident_bytes = resident_bytes;
+        let record = evidence(PreparedInputEvidence::Message(source));
         let mut resident = captured(vec![record.clone()]);
         let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
         let origin = ResourceReadMaterial::new(&ledger, &scope())?;
@@ -2308,26 +2305,6 @@ mod resident_tests {
             unreachable!()
         };
         assert!(std::ptr::eq::<MessageEnvelope>(&*selected, original));
-        assert_eq!(selected.budget_payload_bytes()?, resident_bytes as u64);
-        let history = super::super::snapshot::HistorySnapshot {
-            messages: vec![selected.clone()],
-            ..Default::default()
-        };
-        let encoded = serde_json::to_vec(&(
-            &history.turn_records,
-            &history.messages,
-            &history.briefs,
-            &history.tools,
-            &history.transcript,
-            &history.observations,
-        ))?;
-        assert!(history.input_payload_bytes()? >= encoded.len() as u64);
-        assert_eq!(
-            history.input_payload_bytes()? - encoded.len() as u64,
-            resident_bytes as u64
-                - crate::runtime::input_evidence_budget::serialized_bytes(original)?
-        );
-        drop(history);
         let owning = ResourceReadMaterial::with_test_limits(&ledger, &scope(), bytes, records)?;
         {
             let _active = owning.enter();

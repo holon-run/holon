@@ -226,7 +226,6 @@ fn shared_allocations_are_physical_once_categories_overlap_and_pins_prevent_recl
         InputMemoryCategory::History,
         InputMemoryCategory::Candidate,
         InputMemoryCategory::Pins,
-        InputMemoryCategory::PreparedPrompt,
     ];
     for mask in 0..(1 << categories.len()) {
         let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
@@ -478,13 +477,13 @@ fn host_history_observation_deduplicates_shared_views_and_remains_separate_from_
     );
 }
 #[test]
-fn prompt_owned_allocation_guard_is_shared_and_reports_payload_metadata_coverage() {
+fn owned_allocation_guard_is_shared_and_reports_payload_metadata_coverage() {
     let ledger = InputEvidenceBudgetLedger::new(limits()).unwrap();
     let scope = scope("a", 1);
     let guard = ledger
         .register_owned_bytes(
             &scope,
-            InputMemoryCategory::PreparedPrompt,
+            InputMemoryCategory::Candidate,
             OwnedBytesEstimate {
                 payload_bytes: 100,
                 metadata_estimate_bytes: 20,
@@ -497,7 +496,7 @@ fn prompt_owned_allocation_guard_is_shared_and_reports_payload_metadata_coverage
     assert_eq!(report.owned.metadata_estimate_bytes, 20);
     assert_eq!(report.observed_bytes, 120);
     assert_eq!(
-        report.categories[&InputMemoryCategory::PreparedPrompt].allocations,
+        report.categories[&InputMemoryCategory::Candidate].allocations,
         1
     );
     drop(guard);

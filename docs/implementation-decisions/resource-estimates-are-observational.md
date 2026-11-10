@@ -41,3 +41,8 @@ implicit scans does not retain
 dead allocation identities indefinitely. This cleanup quantum is a traversal
 choice, never a capacity or admission limit. Reporting cost must not gate runtime
 or control-plane availability.
+
+Context snapshot assembly skips the aggregate encoded-size estimate of the
+assembled inputs. The snapshot retains its selected record holders and
+resource acquisition guards. Source validation, actual read failures, and
+explicit test faults still run at their existing boundaries.
