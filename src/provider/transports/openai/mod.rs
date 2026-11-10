@@ -1083,16 +1083,8 @@ impl AgentProvider for OpenAiCodexProvider {
                     if let Some(refreshed) =
                         self.refresh_after_auth_failure(&credential).await.map_err(|refresh_error| {
                             invalidate_openai_continuation(&self.continuation, plan.scope.as_ref());
-                            openai_codex_auth_error(
-                                "credential_refresh_after_auth_failure",
-                                &model_ref,
-                                vec![
-                                    error.to_string(),
-                                    refresh_error.to_string(),
-                                    "OpenAI Codex returned an auth error; Holon attempted to refresh the Holon-managed profile before retrying.".into(),
-                                ],
-                                "OpenAI Codex authentication failed and Holon-managed OAuth refresh did not recover it.",
-                            )
+                            openai_codex_credential_resolution_error(refresh_error, &model_ref, false)
+                                .context("OpenAI Codex authentication failed and Holon-managed OAuth refresh did not recover it")
                         })?
                     {
                         credential = refreshed;
@@ -1246,16 +1238,8 @@ impl AgentProvider for OpenAiCodexProvider {
             Err(error) => {
                 if is_openai_codex_auth_status_error(&error) {
                     if let Some(refreshed) = self.refresh_after_auth_failure(&credential).await.map_err(|refresh_error| {
-                        openai_codex_auth_error(
-                            "credential_refresh_after_auth_failure",
-                            &model_ref,
-                            vec![
-                                error.to_string(),
-                                refresh_error.to_string(),
-                                "OpenAI Codex returned an auth error for image generation; Holon attempted to refresh the Holon-managed profile before retrying.".into(),
-                            ],
-                            "OpenAI Codex image generation authentication failed and Holon-managed OAuth refresh did not recover it.",
-                        )
+                        openai_codex_credential_resolution_error(refresh_error, &model_ref, true)
+                            .context("OpenAI Codex image generation authentication failed and Holon-managed OAuth refresh did not recover it")
                     })? {
                         credential = refreshed;
                         headers = openai_codex_headers(&credential, &self.originator);

@@ -299,11 +299,21 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
             );
             insert_optional_context(&mut safe_context, "stage", Some(&diagnostics.stage));
         }
+        if let Some(attempt) =
+            provider_attempt_timeline(error).and_then(|timeline| timeline.attempts.last())
+        {
+            safe_context
+                .entry("provider".into())
+                .or_insert_with(|| sanitize_runtime_error_text(&attempt.provider));
+            safe_context
+                .entry("model_ref".into())
+                .or_insert_with(|| sanitize_runtime_error_text(&attempt.model_ref));
+        }
         return RuntimeErrorDescriptor {
             domain: RuntimeErrorDomain::Provider,
             code: code.to_string(),
             retryable,
-            operator_message: format!("provider request failed: {kind}"),
+            operator_message: provider_operator_message(kind, diagnostics, &safe_context),
             recovery_hint: provider_recovery_hint(kind),
             safe_context,
             source_chain: merge_source_chains(provider_chain, source_chain),
@@ -516,7 +526,11 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
             domain: RuntimeErrorDomain::Provider,
             code: kind.to_string(),
             retryable,
-            operator_message: format!("provider request failed: {kind}"),
+            operator_message: provider_operator_message(
+                kind,
+                attempt.transport_diagnostics.as_ref(),
+                &safe_context,
+            ),
             recovery_hint: provider_recovery_hint(kind),
             safe_context,
             source_chain: merge_source_chains(provider_chain, source_chain),
@@ -675,9 +689,31 @@ fn merge_source_chains(primary: Vec<String>, secondary: Vec<String>) -> Vec<Stri
         .collect()
 }
 
+fn provider_operator_message(
+    kind: &str,
+    diagnostics: Option<&crate::provider::ProviderTransportDiagnostics>,
+    context: &BTreeMap<String, String>,
+) -> String {
+    let Some(diagnostics) = diagnostics.filter(|diagnostics| diagnostics.stage == "oauth_refresh")
+    else {
+        return format!("provider request failed: {kind}");
+    };
+    let provider = context
+        .get("model_ref")
+        .or_else(|| context.get("provider"))
+        .map(String::as_str)
+        .unwrap_or("unknown");
+    let reason = diagnostics
+        .source_chain
+        .first()
+        .map(|message| sanitize_runtime_error_text(message))
+        .unwrap_or_else(|| "OAuth refresh failed (refresh_failed)".into());
+    format!("provider request failed for {provider}: {kind}: {reason}")
+}
+
 fn provider_recovery_hint(kind: &str) -> Option<String> {
     match kind {
-        "auth_error" => Some("check provider authentication and credentials".into()),
+        "auth_error" => Some("check provider authentication and credentials; sign in again if OAuth credentials were rejected".into()),
         "rate_limited" => Some("retry after the provider rate limit resets".into()),
         "timeout" | "connection" | "server_error" => Some("retry the provider request".into()),
         _ => None,
@@ -804,6 +840,68 @@ fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)
 mod tests {
     use super::*;
     use crate::runtime_db::PersistenceFailurePhase;
+
+    #[test]
+    fn oauth_refresh_brief_preserves_safe_reason_and_active_model_with_or_without_source() {
+        use crate::provider::{
+            provider_transport_error_with_code, provider_turn_error, ProviderFailureClassification,
+            ProviderFailureKind, ProviderTransportDiagnostics, RetryDisposition,
+        };
+
+        let diagnostics: ProviderTransportDiagnostics = serde_json::from_value(serde_json::json!({
+            "stage": "oauth_refresh",
+            "provider": "xai",
+            "status": 400,
+            "source_chain": ["OAuth refresh rejected with HTTP 400 (refresh_failed)"]
+        }))
+        .unwrap();
+        let timeline: crate::provider::ProviderAttemptTimeline =
+            serde_json::from_value(serde_json::json!({
+                "requested_model_ref": "openai@default/requested",
+                "attempts": [{
+                    "provider": "xai",
+                    "model_ref": "xai@default/grok-test",
+                    "attempt": 1,
+                    "max_attempts": 3,
+                    "failure_kind": "auth_error",
+                    "disposition": "fail_fast",
+                    "outcome": "fail_fast_aborted",
+                    "advanced_to_fallback": false,
+                    "transport_diagnostics": diagnostics
+                }]
+            }))
+            .unwrap();
+        for with_source in [true, false] {
+            let source = if with_source {
+                provider_transport_error_with_code(
+                    ProviderFailureClassification {
+                        kind: ProviderFailureKind::AuthError,
+                        disposition: RetryDisposition::FailFast,
+                    },
+                    None,
+                    Some(400),
+                    Some(diagnostics.clone()),
+                    "OAuth refresh failed: private-upstream-payload",
+                )
+            } else {
+                AnyhowError::msg("provider source no longer available")
+            };
+            let error = provider_turn_error("provider turn failed", timeline.clone(), source);
+            let descriptor = describe_runtime_error(&error);
+            assert_eq!(descriptor.domain, RuntimeErrorDomain::Provider);
+            assert_eq!(descriptor.code, "auth_error");
+            assert!(!descriptor.retryable);
+            assert!(descriptor
+                .operator_message
+                .contains("xai@default/grok-test"));
+            assert!(descriptor.operator_message.contains("refresh_failed"));
+            assert!(descriptor.operator_message.contains("HTTP 400"));
+            assert!(!descriptor
+                .operator_message
+                .contains("private-upstream-payload"));
+            assert!(descriptor.recovery_hint.unwrap().contains("sign in again"));
+        }
+    }
 
     #[test]
     fn context_resource_recovery_retries_conflicts_but_not_identity_or_closed_scopes() {

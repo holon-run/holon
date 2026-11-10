@@ -55,6 +55,7 @@ pub async fn refresh_oauth_profile_material(
     let mut auth: AuthDotJson =
         serde_json::from_str(material).map_err(|error| CodexOAuthRefreshFailure {
             kind: CodexOAuthRefreshFailureKind::Other,
+            status: None,
             message: format!("failed to parse Holon credential profile {profile}: {error}"),
         })?;
     let refresh_token = auth
@@ -64,18 +65,21 @@ pub async fn refresh_oauth_profile_material(
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| CodexOAuthRefreshFailure {
             kind: CodexOAuthRefreshFailureKind::Other,
+            status: None,
             message: format!("Holon credential profile {profile} does not contain a refresh token"),
         })?;
     let discovery =
         discover_oauth_endpoints(config)
             .await
             .map_err(|error| CodexOAuthRefreshFailure {
-                kind: CodexOAuthRefreshFailureKind::Other,
+                kind: CodexOAuthRefreshFailureKind::Discovery,
+                status: None,
                 message: error.to_string(),
             })?;
     let response = oauth_http_client()
         .map_err(|error| CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::Transport,
+            status: None,
             message: error.to_string(),
         })?
         .post(discovery.token_endpoint)
@@ -87,7 +91,8 @@ pub async fn refresh_oauth_profile_material(
         .send()
         .await
         .map_err(|error| CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::Transport,
+            status: None,
             message: format!(
                 "failed to refresh {} OAuth token: {error}",
                 config.provider_id
@@ -97,7 +102,8 @@ pub async fn refresh_oauth_profile_material(
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();
         return Err(CodexOAuthRefreshFailure {
-            kind: classify_refresh_failure_kind(&body),
+            kind: classify_refresh_failure_kind(status, &body),
+            status: Some(status.as_u16()),
             message: format!(
                 "{} OAuth refresh failed with HTTP {status}: {}",
                 config.provider_id,
@@ -109,7 +115,8 @@ pub async fn refresh_oauth_profile_material(
         .json::<StandardTokenResponse>()
         .await
         .map_err(|error| CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+            status: Some(status.as_u16()),
             message: format!(
                 "failed to parse {} OAuth refresh response: {error}",
                 config.provider_id
@@ -118,13 +125,15 @@ pub async fn refresh_oauth_profile_material(
     apply_standard_token_response(&mut auth, refreshed);
     let material = serde_json::to_string(&auth).map_err(|error| CodexOAuthRefreshFailure {
         kind: CodexOAuthRefreshFailureKind::Other,
+        status: None,
         message: format!(
             "failed to serialize refreshed Holon credential profile {profile}: {error}"
         ),
     })?;
     let credential = load_oauth_profile_credential(&material, profile).map_err(|error| {
         CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+            status: None,
             message: error.to_string(),
         }
     })?;
@@ -259,6 +268,10 @@ pub enum CodexOAuthRefreshFailureKind {
     Expired,
     Reused,
     Revoked,
+    Rejected,
+    Discovery,
+    Transport,
+    InvalidResponse,
     Other,
 }
 
@@ -268,7 +281,11 @@ impl CodexOAuthRefreshFailureKind {
             Self::Expired => "refresh_token_expired",
             Self::Reused => "refresh_token_reused",
             Self::Revoked => "refresh_token_revoked",
-            Self::Other => "refresh_failed",
+            Self::Rejected
+            | Self::Discovery
+            | Self::Transport
+            | Self::InvalidResponse
+            | Self::Other => "refresh_failed",
         }
     }
 }
@@ -276,7 +293,42 @@ impl CodexOAuthRefreshFailureKind {
 #[derive(Debug, Clone)]
 pub struct CodexOAuthRefreshFailure {
     pub kind: CodexOAuthRefreshFailureKind,
+    pub status: Option<u16>,
     pub message: String,
+}
+
+impl CodexOAuthRefreshFailure {
+    pub fn credentials_rejected(&self) -> bool {
+        matches!(
+            self.kind,
+            CodexOAuthRefreshFailureKind::Expired
+                | CodexOAuthRefreshFailureKind::Reused
+                | CodexOAuthRefreshFailureKind::Revoked
+                | CodexOAuthRefreshFailureKind::Rejected
+        )
+    }
+
+    /// Only controlled labels belong in operator briefs, never upstream text.
+    pub fn safe_summary(&self) -> String {
+        let reason = match self.kind {
+            CodexOAuthRefreshFailureKind::Expired => "refresh token expired",
+            CodexOAuthRefreshFailureKind::Reused => "refresh token reused",
+            CodexOAuthRefreshFailureKind::Revoked => "refresh token revoked",
+            CodexOAuthRefreshFailureKind::Rejected => "credentials rejected",
+            CodexOAuthRefreshFailureKind::Discovery => "endpoint discovery failed",
+            CodexOAuthRefreshFailureKind::Transport => "transport failed",
+            CodexOAuthRefreshFailureKind::InvalidResponse => "invalid refresh response",
+            CodexOAuthRefreshFailureKind::Other => "refresh failed",
+        };
+        let status = self
+            .status
+            .map(|status| format!(" with HTTP {status}"))
+            .unwrap_or_default();
+        format!(
+            "OAuth refresh failed: {reason}{status} ({})",
+            self.kind.as_str()
+        )
+    }
 }
 
 pub fn load_codex_cli_credential(codex_home: &Path) -> Result<CodexCliCredential> {
@@ -318,6 +370,7 @@ pub async fn refresh_codex_oauth_profile_material(
     let mut auth: AuthDotJson =
         serde_json::from_str(material).map_err(|error| CodexOAuthRefreshFailure {
             kind: CodexOAuthRefreshFailureKind::Other,
+            status: None,
             message: format!("failed to parse Holon credential profile {profile}: {error}"),
         })?;
     let refresh_token = auth
@@ -327,6 +380,7 @@ pub async fn refresh_codex_oauth_profile_material(
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| CodexOAuthRefreshFailure {
             kind: CodexOAuthRefreshFailureKind::Other,
+            status: None,
             message: format!("Holon credential profile {profile} does not contain a refresh token"),
         })?;
 
@@ -344,7 +398,8 @@ pub async fn refresh_codex_oauth_profile_material(
         .access_token
         .filter(|token| !token.trim().is_empty())
         .ok_or_else(|| CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+            status: None,
             message: "OpenAI Codex OAuth refresh response did not include an access token"
                 .to_string(),
         })?;
@@ -354,11 +409,13 @@ pub async fn refresh_codex_oauth_profile_material(
     auth.last_refresh = Some(Utc::now());
     let credential = auth_to_credential(auth.clone(), &format!("credential_profile:{profile}"))
         .map_err(|error| CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+            status: None,
             message: format!("refreshed Holon credential profile {profile} is invalid: {error}"),
         })?;
     let material = serde_json::to_string(&auth).map_err(|error| CodexOAuthRefreshFailure {
         kind: CodexOAuthRefreshFailureKind::Other,
+        status: None,
         message: format!(
             "failed to serialize refreshed Holon credential profile {profile}: {error}"
         ),
@@ -828,21 +885,23 @@ async fn request_codex_oauth_refresh(
         .send()
         .await
         .map_err(|error| CodexOAuthRefreshFailure {
-            kind: CodexOAuthRefreshFailureKind::Other,
+            kind: CodexOAuthRefreshFailureKind::Transport,
+            status: None,
             message: format!("failed to refresh OpenAI Codex OAuth token: {error}"),
         })?;
     let status = response.status();
     if status.is_success() {
         return response.json::<RefreshResponse>().await.map_err(|error| {
             CodexOAuthRefreshFailure {
-                kind: CodexOAuthRefreshFailureKind::Other,
+                kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+                status: Some(status.as_u16()),
                 message: format!("failed to parse OpenAI Codex OAuth refresh response: {error}"),
             }
         });
     }
 
     let body = response.text().await.unwrap_or_default();
-    let kind = classify_refresh_failure_kind(&body);
+    let kind = classify_refresh_failure_kind(status, &body);
     let message = match kind {
         CodexOAuthRefreshFailureKind::Expired => {
             "OpenAI Codex refresh token expired; run Holon onboarding login for openai-codex again.".to_string()
@@ -853,12 +912,16 @@ async fn request_codex_oauth_refresh(
         CodexOAuthRefreshFailureKind::Revoked => {
             "OpenAI Codex refresh token was revoked; run Holon onboarding login for openai-codex again.".to_string()
         }
-        CodexOAuthRefreshFailureKind::Other => {
+        _ => {
             let hint = try_parse_refresh_error_message(&body).unwrap_or_else(|| body.clone());
             format!("OpenAI Codex OAuth refresh failed with HTTP {status}: {hint}")
         }
     };
-    Err(CodexOAuthRefreshFailure { kind, message })
+    Err(CodexOAuthRefreshFailure {
+        kind,
+        status: Some(status.as_u16()),
+        message,
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -1323,14 +1386,20 @@ fn parse_jwt_expiration(token: &str) -> Result<Option<DateTime<Utc>>> {
         .and_then(|exp| DateTime::<Utc>::from_timestamp(exp, 0)))
 }
 
-fn classify_refresh_failure_kind(body: &str) -> CodexOAuthRefreshFailureKind {
+fn classify_refresh_failure_kind(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> CodexOAuthRefreshFailureKind {
+    if !matches!(status.as_u16(), 400 | 401 | 403) {
+        return CodexOAuthRefreshFailureKind::Other;
+    }
     match extract_refresh_error_code(body).as_deref() {
         Some("refresh_token_expired") => CodexOAuthRefreshFailureKind::Expired,
         Some("refresh_token_reused") => CodexOAuthRefreshFailureKind::Reused,
         Some("refresh_token_invalidated") | Some("refresh_token_revoked") => {
             CodexOAuthRefreshFailureKind::Revoked
         }
-        _ => CodexOAuthRefreshFailureKind::Other,
+        _ => CodexOAuthRefreshFailureKind::Rejected,
     }
 }
 
@@ -1425,6 +1494,81 @@ mod tests {
     use super::*;
     use base64::Engine;
     use serde_json::json;
+
+    #[test]
+    fn oauth_refresh_http_classification_requires_rejected_grant_status() {
+        for status in [400, 401, 403, 429, 500, 503] {
+            for (code, rejected_kind) in [
+                (
+                    "refresh_token_expired",
+                    CodexOAuthRefreshFailureKind::Expired,
+                ),
+                ("refresh_token_reused", CodexOAuthRefreshFailureKind::Reused),
+                (
+                    "refresh_token_revoked",
+                    CodexOAuthRefreshFailureKind::Revoked,
+                ),
+                ("invalid_grant", CodexOAuthRefreshFailureKind::Rejected),
+            ] {
+                let body = json!({"error": {"code": code}}).to_string();
+                let expected = if matches!(status, 400 | 401 | 403) {
+                    rejected_kind
+                } else {
+                    CodexOAuthRefreshFailureKind::Other
+                };
+                assert_eq!(
+                    classify_refresh_failure_kind(
+                        reqwest::StatusCode::from_u16(status).unwrap(),
+                        &body
+                    ),
+                    expected
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_refresh_discovery_failure_is_not_rejected_credentials() {
+        let mut config = OAuthProviderConfig::xai();
+        // Rejected before any network request, at the real discovery boundary.
+        config.issuer = "http://invalid.example";
+        let failure = refresh_oauth_profile_material(
+            &reqwest::Client::new(),
+            &config,
+            r#"{"tokens":{"access_token":"access","refresh_token":"private-refresh-value"}}"#,
+            "test-profile",
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(failure.kind, CodexOAuthRefreshFailureKind::Discovery);
+        assert!(!failure.credentials_rejected());
+        assert!(failure.safe_summary().contains("endpoint discovery"));
+        assert!(!failure.safe_summary().contains("private-refresh-value"));
+    }
+
+    #[test]
+    fn oauth_refresh_non_grant_failures_have_safe_phase_reasons() {
+        for (kind, reason) in [
+            (
+                CodexOAuthRefreshFailureKind::Discovery,
+                "endpoint discovery",
+            ),
+            (CodexOAuthRefreshFailureKind::Transport, "transport"),
+            (CodexOAuthRefreshFailureKind::InvalidResponse, "response"),
+            (CodexOAuthRefreshFailureKind::Other, "refresh failed"),
+        ] {
+            let failure = CodexOAuthRefreshFailure {
+                kind,
+                status: None,
+                message: "private-upstream-value".into(),
+            };
+            assert!(!failure.credentials_rejected());
+            let summary = failure.safe_summary();
+            assert!(summary.contains(reason));
+            assert!(summary.contains("refresh_failed"));
+            assert!(!summary.contains("private-upstream-value"));
+        }
+    }
 
     fn encode_segment(value: serde_json::Value) -> String {
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
