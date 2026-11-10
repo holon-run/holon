@@ -374,7 +374,7 @@ impl RuntimeHandle {
         );
         if message.kind == MessageKind::OperatorPrompt && dispatch_prior_closure.is_some() {
             context_built.id =
-                super::started_dispatch::operator_provider_entry_id(&dispatch_turn_id);
+                crate::runtime_db::dispatch_memory::operator_provider_entry_id(&dispatch_turn_id);
         }
         self.append_original_audit_event(context_built).await?;
         record_operator_span(

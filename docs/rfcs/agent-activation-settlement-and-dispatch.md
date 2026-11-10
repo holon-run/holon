@@ -1232,7 +1232,9 @@ source. Fenced operator Turns commit their existing context-built audit at a
 stable receipt address before entering provider execution. Only a fenced Turn
 with no such receipt and no external-effect evidence can replay. A committed
 provider entry or an older Turn without the fence retains the source in
-quarantine for operator review. Existing completed settlements are preserved.
+quarantine for operator review. Exclusive daemon startup applies the same
+provider-entry check before making a retained claim runnable. Existing
+completed settlements are preserved.
 
 Automatic recovery and `holon debug scheduler-recovery --apply` call the same
 restricted transition implementation. The debug command without `--apply` is

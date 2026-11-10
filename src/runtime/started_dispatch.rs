@@ -76,10 +76,6 @@ fn dispatch_owner_matches(
             },
         }
 }
-pub(super) fn operator_provider_entry_id(turn_id: &str) -> String {
-    format!("audit:operator-provider-entry:{turn_id}")
-}
-
 /// A retired operator dispatch can fail before recording a canonical input
 /// batch. The original Start, rather than the ingress Turn hint, proves its
 /// actual Turn. The provider-entry receipt survives audit-prefix retention.
@@ -138,22 +134,8 @@ pub(super) fn retired_operator_dispatch_can_replay(
         scope,
         &turn.turn_id,
     )?;
-    let may_have_dispatched: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM input_mutation_receipts WHERE command_nonce=?1)
-          OR EXISTS(SELECT 1 FROM tool_executions WHERE agent_id=?2 AND turn_id=?3)
-          OR EXISTS(SELECT 1 FROM briefs WHERE agent_id=?2 AND turn_id=?3)",
-        params![
-            operator_provider_entry_id(&turn.turn_id),
-            scope.agent_id,
-            turn.turn_id
-        ],
-        |row| row.get(0),
-    )?;
     Ok(Some(
-        turn.operator_dispatch_fenced
-            && !turn.external_side_effect_possible
-            && turn.destructive_operation_id.is_none()
-            && !may_have_dispatched,
+        crate::runtime_db::dispatch_memory::operator_dispatch_can_replay_tx(tx, turn)?,
     ))
 }
 

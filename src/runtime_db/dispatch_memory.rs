@@ -656,6 +656,36 @@ pub(crate) fn unfinished_dispatch_memory_tx(
     Ok(result)
 }
 
+pub(crate) fn operator_provider_entry_id(turn_id: &str) -> String {
+    format!("audit:operator-provider-entry:{turn_id}")
+}
+
+/// Reuse the provider-entry receipt in hot and cold recovery. Older actual
+/// dispatches have no positive evidence that the provider was never entered.
+pub(crate) fn operator_dispatch_can_replay_tx(
+    tx: &Transaction<'_>,
+    turn: &crate::types::TurnRecord,
+) -> Result<bool> {
+    if !turn.operator_dispatch_fenced
+        || turn.external_side_effect_possible
+        || turn.destructive_operation_id.is_some()
+    {
+        return Ok(false);
+    }
+    let may_have_dispatched: bool = tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM input_mutation_receipts WHERE command_nonce=?1)
+          OR EXISTS(SELECT 1 FROM tool_executions WHERE agent_id=?2 AND turn_id=?3)
+          OR EXISTS(SELECT 1 FROM briefs WHERE agent_id=?2 AND turn_id=?3)",
+        params![
+            operator_provider_entry_id(&turn.turn_id),
+            turn.agent_id,
+            turn.turn_id
+        ],
+        |row| row.get(0),
+    )?;
+    Ok(!may_have_dispatched)
+}
+
 /// Claim/new-Turn only. Same-actual-Turn tools never call this admission gate.
 pub(crate) fn validate_new_dispatch_tx(
     tx: &Transaction<'_>,

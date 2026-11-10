@@ -7495,6 +7495,13 @@ impl RuntimeHandle {
 
     async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {
         let agent_id = self.inner.agent.lock().await.state.id.clone();
+        // The first bootstrap read must yield under ordinary reader pressure.
+        let execution_state = self
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized_async(&agent_id)
+            .await?;
         let claimed = self
             .inner
             .runtime_db
@@ -7503,12 +7510,6 @@ impl RuntimeHandle {
         if claimed.is_empty() {
             return Ok(0);
         }
-        let execution_state = self
-            .inner
-            .runtime_db
-            .transitions()
-            .load_execution_protocol_state_if_initialized_async(&agent_id)
-            .await?;
         let bootstrapping = self.inner.bootstrap_result.lock().unwrap().is_none();
         let mut recovered = 0;
 
