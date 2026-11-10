@@ -1805,33 +1805,9 @@ impl RuntimeHandle {
             ),
             "image generation material differs from Runtime identity"
         );
-        let response = generate_image_with_shared_quota(provider.as_ref(), request).await.map_err(|error| {
-            if let Some(tool_error) = error.downcast_ref::<ToolError>() {
-                let mut details = tool_error.details.clone().unwrap_or_else(|| json!({}));
-                details["route"] = json!(route.route_ref.as_string());
-                return tool_error.clone().with_details(details);
-            }
-            if let Some(parameter) = error.downcast_ref::<crate::provider::image_generation::ImageGenerationParameterError>() {
-                return ToolError::new(parameter.code, parameter.to_string())
-                    .with_details(json!({"route": route.route_ref.as_string(), "field": parameter.field}))
-                    .with_recovery_hint(parameter.recovery_hint.clone());
-            }
-            let transport = error.downcast_ref::<crate::provider::ProviderTransportError>();
-            let status = transport.and_then(|error| error.status);
-            let rejected = matches!(status, Some(400 | 422));
-            ToolError::new(
-                if rejected { "provider_image_parameter_rejected" } else { "image_generation_failed" },
-                if rejected { "provider rejected the selected image request; its parameter contract may have changed" }
-                    else { "selected image provider request failed" },
-            )
-                .with_details(json!({
-                    "route": route.route_ref.as_string(),
-                    "provider_failure": crate::provider::classify_provider_error(&error),
-                    "http_status": status,
-                    "provider_error_code": transport.and_then(|error| error.code.as_deref()),
-                }))
-                .with_recovery_hint("inspect the selected route's provider error; no alternate model was tried")
-        })?;
+        let response = generate_image_with_shared_quota(provider.as_ref(), request)
+            .await
+            .map_err(|error| image_generation_tool_error(&error, &route.route_ref))?;
         let selection = json!({
             "requested_model": requested_route.as_ref().map(ModelRouteRef::as_string),
             "resolved_model": route.route_ref.as_string(),
@@ -3079,6 +3055,138 @@ fn visual_observation_response_format() -> ProviderResponseFormatRequest {
             }
         }),
     })
+}
+
+fn image_generation_tool_error(
+    error: &anyhow::Error,
+    route: &ModelRouteRef,
+) -> crate::tool::ToolError {
+    use crate::tool::ToolError;
+    use serde_json::json;
+
+    if let Some(tool_error) = error.downcast_ref::<ToolError>() {
+        let mut details = tool_error.details.clone().unwrap_or_else(|| json!({}));
+        details["route"] = json!(route.as_string());
+        return tool_error.clone().with_details(details);
+    }
+    if let Some(parameter) =
+        error.downcast_ref::<crate::provider::image_generation::ImageGenerationParameterError>()
+    {
+        return ToolError::new(parameter.code, parameter.to_string())
+            .with_details(json!({"route": route.as_string(), "field": parameter.field}))
+            .with_recovery_hint(parameter.recovery_hint.clone());
+    }
+    let transport = error.downcast_ref::<crate::provider::ProviderTransportError>();
+    let status = transport.and_then(|error| error.status);
+    let details = json!({
+        "route": route.as_string(),
+        "provider_failure": crate::provider::classify_provider_error(error),
+        "http_status": status,
+        "provider_error_code": transport.and_then(|error| error.code.as_deref()),
+    });
+    if crate::provider::provider_transport_diagnostics(error)
+        .is_some_and(|diagnostics| diagnostics.stage == "oauth_refresh")
+    {
+        let descriptor = crate::runtime_error::describe_runtime_error(error);
+        return ToolError::new("image_generation_failed", descriptor.operator_message)
+            .with_details(details)
+            .with_recovery_hint(descriptor.recovery_hint.unwrap_or_else(|| {
+                "inspect the selected route's provider error; no alternate model was tried".into()
+            }));
+    }
+    let rejected = matches!(status, Some(400 | 422));
+    ToolError::new(
+        if rejected {
+            "provider_image_parameter_rejected"
+        } else {
+            "image_generation_failed"
+        },
+        if rejected {
+            "provider rejected the selected image request; its parameter contract may have changed"
+        } else {
+            "selected image provider request failed"
+        },
+    )
+    .with_details(details)
+    .with_recovery_hint("inspect the selected route's provider error; no alternate model was tried")
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+mod image_generation_error_tests {
+    use super::*;
+    use crate::provider::{
+        provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
+        ProviderTransportDiagnostics, RetryDisposition,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn image_errors_distinguish_refresh_from_image_parameter_rejection() {
+        let route = ModelRouteRef::parse_compatible("openai-codex@default/gpt-test").unwrap();
+        for (stage, status, kind, expected_code) in [
+            (
+                "oauth_refresh",
+                400,
+                ProviderFailureKind::AuthError,
+                "image_generation_failed",
+            ),
+            (
+                "oauth_refresh",
+                503,
+                ProviderFailureKind::Unknown,
+                "image_generation_failed",
+            ),
+            (
+                "response",
+                400,
+                ProviderFailureKind::Unknown,
+                "provider_image_parameter_rejected",
+            ),
+            (
+                "response",
+                422,
+                ProviderFailureKind::Unknown,
+                "provider_image_parameter_rejected",
+            ),
+        ] {
+            let diagnostics: ProviderTransportDiagnostics = serde_json::from_value(json!({
+                "stage": stage,
+                "provider": "openai-codex",
+                "status": status,
+                "source_chain": ["OAuth refresh rejected with HTTP 400 (refresh_failed)"]
+            }))
+            .unwrap();
+            let error = provider_transport_error_with_code(
+                ProviderFailureClassification {
+                    kind,
+                    disposition: RetryDisposition::FailFast,
+                },
+                None,
+                Some(status),
+                Some(diagnostics),
+                "private-upstream-payload",
+            )
+            .context("image request failed");
+            let mapped = image_generation_tool_error(&error, &route);
+            assert_eq!(mapped.kind, expected_code);
+            assert_eq!(mapped.details.as_ref().unwrap()["http_status"], status);
+            assert_eq!(mapped.details.as_ref().unwrap()["route"], route.as_string());
+            if stage == "oauth_refresh" {
+                assert!(mapped.message.contains("refresh_failed"));
+                assert_eq!(
+                    mapped
+                        .recovery_hint
+                        .as_deref()
+                        .is_some_and(|hint| hint.contains("sign in again")),
+                    kind == ProviderFailureKind::AuthError,
+                );
+            }
+            assert!(!serde_json::to_string(&mapped)
+                .unwrap()
+                .contains("private-upstream-payload"));
+        }
+    }
 }
 
 #[cfg(holon_lib_test_shard = "a")]

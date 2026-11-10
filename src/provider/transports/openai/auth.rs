@@ -123,7 +123,7 @@ impl OpenAiBearerAuth {
         let refreshed =
             refresh_oauth_profile_material(&self.client, &config, &entry.material, profile)
                 .await
-                .map_err(|failure| codex_refresh_error(profile, failure))?;
+                .map_err(|failure| codex_refresh_error(&self.provider_id, profile, failure))?;
         store.profiles.insert(
             profile.to_string(),
             CredentialProfileFile {
@@ -325,7 +325,7 @@ impl OpenAiCodexProvider {
         let refreshed =
             refresh_codex_oauth_profile_material(&self.oauth_client, &entry.material, profile)
                 .await
-                .map_err(|failure| codex_refresh_error(profile, failure))?;
+                .map_err(|failure| codex_refresh_error(&self.provider_id, profile, failure))?;
         store.profiles.insert(
             profile.to_string(),
             CredentialProfileFile {
@@ -551,11 +551,43 @@ pub(super) fn is_openai_codex_auth_status_error(error: &anyhow::Error) -> bool {
         })
 }
 
-fn codex_refresh_error(profile: &str, failure: CodexOAuthRefreshFailure) -> anyhow::Error {
-    anyhow::anyhow!(
-        "OpenAI Codex OAuth refresh failed for Holon credential profile {profile}: {} ({})",
-        failure.message,
-        failure.kind.as_str()
+fn codex_refresh_error(
+    provider: &str,
+    profile: &str,
+    failure: CodexOAuthRefreshFailure,
+) -> anyhow::Error {
+    let kind = if failure.credentials_rejected() {
+        ProviderFailureKind::AuthError
+    } else {
+        ProviderFailureKind::Unknown
+    };
+    crate::provider::provider_transport_error_with_code(
+        ProviderFailureClassification {
+            kind,
+            disposition: RetryDisposition::FailFast,
+        },
+        None,
+        failure.status,
+        Some(ProviderTransportDiagnostics {
+            stage: "oauth_refresh".into(),
+            streaming: None,
+            provider: Some(provider.into()),
+            model_ref: None,
+            url: None,
+            status: failure.status,
+            reqwest: None,
+            context_budget: None,
+            http_trace: None,
+            quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
+            source_chain: vec![failure.safe_summary()],
+        }),
+        format!(
+            "{provider} OAuth refresh failed for Holon credential profile {profile}: {} ({})",
+            failure.message,
+            failure.kind.as_str()
+        ),
     )
 }
 

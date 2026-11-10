@@ -363,6 +363,16 @@ pub enum CredentialKind {
 - `aws_sdk`: provider auth is resolved by an SDK-specific chain
 - `none`: no credential is sent
 
+OAuth refresh failures retain their failure stage and a bounded, controlled
+diagnostic summary. Rejected token grants (HTTP 400/401/403), including expired,
+reused, or revoked refresh tokens, classify as `auth_error` and advise signing
+in again. Discovery, transport, and invalid-response failures must not be
+misclassified as rejected credentials. Refresh failures retain their existing
+fail-fast and immediate-fallback behavior; this classification does not add a
+refresh retry policy. Operator failure briefs identify the active provider/model
+and the safe refresh reason, including when only the attempt timeline survives.
+Raw upstream bodies and credential material are not used as the brief summary.
+
 This means API key is not an auth source. It is a credential kind.
 
 Examples:
