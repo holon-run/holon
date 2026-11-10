@@ -3,9 +3,29 @@ use super::*;
 use crate::runtime_db::input_mutation_receipts::{
     lookup_input_mutation_receipt_tx, InputMutationFamily, PreparedInputMutation,
 };
+use crate::runtime_db::task_result_settlement::canonical_live_turn_id_tx;
 use crate::types::{QueueEntryRecord, QueueEntryStatus};
 
-const AUDITS: &str = "SELECT a.audit_event_id FROM audit_events a WHERE a.agent_id=?1 AND a.kind='scheduler_bootstrap_claim_recovered' AND json_extract(a.data_json,'$.data.message_id')=?2 AND json_extract(a.data_json,'$.data.recovery_outcome')='task_result_attempt_requeued_for_reentry' AND json_extract(a.data_json,'$.data.activation_id') IN (SELECT attempt_id FROM execution_protocol_attempts WHERE agent_id=?1 AND json_extract(payload_json,'$.source_message_id')=?2 AND json_extract(payload_json,'$.turn_id')=?3)";
+// Preselect the expected Turn's batch addresses without decoding its body.
+// The shared resolver below still verifies unique attachment, source, run and owner.
+const AUDITS: &str = "SELECT a.audit_event_id FROM audit_events a
+    WHERE a.agent_id=?1 AND a.kind='scheduler_bootstrap_claim_recovered'
+      AND json_extract(a.data_json,'$.data.message_id')=?2
+      AND json_extract(a.data_json,'$.data.recovery_outcome')='task_result_attempt_requeued_for_reentry'
+      AND EXISTS (
+        SELECT 1 FROM execution_protocol_attempts e
+        WHERE e.agent_id=a.agent_id AND e.attempt_id=json_extract(a.data_json,'$.data.activation_id')
+          AND json_extract(e.payload_json,'$.source_message_id')=?2
+      )
+      AND EXISTS (
+        SELECT 1 FROM turn_records t WHERE t.agent_id=a.agent_id AND t.turn_id=?3 AND (
+          json_extract(t.payload_json,'$.idle_input_batch.activation_id')=json_extract(a.data_json,'$.data.activation_id')
+          OR EXISTS (
+            SELECT 1 FROM json_each(t.payload_json,'$.live_input_batches') batch
+            WHERE json_extract(batch.value,'$.activation_id')=json_extract(a.data_json,'$.data.activation_id')
+          )
+        )
+      )";
 const RECEIPTS: &str = "SELECT r.command_nonce FROM input_mutation_receipts r,json_each(r.outcome_json,'$.scopes') s,json_each(s.value,'$.audit_events') a WHERE r.family='queue' AND json_extract(s.value,'$.scope.agent_id')=?1 AND json_extract(a.value,'$.id') IN (SELECT audit_event_id FROM audits)";
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -42,6 +62,9 @@ pub(super) fn proof_material_tx(
         "SELECT length(CAST(payload_json AS BLOB))+128 size FROM queue_entries WHERE message_id=?2",
         "SELECT length(CAST(payload_json AS BLOB))+128 size FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id IN (SELECT id FROM attempts)",
         "SELECT length(CAST(payload_json AS BLOB))+128 size FROM execution_protocol_outcomes WHERE agent_id=?1 AND attempt_id IN (SELECT id FROM attempts)",
+        // A unique attachment can only decode the preselected Turn. Charge
+        // this additional body read before resolving the canonical attachment.
+        "SELECT length(CAST(payload_json AS BLOB))+length(CAST(turn_id AS BLOB))+128 size FROM turn_records WHERE agent_id=?1 AND turn_id=?3 AND EXISTS (SELECT 1 FROM audits)",
     ] {
         let (count, bytes) = tx.query_row(
             &format!("WITH audits AS ({AUDITS}),receipts AS ({RECEIPTS}),attempts AS ({attempts}) SELECT COUNT(*),COALESCE(SUM(size),0) FROM ({selection})"),
@@ -159,12 +182,16 @@ pub(super) fn read_tx(
         attempt.agent_id == key.agent_id
             && attempt.attempt_id == attempt_id
             && attempt.source_message_id.as_deref() == Some(invocation.message_id.as_str())
-            && attempt.turn_id.as_deref() == Some(key.actual_dispatch_turn_id.as_str())
             && attempt.state == ExecutionAttemptState::Interrupted
             && attempt_state == "interrupted"
             && attempt.terminal_outcome_id.as_deref() == Some(outcome_id.as_str())
             && attempt.source.generation == original.source_sequence,
         "queue reentry Attempt differs from original dispatch"
+    );
+    ensure!(
+        canonical_live_turn_id_tx(tx, &attempt)?.as_deref()
+            == Some(key.actual_dispatch_turn_id.as_str()),
+        "queue reentry activation is not uniquely attached to its original dispatch Turn"
     );
     let outcome_payload: String = tx.query_row("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2 AND attempt_id=?3", params![key.agent_id,outcome_id,attempt_id], |r|r.get(0))?;
     let outcome: ExecutionOutcomeRecord = serde_json::from_str(&outcome_payload)?;
