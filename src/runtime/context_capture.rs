@@ -581,7 +581,8 @@ impl RuntimeHandle {
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
             }
-            let entries = durable_inputs.workspace_entries()?;
+            let entries = durable_inputs
+                .workspace_entries(&state.attached_workspaces, workspace.workspace_id())?;
             let mut execution = workspace::execution_snapshot_from_workspace_entries(
                 &state.execution_profile,
                 &workspace,

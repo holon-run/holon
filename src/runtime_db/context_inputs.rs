@@ -404,24 +404,64 @@ impl<'a> ContextDurableRead<'a> {
         Ok(Some((decode(payload)?, revision)))
     }
 
-    pub(crate) fn workspace_entries(&self) -> Result<Vec<WorkspaceEntry>> {
-        repositories::context_workspace_entries_on(self.connection)
+    pub(crate) fn workspace_entries(
+        &self,
+        attached_ids: &[String],
+        active_id: Option<&str>,
+    ) -> Result<Vec<WorkspaceEntry>> {
+        // The active workspace is already in the selection when it is attached.
+        // With no attachments, projection falls back to the active workspace alone.
+        let selection = match (attached_ids, active_id) {
+            ([], None) => return Ok(Vec::new()),
+            ([], Some(id)) => serde_json::to_string(&[id])?,
+            _ => serde_json::to_string(attached_ids)?,
+        };
+        let mut statement = self.connection.prepare(
+            "SELECT payload_json, workspace_id FROM workspace_entries
+             WHERE workspace_id IN (SELECT value FROM json_each(?1))
+             ORDER BY updated_at ASC, created_at ASC, workspace_id DESC",
+        )?;
+        let mut rows = statement.query([selection])?;
+        let mut entries = Vec::new();
+        while let Some(row) = rows.next()? {
+            let entry =
+                repositories::decode_workspace_entry_payload(repositories::borrowed_payload(row)?)?;
+            ensure!(
+                entry.workspace_id == repositories::borrowed_sql_text(row, 1)?,
+                "context workspace projection mismatch"
+            );
+            entries.push(entry);
+        }
+        Ok(entries)
     }
 
     pub(crate) fn execution_roots_for_workspaces(
         &self,
         ids: &[String],
     ) -> Result<Vec<ExecutionRootEntry>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        // The array ordinal preserves the old per-workspace order and multiplicity.
+        let mut statement = self.connection.prepare(
+            "SELECT root.payload_json, selected.value
+             FROM json_each(?1) AS selected
+             CROSS JOIN execution_root_entries AS root
+             WHERE root.workspace_id = selected.value AND root.removed_at IS NULL
+             ORDER BY selected.key, root.created_at, root.rowid",
+        )?;
+        let mut rows = statement.query([serde_json::to_string(ids)?])?;
         let mut roots = Vec::new();
-        for id in ids {
-            let entries = repositories::context_execution_roots_on(self.connection, id)?;
+        while let Some(row) = rows.next()? {
+            let entry = repositories::decode_execution_root_entry_payload(
+                repositories::borrowed_payload(row)?,
+            )?;
             ensure!(
-                entries
-                    .iter()
-                    .all(|entry| entry.workspace_id == *id && entry.removed_at.is_none()),
+                entry.workspace_id == repositories::borrowed_sql_text(row, 1)?
+                    && entry.removed_at.is_none(),
                 "context execution root workspace projection mismatch"
             );
-            roots.extend(entries);
+            roots.push(entry);
         }
         Ok(roots)
     }
