@@ -120,6 +120,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Deploy a self-hosted Casdoor instance with Docker, initialize organizations and applications, configure Holon's OIDC authentication, and verify end-to-end single sign-on without external accounts.
   <!-- mdorigin:index kind=article -->
 
+- [Wake Holon Agents on Web Page Changes with Self-Hosted changedetection.io](./changedetection-webhook-setup.md)
+  Monitor web pages with self-hosted changedetection.io and wake Holon agents via webhook callbacks when changes are detected: Docker deployment, watch and notification configuration, and end-to-end verification.
+  <!-- mdorigin:index kind=article -->
+
 - [Share AI assistants with your team](./share-with-your-team.md)
   Deploy Holon on a shared server, enable team sign-in, assign tasks to common assistants, and track progress together.
   <!-- mdorigin:index kind=article -->

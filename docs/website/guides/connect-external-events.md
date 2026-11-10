@@ -128,3 +128,7 @@ Confirm that no other integration depends on it first.
   inspection without clearing an independent blocker.
 
 See [Troubleshooting](troubleshooting.md) for task and provider failures.
+
+## Related guides
+
+- [Wake Holon Agents on Web Page Changes with Self-Hosted changedetection.io](changedetection-webhook-setup.md) — Monitor web pages and wake agents on detected diffs.

@@ -87,3 +87,4 @@ curl -s -H "Authorization: Bearer $TOKEN" \
 - [事件、等待与唤醒概念](/zh-CN/concepts/events-and-waits.md) — 异步心智模型
 - [事件与定时器参考](/zh-CN/reference/events-and-timers.md) — 端点与字段契约
 - [调度 Agent 工作](schedule-agent-work.md) — 基于时间的定时调度
+- [用自托管 changedetection.io 让网页变更唤醒 Holon agent](changedetection-webhook-setup.md) — 网页变更监控与 Webhook 唤醒端到端实操
