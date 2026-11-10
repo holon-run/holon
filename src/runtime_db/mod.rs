@@ -428,6 +428,7 @@ pub struct RuntimeDb {
     lock_path: PathBuf,
     // Readers close before the append sender; physical readers also retain state.
     readers: reader_pool::RuntimeDbReaderPool,
+    preparation_readers: reader_pool::RuntimeDbReaderPool,
     writer: RuntimeDbWriter,
     /// Unix millis of the last observer-sync read-side self-heal attempt.
     /// Throttles the heal so a failing capability gate does not re-run the
@@ -474,6 +475,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), open_connection(&path)?)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             lock_path: lock_path.into(),
@@ -507,6 +511,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -550,6 +557,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -605,6 +615,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -660,6 +673,9 @@ impl RuntimeDb {
         let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(&writer.state),
+            ),
             writer,
             path,
             observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
@@ -687,7 +703,8 @@ impl RuntimeDb {
     /// unchanged; Rust closures must cooperate outside SQLite execution.
     pub fn with_read_scope(&self, scope: RuntimeDbReadScope) -> Self {
         let mut db = self.clone();
-        db.readers = db.readers.with_scope(scope);
+        db.readers = db.readers.with_scope(scope.clone());
+        db.preparation_readers = db.preparation_readers.with_scope(scope);
         db
     }
 
@@ -757,6 +774,11 @@ impl RuntimeDb {
             capacity,
             budget,
         );
+        self.preparation_readers = reader_pool::RuntimeDbReaderPool::with_config(
+            std::sync::Arc::clone(&self.writer.state),
+            reader_pool::PREPARATION_CAPACITY,
+            budget,
+        );
         Ok(())
     }
 
@@ -766,24 +788,34 @@ impl RuntimeDb {
     }
 
     #[cfg(test)]
+    pub(crate) fn preparation_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+        self.preparation_readers.stats()
+    }
+
+    #[cfg(test)]
     pub(crate) fn reader_pool_writer_weak_for_tests(
         &self,
     ) -> std::sync::Weak<write_queue::RuntimeDbWriterState> {
         self.readers.writer_weak()
     }
 
-    /// Canonical preparation on a pooled query-only transaction. The callback
-    /// must not write, nest checkouts, or retain the connection across await.
+    /// Canonical preparation has reserved bounded query-only reader capacity.
+    /// Ordinary query saturation must not fail cold runtime construction.
+    /// Callbacks must not write, nest checkouts, or retain a lease across await.
+    #[track_caller]
     pub(crate) fn read_for_preparation<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.with_read(|connection| {
-            let tx =
-                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
-            let value = f(&tx)?;
-            tx.commit()?;
-            Ok(value)
+        let origin = read_block::ReadOrigin::from_location(std::panic::Location::caller());
+        blocking::at_blocking_boundary(|| {
+            self.preparation_readers.with_read_at(origin, |connection| {
+                let tx = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                Ok(value)
+            })
         })
     }
 

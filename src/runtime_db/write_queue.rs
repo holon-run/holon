@@ -711,7 +711,7 @@ mod persistence_tests {
             Ok(tx.query_row("SELECT 7", [], |row| row.get::<_, i64>(0))?)
         })
         .map(|value| assert_eq!(value, 7))?;
-        assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+        assert_eq!(db.preparation_pool_stats_for_tests().connections_opened, 1);
         Ok(())
     }
 

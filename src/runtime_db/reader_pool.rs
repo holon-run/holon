@@ -17,6 +17,7 @@ use super::write_queue::RuntimeDbWriterState;
 use super::{read_block, RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
 
 const DEFAULT_CAPACITY: u32 = 4;
+pub(super) const PREPARATION_CAPACITY: u32 = 1;
 const DEFAULT_BUDGET: Duration = Duration::from_millis(250);
 const LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -128,6 +129,10 @@ impl r2d2::HandleError<ConnectError> for QuietConnectErrors {
 impl RuntimeDbReaderPool {
     pub(crate) fn new(writer: Arc<RuntimeDbWriterState>) -> Self {
         Self::with_config(writer, DEFAULT_CAPACITY, DEFAULT_BUDGET)
+    }
+
+    pub(crate) fn for_preparation(writer: Arc<RuntimeDbWriterState>) -> Self {
+        Self::with_config(writer, PREPARATION_CAPACITY, DEFAULT_BUDGET)
     }
 
     pub(crate) fn with_config(

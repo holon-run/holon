@@ -7205,7 +7205,7 @@ CREATE TABLE working_memory_deltas (
             })?;
             assert_eq!(marker, 0);
         }
-        assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+        assert_eq!(db.preparation_pool_stats_for_tests().connections_opened, 1);
         db.read_for_preparation(|tx| {
             let before: i64 =
                 tx.query_row("SELECT value FROM preparation_read_values", [], |row| {

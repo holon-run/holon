@@ -2622,8 +2622,8 @@ count; malformed JSON and missing or non-string IDs still count as mismatches,
 while SQL/type and admission errors propagate. No active phase still means
 unqualified verification, not a detached budget or an owned runtime read.
 The mutation identity fence still reads the canonical identity before admitting
-the owner. This single-row check uses the existing bounded query-only reader
-pool, with the original sidecar protection checks. It does not reserve a writer
+the owner. This single-row check uses the reserved bounded query-only preparation
+reader, with the original sidecar protection checks. It does not reserve a writer
 ticket or cache the identity. Deleted/recreated identities remain visible across
 independent writes; incarnation and retirement rejection is unchanged.
 Bootstrap uses that same canonical identity read, including its pre-owner lookup.
@@ -2633,11 +2633,15 @@ metadata is cached. The callback may not write, nest checkouts or retain its
 lease across an await. Commit/drop ends the read view before returning the
 lease; dirty connections are discarded and protection failures remain fenced.
 The original normalization, metadata handoffs and posture ACKs remain separate.
+Preparation has one reserved reader alongside the four ordinary readers, so
+ordinary query saturation cannot fail cold construction before asynchronous
+bootstrap handoff. Both roles retain bounded admission, scoped cancellation and
+protection checks; preparation pressure never falls back to the writer.
 Short canonical preparation for Control recovery obligations, the legacy episode
 import check, scheduler adapter metadata and execution authority fences follows
 the same independent Deferred-read contract. Scheduler claim Queue/Delivery
 preflight has explicit preparation entrypoints using the original decoders;
-ordinary Queue/Delivery repository reads use the same bounded reader pool. These
+ordinary Queue/Delivery repository reads use the ordinary bounded reader pool. These
 reads neither cache canonical facts nor retain a transaction across an await,
 and claim commit retains its original in-transaction authority/source checks.
 Bootstrap workspace, Message count and execution-root lookups, and startup
