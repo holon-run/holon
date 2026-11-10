@@ -238,34 +238,37 @@ async fn caller_deadlines_are_independent_of_each_other() {
 #[tokio::test(start_paused = true)]
 async fn shared_deadline_does_not_extend_or_serve_stale_before_late_protection() {
     let gate = Arc::new(ProjectionGate::new(1, Duration::from_millis(1)));
-    gate.run(key(), || async { Ok(Bytes::from_static(b"old")) })
+    let key = ProjectionKey::AgentProjectionSnapshot("agent-a".into(), "operator".into());
+    gate.run(key.clone(), || async { Ok(Bytes::from_static(b"old")) })
         .await
         .unwrap();
     tokio::time::advance(Duration::from_millis(2)).await;
     let started = Arc::new(Notify::new());
     let cancelled = Arc::new(Notify::new());
     let release = Arc::new(Notify::new());
-    let mut first = Box::pin(gate.run_owned(key(), deadline(), Duration::from_secs(1), {
-        let started = Arc::clone(&started);
-        let cancelled = Arc::clone(&cancelled);
-        let release = Arc::clone(&release);
-        move |context| async move {
-            let scope = Some(context.read_scope());
-            started.notify_one();
-            RuntimeDbReadScope::cancelled(&scope).await;
-            cancelled.notify_one();
-            release.notified().await;
-            Err(ProjectionFailure {
-                status: StatusCode::SERVICE_UNAVAILABLE,
-                body: json!({"code": "runtime_db_quarantined", "retryable": false}),
-            })
-        }
-    }));
+    let mut first = Box::pin(
+        gate.run_owned(key.clone(), deadline(), Duration::from_secs(1), {
+            let started = Arc::clone(&started);
+            let cancelled = Arc::clone(&cancelled);
+            let release = Arc::clone(&release);
+            move |context| async move {
+                let scope = Some(context.read_scope());
+                started.notify_one();
+                RuntimeDbReadScope::cancelled(&scope).await;
+                cancelled.notify_one();
+                release.notified().await;
+                Err(ProjectionFailure {
+                    status: StatusCode::SERVICE_UNAVAILABLE,
+                    body: json!({"code": "runtime_db_quarantined", "retryable": false}),
+                })
+            }
+        }),
+    );
     enroll(first.as_mut()).await;
     started.notified().await;
     tokio::time::advance(Duration::from_millis(900)).await;
     let mut follower = Box::pin(gate.run_owned(
-        key(),
+        key.clone(),
         deadline(),
         Duration::from_secs(100),
         |_| async { panic!("follower must not extend the shared deadline") },
@@ -281,7 +284,7 @@ async fn shared_deadline_does_not_extend_or_serve_stale_before_late_protection()
     let state = gate.state.lock().unwrap();
     assert!(state.entries.is_empty());
     assert_eq!(
-        state.stale.get(&key()).unwrap().bytes,
+        state.stale.get(&key).unwrap().bytes,
         Bytes::from_static(b"old")
     );
 }

@@ -438,7 +438,7 @@ fn build_agent_state_projection(
             db,
             handle,
         )
-        .map_err(agent_access_error)
+        .map_err(|error| state_projection_access_error(agent_id, error))
         .map_err(ProjectionFailure::from)?;
     let workspace_started = std::time::Instant::now();
     let workspace = state_workspace_snapshot(&state_projection.agent.agent, db)?;
@@ -510,6 +510,35 @@ fn build_agent_state_projection(
         .map_err(error_response)
         .map_err(ProjectionFailure::from)?;
     Ok(bytes)
+}
+
+fn state_projection_access_error(
+    agent_id: &str,
+    error: PublicAgentError,
+) -> (StatusCode, Json<Value>) {
+    use crate::runtime::mutation_owner::MutationOwnerError;
+
+    if let PublicAgentError::Runtime(error) = &error {
+        if let Some(MutationOwnerError::NeedsReconcile(key)) =
+            error.downcast_ref::<MutationOwnerError>()
+        {
+            warn!(
+                agent_id,
+                affected_agent_id = %key.agent_id,
+                identity_incarnation = key.identity_incarnation,
+                "State projection awaiting mutation reconciliation"
+            );
+            let mut envelope = HttpErrorEnvelope::new(
+                "agent_reconciliation_pending",
+                "agent state is temporarily unavailable while a mutation is reconciled",
+            )
+            .hint("retry the state read")
+            .retryable(true);
+            envelope.domain = Some(RuntimeErrorDomain::Runtime);
+            return http_error(StatusCode::SERVICE_UNAVAILABLE, envelope);
+        }
+    }
+    agent_access_error(error)
 }
 
 fn slim_state_agent_runtime_dto(

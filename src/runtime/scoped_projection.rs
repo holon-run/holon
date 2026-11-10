@@ -50,11 +50,7 @@ impl RuntimeHandle {
             .capture()
             .map_err(|error| match error {
                 mutation_owner::MutationOwnerError::NeedsReconcile(_) => {
-                    anyhow::Error::new(crate::runtime_db::RuntimeDbRetryableError::new(
-                        Self::OBSERVER_PUBLICATION_OPERATION,
-                        db.path(),
-                        error,
-                    ))
+                    error.into_observer_busy(Self::OBSERVER_PUBLICATION_OPERATION, db)
                 }
                 error => error.into(),
             })?
