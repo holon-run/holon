@@ -195,7 +195,7 @@ pub async fn install_template(
     let writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(vec![user_home.join(".agents/agent_templates")])
         .map_err(error_response)?;
     let template_id = tokio::task::spawn_blocking(move || {
         writer.enter_physical();
@@ -233,7 +233,7 @@ pub async fn remove_template(
     let writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(vec![user_home.join(".agents/agent_templates")])
         .map_err(error_response)?;
     tokio::task::spawn_blocking(move || {
         writer.enter_physical();

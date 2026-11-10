@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Weak;
 
 pub(super) struct RuntimeResources {
-    pub registry: ContextResourceRegistry,
+    pub registry: Arc<ContextResourceRegistry>,
     pub gate: Arc<ContextResources>,
     notify: Arc<Notify>,
     initial_done: AtomicBool,
@@ -123,24 +123,12 @@ enum RefreshFailure {
 /// and the capture. The bound matches the writer-conflict re-entry that the
 /// Context preparation path already allows.
 pub(super) const RESOURCE_SOURCE_CHANGE_REPREPARES: usize = 2;
-/// The typed source-change failure survives every context chain, so the
-/// preparation paths can classify it and re-prepare.
-pub(super) fn is_source_changed_error(error: &anyhow::Error) -> bool {
+/// Preparation retries only resource conflicts; closed and foreign scopes fail.
+pub(super) fn is_resource_preparation_conflict(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<ResourceObservationError>(),
-            Some(ResourceObservationError::SourceChanged)
-        )
-    })
-}
-/// The typed resource failures that a preparation may re-prepare for. Every
-/// other failure stays fail-closed.
-fn is_repreparable_resource_error(error: &anyhow::Error) -> bool {
-    error.chain().any(|cause| {
-        matches!(
-            cause.downcast_ref::<ResourceObservationError>(),
-            Some(ResourceObservationError::SourceChanged | ResourceObservationError::NotReady(_))
-        )
+        cause
+            .downcast_ref::<ResourceObservationError>()
+            .is_some_and(ResourceObservationError::is_preparation_conflict)
     })
 }
 impl RefreshFailure {
@@ -148,7 +136,7 @@ impl RefreshFailure {
         if crate::runtime_error::describe_runtime_error(error).code == "context_resource_exhausted"
         {
             Self::Exhausted
-        } else if is_source_changed_error(error) {
+        } else if is_resource_preparation_conflict(error) {
             Self::SourceChanged
         } else if let Some(kind) = error.chain().find_map(|cause| {
             cause
@@ -188,9 +176,10 @@ impl RuntimeResources {
             None => Arc::new(ContextResources::default()),
         };
         let notify = Arc::new(Notify::new());
-        gate.subscribe(&notify)?;
+        let registry = Arc::new(ContextResourceRegistry::new(ledger.clone()));
+        gate.subscribe(&registry, &notify)?;
         Ok(Self {
-            registry: ContextResourceRegistry::new(ledger.clone()),
+            registry,
             gate,
             notify,
             scope,
@@ -584,7 +573,7 @@ impl RuntimeHandle {
                 &self.inner.resources.scope.agent_id,
                 self.inner.resources.scope.identity_incarnation,
             ),
-            ResourceObservationError::SourceChanged
+            ResourceObservationError::ScopeChanged
         );
         let mut slot = self.inner.resources.test_material.lock().unwrap();
         anyhow::ensure!(slot.is_none(), "resource test material already installed");
@@ -610,7 +599,7 @@ impl RuntimeHandle {
         };
         match captured {
             Ok(_) => Ok(()),
-            Err(error) if is_repreparable_resource_error(&error) => {
+            Err(error) if is_resource_preparation_conflict(&error) => {
                 // Only an invalidated resource needs its existing refresh protocol.
                 drop(self.ensure_context_resources().await?);
                 Ok(())
@@ -648,7 +637,7 @@ impl RuntimeHandle {
                 // so neither its refresh lock nor an agent owner can be held.
                 self.trace_resource_refresh("writers_wait_start");
                 tokio::select! {
-                    result = self.inner.resources.gate.wait_for_writers() => result?,
+                    result = self.inner.resources.gate.wait_for_writers(&self.inner.resources.registry) => result?,
                     _ = self.inner.resources.closed() => {
                         return Err(ResourceObservationError::NotReady(
                             super::resource_observation::ResourceFreshness::Closed
@@ -659,7 +648,10 @@ impl RuntimeHandle {
                 continue;
             }
             if source_changes < RESOURCE_SOURCE_CHANGE_REPREPARES
-                && result.as_ref().err().is_some_and(is_source_changed_error)
+                && result
+                    .as_ref()
+                    .err()
+                    .is_some_and(is_resource_preparation_conflict)
             {
                 // The published source moved while the refresh was reading it.
                 // Re-prepare with the current source on this bounded path
@@ -951,7 +943,6 @@ impl RuntimeHandle {
             execution_root: workspace.map(|entry| entry.execution_root.clone()),
             include_user_skills: state.id == self.inner.default_agent_id,
             config_generation: config.resource_generation,
-            host_generation: self.inner.resources.gate.generation()?,
             active_skills_selector: selector.into(),
             work_revision: captured.revision,
             plans,
@@ -965,7 +956,11 @@ impl RuntimeHandle {
     ) -> Result<Arc<ResourceObservation>> {
         let _io = material.enter();
         let source = self.context_resource_source(state, config)?;
-        let _fence = self.inner.resources.gate.ready(source.host_generation)?;
+        let _fence = self
+            .inner
+            .resources
+            .gate
+            .ready_for(&self.inner.resources.registry)?;
         self.inner
             .resources
             .registry
@@ -986,7 +981,11 @@ impl RuntimeHandle {
             "instruction resource Root scope differs"
         );
         let source = self.context_resource_source_with_root(&root.state, config, root)?;
-        let _fence = self.inner.resources.gate.ready(source.host_generation)?;
+        let _fence = self
+            .inner
+            .resources
+            .gate
+            .ready_for(&self.inner.resources.registry)?;
         self.inner
             .resources
             .registry
@@ -1031,6 +1030,16 @@ impl RuntimeHandle {
             let _io = source_material.enter();
             self.context_resource_source(&state, &config)?
         };
+        self.inner.resources.gate.set_paths(
+            &self.inner.resources.registry,
+            resource_dependency_paths(&source),
+        )?;
+        drop(
+            self.inner
+                .resources
+                .gate
+                .ready_for(&self.inner.resources.registry)?,
+        );
         self.trace_resource_refresh("source_done");
         Ok(ResourceRefreshSource {
             state,
@@ -1083,6 +1092,7 @@ impl RuntimeHandle {
                     released = checkpoint.release.wait(released).unwrap();
                 }
             }
+            drop(resources.gate.ready_for(&resources.registry)?);
             resource_io::charge_owned_metadata(
                 input_evidence_budget::serialized_bytes(&state.active_skills)? + 16384,
                 256,
@@ -1208,7 +1218,9 @@ impl RuntimeHandle {
                 self.trace_resource_refresh("publication_validate_start");
                 anyhow::ensure!(
                     !resources.closed.load(Ordering::Acquire),
-                    ResourceObservationError::SourceChanged
+                    ResourceObservationError::NotReady(
+                        super::resource_observation::ResourceFreshness::Closed
+                    )
                 );
                 let root = owner
                     .capture_ready_snapshot()?
@@ -1216,7 +1228,7 @@ impl RuntimeHandle {
                 let current_config = self.inner.config_snapshot.load_full();
                 let actual = self.context_resource_source(&root.state, &current_config)?;
                 anyhow::ensure!(actual == *expected, ResourceObservationError::SourceChanged);
-                let fence = resources.gate.ready(expected.host_generation)?;
+                let fence = resources.gate.ready_for(&resources.registry)?;
                 let mut inventory = inventory
                     .try_write()
                     .map_err(|_| ResourceObservationError::InventoryContended)?;
@@ -1233,12 +1245,22 @@ impl RuntimeHandle {
     pub(crate) fn begin_context_resource_write(
         &self,
     ) -> Result<crate::host::resource_writes::ResourceWrite> {
-        let writer = self.inner.resources.gate.begin_write()?;
-        self.inner
-            .resources
-            .registry
-            .invalidate(ResourceInvalidation::KnownWrite)?;
-        Ok(writer)
+        self.begin_context_resource_write_for_paths(Vec::new())
+    }
+    pub(crate) fn begin_context_resource_write_for_paths(
+        &self,
+        mut paths: Vec<PathBuf>,
+    ) -> Result<crate::host::resource_writes::ResourceWrite> {
+        anyhow::ensure!(
+            !self.inner.resources.closed.load(Ordering::Acquire),
+            ResourceObservationError::NotReady(
+                super::resource_observation::ResourceFreshness::Closed
+            )
+        );
+        paths.push(self.agent_home());
+        self.inner.resources.gate.begin_scoped_write(
+            crate::host::context_resources::ResourceWriteScope::paths(paths),
+        )
     }
     pub(crate) fn context_resource_material(&self) -> Result<ResourceReadMaterial> {
         ResourceReadMaterial::new(
@@ -1246,6 +1268,28 @@ impl RuntimeHandle {
             &self.inner.resources.scope,
         )
     }
+}
+
+fn resource_dependency_paths(source: &ContextResourceSource) -> Vec<PathBuf> {
+    let mut paths = vec![source.agent_home.clone()];
+    if let Some(anchor) = &source.workspace_anchor {
+        paths.push(anchor.join("AGENTS.md"));
+        paths.push(anchor.join("CLAUDE.md"));
+    }
+    if let Some(root) = &source.execution_root {
+        paths.extend(
+            crate::skills::SKILL_ROOT_SUFFIXES
+                .iter()
+                .map(|suffix| root.join(suffix)),
+        );
+    }
+    if let Some(home) = &source.user_home {
+        paths.push(home.join(".agents/AGENTS.md"));
+        paths.push(home.join(".agents/agent_templates"));
+        // Non-default agents may attach a library skill by symlink.
+        paths.extend(crate::skills::user_global_skill_root_candidates(home));
+    }
+    paths
 }
 
 #[cfg(holon_lib_test_shard = "a")]
@@ -1985,7 +2029,7 @@ mod tests {
         ));
         // A wrapped failure keeps its type for the preparation paths.
         let wrapped = failure.context("summary capture");
-        assert!(is_source_changed_error(&wrapped));
+        assert!(is_resource_preparation_conflict(&wrapped));
         assert!(matches!(
             RefreshFailure::from_error(&wrapped),
             RefreshFailure::SourceChanged
@@ -1995,7 +2039,7 @@ mod tests {
             RefreshFailure::from_error(&anyhow!("context resource refresh failed")),
             RefreshFailure::Other
         ));
-        assert!(!is_source_changed_error(&anyhow!(
+        assert!(!is_resource_preparation_conflict(&anyhow!(
             "context resource refresh failed"
         )));
     }

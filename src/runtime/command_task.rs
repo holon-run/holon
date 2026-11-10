@@ -1834,7 +1834,14 @@ impl RuntimeHandle {
             &process_scope,
             &self.inner.input_evidence_budget,
         )?;
-        process_responsibility.record_resource_start(self.inner.resources.gate.clone())?;
+        process_responsibility.record_resource_start(
+            self.inner.resources.gate.clone(),
+            vec![
+                self.agent_home(),
+                execution.workspace.execution_root().to_path_buf(),
+                resolved.workdir.clone(),
+            ],
+        )?;
         self.inner.control_cancellations.retain_managed_process(
             process_responsibility.clone(),
             &self.inner.input_evidence_budget,

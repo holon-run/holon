@@ -49,7 +49,11 @@ pub async fn install_skill(
     let writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write({
+            let mut paths = crate::skills::user_global_skill_root_candidates(&user_home);
+            paths.push(agent_home.clone());
+            paths
+        })
         .map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
         writer.enter_physical();
@@ -88,7 +92,7 @@ pub async fn add_skill_to_catalog(
     let writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
         .map_err(error_response)?;
     let skill_name = tokio::task::spawn_blocking(move || {
         writer.enter_physical();
@@ -115,7 +119,7 @@ pub async fn remove_skill_from_catalog(
     let _writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
         .map_err(error_response)?;
     crate::skills::remove_library_skill(&user_home, &request.name).map_err(error_response)?;
     Ok(Json(json!({
@@ -135,7 +139,7 @@ pub async fn reconcile_skill_catalog(
     let _writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
         .map_err(error_response)?;
     let result = crate::skills::reconcile_library_skills(&user_home, request.name.as_deref())
         .map_err(error_response)?;
@@ -151,12 +155,12 @@ pub async fn refresh_skill_catalog(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let _writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
         .map_err(error_response)?;
-    let user_home = effective_user_home_dir(&state).map_err(error_response)?;
     let roots = crate::skills::existing_skill_roots(
         Some(&user_home),
         &crate::skills::COMPAT_SKILL_ROOT_SUFFIXES,
@@ -226,7 +230,7 @@ pub async fn enable_skill(
     let _writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(vec![agent_home.clone()])
         .map_err(error_response)?;
     let skill_name = crate::skills::enable_agent_skill(
         &agent_home,
@@ -269,7 +273,7 @@ pub async fn uninstall_skill(
     let _writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(vec![agent_home.clone()])
         .map_err(error_response)?;
     crate::skills::uninstall_skill(&agent_home, &request.name).map_err(error_response)?;
     runtime
@@ -306,7 +310,7 @@ pub async fn disable_skill(
     let _writer = state
         .host
         .context_resources()
-        .begin_write()
+        .begin_path_write(vec![agent_home.clone()])
         .map_err(error_response)?;
     crate::skills::disable_agent_skill(&agent_home, &request.name).map_err(error_response)?;
     runtime

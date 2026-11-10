@@ -29,7 +29,6 @@ pub(crate) struct ContextResourceSource {
     pub execution_root: Option<PathBuf>,
     pub include_user_skills: bool,
     pub config_generation: u64,
-    pub host_generation: u64,
     pub active_skills_selector: [u8; 32],
     pub work_revision: u64,
     pub plans: Vec<ContextPlanSource>,
@@ -46,7 +45,6 @@ impl ContextResourceSource {
             && self.execution_root == other.execution_root
             && self.include_user_skills == other.include_user_skills
             && self.config_generation == other.config_generation
-            && self.host_generation == other.host_generation
             && self.active_skills_selector == other.active_skills_selector
     }
 }
@@ -85,6 +83,8 @@ pub(crate) enum ResourceFreshness {
 pub(crate) enum ResourceObservationError {
     #[error("context resource source differs from its observation")]
     SourceChanged,
+    #[error("context resource source identity differs from its owner or observation")]
+    ScopeChanged,
     #[error("context resource inventory lock is temporarily unavailable")]
     InventoryContended,
     #[error("context resource inventory snapshot changed before publication")]
@@ -95,6 +95,22 @@ pub(crate) enum ResourceObservationError {
     ObsoleteRefresh,
     #[error("context resource generation exhausted")]
     GenerationExhausted,
+}
+
+impl ResourceObservationError {
+    pub(crate) fn is_preparation_conflict(&self) -> bool {
+        matches!(
+            self,
+            Self::SourceChanged
+                | Self::ObsoleteRefresh
+                | Self::InventorySnapshotChanged
+                | Self::NotReady(
+                    ResourceFreshness::Unobserved
+                        | ResourceFreshness::Dirty(_)
+                        | ResourceFreshness::RefreshFailed
+                )
+        )
+    }
 }
 
 #[derive(Debug, Default)]
@@ -488,6 +504,10 @@ impl ContextResourceRegistry {
     pub(crate) fn freshness(&self) -> Result<ResourceFreshness> {
         Ok(self.lock()?.freshness)
     }
+    #[cfg(test)]
+    pub(crate) fn generation_for_test(&self) -> Result<u64> {
+        Ok(self.lock()?.generation)
+    }
     pub(crate) fn invalidate(&self, reason: ResourceInvalidation) -> Result<()> {
         let mut state = self.lock()?;
         if state.freshness == ResourceFreshness::Closed {
@@ -600,23 +620,31 @@ impl ContextResourceRegistry {
         &self,
         source: &ContextResourceSource,
     ) -> Result<Arc<ResourceObservation>> {
-        self.capture_matching(|old| old == source)
+        self.capture_matching(source, |old| old == source)
     }
     pub(crate) fn capture_instructions(
         &self,
         source: &ContextResourceSource,
     ) -> Result<InstructionResourceRead> {
-        self.capture_matching(|old| old.same_instruction_sources(source))
+        self.capture_matching(source, |old| old.same_instruction_sources(source))
             .map(InstructionResourceRead)
     }
     fn capture_matching(
         &self,
+        source: &ContextResourceSource,
         matches: impl FnOnce(&ContextResourceSource) -> bool,
     ) -> Result<Arc<ResourceObservation>> {
         let state = self.lock()?;
         if state.exhausted {
             return Err(ResourceObservationError::GenerationExhausted.into());
         }
+        anyhow::ensure!(
+            state
+                .source
+                .as_ref()
+                .is_none_or(|old| old.key.scope == source.scope),
+            ResourceObservationError::ScopeChanged
+        );
         if state.source.as_ref().is_none_or(|old| !matches(&old.key)) {
             return Err(ResourceObservationError::SourceChanged.into());
         }
@@ -723,7 +751,7 @@ impl ContextResourceRegistry {
                 &source.scope.agent_id,
                 source.scope.identity_incarnation,
             ),
-            ResourceObservationError::SourceChanged
+            ResourceObservationError::ScopeChanged
         );
         let prepared = PreparedSource::with_material(source, prior, || material.transaction())?;
         self.prepare_refresh_with_material(prepared, read, |_| material.transaction())
@@ -785,7 +813,7 @@ impl ContextResourceRegistry {
             anyhow::ensure!(
                 owner.agent_id() == ticket.source.key.scope.agent_id
                     && owner.identity_incarnation() == ticket.source.key.scope.identity_incarnation,
-                ResourceObservationError::SourceChanged
+                ResourceObservationError::ScopeChanged
             );
             let _io = material.enter();
             let fence = validate(&owner, &ticket.source.key)?;

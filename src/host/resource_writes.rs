@@ -1,10 +1,11 @@
 //! Responsibility belongs to the admitted physical writer, not its waiter.
-use super::context_resources::ContextResources;
+use super::context_resources::{ContextResources, ResourceWriteScope};
 use anyhow::{ensure, Result};
 use std::sync::Arc;
 
 pub(crate) struct ResourceWrite {
     resources: Arc<ContextResources>,
+    scope: Arc<ResourceWriteScope>,
 }
 impl ResourceWrite {
     /// Called inside the original blocking kernel, never in its waiter.
@@ -53,31 +54,45 @@ impl ContextResources {
     }
 }
 impl ContextResources {
+    pub(crate) fn begin_path_write(
+        self: &Arc<Self>,
+        paths: Vec<std::path::PathBuf>,
+    ) -> Result<ResourceWrite> {
+        self.begin_scoped_write(ResourceWriteScope::paths(paths))
+    }
     /// Call only after the original authorization and operation admission.
     pub(crate) fn begin_write(self: &Arc<Self>) -> Result<ResourceWrite> {
+        self.begin_scoped_write(ResourceWriteScope::shared())
+    }
+    pub(crate) fn begin_scoped_write(
+        self: &Arc<Self>,
+        scope: ResourceWriteScope,
+    ) -> Result<ResourceWrite> {
         let mut state = self.lock()?;
         ensure!(
             !state.closing,
             "context resource writer admission is Closing"
         );
-        let active = state
-            .active
-            .checked_add(1)
-            .ok_or_else(|| anyhow::anyhow!("resource writer count exhausted"))?;
-        Self::changed(&mut state)?;
-        state.active = active;
+        let scope = Arc::new(scope);
+        Self::changed(&mut state, &scope)?;
+        state.active.push(scope.clone());
         Ok(ResourceWrite {
             resources: self.clone(),
+            scope,
         })
     }
 }
 impl Drop for ResourceWrite {
     fn drop(&mut self) {
         if let Ok(mut state) = self.resources.lock() {
-            state.active -= 1;
+            state
+                .active
+                .retain(|scope| !Arc::ptr_eq(scope, &self.scope));
             state.failed |= std::thread::panicking();
             // Failure, panic and cancellation are dirty too.
-            let _ = ContextResources::changed(&mut state);
+            if let Err(error) = ContextResources::changed(&mut state, &self.scope) {
+                tracing::warn!(%error, "resource writer exit invalidation failed");
+            }
             self.resources.drained.notify_waiters();
         }
     }
@@ -99,7 +114,7 @@ mod tests {
         waiter.abort();
         resources.begin_close()?;
         assert!(resources.begin_write().is_err());
-        assert!(resources.generation().is_err());
+        assert!(resources.ready().is_err());
         assert!(tokio::time::timeout(
             std::time::Duration::from_millis(20),
             resources.join_writers()
@@ -165,7 +180,7 @@ mod actual_http_tests {
         });
         tokio::time::timeout(Duration::from_secs(10), pause.wait()).await?;
         request.abort();
-        assert!(gate.generation().is_err());
+        assert!(gate.ready().is_err());
         let closing = tokio::spawn({
             let host = host.clone();
             async move { host.shutdown().await }
@@ -237,7 +252,7 @@ mod actual_http_tests {
         });
         tokio::time::timeout(Duration::from_secs(10), pause.wait()).await?;
         request.abort();
-        assert!(host.context_resources().generation().is_err());
+        assert!(host.context_resources().ready().is_err());
         let closing = tokio::spawn({
             let host = host.clone();
             async move { host.shutdown().await }
@@ -268,7 +283,7 @@ mod join_failure_tests {
         gate.begin_close()?;
         assert!(gate.join_writers().await.is_err());
         assert!(gate.begin_write().is_err());
-        assert!(gate.generation().is_err());
+        assert!(gate.ready().is_err());
         Ok(())
     }
 }

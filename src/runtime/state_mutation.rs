@@ -4206,22 +4206,22 @@ mod plan_preparation_tests {
                 .unwrap_err();
             assert!(error.to_string().contains("controlled lost"));
             assert!(saved.original_attempt_finished());
-            assert!(runtime.inner.resources.gate.generation().is_err());
+            assert!(runtime.inner.resources.gate.ready().is_err());
             if with_pending {
                 // Unknown cannot be downgraded by a non-fresh negative proof.
                 assert!(saved.release_pending_not_committed(false).is_err());
-                assert!(runtime.inner.resources.gate.generation().is_err());
+                assert!(runtime.inner.resources.gate.ready().is_err());
             }
             runtime
                 .reconcile_reserved_mutations(&mut mutation.reservations)
                 .await?;
-            assert!(runtime.inner.resources.gate.generation().is_ok());
+            assert!(runtime.inner.resources.gate.ready().is_ok());
             assert_eq!(ledger.report()?.pending.unresolved_count, 0);
             assert_eq!(
                 saved.release_pending_not_committed(true).is_err(),
                 with_pending
             );
-            assert!(runtime.inner.resources.gate.generation().is_ok());
+            assert!(runtime.inner.resources.gate.ready().is_ok());
             drop((saved, historical, preparation, mutation));
             assert!(material.upgrade().is_none());
             runtime.join_owned_mutations().await?;
@@ -4272,7 +4272,7 @@ mod plan_preparation_tests {
                 )
                 .await;
             assert_eq!(result.is_err(), fault.is_some());
-            assert!(runtime.inner.resources.gate.generation().is_ok());
+            assert!(runtime.inner.resources.gate.ready().is_ok());
             assert!(material.upgrade().is_some());
             drop((mutation, preparation, historical));
             assert!(material.upgrade().is_some());

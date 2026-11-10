@@ -146,6 +146,14 @@ pub(crate) fn user_global_skill_roots(user_home: Option<&Path>) -> Vec<PathBuf> 
     existing_skill_roots(user_home, &COMPAT_SKILL_ROOT_SUFFIXES)
 }
 
+/// Include absent roots so installing the first skill also invalidates readers.
+pub(crate) fn user_global_skill_root_candidates(user_home: &Path) -> Vec<PathBuf> {
+    COMPAT_SKILL_ROOT_SUFFIXES
+        .iter()
+        .map(|suffix| user_home.join(suffix))
+        .collect()
+}
+
 pub(crate) fn agent_skill_roots(agent_home: &Path) -> Vec<PathBuf> {
     existing_skill_roots(Some(agent_home), &SKILL_ROOT_SUFFIXES)
 }

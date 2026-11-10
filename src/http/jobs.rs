@@ -193,7 +193,9 @@ async fn create_skill_install_job(
             }
         };
         let kind = request.kind.clone();
-        let writer = match resource_gate.begin_write() {
+        let writer = match resource_gate
+            .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
+        {
             Ok(writer) => writer,
             Err(error) => {
                 jobs.update(&job_id, |job| {
@@ -323,7 +325,9 @@ pub(super) async fn create_skill_update_job(
         let progress_jobs = jobs.clone();
         let progress_job_id = job_id.clone();
         let name = request.name.clone();
-        let writer = match resource_gate.begin_write() {
+        let writer = match resource_gate
+            .begin_path_write(crate::skills::user_global_skill_root_candidates(&user_home))
+        {
             Ok(writer) => writer,
             Err(error) => {
                 jobs.update(&job_id, |job| {

@@ -1,4 +1,5 @@
 //! One original spawn responsibility, including foreground exec commands.
+use crate::host::context_resources::ResourceWriteScope;
 use crate::{
     runtime::{
         input_evidence_budget::{
@@ -13,6 +14,7 @@ use crate::{
     },
 };
 use anyhow::{anyhow, ensure, Result};
+use std::path::PathBuf;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
@@ -26,7 +28,12 @@ pub(in crate::runtime) struct OriginalManagedProcess {
     group: Mutex<Option<Arc<dyn RegisteredProcessGroupProbe>>>,
     material_bytes: u64,
     _material: Arc<BudgetViewGuard>,
-    resources: Mutex<Option<Arc<crate::host::context_resources::ContextResources>>>,
+    resources: Mutex<
+        Option<(
+            Arc<crate::host::context_resources::ContextResources>,
+            ResourceWriteScope,
+        )>,
+    >,
 }
 impl OriginalManagedProcess {
     // Only the Command runner can allocate or complete this responsibility.
@@ -59,12 +66,15 @@ impl OriginalManagedProcess {
     pub(super) fn record_resource_start(
         &self,
         resources: Arc<crate::host::context_resources::ContextResources>,
+        paths: Vec<PathBuf>,
     ) -> Result<()> {
-        resources.invalidate()?;
+        let scope = ResourceWriteScope::paths(paths);
+        resources.invalidate(&scope)?;
         *self
             .resources
             .lock()
-            .map_err(|_| anyhow!("process resource responsibility poisoned"))? = Some(resources);
+            .map_err(|_| anyhow!("process resource responsibility poisoned"))? =
+            Some((resources, scope));
         Ok(())
     }
     pub(super) fn attach_original_handle(&self, process: &dyn RunningProcess) -> Result<()> {
@@ -82,14 +92,14 @@ impl OriginalManagedProcess {
     pub(super) fn record_successful_exit(&self) {
         if self.attached.load(Ordering::Acquire) {
             self.successful_exit.store(true, Ordering::Release);
-            if let Some(resources) = self
+            if let Some((resources, scope)) = self
                 .resources
                 .lock()
                 .ok()
                 .and_then(|mut resources| resources.take())
             {
                 // Original OS wait is not a proof that detached descendants exited.
-                let _ = resources.invalidate();
+                let _ = resources.invalidate(&scope);
             }
         }
     }

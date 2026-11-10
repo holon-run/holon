@@ -1469,7 +1469,7 @@ The explicit synchronous refresh seam prepares and meters source ownership,
 reserves Candidate material, reads under ResourceReadBudget, and ends I/O before
 attempting the mutation owner. Retained coverage checks, sealing the original
 material guard and streaming the content digest finish on the private candidate
-before acquiring that owner or a Host readiness fence. Its caller must revalidate
+before acquiring that owner or a resource-writer readiness fence. Its caller must revalidate
 root, source and identity under that reservation. Installation consumes the sealed
 candidate, then checks generation and nonce before atomically publishing
 the candidate source, source generation and observation. Preparation keeps the
@@ -1486,6 +1486,40 @@ before any partial update. Allocation gates still precede ownership, and the
 core rejects retained bodies exceeding their prior admission before sealing.
 
 #### Loaded Context resource boundary
+
+Resource source keys do not contain a process-wide `host_generation`. Each
+Agent's resource registry owns its existing invalidation generation and refresh
+nonce. Unrelated Agents do not invalidate each other's Context merely by
+executing a command or writing their private resources.
+
+The resource coordinator tracks each registry's read paths and admitted physical
+writers. Source preparation registers AgentHome, workspace guidance and execution
+root skill paths, plus configured user guidance, template and skill-library paths,
+including absent paths. User skill-library writes conservatively invalidate all
+subscribers of that library because non-default Agents can attach library skills
+by symlink. Registration uses lexical path normalization without filesystem I/O
+under the mutation owner; workspace and configuration changes rebind paths before
+the next physical refresh. An active writer also fences consumers that subscribe
+after its admission.
+
+Known writes invalidate intersecting registries at admission and physical exit,
+including failure or cancellation. Patch invalidation uses all parsed source and
+destination paths before reading or writing file bodies. An opaque command
+invalidates its AgentHome, execution-root and working-directory consumers at spawn and
+original OS wait, without holding a physical-writer fence for its lifetime.
+This is conservative invalidation, not a filesystem watch or proof of all shell
+effects: edits outside those paths and detached descendants require a known
+write or explicit resource refresh. Explicit host-wide configuration or remote
+catalogue operations may invalidate all subscribers without a global counter.
+Closing still rejects fresh writes and joins all admitted physical writers.
+
+A candidate invalidated during I/O cannot install: its original registry ticket
+must still match generation and nonce. Source drift within one identity,
+dirty/unprepared observations, superseded tickets and shared-inventory races
+remain typed retryable conflicts
+after bounded local preparation; a failed loop can use existing host recovery.
+Identity/owner mismatches, closed resources and exhausted registry counters stay
+non-retryable. Existing immutable snapshot holders remain valid.
 
 Loaded Context acquires guidance, agent memory, the effective skills/template
 catalogue and notes from one immutable observation. Startup, explicit refresh,
@@ -1517,8 +1551,8 @@ It does not admit an unclaimed `Processed` or `Aborted` terminal.
 Refresh releases filesystem TLS and all I/O before acquiring the original
 mutation reservation. Installation rechecks incarnation, workspace/execution
 root, active-skills selector and monotonic configuration generation, then holds
-a short Host generation/active-writer/Closing fence through registry install.
-The lock order is owner, Host readiness, registry; no inventory or owner lock
+a short scoped-active-writer/Closing fence through registry install.
+The lock order is owner, resource-writer readiness, registry; no inventory or owner lock
 crosses I/O or await. Owner Busy retains the existing Ready/Dirty posture and
 uses the original owner-release wake. Inventory contention is a separate,
 non-failure result: after releasing publication guards the finite refresh
@@ -4404,7 +4438,7 @@ protocol validation and independent pin/metadata guards remain unchanged.
 Capturing a retained resident domain still admits its separate owning clones.
 The loaded execution snapshot moves its admitted workspace/path allocations into
 Context; borrowed cold inputs retain their pre-clone admission. The explicit
-resource preparation barrier may wait for active Host writers only after its
+resource preparation barrier may wait for matching resource writers only after its
 physical refresh and owner locks have exited. Pure captures still fail closed,
 and Closing or a failed physical writer is not retryable readiness.
 Resource refresh transfers the actual asynchronously acquired source reservation
