@@ -374,6 +374,19 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             Some("responses"),
         )
     });
+    entries.push(BuiltInModelMetadata {
+        description: "OpenCode Go native Chat LongCat 2.5 Free, available for a limited time; context, output ceiling, vision and reasoning follow the official Go listing; output default and effort controls remain unconfirmed.".into(),
+        default_max_output_tokens: None,
+        ..opencode_go_model(
+            "longcat-2.5-free",
+            "LongCat 2.5 Free",
+            1_000_000,
+            Some(262_144),
+            true,
+            true,
+            None,
+        )
+    });
     entries.extend(opencode_go_models_dev_entries());
     for entry in &mut entries {
         if entry.model_ref.provider != provider_id("opencode-go") {
@@ -472,6 +485,50 @@ mod tests {
             for endpoint in ["default", "messages"] {
                 let route =
                     ModelRouteRef::parse(&format!("opencode-go@{endpoint}/crouton-alpha-free"))
+                        .unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let policy = catalog.resolve_route_policy(
+                    &route,
+                    &HashMap::new(),
+                    &HashMap::new(),
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                );
+                assert_eq!(policy.context_window_tokens, None);
+                assert_eq!(policy.max_output_tokens_upper_limit, None);
+                assert!(!policy.capabilities.supports_reasoning);
+                assert!(!policy.capabilities.image_input);
+                assert!(!policy.agent_turn);
+                assert!(policy.reasoning_effort_options.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn opencode_go_longcat_25_free_native_chat_does_not_certify_translation() {
+        for catalog in [
+            BuiltInModelCatalog::from_legacy_definitions(),
+            BuiltInModelCatalog::new(),
+        ] {
+            let route = ModelRouteRef::parse("opencode-go@default/longcat-2.5-free").unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let metadata = catalog.get(&route.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(1_000_000));
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(262_144));
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert!(metadata.reasoning_effort_options.is_empty());
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&route.model_ref())
+                    .unwrap(),
+                route
+            );
+            for endpoint in ["messages", "responses"] {
+                let route =
+                    ModelRouteRef::parse(&format!("opencode-go@{endpoint}/longcat-2.5-free"))
                         .unwrap();
                 assert!(catalog.get_route(&route).is_some());
                 let policy = catalog.resolve_route_policy(

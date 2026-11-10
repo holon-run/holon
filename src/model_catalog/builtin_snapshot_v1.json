@@ -4183,6 +4183,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/longcat-2.5-free",
+      "display_name": "LongCat 2.5 Free",
+      "description": "OpenCode Go native Chat LongCat 2.5 Free, available for a limited time; context, output ceiling, vision and reasoning follow the official Go listing; output default and effort controls remain unconfirmed.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 262144,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/longcat-2.5-preview-free",
       "display_name": "LongCat 2.5 Preview Free",
       "description": "OpenCode Go longcat-2.5-preview-free route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
@@ -10332,6 +10353,16 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/longcat-2.5-free",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "opencode-go@default/longcat-2.5-preview-free",
       "policy": {
         "display_name": null,
@@ -11044,6 +11075,31 @@
       }
     },
     {
+      "route_ref": "opencode-go@messages/longcat-2.5-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@messages/mimo-v2.5",
       "policy": {
         "cache_capabilities": {
@@ -11731,6 +11787,31 @@
         "max_output_tokens_upper_limit": null,
         "default_verbosity": null,
         "capabilities": {
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@responses/longcat-2.5-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
           "parallel_tool_calls": false,
           "image_input": false,
           "image_generation": false,
@@ -16313,6 +16394,10 @@
     {
       "model_ref": "opencode-go/longcat-2.0",
       "route_ref": "opencode-go@default/longcat-2.0"
+    },
+    {
+      "model_ref": "opencode-go/longcat-2.5-free",
+      "route_ref": "opencode-go@default/longcat-2.5-free"
     },
     {
       "model_ref": "opencode-go/longcat-2.5-preview-free",

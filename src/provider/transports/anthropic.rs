@@ -339,6 +339,22 @@ fn reasoning_effort_to_thinking(
     })
 }
 
+fn requires_always_on_adaptive_thinking(route_provider: &str, model: &str) -> bool {
+    route_provider == "anthropic" && model == "claude-fable-5-2"
+}
+
+fn anthropic_cache_temperature(
+    route_provider: &str,
+    model: &str,
+    cache_strategy: AnthropicCacheStrategy,
+    cache_control: bool,
+) -> Option<f32> {
+    (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache
+        && cache_control
+        && !requires_always_on_adaptive_thinking(route_provider, model))
+    .then_some(1.0)
+}
+
 fn anthropic_reasoning_controls<'a>(
     route_provider: &str,
     model: &str,
@@ -346,6 +362,20 @@ fn anthropic_reasoning_controls<'a>(
     reasoning_effort: Option<&'a str>,
     max_output_tokens: u32,
 ) -> Result<(Option<ThinkingRequest>, Option<OutputConfigRequest<'a>>)> {
+    if requires_always_on_adaptive_thinking(route_provider, model) {
+        if let Some(effort) = reasoning_effort {
+            if !matches!(effort, "low" | "medium" | "high" | "xhigh" | "max") {
+                return Err(anyhow!(
+                    "{model} requires thinking; reasoning effort must be low, medium, high, xhigh, or max"
+                ));
+            }
+        }
+        // Thinking is always adaptive; neither a manual budget nor a disable is valid.
+        return Ok((
+            None,
+            reasoning_effort.map(|effort| OutputConfigRequest { effort }),
+        ));
+    }
     if route_provider == "dashscope" && model == "kimi-k3.1-pro" {
         if let Some(effort) = reasoning_effort {
             if !matches!(effort, "low" | "medium" | "high" | "max") {
@@ -516,7 +546,11 @@ impl AnthropicProvider {
         if needs_placeholder_user_text(&self.route_provider) {
             ensure_placeholder_user_text(&mut messages);
         }
-        let response_format_tool_choice = anthropic_response_format_tool_choice(request);
+        let response_format_tool_choice = anthropic_response_format_tool_choice_for_model(
+            request,
+            &self.route_provider,
+            &self.model,
+        )?;
         let (thinking, output_config) = anthropic_reasoning_controls(
             &self.route_provider,
             &self.model,
@@ -536,9 +570,12 @@ impl AnthropicProvider {
             tool_choice: response_format_tool_choice,
             betas: self.effective_betas(),
             metadata: build_anthropic_metadata(request, cache_strategy, cache_control),
-            temperature: (cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache
-                && cache_control)
-                .then_some(1.0),
+            temperature: anthropic_cache_temperature(
+                &self.route_provider,
+                &self.model,
+                cache_strategy,
+                cache_control,
+            ),
             context_management: build_context_management_request(&self.context_management),
         };
         let mut request_payload = material.json_value(&request_body)?;
@@ -2042,6 +2079,20 @@ fn anthropic_response_format_tool_choice(request: &ProviderTurnRequest) -> Optio
         "type": "tool",
         "name": anthropic_response_format_tool_name(request)?,
     }))
+}
+
+fn anthropic_response_format_tool_choice_for_model(
+    request: &ProviderTurnRequest,
+    route_provider: &str,
+    model: &str,
+) -> Result<Option<Value>> {
+    let choice = anthropic_response_format_tool_choice(request);
+    if requires_always_on_adaptive_thinking(route_provider, model) && choice.is_some() {
+        return Err(anyhow!(
+            "{model} does not support forced-tool response formats"
+        ));
+    }
+    Ok(choice)
 }
 
 fn native_web_search_diagnostics(
@@ -5509,6 +5560,127 @@ mod tests {
     fn reasoning_effort_to_thinking_skips_when_too_small() {
         // max_output_tokens = 1024 → max_tokens - 1 = 1023 < 1024 min → skip
         assert!(reasoning_effort_to_thinking(Some("high"), 1024).is_none());
+    }
+
+    #[test]
+    fn fable_52_rejects_forced_response_format_without_affecting_other_routes() {
+        let mut request = ProviderTurnRequest::plain(
+            "system",
+            vec![ConversationMessage::UserText("return json".into())],
+            vec![],
+        );
+        assert!(anthropic_response_format_tool_choice_for_model(
+            &request,
+            "anthropic",
+            "claude-fable-5-2",
+        )
+        .unwrap()
+        .is_none());
+        request.response_format = Some(ProviderResponseFormatRequest::JsonSchema(
+            crate::provider::ProviderJsonSchemaResponseFormat {
+                name: "answer_v1".into(),
+                strict: true,
+                schema: json!({"type": "object", "properties": {"answer": {"type": "string"}}}),
+            },
+        ));
+        let error = anthropic_response_format_tool_choice_for_model(
+            &request,
+            "anthropic",
+            "claude-fable-5-2",
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("does not support forced-tool"));
+        for (provider, model) in [
+            ("opencode-go", "claude-fable-5-2"),
+            ("anthropic", "claude-fable-5"),
+            ("anthropic", "claude-fable-5-2-other"),
+        ] {
+            assert_eq!(
+                anthropic_response_format_tool_choice_for_model(&request, provider, model).unwrap(),
+                anthropic_response_format_tool_choice(&request),
+            );
+        }
+    }
+
+    #[test]
+    fn fable_52_prompt_cache_omits_unsupported_temperature() {
+        assert_eq!(
+            anthropic_cache_temperature(
+                "anthropic",
+                "claude-fable-5-2",
+                AnthropicCacheStrategy::ClaudeCodePromptCache,
+                true,
+            ),
+            None
+        );
+        for (provider, model) in [
+            ("opencode-go", "claude-fable-5-2"),
+            ("anthropic", "claude-fable-5"),
+            ("anthropic", "claude-fable-5-2-other"),
+        ] {
+            assert_eq!(
+                anthropic_cache_temperature(
+                    provider,
+                    model,
+                    AnthropicCacheStrategy::ClaudeCodePromptCache,
+                    true,
+                ),
+                Some(1.0)
+            );
+            assert_eq!(
+                anthropic_cache_temperature(
+                    provider,
+                    model,
+                    AnthropicCacheStrategy::ClaudeCodePromptCache,
+                    false,
+                ),
+                None
+            );
+        }
+    }
+
+    #[test]
+    fn fable_52_reasoning_uses_exact_effort_without_manual_thinking_budget() {
+        for effort in ["low", "medium", "high", "xhigh", "max"] {
+            let (thinking, output_config) = anthropic_reasoning_controls(
+                "anthropic",
+                "claude-fable-5-2",
+                true,
+                Some(effort),
+                16_384,
+            )
+            .unwrap();
+            assert!(thinking.is_none());
+            assert_eq!(
+                serde_json::to_value(output_config).unwrap(),
+                json!({"effort": effort})
+            );
+        }
+        let (thinking, output_config) =
+            anthropic_reasoning_controls("anthropic", "claude-fable-5-2", true, None, 16_384)
+                .unwrap();
+        assert!(thinking.is_none());
+        assert!(output_config.is_none());
+        for effort in ["none", "off", "disabled", "minimal", "unknown"] {
+            assert!(anthropic_reasoning_controls(
+                "anthropic",
+                "claude-fable-5-2",
+                true,
+                Some(effort),
+                16_384,
+            )
+            .is_err());
+        }
+        for (provider, model) in [
+            ("opencode-go", "claude-fable-5-2"),
+            ("anthropic", "claude-fable-5"),
+            ("anthropic", "claude-fable-5-2-other"),
+        ] {
+            let (thinking, output_config) =
+                anthropic_reasoning_controls(provider, model, true, Some("high"), 16_384).unwrap();
+            assert!(thinking.is_some());
+            assert!(output_config.is_none());
+        }
     }
 
     #[test]

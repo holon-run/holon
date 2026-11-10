@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
+  "revision": "models-dev-b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
   "upstream": {
     "source": "models.dev",
-    "revision": "06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
-    "fetched_at": "2026-11-08T21:10:58.698951248+00:00",
-    "content_sha256": "06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
-    "adapter_version": "0.59.0 (4352b899e-dirty)"
+    "revision": "b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
+    "fetched_at": "2026-11-10T12:08:01.202380990+00:00",
+    "content_sha256": "b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
+    "adapter_version": "0.59.0 (567d5a466-dirty)"
   },
   "models": [
     {
@@ -40,6 +40,34 @@
     {
       "model_ref": "anthropic/claude-fable-5-1",
       "display_name": "Claude Fable 5.1",
+      "description": "Claude model for demanding reasoning and long-horizon agentic work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "anthropic/claude-fable-5-2",
+      "display_name": "Claude Fable 5.2",
       "description": "Claude model for demanding reasoning and long-horizon agentic work",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
@@ -3439,9 +3467,9 @@
       "model_ref": "gemini/deep-research-max-preview-04-2026",
       "display_name": "Deep Research Max Preview (Apr-21-2026)",
       "description": "Maximum-comprehensiveness agentic researcher for multi-step investigation, synthesis, and cited reports",
-      "context_window_tokens": 131072,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 65536,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
@@ -3460,9 +3488,9 @@
       "model_ref": "gemini/deep-research-preview-04-2026",
       "display_name": "Deep Research Preview (Apr-21-2026)",
       "description": "Agentic model for autonomous multi-step research, synthesis, and cited reports",
-      "context_window_tokens": 131072,
+      "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 124518,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 65536,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
@@ -11478,6 +11506,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/anthropic/claude-fable-5.2",
+      "display_name": "Claude Fable 5.2",
+      "description": "Claude model for creative writing, analysis, and controlled agent workflows",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/anthropic/claude-haiku-4.5",
       "display_name": "Claude Haiku 4.5 (latest)",
       "description": "Fast Claude lane for lightweight agents, office tasks, and responsive chat",
@@ -13830,6 +13886,35 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/meta/muse-ember",
+      "display_name": "Muse Ember",
+      "description": "Open Llama multimodal model for image understanding and text reasoning",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/meta/muse-glimmer-30b",
       "display_name": "Muse Glimmer 30B",
       "description": "Muse Glimmer is a 30-billion-parameter open-weight multimodal model from Meta Superintelligence Labs, distilled from Muse Spark for always-on local agents, tool use, coding, and image understanding.",
@@ -14005,8 +14090,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14076,33 +14161,12 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/minimax/minimax-m1",
-      "display_name": "MiniMax M1",
-      "description": "MiniMax model for chat, coding, office work, and agentic tasks",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 40000,
-      "max_output_tokens_upper_limit": 40000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/minimax/minimax-m2.5",
       "display_name": "MiniMax-M2.5",
       "description": "Prior MiniMax coding model for agent workflows, office edits, and automation",
-      "context_window_tokens": 204800,
+      "context_window_tokens": 200000,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 194560,
+      "auto_compact_token_limit": 190000,
       "default_max_output_tokens": 58982,
       "max_output_tokens_upper_limit": 58982,
       "default_verbosity": null,
@@ -14121,9 +14185,9 @@
       "model_ref": "openrouter/minimax/minimax-m2.7",
       "display_name": "MiniMax-M2.7",
       "description": "Open MiniMax flagship for coding agents, office automation, and complex environments",
-      "context_window_tokens": 204800,
+      "context_window_tokens": 196608,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 194560,
+      "auto_compact_token_limit": 186777,
       "default_max_output_tokens": 176947,
       "max_output_tokens_upper_limit": 176947,
       "default_verbosity": null,
@@ -14563,8 +14627,8 @@
       "context_window_tokens": 256000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 243200,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 26214,
+      "max_output_tokens_upper_limit": 26214,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -16542,8 +16606,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 117964,
-      "max_output_tokens_upper_limit": 117964,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17455,8 +17519,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 64000,
+      "max_output_tokens_upper_limit": 64000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18000,7 +18064,7 @@
         "parallel_tool_calls": false,
         "image_input": false,
         "image_generation": false,
-        "supports_reasoning": false,
+        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "remote_discovered"
@@ -18272,9 +18336,9 @@
       "model_ref": "openrouter/stepfun/step-5-preview",
       "display_name": "Step 5 Preview",
       "description": "StepFun flash model for efficient multimodal reasoning, coding, and tool use",
-      "context_window_tokens": 1048576,
+      "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
+      "auto_compact_token_limit": 950000,
       "default_max_output_tokens": 64000,
       "max_output_tokens_upper_limit": 64000,
       "default_verbosity": null,
@@ -18948,9 +19012,9 @@
       "model_ref": "openrouter/xiaomi/mimo-v2.5-pro",
       "display_name": "MiMo-V2.5-Pro",
       "description": "Stronger MiMo Pro tier for multimodal reasoning and coding-agent execution",
-      "context_window_tokens": 1050000,
+      "context_window_tokens": 1024000,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 997500,
+      "auto_compact_token_limit": 972800,
       "default_max_output_tokens": 235929,
       "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
@@ -19318,8 +19382,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 943717,
+      "max_output_tokens_upper_limit": 943717,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -21062,6 +21126,34 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "venice/claude-fable-5-2",
+      "display_name": "Claude Fable 5.2",
+      "description": "Claude model for creative writing, analysis, and controlled agent workflows",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "venice/claude-haiku-5-5",
       "display_name": "Claude Haiku 5.5",
       "description": "Fast Claude model for responsive assistance, classification, and lightweight agents",
@@ -22418,87 +22510,6 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "venice/mercury-2",
-      "display_name": "Mercury 2",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 128000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 121600,
-      "default_max_output_tokens": 50000,
-      "max_output_tokens_upper_limit": 50000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "venice/mercury-2-5",
-      "display_name": "Mercury 2.5",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 260000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 247000,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
-      "source": "remote_discovered"
-    },
-    {
-      "model_ref": "venice/mercury-3",
-      "display_name": "Mercury 3",
-      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 950000,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "none",
-        "low",
-        "medium",
-        "high"
-      ],
       "source": "remote_discovered"
     },
     {

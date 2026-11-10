@@ -1,11 +1,39 @@
 {
   "schema_version": 1,
-  "upstream_revision": "06f904263b196dae1281b28f95963fa2fec04f0cba6d8205af13827746833412",
-  "adapter_version": "0.59.0 (4352b899e-dirty)",
+  "upstream_revision": "b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
+  "adapter_version": "0.59.0 (567d5a466-dirty)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
       "display_name": "Claude Fable 5.1",
+      "description": "Claude model for demanding reasoning and long-horizon agentic work",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "anthropic/claude-fable-5-2",
+      "display_name": "Claude Fable 5.2",
       "description": "Claude model for demanding reasoning and long-horizon agentic work",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,

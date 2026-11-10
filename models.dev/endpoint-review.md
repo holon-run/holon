@@ -9,6 +9,122 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-10 incremental review
+
+Baseline main is `567d5a46`. The November 10 Beijing cycle fixes the
+November 9 21:00:28 UTC models.dev payload at SHA-256
+`b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496`.
+This review distinguishes new, independently supported changes from preserved
+facts and unresolved evidence; it does not recertify all historical fields.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-10) records
+the new model contracts and sampling hashes.
+
+### Accepted increments
+
+- Add `anthropic@default/claude-fable-5-2` from the normal API supplement:
+  1,000,000 context, 128,000 output ceiling, image input and reasoning;
+  efforts `low/medium/high/xhigh/max`. The native API always uses adaptive
+  thinking. Send effort in `output_config`, not manual `budget_tokens`;
+  omitted effort leaves the API's `high` default alone. Reject forced-tool
+  structured-response lowering locally and omit prompt-cache `temperature`.
+  Scope this adaptation to the exact native Anthropic model, not gateway
+  lookalikes or earlier Fable versions. The official contract requires
+  30-day retention and does not grant ordinary ZDR access. Do not change
+  preferred/default models, account settings, or infer account eligibility.
+- Add `opencode-go/longcat-2.5-free` with **native Chat** preferred:
+  context 1,000,000, output ceiling 262,144, image input and reasoning.
+  Its Go-specific listing has a reasoning toggle but no effort enumeration
+  or service output default; keep both unassigned. Existing reviewed text
+  translation registers Messages/Responses separately, without capacity,
+  vision, reasoning, explicit cache support, or agent-turn certification.
+  Zen has independent evidence on a different host; it grants no Go
+  entitlement and does not authorize a new Zen endpoint here.
+- The discovery artifact adds three other remote records (OpenRouter Fable
+  5.2 and Muse Ember, Venice Fable 5.2), removes absent OpenRouter MiniMax M1
+  and three Venice Mercury records, and updates twelve remote projections.
+  These are discovery records, not new static subscription registrations.
+  OpenRouter's independently sampled limits agree on the changed records.
+  Batch-only additions in its live listing are not imported outside the
+  fixed models.dev snapshot.
+
+### Special endpoint audit and preserved uncertainties
+
+| Endpoint | Result and preserved boundary |
+| --- | --- |
+| `dashscope@default` | Targeted model/protocol review; native Messages effort is not a Chat budget. |
+| `dashscope@token-plan` | Personal/team eligibility remains separate; no ordinary-API entitlement inference. |
+| `dashscope@coding-plan` | Domestic eligibility remains independent of Token Plan and international Coding. |
+| `dashscope@coding-plan-intl` | Six exact published versions; no domestic-list expansion. |
+| `volcengine@default` | Retain K3.1 output-default uncertainty: the model card's 131,072 still conflicts with the ordinary list's 4k. |
+| `volcengine@coding` | Retain package-specific IDs/limits and the already effective M3 withdrawal. |
+| `volcengine@plan` | Agent Plan model-specific 1M statements do not certify every subscription route. |
+| `tencent-tokenhub@default` | Preserve exact retirements; M2.7's November 17 deadline is still in the future. |
+| `tencent-tokenhub@messages` | Preserve model/protocol matrix; public compatible parameters are not per-model support. |
+| `tencent-tokenhub@responses` | Native-versus-compatible effort mapping remains unresolved; do not enable all Responses routes. |
+| `qianfan@default` | Preserve exact units, model-specific limits and unresolved thinking-exp semantics. |
+| `bigmodel@default` | Domestic ordinary API, plan and legal-model evidence remain distinct. |
+| `zai@default` | International eligibility is not copied from Bigmodel or its subscription API. |
+| `xiaomi@default` | Preserve V2.5 retirements and V2.6 facts; three archived overview/update URLs contain only a SPA shell. |
+| `xiaomi@token-plan` | Preserve separate Key/region/model eligibility; no ultraspeed expansion or blanket effort inference. |
+| `minimax@default` | Preserve native model and reasoning controls; no plan eligibility inference. |
+| `minimax@m-plan` | Review separately from ordinary API and mainland subscription. |
+| `minimax-cn@default` | Preserve mainland native contract and existing unknowns. |
+| `minimax-cn@m-plan` | Preserve mainland plan limits and eligibility separately. |
+| `moonshot@default` | Preserve international model IDs/limits; no Coding inheritance. |
+| `moonshot-cn@default` | Require merged runtime objects, not snapshot-only reconstruction. |
+| `kimi@default` | Preserve independent native endpoint contract and unknowns. |
+| `kimi@coding` | Preserve Coding eligibility; an unavailable api.html is not evidence of removal. |
+| `qwen-portal@default` | Preserve portal/OAuth isolation; unavailable raw authentication.md is not an entitlement change. |
+| `nvidia@default` | Preserve exact hosted IDs and deployment-specific unknowns. |
+| `opencode-go@default` | Admit only the independently published LongCat Chat contract; keep historical IDs absent from one listing. |
+| `opencode-go@messages` | LongCat is translated text only; do not copy native Chat capabilities. |
+| `opencode-go@responses` | Same isolation; a newer listing missing Crouton is not retirement evidence. |
+| `fireworks@default` | Preserve mode/deployment isolation; index serverless=false alone does not settle existing route policy or prove dated retirement. |
+| `xiaomi@responses` | Preserve independent Responses effort/character-limit uncertainty, not a Chat or Token Plan copy. |
+
+The first group's archived review reached 92/95 relevant-source readings;
+three Xiaomi shell responses contain no contractual body. Prior per-model
+eligibility/effort gaps remain explicitly unresolved, not silently certified
+by a successful HTTP response or unchanged objects. The second group's
+corrected real coverage export contains 139 objects across its 15 target
+endpoints, not the earlier snapshot-only 137 or historical 173 estimate.
+Five endpoints have zero routes in this checked-in, no-local-config export;
+this is not an assertion about their dynamic or account-specific catalogs.
+All 630 historical coverage records match main in their recorded facts and
+inputs. The earlier Go capability discrepancies were reconstruction errors;
+the corrected source comparison preserves unknowns and translated overrides.
+Fireworks' six serverless=false index rows do not independently establish
+runtime mode-policy violations. Codex's sampled catalog bytes and the two DeepSeek contract texts
+are unchanged from the preceding cycle. No credentials, account-specific
+configuration, paid inference, or automatic refresh schedule is involved.
+
+### Verification status
+
+Two pre-fix regressions failed at the intended LongCat registration and Fable
+manual-thinking assertions. Builtin regeneration passed exactly one test;
+the initial focused green run passed seven tests, followed by three Fable
+regressions. Fixed refresh, validation, complete-object review and 634-route
+coverage passed; the historical 630 records, defaults and cache policies
+remain unchanged. Both integration targets passed (11 adapter tests and one
+context-budget test), as did formatting, diff checks and
+`RUSTFLAGS="-D warnings"` all-target checking with Rust 1.99.1.
+
+The full CI compile-group `c` run was **not green**: 1,950 passed, two failed
+and seven were ignored. Both failures are in unchanged
+`http::tailscale_serve` IPv6 listener tests: the wildcard backend reports
+`NetworkUnreachable` (OS 101), and localhost migration reports
+`AddrNotAvailable` (OS 99). Remote CI must verify these tests; no unrelated
+network code or host configuration was changed. Existing Cargo manifest
+warnings about redundant homepage metadata and the unused `rpassword`
+dependency remain; the successful Rust check is not a claim of warning-free
+Cargo output.
+
+The first independent review found no confirmed defects in its checked
+production/test hunks, but did not finish all document and LongCat source
+cross-checks. It is a limited review, not a complete twelve-file sign-off;
+the remaining evidence/document review is pending. Frozen hashes passed
+for all twelve files before this verification-only document update.
+
 ## 2026-11-09 incremental review
 
 Baseline main is `4352b899`; November 8 UTC sampling corresponds to the
