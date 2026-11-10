@@ -773,25 +773,25 @@ impl RuntimeMutation {
             }
             std::borrow::Cow::Owned(request)
         };
-        // Owner is held; this chooses an explicit preparation policy only.
-        // The preparation transaction revalidates exact scope and State.
         let scope = self.input_evidence_scope();
-        let deleting = self
-            .runtime
-            .inner
-            .runtime_db
-            .agent_identities()
-            .latest_for_mutation(&scope.agent_id)?
-            .is_some_and(|identity| {
-                identity.incarnation == scope.identity_incarnation
-                    && identity.status == crate::types::AgentRegistryStatus::Deleting
-            });
-        let cause = if deleting {
-            InputPreparationCause::ExistingAdmissionCleanup
-        } else if self.input_evidence.is_none() {
-            InputPreparationCause::ValidatedRecovery
-        } else {
-            InputPreparationCause::OwnerChange
+        let resolve_cause = || {
+            let deleting = self
+                .runtime
+                .inner
+                .runtime_db
+                .agent_identities()
+                .latest_for_mutation(&scope.agent_id)?
+                .is_some_and(|identity| {
+                    identity.incarnation == scope.identity_incarnation
+                        && identity.status == crate::types::AgentRegistryStatus::Deleting
+                });
+            Ok(if deleting {
+                InputPreparationCause::ExistingAdmissionCleanup
+            } else if self.input_evidence.is_none() {
+                InputPreparationCause::ValidatedRecovery
+            } else {
+                InputPreparationCause::OwnerChange
+            })
         };
         let default_scheduling = super::resident_scheduling::SchedulingCaptureRequest::current();
         let current_roles = self.runtime.inner.current_queries.snapshot(
@@ -814,7 +814,7 @@ impl RuntimeMutation {
                 &self.runtime.inner.runtime_db,
                 &self.reservations[self.primary_index],
                 &root,
-                cause,
+                resolve_cause,
                 &request,
                 recent_episode_limit,
                 &self.runtime.inner.input_evidence_budget,

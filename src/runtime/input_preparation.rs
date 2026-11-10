@@ -68,7 +68,7 @@ pub(crate) fn prepare_reserved_input_domains(
         db,
         reservation,
         published,
-        cause,
+        || Ok(cause),
         request,
         recent_episode_limit,
         budget,
@@ -81,7 +81,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
     db: &RuntimeDb,
     reservation: &MutationReservation,
     published: &AgentSnapshot,
-    cause: InputPreparationCause,
+    resolve_cause: impl FnOnce() -> Result<InputPreparationCause>,
     request: &InputEvidenceLoadRequest,
     recent_episode_limit: usize,
     budget: &InputEvidenceBudgetLedger,
@@ -172,7 +172,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
                 {
                     #[cfg(test)]
                     eprintln!(
-                        "input preparation reload: agent={} cause={cause:?} readiness={error:#}",
+                        "input preparation reload: agent={} readiness={error:#}",
                         scope.agent_id
                     );
                 }
@@ -180,6 +180,9 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
             }
         }
     }
+    // Covered requests need only the held publication. Resolve the durable
+    // lifecycle policy once a miss requires an actual preparation read.
+    let cause = resolve_cause()?;
     #[cfg(test)]
     eprintln!(
         "input preparation reload: agent={} cause={cause:?} scheduling_ready={scheduling_ready} current_ready={current_ready} inputs_present={}",
