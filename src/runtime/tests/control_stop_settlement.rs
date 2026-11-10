@@ -39,7 +39,7 @@ fn runtime_fixture(
     workspace: &std::path::Path,
     started: Arc<tokio::sync::Notify>,
 ) -> RuntimeHandle {
-    let runtime = RuntimeHandle::new(
+    RuntimeHandle::new(
         "default",
         home.to_path_buf(),
         workspace.to_path_buf(),
@@ -48,21 +48,7 @@ fn runtime_fixture(
         "default".into(),
         context_config(),
     )
-    .unwrap();
-    runtime
-        .runtime_db()
-        .agent_identities()
-        .upsert(&crate::types::AgentIdentityRecord::new(
-            "default",
-            AgentKind::Default,
-            AgentVisibility::Public,
-            AgentOwnership::SelfOwned,
-            AgentProfilePreset::PublicNamed,
-            None,
-            None,
-        ))
-        .unwrap();
-    runtime
+    .unwrap()
 }
 fn proof<'a>(
     runtime: &RuntimeHandle,

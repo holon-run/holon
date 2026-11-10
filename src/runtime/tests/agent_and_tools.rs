@@ -670,14 +670,8 @@ async fn canonical_capability_policy_agrees_across_provider_preview_and_dispatch
             requests: Mutex::new(Vec::new()),
         });
         let host = RuntimeHost::new_with_provider(config, provider.clone()).unwrap();
-        let runtime = host.default_runtime().await.unwrap();
-        let agent_id = runtime.agent_id().await.unwrap();
-        let mut identity = host
-            .runtime_db()
-            .agent_identities()
-            .latest(&agent_id)
-            .unwrap()
-            .unwrap();
+        let mut identity = host.ensure_default_agent_identity().unwrap();
+        let agent_id = identity.agent_id.clone();
         // Deliberately disagree with the legacy preset in the first two cases.
         identity.profile_preset = Some(preset);
         identity.revision += 1;
@@ -686,11 +680,13 @@ async fn canonical_capability_policy_agrees_across_provider_preview_and_dispatch
             .upsert(&identity)
             .unwrap();
         host.cache_agent_identity(&identity).unwrap();
-        assert_eq!(
-            runtime.agent_identity_view().await.unwrap().profile_preset,
-            preset
-        );
-        let mut policy = runtime.agent_capability_policy().await.unwrap().unwrap();
+        let mut policy = host
+            .runtime_db()
+            .agent_canonical_relations()
+            .latest(&agent_id)
+            .unwrap()
+            .and_then(|relations| relations.capability_policy)
+            .unwrap();
         policy.revision += 1;
         // Unspecified families remain denied; no preset rules may fill them in.
         policy.rules = vec![
@@ -707,6 +703,14 @@ async fn canonical_capability_policy_agrees_across_provider_preview_and_dispatch
             .agent_canonical_relations()
             .upsert_capability_policy(&policy)
             .unwrap();
+        let runtime = host
+            .default_runtime_bootstrapped_observed(None)
+            .await
+            .unwrap();
+        assert_eq!(
+            runtime.agent_identity_view().await.unwrap().profile_preset,
+            preset
+        );
         let allowed = effect == AgentPolicyEffect::Allow;
 
         let (_, tools, _, _, _) = runtime.provider_tool_selection().await.unwrap();
