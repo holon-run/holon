@@ -670,12 +670,25 @@ impl Fixture {
         self.commit_queue_reentry_with_delay(chrono::Duration::zero())
     }
     fn commit_queue_reentry_with_delay(&self, delay: chrono::Duration) -> Result<()> {
+        self.commit_queue_reentry_with_ingress(
+            delay,
+            Some(&self.binding.key().actual_dispatch_turn_id),
+            false,
+        )
+    }
+
+    fn commit_queue_reentry_with_ingress(
+        &self,
+        delay: chrono::Duration,
+        ingress: Option<&str>,
+        attach_live: bool,
+    ) -> Result<()> {
         use crate::domain::execution_protocol::{ExecutionProtocolCommand, InterruptExecution};
         use crate::runtime_db::transitions::{
             ExecutionProtocolTransition, PreparedQueueTransition, QueueMutation, QueueOperation,
             QueueTransitionCommand,
         };
-        self.admit_original_command()?;
+        self.admit_original_command_with_turn(ingress.map(str::to_owned))?;
         let at = self.at + chrono::Duration::seconds(2);
         let (mut turn, before) = self.db.transaction(|tx| {
             let turn = ContextDurableRead::new(tx, &self.source.agent_id)
@@ -699,6 +712,36 @@ impl Fixture {
         queued.status = QueueEntryStatus::Queued;
         queued.updated_at = at + delay;
         let activation = format!("activation:message:{}", self.source.id);
+        let items = vec![crate::types::IdleInputBatchItem {
+            message_id: self.source.id.clone(),
+            source_ref: format!("message:{}", self.source.id),
+            rendered: String::new(),
+        }];
+        if attach_live {
+            turn.live_input_batches
+                .push(crate::types::LiveInputBatchRecord {
+                    activation_id: activation.clone(),
+                    safe_point: crate::types::LiveInputSafePoint::new(&activation, 1),
+                    cutoff: at,
+                    max_items: 1,
+                    max_bytes: 1024,
+                    rendered_bytes: 0,
+                    result_identities: vec![],
+                    ordinary_message_ids: vec![self.source.id.clone()],
+                    items,
+                });
+        } else {
+            turn.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+                anchor_message_id: self.source.id.clone(),
+                activation_id: Some(activation.clone()),
+                sender_agent_id: self.source.agent_id.clone(),
+                cutoff: at,
+                max_items: 1,
+                max_bytes: 1024,
+                rendered_bytes: 0,
+                items,
+            });
+        }
         let mut audit = AuditEvent::legacy(
             "scheduler_bootstrap_claim_recovered",
             serde_json::json!({"agent_id":self.source.agent_id,"message_id":self.source.id,"activation_id":activation,"queue_status":"queued","recovery_outcome":"task_result_attempt_requeued_for_reentry","provenance":"bootstrap_reconciliation"}),
@@ -787,12 +830,53 @@ fn exclusive_startup_finishes_original_queue_reentry_without_forging_startup_aud
 }
 
 #[test]
+fn queue_reentry_uses_canonical_attachment_when_ingress_is_missing() -> Result<()> {
+    assert_queue_reentry_uses_attachment(None, false)
+}
+
+#[test]
+fn queue_reentry_uses_canonical_attachment_when_ingress_differs() -> Result<()> {
+    assert_queue_reentry_uses_attachment(Some("unrelated-ingress"), false)
+}
+
+#[test]
+fn queue_reentry_uses_canonical_live_attachment() -> Result<()> {
+    assert_queue_reentry_uses_attachment(Some("unrelated-ingress"), true)
+}
+
+fn assert_queue_reentry_uses_attachment(ingress: Option<&str>, attach_live: bool) -> Result<()> {
+    let f = Fixture::with_source_turn(false, ingress)?;
+    f.commit_queue_reentry_with_ingress(chrono::Duration::milliseconds(20), ingress, attach_live)?;
+    let lease_path = f.home.path().join("maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lease_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock().unwrap();
+    let cap =
+        ExclusiveStartupInputRecovery::for_pre_activation_host(&f.db, &lease, &lease_path, &guard)?;
+    let session = StartupEndedMemorySession::new(&f.db, &cap)?;
+    let token =
+        f.db.transaction(|tx| session.authorize_interrupted_tx(tx, &f.binding))?;
+    assert!(matches!(token.end, CanonicalEnd::QueueReentry(_)));
+    f.clear_original_posture()?;
+    f.db.transaction(|tx| token.validate_tx(tx, f.binding.key(), f.binding.invocation()))?;
+    let persisted_hint: Option<String> = f.db.connection()?.query_row(
+        "SELECT json_extract(payload_json,'$.turn_id') FROM execution_protocol_attempts WHERE attempt_id=?1",
+        [format!("activation:message:{}", f.source.id)],
+        |r| r.get(0),
+    )?;
+    assert_eq!(persisted_hint.as_deref(), ingress);
+    Ok(())
+}
+
+#[test]
 fn queue_reentry_requires_original_receipt_and_unchanged_native_facts() -> Result<()> {
     for mutation in [
         "DELETE FROM input_mutation_receipts WHERE command_nonce='queue-reentry-original'",
         "UPDATE audit_events SET data_json=json_set(data_json,'$.data.activation_id','foreign') WHERE audit_event_id='queue-reentry-audit'",
         "UPDATE queue_entries SET updated_at='2030-01-01T00:00:00.000Z',payload_json=json_set(payload_json,'$.updated_at','2030-01-01T00:00:00Z')",
         "UPDATE execution_protocol_attempts SET lifecycle_state='settled'",
+        "UPDATE execution_protocol_attempts SET payload_json=json_set(payload_json,'$.run_id','foreign-run')",
+        "UPDATE turn_records SET payload_json=json_remove(payload_json,'$.idle_input_batch') WHERE turn_id='startup-ended-turn'",
         "UPDATE turn_records SET completed_at='2030-01-01T00:00:00.000Z' WHERE turn_id='startup-ended-turn'",
     ] {
         let f=Fixture::new()?;f.commit_queue_reentry()?;

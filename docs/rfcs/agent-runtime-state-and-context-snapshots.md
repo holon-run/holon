@@ -5214,7 +5214,9 @@ real I/O/arithmetic failure propagation.
 Startup may finish an original dispatch already interrupted by canonical
 TaskResult queue reentry. This requires the original same-scope whole Queue
 receipt and its exact recovery audit ACK, unchanged queued source and terminal
-Turn columns, and the original interrupted Attempt/outcome. The exclusive
-startup session still fences old producers; a terminal row or reason alone
-never grants recovery authority. Revalidate the frozen proof before the normal
-memory Finish transaction, preserving the business terminal and replay queue.
+Turn columns, and the original interrupted Attempt/outcome. Resolve the actual
+Turn through its unique durable activation attachment; the Attempt's ingress
+hint can differ or be absent. The exclusive startup session still fences old
+producers; a terminal row or reason alone never grants recovery authority.
+Revalidate the frozen proof before the normal memory Finish transaction,
+preserving the business terminal and replay queue.
