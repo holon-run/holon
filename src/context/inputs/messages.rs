@@ -44,19 +44,6 @@ impl ContextHistoryMessage {
         )?;
         Ok(Self(HistoryMessage::Owned(Arc::new(record))))
     }
-
-    pub(in crate::context) fn budget_payload_bytes(&self) -> Result<u64> {
-        match &self.0 {
-            // Qualification already measured this immutable body, including
-            // the evidence/relation envelope. Retain that conservative charge.
-            HistoryMessage::Qualified { evidence, .. } => {
-                Ok(u64::try_from(evidence.resident_bytes)?)
-            }
-            HistoryMessage::Owned(record) => Ok(
-                crate::runtime::input_evidence_budget::serialized_bytes(record.as_ref())?,
-            ),
-        }
-    }
 }
 
 impl Deref for ContextHistoryMessage {
