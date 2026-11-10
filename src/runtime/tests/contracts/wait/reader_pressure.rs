@@ -55,8 +55,8 @@ async fn under_reader_pressure<T>(
 ) -> anyhow::Result<T> {
     let mut releases = Vec::new();
     let mut readers = Vec::new();
-    // Occupy the runtime's four default reader slots without holding the writer.
-    for _ in 0..4 {
+    // Occupy all ordinary reader slots without holding the writer.
+    for _ in 0..runtime.runtime_db().reader_pool_stats_for_tests().capacity {
         let db = runtime.runtime_db().clone();
         let (started_tx, started_rx) = tokio::sync::oneshot::channel();
         let (release_tx, release_rx) = mpsc::channel();

@@ -152,6 +152,13 @@ its provider state. Startup-only changes return `accepted_requires_restart`.
 Unsupported keys are rejected with structured reasons instead of silently
 editing files.
 
+The persisted `runtime.db_readers` limits are a runtime resource setting whose
+effect requires the next Host construction. They remain writable through this
+API and the CLI, but report `accepted_requires_restart`. Reload preserves the
+running limits and reader pools; it must not install a second set of pools for
+new Agents while existing Agents retain the old ones. See
+[reader limits](runtime-db-reader-reuse.md#configurable-reader-limits).
+
 Runtime config and credential mutations share one host-owned reload
 coordinator. The coordinator serializes reload rounds, coalesces bursts, and
 runs another round when a newer generation is requested while one is already

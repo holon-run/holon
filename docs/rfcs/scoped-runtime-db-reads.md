@@ -12,14 +12,17 @@ verification; gate-only tests do not establish end-to-end shutdown correctness.
 `RuntimeDb::with_read_scope` derives a facade sharing the existing pool and
 writer, but carrying a `RuntimeDbReadScope` for pooled read-role operations.
 The scope has an absolute monotonic deadline and explicit cancellation.
-Unscoped facades keep the existing acquisition-only budget: the default 250 ms
-does not become an SQL execution deadline.
+Unscoped production facades wait for capacity without an implicit acquisition
+deadline. The ordinary/preparation limits are fixed when their RuntimeDb opens;
+the Host resolves them from `runtime.db_readers` at startup.
 
-The acquisition deadline is the smaller of the existing acquisition budget and
-the explicit scope deadline. Checks run before acquisition, before the business
+An explicit scope supplies an absolute acquisition and execution deadline.
+Test-only acquisition budgets, when present, further restrict acquisition.
+Checks run before acquisition, before the business
 closure, and before a successful result escapes. Asynchronous admission also
-observes cancellation. A synchronous checkout can remain blocked until its
-bounded acquisition deadline; it does not poll or open overflow connections.
+observes cancellation. Synchronous checkout polls scope/protection while waiting
+for capacity; the check interval is not a timeout. Neither role opens overflow
+connections or borrows the writer.
 
 Every read uses a child cancellation token. Dropping an asynchronous read future
 cancels only that operation, not its parent scope or sibling reads. Once blocking

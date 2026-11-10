@@ -26,6 +26,27 @@ stderr 打印 `applied_via=daemon_api` 或 `applied_via=offline_store`，stdout 
 继续使用当前生效的配置，CLI 会在 stderr 上提示这一点。
 用 `holon config schema` 查看所有可用的键及其类型、默认值和说明。
 
+### 运行时数据库读池
+
+| 键 | 类型 | 默认值 | 说明 |
+|-----|------|--------|------|
+| `runtime.db_readers.ordinary_max_connections` | 正整数 | `16` | 普通读池的连接上限 |
+| `runtime.db_readers.preparation_max_connections` | 正整数 | `4` | 准备阶段保留读池的连接上限 |
+
+两项都必须为正整数，合计不超过 **64**。一个 Host 内的所有 Agent 共享这两个池，
+不会按 Agent 分别分配。连接按需增长，空闲后保留复用；专用写队列仍串行执行。
+更大的上限允许更多 SQL 并发，也可能增加内存、文件描述符和磁盘负载，不能代替慢查询
+或写锁问题的修复。
+
+```bash
+holon config set runtime.db_readers.ordinary_max_connections 16
+holon config set runtime.db_readers.preparation_max_connections 4
+```
+
+配置立即持久化，在 **daemon 重启后生效**；运行时配置或模型重载保留现有池及其生效
+上限。`unset` 恢复对应默认值；恢复后总量超过 64 时会拒绝修改。内部读取等待可用容量，
+显式请求截止时间与取消仍然有效；这两个配置不会增加短暂的 checkout 超时。
+
 ### 模型与提供商设置
 
 | 键 | 类型 | 说明 |

@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::{RuntimeDb, RuntimeDbReadScope, RuntimeDbRetryableError};
+use super::{RuntimeDb, RuntimeDbReadScope, RuntimeDbReaderConfig, RuntimeDbRetryableError};
 // Only the protection-loss regression test below exercises these types, and
 // it runs on Linux where the WAL sidecar can be removed underneath the pool.
 #[cfg(target_os = "linux")]
@@ -26,13 +26,140 @@ fn read_one(db: &RuntimeDb) -> Result<i64> {
     db.with_read(|connection| Ok(connection.query_row("SELECT 1", [], |row| row.get(0))?))
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unscoped_preparation_waits_past_old_checkout_limit_but_scope_still_expires() -> Result<()>
-{
+#[test]
+fn production_reader_defaults_are_lazy_and_shared() -> Result<()> {
     let directory = tempfile::tempdir()?;
     let db = RuntimeDb::open_and_migrate(
         directory.path().join("runtime.sqlite"),
         directory.path().join("runtime.lock"),
+    )?;
+    let clone = db.clone();
+    assert_eq!(db.reader_pool_stats_for_tests().capacity, 16);
+    assert_eq!(db.preparation_pool_stats_for_tests().capacity, 4);
+    assert_eq!(db.reader_pool_stats_for_tests().connect_attempts, 0);
+    assert_eq!(db.preparation_pool_stats_for_tests().connect_attempts, 0);
+    read_one(&clone)?;
+    db.read_for_preparation(|_| Ok(()))?;
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    assert_eq!(
+        clone.preparation_pool_stats_for_tests().connections_opened,
+        1
+    );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn configured_reader_roles_grow_to_their_limits_and_resume_after_release() -> Result<()> {
+    let directory = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate_with_reader_config(
+        directory.path().join("runtime.sqlite"),
+        directory.path().join("runtime.lock"),
+        RuntimeDbReaderConfig::new(8, 3)?,
+    )?;
+    for preparation in [false, true] {
+        let capacity = if preparation { 3 } else { 8 };
+        let (started, mut running) = tokio::sync::mpsc::unbounded_channel();
+        let mut releases = Vec::new();
+        let mut holders = Vec::new();
+        for _ in 0..capacity {
+            let reader = db.clone();
+            let started = started.clone();
+            let (release, held) = mpsc::channel();
+            releases.push(release);
+            holders.push(tokio::spawn(async move {
+                let read = move || {
+                    started.send(())?;
+                    held.recv_timeout(Duration::from_secs(10))?;
+                    Ok(())
+                };
+                if preparation {
+                    tokio::task::spawn_blocking(move || reader.read_for_preparation(|_| read()))
+                        .await?
+                } else {
+                    reader.with_read_async(move |_| read()).await
+                }
+            }));
+        }
+        for _ in 0..capacity {
+            tokio::time::timeout(Duration::from_secs(5), running.recv())
+                .await?
+                .unwrap();
+        }
+        let stats = if preparation {
+            db.preparation_pool_stats_for_tests()
+        } else {
+            db.reader_pool_stats_for_tests()
+        };
+        assert_eq!(stats.capacity, capacity);
+        assert_eq!(stats.connections_opened, u64::from(capacity));
+        assert_eq!(stats.current_connections, capacity);
+        assert_eq!(stats.idle_connections, 0);
+        if !preparation {
+            assert_eq!(stats.available_admission, 0);
+        }
+        // The other role remains usable even when this role reaches its maximum.
+        if preparation {
+            assert_eq!(read_one(&db)?, 1);
+        } else {
+            db.read_for_preparation(|_| Ok(()))?;
+        }
+        let reader = db.with_read_scope(RuntimeDbReadScope::new(
+            Instant::now() + Duration::from_millis(30),
+        ));
+        let ran = Arc::new(AtomicBool::new(false));
+        let entered = ran.clone();
+        let read = move || {
+            entered.store(true, Ordering::SeqCst);
+            Ok(())
+        };
+        let error = if preparation {
+            tokio::task::spawn_blocking(move || reader.read_for_preparation(|_| read()))
+                .await?
+                .unwrap_err()
+        } else {
+            reader.with_read_async(move |_| read()).await.unwrap_err()
+        };
+        assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
+        assert!(!ran.load(Ordering::SeqCst));
+        let reader = db.clone();
+        let waiting = tokio::spawn(async move {
+            if preparation {
+                tokio::task::spawn_blocking(move || reader.read_for_preparation(|_| Ok(42))).await?
+            } else {
+                reader.with_read_async(|_| Ok(42)).await
+            }
+        });
+        releases.pop().unwrap().send(())?;
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(5), waiting).await???,
+            42
+        );
+        for release in releases {
+            release.send(())?;
+        }
+        for holder in holders {
+            holder.await??;
+        }
+        let stats = if preparation {
+            db.preparation_pool_stats_for_tests()
+        } else {
+            db.reader_pool_stats_for_tests()
+        };
+        assert_eq!(stats.connections_opened, u64::from(capacity));
+        assert_eq!(stats.idle_connections, capacity);
+        assert_eq!(stats.available_admission, capacity as usize);
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unscoped_preparation_waits_past_old_checkout_limit_but_scope_still_expires() -> Result<()>
+{
+    let directory = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate_with_reader_config(
+        directory.path().join("runtime.sqlite"),
+        directory.path().join("runtime.lock"),
+        RuntimeDbReaderConfig::new(4, 1)?,
     )?;
     let (started, running) = tokio::sync::oneshot::channel();
     let (release, held) = mpsc::channel();
@@ -69,9 +196,10 @@ async fn unscoped_preparation_waits_past_old_checkout_limit_but_scope_still_expi
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unscoped_async_reader_waits_for_capacity_without_old_admission_limit() -> Result<()> {
     let directory = tempfile::tempdir()?;
-    let db = RuntimeDb::open_and_migrate(
+    let db = RuntimeDb::open_and_migrate_with_reader_config(
         directory.path().join("runtime.sqlite"),
         directory.path().join("runtime.lock"),
+        RuntimeDbReaderConfig::new(4, 1)?,
     )?;
     let (started, mut running) = tokio::sync::mpsc::unbounded_channel();
     let mut releases = Vec::new();
@@ -127,7 +255,7 @@ async fn operator_prompt_waits_for_preparation_reader_and_is_admitted_once() -> 
     let home = tempfile::tempdir()?;
     std::fs::write(
         home.path().join("config.json"),
-        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+        r#"{"model":{"default":"openai/gpt-5.4"},"runtime":{"db_readers":{"ordinary_max_connections":3,"preparation_max_connections":1}}}"#,
     )?;
     let mut config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
     config.control_token = Some("secret".into());
@@ -139,6 +267,8 @@ async fn operator_prompt_waits_for_preparation_reader_and_is_admitted_once() -> 
     let runtime = host.default_runtime_bootstrapped_observed(None).await?;
     let agent = host.config().default_agent_id.clone();
     let db = host.runtime_db().clone();
+    assert_eq!(db.reader_pool_stats_for_tests().capacity, 3);
+    assert_eq!(db.preparation_pool_stats_for_tests().capacity, 1);
     let (started, running) = tokio::sync::oneshot::channel();
     let (release, held) = mpsc::channel();
     let holder = tokio::task::spawn_blocking(move || {

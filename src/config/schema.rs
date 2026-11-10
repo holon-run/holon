@@ -563,6 +563,20 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec!["true", "false"],
         },
         ConfigSchemaEntry {
+            key: "runtime.db_readers.ordinary_max_connections",
+            kind: "positive_integer",
+            description: "Ordinary reader limit shared across Agents in one Host. Both reader limits must total at most 64. Connections grow on demand; changes require daemon restart.",
+            default: json!(crate::runtime_db::DEFAULT_ORDINARY_MAX_CONNECTIONS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "runtime.db_readers.preparation_max_connections",
+            kind: "positive_integer",
+            description: "Reserved preparation reader limit shared across Agents in one Host. Both reader limits must total at most 64. Connections grow on demand; changes require daemon restart.",
+            default: json!(crate::runtime_db::DEFAULT_PREPARATION_MAX_CONNECTIONS),
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "runtime.state_memory.history_per_agent_bytes", kind: "positive_integer",
             description: "Historical allocation budget per Agent; does not cap current facts, pending bodies, pins or RSS. Changes take effect when the next Host is constructed.",
             default: json!(33554432), allowed_values: vec![],
@@ -1267,6 +1281,18 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .idle_grace_seconds
             .map(|v| json!(v))
             .unwrap_or(Value::Null)),
+        "runtime.db_readers.ordinary_max_connections" => Ok(config
+            .runtime
+            .db_readers
+            .ordinary_max_connections
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
+        "runtime.db_readers.preparation_max_connections" => Ok(config
+            .runtime
+            .db_readers
+            .preparation_max_connections
+            .map(|value| json!(value))
+            .unwrap_or(Value::Null)),
         "runtime.retention.enabled" => Ok(config
             .runtime
             .retention
@@ -1819,6 +1845,18 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.runtime.reclamation.idle_grace_seconds =
                 Some(parse_positive_u64_key(key, raw_value)?);
         }
+        "runtime.db_readers.ordinary_max_connections"
+        | "runtime.db_readers.preparation_max_connections" => {
+            let mut readers = config.runtime.db_readers.clone();
+            let capacity = Some(parse_positive_u32_key(key, raw_value)?);
+            if key == "runtime.db_readers.ordinary_max_connections" {
+                readers.ordinary_max_connections = capacity;
+            } else {
+                readers.preparation_max_connections = capacity;
+            }
+            readers.resolve()?;
+            config.runtime.db_readers = readers;
+        }
         "runtime.retention.enabled" => {
             config.runtime.retention.enabled = Some(
                 parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?,
@@ -2259,6 +2297,17 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         }
         "runtime.reclamation.idle_grace_seconds" => {
             config.runtime.reclamation.idle_grace_seconds = None
+        }
+        "runtime.db_readers.ordinary_max_connections"
+        | "runtime.db_readers.preparation_max_connections" => {
+            let mut readers = config.runtime.db_readers.clone();
+            if key == "runtime.db_readers.ordinary_max_connections" {
+                readers.ordinary_max_connections = None;
+            } else {
+                readers.preparation_max_connections = None;
+            }
+            readers.resolve()?;
+            config.runtime.db_readers = readers;
         }
         "runtime.retention.enabled" => config.runtime.retention.enabled = None,
         "runtime.retention.audit_events_days" => {

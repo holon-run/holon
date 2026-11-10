@@ -117,6 +117,87 @@ mod setup_tests {
     }
 
     #[tokio::test]
+    async fn reader_limits_api_persists_for_restart_and_keeps_effective_pools() {
+        let (_home, host) = host();
+        let (status, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","value":8},
+                {"key":"runtime.db_readers.preparation_max_connections","value":2}
+            ]}),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        for result in accepted["results"].as_array().unwrap() {
+            assert_eq!(result["effect"], "accepted_requires_restart");
+        }
+        let generation = accepted["reload"]["requested_generation"].as_u64().unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while host.config_reload_status().completed_generation < generation {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("config reload convergence");
+        let path = host.config().config_file_path.clone();
+        let persisted = crate::config::load_persisted_config_at(&path).unwrap();
+        assert_eq!(
+            persisted.runtime.db_readers.resolve().unwrap(),
+            crate::runtime_db::RuntimeDbReaderConfig::new(8, 2).unwrap()
+        );
+        assert_eq!(host.runtime_db().reader_pool_stats_for_tests().capacity, 16);
+        assert_eq!(
+            host.runtime_db()
+                .preparation_pool_stats_for_tests()
+                .capacity,
+            4
+        );
+        assert_eq!(
+            host.config()
+                .stored_config
+                .runtime
+                .db_readers
+                .resolve()
+                .unwrap(),
+            crate::runtime_db::RuntimeDbReaderConfig::default()
+        );
+        let (_, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","value":64}
+            ]}),
+        )
+        .await;
+        assert_eq!(rejected["changed"], false, "{rejected}");
+        assert_eq!(
+            crate::config::load_persisted_config_at(&path)
+                .unwrap()
+                .runtime
+                .db_readers,
+            persisted.runtime.db_readers
+        );
+        let (_, unset) = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","unset":true},
+                {"key":"runtime.db_readers.preparation_max_connections","unset":true}
+            ]}),
+        )
+        .await;
+        assert_eq!(unset["changed"], true, "{unset}");
+        assert!(crate::config::load_persisted_config_at(&path)
+            .unwrap()
+            .runtime
+            .db_readers
+            .is_empty());
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn runtime_setup_http_still_requires_control_authorization() {
         let (_home, host) = host();
         let mut state = AppState::for_tcp(host);
@@ -737,6 +818,14 @@ pub async fn runtime_config_update(
             .map_err(error_response)?;
         for result in &mut results {
             if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
+                if matches!(
+                    result.key.as_str(),
+                    "runtime.db_readers.ordinary_max_connections"
+                        | "runtime.db_readers.preparation_max_connections"
+                ) {
+                    result.reason = "persisted in config.json; reader pool limits take effect after daemon restart".into();
+                    continue;
+                }
                 result.effect = RuntimeConfigUpdateEffect::AcceptedReloadScheduled;
                 result.reason =
                     format!("persisted in config.json; reload generation {generation} scheduled");
@@ -858,6 +947,8 @@ fn is_runtime_mutable_config_key(key: &str) -> bool {
             | "runtime.default_tool_output_tokens"
             | "runtime.max_tool_output_tokens"
             | "runtime.disable_provider_fallback"
+            | "runtime.db_readers.ordinary_max_connections"
+            | "runtime.db_readers.preparation_max_connections"
             | "decision.enabled"
             | "decision.model"
             | "decision.local_onnx.enabled"

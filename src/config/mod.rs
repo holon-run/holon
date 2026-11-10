@@ -140,6 +140,8 @@ impl AppConfig {
             self.compaction_keep_recent_estimated_tokens;
         reloaded.stored_config.runtime.context_budget_overrides =
             self.stored_config.runtime.context_budget_overrides;
+        // Pool limits stay with the Host and all its existing RuntimeDb clones.
+        reloaded.stored_config.runtime.db_readers = self.stored_config.runtime.db_readers.clone();
         reloaded.recent_episode_candidates = self.recent_episode_candidates;
         reloaded.max_relevant_episodes = self.max_relevant_episodes;
         reloaded.control_token = self.control_token.clone();
@@ -331,6 +333,7 @@ impl AppConfig {
         validate_retired_scheduler_selector(&stored_config)?;
         resolve_runtime_db_retention_policy(&stored_config)?;
         stored_config.runtime.state_memory.resolve()?;
+        stored_config.runtime.db_readers.resolve()?;
         let validated_model_overrides = resolve_model_catalog(&stored_config)?;
         resolve_model_route_overrides(&stored_config)?;
         let validated_unknown_model_fallback =
