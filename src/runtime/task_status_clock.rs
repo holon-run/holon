@@ -13,7 +13,7 @@ use crate::runtime::{
         CanonicalTaskFact, CapturedTasks, QualifiedTaskFact, TaskFamily, TaskKey, TaskReadError,
     },
 };
-use crate::runtime_db::task_snapshot::TaskSnapshotError;
+use crate::runtime_error::{RuntimeError, RuntimeErrorDomain};
 use crate::types::{
     AdmissionContext, MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
     TaskKind, TaskRecord, TaskStatus,
@@ -127,7 +127,12 @@ pub(super) fn qualify<'a>(
     };
     ensure!(
         association,
-        TaskSnapshotError::CanonicalChanged(key.clone())
+        RuntimeError::new(
+            RuntimeErrorDomain::Task,
+            "task_status_generation_mismatch",
+            "Running TaskStatus could not prove the qualified Task generation",
+        )
+        .with_recovery_hint("Check the accepted status message against the original Task birth")
     );
     fn field<'a>(
         detail: Option<&'a serde_json::Value>,
@@ -185,7 +190,12 @@ pub(super) fn qualify<'a>(
             && parsed.work_item_id == task.work_item_id
             && parsed.recovery == task.recovery
             && same_rejoin,
-        TaskSnapshotError::CanonicalChanged(key)
+        RuntimeError::new(
+            RuntimeErrorDomain::Task,
+            "task_status_binding_mismatch",
+            "Running TaskStatus differs from the qualified Task binding",
+        )
+        .with_recovery_hint("Check the accepted status message and original Task rejoin binding")
     );
     Ok(Some(AcceptedChildRunningClock {
         _message: source.as_ref(),

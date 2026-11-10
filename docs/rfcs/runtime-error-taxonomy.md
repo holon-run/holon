@@ -89,6 +89,13 @@ do not create a stable code. Upstream provider codes such as
 `context_length_exceeded` are stored on the typed transport error and queried
 directly.
 
+TaskStatus settlement distinguishes an unproven Task generation
+(`task_status_generation_mismatch`), a mismatched Running status binding
+(`task_status_binding_mismatch`), and canonical Task qualification drift during
+persistence (`task_status_canonical_mismatch`). These are non-retryable Task
+errors. The existing bounded retry for typed state transition conflicts still
+applies, and unknown transaction outcomes retain priority.
+
 ## Boundary projections
 
 ### Tool
