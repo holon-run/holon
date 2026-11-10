@@ -6,6 +6,17 @@ use crate::runtime_db::RuntimeDb;
 use tokio::runtime::Handle;
 
 impl RuntimeHandle {
+    /// Availability-window errors produced by [`RuntimeHandle::observer_ready_root`].
+    pub(super) const OBSERVER_PUBLICATION_OPERATION: &'static str = "observer publication";
+    /// The window ends with the owner's next publication; interactive observer
+    /// reads wait it out instead of surfacing retryable busy on first attempt.
+    /// The bound must surface busy well inside existing caller deadlines:
+    /// fleet activity snapshots assert a typed error within 1s, and the
+    /// default summary exhaustion path asserts one within 2s.
+    const OBSERVER_PUBLICATION_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+    const OBSERVER_PUBLICATION_RETRY_DELAY: std::time::Duration =
+        std::time::Duration::from_millis(20);
+
     /// Observers pin one Ready cut; they never reserve an execution owner.
     pub(super) fn capture_observer_root(
         &self,
@@ -19,7 +30,7 @@ impl RuntimeHandle {
         &self,
         db: &RuntimeDb,
     ) -> Result<Arc<resident_state::AgentSnapshot>> {
-        let root = self.observer_ready_root(db)?;
+        let root = self.observer_ready_root_bounded(db).await?;
         if !Self::observer_needs_preparation(&root) {
             return Ok(root);
         }
@@ -40,7 +51,7 @@ impl RuntimeHandle {
             .map_err(|error| match error {
                 mutation_owner::MutationOwnerError::NeedsReconcile(_) => {
                     anyhow::Error::new(crate::runtime_db::RuntimeDbRetryableError::new(
-                        "observer publication",
+                        Self::OBSERVER_PUBLICATION_OPERATION,
                         db.path(),
                         error,
                     ))
@@ -49,7 +60,7 @@ impl RuntimeHandle {
             })?
             .ok_or_else(|| {
                 crate::runtime_db::RuntimeDbRetryableError::new(
-                    "observer publication",
+                    Self::OBSERVER_PUBLICATION_OPERATION,
                     db.path(),
                     "Ready publication is not available",
                 )
@@ -60,6 +71,36 @@ impl RuntimeHandle {
             "observer publication scope differs"
         );
         Ok(root)
+    }
+
+    fn observer_publication_window(error: &anyhow::Error) -> bool {
+        error
+            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+            .is_some_and(|error| error.operation() == Self::OBSERVER_PUBLICATION_OPERATION)
+    }
+
+    /// Bounded convergence for async observer reads. A claim or an input
+    /// recovery unpublishes the Ready cut only until the next publication, so
+    /// waiting briefly beats surfacing retryable busy on the first attempt.
+    /// Other errors, and windows that outlive the bound, keep their original
+    /// error contract. The check itself stays in memory; no SQL reader is used.
+    pub(super) async fn observer_ready_root_bounded(
+        &self,
+        db: &RuntimeDb,
+    ) -> Result<Arc<resident_state::AgentSnapshot>> {
+        let deadline = tokio::time::Instant::now() + Self::OBSERVER_PUBLICATION_WAIT;
+        loop {
+            let error = match self.observer_ready_root(db) {
+                Ok(root) => return Ok(root),
+                Err(error) => error,
+            };
+            if !Self::observer_publication_window(&error)
+                || tokio::time::Instant::now() + Self::OBSERVER_PUBLICATION_RETRY_DELAY > deadline
+            {
+                return Err(error);
+            }
+            tokio::time::sleep(Self::OBSERVER_PUBLICATION_RETRY_DELAY).await;
+        }
     }
 
     fn observer_needs_preparation(root: &resident_state::AgentSnapshot) -> bool {

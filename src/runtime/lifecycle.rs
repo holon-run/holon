@@ -1121,7 +1121,9 @@ impl RuntimeHandle {
     pub(crate) async fn child_agent_summary_observation(
         &self,
     ) -> Result<ChildAgentSummaryObservation> {
-        let root = self.observer_ready_root(&self.inner.runtime_db)?;
+        let root = self
+            .observer_ready_root_bounded(&self.inner.runtime_db)
+            .await?;
         let root = if root.scheduling.is_none() {
             self.capture_observer_root_async(&self.inner.runtime_db)
                 .await?
