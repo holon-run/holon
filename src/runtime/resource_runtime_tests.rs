@@ -273,15 +273,163 @@ async fn shared_guidance_write_invalidates_consumers_and_preserves_held_snapshot
 }
 
 #[tokio::test]
-async fn source_change_exhaustion_recovers_queued_input_without_host_access() -> Result<()> {
+async fn resource_write_during_domain_preparation_preserves_the_captured_read() -> Result<()> {
+    let (_home, host, runtime) = fixture().await?;
+    let before = runtime.ensure_context_resources().await?;
+    runtime
+        .inner
+        .context_capture_checkpoint
+        .after_resources
+        .store(true, Ordering::SeqCst);
+    let preparation = tokio::spawn({
+        let runtime = runtime.clone();
+        async move {
+            runtime
+                .preview_prompt(
+                    "hold this resource read".into(),
+                    AuthorityClass::OperatorInstruction,
+                )
+                .await
+        }
+    });
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.inner.context_capture_checkpoint.reached.notified(),
+    )
+    .await?;
+    {
+        let _writer = runtime.begin_context_resource_write()?;
+        std::fs::write(runtime.agent_home().join("AGENTS.md"), "NEXT_RESOURCE_READ")?;
+    }
+    runtime
+        .inner
+        .context_capture_checkpoint
+        .release
+        .notify_one();
+    let prompt = tokio::time::timeout(Duration::from_secs(5), preparation).await???;
+    assert!(Arc::ptr_eq(
+        &before,
+        &prompt._resource_read_material.as_ref().unwrap().observation
+    ));
+    assert!(prompt
+        .loaded_agents_md
+        .agent_source
+        .as_ref()
+        .unwrap()
+        .content
+        .contains("RESOURCE_GUIDANCE"));
+    let next = runtime
+        .preview_prompt(
+            "capture the new resource".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await?;
+    assert_eq!(
+        next.loaded_agents_md.agent_source.as_ref().unwrap().content,
+        "NEXT_RESOURCE_READ"
+    );
+    assert!(!Arc::ptr_eq(
+        &before,
+        &next._resource_read_material.as_ref().unwrap().observation
+    ));
+    host.shutdown().await
+}
+
+#[tokio::test]
+async fn resource_conflicts_process_original_input_without_runtime_rebuild() -> Result<()> {
+    for (configuration_change, conflicts) in [(false, 1), (false, 6), (true, 6)] {
+        let (_home, host, runtime) = fixture().await?;
+        let paused = runtime.pause_run_loop_for_monitor_test().await;
+        let message = enqueue_resource_race(&runtime).await?;
+        drop(paused);
+        race_resource_changes(&runtime, conflicts, configuration_change).await?;
+        tokio::time::timeout(Duration::from_secs(15), async {
+            loop {
+                if runtime
+                    .storage()
+                    .latest_queue_entries()?
+                    .iter()
+                    .any(|entry| {
+                        entry.message_id == message.id
+                            && entry.status == QueueEntryStatus::Processed
+                    })
+                {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Ok::<_, anyhow::Error>(())
+        })
+        .await
+        .context("the original queued input must process after resource churn")??;
+        let events = runtime.storage().read_recent_events(256)?;
+        assert!(events.iter().all(|event| !matches!(
+            event.kind.as_str(),
+            "agent_runtime_loop_failed" | "runtime_loop_recovered"
+        )));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "queue_entry_claimed"
+                    && event.data["message_id"] == message.id)
+                .count(),
+            1
+        );
+        let loaded = host
+            .try_get_loaded_runtime(runtime.instance_agent_id())
+            .await
+            .context("the original runtime must remain loaded")?;
+        assert!(Arc::ptr_eq(&runtime.inner, &loaded.inner));
+        host.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn resource_conflict_wait_releases_owner_and_allows_shutdown_without_claim() -> Result<()> {
     let (_home, host, runtime) = fixture().await?;
     let paused = runtime.pause_run_loop_for_monitor_test().await;
+    let message = enqueue_resource_race(&runtime).await?;
+    drop(paused);
+    race_resource_changes(&runtime, 3, false).await?;
+    // The loop releases this read gate when it waits. A pending writer obtains
+    // it before the next poll, keeping the source unclaimed for shutdown.
+    let paused = tokio::time::timeout(
+        Duration::from_secs(5),
+        runtime.pause_run_loop_for_monitor_test(),
+    )
+    .await?;
+    tokio::time::timeout(Duration::from_secs(5), runtime.request_service_shutdown()).await??;
+    drop(paused);
+    tokio::time::timeout(Duration::from_secs(5), host.shutdown()).await??;
+    let queued = runtime
+        .storage()
+        .latest_queue_entries()?
+        .into_iter()
+        .find(|entry| entry.message_id == message.id)
+        .context("the accepted source must remain durable")?;
+    assert_eq!(queued.status, QueueEntryStatus::Queued);
+    assert!(runtime
+        .storage()
+        .read_recent_events(256)?
+        .iter()
+        .all(|event| !matches!(
+            event.kind.as_str(),
+            "queue_entry_claimed"
+                | "turn_started"
+                | "agent_runtime_loop_failed"
+                | "runtime_loop_recovered"
+        )));
+    Ok(())
+}
+
+async fn enqueue_resource_race(runtime: &RuntimeHandle) -> Result<MessageEnvelope> {
     runtime
         .inner
         .context_capture_checkpoint
         .before_resources
         .store(true, Ordering::SeqCst);
-    let message = runtime
+    runtime
         .enqueue(
             MessageEnvelope::new(
                 runtime.instance_agent_id(),
@@ -293,7 +441,7 @@ async fn source_change_exhaustion_recovers_queued_input_without_host_access() ->
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
-                    text: "recover resource preparation".into(),
+                    text: "retain this source through resource churn".into(),
                 },
             )
             .with_admission(
@@ -301,74 +449,57 @@ async fn source_change_exhaustion_recovers_queued_input_without_host_access() ->
                 crate::types::AdmissionContext::ControlAuthenticated,
             ),
         )
-        .await?;
-    drop(paused);
-    for attempt in 0..3 {
+        .await
+}
+
+async fn race_resource_changes(
+    runtime: &RuntimeHandle,
+    conflicts: usize,
+    configuration_change: bool,
+) -> Result<()> {
+    for attempt in 0..conflicts {
         tokio::time::timeout(
             Duration::from_secs(10),
             runtime.inner.context_capture_checkpoint.reached.notified(),
         )
         .await
         .with_context(|| format!("resource conflict checkpoint {attempt}"))?;
-        runtime.inner.resources.gate.publish_config(|| {
-            let mut config = runtime.inner.config_snapshot.load_full().as_ref().clone();
-            config.resource_generation += 1;
-            runtime.inner.config_snapshot.store(Arc::new(config));
-            runtime.inner.resources.registry.invalidate(
-                super::resource_observation::ResourceInvalidation::ConfigurationChange,
+        if configuration_change {
+            runtime.inner.resources.gate.publish_config(|| {
+                let mut config = runtime.inner.config_snapshot.load_full().as_ref().clone();
+                config.resource_generation += 1;
+                runtime.inner.config_snapshot.store(Arc::new(config));
+                runtime.inner.resources.registry.invalidate(
+                    super::resource_observation::ResourceInvalidation::ConfigurationChange,
+                )?;
+                Ok(())
+            })?;
+        } else {
+            // Each real write finishes before capture resumes. No error is
+            // injected and no physical writer is held across the retry.
+            let _writer = runtime.begin_context_resource_write()?;
+            std::fs::write(
+                runtime.agent_home().join("AGENTS.md"),
+                format!("# Completed resource write {attempt}\n"),
             )?;
-            Ok(())
-        })?;
+        }
+        assert!(runtime
+            .storage()
+            .read_recent_events(256)?
+            .iter()
+            .all(|event| event.kind != "queue_entry_claimed"));
         runtime
             .inner
             .context_capture_checkpoint
             .before_resources
-            .store(attempt < 2, Ordering::SeqCst);
+            .store(attempt + 1 < conflicts, Ordering::SeqCst);
         runtime
             .inner
             .context_capture_checkpoint
             .release
             .notify_one();
     }
-    tokio::time::timeout(Duration::from_secs(15), async {
-        loop {
-            let events = runtime.storage().read_recent_events(256)?;
-            if let Some(failure) = events
-                .iter()
-                .find(|event| event.kind == "agent_runtime_loop_failed")
-            {
-                assert_eq!(failure.data["code"], "context_resource_changed");
-                assert_eq!(failure.data["retryable"], true);
-            }
-            if events
-                .iter()
-                .any(|event| event.kind == "runtime_loop_recovered")
-                && runtime
-                    .storage()
-                    .latest_queue_entries()?
-                    .iter()
-                    .any(|entry| {
-                        entry.message_id == message.id
-                            && entry.status == QueueEntryStatus::Processed
-                    })
-            {
-                assert_eq!(
-                    events
-                        .iter()
-                        .filter(|event| event.kind == "queue_entry_claimed"
-                            && event.data["message_id"] == message.id)
-                        .count(),
-                    1
-                );
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        Ok::<_, anyhow::Error>(())
-    })
-    .await
-    .context("automatic recovery must process the original queued input")??;
-    host.shutdown().await
+    Ok(())
 }
 
 async fn capture_loaded_prompt(runtime: &RuntimeHandle, text: &str) -> Result<EffectivePrompt> {

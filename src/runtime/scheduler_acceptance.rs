@@ -324,7 +324,8 @@ async fn seed_scheduler_claim_admission_restart_fixture(
                     ));
                 }
                 scheduler_executor::RunLoopPoll::Idle
-                | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+                | scheduler_executor::RunLoopPoll::AuthorityBlocked
+                | scheduler_executor::RunLoopPoll::ContextResourcesPending => {
                     return Err(anyhow!(
                         "scheduler claim restart replay did not claim the queued message"
                     ));
@@ -567,7 +568,8 @@ async fn seed_scheduler_waiting_work(
             ));
         }
         scheduler_executor::RunLoopPoll::Idle
-        | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+        | scheduler_executor::RunLoopPoll::AuthorityBlocked
+        | scheduler_executor::RunLoopPoll::ContextResourcesPending => {
             return Err(anyhow!(
                 "scheduler waiting restart fixture did not claim its work queue message"
             ));
@@ -915,7 +917,8 @@ async fn claim_scheduler_message(
             ));
         }
         scheduler_executor::RunLoopPoll::Idle
-        | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+        | scheduler_executor::RunLoopPoll::AuthorityBlocked
+        | scheduler_executor::RunLoopPoll::ContextResourcesPending => {
             return Err(anyhow!(
                 "scheduler restart fixture did not claim {expected_message_id}"
             ));
@@ -1430,7 +1433,8 @@ async fn seed_scheduler_wait_trigger_restart_fixture(
                 ));
             }
             scheduler_executor::RunLoopPoll::Idle
-            | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+            | scheduler_executor::RunLoopPoll::AuthorityBlocked
+            | scheduler_executor::RunLoopPoll::ContextResourcesPending => {
                 return Err(anyhow!(
                     "scheduler wait trigger replay did not claim the queued trigger"
                 ));
@@ -1660,7 +1664,8 @@ async fn seed_scheduler_post_commit_notification_restart_fixture(
                 ));
             }
             scheduler_executor::RunLoopPoll::Idle
-            | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+            | scheduler_executor::RunLoopPoll::AuthorityBlocked
+            | scheduler_executor::RunLoopPoll::ContextResourcesPending => {
                 return Err(anyhow!(
                     "scheduler post-commit replay did not progress after lost notification"
                 ));
@@ -2087,7 +2092,8 @@ pub async fn seed_scheduler_terminal_recovery_fixture(
             ));
         }
         scheduler_executor::RunLoopPoll::Idle
-        | scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+        | scheduler_executor::RunLoopPoll::AuthorityBlocked
+        | scheduler_executor::RunLoopPoll::ContextResourcesPending => {
             return Err(anyhow!(
                 "scheduler recovery fixture did not claim the work queue message"
             ));

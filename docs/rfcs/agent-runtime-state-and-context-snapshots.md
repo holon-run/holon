@@ -1534,13 +1534,33 @@ Closing still rejects fresh writes and joins all admitted physical writers.
 A candidate invalidated during I/O cannot install: its original registry ticket
 must still match generation and nonce. Source drift within one identity,
 dirty/unprepared observations, superseded tickets and shared-inventory races
-remain typed retryable conflicts
-after bounded local preparation; a failed loop can use existing host recovery.
+remain typed retryable conflicts after bounded local preparation.
 Identity/owner mismatches, closed resources and exhausted registry counters stay
 non-retryable. Existing immutable snapshot holders remain valid.
 
+Before a scheduler Claim, these conflicts and active-writer conflicts return
+`context_resources_pending` to the existing run loop. The original input stays
+Queued without a settlement, pending-count change, Attempt or Start. They do
+not terminate the runtime or use host recovery. After releasing preparation
+owners and material, the loop waits for refresh-flight completion with a 50 ms
+minimum debounce and an exponential fallback deadline capped at one second.
+Input/control notifications and resource Closing wake the wait immediately;
+the next poll reselects and revalidates the source. The deadline covers a refresh
+completed before wait registration. This wait does not consume the resource
+actor's notification or start another worker. Actual reader failures and
+scope/identity/Closing errors retain their existing error path; pure capture
+still rejects Dirty resources. Configuration/dependency exhaustion below keeps
+its separate unclaimed interruption contract.
+
 Loaded Context acquires guidance, agent memory, the effective skills/template
-catalogue and notes from one immutable observation. Startup, explicit refresh,
+catalogue and notes from one immutable observation. Under its existing mutation
+reservation it captures this Ready observation before the remaining Task, Work,
+Scheduling and Input preparation. It retains that read across preparation:
+later file invalidations affect the next capture, rather than discarding the
+current immutable read. Final assembly checks the captured Work revision against
+the resource source, together with the existing same-owner State and configuration
+checks. A Work-source change re-enters bounded dependency preparation; it cannot
+combine new plan facts with the prior observation. Startup, explicit refresh,
 source acknowledgements, configuration publication and known writes wake the
 resource actor; capture does not scan or repair a missing observation. An
 unready or source-mismatched observation rejects the new Context without

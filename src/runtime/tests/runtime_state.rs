@@ -9586,6 +9586,9 @@ async fn task_result_wait_preserves_business_blocker_inner(
                 scheduler_executor::RunLoopPoll::ContextPreparationInterrupted => {
                     last_poll = "context_preparation_interrupted"
                 }
+                scheduler_executor::RunLoopPoll::ContextResourcesPending => {
+                    last_poll = "context_resources_pending"
+                }
             }
             if scheduled.is_none() {
                 if std::time::Instant::now() >= deadline {

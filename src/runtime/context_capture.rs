@@ -56,6 +56,7 @@ struct PreparedLoadedContext {
 pub(super) struct ContextCaptureCheckpoint {
     pub(super) armed: AtomicBool,
     pub(super) before_resources: AtomicBool,
+    pub(super) after_resources: AtomicBool,
     pub(super) reached: Notify,
     pub(super) release: Notify,
 }
@@ -294,6 +295,39 @@ impl RuntimeHandle {
             &self.inner.input_evidence_budget,
             &metadata.tasks.scope,
         )?;
+        // Freeze Ready resources before the remaining domain preparation. Later
+        // writes block new captures, while this admitted immutable read survives.
+        #[cfg(test)]
+        if self
+            .inner
+            .context_capture_checkpoint
+            .before_resources
+            .swap(false, Ordering::SeqCst)
+        {
+            self.inner.context_capture_checkpoint.reached.notify_one();
+            self.inner
+                .context_capture_checkpoint
+                .release
+                .notified()
+                .await;
+        }
+        let observation =
+            self.capture_context_resources(&mutation.state, &config_version, &resource_material)?;
+
+        #[cfg(test)]
+        if self
+            .inner
+            .context_capture_checkpoint
+            .after_resources
+            .swap(false, Ordering::SeqCst)
+        {
+            self.inner.context_capture_checkpoint.reached.notify_one();
+            self.inner
+                .context_capture_checkpoint
+                .release
+                .notified()
+                .await;
+        }
         let model = super::prepare_agent_model_state_for_turn(
             &config_version.model_catalog,
             &config_version.base_context_config,
@@ -478,6 +512,11 @@ impl RuntimeHandle {
             .work
             .as_ref()
             .ok_or_else(|| crate::runtime::resident_work::WorkReadError::IncompleteLive)?;
+        // State remains reserved and configuration is checked below. Work
+        // hydration must also preserve the resource source captured above.
+        if observation.source().work_revision != work.revision {
+            return Err(ContextDependencyChanged.into());
+        }
         validate_work_selection(&planned_work, work)?;
         let tasks = captured
             .tasks
@@ -509,22 +548,6 @@ impl RuntimeHandle {
             resident.scope == planned_tasks.scope,
             "context request material scope differs"
         );
-        #[cfg(test)]
-        if self
-            .inner
-            .context_capture_checkpoint
-            .before_resources
-            .swap(false, Ordering::SeqCst)
-        {
-            self.inner.context_capture_checkpoint.reached.notify_one();
-            self.inner
-                .context_capture_checkpoint
-                .release
-                .notified()
-                .await;
-        }
-        let observation =
-            self.capture_context_resources(state, &config_version, &resource_material)?;
 
         let execution = capture_mode.measure_sync(Stage::WorkspacePublication, || {
             let _resource_io = resource_material.enter();
