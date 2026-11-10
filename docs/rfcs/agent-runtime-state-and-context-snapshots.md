@@ -5210,3 +5210,11 @@ batches do not exclude an otherwise valid large row. Keep scope, incarnation,
 source generation, canonical digest, execution ownership, structural depth and
 publication-fence validation, exact pending-ticket lifecycle accounting, and
 real I/O/arithmetic failure propagation.
+
+Startup may finish an original dispatch already interrupted by canonical
+TaskResult queue reentry. This requires the original same-scope whole Queue
+receipt and its exact recovery audit ACK, unchanged queued source and terminal
+Turn columns, and the original interrupted Attempt/outcome. The exclusive
+startup session still fences old producers; a terminal row or reason alone
+never grants recovery authority. Revalidate the frozen proof before the normal
+memory Finish transaction, preserving the business terminal and replay queue.

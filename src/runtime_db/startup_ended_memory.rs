@@ -33,6 +33,8 @@ use std::{
 
 #[path = "startup_ended_memory_lineage.rs"]
 mod lineage;
+#[path = "startup_ended_memory_queue.rs"]
+mod queue_reentry;
 
 #[derive(Debug)]
 struct SessionActivity {
@@ -67,7 +69,12 @@ impl<'cap, 'guard> StartupEndedMemorySession<'cap, 'guard> {
         binding: &DispatchMemoryBinding,
     ) -> Result<(usize, usize)> {
         self.activity.validate_tx(tx)?;
-        startup_interruption_proof_material_tx(tx, binding)
+        let mut material = startup_interruption_proof_material_tx(tx, binding)?;
+        if queue_reentry::is_queue_reentry_tx(tx, binding)? {
+            let (bytes, records) = queue_reentry::proof_material_tx(tx, binding)?;
+            add_proof_material(&mut material, bytes, records)?;
+        }
+        Ok(material)
     }
     pub(crate) fn stopped_proof_material_tx(
         &self,
@@ -93,6 +100,10 @@ impl<'cap, 'guard> StartupEndedMemorySession<'cap, 'guard> {
     ) -> Result<StartupEndedDispatchAuthorization> {
         self.interrupted_proof_material_tx(tx, binding)?;
         let common = read_original_address_tx(tx, binding)?;
+        if queue_reentry::is_queue_reentry_tx(tx, binding)? {
+            let proof = queue_reentry::read_tx(tx, binding, &common)?;
+            return Ok(self.authorization(binding, common, CanonicalEnd::QueueReentry(proof)));
+        }
         let interrupted = read_startup_interruption_tx(tx, binding, &common)?;
         Ok(self.authorization(
             binding,
@@ -186,6 +197,12 @@ impl StartupEndedDispatchAuthorization {
             .context("startup ended-memory session is no longer alive")?;
         activity.validate_tx(tx)?;
         match &self.end {
+            CanonicalEnd::QueueReentry(_) => {
+                let mut material = startup_interruption_proof_material_tx(tx, &self.binding)?;
+                let (bytes, records) = queue_reentry::proof_material_tx(tx, &self.binding)?;
+                add_proof_material(&mut material, bytes, records)?;
+                Ok(material)
+            }
             CanonicalEnd::StartupInterrupted(_) => {
                 startup_interruption_proof_material_tx(tx, &self.binding)
             }
@@ -233,6 +250,10 @@ impl StartupEndedDispatchAuthorization {
             "startup memory Finish requires original canonical posture with no new run"
         );
         match &self.end {
+            CanonicalEnd::QueueReentry(expected) => ensure!(
+                queue_reentry::read_tx(tx, &self.binding, &self.original)? == *expected,
+                "original queue reentry proof changed"
+            ),
             CanonicalEnd::StartupInterrupted(expected) => ensure!(
                 read_startup_interruption_tx(tx, &self.binding, &self.original)? == *expected,
                 "startup interruption proof changed"
@@ -287,6 +308,7 @@ struct OriginalAddress {
 #[derive(Debug, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 enum CanonicalEnd {
+    QueueReentry(queue_reentry::QueueReentryAddress),
     StartupInterrupted(InterruptedAddress),
     ControlStopped(StoppedAddress),
 }
