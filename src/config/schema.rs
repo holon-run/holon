@@ -1625,6 +1625,33 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
     }
 }
 
+pub(crate) fn is_runtime_db_reader_config_key(key: &str) -> bool {
+    matches!(
+        key,
+        "runtime.db_readers.ordinary_max_connections"
+            | "runtime.db_readers.preparation_max_connections"
+    )
+}
+
+/// Stage one field; the caller must validate the final effective pair.
+pub(crate) fn stage_runtime_db_reader_update(
+    readers: &mut RuntimeDbReadersConfigFile,
+    key: &str,
+    raw_value: Option<&str>,
+) -> Result<()> {
+    let field = match key {
+        "runtime.db_readers.ordinary_max_connections" => &mut readers.ordinary_max_connections,
+        "runtime.db_readers.preparation_max_connections" => {
+            &mut readers.preparation_max_connections
+        }
+        _ => return Err(unknown_config_key(key)),
+    };
+    *field = raw_value
+        .map(|raw| parse_positive_u32_key(key, raw))
+        .transpose()?;
+    Ok(())
+}
+
 pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) -> Result<()> {
     match key {
         "tailscale_serve_desired_enabled" => {
@@ -1848,12 +1875,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "runtime.db_readers.ordinary_max_connections"
         | "runtime.db_readers.preparation_max_connections" => {
             let mut readers = config.runtime.db_readers.clone();
-            let capacity = Some(parse_positive_u32_key(key, raw_value)?);
-            if key == "runtime.db_readers.ordinary_max_connections" {
-                readers.ordinary_max_connections = capacity;
-            } else {
-                readers.preparation_max_connections = capacity;
-            }
+            stage_runtime_db_reader_update(&mut readers, key, Some(raw_value))?;
             readers.resolve()?;
             config.runtime.db_readers = readers;
         }
@@ -2301,11 +2323,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "runtime.db_readers.ordinary_max_connections"
         | "runtime.db_readers.preparation_max_connections" => {
             let mut readers = config.runtime.db_readers.clone();
-            if key == "runtime.db_readers.ordinary_max_connections" {
-                readers.ordinary_max_connections = None;
-            } else {
-                readers.preparation_max_connections = None;
-            }
+            stage_runtime_db_reader_update(&mut readers, key, None)?;
             readers.resolve()?;
             config.runtime.db_readers = readers;
         }

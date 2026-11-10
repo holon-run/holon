@@ -198,6 +198,119 @@ mod setup_tests {
     }
 
     #[tokio::test]
+    async fn reader_limits_api_validates_final_batch_in_either_order() {
+        let (_home, host) = host();
+        let ordinary = "runtime.db_readers.ordinary_max_connections";
+        let preparation = "runtime.db_readers.preparation_max_connections";
+        let path = host.config().config_file_path.clone();
+        for reverse in [false, true] {
+            for (ordinary_value, preparation_value) in [(63, 1), (1, 63)] {
+                let mut updates = vec![
+                    json!({"key":ordinary,"value":ordinary_value}),
+                    json!({"key":preparation,"value":preparation_value}),
+                    json!({"key":"runtime.max_tool_output_tokens","value":12345}),
+                ];
+                if reverse {
+                    updates.reverse();
+                }
+                let (status, accepted) = request(&host, "PATCH", json!({"updates":updates})).await;
+                assert_eq!(status, StatusCode::OK);
+                assert_eq!(accepted["changed"], true, "{accepted}");
+                let persisted = crate::config::load_persisted_config_at(&path).unwrap();
+                assert_eq!(
+                    persisted.runtime.db_readers.resolve().unwrap(),
+                    crate::runtime_db::RuntimeDbReaderConfig::new(
+                        ordinary_value,
+                        preparation_value
+                    )
+                    .unwrap()
+                );
+                assert_eq!(persisted.runtime.max_tool_output_tokens, Some(12345));
+                let mut updates = vec![
+                    json!({"key":ordinary,"unset":true}),
+                    json!({"key":preparation,"unset":true}),
+                ];
+                if reverse {
+                    updates.reverse();
+                }
+                let (_, reset) = request(&host, "PATCH", json!({"updates":updates})).await;
+                assert_eq!(reset["changed"], true, "{reset}");
+                assert!(crate::config::load_persisted_config_at(&path)
+                    .unwrap()
+                    .runtime
+                    .db_readers
+                    .is_empty());
+            }
+        }
+        assert_eq!(host.runtime_db().reader_pool_stats_for_tests().capacity, 16);
+        assert_eq!(
+            host.runtime_db()
+                .preparation_pool_stats_for_tests()
+                .capacity,
+            4
+        );
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn reader_limits_api_rejects_invalid_final_batches_atomically() {
+        let (_home, host) = host();
+        let ordinary = "runtime.db_readers.ordinary_max_connections";
+        let preparation = "runtime.db_readers.preparation_max_connections";
+        let path = host.config().config_file_path.clone();
+        let before = std::fs::read(&path).unwrap();
+        for invalid in [
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!("bad"),
+            json!(4294967296_u64),
+            json!(64),
+        ] {
+            let (_, rejected) = request(
+                &host,
+                "PATCH",
+                json!({"updates":[
+                    {"key":"runtime.max_tool_output_tokens","value":12345},
+                    {"key":ordinary,"value":invalid},
+                    {"key":preparation,"value":1}
+                ]}),
+            )
+            .await;
+            assert_eq!(rejected["changed"], false, "{rejected}");
+            assert!(rejected["results"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|result| result["effect"] == "rejected"));
+            assert_eq!(std::fs::read(&path).unwrap(), before);
+        }
+        // An unset can also leave a final pair over the limit through its default.
+        let (_, accepted) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":ordinary,"value":1}, {"key":preparation,"value":63}
+            ]}),
+        )
+        .await;
+        assert_eq!(accepted["changed"], true, "{accepted}");
+        let before = std::fs::read(&path).unwrap();
+        let (_, rejected) = request(
+            &host,
+            "PATCH",
+            json!({"updates":[
+                {"key":ordinary,"unset":true},
+                {"key":"runtime.max_tool_output_tokens","value":12345}
+            ]}),
+        )
+        .await;
+        assert_eq!(rejected["changed"], false, "{rejected}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        host.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn runtime_setup_http_still_requires_control_authorization() {
         let (_home, host) = host();
         let mut state = AppState::for_tcp(host);
@@ -744,6 +857,7 @@ pub async fn runtime_config_update(
     let config = state.host.config();
     let stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
     let mut candidate = stored.clone();
+    let mut reader_limits = candidate.runtime.db_readers.clone();
     let mut results = Vec::new();
 
     for update in request.updates {
@@ -757,11 +871,24 @@ pub async fn runtime_config_update(
         }
 
         let result = if update.unset {
-            unset_config_key(&mut candidate, &update.key)
+            if crate::config::is_runtime_db_reader_config_key(&update.key) {
+                crate::config::stage_runtime_db_reader_update(&mut reader_limits, &update.key, None)
+            } else {
+                unset_config_key(&mut candidate, &update.key)
+            }
         } else {
             match update.value {
                 Some(value) => {
-                    set_config_key(&mut candidate, &update.key, &config_value_as_raw(value))
+                    let raw = config_value_as_raw(value);
+                    if crate::config::is_runtime_db_reader_config_key(&update.key) {
+                        crate::config::stage_runtime_db_reader_update(
+                            &mut reader_limits,
+                            &update.key,
+                            Some(&raw),
+                        )
+                    } else {
+                        set_config_key(&mut candidate, &update.key, &raw)
+                    }
                 }
                 None => Err(anyhow!(
                     "runtime config update for {} requires value or unset=true",
@@ -786,6 +913,7 @@ pub async fn runtime_config_update(
         }
     }
 
+    candidate.runtime.db_readers = reader_limits;
     if results
         .iter()
         .any(|result| result.effect == RuntimeConfigUpdateEffect::Rejected)
@@ -818,11 +946,7 @@ pub async fn runtime_config_update(
             .map_err(error_response)?;
         for result in &mut results {
             if result.effect == RuntimeConfigUpdateEffect::AcceptedRequiresRestart {
-                if matches!(
-                    result.key.as_str(),
-                    "runtime.db_readers.ordinary_max_connections"
-                        | "runtime.db_readers.preparation_max_connections"
-                ) {
+                if crate::config::is_runtime_db_reader_config_key(&result.key) {
                     result.reason = "persisted in config.json; reader pool limits take effect after daemon restart".into();
                     continue;
                 }
@@ -888,6 +1012,7 @@ fn validate_runtime_config_candidate(
     config: &crate::config::AppConfig,
     candidate: &HolonConfigFile,
 ) -> Result<()> {
+    candidate.runtime.db_readers.resolve()?;
     let credentials = load_credential_store_at(&credential_store_path(&config.home_dir))?;
     crate::web::materialize_web_config(&candidate.web, &credentials)?;
     let mut candidate_config = config.clone();

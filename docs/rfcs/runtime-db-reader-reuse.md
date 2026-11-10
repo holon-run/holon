@@ -132,6 +132,12 @@ reader limits. Both must be positive integers and their sum must not exceed
 defaults restored by unset. Independently opened/offline RuntimeDb owners use
 their own limits, so 64 is not a process-wide SQLite connection cap.
 
+An API batch stages both fields and validates their final effective pair before
+persisting any configuration. Valid updates and resets do not depend on entry
+order, even when an intermediate pair would exceed 64. Malformed individual
+values and invalid final pairs reject the whole batch. Single-key CLI set/unset
+still validates immediately.
+
 The Host resolves these limits once at construction. Configuration updates are
 persisted for the next daemon start; a model/config reload preserves the running
 Host's effective reader limits. Replacing live pools could leave old clones and

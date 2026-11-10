@@ -4,6 +4,8 @@ fn runtime_db_readers_config_round_trip_defaults_and_limits() {
     let ordinary = "runtime.db_readers.ordinary_max_connections";
     let preparation = "runtime.db_readers.preparation_max_connections";
     let mut config = HolonConfigFile::default();
+    assert!(set_config_key(&mut config, ordinary, "63").is_err());
+    assert!(config.runtime.db_readers.is_empty());
     assert_eq!(
         config.runtime.db_readers.resolve().unwrap(),
         RuntimeDbReaderConfig::default()
