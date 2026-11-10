@@ -12,7 +12,9 @@ struct HeldReaders {
 
 #[tokio::test]
 async fn local_actor_logout_and_pairing_preserve_storage_errors() {
-    let (_home, host) = tests::control_token_test_host();
+    let (_home, mut host) = tests::control_token_test_host();
+    host.configure_reader_pool_for_tests(4, Duration::from_millis(100))
+        .unwrap();
     let secret = issue_session(&host);
     let state = AppState::for_tcp(host.clone());
     let app = router(state.clone());
@@ -48,7 +50,9 @@ async fn local_actor_logout_and_pairing_preserve_storage_errors() {
 
 #[tokio::test]
 async fn oidc_api_and_html_preserve_storage_errors_without_login_redirect() {
-    let (_home, host, secret) = tests::oidc_test_host_with_session();
+    let (_home, mut host, secret) = tests::oidc_test_host_with_session();
+    host.configure_reader_pool_for_tests(4, Duration::from_millis(100))
+        .unwrap();
     let app = router(AppState::for_tcp(host.clone()));
     let held = HeldReaders::new(host.runtime_db());
     for uri in ["/api/status", "/"] {
@@ -83,7 +87,9 @@ async fn oidc_api_and_html_preserve_storage_errors_without_login_redirect() {
 
 #[tokio::test]
 async fn origin_bearer_session_checkout_failure_is_not_csrf_rejection() {
-    let (_home, host) = tests::control_token_test_host_with_origin_guard();
+    let (_home, mut host) = tests::control_token_test_host_with_origin_guard();
+    host.configure_reader_pool_for_tests(4, Duration::from_millis(100))
+        .unwrap();
     let secret = issue_session(&host);
     let app = router(AppState::for_tcp(host.clone()));
     let held = HeldReaders::new(host.runtime_db());
@@ -193,7 +199,9 @@ async fn assert_db_busy(response: AxumResponse) {
 
 #[tokio::test]
 async fn cookie_only_reader_checkout_failure_remains_storage_error() {
-    let (_home, host) = tests::control_token_test_host();
+    let (_home, mut host) = tests::control_token_test_host();
+    host.configure_reader_pool_for_tests(4, Duration::from_millis(100))
+        .unwrap();
     let secret = issue_session(&host);
     let _runtime = host.default_runtime().await.unwrap();
     let uri = format!("/api/agents/{}/events", host.config().default_agent_id);
@@ -264,7 +272,9 @@ fn session_fallback_only_continues_after_credential_rejection() {
 
 #[test]
 fn local_static_token_and_independent_admission_keep_their_boundaries() {
-    let (_home, host) = tests::control_token_test_host();
+    let (_home, mut host) = tests::control_token_test_host();
+    host.configure_reader_pool_for_tests(4, Duration::from_millis(100))
+        .unwrap();
     let secret = issue_session(&host);
     let state = AppState::for_tcp(host.clone());
     let held = HeldReaders::new(host.runtime_db());
