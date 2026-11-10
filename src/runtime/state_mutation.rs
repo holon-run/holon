@@ -3739,6 +3739,9 @@ impl RuntimeHandle {
         &self,
         reservations: &mut [MutationReservation],
     ) -> Result<bool> {
+        for reservation in reservations.iter_mut() {
+            reservation.resolve_identity_rename(&self.inner.runtime_db)?;
+        }
         let version = self.inner.config_snapshot.load_full();
         let task_queries = self.task_recovery_queries_for_group(reservations).await?;
         super::input_recovery::resolve_input_recovery_with_queries(

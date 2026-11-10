@@ -1494,7 +1494,7 @@ pub(crate) fn import_audit_event_tx(
     )
 }
 
-fn audit_event_by_id_tx(
+pub(super) fn audit_event_by_id_tx(
     tx: &Transaction<'_>,
     agent_id: Option<&str>,
     event_id: &str,

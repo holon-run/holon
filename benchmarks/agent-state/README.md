@@ -150,7 +150,6 @@ capture mode (preview, admission planning, or execution) and stage:
 | `owner_acquisition` | `begin_mutation`, including reservation, identity validation, and any reconciliation |
 | `task_preparation` | Each of the two Task preparation requests |
 | `work_preparation` | Work preparation request |
-| `identity_lookup` | Identity read before the final durable transaction |
 | `scheduling_preparation` | Scheduling preparation request, including Input preparation it invokes |
 | `input_preparation` | Input preparation request for the selected context |
 | `durable_capture` | Final SQLite connection and transaction, including scope and revision validation, workspace and execution roots, remaining source reads, and snapshot assembly |
@@ -166,7 +165,9 @@ errors and retries, so sample counts need not match constructed requests.
 `samples_without_sql` counts calls with no attributed statement of any kind.
 The final transaction's stage includes connection configuration and transaction
 control statements. This attribution establishes a baseline for removing
-loaded context reads and reservations.
+loaded context reads and reservations. Reports from the original baseline
+include an `identity_lookup` stage. Capture now takes identity from the
+published root; the final transaction still validates it.
 
 Memory reports instrumented System-allocator requested live/phase-peak bytes
 and process lifetime peak RSS (`getrusage`). SQLite native allocations and

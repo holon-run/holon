@@ -9,12 +9,13 @@ use super::resident_input_evidence::{CapturedInputEvidence, ResidentInputEvidenc
 use super::resident_scheduling::{CapturedScheduling, ResidentSchedulingDomain};
 use super::resident_task::{CapturedTasks, ResidentTaskDomain};
 use super::resident_work::{CapturedWork, ResidentWorkDomain};
-use crate::types::{AgentState, ContextEpisodeRecord};
+use crate::types::{AgentIdentityRecord, AgentState, ContextEpisodeRecord};
 
 #[derive(Debug, Clone)]
 pub(crate) struct AgentSnapshot {
     pub token: PublicationToken,
     pub state: Arc<AgentState>,
+    pub identity: Option<Arc<AgentIdentityRecord>>,
     // None is an unprepared domain, never a ready empty collection.
     pub episodes: Option<Arc<ResidentEpisodes>>,
     pub input_evidence: Option<Arc<ResidentInputEvidence>>,
@@ -31,6 +32,7 @@ pub(crate) struct AgentSnapshot {
 pub(crate) struct CapturedAgentContext {
     pub token: PublicationToken,
     pub state: Arc<AgentState>,
+    pub identity: Option<Arc<AgentIdentityRecord>>,
     pub episode_candidate_limit: usize,
     pub episodes: Vec<Arc<ContextEpisodeRecord>>,
     pub input_evidence: Option<CapturedInputEvidence>,
@@ -49,6 +51,7 @@ impl AgentSnapshot {
         Ok(CapturedAgentContext {
             token: self.token,
             state: self.state.clone(),
+            identity: self.identity.clone(),
             episode_candidate_limit: episode_limit,
             episodes,
             input_evidence: None,
@@ -264,6 +267,7 @@ mod tests {
                 generation: 1,
             },
             state: Arc::new(AgentState::new("agent-a")),
+            identity: None,
             episodes: Some(episodes),
         });
         let old_root = Arc::downgrade(&root);

@@ -169,6 +169,8 @@ pub(crate) struct RecoveryRecord {
     // A successor claim clears its root. Preserve the original cold boundary
     // so recovery cannot reinterpret a formerly published State as absent.
     original_root_absent: bool,
+    original_identity: Option<Arc<AgentIdentityRecord>>,
+    identity_rename: Option<Arc<AgentIdentityRecord>>,
     _original_input_evidence: Option<Arc<OriginalInputRecoveryEvidence>>,
     group: Arc<RecoveryGroup>,
 }
@@ -794,7 +796,7 @@ impl MutationReservation {
         for ((reservation, publication), key) in
             reservations.iter().zip(&mut publications).zip(&keys)
         {
-            let original_root_absent = reservation.owner.slot.root.load_full().is_none();
+            let original_root = reservation.owner.slot.root.load_full();
             publication.recovery = Some(RecoveryRecord {
                 key: key.clone(),
                 phase: RecoveryPhase::Committing,
@@ -802,7 +804,9 @@ impl MutationReservation {
                 committed_runtime: None,
                 known: None,
                 witness: witness.clone(),
-                original_root_absent,
+                original_root_absent: original_root.is_none(),
+                original_identity: original_root.and_then(|root| root.identity.clone()),
+                identity_rename: None,
                 _original_input_evidence: None,
                 group: group.clone(),
             });
@@ -1531,11 +1535,85 @@ impl MutationReservation {
         Ok(Self::begin_all(std::slice::from_mut(self), operation_id)?.remove(0))
     }
 
+    pub(crate) fn begin_identity_rename(
+        &mut self,
+        operation_id: String,
+        before: Arc<AgentIdentityRecord>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            before.agent_id == self.agent_id()
+                && before.incarnation == self.identity_incarnation()
+                && before.status == AgentRegistryStatus::Active,
+            "rename identity differs from its owner"
+        );
+        self.begin(operation_id)?;
+        let mut publication = self
+            .owner
+            .slot
+            .publication
+            .lock()
+            .expect("publication poisoned");
+        self.check_ticket(&publication)?;
+        publication
+            .recovery
+            .as_mut()
+            .expect("checked ticket")
+            .identity_rename = Some(before);
+        Ok(())
+    }
+
+    pub(crate) fn resolve_identity_rename(
+        &mut self,
+        db: &crate::runtime_db::RuntimeDb,
+    ) -> anyhow::Result<()> {
+        let Some(recovery) = self.recovery()? else {
+            return Ok(());
+        };
+        let Some(before) = recovery
+            .identity_rename
+            .filter(|_| recovery.known.is_none())
+        else {
+            return Ok(());
+        };
+        // The reservation outlives the synchronous SQL attempt. Its original
+        // audit event is written atomically with the identity revision.
+        let facts = db
+            .agent_identities()
+            .recover_rename(&before, &recovery.key.operation_id)?;
+        let mut publication = self
+            .owner
+            .slot
+            .publication
+            .lock()
+            .expect("publication poisoned");
+        self.owner.validate_publication(&publication)?;
+        let saved = publication
+            .recovery
+            .as_mut()
+            .ok_or(MutationOwnerError::TicketMismatch)?;
+        if saved.key != recovery.key || saved.known.is_some() {
+            return Err(MutationOwnerError::TicketMismatch.into());
+        }
+        if let Some(facts) = facts {
+            let known = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                identity: facts.identity.map(Arc::new),
+                state: facts.state,
+            }));
+            self.validate_known(&known)?;
+            saved.set_known(known);
+        } else {
+            publication.recovery = None;
+            self.ticket = None;
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn definitely_not_committed(&mut self) -> Result<(), MutationOwnerError> {
         Self::definitely_not_committed_all(std::slice::from_mut(self))
     }
 
+    #[cfg(test)]
     pub(crate) fn committed(
         &self,
         state: Arc<AgentState>,
@@ -1544,8 +1622,7 @@ impl MutationReservation {
         self.committed_prepared(state, None, tasks)
     }
 
-    /// Bootstrap and migrated families pass the exact prepared domain with the
-    /// acknowledged state. Legacy callers explicitly leave it unprepared.
+    #[cfg(test)]
     pub(crate) fn committed_prepared(
         &self,
         state: Arc<AgentState>,
@@ -1555,6 +1632,7 @@ impl MutationReservation {
         self.committed_prepared_with_inputs(state, episodes, None, tasks)
     }
 
+    #[cfg(test)]
     pub(crate) fn committed_prepared_with_inputs(
         &self,
         state: Arc<AgentState>,
@@ -1565,6 +1643,7 @@ impl MutationReservation {
         self.committed_prepared_with_domains(state, episodes, input_evidence, None, tasks)
     }
 
+    #[cfg(test)]
     pub(crate) fn committed_prepared_with_domains(
         &self,
         state: Arc<AgentState>,
@@ -1711,78 +1790,62 @@ impl MutationReservation {
             .generation
             .checked_add(1)
             .expect("publication generation exhausted");
-        let episodes = match &known {
-            KnownCommit::State { episodes, .. } => episodes.clone(),
-            KnownCommit::Metadata(facts) => facts.identity.as_ref().and_then(|identity| {
-                (identity.incarnation == self.owner.incarnation
-                    && identity.status == AgentRegistryStatus::Active)
-                    .then(|| {
-                        self.owner
-                            .slot
-                            .root
-                            .load_full()
-                            .and_then(|root| root.episodes.clone())
-                    })
-                    .flatten()
-            }),
+        let recovery = publication.recovery.as_ref().expect("validated recovery");
+        let identity = match &known {
+            KnownCommit::State { .. } => recovery.original_identity.clone(),
+            KnownCommit::Metadata(facts) => facts.identity.clone(),
         };
-        let input_evidence = match &known {
-            KnownCommit::State { input_evidence, .. } => input_evidence.clone(),
-            KnownCommit::Metadata(facts) => facts.identity.as_ref().and_then(|identity| {
-                (identity.incarnation == self.owner.incarnation
-                    && identity.status == AgentRegistryStatus::Active)
-                    .then(|| {
-                        self.owner
-                            .slot
-                            .root
-                            .load_full()
-                            .and_then(|root| root.input_evidence.clone())
-                    })
-                    .flatten()
-            }),
-        };
-        let work = match &known {
-            KnownCommit::State { work, .. } => work.clone(),
-            KnownCommit::Metadata(facts) => facts.identity.as_ref().and_then(|identity| {
-                (identity.incarnation == self.owner.incarnation
-                    && identity.status == AgentRegistryStatus::Active)
-                    .then(|| {
-                        self.owner
-                            .slot
-                            .root
-                            .load_full()
-                            .and_then(|root| root.work.clone())
-                    })
-                    .flatten()
-            }),
-        };
-        let tasks = match &known {
-            KnownCommit::State { tasks, .. } => tasks.clone(),
-            KnownCommit::Metadata(facts) => facts.identity.as_ref().and_then(|identity| {
-                (identity.incarnation == self.owner.incarnation
-                    && identity.status == AgentRegistryStatus::Active)
-                    .then(|| {
-                        self.owner
-                            .slot
-                            .root
-                            .load_full()
-                            .and_then(|root| root.tasks.clone())
-                    })
-                    .flatten()
-            }),
-        };
-        // Metadata-only maintenance cannot attest Scheduling completeness. It
-        // keeps the durable responsibility and requires named preparation.
-        let scheduling = match &known {
-            KnownCommit::State { scheduling, .. } => scheduling.clone(),
-            KnownCommit::Metadata(_) => None,
-        };
-        // Metadata maintenance and domain readback do not attest Current bodies.
-        let current = match &known {
-            KnownCommit::State { runtime, .. } => {
-                runtime.as_ref().and_then(|facts| facts.current.clone())
+        let active_metadata_root = match &known {
+            KnownCommit::Metadata(facts)
+                if facts.identity.as_ref().is_some_and(|identity| {
+                    identity.incarnation == self.owner.incarnation
+                        && identity.status == AgentRegistryStatus::Active
+                }) =>
+            {
+                self.owner.slot.root.load_full()
             }
-            KnownCommit::Metadata(_) => None,
+            _ => None,
+        };
+        let rename_root = active_metadata_root.as_ref().filter(|root| {
+            recovery.identity_rename.as_ref() == root.identity.as_ref()
+                && recovery.identity_rename.is_some()
+                && known.state() == Some(&root.state)
+        });
+        let (episodes, input_evidence, work, tasks, scheduling, current) = match &known {
+            KnownCommit::State {
+                episodes,
+                input_evidence,
+                work,
+                tasks,
+                scheduling,
+                runtime,
+                ..
+            } => (
+                episodes.clone(),
+                input_evidence.clone(),
+                work.clone(),
+                tasks.clone(),
+                scheduling.clone(),
+                runtime.as_ref().and_then(|facts| facts.current.clone()),
+            ),
+            KnownCommit::Metadata(_) => (
+                active_metadata_root
+                    .as_ref()
+                    .and_then(|root| root.episodes.clone()),
+                active_metadata_root
+                    .as_ref()
+                    .and_then(|root| root.input_evidence.clone()),
+                active_metadata_root
+                    .as_ref()
+                    .and_then(|root| root.work.clone()),
+                active_metadata_root
+                    .as_ref()
+                    .and_then(|root| root.tasks.clone()),
+                // A rename leaves Scheduling intact, but its Audit event
+                // advances Current Event coverage without a domain ACK.
+                rename_root.and_then(|root| root.scheduling.clone()),
+                None,
+            ),
         };
         let observation = known.state().map(|state| {
             Arc::new(PostureObservation {
@@ -1792,6 +1855,7 @@ impl MutationReservation {
                     generation: publication.generation,
                 },
                 state: state.clone(),
+                identity,
                 episodes,
                 input_evidence,
                 work,

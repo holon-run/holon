@@ -224,6 +224,7 @@ async fn fixture() -> Result<(tempfile::TempDir, RuntimeHost)> {
     let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("done")))?;
     host.create_named_agent("web", None).await?;
     host.rename_public_agent("web", "汉字 🦀", "fixture")
+        .await
         .map_err(|error| anyhow!("{error}"))?;
     host.runtime_db().connection()?.execute(
         "INSERT INTO briefs (evidence_id, agent_id, created_at, kind, preview, payload_json)

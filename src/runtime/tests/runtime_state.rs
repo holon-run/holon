@@ -3089,22 +3089,6 @@ async fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) 
     message
 }
 
-fn append_default_host_identity(runtime: &RuntimeHandle) {
-    runtime
-        .runtime_db()
-        .agent_identities()
-        .upsert(&crate::types::AgentIdentityRecord::new(
-            "default",
-            AgentKind::Default,
-            AgentVisibility::Public,
-            AgentOwnership::SelfOwned,
-            AgentProfilePreset::PublicNamed,
-            None,
-            None,
-        ))
-        .unwrap();
-}
-
 async fn begin_canonical_operator_turn(
     runtime: &RuntimeHandle,
     text: &str,
@@ -20637,7 +20621,6 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
         context_config(),
     )
     .unwrap();
-    append_default_host_identity(&runtime);
     runtime
         .enqueue(
             MessageEnvelope::new(
@@ -20790,7 +20773,6 @@ async fn abort_current_run_idle_after_abort_keeps_agent_awake_and_accepts_next_p
         context_config(),
     )
     .unwrap();
-    append_default_host_identity(&runtime);
     runtime
         .enqueue(
             MessageEnvelope::new(
@@ -20953,7 +20935,6 @@ async fn assert_interjection_visible_before_terminal_tool(tool_name: &'static st
         },
     )
     .unwrap();
-    append_default_host_identity(&runtime);
 
     runtime
         .enqueue(MessageEnvelope::new(
@@ -21105,7 +21086,6 @@ async fn terminal_wait_leaves_late_interjection_for_next_activation() {
         context_config(),
     )
     .unwrap();
-    append_default_host_identity(&runtime);
 
     let work_item = runtime
         .create_work_item(
@@ -21668,7 +21648,6 @@ async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch
         context_config(),
     )
     .unwrap();
-    append_default_host_identity(&closed_runtime);
     let (_message, activation_id, _closed_scheduled) =
         begin_canonical_operator_turn(&closed_runtime, "start closed-attempt turn").await;
     let execution = closed_runtime
@@ -21730,7 +21709,6 @@ async fn operator_interjection_distinguishes_closed_attempt_from_source_mismatch
         context_config(),
     )
     .unwrap();
-    append_default_host_identity(&mismatch_runtime);
     let (_message, _activation_id, _mismatch_scheduled) =
         begin_canonical_operator_turn(&mismatch_runtime, "start source-mismatch turn").await;
     let unrelated = mismatch_runtime
@@ -21872,7 +21850,6 @@ async fn abort_current_run_rejects_stale_run_id() {
         context_config(),
     )
     .unwrap();
-    append_default_host_identity(&runtime);
     runtime
         .enqueue(
             MessageEnvelope::new(
@@ -24175,7 +24152,6 @@ async fn conversation_stream_exposes_progress_and_tool_before_result_delivery() 
         continuation_ready_context_config(&workspace, 64_000),
     )
     .unwrap();
-    append_default_host_identity(&runtime);
     runtime
         .enqueue(trusted_operator_prompt(None, "test live progress"))
         .await

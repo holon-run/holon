@@ -1132,6 +1132,7 @@ pub async fn rename_agent(
     let detail = state
         .host
         .rename_public_agent(&agent_id, &request.name, "authenticated_operator_control")
+        .await
         .map_err(agent_access_error)?;
     Ok(Json(detail))
 }

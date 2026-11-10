@@ -93,6 +93,7 @@ async fn detail_public_operator_and_rename_keep_existing_contract() -> Result<()
     assert_eq!(operator, expected);
     let renamed = host
         .rename_public_agent("web", "新名字 🦀", "detail-test")
+        .await
         .map_err(|error| anyhow!("{error}"))?;
     let updated = host.agent_identity_record("web")?.unwrap();
     assert_eq!(renamed, borrowed_detail(&host, &updated)?);
@@ -323,6 +324,7 @@ async fn detail_bootstrap_move_matches_old_public_operator_and_rename_wire() -> 
         }
         let renamed = host
             .rename_public_agent("web", "bootstrap 新名字 🦀", "bootstrap-move-test")
+            .await
             .map_err(anyhow::Error::new)?;
         let identity = host.agent_identity_record("web")?.unwrap();
         assert_eq!(renamed, borrowed_detail(&host, &identity)?);

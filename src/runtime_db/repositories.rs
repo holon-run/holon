@@ -11,6 +11,7 @@ use crate::runtime_db::agent_relations::{
     canonical_relations_from_connection, transition_supervision_state_tx,
     upsert_canonical_record_set_tx,
 };
+use crate::runtime_db::context_inputs::{ContextDurableRead, ContextScopeFacts};
 use crate::runtime_db::conversation::{
     assign_input_to_turn_tx, assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx,
     ensure_turn_revision_tx, settle_turn_result_tx, SOURCE_OPERATOR, SOURCE_WAIT,
@@ -1407,28 +1408,22 @@ impl AgentIdentityRepository<'_> {
             .transpose()
     }
 
-    pub fn rename(
+    pub(crate) fn rename(
         &self,
-        agent_id: &str,
+        before: &AgentIdentityRecord,
         requested_name: &str,
         actor: &str,
-    ) -> Result<AgentIdentityRecord> {
+        operation_id: &str,
+    ) -> Result<ContextScopeFacts> {
         let name = normalize_agent_name(requested_name)?;
         let name_key = agent_name_key(&name);
         self.db.transaction(|tx| {
-            let payload = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
+            let agent_id = &before.agent_id;
+            let mut identity = Self::latest_on(tx, agent_id)?
                 .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
-            let mut identity = decode_agent_identity_payload(&payload)?;
             anyhow::ensure!(
-                identity.status == AgentRegistryStatus::Active,
-                "agent {agent_id} cannot be renamed while it is {:?}",
-                identity.status
+                identity == *before && identity.status == AgentRegistryStatus::Active,
+                "agent {agent_id} identity changed before rename"
             );
             let conflict = tx
                 .query_row(
@@ -1452,7 +1447,7 @@ impl AgentIdentityRepository<'_> {
             identity.revision = identity.revision.saturating_add(1);
             identity.updated_at = now;
             upsert_agent_identity_tx(tx, &identity)?;
-            let event = AuditEvent::legacy(
+            let mut event = AuditEvent::legacy(
                 "agent_renamed",
                 serde_json::json!({
                     "agent_id": agent_id,
@@ -1461,8 +1456,48 @@ impl AgentIdentityRepository<'_> {
                     "name": identity.name,
                 }),
             );
+            event.id = operation_id.to_owned();
             append_audit_event_tx(tx, Some(agent_id), &event)?;
-            Ok(identity)
+            let facts = ContextDurableRead::new(tx, agent_id).scope_facts()?;
+            anyhow::ensure!(
+                facts.identity.as_ref() == Some(&identity),
+                "rename readback differs from the written identity"
+            );
+            Ok(facts)
+        })
+    }
+
+    pub(crate) fn recover_rename(
+        &self,
+        before: &AgentIdentityRecord,
+        operation_id: &str,
+    ) -> Result<Option<ContextScopeFacts>> {
+        self.db.read_for_preparation(|tx| {
+            let receipt = audit_event_by_id_tx(tx, Some(&before.agent_id), operation_id)?;
+            let facts = ContextDurableRead::new(tx, &before.agent_id).scope_facts()?;
+            let current = facts.identity.as_ref().context("rename identity missing")?;
+            match receipt {
+                Some(event) => {
+                    anyhow::ensure!(
+                        event.id == operation_id
+                            && event.kind == "agent_renamed"
+                            && event.data["previous_name"].as_str() == before.name.as_deref()
+                            && event.data["name"].as_str() == current.name.as_deref()
+                            && current.incarnation == before.incarnation
+                            && current.status == AgentRegistryStatus::Active
+                            && current.revision == before.revision.saturating_add(1),
+                        "rename receipt differs from the original identity"
+                    );
+                    Ok(Some(facts))
+                }
+                None => {
+                    anyhow::ensure!(
+                        current == before,
+                        "rename outcome is unknown: identity changed without its original audit"
+                    );
+                    Ok(None)
+                }
+            }
         })
     }
 }

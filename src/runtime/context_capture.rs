@@ -370,13 +370,6 @@ impl RuntimeHandle {
             .await?;
         let state = &mutation.state;
         anyhow::ensure!(state.id == message.agent_id, "context input agent mismatch");
-        let identity_record = capture_mode
-            .measure_sync(Stage::IdentityLookup, || {
-                self.inner.runtime_db.agent_identities().latest(&state.id)
-            })?
-            .ok_or_else(|| anyhow!("context identity missing"))?;
-        let identity =
-            AgentIdentityView::from_record(&identity_record, &self.inner.default_agent_id);
         let workspace = self.workspace_view_from_state(state)?;
         let history_policy =
             turn::context_history_preparation(&state.id, &model.model.effective_model);
@@ -492,6 +485,12 @@ impl RuntimeHandle {
             .ok_or(crate::runtime::resident_task::TaskReadError::IncompleteActive)?;
         validate_task_selection(&planned_tasks, tasks)?;
         let state = captured.state.as_ref();
+        let identity_record = captured
+            .identity
+            .as_deref()
+            .ok_or_else(|| anyhow!("context identity is not published"))?;
+        let identity =
+            AgentIdentityView::from_record(identity_record, &self.inner.default_agent_id);
         let resident = captured.input_evidence.as_ref().ok_or_else(|| {
             InputEvidenceSnapshotError::NeedsPreparation(
                 "loaded context input domain is not prepared".into(),
@@ -544,7 +543,7 @@ impl RuntimeHandle {
                 .as_ref()
                 .ok_or_else(|| anyhow!("context identity missing"))?;
             anyhow::ensure!(
-                durable_identity == &identity_record
+                durable_identity == identity_record
                     && durable_identity.incarnation == captured.token.identity_incarnation
                     && durable_identity.status == crate::types::AgentRegistryStatus::Active,
                 "context identity differs from the reserved publication"
@@ -2237,6 +2236,129 @@ mod resource_read_tests {
         let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
         let runtime = host.default_runtime().await?;
         Ok((home, host, runtime))
+    }
+
+    #[tokio::test]
+    async fn loaded_context_publishes_renamed_identity_and_recovers_known_ack() -> Result<()> {
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.control(crate::types::ControlAction::Stop).await?;
+        let owner = &runtime.inner.mutation_owner;
+        let agent_id = owner.agent_id();
+        let prompt = runtime
+            .preview_prompt(
+                "original identity".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        let original = owner.capture()?.unwrap();
+        let original_identity = original.identity.as_ref().unwrap();
+        assert_eq!(prompt.identity.name, original_identity.name);
+
+        host.rename_public_agent(agent_id, "First name", "context-test")
+            .await?;
+        let renamed = owner.capture()?.unwrap();
+        assert_eq!(
+            renamed.identity.as_ref().unwrap().name.as_deref(),
+            Some("First name")
+        );
+        assert!(Arc::ptr_eq(
+            original.scheduling.as_ref().unwrap(),
+            renamed.scheduling.as_ref().unwrap()
+        ));
+
+        host.fail_next_external_mutation_publication();
+        let error = host
+            .rename_public_agent(agent_id, "Recovered name", "context-test")
+            .await
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("publication requires reconciliation"));
+        assert!(matches!(
+            owner.capture(),
+            Err(super::super::mutation_owner::MutationOwnerError::NeedsReconcile(_))
+        ));
+        let prompt = runtime
+            .preview_prompt(
+                "recovered identity".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        assert_eq!(prompt.identity.name.as_deref(), Some("Recovered name"));
+        let recovered = owner.capture()?.unwrap();
+        assert_eq!(
+            recovered.identity.as_ref().unwrap().revision,
+            original_identity.revision + 2
+        );
+        assert_eq!(
+            host.runtime_db()
+                .audit_events()
+                .recent(Some(agent_id), 100)?
+                .iter()
+                .filter(|event| event.kind == "agent_renamed")
+                .count(),
+            2
+        );
+        assert_ne!(
+            original_identity.name,
+            recovered.identity.as_ref().unwrap().name
+        );
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn loaded_context_resolves_unknown_rename_from_original_audit() -> Result<()> {
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.control(crate::types::ControlAction::Stop).await?;
+        let owner = &runtime.inner.mutation_owner;
+        let before = owner.capture()?.unwrap().identity.clone().unwrap();
+        {
+            let mut reservation = owner.reserve().await?;
+            reservation.begin_identity_rename(crate::ids::audit_event_id(), before.clone())?;
+        }
+        let prompt = runtime
+            .preview_prompt(
+                "rename rolled back".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        assert_eq!(prompt.identity.name, before.name);
+
+        let operation = crate::ids::audit_event_id();
+        {
+            let mut reservation = owner.reserve().await?;
+            reservation.begin_identity_rename(operation.clone(), before.clone())?;
+            host.runtime_db().agent_identities().rename(
+                &before,
+                "Committed name",
+                "context-test",
+                &operation,
+            )?;
+        }
+        let prompt = runtime
+            .preview_prompt(
+                "rename committed".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        assert_eq!(prompt.identity.name.as_deref(), Some("Committed name"));
+        assert_eq!(
+            owner
+                .capture()?
+                .unwrap()
+                .identity
+                .as_ref()
+                .unwrap()
+                .revision,
+            before.revision + 1
+        );
+        assert!(host
+            .runtime_db()
+            .audit_events()
+            .has_event_by_id(&operation)?);
+        host.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test]
