@@ -186,8 +186,17 @@ async fn scheduling_missing_domain_requires_named_owner_preparation_and_unknown_
         .prepare_owner_scheduling_request(&SchedulingCaptureRequest::current())
         .await?;
     let first = owner.capture_published_root()?;
+    runtime.inner.runtime_db.transaction(|tx| {
+        tx.execute_batch(
+            "ALTER TABLE agent_identities RENAME TO preparation_identity_reads_forbidden",
+        )?;
+        Ok(())
+    })?;
     owner
         .prepare_owner_scheduling_request(&SchedulingCaptureRequest::current())
+        .await?;
+    owner
+        .prepare_owner_inputs(Default::default(), Default::default())
         .await?;
     assert_eq!(first.token, owner.capture_published_root()?.token);
     let selected = owner.capture_scheduling_read(&SchedulingCaptureRequest::current())?;
@@ -199,6 +208,51 @@ async fn scheduling_missing_domain_requires_named_owner_preparation_and_unknown_
         ))
         .is_err());
     assert_eq!(selected.scheduling.active_timer_count()?, 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn preparation_miss_preserves_original_deletion_cleanup() -> Result<()> {
+    use crate::runtime::mutation_owner::{IdentityMutationFacts, KnownCommit, MutationReservation};
+    use crate::types::AgentRegistryStatus;
+
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let identity = root.identity.as_ref().unwrap();
+    let mut reservation = runtime.inner.mutation_owner.reserve().await?;
+    reservation.begin(crate::ids::audit_event_id())?;
+    let (deleting, _, _) = runtime.inner.runtime_db.agent_deletions().begin(
+        &identity.agent_id,
+        identity.revision,
+        "preparation-test",
+        false,
+    )?;
+    MutationReservation::committed_all(
+        std::slice::from_mut(&mut reservation),
+        vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            identity: Some(Arc::new(deleting)),
+            state: Some(root.state.clone()),
+        }))],
+    )?;
+    let deleting = reservation.publish(root.state.clone())?;
+    drop(reservation);
+    assert!(deleting.scheduling.is_none());
+    assert_eq!(
+        deleting.identity.as_ref().unwrap().status,
+        AgentRegistryStatus::Deleting
+    );
+
+    let mut owner = runtime.begin_mutation().await?;
+    owner
+        .prepare_owner_scheduling_request(&SchedulingCaptureRequest::current())
+        .await?;
+    let prepared = owner.capture_published_root()?;
+    assert_ne!(prepared.token, deleting.token);
+    assert_eq!(prepared.state, deleting.state);
+    assert_eq!(prepared.identity, deleting.identity);
+    assert!(prepared.scheduling.is_some());
+    assert!(prepared.input_evidence.is_some());
     Ok(())
 }
 

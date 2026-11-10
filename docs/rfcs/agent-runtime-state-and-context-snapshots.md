@@ -1761,7 +1761,11 @@ through owner/SQL request copies and Scheduling loader/resident installation.
 The internal Scheduling preparation requires that material; its existing Context
 entry does not acquire a second allowance. The material stays alive across
 installation awaits, but TLS enters only the synchronous construction/preparation
-segments. An AlreadyPrepared result need not retain the new temporary phase after
+segments. Covered Input, Scheduling, Current and Episode preparation returns
+from the held publication before selecting a durable lifecycle policy. A miss
+resolves the existing owner change, validated recovery or deletion cleanup
+policy and validates its scope in the preparation transaction.
+An AlreadyPrepared result need not retain the new temporary phase after
 its request/capture temporaries drop; a newly installed resident retains its
 original material through publication and subsequent captures. The ordinary
 preparation entry borrows its reservation's agent ID/incarnation through phase
