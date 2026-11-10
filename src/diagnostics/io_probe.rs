@@ -151,6 +151,7 @@ pub enum ContextCaptureStage {
     IdentityLookup,
     SchedulingPreparation,
     InputPreparation,
+    WorkspacePublication,
     DurableCapture,
 }
 

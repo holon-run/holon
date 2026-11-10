@@ -2446,14 +2446,12 @@ fn prepare_runtime_storage_owned(
         reservation.begin(crate::ids::audit_event_id())?;
     }
     runtime_db.initialize_sqlite_storage_domains()?;
+    runtime_db.prepare_workspace_context()?;
     if let Some(workspace) = initial_workspace_entry.as_ref() {
-        let known = runtime_db
-            .workspace_entries()
-            .latest_all_for_preparation()?;
-        if !known
-            .iter()
-            .any(|entry| entry.workspace_id == workspace.workspace_id)
-        {
+        let exists = runtime_db.with_workspace_context(|context| {
+            Ok(context.anchor(&workspace.workspace_id)?.is_some())
+        })?;
+        if !exists {
             runtime_db.workspace_entries().upsert(workspace)?;
         }
     }
@@ -2623,13 +2621,10 @@ fn prepare_runtime_storage_owned(
 
     if workspace::canonicalize_agent_home_bindings(&mut state, storage.data_dir(), &agent_id)? {
         let workspace = workspace::agent_home_workspace_entry(storage.data_dir(), &agent_id);
-        let known = runtime_db
-            .workspace_entries()
-            .latest_all_for_preparation()?;
-        if !known
-            .iter()
-            .any(|entry| entry.workspace_id == workspace.workspace_id)
-        {
+        let exists = runtime_db.with_workspace_context(|context| {
+            Ok(context.anchor(&workspace.workspace_id)?.is_some())
+        })?;
+        if !exists {
             storage.append_workspace_entry(&workspace)?;
         }
         append_bootstrap_audit_event(

@@ -2,13 +2,14 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock};
+use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock, Weak};
 use std::thread;
 #[cfg(test)]
 use std::time::Duration;
 use std::time::Instant;
 
 use super::blocking::at_blocking_boundary;
+use super::workspace_context::WorkspaceContextPublication;
 use anyhow::{anyhow, bail, Context, Result};
 use rusqlite::{Connection, Transaction};
 
@@ -37,6 +38,7 @@ pub(crate) struct RuntimeDbWriter {
 pub(crate) struct RuntimeDbWriterState {
     pub(crate) path: PathBuf,
     pub(crate) connection: Mutex<Connection>,
+    pub(super) workspace_context: Arc<RwLock<WorkspaceContextPublication>>,
     #[cfg(unix)]
     database_identity: RuntimeDbFileIdentity,
     pub(crate) queue: Arc<RuntimeDbWriteQueue>,
@@ -111,6 +113,13 @@ impl RuntimeDbFileIdentity {
 pub(crate) struct RuntimeDbWriteQueue {
     pub(crate) state: Mutex<RuntimeDbWriteQueueState>,
     pub(crate) available: Condvar,
+    workspace_context: Mutex<Option<SharedWorkspaceContext>>,
+}
+
+struct SharedWorkspaceContext {
+    #[cfg(unix)]
+    database_identity: RuntimeDbFileIdentity,
+    publication: Weak<RwLock<WorkspaceContextPublication>>,
 }
 
 #[derive(Default)]
@@ -193,9 +202,14 @@ impl RuntimeDbWriter {
         #[cfg(unix)]
         let database_identity = RuntimeDbFileIdentity::bind(&path, &connection)?;
         let queue = runtime_db_write_queue(&path)?;
+        let workspace_context = queue.workspace_context(
+            #[cfg(unix)]
+            database_identity,
+        )?;
         let state = Arc::new(RuntimeDbWriterState {
             path,
             connection: Mutex::new(connection),
+            workspace_context,
             #[cfg(unix)]
             database_identity,
             queue,
@@ -604,6 +618,35 @@ fn before_begin_failure(error: anyhow::Error) -> anyhow::Error {
 }
 
 impl RuntimeDbWriteQueue {
+    fn workspace_context(
+        &self,
+        #[cfg(unix)] database_identity: RuntimeDbFileIdentity,
+    ) -> Result<Arc<RwLock<WorkspaceContextPublication>>> {
+        let mut slot = self
+            .workspace_context
+            .lock()
+            .map_err(|_| anyhow!("workspace context slot poisoned"))?;
+        if let Some(shared) = slot.as_ref() {
+            #[cfg(unix)]
+            let same_database = shared.database_identity == database_identity;
+            #[cfg(not(unix))]
+            let same_database = true;
+            if let Some(publication) = same_database
+                .then(|| shared.publication.upgrade())
+                .flatten()
+            {
+                return Ok(publication);
+            }
+        }
+        let publication = Arc::new(RwLock::default());
+        *slot = Some(SharedWorkspaceContext {
+            #[cfg(unix)]
+            database_identity,
+            publication: Arc::downgrade(&publication),
+        });
+        Ok(publication)
+    }
+
     pub(crate) fn wait_turn(self: &Arc<Self>) -> Result<RuntimeDbWriteTurn> {
         let ticket = {
             let mut state = self
@@ -668,6 +711,7 @@ fn runtime_db_write_queue(path: &Path) -> Result<Arc<RuntimeDbWriteQueue>> {
         Arc::new(RuntimeDbWriteQueue {
             state: Mutex::new(RuntimeDbWriteQueueState::default()),
             available: Condvar::new(),
+            workspace_context: Mutex::default(),
         })
     })))
 }

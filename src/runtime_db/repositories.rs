@@ -23,6 +23,7 @@ use crate::runtime_db::transitions::{
     PostCommitEffects, WorkItemMutation,
 };
 use crate::runtime_db::types::*;
+use crate::runtime_db::workspace_context::WorkspaceContextChange;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::runtime_db::{
     RuntimeStateTransitionConflict, TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT,
@@ -858,8 +859,7 @@ impl AgentStateRepository<'_> {
 
 impl WorkspaceEntryRepository<'_> {
     pub fn upsert(&self, record: &WorkspaceEntry) -> Result<()> {
-        self.db
-            .transaction(|tx| upsert_workspace_entry_tx(tx, record))
+        self.upsert_with_index_changes(record, &[])
     }
 
     pub fn upsert_with_index_changes(
@@ -867,9 +867,16 @@ impl WorkspaceEntryRepository<'_> {
         record: &WorkspaceEntry,
         changes: &[RuntimeIndexChange],
     ) -> Result<()> {
-        self.db.transaction(|tx| {
-            upsert_workspace_entry_tx(tx, record)?;
-            insert_runtime_index_changes_tx(tx, changes)
+        self.db.write_workspace_context(|tx, ready| {
+            let changed = upsert_workspace_entry_tx(tx, record)?;
+            insert_runtime_index_changes_tx(tx, changes)?;
+            let change = (ready && changed).then(|| {
+                WorkspaceContextChange::Anchor(
+                    record.workspace_id.clone(),
+                    record.workspace_anchor.clone(),
+                )
+            });
+            Ok(((), change))
         })
     }
 
@@ -878,6 +885,7 @@ impl WorkspaceEntryRepository<'_> {
             .with_read(|connection| context_workspace_entries_on(&connection))
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "b"))]
     pub(crate) fn latest_all_for_preparation(&self) -> Result<Vec<WorkspaceEntry>> {
         self.db
             .read_for_preparation(|tx| context_workspace_entries_on(tx))
@@ -913,8 +921,15 @@ impl WorkspaceOccupancyRepository<'_> {
 
 impl ExecutionRootEntryRepository<'_> {
     pub fn upsert(&self, record: &ExecutionRootEntry) -> Result<()> {
-        self.db
-            .transaction(|tx| upsert_execution_root_entry_tx(tx, record))
+        self.db.write_workspace_context(|tx, ready| {
+            let previous = upsert_execution_root_entry_tx(tx, record)?;
+            let change = ready
+                .then(|| {
+                    WorkspaceContextChange::roots(tx, &record.workspace_id, previous.as_deref())
+                })
+                .transpose()?;
+            Ok(((), change))
+        })
     }
 
     /// Look up an execution root entry by its `execution_root_id`.
@@ -950,19 +965,19 @@ impl ExecutionRootEntryRepository<'_> {
     /// Soft-delete: mark an execution root entry as removed.
     pub fn mark_removed(&self, execution_root_id: &str) -> Result<bool> {
         let now = crate::runtime_db::migrations::timestamp(Utc::now());
-        let affected = self.db.transaction(|tx| {
+        self.db.write_workspace_context(|tx, ready| {
             // Read the current payload, set removed_at, and write it back
             // so that reads via decode_execution_root_entry_payload see the change.
-            let payload: Option<String> = tx
+            let existing: Option<(String, String)> = tx
                 .query_row(
-                    "SELECT payload_json FROM execution_root_entries
+                    "SELECT workspace_id, payload_json FROM execution_root_entries
                      WHERE execution_root_id = ?1 AND removed_at IS NULL",
                     [execution_root_id],
-                    |row| row.get(0),
+                    |row| Ok((row.get(0)?, row.get(1)?)),
                 )
                 .optional()?;
-            let Some(payload) = payload else {
-                return Ok(0);
+            let Some((workspace_id, payload)) = existing else {
+                return Ok((false, None));
             };
             let mut json: serde_json::Value = serde_json::from_str(&payload)?;
             json["removed_at"] = serde_json::Value::String(now.clone());
@@ -973,9 +988,12 @@ impl ExecutionRootEntryRepository<'_> {
                  WHERE execution_root_id = ?3 AND removed_at IS NULL",
                 params![now, updated_payload, execution_root_id],
             )?;
-            Ok(n)
-        })?;
-        Ok(affected > 0)
+            let changed = n > 0;
+            let change = (ready && changed)
+                .then(|| WorkspaceContextChange::roots(tx, &workspace_id, None))
+                .transpose()?;
+            Ok((changed, change))
+        })
     }
 
     /// Return all non-removed entries for a workspace.

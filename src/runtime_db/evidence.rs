@@ -540,9 +540,9 @@ pub(crate) fn upsert_agent_state_at_tx(
 pub(crate) fn upsert_workspace_entry_tx(
     tx: &Transaction<'_>,
     record: &WorkspaceEntry,
-) -> Result<()> {
+) -> Result<bool> {
     let payload_json = serde_json::to_string(record)?;
-    tx.execute(
+    let changed = tx.execute(
         "INSERT INTO workspace_entries (
             workspace_id, workspace_alias, workspace_kind, owner_agent_id,
             workspace_anchor, repo_name, created_at, updated_at, payload_json
@@ -569,7 +569,7 @@ pub(crate) fn upsert_workspace_entry_tx(
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(changed != 0)
 }
 
 pub(crate) fn upsert_workspace_occupancy_tx(
@@ -613,7 +613,7 @@ pub(crate) fn upsert_workspace_occupancy_tx(
 pub(crate) fn upsert_execution_root_entry_tx(
     tx: &Transaction<'_>,
     record: &ExecutionRootEntry,
-) -> Result<()> {
+) -> Result<Option<String>> {
     if record.removed_at.is_none() {
         super::reclamation::ensure_root_admission_tx(tx, &record.execution_root_id)?;
         if let Some(worktree) = &record.worktree {
@@ -626,15 +626,19 @@ pub(crate) fn upsert_execution_root_entry_tx(
             }
         }
     }
-    let existing_removed_at = tx
+    let existing: Option<(String, Option<String>)> = tx
         .query_row(
-            "SELECT removed_at FROM execution_root_entries
+            "SELECT workspace_id, removed_at FROM execution_root_entries
              WHERE execution_root_id = ?1",
             [&record.execution_root_id],
-            |row| row.get::<_, Option<String>>(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?
-        .flatten()
+        .optional()?;
+    let (previous_workspace, existing_removed_at) = match existing {
+        Some((workspace, removed_at)) => (Some(workspace), removed_at),
+        None => (None, None),
+    };
+    let existing_removed_at = existing_removed_at
         .map(|value| {
             DateTime::parse_from_rfc3339(&value)
                 .with_context(|| format!("parsing execution root removed_at timestamp: {value}"))
@@ -670,7 +674,7 @@ pub(crate) fn upsert_execution_root_entry_tx(
             payload_json,
         ],
     )?;
-    Ok(())
+    Ok(previous_workspace)
 }
 
 /// Enforces the durable Agent identity reservation invariant inside every

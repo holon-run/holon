@@ -332,6 +332,24 @@ Current query coverage because it appends an audit event. The original event and
 identity revision share a transaction and allow recovery to publish the rename
 without repeating it.
 
+### Shared workspace context
+
+The loaded Agent supplies the active binding and attached workspace IDs. The
+runtime database publishes the current workspace anchors and live execution
+root references through one in-memory registry shared by its runtimes.
+Bootstrap initializes the view from one durable read. Workspace and execution
+root writes publish their affected entries after commit, including when another
+Agent registered or removed a root. An ambiguous commit reloads the view at the
+writer boundary. Failed reload leaves the view unavailable until preparation or
+a later writer can reload it.
+
+Context capture copies only the requested workspace material from this view.
+Invalid material fails capture for its own workspace. The selected execution
+root references preserve exact historical URI resolution within attached
+workspaces. Removal and detachment exclude those roots from later captures.
+File contents are still acquired separately through the existing reference
+resolution and access checks.
+
 ### Immutable sharing and publication
 
 Each agent has a single writer and an `ArcSwap<AgentSnapshot>` publication
