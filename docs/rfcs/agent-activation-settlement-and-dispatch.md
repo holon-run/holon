@@ -1223,6 +1223,17 @@ ordinary candidate admission. Legacy queue state, including whether the
 source entry is already processed, does not determine whether canonical
 `NeedsSettlement` is discoverable or repairable.
 
+When the Host rebuilds a failed operator loop, its retired dispatch can own an
+actual Turn even before an input batch exists. Reconciliation uses the current
+binding, canonical attempt, original dispatch receipt and exact Dequeued
+claim. It commits the interrupted Turn with the queue, attempt and any
+remaining dispatch-memory responsibility before another run can claim the
+source. Fenced operator Turns commit their existing context-built audit at a
+stable receipt address before entering provider execution. Only a fenced Turn
+with no such receipt and no external-effect evidence can replay. A committed
+provider entry or an older Turn without the fence retains the source in
+quarantine for operator review. Existing completed settlements are preserved.
+
 Automatic recovery and `holon debug scheduler-recovery --apply` call the same
 restricted transition implementation. The debug command without `--apply` is
 read-only and reports the same ordered recovery plan, typed evidence,

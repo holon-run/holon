@@ -978,6 +978,8 @@ impl RuntimeHandle {
                 terminal_task_transition_conflicts_remaining: AtomicUsize::new(0),
                 #[cfg(test)]
                 fail_after_next_runtime_claim: AtomicBool::new(false),
+                #[cfg(all(test, holon_lib_test_shard = "d"))]
+                operator_dispatch_reader_failure: StdMutex::new(None),
                 #[cfg(test)]
                 fail_non_retryable_after_next_runtime_claim: AtomicBool::new(false),
                 #[cfg(test)]

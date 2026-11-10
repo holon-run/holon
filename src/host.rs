@@ -24924,6 +24924,115 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
+    async fn runtime_reader_pressure_reconciles_started_operator_dispatch() {
+        for after_provider in [false, true] {
+            let (_home, host) = canonical_test_host();
+            let agent_id = host.config().default_agent_id.clone();
+            let runtime = host.default_runtime().await.unwrap();
+            runtime.inject_operator_dispatch_reader_failure(after_provider);
+            let message = runtime
+                .enqueue(MessageEnvelope::new(
+                    &agent_id,
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "recover the actual started turn".into(),
+                    },
+                ))
+                .await
+                .unwrap();
+            let expected_status = if after_provider {
+                QueueEntryStatus::Quarantined
+            } else {
+                QueueEntryStatus::Processed
+            };
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+            let events = loop {
+                let entry = host
+                    .runtime_db()
+                    .queue_entries()
+                    .latest(&message.id)
+                    .unwrap();
+                let events = runtime.storage().read_recent_events(128).unwrap();
+                if entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.status == expected_status)
+                    && events
+                        .iter()
+                        .any(|event| event.kind == "runtime_loop_recovered")
+                {
+                    break events;
+                }
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "recovery did not reach {expected_status:?}: {entry:?}, events={:?}",
+                    events
+                        .iter()
+                        .map(|event| event.kind.as_str())
+                        .collect::<Vec<_>>(),
+                );
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            };
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| event.kind == "provider_round_completed")
+                    .count(),
+                1,
+                "provider must run only once across failure and recovery"
+            );
+            let mut turns = runtime.storage().read_recent_turns(5).unwrap();
+            turns.retain(|turn| {
+                turn.trigger
+                    .as_ref()
+                    .and_then(|trigger| trigger.message_id.as_deref())
+                    == Some(message.id.as_str())
+            });
+            turns.sort_by_key(|turn| turn.turn_index);
+            assert_eq!(turns.len(), if after_provider { 1 } else { 2 });
+            let original = &turns[0];
+            assert_eq!(
+                original.terminal.as_ref().map(|terminal| terminal.kind),
+                Some(crate::types::TurnTerminalKind::Interrupted)
+            );
+            let expected_reason = if after_provider {
+                "runtime_recovery_operator_dispatch_uncertain"
+            } else {
+                "interrupted_queue_claim_reentry"
+            };
+            assert_eq!(
+                original
+                    .terminal
+                    .as_ref()
+                    .and_then(|terminal| terminal.reason.as_deref()),
+                Some(expected_reason)
+            );
+            if !after_provider {
+                assert_ne!(original.run_id, turns[1].run_id);
+                assert_eq!(
+                    turns[1].terminal.as_ref().map(|terminal| terminal.kind),
+                    Some(crate::types::TurnTerminalKind::Completed)
+                );
+            }
+            host.runtime_db().with_read(|connection| {
+                let checkpoint: String = connection.query_row(
+                    "SELECT state FROM dispatch_memory_checkpoints WHERE agent_id=?1 AND turn_id=?2",
+                    rusqlite::params![agent_id, original.turn_id],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(checkpoint, "done");
+                Ok(())
+            }).unwrap();
+        }
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
     async fn non_retryable_runtime_loop_failure_does_not_trigger_automatic_recovery() {
         let (_home, host) = canonical_test_host();
         let agent_id = host.config().default_agent_id.clone();

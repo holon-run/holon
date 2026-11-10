@@ -859,6 +859,8 @@ struct RuntimeInner {
     terminal_task_transition_conflicts_remaining: AtomicUsize,
     #[cfg(test)]
     fail_after_next_runtime_claim: AtomicBool,
+    #[cfg(all(test, holon_lib_test_shard = "d"))]
+    operator_dispatch_reader_failure: StdMutex<Option<bool>>,
     #[cfg(test)]
     fail_non_retryable_after_next_runtime_claim: AtomicBool,
     #[cfg(test)]
@@ -3413,6 +3415,26 @@ impl RuntimeHandle {
         self.inner.notify.notify_one();
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "d"))]
+    pub(crate) fn inject_operator_dispatch_reader_failure(&self, after_provider: bool) {
+        *self.inner.operator_dispatch_reader_failure.lock().unwrap() = Some(after_provider);
+    }
+
+    #[cfg(all(test, holon_lib_test_shard = "d"))]
+    fn check_operator_dispatch_reader_failure(&self, after_provider: bool) -> Result<()> {
+        let mut fault = self.inner.operator_dispatch_reader_failure.lock().unwrap();
+        if *fault == Some(after_provider) {
+            fault.take();
+            return Err(crate::runtime_db::RuntimeDbRetryableError::new(
+                "reader pool checkout",
+                std::path::Path::new("fixture.sqlite"),
+                "injected operator dispatch checkout timeout",
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn inject_non_retryable_runtime_loop_failure_after_next_claim(&self) {
         self.inner
@@ -4644,6 +4666,9 @@ impl RuntimeHandle {
                 prior_terminal.clone(),
                 self.now(),
             )?;
+            started_turn.operator_dispatch_fenced = dispatch_prior_closure.is_some()
+                && message.is_some_and(|source| source.kind == MessageKind::OperatorPrompt)
+                && canonical_execution_binding.is_some();
             if let (Some(message), Some((source_id, _))) = (
                 message,
                 replay_source
@@ -6434,13 +6459,19 @@ impl RuntimeHandle {
         brief_evidence: Vec<BriefRecord>,
         duration_ms: u64,
     ) -> Result<TerminalSettlementDisposition> {
-        let open_attempt_id = terminal_execution_open_attempt_id(&self.inner.runtime_db, &record)?;
-        let materialized_witness = terminal_execution_settlement_witness(
-            &self.inner.storage,
-            &self.inner.runtime_db,
-            &record,
-            terminal_transition,
-        );
+        let open_attempt_id = crate::runtime_db::retry_reader_checkout(|| async {
+            terminal_execution_open_attempt_id(&self.inner.runtime_db, &record)
+        })
+        .await?;
+        let materialized_witness = crate::runtime_db::retry_reader_checkout(|| async {
+            terminal_execution_settlement_witness(
+                &self.inner.storage,
+                &self.inner.runtime_db,
+                &record,
+                terminal_transition,
+            )
+        })
+        .await;
         let (error, execution_witness, materialization_failed) = match materialized_witness {
             Ok(materialized_witness) => {
                 let execution_witness = materialized_witness.or_else(|| {
@@ -6474,11 +6505,15 @@ impl RuntimeHandle {
         if !materialization_failed && execution_settlement_conflict(&error) {
             return Err(error);
         }
-        match self.terminal_settlement_readback(
-            &record,
-            terminal_transition,
-            execution_witness.as_ref(),
-        )? {
+        match crate::runtime_db::retry_reader_checkout(|| async {
+            self.terminal_settlement_readback(
+                &record,
+                terminal_transition,
+                execution_witness.as_ref(),
+            )
+        })
+        .await?
+        {
             TerminalSettlementReadback::Committed => {
                 tracing::warn!(
                     message_id = %record.message_id,
@@ -6496,8 +6531,9 @@ impl RuntimeHandle {
             TerminalSettlementReadback::NotCommitted => {}
         }
 
-        if !materialization_failed
-            && terminal_transition.terminal.kind != TurnTerminalKind::Completed
+        if crate::runtime_db::is_reader_checkout_pressure(&error)
+            || (!materialization_failed
+                && terminal_transition.terminal.kind != TurnTerminalKind::Completed)
         {
             self.commit_queue_terminal_settlement_with_evidence(
                 record,
@@ -7045,6 +7081,14 @@ impl RuntimeHandle {
         }
         let terminal_transition = match processing_result {
             Ok(transition) => transition,
+            // Preserve the claim when the reader could not run. Bootstrap will
+            // settle the exact dispatch and decide whether the source may replay.
+            Err(error)
+                if message.kind == MessageKind::OperatorPrompt
+                    && crate::runtime_db::is_reader_checkout_pressure(&error) =>
+            {
+                return Err(error);
+            }
             Err(err) => {
                 let aborted = err.downcast_ref::<CurrentRunAborted>().cloned();
                 let (terminal, queue_status, mut audit_events, failure_artifacts) = if let Some(
@@ -7451,25 +7495,21 @@ impl RuntimeHandle {
 
     async fn recover_scheduler_bootstrap_claims(&self) -> Result<usize> {
         let agent_id = self.inner.agent.lock().await.state.id.clone();
+        let claimed = self
+            .inner
+            .runtime_db
+            .queue_entries()
+            .dequeued_for_preparation(&agent_id)?;
+        if claimed.is_empty() {
+            return Ok(0);
+        }
         let execution_state = self
             .inner
             .runtime_db
             .transitions()
             .load_execution_protocol_state_if_initialized_async(&agent_id)
             .await?;
-        let claimed = self
-            .inner
-            .runtime_db
-            .queue_entries()
-            .recent_for_preparation(Some(&agent_id), usize::MAX)?
-            .into_iter()
-            .filter(|entry| entry.status == QueueEntryStatus::Dequeued)
-            .collect::<Vec<_>>();
-        let turns = self
-            .inner
-            .runtime_db
-            .turn_records()
-            .recent_for_agent_for_preparation(&agent_id, usize::MAX)?;
+        let bootstrapping = self.inner.bootstrap_result.lock().unwrap().is_none();
         let mut recovered = 0;
 
         for mut entry in claimed {
@@ -7572,27 +7612,58 @@ impl RuntimeHandle {
                 provider_recovery::resolve(&self.inner.storage, &message, state)
                     .is_ok_and(|source| source.is_initial_attempt(&message, &attempt))
             });
-            let (canonical_attachment, has_batch_attachment) =
-                self.inner.runtime_db.transaction(|tx| {
+            let bound_turn = guard
+                .state
+                .current_execution_binding
+                .as_ref()
+                .filter(|binding| binding.source_message_id == message.id)
+                .map(|binding| self.inner.storage.read_turn_by_id(&binding.turn_id))
+                .transpose()?
+                .flatten();
+            let (canonical_attachment, has_batch_attachment, retired_operator_replay) =
+                self.inner.runtime_db.read_for_preparation(|tx| {
                     let canonical =
                         crate::runtime_db::task_result_settlement::canonical_live_turn_id_tx(
                             tx, &attempt,
                         )?;
-                    let has_batch: bool = tx.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM turn_records WHERE agent_id=?1 AND (
+                    let has_batch: bool = canonical.is_some()
+                        || tx.query_row(
+                            "SELECT EXISTS(SELECT 1 FROM turn_records WHERE agent_id=?1 AND (
                      json_extract(payload_json,'$.idle_input_batch.activation_id')=?2 OR
                      EXISTS(SELECT 1 FROM json_each(payload_json,'$.live_input_batches') batch
                      WHERE json_extract(batch.value,'$.activation_id')=?2)))",
-                        rusqlite::params![agent_id, activation_id],
-                        |row| row.get(0),
-                    )?;
-                    Ok((canonical, has_batch))
+                            rusqlite::params![agent_id, activation_id],
+                            |row| row.get(0),
+                        )?;
+                    let retired_operator_replay = match bound_turn.as_ref() {
+                        Some(turn)
+                            if bootstrapping
+                                && guard.current_run_abort.is_none()
+                                && canonical.as_ref().is_none_or(|id| id == &turn.turn_id) =>
+                        {
+                            started_dispatch::retired_operator_dispatch_can_replay(
+                                tx,
+                                &guard.input_evidence_scope(),
+                                &guard.state,
+                                &attempt,
+                                &message,
+                                &owner,
+                                turn,
+                            )?
+                            .map(|safe| safe && (!has_batch || canonical.is_some()))
+                        }
+                        _ => None,
+                    };
+                    Ok((canonical, has_batch, retired_operator_replay))
                 })?;
             let attachment_turn_id = canonical_attachment.or_else(|| {
                 // A recovery dispatch can crash before its first batch. Close
                 // only its original binding; this grants no replay admission.
                 let binding = guard.state.current_execution_binding.as_ref()?;
-                let turn = turns.iter().find(|turn| turn.turn_id == binding.turn_id)?;
+                let turn = bound_turn.as_ref()?;
+                if retired_operator_replay.is_some() {
+                    return Some(turn.turn_id.clone());
+                }
                 let batchless_task_result_recovery =
                     message.kind == MessageKind::InternalFollowup
                     && message.authority_class == AuthorityClass::RuntimeInstruction
@@ -7620,15 +7691,22 @@ impl RuntimeHandle {
                             if admitted == &activation_id))
                 .then(|| turn.turn_id.clone())
             });
-            let terminal_turn = turns.iter().find(|turn| {
+            let source_turn = attachment_turn_id
+                .as_deref()
+                .or(message.turn_id.as_deref())
+                .map(|id| match bound_turn {
+                    Some(turn) if turn.turn_id == id => Ok(Some(turn)),
+                    _ => self.inner.storage.read_turn_by_id(id),
+                })
+                .transpose()?
+                .flatten();
+            let terminal_turn = source_turn.as_ref().filter(|turn| {
                 turn.terminal.is_some()
                     && turn
                         .trigger
                         .as_ref()
                         .and_then(|trigger| trigger.message_id.as_deref())
                         == Some(entry.message_id.as_str())
-                    && attachment_turn_id.as_deref().or(message.turn_id.as_deref())
-                        == Some(turn.turn_id.as_str())
                     && turn.effective_owner() == owner
             });
             let terminal_is_completed = terminal_turn.is_some_and(|turn| {
@@ -7642,15 +7720,22 @@ impl RuntimeHandle {
                     crate::domain::execution_protocol::ExecutionAttemptState::Open
                         | crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
                 ) {
-                attachment_turn_id
-                    .map(|id| self.inner.storage.read_turn_by_id(&id))
-                    .transpose()?
-                    .flatten()
-                    .filter(|turn| turn.terminal.is_none())
+                source_turn
+                    .as_ref()
+                    .filter(|turn| {
+                        attachment_turn_id.as_deref() == Some(turn.turn_id.as_str())
+                            && turn.terminal.is_none()
+                    })
+                    .cloned()
                     .map(|mut turn| {
+                        let reason = if retired_operator_replay == Some(false) {
+                            "runtime_recovery_operator_dispatch_uncertain"
+                        } else {
+                            "interrupted_queue_claim_reentry"
+                        };
                         turn.terminal = Some(crate::types::TurnTerminalSummary {
                             kind: TurnTerminalKind::Interrupted,
-                            reason: Some("interrupted_queue_claim_reentry".into()),
+                            reason: Some(reason.into()),
                             no_brief_reason: Some(TurnNoBriefReason::Interrupted),
                             completed_at: self.now(),
                             duration_ms: 0,
@@ -7692,7 +7777,14 @@ impl RuntimeHandle {
             } else {
                 false
             };
-            let decision =
+            let decision = if retired_operator_replay == Some(false)
+                && interrupted_attachment.is_some()
+                && attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+            {
+                unsettled_claim::UnsettledClaimDecision::InterruptAndQuarantine {
+                    reason: "runtime_recovery_operator_dispatch_uncertain",
+                }
+            } else {
                 unsettled_claim::plan_unsettled_claim(&unsettled_claim::UnsettledClaimFacts {
                     queue_status: entry.status.clone(),
                     attempt_state: attempt.state,
@@ -7711,7 +7803,8 @@ impl RuntimeHandle {
                         task_result_replay_fence
                     },
                     recovery_of_attempt_id: attempt.recovery_of_attempt_id.clone(),
-                });
+                })
+            };
             if let unsettled_claim::UnsettledClaimDecision::QuarantineSettled { reason } = decision
             {
                 entry.status = QueueEntryStatus::Quarantined;
@@ -7798,7 +7891,9 @@ impl RuntimeHandle {
                                 agent_state: None,
                                 message_evidence: Vec::new(),
                                 transcript_entries: Vec::new(),
-                                turn_record: terminal_turn.cloned(),
+                                turn_record: terminal_turn.cloned().or_else(|| {
+                                    retired_operator_replay.and(interrupted_attachment.clone())
+                                }),
                                 audit_events: vec![AuditEvent::legacy(
                                     "unsettled_claim_reconciled",
                                     serde_json::json!({
@@ -7808,6 +7903,7 @@ impl RuntimeHandle {
                                         "work_item_id": work_item_id,
                                         "decision": "interrupt_and_quarantine",
                                         "reason": reason,
+                                        "terminal_turn_id": interrupted_attachment.as_ref().map(|turn| &turn.turn_id),
                                         "recovery_generation": u32::from(
                                             attempt.recovery_of_attempt_id.is_some()
                                         ),
@@ -7983,7 +8079,9 @@ impl RuntimeHandle {
             entry.updated_at = self.now();
             let message_id = entry.message_id.clone();
             let queue_status = entry.status.clone();
-            let terminal_turn_id = terminal_turn.map(|turn| turn.turn_id.clone());
+            let terminal_turn_id = terminal_turn
+                .or(interrupted_attachment.as_ref())
+                .map(|turn| turn.turn_id.clone());
             let recovery_outcome = if terminal_is_completed {
                 "settled_from_terminal_turn"
             } else {

@@ -179,6 +179,7 @@ fn idle_batch_invariants(record: &TurnRecord) -> impl PartialEq + '_ {
         replay,
         destructive_operation_id,
         external_side_effect_possible,
+        operator_dispatch_fenced,
         created_at,
     } = record;
     (
@@ -203,6 +204,7 @@ fn idle_batch_invariants(record: &TurnRecord) -> impl PartialEq + '_ {
             replay,
             destructive_operation_id,
             external_side_effect_possible,
+            operator_dispatch_fenced,
             created_at,
         ),
     )

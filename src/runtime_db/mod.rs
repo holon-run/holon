@@ -229,6 +229,38 @@ impl fmt::Display for RuntimeDbRetryableError {
 
 impl StdError for RuntimeDbRetryableError {}
 
+pub(crate) fn is_reader_checkout_pressure(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<RuntimeDbRetryableError>()
+            .is_some_and(|error| {
+                matches!(
+                    error.operation(),
+                    "reader pool admission"
+                        | "reader pool blocking admission"
+                        | "reader pool checkout"
+                )
+            })
+    })
+}
+
+/// Retry read preparation only. Never wrap a business write or a provider call.
+pub(crate) async fn retry_reader_checkout<T, F, Fut>(mut read: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    for delay_ms in [50, 100] {
+        match read().await {
+            Err(error) if is_reader_checkout_pressure(&error) => {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            result => return result,
+        }
+    }
+    read().await
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeDbProtectionError {
     path: PathBuf,

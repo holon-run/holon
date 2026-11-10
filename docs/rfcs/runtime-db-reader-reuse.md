@@ -115,6 +115,18 @@ handles and raw maintenance connections are separate owners and must not be
 counted as part of the same pool limit. There is no overflow connection or
 fallback to unbounded raw opens.
 
+Acquisition timeouts log the reader role, wait stage, waiting call site and
+active leases with their call sites and elapsed time. Operator execution context
+preparation can retry a checkout that never ran, within its existing three
+attempt limit and after releasing the previous reservation. Terminal read
+preparation and readback also retry the individual read on checkout pressure.
+A settlement can retry after readback proves it did not commit. A checkout
+failure that escapes operator processing preserves the original queue claim for
+reconciliation. Bootstrap reads only Dequeued rows and their exact Turn
+addresses. Legacy deletion maintenance can look up single-agent receipts by
+indexed scope and checks multi-scope receipt ownership through the existing
+JSON proof.
+
 Internal closure APIs return owned values, never a lease, transaction, or cursor.
 The synchronous API is for synchronous/blocking boundaries. The async API waits
 for bounded, cancellable admission before `spawn_blocking`. The same acquisition

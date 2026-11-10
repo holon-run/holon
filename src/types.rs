@@ -2595,6 +2595,9 @@ pub struct TurnRecord {
     /// reached a durable tool-result checkpoint. Such turns are never replayed.
     #[serde(default)]
     pub external_side_effect_possible: bool,
+    /// This operator dispatch must commit its provider entry receipt before execution.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub(crate) operator_dispatch_fenced: bool,
     pub created_at: DateTime<Utc>,
 }
 
@@ -2621,6 +2624,7 @@ impl TurnRecord {
             replay: None,
             destructive_operation_id: None,
             external_side_effect_possible: false,
+            operator_dispatch_fenced: false,
             created_at: Utc::now(),
         }
     }
