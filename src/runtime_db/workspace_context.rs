@@ -275,6 +275,36 @@ mod tests {
     use chrono::{TimeDelta, Utc};
 
     #[test]
+    fn workspace_context_recovers_a_commit_without_its_ack() -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.lock"),
+        )?;
+        db.prepare_workspace_context()?;
+        let workspace = WorkspaceEntry::new("workspace", home.path().join("committed"), None);
+        let error = db
+            .write_workspace_context(|tx, _| {
+                upsert_workspace_entry_tx(tx, &workspace)?;
+                // Simulate a durable commit whose original transaction wrapper lost its ACK.
+                tx.execute_batch("COMMIT")?;
+                Ok(((), None))
+            })
+            .unwrap_err();
+        assert_eq!(
+            persistence_certainty(&error),
+            Some(PersistenceCertainty::Indeterminate)
+        );
+        db.with_workspace_context(|view| {
+            assert_eq!(
+                view.anchor("workspace")?,
+                Some(workspace.workspace_anchor.as_path())
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
     fn workspace_context_preserves_commit_scope_and_rebuilds_from_disk() -> Result<()> {
         let home = tempfile::tempdir()?;
         let open = || {
