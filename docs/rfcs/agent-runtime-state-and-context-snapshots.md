@@ -5197,6 +5197,29 @@ the parent reservation before collecting child observations. No intervening
 metadata publication may separate a prepared cut from its capture.
 
 
+### Episode receipt recovery completes loaded publication
+
+A loaded owner's positive Episode receipt recovery prepares Input, Work, Tasks
+and Scheduling in the same fresh writer `BEGIN IMMEDIATE` preparation transaction
+as the exact receipt, canonical State and qualified Episodes. Query qualification
+and cursor preparation may write; this is not a pure Deferred read. Input includes
+the held live query roles, current
+execution roots and the existing scheduler Brief window; Work includes the live
+binding and Tasks retain their existing qualified query selection and limits.
+The recovered `KnownCommit::State` carries these domains before publication, so
+status observation, Stop, Abort and runtime-failure cleanup do not inherit a
+State/Episodes-only root that discarded their prepared coverage.
+Group recovery resolves the actual loaded runtime for each reservation, including
+secondary owners; the initiating runtime is not a substitute for their live roles.
+
+Receipt absence, unfinished attempts, mismatched witnesses and retired identities
+retain their original recovery rules; they do not authorize current body
+preparation. Bootstrap and unloaded owners retain their separate construction
+and preparation boundaries. A failed loaded preparation leaves recovery fenced,
+without replaying the Episode write or publishing a partial successful root.
+Observer capture and Input lookup remain pure consumers: neither repairs missing
+coverage, broadens history, nor acquires execution ownership.
+
 ### Cumulative state sizes are observational
 
 Startup migration and ordinary requests do not apply cumulative byte, record,

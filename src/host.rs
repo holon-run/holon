@@ -2874,12 +2874,13 @@ impl RuntimeHost {
                 &self.inner.input_evidence_budget,
             )
             .await?;
+            crate::runtime::episode_recovery::resolve_episode_recovery(
+                &self.inner.runtime_db,
+                std::slice::from_mut(reservation),
+                self.config().recent_episode_candidates,
+                original_runtime.as_ref(),
+            )?;
         }
-        crate::runtime::episode_recovery::resolve_episode_recovery(
-            &self.inner.runtime_db,
-            reservations,
-            self.config().recent_episode_candidates,
-        )?;
         let known = MutationReservation::validate_group_known(reservations)?;
         let mut notifications = Vec::new();
         let mut cold_notifications = Vec::new();

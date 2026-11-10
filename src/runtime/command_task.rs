@@ -2209,6 +2209,7 @@ mod tests {
 
     use super::*;
     include!("command_task/producer_tests.rs");
+    include!("command_task/producer_source_tests.rs");
 
     #[derive(Clone)]
     struct FakeRunningProcess {
@@ -2291,6 +2292,10 @@ mod tests {
     }
 
     fn test_runtime() -> (TempDir, TempDir, RuntimeHandle) {
+        test_runtime_with_context(ContextConfig::default())
+    }
+
+    fn test_runtime_with_context(context: ContextConfig) -> (TempDir, TempDir, RuntimeHandle) {
         let home = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let runtime = RuntimeHandle::new(
@@ -2300,7 +2305,7 @@ mod tests {
             "http://127.0.0.1:7878".into(),
             Arc::new(StubProvider::new("done")),
             "default".into(),
-            ContextConfig::default(),
+            context,
         )
         .unwrap();
         crate::runtime::tests::support::isolate_test_user_home(&runtime);

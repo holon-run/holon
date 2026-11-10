@@ -809,6 +809,7 @@ impl RuntimeHandle {
             &runtime_db,
             std::slice::from_mut(&mut bootstrap_reservation),
             context_config.recent_episode_candidates,
+            None,
         )?;
         mutation_owner.validate_bootstrap()?;
         if bootstrap_reservation.recovery()?.is_some() {

@@ -4,6 +4,8 @@ use crate::runtime::{
     WaitForWakeKind,
 };
 
+include!("recovered_query_tests.rs");
+
 fn fixture() -> (tempfile::TempDir, RuntimeHandle) {
     let home = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1297,16 +1299,16 @@ async fn scheduler_prepares_current_source_after_positive_episode_recovery_inval
     );
     drop(mutation);
     // begin_mutation performs real receipt reconciliation. Episode recovery
-    // deliberately publishes current State/Episodes without guessing Inputs/Work.
+    // completes the publication cut with the live domains in the same view.
     let mut mutation = runtime.begin_mutation().await?;
     let root = mutation.capture_published_root()?;
-    assert!(root.input_evidence.is_none() && root.work.is_none());
+    assert!(root.input_evidence.is_some() && root.work.is_some());
     assert_eq!(
         root.state.current_execution_binding.as_ref(),
         Some(&binding)
     );
     drop(root);
-    // Model an incomplete recovered publication below the owner preparation
+    // Model an incomplete publication below the owner preparation
     // boundary. Ordinary capture must not repair its missing scheduler window.
     let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy()?;
     let narrow = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
