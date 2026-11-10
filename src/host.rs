@@ -1569,6 +1569,18 @@ impl RuntimeHost {
         &self.inner.runtime_db
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "c"))]
+    pub(crate) fn configure_reader_pool_for_tests(
+        &mut self,
+        capacity: u32,
+        budget: Duration,
+    ) -> Result<()> {
+        Arc::get_mut(&mut self.inner)
+            .context("configure test readers before sharing the host")?
+            .runtime_db
+            .configure_reader_pool_for_tests(capacity, budget)
+    }
+
     pub(crate) fn skills_registry(&self) -> Arc<RwLock<SkillsRegistry>> {
         self.inner.skills_registry.clone()
     }
