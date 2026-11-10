@@ -1,6 +1,6 @@
 # models.dev refresh summary
 
-- Supplement models: 55 (drafted this run: 0, retained: 55, removed: 0)
+- Supplement models: 56 (drafted this run: 0, retained: 56, removed: 0)
 - Deferred candidates: 189 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 630; unknown context: 225; unknown output ceiling: 259.
+Routes: 634; unknown context: 227; unknown output ceiling: 261.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -207,6 +207,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@messages/kimi-k3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/kimi-k3.1-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/longcat-2.0` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
+| `opencode-go@messages/longcat-2.5-free` | Unknown | Unknown | no_exact_endpoint_upstream_evidence; no_exact_endpoint_upstream_evidence |
 | `opencode-go@messages/mimo-v2.5` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@messages/mimo-v2.5-pro` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@messages/mimo-v2.6-flash` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
@@ -232,6 +233,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@responses/kimi-k3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/kimi-k3.1-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/longcat-2.0` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
+| `opencode-go@responses/longcat-2.5-free` | Unknown | Unknown | no_exact_endpoint_upstream_evidence; no_exact_endpoint_upstream_evidence |
 | `opencode-go@responses/mimo-v2.5` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@responses/mimo-v2.5-pro` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@responses/mimo-v2.6-flash` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
@@ -414,8 +416,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 - `deepseek@responses`: 3 checked-in routes; not proof of live subscription support.
 - `minimax-cn@m-plan`: 2 checked-in routes; not proof of live subscription support.
 - `minimax@m-plan`: 2 checked-in routes; not proof of live subscription support.
-- `opencode-go@messages`: 36 checked-in routes; not proof of live subscription support.
-- `opencode-go@responses`: 32 checked-in routes; not proof of live subscription support.
+- `opencode-go@messages`: 37 checked-in routes; not proof of live subscription support.
+- `opencode-go@responses`: 33 checked-in routes; not proof of live subscription support.
 - `stepfun@plan`: 5 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@messages`: 36 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@responses`: 28 checked-in routes; not proof of live subscription support.

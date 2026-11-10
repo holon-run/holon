@@ -868,6 +868,7 @@ pub(crate) const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
     ("kimi-k3", "default"),
     ("kimi-k2.7-code", "default"),
     ("longcat-2.0", "default"),
+    ("longcat-2.5-free", "default"),
     ("deepseek-v4.1-flash", "default"),
     ("deepseek-v4-pro", "default"),
     ("mimo-v2.6-flash", "default"),
@@ -2754,8 +2755,65 @@ mod tests {
     }
 
     #[test]
+    fn opencode_go_longcat_native_contract_is_chat_and_host_scoped() {
+        let provider = ProviderId::parse("opencode-go").unwrap();
+        let native = serde_json::json!({
+            "id": "longcat-2.5-free",
+            "api": {"chat-completions": {"base_url": "https://opencode.ai/inference/go/openai/v1"}},
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+            "capabilities": {"reasoning": {"supported": true, "toggle": true}},
+            "limit": {"context": 1_000_000, "output": 262_144}
+        });
+        let decode = |value| {
+            serde_json::from_value::<OpenCodeGoModel>(value)
+                .unwrap()
+                .into_model_metadata(&provider)
+                .unwrap()
+        };
+        let model = decode(native.clone());
+        assert_eq!(model.endpoint, None);
+        assert_eq!(model.context_window_tokens, Some(1_000_000));
+        assert_eq!(model.default_max_output_tokens, None);
+        assert_eq!(model.max_output_tokens_upper_limit, Some(262_144));
+        assert!(model.capabilities.image_input);
+        assert!(model.capabilities.supports_reasoning);
+        assert!(model.reasoning_effort_options.is_empty());
+        for (api, host) in [
+            ("messages", "https://opencode.ai/inference/go/openai/v1"),
+            ("responses", "https://opencode.ai/inference/go/openai/v1"),
+            (
+                "chat-completions",
+                "https://opencode.ai/inference/openai/v1",
+            ),
+            (
+                "chat-completions",
+                "https://opencode.ai/inference/go/anthropic/v1",
+            ),
+            (
+                "chat-completions",
+                "https://opencode.ai/inference/go/openai/v1/other",
+            ),
+        ] {
+            let mut value = native.clone();
+            value["api"] = serde_json::json!({api: {"base_url": host}});
+            let model = decode(value);
+            assert_eq!(model.context_window_tokens, None);
+            assert_eq!(model.max_output_tokens_upper_limit, None);
+            assert!(!model.capabilities.image_input);
+            assert!(!model.capabilities.supports_reasoning);
+            assert!(model.reasoning_effort_options.is_empty());
+        }
+        let mut unknown = native;
+        unknown["id"] = serde_json::json!("longcat-2.5-free-future");
+        assert!(serde_json::from_value::<OpenCodeGoModel>(unknown)
+            .unwrap()
+            .into_model_metadata(&provider)
+            .is_none());
+    }
+
+    #[test]
     fn opencode_go_discovery_accepts_reviewed_text_ids_without_inventing_capabilities() {
-        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 32);
+        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 33);
         let mut data = OPENCODE_GO_TEXT_MODELS
             .iter()
             .map(|(id, _)| serde_json::json!({"id": id}))
@@ -2772,7 +2830,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({"data": data})).unwrap();
         let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
         // Discovery is model-keyed, not route-keyed: retain one preferred record.
-        assert_eq!(models.len(), 32);
+        assert_eq!(models.len(), 33);
         assert!(models
             .windows(2)
             .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));

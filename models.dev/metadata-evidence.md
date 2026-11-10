@@ -5,6 +5,55 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-10
+
+Pinned payload:
+`b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496`,
+sampled November 9 at 21:00:28 UTC. The
+[endpoint review](endpoint-review.md#2026-11-10-incremental-review) separates
+accepted increments from preserved unknowns and incomplete source evidence.
+
+The native [Fable 5.2 overview](https://platform.claude.com/docs/en/models/fable-5-2/overview)
+confirms the exact `claude-fable-5-2` API ID, 1M/128K limits, always-on
+adaptive thinking, unsupported forced tool choice, and omitted sampling
+parameters. It also explicitly requires 30-day retention, with ZDR access
+only when separately authorized. The
+[effort contract](https://platform.claude.com/docs/en/build-with-claude/effort)
+confirms five levels and default `high`. The sampled model overview,
+thinking and effort bodies have SHA-256 respectively:
+
+- `a6b6ea43f997802dc8b34aeaaaade72592cb872b8acb692f7a15240c06a3d85f`
+- `71025f38bd32896e07b04226ea0116a55b6cb4618e03c8bbc95be3e9e39c6b5c`
+- `87c3900847cb21bd1b44f466831fd97a9d19f689e65400da4157b6302a4ee55f`
+
+The exact LongCat ID is independently listed in
+[Go](https://opencode.ai/inference/go/v1/models) and
+[Zen](https://opencode.ai/inference/openai/v1/models). Both objects identify
+native `chat-completions`, but their base URLs differ:
+`https://opencode.ai/inference/go/openai/v1` versus
+`https://opencode.ai/inference/openai/v1`. Root `id` supplies the wire model;
+the API object has no `id` override. `canonical_id=meituan/longcat-2.5`
+is not the request ID. Published fields are text/image input, text output,
+tools/reasoning true, toggle-only reasoning, context 1,000,000, output
+262,144, and `reasoning_content` compatibility. The free Go offer is
+time-limited. Neither the ceiling nor a reasoning toggle establishes a
+service output default or effort enumeration. Messages/Responses remain
+Holon translations with explicit conservative route overrides.
+
+The [ordinary Ark list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md)
+and [K3.1 card](https://ark.volcengine.com/models/kimi-k3-1-pro.md) already
+disagreed on 4k versus 131,072 output default. Re-reading only the card
+does not resolve that conflict; keep the existing unknown and 8,192 runtime
+fallback. No ordinary-API default is projected into Coding/Agent Plan.
+
+Codex's catalog is byte-identical to the preceding sample. DeepSeek pricing
+and Responses text hashes are unchanged:
+`b5491191b386267f90608fbb1d1667d76e3c16c4896f49f55872aff4faa707f5`
+and `eb3a72042cfdfc9cbd6d182055e0f5f00719c10ea5945a41c598ed2c83ad69c4`.
+Preserve endpoint-specific protocol/region qualification and existing cache
+semantics. The full historical field set is preserved rather than newly
+certified; recorded source/qualification gaps remain outstanding.
+
 ## Incremental review: 2026-11-09
 
 The fixed models.dev payload is
