@@ -207,7 +207,7 @@ async fn create_skill_install_job(
             }
         };
         let result = tokio::task::spawn_blocking(move || {
-            writer.enter_physical();
+            writer.enter_physical()?;
             let _writer = writer;
             let _permit = permit;
             crate::skills::add_library_skill(&user_home, &kind)
@@ -339,7 +339,7 @@ pub(super) async fn create_skill_update_job(
             }
         };
         let result = tokio::task::spawn_blocking(move || {
-            writer.enter_physical();
+            writer.enter_physical()?;
             let _writer = writer;
             let _permit = permit;
             crate::skills::update_library_skills_with_progress(

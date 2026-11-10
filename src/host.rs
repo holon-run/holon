@@ -1299,7 +1299,7 @@ impl RuntimeHost {
                 startup_dispatch: Default::default(),
                 task_stop_supervisor: Default::default(),
                 skills_registry: Arc::new(RwLock::new(SkillsRegistry::new())),
-                context_resources: Arc::new(context_resources::ContextResources::default()),
+                context_resources: Arc::new(context_resources::ContextResources::new()?),
                 static_provider: Mutex::new(static_provider),
                 #[cfg(test)]
                 spawn_child_error: Mutex::new(None),

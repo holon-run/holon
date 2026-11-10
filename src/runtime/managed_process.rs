@@ -68,7 +68,7 @@ impl OriginalManagedProcess {
         resources: Arc<crate::host::context_resources::ContextResources>,
         paths: Vec<PathBuf>,
     ) -> Result<()> {
-        let scope = ResourceWriteScope::paths(paths);
+        let scope = resources.resolve_scope(&resources.path_scope(paths))?;
         resources.invalidate(&scope)?;
         *self
             .resources

@@ -173,7 +173,7 @@ impl RuntimeResources {
     ) -> Result<Self> {
         let gate = match bridge {
             Some(bridge) => bridge.context_resources()?,
-            None => Arc::new(ContextResources::default()),
+            None => Arc::new(ContextResources::new()?),
         };
         let notify = Arc::new(Notify::new());
         let registry = Arc::new(ContextResourceRegistry::new(ledger.clone()));
@@ -312,7 +312,11 @@ impl RuntimeHandle {
         initial: Option<&str>,
         material: Option<ResourceReadMaterial>,
     ) -> Result<(bool, Arc<WorkPlanPreparation>)> {
-        let writer = self.begin_context_resource_write()?;
+        let writer =
+            self.begin_context_resource_write_for_paths(vec![crate::work_item_plan::plan_path(
+                &self.agent_home(),
+                &record.id,
+            )])?;
         let material = match material {
             Some(material) => material,
             None => self.context_resource_material()?,
@@ -339,7 +343,7 @@ impl RuntimeHandle {
         self.spawn_owned_mutation(async move {
             let result = tokio::task::spawn_blocking(move || {
                 let _io = material.enter();
-                writer.enter_physical();
+                writer.enter_physical()?;
                 let mut owned_record = owned_record;
                 let artifact = if owned_record.plan_artifact.is_none() {
                     crate::work_item_plan::ensure_plan_artifact(
@@ -663,6 +667,10 @@ impl RuntimeHandle {
             }
             return result;
         }
+    }
+    #[cfg(test)]
+    pub(super) async fn observe_context_resources_for_test(&self) -> Result<()> {
+        self.run_context_resource_refresh(false).await.map(|_| ())
     }
     async fn reserve_resource_source(&self) -> Result<mutation_owner::MutationReservation> {
         self.trace_resource_refresh("owner_wait_start");
@@ -1030,10 +1038,14 @@ impl RuntimeHandle {
             let _io = source_material.enter();
             self.context_resource_source(&state, &config)?
         };
-        self.inner.resources.gate.set_paths(
-            &self.inner.resources.registry,
-            resource_dependency_paths(&source),
-        )?;
+        // A queued notification can reach this path after another refresh has
+        // already installed the same source. Keep its physical aliases intact.
+        if self.inner.resources.registry.capture(&source).is_err() {
+            self.inner.resources.gate.set_paths(
+                &self.inner.resources.registry,
+                resource_dependency_paths(&source),
+            )?;
+        }
         drop(
             self.inner
                 .resources
@@ -1092,6 +1104,12 @@ impl RuntimeHandle {
                     released = checkpoint.release.wait(released).unwrap();
                 }
             }
+            // The refresh ticket already exists. Discover aliases before body
+            // reads so writes through another alias can obsolete that ticket.
+            let paths = physical_resource_dependency_paths(&source)?;
+            resources
+                .gate
+                .set_paths(&resources.registry, resources.gate.resolve_paths(paths)?)?;
             drop(resources.gate.ready_for(&resources.registry)?);
             resource_io::charge_owned_metadata(
                 input_evidence_budget::serialized_bytes(&state.active_skills)? + 16384,
@@ -1242,6 +1260,7 @@ impl RuntimeHandle {
                 Ok(fence)
             })
     }
+    #[cfg(test)]
     pub(crate) fn begin_context_resource_write(
         &self,
     ) -> Result<crate::host::resource_writes::ResourceWrite> {
@@ -1258,9 +1277,7 @@ impl RuntimeHandle {
             )
         );
         paths.push(self.agent_home());
-        self.inner.resources.gate.begin_scoped_write(
-            crate::host::context_resources::ResourceWriteScope::paths(paths),
-        )
+        self.inner.resources.gate.begin_path_write(paths)
     }
     pub(crate) fn context_resource_material(&self) -> Result<ResourceReadMaterial> {
         ResourceReadMaterial::new(
@@ -1290,6 +1307,77 @@ fn resource_dependency_paths(source: &ContextResourceSource) -> Vec<PathBuf> {
         paths.extend(crate::skills::user_global_skill_root_candidates(home));
     }
     paths
+}
+
+fn physical_resource_dependency_paths(source: &ContextResourceSource) -> Result<Vec<PathBuf>> {
+    let mut paths = resource_dependency_paths(source);
+    paths.extend(
+        ["AGENTS.md", "memory/operator.md", "memory/self.md", "notes"]
+            .map(|suffix| source.agent_home.join(suffix)),
+    );
+    paths.extend(
+        source
+            .plans
+            .iter()
+            .map(|plan| crate::work_item_plan::plan_path(&source.agent_home, &plan.work_item_id)),
+    );
+    let mut skill_roots = crate::skills::SKILL_ROOT_SUFFIXES
+        .iter()
+        .map(|suffix| source.agent_home.join(suffix))
+        .collect::<Vec<_>>();
+    if let Some(root) = &source.execution_root {
+        skill_roots.extend(
+            crate::skills::SKILL_ROOT_SUFFIXES
+                .iter()
+                .map(|suffix| root.join(suffix)),
+        );
+    }
+    if source.include_user_skills {
+        if let Some(home) = &source.user_home {
+            skill_roots.extend(crate::skills::user_global_skill_root_candidates(home));
+        }
+    }
+    for root in skill_roots {
+        paths.push(root.clone());
+        append_catalogue_dependency_paths(&mut paths, &root, &["SKILL.md"])?;
+    }
+    let mut template_roots = vec![source.agent_home.join("agent_templates")];
+    if let Some(home) = &source.user_home {
+        template_roots.push(home.join(".agents/agent_templates"));
+    }
+    for root in template_roots {
+        paths.push(root.clone());
+        append_catalogue_dependency_paths(
+            &mut paths,
+            &root,
+            &["AGENTS.md", "template.toml", "skills.toml"],
+        )?;
+    }
+    Ok(paths)
+}
+
+// Match the catalogues' one-level traversal, without scanning skill assets or
+// unrelated AgentHome history/artifacts. Entrypoints may themselves be links.
+fn append_catalogue_dependency_paths(
+    paths: &mut Vec<PathBuf>,
+    root: &Path,
+    files: &[&str],
+) -> Result<()> {
+    let Ok(entries) = crate::diagnostics::io_probe::read_dir(root) else {
+        return Ok(());
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
+        if kind.is_dir() || kind.is_symlink() {
+            resource_io::charge_owned_metadata(4096, 16)?;
+            let path = entry.path();
+            paths.push(path.clone());
+            paths.extend(files.iter().map(|name| path.join(name)));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(holon_lib_test_shard = "a")]
