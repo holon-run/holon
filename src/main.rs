@@ -1329,6 +1329,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         tcp_router,
         unix_server,
         projection_owner,
+        startup_dispatch,
     ) = startup
         .observe("serve_startup", async {
             let maintenance_lease =
@@ -1368,7 +1369,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             std::env::remove_var(PRE_SERVER_PREPARED_ENV);
             std::env::remove_var(DAEMON_SERVE_ARGS_ENV);
             std::env::remove_var(DAEMON_SERVE_RESOLUTION_ENV);
-            host.recover_startup_observed(&startup).await?;
+            let (_, startup_dispatch) = host.recover_startup_deferred_observed(&startup).await?;
             startup
                 .observe("bootstrap_sweep", async {
                     let swept = host.sweep_pending_agent_bootstraps()?;
@@ -1384,18 +1385,15 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             let runtime = startup
                 .observe("default_activation", async {
                     if host.configured_default_agent_id()?.is_some() {
-                        Ok(Some(
-                            host.default_runtime_observed(Some(startup.clone())).await?,
-                        ))
+                        let runtime = host
+                            .default_runtime_bootstrapped_observed(Some(startup.clone()))
+                            .await?;
+                        Ok(Some(runtime))
                     } else {
                         Ok(None)
                     }
                 })
                 .await?;
-            host.spawn_daemon_memory_indexer();
-            host.spawn_daemon_runtime_db_retention();
-            host.spawn_daemon_deletion_coordinator();
-            spawn_stale_agent_template_remote_source_sync(&config, &host);
             startup
                 .observe("first_run", async {
                     if let Some(runtime) = runtime.as_ref() {
@@ -1497,9 +1495,15 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                 tcp_router,
                 unix_server,
                 projection_owner,
+                startup_dispatch,
             ))
         })
         .await?;
+    startup_dispatch.release();
+    host.spawn_daemon_memory_indexer();
+    host.spawn_daemon_runtime_db_retention();
+    host.spawn_daemon_deletion_coordinator();
+    spawn_stale_agent_template_remote_source_sync(&config, &host);
     #[cfg(not(unix))]
     let _ = unix_server;
 

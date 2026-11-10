@@ -28,6 +28,7 @@ mod original_child_spawn;
 mod pending_budget;
 pub(crate) mod resource_writes;
 mod startup_dispatch;
+pub use startup_dispatch::StartupDispatchCompletion;
 mod startup_dispatch_memory;
 mod task_monitor_read;
 #[cfg(holon_lib_test_shard = "d")]
@@ -3652,6 +3653,16 @@ impl RuntimeHost {
         .await
     }
 
+    /// Daemon initialization must observe default-agent bootstrap before dispatch.
+    pub async fn default_runtime_bootstrapped_observed(
+        &self,
+        observation: Option<crate::startup::StartupObservation>,
+    ) -> Result<RuntimeHandle> {
+        let runtime = self.default_runtime_observed(observation).await?;
+        runtime.wait_for_bootstrap().await?;
+        Ok(runtime)
+    }
+
     pub async fn recover_orphaned_queue_claims_at_startup(&self) -> Result<Vec<String>> {
         self.recover_startup_observed(&crate::startup::StartupObservation::new())
             .await
@@ -3661,16 +3672,25 @@ impl RuntimeHost {
         &self,
         observation: &crate::startup::StartupObservation,
     ) -> Result<Vec<String>> {
+        let (recovered, dispatch) = self.recover_startup_deferred_observed(observation).await?;
+        dispatch.release();
+        Ok(recovered)
+    }
+
+    /// Keep recovered owners idle until the caller completes daemon initialization.
+    pub async fn recover_startup_deferred_observed(
+        &self,
+        observation: &crate::startup::StartupObservation,
+    ) -> Result<(Vec<String>, StartupDispatchCompletion)> {
         let host = self.clone();
         let observation = observation.clone();
-        let recovery: std::pin::Pin<Box<dyn Future<Output = Result<Vec<String>>> + Send>> =
-            Box::pin(async move {
-                let admission = AcceptedStartupRecovery {
-                    host: Arc::downgrade(&host.inner),
-                };
-                host.recover_orphaned_queue_claims_at_startup_inner(&admission, &observation)
-                    .await
-            });
+        let recovery: std::pin::Pin<Box<dyn Future<Output = _> + Send>> = Box::pin(async move {
+            let admission = AcceptedStartupRecovery {
+                host: Arc::downgrade(&host.inner),
+            };
+            host.recover_orphaned_queue_claims_at_startup_inner(&admission, &observation)
+                .await
+        });
         self.run_owned_external_mutation(recovery).await
     }
 
@@ -3678,7 +3698,7 @@ impl RuntimeHost {
         &self,
         admission: &AcceptedStartupRecovery,
         observation: &crate::startup::StartupObservation,
-    ) -> Result<Vec<String>> {
+    ) -> Result<(Vec<String>, StartupDispatchCompletion)> {
         let phase = observation.phase("agent_recovery");
         let mut candidates = 0usize;
         let mut completed = 0usize;
@@ -3848,9 +3868,6 @@ impl RuntimeHost {
         self.start_task_stop_supervisor();
         Ok(recovered_queue_agent_ids)
         }.await;
-        if let Some(dispatch) = dispatch {
-            dispatch.finish(result.is_ok());
-        }
         tracing::info!(
             startup_id = %observation.startup_id,
             candidates,
@@ -3862,7 +3879,10 @@ impl RuntimeHost {
             "startup agent recovery summary"
         );
         phase.finish(&result);
-        result
+        Ok((
+            result?,
+            dispatch.expect("startup activation installs dispatch gate"),
+        ))
     }
 
     #[cfg(test)]

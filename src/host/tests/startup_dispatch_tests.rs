@@ -57,6 +57,68 @@ fn paused_second_bootstrap(
 }
 
 #[tokio::test]
+async fn startup_dispatch_daemon_initialization_holds_default_and_recovered_owners() {
+    let (_home, host, calls) = queued_startup_fixture().await;
+    let (_, dispatch) = host
+        .recover_startup_deferred_observed(&crate::startup::StartupObservation::new())
+        .await
+        .unwrap();
+    let default = host
+        .default_runtime_bootstrapped_observed(None)
+        .await
+        .unwrap();
+    default
+        .enqueue(MessageEnvelope::new(
+            host.config().default_agent_id.clone(),
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "default input before daemon readiness".into(),
+            },
+        ))
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    dispatch.release();
+    for agent in ["a-startup-dispatch", "b-startup-bootstrap"] {
+        wait_for_agent_inputs_settled(&host.try_get_loaded_runtime(agent).await.unwrap()).await;
+    }
+    wait_for_agent_inputs_settled(&default).await;
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn startup_dispatch_daemon_initialization_failure_retires_waiting_owners() {
+    let (_home, host, calls) = queued_startup_fixture().await;
+    let (_, dispatch) = host
+        .recover_startup_deferred_observed(&crate::startup::StartupObservation::new())
+        .await
+        .unwrap();
+    let _default = host
+        .default_runtime_bootstrapped_observed(None)
+        .await
+        .unwrap();
+    drop(dispatch);
+    host.shutdown().await.unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+    assert!(host
+        .runtime_db()
+        .agent_states()
+        .latest("a-startup-dispatch")
+        .unwrap()
+        .unwrap()
+        .last_runtime_failure
+        .is_none());
+}
+
+#[tokio::test]
 async fn startup_dispatch_rejected_recovery_does_not_block_later_activation() {
     let (_home, host, calls) = queued_startup_fixture().await;
     host.default_runtime()

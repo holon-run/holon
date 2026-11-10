@@ -70,6 +70,12 @@ so waiting for the batch cannot deadlock candidate recovery. Normal activation
 outside startup and the existing reader capacities/deadlines retain their
 contracts.
 
+Daemon startup retains the dispatch completion through default-agent bootstrap,
+listener/router initialization, and readiness publication. Recovery completion
+alone does not release dispatch: otherwise recovered owners can occupy the pools
+before the default agent opens. Dropping the completion on any later startup
+failure closes the same batch. Daemon background workers start after release.
+
 Owner-held preparation reads, including bootstrap metadata and identity reads,
 use a reserved query-only pool bounded to one reader. Ordinary queries retain
 their separate four-reader pool: observer saturation must not fail cold runtime

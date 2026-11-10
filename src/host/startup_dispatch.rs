@@ -44,12 +44,18 @@ impl StartupDispatch {
     }
 }
 
-pub(super) struct StartupDispatchCompletion {
+#[must_use = "release dispatch only after the remaining startup initialization succeeds"]
+pub struct StartupDispatchCompletion {
     outcome: watch::Sender<Option<bool>>,
     finished: bool,
 }
 
 impl StartupDispatchCompletion {
+    /// Allow ordinary dispatch after all startup initialization succeeds.
+    pub fn release(self) {
+        self.finish(true);
+    }
+
     pub(super) fn finish(mut self, success: bool) {
         self.finished = true;
         self.outcome.send_replace(Some(success));
