@@ -1,6 +1,7 @@
 //! Owner-coherent acquisition for loaded runtimes; projection consumes only values.
 
 use super::*;
+use crate::diagnostics::io_probe::{ContextCaptureMode, ContextCaptureStage as Stage};
 use crate::{
     context::{
         acquire_durable_context_with_work_queue, completion_work_item_ids,
@@ -244,9 +245,18 @@ impl RuntimeHandle {
         require_execution: bool,
         admission: Option<ContextAdmissionPlan<'_>>,
     ) -> Result<PreparedLoadedContext> {
+        let capture_mode = if admission.is_some() {
+            ContextCaptureMode::Admission
+        } else if require_execution {
+            ContextCaptureMode::Execution
+        } else {
+            ContextCaptureMode::Preview
+        };
         // RuntimeMutation owns a reservation and private copies, never a held
         // RuntimeAgent mutex. Remaining domain adapters stay explicit in D3.
-        let mut mutation = self.begin_mutation().await?;
+        let mut mutation = capture_mode
+            .measure(Stage::OwnerAcquisition, self.begin_mutation())
+            .await?;
         // D3 Message writers publish the exact count with the accepted payload;
         // this consumer never repairs it by counting historical Message rows.
         // Derive from one immutable config publication, not the independently
@@ -257,8 +267,11 @@ impl RuntimeHandle {
         let (mandatory_roots, record_limit, byte_limit) =
             mutation.context_input_evidence_policy()?;
         let metadata_request = active_task_request();
-        mutation
-            .prepare_owner_task_request(&metadata_request)
+        capture_mode
+            .measure(
+                Stage::TaskPreparation,
+                mutation.prepare_owner_task_request(&metadata_request),
+            )
             .await?;
         let metadata = mutation.capture_task_read(&metadata_request)?;
         anyhow::ensure!(
@@ -313,7 +326,12 @@ impl RuntimeHandle {
             byte_limit,
         )?;
         drop(metadata);
-        mutation.prepare_owner_task_request(&task_request).await?;
+        capture_mode
+            .measure(
+                Stage::TaskPreparation,
+                mutation.prepare_owner_task_request(&task_request),
+            )
+            .await?;
         let planned_tasks = mutation.capture_task_read(&task_request)?.tasks;
         let work_request = {
             let _resource_io = resource_material.enter();
@@ -334,26 +352,32 @@ impl RuntimeHandle {
             }
             request
         };
-        mutation
-            .prepare_owner_work_request_with_material(&work_request, &resource_material)
+        capture_mode
+            .measure(
+                Stage::WorkPreparation,
+                mutation
+                    .prepare_owner_work_request_with_material(&work_request, &resource_material),
+            )
             .await?;
         let state = &mutation.state;
         anyhow::ensure!(state.id == message.agent_id, "context input agent mismatch");
-        let identity_record = self
-            .inner
-            .runtime_db
-            .agent_identities()
-            .latest(&state.id)?
+        let identity_record = capture_mode
+            .measure_sync(Stage::IdentityLookup, || {
+                self.inner.runtime_db.agent_identities().latest(&state.id)
+            })?
             .ok_or_else(|| anyhow!("context identity missing"))?;
         let identity =
             AgentIdentityView::from_record(&identity_record, &self.inner.default_agent_id);
         let workspace = self.workspace_view_from_state(state)?;
         let history_policy =
             turn::context_history_preparation(&state.id, &model.model.effective_model);
-        mutation
-            .prepare_owner_scheduling_request_with_material(
-                &super::resident_scheduling::SchedulingCaptureRequest::current(),
-                &resource_material,
+        capture_mode
+            .measure(
+                Stage::SchedulingPreparation,
+                mutation.prepare_owner_scheduling_request_with_material(
+                    &super::resident_scheduling::SchedulingCaptureRequest::current(),
+                    &resource_material,
+                ),
             )
             .await?;
         let state = &mutation.state;
@@ -430,11 +454,14 @@ impl RuntimeHandle {
         }
         // The owner adds the ordinary closure policy without changing this
         // frozen prompt selection. Do not copy its selectors a second time here.
-        mutation
-            .prepare_owner_input_request_with_material(
-                &input_request,
-                config.recent_episode_candidates,
-                &resource_material,
+        capture_mode
+            .measure(
+                Stage::InputPreparation,
+                mutation.prepare_owner_input_request_with_material(
+                    &input_request,
+                    config.recent_episode_candidates,
+                    &resource_material,
+                ),
             )
             .await?;
         let captured = mutation.capture_context_with_inputs_and_work_and_tasks(
@@ -492,7 +519,7 @@ impl RuntimeHandle {
             self.capture_context_resources(state, &config_version, &resource_material)?;
 
         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
-        let (durable, control_revision) = {
+        let capture_durable = || {
             let _resource_io = resource_material.enter();
             let mut connection = self.inner.runtime_db.connection()?;
             let transaction =
@@ -594,8 +621,10 @@ impl RuntimeHandle {
                 admission,
             )?;
             transaction.commit()?;
-            (durable, control_revision)
+            Ok::<_, anyhow::Error>((durable, control_revision))
         };
+        let (durable, control_revision) =
+            capture_mode.measure_sync(Stage::DurableCapture, capture_durable)?;
 
         let snapshot = {
             let _resource_io = resource_material.enter();

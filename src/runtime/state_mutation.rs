@@ -3409,6 +3409,7 @@ impl RuntimeHandle {
             }
             None => mutation_owner::MutationOwner::reserve_all(owners).await?,
         };
+        crate::diagnostics::io_probe::record_context_owner_reserved(measurement_started);
         // Original responsibility must finish on the registered worker, even
         // if the scoped caller cancels while reconciliation is in progress.
         self.reconcile_reserved_mutations(&mut reservations).await?;
