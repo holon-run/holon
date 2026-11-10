@@ -330,8 +330,7 @@ impl RuntimeHost {
             let single = &mut reservations[index..index + 1];
             if recovery.known.is_none() {
                 MutationReservation::validate_input_unknown(single, &recovery.key, &witness)?;
-                let mut connection = self.runtime_db().connection()?;
-                let sizes:(usize,usize)=connection.query_row("SELECT COALESCE((SELECT length(CAST(prepared_json AS BLOB))+length(CAST(scopes_json AS BLOB))+length(CAST(outcome_json AS BLOB))+512 FROM input_mutation_receipts WHERE command_nonce=?1),0),COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_identities WHERE agent_id=?2),0)",params![descriptor.command_nonce(),single[0].agent_id()],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                let sizes:(usize,usize)=self.runtime_db().read_for_preparation(|connection| Ok(connection.query_row("SELECT COALESCE((SELECT length(CAST(prepared_json AS BLOB))+length(CAST(scopes_json AS BLOB))+length(CAST(outcome_json AS BLOB))+512 FROM input_mutation_receipts WHERE command_nonce=?1),0),COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_identities WHERE agent_id=?2),0)",params![descriptor.command_nonce(),single[0].agent_id()],|r|Ok((r.get(0)?,r.get(1)?)))?))?;
                 let material = sizes
                     .0
                     .checked_add(sizes.1)
@@ -346,7 +345,7 @@ impl RuntimeHost {
                     InputMemoryCategory::Candidate,
                 )?;
                 let current = with_fresh_input_mutation_resolution(
-                    &mut connection,
+                    self.runtime_db(),
                     attempt,
                     |tx, resolution| {
                         let InputMutationResolution::Present(receipt) = resolution else {

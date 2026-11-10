@@ -487,7 +487,7 @@ impl RuntimeHandle {
         let ack = match initial {
             Ok(ack) => ack,
             Err(error) => {
-                if crate::runtime_db::persistence_certainty(&error)
+                if crate::runtime_db::original_input_attempt_certainty(&error)
                     == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
                 {
                     // The synchronous original attempt ended in a proven rollback.

@@ -2622,27 +2622,24 @@ count; malformed JSON and missing or non-string IDs still count as mismatches,
 while SQL/type and admission errors propagate. No active phase still means
 unqualified verification, not a detached budget or an owned runtime read.
 The mutation identity fence still reads the canonical identity before admitting
-the owner. This single-row check borrows the existing writer connection under
-its FIFO turn and connection mutex, with the original sidecar protection check.
-It does not begin a transaction, cache the identity, or change the public
-identity repository read. Deleted/recreated identities remain visible across
-independent writers; the incarnation and retirement rejection is unchanged.
+the owner. This single-row check uses the existing bounded query-only reader
+pool, with the original sidecar protection checks. It does not reserve a writer
+ticket or cache the identity. Deleted/recreated identities remain visible across
+independent writes; incarnation and retirement rejection is unchanged.
 Bootstrap uses that same canonical identity read, including its pre-owner lookup.
-Its scope-facts and pending-metadata reads each borrow the writer connection
-under a separate FIFO turn and independent Deferred transaction. Each read
-still acquires fresh canonical facts; neither identity nor metadata is cached.
-The callback may not write or reenter the writer. Commit/drop ends the read
-view before releasing the turn, and failed transaction cleanup quarantines the
-connection. The original normalization, metadata handoffs and posture ACKs
-remain separate; ordinary repository reads still open their own connections.
+Its scope-facts and pending-metadata reads each use a separate pooled Deferred
+transaction. Each read acquires fresh committed facts; neither identity nor
+metadata is cached. The callback may not write, nest checkouts or retain its
+lease across an await. Commit/drop ends the read view before returning the
+lease; dirty connections are discarded and protection failures remain fenced.
+The original normalization, metadata handoffs and posture ACKs remain separate.
 Short canonical preparation for Control recovery obligations, the legacy episode
 import check, scheduler adapter metadata and execution authority fences follows
 the same independent Deferred-read contract. Scheduler claim Queue/Delivery
 preflight has explicit preparation entrypoints using the original decoders;
-ordinary Queue/Delivery repository reads still use fresh connections. These
+ordinary Queue/Delivery repository reads use the same bounded reader pool. These
 reads neither cache canonical facts nor retain a transaction across an await,
 and claim commit retains its original in-transaction authority/source checks.
-There is no shared read-connection cache or new read fallback.
 Bootstrap workspace, Message count and execution-root lookups, and startup
 recovery Queue/Turn scans use explicit preparation entrypoints under this same
 contract. They share SQL and decoders with ordinary reads, including scope,
@@ -2651,12 +2648,20 @@ read view before subsequent writes or awaits; no combined bootstrap ACK is
 introduced.
 Original Input recovery separates read-only receipt/metadata observation from
 positive-receipt preparation. The latter may initialize or qualify named Task
-and Input query relations, so it opens an independent Immediate transaction
-before receipt preflight; it must not upgrade a Deferred read snapshot after a
-concurrent writer commits. Read-only status/command observation remains
-Deferred. Both paths retain finished-attempt validation, pre-decode material
+and Input query relations, so it joins the ordinary writer FIFO and reuses its
+connection for an Immediate transaction before receipt preflight. It must not
+upgrade a Deferred read snapshot after a concurrent writer commits. Read-only
+status/command observation uses a pooled Deferred transaction. Both paths
+retain finished-attempt validation, pre-decode material
 admission, exact receipt/scope checks, rollback and final-owner publication;
-neither path reruns business SQL or introduces a retry loop.
+neither path reruns business SQL. Writer BEGIN contention may wait before the
+once-only recovery callback starts; uncertain commits retain their original
+reconciliation fence.
+Owner-held Input/Scheduling reconstruction first loads existing qualification
+through a pooled read. Only typed missing qualification permits its original
+initialization transaction. Pool admission failures and canonical drift do not
+authorize that fallback. Pure query reads never initialize a missing birth
+cursor. First qualification remains atomic under the same held owner.
 Projection-effect inventory verification borrows grouped SQLite kind/schema
 text. Unsupported diagnostic Strings and their list slots are admitted together
 before formatting on the original caller phase; the warning streams borrowed

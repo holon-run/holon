@@ -1388,9 +1388,7 @@ impl AgentIdentityRepository<'_> {
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
-        self.db
-            .writer
-            .read_committed(|connection| Self::latest_on(connection, agent_id))
+        self.latest(agent_id)
     }
 
     fn latest_on(

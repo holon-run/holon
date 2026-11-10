@@ -20,6 +20,18 @@ pub enum PersistenceFailurePhase {
     Commit,
 }
 
+impl PersistenceFailurePhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::BeforeBegin => "before_begin",
+            Self::Begin => "begin",
+            Self::Callback => "callback",
+            Self::Rollback => "rollback",
+            Self::Commit => "commit",
+        }
+    }
+}
+
 /// Typed context attached to the original `anyhow::Error` without replacing it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistenceFailure {
@@ -27,6 +39,9 @@ pub struct PersistenceFailure {
     phase: PersistenceFailurePhase,
     message: String,
     rollback_error: Option<String>,
+    operation: Option<&'static str>,
+    table: Option<&'static str>,
+    sqlite_extended_code: Option<i32>,
 }
 
 impl PersistenceFailure {
@@ -40,6 +55,18 @@ impl PersistenceFailure {
 
     pub fn rollback_error(&self) -> Option<&str> {
         self.rollback_error.as_deref()
+    }
+
+    pub fn operation(&self) -> Option<&'static str> {
+        self.operation
+    }
+
+    pub fn table(&self) -> Option<&'static str> {
+        self.table
+    }
+
+    pub fn sqlite_extended_code(&self) -> Option<i32> {
+        self.sqlite_extended_code
     }
 }
 
@@ -60,6 +87,29 @@ pub fn persistence_certainty(error: &anyhow::Error) -> Option<PersistenceCertain
     error
         .downcast_ref::<PersistenceFailure>()
         .map(PersistenceFailure::certainty)
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("{message}")]
+struct OriginalInputRecoveryFailure {
+    message: String,
+}
+
+pub(crate) fn mark_original_input_recovery_failure(error: anyhow::Error) -> anyhow::Error {
+    let message = error.to_string();
+    error.context(OriginalInputRecoveryFailure { message })
+}
+
+/// Recovery transaction certainty cannot release the original business capsule.
+/// Its receipt/owner protocol must resolve that original attempt first.
+pub(crate) fn original_input_attempt_certainty(
+    error: &anyhow::Error,
+) -> Option<PersistenceCertainty> {
+    if error.is::<OriginalInputRecoveryFailure>() {
+        None
+    } else {
+        persistence_certainty(error)
+    }
 }
 
 /// Preserve legacy untagged OCC retries, but never replay an ambiguous transaction.
@@ -96,7 +146,32 @@ pub(crate) fn mark_persistence_failure(
         phase,
         message: error.to_string(),
         rollback_error,
+        operation: None,
+        table: None,
+        sqlite_extended_code: sqlite_extended_code(&error),
     };
+    error.context(failure)
+}
+
+pub(crate) fn sqlite_extended_code(error: &anyhow::Error) -> Option<i32> {
+    error
+        .chain()
+        .find_map(|source| match source.downcast_ref::<rusqlite::Error>() {
+            Some(rusqlite::Error::SqliteFailure(failure, _)) => Some(failure.extended_code),
+            _ => None,
+        })
+}
+
+pub(crate) fn attach_write_context(
+    error: anyhow::Error,
+    operation: &'static str,
+    table: &'static str,
+) -> anyhow::Error {
+    let Some(mut failure) = error.downcast_ref::<PersistenceFailure>().cloned() else {
+        return error;
+    };
+    failure.operation.get_or_insert(operation);
+    failure.table.get_or_insert(table);
     error.context(failure)
 }
 
@@ -129,6 +204,47 @@ mod tests {
             Duration::ZERO,
             f,
         )
+    }
+
+    #[test]
+    fn recovery_certainty_cannot_release_the_original_attempt() {
+        for certainty in [
+            PersistenceCertainty::DefinitelyNotCommitted,
+            PersistenceCertainty::Indeterminate,
+        ] {
+            let error = mark_persistence_failure(
+                anyhow!(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY_SNAPSHOT),
+                    None,
+                )),
+                certainty,
+                PersistenceFailurePhase::Callback,
+                None,
+            );
+            assert_eq!(original_input_attempt_certainty(&error), Some(certainty));
+            let recovery = mark_original_input_recovery_failure(error).context("caller context");
+            assert_eq!(original_input_attempt_certainty(&recovery), None);
+            assert_eq!(persistence_certainty(&recovery), Some(certainty));
+            let descriptor = crate::runtime_error::describe_runtime_error(&recovery);
+            assert_eq!(
+                descriptor.retryable,
+                certainty == PersistenceCertainty::DefinitelyNotCommitted
+            );
+            assert_eq!(descriptor.safe_context["sqlite_extended_code"], "517");
+            if certainty == PersistenceCertainty::Indeterminate {
+                assert_eq!(descriptor.code, "runtime_db_outcome_unknown");
+                let outer = mark_persistence_failure(
+                    recovery,
+                    PersistenceCertainty::DefinitelyNotCommitted,
+                    PersistenceFailurePhase::Callback,
+                    None,
+                );
+                assert_eq!(persistence_certainty(&outer), Some(certainty));
+                assert_eq!(original_input_attempt_certainty(&outer), None);
+            } else {
+                assert_eq!(descriptor.code, "runtime_db_busy");
+            }
+        }
     }
 
     #[test]

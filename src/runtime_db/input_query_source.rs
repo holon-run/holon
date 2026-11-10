@@ -15,21 +15,29 @@ pub(super) fn prepare_tx(
     selection: &InputQuerySelection,
     ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     limits: (usize, usize),
+    prepare: bool,
 ) -> Result<PreparedInputQuery> {
     ensure!(
         native_birth::installed(tx)?,
         InputQueryError::NeedsPreparation
     );
     let mut material = read_material::InputReadMaterial::new(scope, ledger, limits, None)?;
-    // This creates only an empty metadata baseline, never historical membership.
-    tx.execute(
-        "INSERT INTO input_query_birth_cursors(agent_id,identity_incarnation,high_water) VALUES(?1,?2,0) ON CONFLICT(agent_id,identity_incarnation) DO NOTHING",
-        params![scope.agent_id, scope.identity_incarnation],
-    )?;
-    let cursor: u64 = tx.query_row(
+    let cursor: Option<u64> = tx.query_row(
         "SELECT high_water FROM input_query_birth_cursors WHERE agent_id=?1 AND identity_incarnation=?2",
         params![scope.agent_id, scope.identity_incarnation], |row| row.get(0),
-    )?;
+    ).optional()?;
+    let cursor = match cursor {
+        Some(cursor) => cursor,
+        None if prepare => {
+            // This creates only an empty baseline, never historical membership.
+            tx.execute(
+                "INSERT INTO input_query_birth_cursors(agent_id,identity_incarnation,high_water) VALUES(?1,?2,0)",
+                params![scope.agent_id, scope.identity_incarnation],
+            )?;
+            0
+        }
+        None => return Err(InputQueryError::NeedsPreparation.into()),
+    };
     let highest: u64 = tx.query_row(
         "SELECT COALESCE(MAX(birth_seq),0) FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2",
         params![scope.agent_id, scope.identity_incarnation], |row| row.get(0),

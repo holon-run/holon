@@ -1501,7 +1501,7 @@ fn prepared_queue_progress_freezes_clock_and_replays_original_bounded_dispositio
         panic!("later quarantine must not rerun the first reducer")
     };
     assert_eq!(receipt, original);
-    with_fresh_input_mutation_resolution(&mut f.db.connection()?, &attempt, |_, resolution| {
+    with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
         assert_eq!(resolution, InputMutationResolution::Present(original));
         Ok(())
     })?;
@@ -1589,14 +1589,10 @@ fn prepared_queue_progress_rolls_back_counter_state_queue_audit_and_receipt() ->
             .commit_prepared_transition(&prepared)
             .is_err());
         attempt.finish_original_attempt();
-        with_fresh_input_mutation_resolution(
-            &mut f.db.connection()?,
-            &attempt,
-            |_, resolution| {
-                assert_eq!(resolution, InputMutationResolution::Absent);
-                Ok(())
-            },
-        )?;
+        with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
+            assert_eq!(resolution, InputMutationResolution::Absent);
+            Ok(())
+        })?;
         assert_eq!(f.state()?, before);
         assert_eq!(
             f.db.queue_entries().latest(&expected.message_id)?,

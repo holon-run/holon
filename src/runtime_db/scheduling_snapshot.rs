@@ -54,7 +54,8 @@ pub(crate) use loader::load_scheduling_domain_snapshot_tx;
 #[cfg(test)]
 pub(crate) use loader::prepare_original_scheduling_recovery_snapshot_tx;
 pub(crate) use loader::{
-    prepare_scheduling_domain_snapshot_tx, prepare_scheduling_with_context_scope_tx,
+    load_scheduling_with_context_scope_tx, prepare_scheduling_domain_snapshot_tx,
+    prepare_scheduling_with_context_scope_tx,
 };
 pub(in crate::runtime_db) use qualification::{
     capture_fixed_checkpoint_on, capture_scheduling_seed_if_ready_tx, consume_scheduling_upgrade_tx,

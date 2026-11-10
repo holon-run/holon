@@ -1020,7 +1020,7 @@ impl RuntimeMutation {
                     tx.commit()?;
                     Ok(query)
                 }),
-                None => self.runtime.inner.runtime_db.transaction(prepare),
+                None => self.runtime.inner.runtime_db.read_for_preparation(prepare),
             }
         })?;
         if let Some(db) = read_db {

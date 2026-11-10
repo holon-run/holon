@@ -399,7 +399,22 @@ impl RuntimeDbReaderPool {
         if !result.as_ref().err().is_some_and(is_broken_error) {
             self.check_scope(&scope)?;
         }
-        result
+        result.map_err(|error| {
+            if error.chain().any(|source| {
+                source
+                    .downcast_ref::<rusqlite::Error>()
+                    .is_some_and(super::connection::is_sqlite_locked)
+            }) {
+                let context = RuntimeDbRetryableError::new(
+                    "reading runtime db",
+                    &control.writer.path,
+                    &error,
+                );
+                error.context(context)
+            } else {
+                error
+            }
+        })
     }
 
     pub(crate) async fn with_read_async_at<T: Send + 'static>(

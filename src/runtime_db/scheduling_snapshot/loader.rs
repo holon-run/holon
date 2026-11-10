@@ -28,6 +28,29 @@ pub(crate) fn prepare_scheduling_with_context_scope_tx(
     original_recovery: bool,
     read: &super::super::context_inputs::ContextScopeRead<'_>,
 ) -> Result<SchedulingBootstrapSnapshot> {
+    scheduling_with_context_scope_tx(tx, scope, request, ledger, true, original_recovery, read)
+}
+
+pub(crate) fn load_scheduling_with_context_scope_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+    original_recovery: bool,
+    read: &super::super::context_inputs::ContextScopeRead<'_>,
+) -> Result<SchedulingBootstrapSnapshot> {
+    scheduling_with_context_scope_tx(tx, scope, request, ledger, false, original_recovery, read)
+}
+
+fn scheduling_with_context_scope_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &SchedulingDomainLoadRequest,
+    ledger: &InputEvidenceBudgetLedger,
+    prepare: bool,
+    original_recovery: bool,
+    read: &super::super::context_inputs::ContextScopeRead<'_>,
+) -> Result<SchedulingBootstrapSnapshot> {
     read.validate(tx, scope)?;
     let facts = read.facts();
     ensure!(
@@ -52,7 +75,7 @@ pub(crate) fn prepare_scheduling_with_context_scope_tx(
         scope,
         request,
         ledger,
-        true,
+        prepare,
         original_recovery,
         None,
         None,

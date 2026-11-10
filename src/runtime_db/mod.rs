@@ -109,7 +109,9 @@ pub use crate::runtime_db::index_outbox::{
 pub use crate::runtime_db::observer_sync::{
     AgentEventRecoveryWindow, AgentRosterLatestBriefRow, AgentRosterRow, AgentRosterSnapshotRows,
 };
-pub(crate) use crate::runtime_db::persistence::retryable_state_transition_conflict;
+pub(crate) use crate::runtime_db::persistence::{
+    original_input_attempt_certainty, retryable_state_transition_conflict,
+};
 pub use crate::runtime_db::persistence::{
     persistence_certainty, PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
 };
@@ -770,13 +772,19 @@ impl RuntimeDb {
         self.readers.writer_weak()
     }
 
-    /// Short canonical preparation only. The callback must not write, control
-    /// transactions, reenter this writer, or retain the connection across await.
+    /// Canonical preparation on a pooled query-only transaction. The callback
+    /// must not write, nest checkouts, or retain the connection across await.
     pub(crate) fn read_for_preparation<T>(
         &self,
         f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        self.writer.read_deferred(f)
+        self.with_read(|connection| {
+            let tx =
+                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+            let value = f(&tx)?;
+            tx.commit()?;
+            Ok(value)
+        })
     }
 
     pub fn record_provider_quota_failure(
@@ -1083,7 +1091,7 @@ impl RuntimeDb {
         self.writer.append_wait(f)
     }
 
-    fn transaction_with_context<T>(
+    pub(crate) fn transaction_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
@@ -1096,6 +1104,16 @@ impl RuntimeDb {
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
         self.writer.append_wait_once(f)
+    }
+
+    pub(crate) fn recovery_transaction_once<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_once_with_context(
+            RuntimeDbWriteContext::sync("runtime_db.input_recovery", "input_mutation_receipts"),
+            f,
+        )
     }
 
     /// Enqueue a background transaction. Success means queue acceptance, not commit.

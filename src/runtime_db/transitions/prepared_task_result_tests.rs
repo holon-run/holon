@@ -474,9 +474,8 @@ fn result_receipt_budget_precedes_corrupt_prior_outcome_decode() -> Result<()> {
         p.descriptor().clone(),
     );
     attempt.finish_original_attempt();
-    let mut connection = f.db.connection()?;
     let error = crate::runtime_db::input_mutation_receipts::with_fresh_input_mutation_resolution_and_preflight(
-        &mut connection, &attempt,
+        &f.db, &attempt,
         |tx| crate::runtime_db::transitions::task_result_receipt_budget_tx(tx,p.descriptor(),&f.scope,&tiny,&ledger),
         |_,_| -> Result<()> { panic!("oversize receipt must fail before lookup/callback") },
     ).unwrap_err();
@@ -754,9 +753,8 @@ fn result_receipt_all_normalized_columns_are_bounded_before_direct_and_fresh_dec
             prepared.descriptor().clone(),
         );
         attempt.finish_original_attempt();
-        let mut connection = f.db.connection()?;
         let error = crate::runtime_db::input_mutation_receipts::with_fresh_input_mutation_resolution_and_preflight(
-            &mut connection, &attempt,
+            &f.db, &attempt,
             |tx| crate::runtime_db::transitions::task_result_receipt_budget_tx(tx,prepared.descriptor(),&f.scope,&tiny,&ledger),
             |_,_| -> Result<()> { panic!("normalized bytes must be bounded before lookup/callback") },
         ).unwrap_err();

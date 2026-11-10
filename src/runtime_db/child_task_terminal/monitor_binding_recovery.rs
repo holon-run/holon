@@ -149,7 +149,6 @@ impl crate::runtime_db::RuntimeDb {
             "binding recovery changed its exact original attempt"
         );
         let scope = &source.address().scope;
-        let mut connection = self.connection()?;
         let phase = std::cell::RefCell::new(
             crate::runtime_db::task_status_metadata::PhaseMaterial::new(request),
         );
@@ -162,7 +161,7 @@ impl crate::runtime_db::RuntimeDb {
         phase.borrow_mut().include(usage.bytes, usage.records)?;
         let guards = std::cell::RefCell::new(Vec::new());
         with_fresh_input_mutation_preparation_and_preflight(
-            &mut connection,
+            self,
             attempt,
             |tx| {
                 let (held, bytes, records) = super::child_receipt_material_tx(

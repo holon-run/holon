@@ -7181,15 +7181,14 @@ CREATE TABLE working_memory_deltas (
     #[test]
     fn preparation_read_reuses_connection_but_not_canonical_snapshot() -> Result<()> {
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
-        let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let mut db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        db.configure_reader_pool_for_tests(1, std::time::Duration::from_millis(250))?;
         let other = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let independent = other.connection()?;
         independent.busy_timeout(std::time::Duration::from_millis(100))?;
         db.transaction(|tx| {
             tx.execute_batch(
-                "CREATE TEMP TABLE preparation_connection_marker(value INTEGER);
-                 INSERT INTO preparation_connection_marker VALUES (7);
-                 CREATE TABLE preparation_read_values(value INTEGER);
+                "CREATE TABLE preparation_read_values(value INTEGER);
                  INSERT INTO preparation_read_values VALUES (0);",
             )?;
             Ok(())
@@ -7198,21 +7197,22 @@ CREATE TABLE working_memory_deltas (
         for reader in [&db, &clone] {
             let marker: i64 = reader.read_for_preparation(|tx| {
                 assert!(!tx.is_autocommit());
-                Ok(tx.query_row(
-                    "SELECT value FROM preparation_connection_marker",
-                    [],
-                    |row| row.get(0),
-                )?)
+                Ok(
+                    tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
+                        row.get(0)
+                    })?,
+                )
             })?;
-            assert_eq!(marker, 7);
+            assert_eq!(marker, 0);
         }
+        assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
         db.read_for_preparation(|tx| {
             let before: i64 =
                 tx.query_row("SELECT value FROM preparation_read_values", [], |row| {
                     row.get(0)
                 })?;
-            // Runtime writers share the path's FIFO; use an independent SQLite
-            // writer here rather than reenter that queue while holding its turn.
+            // A concurrent writer may commit, but this pooled transaction must
+            // retain its original committed snapshot until the lease returns.
             independent.execute("UPDATE preparation_read_values SET value = 1", [])?;
             let after: i64 =
                 tx.query_row("SELECT value FROM preparation_read_values", [], |row| {

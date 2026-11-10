@@ -9,7 +9,7 @@ use std::sync::{
 
 use anyhow::{ensure, Context, Result};
 use chrono::{DateTime, SecondsFormat, Utc};
-use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -796,57 +796,18 @@ pub(crate) fn insert_input_mutation_receipt_tx(
 /// It must not perform business writes. Owner/group/epoch/same-attempt checks
 /// remain mandatory before and after this narrow storage resolution.
 pub(crate) fn with_fresh_input_mutation_resolution<T>(
-    connection: &mut Connection,
+    db: &super::RuntimeDb,
     attempt: &OriginalInputMutationAttempt,
     read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
 ) -> Result<T> {
-    with_fresh_input_mutation_resolution_and_preflight(
-        connection,
-        attempt,
-        |_| Ok(()),
-        read_current,
-    )
+    with_fresh_input_mutation_resolution_and_preflight(db, attempt, |_| Ok(()), read_current)
 }
 
 /// The owned acquisition guard exists before receipt decoding and remains until
 /// the same-view callback completes. It adds no business/recovery authorization.
 pub(crate) fn with_fresh_input_mutation_resolution_and_preflight<T, G>(
-    connection: &mut Connection,
+    db: &super::RuntimeDb,
     attempt: &OriginalInputMutationAttempt,
-    preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
-    read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
-) -> Result<T> {
-    with_fresh_input_mutation_view(
-        connection,
-        attempt,
-        TransactionBehavior::Deferred,
-        preflight,
-        read_current,
-    )
-}
-
-/// Positive original receipts may authorize named qualification writes. Reserve
-/// the writer before reading that fresh view; a Deferred snapshot cannot safely
-/// upgrade after another connection commits. This never reruns the command.
-pub(crate) fn with_fresh_input_mutation_preparation_and_preflight<T, G>(
-    connection: &mut Connection,
-    attempt: &OriginalInputMutationAttempt,
-    preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
-    prepare_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
-) -> Result<T> {
-    with_fresh_input_mutation_view(
-        connection,
-        attempt,
-        TransactionBehavior::Immediate,
-        preflight,
-        prepare_current,
-    )
-}
-
-fn with_fresh_input_mutation_view<T, G>(
-    connection: &mut Connection,
-    attempt: &OriginalInputMutationAttempt,
-    behavior: TransactionBehavior,
     preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
     read_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
 ) -> Result<T> {
@@ -854,15 +815,39 @@ fn with_fresh_input_mutation_view<T, G>(
         attempt.original_attempt_finished(),
         ReceiptError::OriginalAttemptNotFinished
     );
-    let tx = connection.transaction_with_behavior(behavior)?;
-    let _material = preflight(&tx)?;
-    let resolution = match lookup_input_mutation_receipt_tx(&tx, attempt.prepared())? {
-        Some(receipt) => InputMutationResolution::Present(receipt),
-        None => InputMutationResolution::Absent,
-    };
-    let result = read_current(&tx, resolution)?;
-    tx.commit()?;
-    Ok(result)
+    db.read_for_preparation(|tx| {
+        let _material = preflight(tx)?;
+        let resolution = match lookup_input_mutation_receipt_tx(tx, attempt.prepared())? {
+            Some(receipt) => InputMutationResolution::Present(receipt),
+            None => InputMutationResolution::Absent,
+        };
+        read_current(tx, resolution)
+    })
+    .map_err(super::persistence::mark_original_input_recovery_failure)
+}
+
+/// Positive original receipts may authorize named qualification writes. Reserve
+/// the writer before reading that fresh view; a Deferred snapshot cannot safely
+/// upgrade after another connection commits. This never reruns the command.
+pub(crate) fn with_fresh_input_mutation_preparation_and_preflight<T, G>(
+    db: &super::RuntimeDb,
+    attempt: &OriginalInputMutationAttempt,
+    preflight: impl FnOnce(&Transaction<'_>) -> Result<G>,
+    prepare_current: impl FnOnce(&Transaction<'_>, InputMutationResolution) -> Result<T>,
+) -> Result<T> {
+    ensure!(
+        attempt.original_attempt_finished(),
+        ReceiptError::OriginalAttemptNotFinished
+    );
+    db.recovery_transaction_once(|tx| {
+        let _material = preflight(tx)?;
+        let resolution = match lookup_input_mutation_receipt_tx(tx, attempt.prepared())? {
+            Some(receipt) => InputMutationResolution::Present(receipt),
+            None => InputMutationResolution::Absent,
+        };
+        prepare_current(tx, resolution)
+    })
+    .map_err(super::persistence::mark_original_input_recovery_failure)
 }
 
 /// Stable serde encoding with recursively ordered object keys. Callers freeze

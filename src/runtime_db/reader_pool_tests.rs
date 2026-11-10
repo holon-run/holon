@@ -624,17 +624,19 @@ fn migrated_repository_saturation_never_becomes_missing_or_success() -> Result<(
             db.agent_projection_snapshot_rows("missing").map(drop),
         ),
         ("metadata", db.runtime_id().map(drop)),
+        (
+            "authority",
+            db.transitions()
+                .load_execution_authority_fences("missing")
+                .map(drop),
+        ),
+        (
+            "mutation identity",
+            db.agent_identities()
+                .latest_for_mutation("missing")
+                .map(drop),
+        ),
     ];
-    // Named authority preparation has its own FIFO writer read, not a pooled
-    // repository fallback. It must still reject missing canonical authority.
-    let authority_error = db
-        .transitions()
-        .load_execution_authority_fences("missing")
-        .unwrap_err();
-    assert_eq!(
-        authority_error.to_string(),
-        "execution admission requires durable agent control state"
-    );
     release_tx.send(())?;
     worker.join().expect("reader thread panicked")?;
     for (name, result) in reads {
@@ -646,6 +648,15 @@ fn migrated_repository_saturation_never_becomes_missing_or_success() -> Result<(
     }
     assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
     read_repository_bundle(&db)?;
+    // Only a completed read may establish missing canonical authority.
+    let authority_error = db
+        .transitions()
+        .load_execution_authority_fences("missing")
+        .unwrap_err();
+    assert_eq!(
+        authority_error.to_string(),
+        "execution admission requires durable agent control state"
+    );
     Ok(())
 }
 
@@ -1046,6 +1057,30 @@ async fn list_sync_and_async_share_committed_fact_contract() -> Result<()> {
         .await?
         .rows
         .is_empty());
+    assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
+    Ok(())
+}
+
+#[test]
+fn pooled_lock_failure_preserves_sqlite_code_and_read_retry_classification() -> Result<()> {
+    let (_directory, db) = fixture(1)?;
+    let error = db
+        .read_for_preparation::<()>(|_| {
+            Err(anyhow::anyhow!(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY),
+                Some("database is locked".into())
+            ),))
+        })
+        .unwrap_err()
+        .context("original read boundary");
+    assert!(error.is::<RuntimeDbRetryableError>());
+    assert!(error.is::<rusqlite::Error>());
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(descriptor.code, "runtime_db_busy");
+    assert!(descriptor.retryable);
+    assert_eq!(descriptor.safe_context["operation"], "reading runtime db");
+    assert_eq!(descriptor.safe_context["sqlite_extended_code"], "5");
+    assert_eq!(read_one(&db)?, 1);
     assert_eq!(db.reader_pool_stats_for_tests().connections_opened, 1);
     Ok(())
 }

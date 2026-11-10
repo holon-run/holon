@@ -37,6 +37,24 @@ Initial domains are:
 Unknown errors are fail-closed: code `runtime_error`, domain `unknown`, and
 `retryable=false`.
 
+SQLite lock errors retain their primary and extended result codes. A pooled
+read lock failure or a transaction failure with a confirmed rollback is
+`storage/runtime_db_busy` and retryable. A raw lock failure without transaction
+certainty is `storage/runtime_db_locked`, with retry disabled until its original
+outcome is inspected. An indeterminate COMMIT or rollback remains
+`storage/runtime_db_outcome_unknown` and takes precedence over any nested busy
+error. These classifications never replay external commands or a completed
+business callback.
+Recovery errors report the recovery transaction's certainty; that certainty
+cannot establish absence of the original business receipt or release its
+frozen command descriptor.
+
+Storage failure context may include the static operation/table, transaction
+phase, certainty, `sqlite_code` and `sqlite_extended_code`. It contains no SQL
+parameters or payloads. Slow successful writes and failed callbacks report
+writer queue wait, BEGIN wait and transaction lock duration separately. COMMIT
+failures report their unknown outcome rather than retrying the callback.
+
 `RuntimeErrorContext` contains correlation references:
 
 - `message_id`

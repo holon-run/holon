@@ -13,6 +13,7 @@ use crate::{
         Priority, TurnRecord,
     },
 };
+use rusqlite::TransactionBehavior;
 
 #[test]
 fn canonical_command_digest_preserves_legacy_bytes_and_nested_golden() -> Result<()> {
@@ -305,14 +306,10 @@ fn complete_compound_write_and_receipt_roll_back_together() -> Result<()> {
         );
         let attempt = OriginalInputMutationAttempt::new(prepared);
         attempt.finish_original_attempt();
-        with_fresh_input_mutation_resolution(
-            &mut f.db.connection()?,
-            &attempt,
-            |_, resolution| {
-                assert_eq!(resolution, InputMutationResolution::Absent);
-                Ok(())
-            },
-        )?;
+        with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
+            assert_eq!(resolution, InputMutationResolution::Absent);
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -396,9 +393,7 @@ fn unfinished_or_same_key_new_attempt_cannot_borrow_original_completion() -> Res
     let original = OriginalInputMutationAttempt::new(f.prepared()?);
     let saved = original.clone();
     let other = OriginalInputMutationAttempt::new(f.prepared()?);
-    let mut connection = f.db.connection()?;
-    let error = with_fresh_input_mutation_resolution(&mut connection, &original, |_, _| Ok(()))
-        .unwrap_err();
+    let error = with_fresh_input_mutation_resolution(&f.db, &original, |_, _| Ok(())).unwrap_err();
     assert!(matches!(
         error.downcast_ref::<ReceiptError>(),
         Some(ReceiptError::OriginalAttemptNotFinished)
@@ -406,8 +401,8 @@ fn unfinished_or_same_key_new_attempt_cannot_borrow_original_completion() -> Res
     original.finish_original_attempt();
     assert!(saved.original_attempt_finished() && saved.same_attempt(&original));
     assert!(!other.original_attempt_finished() && !other.same_attempt(&original));
-    assert!(with_fresh_input_mutation_resolution(&mut connection, &other, |_, _| Ok(())).is_err());
-    with_fresh_input_mutation_resolution(&mut connection, &saved, |_, resolution| {
+    assert!(with_fresh_input_mutation_resolution(&f.db, &other, |_, _| Ok(())).is_err());
+    with_fresh_input_mutation_resolution(&f.db, &saved, |_, resolution| {
         assert_eq!(resolution, InputMutationResolution::Absent);
         Ok(())
     })?;
@@ -422,12 +417,11 @@ fn fresh_preparation_reserves_writer_before_receipt_and_releases_on_error() -> R
     f.db.transaction(|tx| {
         insert_input_mutation_receipt_tx(tx, &prepared, &noop(&prepared), f.time)
     })?;
-    let mut connection = f.db.connection()?;
     let other = f.db.connection()?;
     other.busy_timeout(std::time::Duration::ZERO)?;
     let preflight_called = std::cell::Cell::new(false);
     let error = with_fresh_input_mutation_preparation_and_preflight(
-        &mut connection,
+        &f.db,
         &attempt,
         |_| {
             preflight_called.set(true);
@@ -440,13 +434,13 @@ fn fresh_preparation_reserves_writer_before_receipt_and_releases_on_error() -> R
         error.downcast_ref::<ReceiptError>(),
         Some(ReceiptError::OriginalAttemptNotFinished)
     ));
-    assert!(!preflight_called.get() && connection.is_autocommit());
+    assert!(!preflight_called.get());
     attempt.finish_original_attempt();
     let mut later = f.state.clone();
     later.turn_index = 9;
     for fail in [true, false] {
         let result = with_fresh_input_mutation_preparation_and_preflight(
-            &mut connection,
+            &f.db,
             &attempt,
             |tx| {
                 let count: usize =
@@ -488,7 +482,6 @@ fn fresh_preparation_reserves_writer_before_receipt_and_releases_on_error() -> R
         } else {
             result?;
         }
-        assert!(connection.is_autocommit());
         assert_eq!(
             f.db.agent_states().latest("agent-a")?.unwrap(),
             if fail { f.state.clone() } else { later.clone() }
@@ -516,9 +509,8 @@ fn fresh_receipt_observation_keeps_independent_deferred_snapshot() -> Result<()>
     other.busy_timeout(std::time::Duration::ZERO)?;
     let mut later = f.state.clone();
     later.turn_index = 9;
-    let mut connection = f.db.connection()?;
     with_fresh_input_mutation_resolution_and_preflight(
-        &mut connection,
+        &f.db,
         &attempt,
         |tx| {
             let payload: String = tx.query_row(
@@ -545,7 +537,6 @@ fn fresh_receipt_observation_keeps_independent_deferred_snapshot() -> Result<()>
             Ok(())
         },
     )?;
-    assert!(connection.is_autocommit());
     assert_eq!(f.db.agent_states().latest("agent-a")?.unwrap(), later);
     Ok(())
 }
@@ -573,7 +564,7 @@ fn lost_ack_proves_original_outcome_and_reads_later_state_without_rewinding() ->
         )?;
         Ok(())
     })?;
-    with_fresh_input_mutation_resolution(&mut f.db.connection()?, &attempt, |tx, resolution| {
+    with_fresh_input_mutation_resolution(&f.db, &attempt, |tx, resolution| {
         let InputMutationResolution::Present(receipt) = resolution else {
             panic!("committed original receipt")
         };
@@ -615,7 +606,7 @@ fn fresh_resolution_does_not_reuse_an_older_sqlite_read_snapshot() -> Result<()>
     }
     let attempt = OriginalInputMutationAttempt::new(prepared);
     attempt.finish_original_attempt();
-    with_fresh_input_mutation_resolution(&mut connection, &attempt, |_, resolution| {
+    with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
         assert!(matches!(resolution, InputMutationResolution::Present(_)));
         Ok(())
     })
@@ -754,7 +745,7 @@ fn actual_delivery_outcome_is_bound_once_and_preserved_after_native_state_advanc
     })?;
     let attempt = OriginalInputMutationAttempt::new(prepared);
     attempt.finish_original_attempt();
-    with_fresh_input_mutation_resolution(&mut f.db.connection()?, &attempt, |_, resolution| {
+    with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
         assert_eq!(resolution, InputMutationResolution::Present(receipt));
         Ok(())
     })
@@ -826,19 +817,15 @@ fn task_result_successful_empty_outcomes_replay_original_after_later_state() -> 
     for (prepared, outcome) in originals {
         let attempt = OriginalInputMutationAttempt::new(prepared);
         attempt.finish_original_attempt();
-        with_fresh_input_mutation_resolution(
-            &mut f.db.connection()?,
-            &attempt,
-            |_, resolution| {
-                let InputMutationResolution::Present(receipt) = resolution else {
-                    anyhow::bail!("successful empty TaskResult operation lost its receipt")
-                };
-                assert_eq!(receipt.outcome, outcome);
-                assert!(!receipt.outcome.applied);
-                assert_eq!(receipt.committed_at, f.time);
-                Ok(())
-            },
-        )?;
+        with_fresh_input_mutation_resolution(&f.db, &attempt, |_, resolution| {
+            let InputMutationResolution::Present(receipt) = resolution else {
+                anyhow::bail!("successful empty TaskResult operation lost its receipt")
+            };
+            assert_eq!(receipt.outcome, outcome);
+            assert!(!receipt.outcome.applied);
+            assert_eq!(receipt.committed_at, f.time);
+            Ok(())
+        })?;
     }
     assert_eq!(f.db.agent_states().latest("agent-a")?, Some(later));
     assert_eq!(f.count("input_mutation_receipts")?, 5);
@@ -920,5 +907,146 @@ fn task_result_receipt_rejects_wrong_family_and_foreign_original_result() -> Res
         })
         .is_err());
     assert_eq!(f.count("input_mutation_receipts")?, 0);
+    Ok(())
+}
+
+#[test]
+fn fresh_preparation_joins_the_writer_queue_and_reuses_its_connection() -> Result<()> {
+    use std::{
+        sync::{
+            atomic::{AtomicUsize, Ordering},
+            mpsc, Arc,
+        },
+        time::{Duration, Instant},
+    };
+    let f = Fixture::new()?;
+    let prepared = f.prepared()?;
+    f.db.transaction(|tx| {
+        tx.execute_batch("CREATE TEMP TABLE recovery_connection_marker(value INTEGER); INSERT INTO recovery_connection_marker VALUES(7);")?;
+        insert_input_mutation_receipt_tx(tx, &prepared, &noop(&prepared), f.time)
+    })?;
+    let attempt = OriginalInputMutationAttempt::new(prepared);
+    attempt.finish_original_attempt();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    std::thread::scope(|threads| -> Result<()> {
+        let db = f.db.clone();
+        let writer = threads.spawn(move || {
+            db.transaction(|_| {
+                entered_tx.send(())?;
+                release_rx.recv_timeout(Duration::from_secs(5))?;
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(Duration::from_secs(5))?;
+        let db = f.db.clone();
+        let observed_calls = calls.clone();
+        let recovery = threads.spawn(move || {
+            with_fresh_input_mutation_preparation_and_preflight(
+                &db,
+                &attempt,
+                |tx| {
+                    // A separately opened connection cannot observe this TEMP table.
+                    let marker: i64 =
+                        tx.query_row("SELECT value FROM recovery_connection_marker", [], |r| {
+                            r.get(0)
+                        })?;
+                    assert_eq!(marker, 7);
+                    Ok(())
+                },
+                |tx, receipt| {
+                    observed_calls.fetch_add(1, Ordering::SeqCst);
+                    assert!(matches!(receipt, InputMutationResolution::Present(_)));
+                    tx.execute("UPDATE recovery_connection_marker SET value=8", [])?;
+                    Ok(())
+                },
+            )
+        });
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let queued = loop {
+            let queued = f.db.writer.outstanding_writes_for_tests() > 1;
+            if queued || Instant::now() >= deadline {
+                break queued;
+            }
+            std::thread::yield_now();
+        };
+        // Release the original writer even if admission regresses.
+        release_tx.send(())?;
+        writer.join().expect("writer panicked")?;
+        recovery.join().expect("recovery panicked")?;
+        assert!(queued, "recovery must wait in the canonical writer FIFO");
+        Ok(())
+    })?;
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let marker: i64 = f.db.transaction(|tx| {
+        Ok(
+            tx.query_row("SELECT value FROM recovery_connection_marker", [], |r| {
+                r.get(0)
+            })?,
+        )
+    })?;
+    assert_eq!(marker, 8);
+    assert_eq!(f.count("input_mutation_receipts")?, 1);
+    assert_eq!(f.count("messages")?, 0);
+    Ok(())
+}
+
+#[test]
+fn fresh_preparation_rolls_back_a_busy_callback_without_replaying_it() -> Result<()> {
+    use crate::runtime_db::{PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase};
+    let f = Fixture::new()?;
+    let attempt = OriginalInputMutationAttempt::new(f.prepared()?);
+    attempt.finish_original_attempt();
+    let calls = std::cell::Cell::new(0);
+    let error = with_fresh_input_mutation_preparation_and_preflight(
+        &f.db,
+        &attempt,
+        |_| Ok(()),
+        |tx, resolution| -> Result<()> {
+            assert_eq!(resolution, InputMutationResolution::Absent);
+            calls.set(calls.get() + 1);
+            tx.execute("DELETE FROM agent_states WHERE agent_id='agent-a'", [])?;
+            Err(anyhow::anyhow!(rusqlite::Error::SqliteFailure(
+                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_BUSY_SNAPSHOT),
+                Some("database is locked".into()),
+            )))
+        },
+    )
+    .unwrap_err();
+    assert_eq!(calls.get(), 1);
+    assert_eq!(
+        f.db.agent_states().latest("agent-a")?,
+        Some(f.state.clone())
+    );
+    let failure = error.downcast_ref::<PersistenceFailure>().unwrap();
+    assert_eq!(
+        failure.certainty(),
+        PersistenceCertainty::DefinitelyNotCommitted
+    );
+    assert_eq!(failure.phase(), PersistenceFailurePhase::Callback);
+    assert_eq!(failure.operation(), Some("runtime_db.input_recovery"));
+    // This rollback belongs to recovery, not to the finished business attempt.
+    assert_eq!(
+        crate::runtime_db::original_input_attempt_certainty(&error),
+        None
+    );
+    assert_eq!(
+        crate::runtime_db::persistence_certainty(&error),
+        Some(PersistenceCertainty::DefinitelyNotCommitted)
+    );
+    assert_eq!(
+        failure.sqlite_extended_code(),
+        Some(rusqlite::ffi::SQLITE_BUSY_SNAPSHOT)
+    );
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(descriptor.code, "runtime_db_busy");
+    assert!(descriptor.retryable);
+    assert_eq!(descriptor.safe_context["phase"], "callback");
+    assert_eq!(
+        descriptor.safe_context["operation"],
+        "runtime_db.input_recovery"
+    );
+    assert_eq!(descriptor.safe_context["sqlite_extended_code"], "517");
     Ok(())
 }

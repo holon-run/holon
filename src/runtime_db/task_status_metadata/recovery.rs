@@ -73,11 +73,10 @@ impl crate::runtime_db::RuntimeDb {
             "Status metadata recovery requires its single original scope"
         );
         let scope = &attempt.prepared().scopes()[0];
-        let mut connection = self.connection()?;
         let material = std::cell::RefCell::new(PhaseMaterial::new(request));
         let retained = std::cell::RefCell::new(None);
         with_fresh_input_mutation_resolution_and_preflight(
-            &mut connection,
+            self,
             attempt,
             |tx| {
                 let mut material = material.borrow_mut();

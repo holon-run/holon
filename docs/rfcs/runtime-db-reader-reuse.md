@@ -58,6 +58,33 @@ observation only: no sidecar protection or cache change is authorized here.
 
 ## Read contract
 
+Owner-held preparation reads, including bootstrap metadata and identity reads,
+use the same bounded query-only pool. They do not reserve a writer ticket or
+borrow its connection. Each preparation read keeps one Deferred snapshot and
+returns owned facts before another checkout or a writer transaction.
+
+Input/Scheduling reconstruction first loads existing qualification through that
+pool. Only an explicit missing-qualification result permits the already-held
+owner to enter the existing initialization transaction. Corruption, changed
+canonical facts, retired scopes and reader admission failures propagate without
+initialization. Query birth cursors are read as stored; a pure read cannot create
+an empty cursor or infer completeness from its absence. First initialization
+still commits its complete qualification atomically.
+
+Receipt recovery that can write qualification uses the same writer FIFO and
+connection as ordinary writes. It reserves the writer before its receipt read,
+retains one Immediate transaction through preparation and commit, and executes
+its callback once. BEGIN contention may wait without replaying that callback;
+an uncertain COMMIT still requires original-receipt reconciliation. Owner,
+group, epoch, attempt identity and publication checks remain mandatory.
+Recovery rollback certainty never releases or re-prepares the original business
+capsule; only that original attempt's receipt/owner protocol may resolve it.
+
+Borrowed preparation/recovery callbacks remain on their calling thread inside
+the existing Tokio blocking boundary. This preserves thread-local material and
+mutation witnesses while allowing other async work to progress. It is not an
+enqueue-only acknowledgement or a second detached recovery worker.
+
 Clones of a RuntimeDb share one lazily used reader pool. Independently opened
 RuntimeDb handles and raw maintenance connections are separate owners and must
 not be counted as part of the same pool limit. The initial candidate capacity is

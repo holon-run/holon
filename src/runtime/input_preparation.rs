@@ -186,40 +186,73 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         scope.agent_id,
         published.input_evidence.is_some()
     );
-    let (prepared, current) = db.transaction(|tx| {
-        let prepared = if cause == InputPreparationCause::ExistingAdmissionCleanup {
-            crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx(
-                tx,
-                &scope,
-                &published.state,
-                request,
-                recent_episode_limit,
-                budget,
-                scheduling,
-            )?
-        } else {
-            crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
-                tx,
-                &scope,
-                &published.state,
-                request,
-                recent_episode_limit,
-                budget,
-                scheduling,
-            )?
-        };
-        let current =
-            current
-                .map(|roles| {
-                    crate::runtime_db::current_query::prepare(
-                tx, &scope, Some(roles.selection()), budget,
-                (request.byte_limit, request.record_limit),
-            ).map(crate::runtime_db::current_read_writes::CommittedCurrentWrites::prepared_query)
-                .map(Arc::new)
-                })
-                .transpose()?;
+    let current_query = |tx: &rusqlite::Transaction<'_>| {
+        current
+            .map(|roles| {
+                let query = crate::runtime_db::current_query::prepare(
+                    tx,
+                    &scope,
+                    Some(roles.selection()),
+                    budget,
+                    (request.byte_limit, request.record_limit),
+                )?;
+                Ok::<_, anyhow::Error>(Arc::new(
+                    crate::runtime_db::current_read_writes::CommittedCurrentWrites::prepared_query(
+                        query,
+                    ),
+                ))
+            })
+            .transpose()
+    };
+    let read = db.read_for_preparation(|tx| {
+        let prepared = crate::runtime_db::input_preparation::load_input_with_scheduling_tx(
+            tx,
+            &scope,
+            &published.state,
+            request,
+            recent_episode_limit,
+            budget,
+            scheduling,
+            cause == InputPreparationCause::ExistingAdmissionCleanup,
+        )?;
+        let current = current_query(tx)?;
         Ok((prepared, current))
-    })?;
+    });
+    let (prepared, current) = match read {
+        Ok(read) => read,
+        Err(error) if needs_qualification_preparation(&error) => db.transaction_with_context(
+            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                "runtime_db.input_preparation",
+                "qualified_domains",
+            ),
+            |tx| {
+                let prepared = if cause == InputPreparationCause::ExistingAdmissionCleanup {
+                    crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx(
+                        tx,
+                        &scope,
+                        &published.state,
+                        request,
+                        recent_episode_limit,
+                        budget,
+                        scheduling,
+                    )?
+                } else {
+                    crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
+                        tx,
+                        &scope,
+                        &published.state,
+                        request,
+                        recent_episode_limit,
+                        budget,
+                        scheduling,
+                    )?
+                };
+                let current = current_query(tx)?;
+                Ok((prepared, current))
+            },
+        )?,
+        Err(error) => return Err(error),
+    };
     // Sidecar preparation is idempotent and cannot change canonical facts.
     // A failed/indeterminate transaction leaves the old published root intact;
     // it does not resolve a business family's unknown ticket.
@@ -260,6 +293,29 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         queue,
         queue_budget_view,
     }))
+}
+
+fn needs_qualification_preparation(error: &anyhow::Error) -> bool {
+    use crate::runtime::{
+        resident_input_evidence::InputQueryError, resident_scheduling::SchedulingReadError,
+    };
+    use crate::runtime_db::{
+        input_evidence_snapshot::InputEvidenceSnapshotError,
+        scheduling_snapshot::SchedulingSnapshotError,
+    };
+    matches!(
+        error.downcast_ref::<InputEvidenceSnapshotError>(),
+        Some(InputEvidenceSnapshotError::NeedsPreparation(_))
+    ) || matches!(
+        error.downcast_ref::<SchedulingSnapshotError>(),
+        Some(SchedulingSnapshotError::NeedsPreparation(_))
+    ) || matches!(
+        error.downcast_ref::<SchedulingReadError>(),
+        Some(SchedulingReadError::IncompleteLive)
+    ) || matches!(
+        error.downcast_ref::<InputQueryError>(),
+        Some(InputQueryError::NeedsPreparation)
+    )
 }
 
 fn validate_ready_root(

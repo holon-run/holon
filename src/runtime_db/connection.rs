@@ -23,7 +23,8 @@ use anyhow::{anyhow, Context, Result};
 use rusqlite::{ffi::ErrorCode, Connection, Transaction, TransactionBehavior};
 
 use crate::runtime_db::persistence::{
-    mark_persistence_failure, persistence_certainty, PersistenceCertainty, PersistenceFailurePhase,
+    attach_write_context, mark_persistence_failure, persistence_certainty, sqlite_extended_code,
+    PersistenceCertainty, PersistenceFailurePhase,
 };
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 #[cfg(target_os = "linux")]
@@ -555,6 +556,18 @@ pub(crate) fn run_transaction_on_connection<T>(
     mutex_wait: Duration,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
+    run_transaction_attempt(connection, path, context, queue_wait, mutex_wait, f)
+        .map_err(|error| attach_write_context(error, context.operation, context.table))
+}
+
+fn run_transaction_attempt<T>(
+    connection: &Connection,
+    path: &Path,
+    context: RuntimeDbWriteContext,
+    queue_wait: Duration,
+    mutex_wait: Duration,
+    f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+) -> Result<T> {
     let started_at = Instant::now();
     tracing::trace!(
         path = %path.display(),
@@ -566,7 +579,7 @@ pub(crate) fn run_transaction_on_connection<T>(
         "runtime db write starting"
     );
     let (transaction, begin_retry_count, begin_wait) =
-        begin_immediate_transaction_with_retry(connection, path).map_err(|error| {
+        begin_immediate_transaction_with_retry(connection, path, context).map_err(|error| {
             mark_persistence_failure(
                 error,
                 PersistenceCertainty::DefinitelyNotCommitted,
@@ -577,6 +590,19 @@ pub(crate) fn run_transaction_on_connection<T>(
     match f(&transaction) {
         Ok(value) => {
             transaction.commit().map_err(|error| {
+                tracing::warn!(
+                    operation = context.operation,
+                    table = context.table,
+                    phase = "commit",
+                    sqlite_code = error
+                        .sqlite_error()
+                        .map(|failure| failure.extended_code & 0xff),
+                    sqlite_extended_code =
+                        error.sqlite_error().map(|failure| failure.extended_code),
+                    held_write_lock_ms =
+                        started_at.elapsed().saturating_sub(begin_wait).as_millis(),
+                    "runtime db commit outcome unknown"
+                );
                 mark_persistence_failure(
                     map_runtime_db_sqlite_error("committing transaction", path, error),
                     PersistenceCertainty::Indeterminate,
@@ -585,6 +611,26 @@ pub(crate) fn run_transaction_on_connection<T>(
                 )
             })?;
             let elapsed = started_at.elapsed();
+            let held_write_lock = elapsed.saturating_sub(begin_wait);
+            if queue_wait
+                .saturating_add(mutex_wait)
+                .saturating_add(elapsed)
+                >= Duration::from_secs(1)
+            {
+                tracing::warn!(
+                    operation = context.operation,
+                    table = context.table,
+                    mode = context.mode.as_str(),
+                    phase = "committed",
+                    queue_wait_ms = queue_wait.as_millis(),
+                    mutex_wait_ms = mutex_wait.as_millis(),
+                    begin_wait_ms = begin_wait.as_millis(),
+                    begin_retry_count,
+                    held_write_lock_ms = held_write_lock.as_millis(),
+                    elapsed_ms = elapsed.as_millis(),
+                    "slow runtime db write"
+                );
+            }
             tracing::trace!(
                 path = %path.display(),
                 operation = context.operation,
@@ -622,10 +668,17 @@ pub(crate) fn run_transaction_on_connection<T>(
             };
             let elapsed = started_at.elapsed();
             let retryable = is_retryable_db_error(&error);
+            let sqlite_extended_code = sqlite_extended_code(&error);
+            let sqlite_code = sqlite_extended_code.map(|code| code & 0xff);
+            let held_write_lock = elapsed.saturating_sub(begin_wait);
             if rolled_back && is_retryable_state_transition_conflict(&error) {
                 tracing::debug!(
                     error = %error,
                     retryable,
+                    phase = if rolled_back { "callback" } else { "rollback" },
+                    sqlite_code,
+                    sqlite_extended_code,
+                    held_write_lock_ms = held_write_lock.as_millis(),
                     path = %path.display(),
                     operation = context.operation,
                     table = context.table,
@@ -641,6 +694,10 @@ pub(crate) fn run_transaction_on_connection<T>(
                 tracing::warn!(
                     error = %error,
                     retryable,
+                    phase = if rolled_back { "callback" } else { "rollback" },
+                    sqlite_code,
+                    sqlite_extended_code,
+                    held_write_lock_ms = held_write_lock.as_millis(),
                     rolled_back,
                     path = %path.display(),
                     operation = context.operation,
@@ -662,6 +719,7 @@ pub(crate) fn run_transaction_on_connection<T>(
 pub(crate) fn begin_immediate_transaction_with_retry<'connection>(
     connection: &'connection Connection,
     path: &Path,
+    context: RuntimeDbWriteContext,
 ) -> Result<(Transaction<'connection>, u32, Duration)> {
     let started_at = Instant::now();
     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
@@ -678,6 +736,10 @@ pub(crate) fn begin_immediate_transaction_with_retry<'connection>(
                 tracing::trace!(
                     error = %error,
                     path = %path.display(),
+                    operation = context.operation,
+                    table = context.table,
+                    phase = "begin",
+                    sqlite_extended_code = error.sqlite_error().map(|failure| failure.extended_code),
                     retry_count,
                     retry_delay_ms = retry_delay.as_millis(),
                     "runtime db begin immediate transaction retrying"
@@ -686,6 +748,10 @@ pub(crate) fn begin_immediate_transaction_with_retry<'connection>(
                     tracing::warn!(
                         error = %error,
                         path = %path.display(),
+                        operation = context.operation,
+                        table = context.table,
+                        phase = "begin",
+                        sqlite_extended_code = error.sqlite_error().map(|failure| failure.extended_code),
                         retry_count,
                         elapsed_ms = elapsed.as_millis(),
                         retry_delay_ms = retry_delay.as_millis(),
@@ -721,7 +787,8 @@ pub(crate) fn map_runtime_db_sqlite_error(
     error: rusqlite::Error,
 ) -> anyhow::Error {
     if is_sqlite_locked(&error) {
-        RuntimeDbRetryableError::new(operation, path, error).into()
+        let context = RuntimeDbRetryableError::new(operation, path, &error);
+        anyhow!(error).context(context)
     } else {
         anyhow!(error).context(format!("{} for {}", operation, path.display()))
     }
@@ -752,12 +819,13 @@ pub(crate) fn is_retryable_transaction_error(error: &anyhow::Error) -> bool {
     if persistence_certainty(error) == Some(PersistenceCertainty::Indeterminate) {
         return false;
     }
-    error.chain().any(|source| {
-        source.downcast_ref::<RuntimeDbRetryableError>().is_some()
-            || source
-                .downcast_ref::<rusqlite::Error>()
-                .is_some_and(is_sqlite_locked)
-    })
+    error.downcast_ref::<RuntimeDbRetryableError>().is_some()
+        || error.chain().any(|source| {
+            source.downcast_ref::<RuntimeDbRetryableError>().is_some()
+                || source
+                    .downcast_ref::<rusqlite::Error>()
+                    .is_some_and(is_sqlite_locked)
+        })
 }
 
 /// Check if an error is retryable for runtime error classification and logging.
