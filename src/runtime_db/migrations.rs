@@ -4392,6 +4392,11 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "original_turnless_command_creation",
         sql: super::command_task_creation::SCHEMA,
     },
+    Migration {
+        version: 105,
+        name: "index_receipt_scope_for_deletion_maintenance",
+        sql: super::agent_deletion_cleanup::RECEIPT_SCOPE_INDEX_SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

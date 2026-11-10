@@ -955,7 +955,7 @@ pub(crate) fn validate_task_domain_observation_tx(
         scope_facts(tx, scope, false)?.is_some(),
         "Task observation retired"
     );
-    validate_observation_revision(tx, scope, revision)
+    validate_task_observation_revision_tx(tx, scope, revision)
 }
 
 pub(crate) fn validate_task_domain_observation_with_scope_tx(
@@ -972,10 +972,10 @@ pub(crate) fn validate_task_domain_observation_with_scope_tx(
             .is_some_and(|identity| identity.status == AgentRegistryStatus::Active),
         "Task observation retired"
     );
-    validate_observation_revision(tx, scope, revision)
+    validate_task_observation_revision_tx(tx, scope, revision)
 }
 
-fn validate_observation_revision(
+pub(in crate::runtime_db) fn validate_task_observation_revision_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     revision: u64,

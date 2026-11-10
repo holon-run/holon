@@ -26,8 +26,8 @@ use crate::{
         input_evidence_snapshot::{
             InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
         },
-        task_snapshot::{validate_task_domain_observation_with_scope_tx, TaskSnapshotError},
-        work_snapshot::{validate_work_domain_observation_with_scope_tx, WorkSnapshotError},
+        task_snapshot::TaskSnapshotError,
+        work_snapshot::WorkSnapshotError,
     },
     types::TurnOwner,
 };
@@ -221,6 +221,15 @@ impl RuntimeHandle {
                     tracing::debug!(agent_id = %message.agent_id, attempt = attempt + 1,
                         "retrying context acquisition after a frozen dependency changed");
                     tokio::task::yield_now().await;
+                }
+                Err(error)
+                    if require_execution
+                        && attempt < 2
+                        && crate::runtime_db::is_reader_checkout_pressure(&error) =>
+                {
+                    // The failed acquisition released the snapshot's reservation
+                    // and reader before this backoff. Rebuild only preparation.
+                    tokio::time::sleep(std::time::Duration::from_millis(50 << attempt)).await;
                 }
                 Err(error) => return Err(error),
             }
@@ -547,20 +556,13 @@ impl RuntimeHandle {
             let control_revision = scope
                 .control_revision
                 .ok_or_else(|| anyhow!("context control revision missing"))?;
-            validate_work_domain_observation_with_scope_tx(
-                &transaction,
-                &work.scope,
-                work.revision,
-                &scope_read,
-            )
-            .map_err(context_work_observation_error)?;
-            validate_task_domain_observation_with_scope_tx(
-                &transaction,
-                &tasks.scope,
-                tasks.revision,
-                &scope_read,
-            )
-            .map_err(context_task_observation_error)?;
+            scope_read
+                .validate_work_and_task_observations(
+                    &transaction,
+                    (&work.scope, work.revision),
+                    (&tasks.scope, tasks.revision),
+                )
+                .map_err(context_domain_observation_error)?;
             let scheduling = captured
                 .scheduling
                 .as_ref()
@@ -738,19 +740,11 @@ pub(super) fn context_work_capture_request(state: &AgentState) -> WorkCaptureReq
     request
 }
 
-fn context_work_observation_error(error: anyhow::Error) -> anyhow::Error {
+fn context_domain_observation_error(error: anyhow::Error) -> anyhow::Error {
     if matches!(
         error.downcast_ref::<WorkSnapshotError>(),
         Some(WorkSnapshotError::RevisionMismatch { .. })
-    ) {
-        ContextDependencyChanged.into()
-    } else {
-        error
-    }
-}
-
-fn context_task_observation_error(error: anyhow::Error) -> anyhow::Error {
-    if matches!(
+    ) || matches!(
         error.downcast_ref::<TaskSnapshotError>(),
         Some(TaskSnapshotError::RevisionMismatch { .. })
     ) {

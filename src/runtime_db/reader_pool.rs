@@ -41,6 +41,8 @@ struct ReaderPoolControl {
     stats: Counters,
     last_connect_warning: Mutex<Option<Instant>>,
     last_timeout_warning: Mutex<Option<Instant>>,
+    role: &'static str,
+    holders: Mutex<Vec<Option<(read_block::ReadOrigin, Instant)>>>,
     #[cfg(test)]
     test_hook: Mutex<Option<Arc<ReaderTestHook>>>,
 }
@@ -128,11 +130,11 @@ impl r2d2::HandleError<ConnectError> for QuietConnectErrors {
 
 impl RuntimeDbReaderPool {
     pub(crate) fn new(writer: Arc<RuntimeDbWriterState>) -> Self {
-        Self::with_limits(writer, DEFAULT_CAPACITY, None)
+        Self::with_role(writer, DEFAULT_CAPACITY, None, "ordinary")
     }
 
     pub(crate) fn for_preparation(writer: Arc<RuntimeDbWriterState>) -> Self {
-        Self::with_limits(writer, PREPARATION_CAPACITY, None)
+        Self::with_role(writer, PREPARATION_CAPACITY, None, "preparation")
     }
 
     #[cfg(test)]
@@ -141,13 +143,14 @@ impl RuntimeDbReaderPool {
         capacity: u32,
         budget: Duration,
     ) -> Self {
-        Self::with_limits(writer, capacity, Some(budget))
+        Self::with_role(writer, capacity, Some(budget), "test")
     }
 
-    fn with_limits(
+    fn with_role(
         writer: Arc<RuntimeDbWriterState>,
         capacity: u32,
         budget: Option<Duration>,
+        role: &'static str,
     ) -> Self {
         assert!(capacity > 0, "reader pool capacity must be positive");
         let shared = Arc::new_cyclic(|owner| {
@@ -158,6 +161,8 @@ impl RuntimeDbReaderPool {
                 stats: Counters::default(),
                 last_connect_warning: Mutex::new(None),
                 last_timeout_warning: Mutex::new(None),
+                role,
+                holders: Mutex::new(vec![None; capacity as usize]),
                 #[cfg(test)]
                 test_hook: Mutex::new(None),
             });
@@ -208,7 +213,13 @@ impl RuntimeDbReaderPool {
         let mut readers = Vec::with_capacity(capacity as usize);
         for _ in 0..capacity {
             self.check_read_scope()?;
-            let mut reader = self.checkout_connection(&pool, deadline, &self.effective_scope())?;
+            let mut reader = self.checkout_connection(
+                &pool,
+                deadline,
+                &self.effective_scope(),
+                read_block::ReadOrigin::UNKNOWN,
+                "warmup",
+            )?;
             self.check_read_scope()?;
             if let Err(error) = reader.connection.as_ref().expect("live reader").query_row(
                 "SELECT count(*) FROM sqlite_schema",
@@ -238,6 +249,8 @@ impl RuntimeDbReaderPool {
         pool: &Pool<ReaderManager>,
         deadline: Option<Instant>,
         scope: &Option<RuntimeDbReadScope>,
+        origin: read_block::ReadOrigin,
+        stage: &'static str,
     ) -> Result<PooledConnection<ReaderManager>> {
         loop {
             self.shared.control.ensure_protected()?;
@@ -245,7 +258,7 @@ impl RuntimeDbReaderPool {
             let remaining =
                 deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
             if remaining.is_some_and(|remaining| remaining.is_zero()) {
-                self.shared.control.timeout();
+                self.shared.control.timeout(origin, stage);
                 return Err(RuntimeDbRetryableError::new(
                     "reader pool checkout",
                     &self.shared.control.writer.path,
@@ -260,7 +273,7 @@ impl RuntimeDbReaderPool {
                 Err(error) => {
                     self.shared.control.ensure_protected()?;
                     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                        self.shared.control.timeout();
+                        self.shared.control.timeout(origin, stage);
                         self.check_scope(scope)?;
                         return Err(RuntimeDbRetryableError::new(
                             "reader pool checkout",
@@ -364,7 +377,7 @@ impl RuntimeDbReaderPool {
             .map_err(|_| anyhow!("runtime db reader pool mutex poisoned"))?
             .clone()
             .ok_or_else(|| anyhow!("runtime db reader pool is closed"))?;
-        let connection = self.checkout_connection(&pool, deadline, &scope)?;
+        let connection = self.checkout_connection(&pool, deadline, &scope, origin, "checkout")?;
         drop(checkout);
         let checkout_elapsed = started.elapsed();
         // Declare the timer first so the lease is returned before it stops.
@@ -373,6 +386,7 @@ impl RuntimeDbReaderPool {
             connection,
             progress_handler: false,
         };
+        let _holder = control.track_holder(origin);
         control.ensure_protected()?;
         self.check_scope(&scope)?;
         if let Some(scope) = scope.clone() {
@@ -468,7 +482,7 @@ impl RuntimeDbReaderPool {
                 bail!("runtime db reader pool is closed");
             }
             None => {
-                self.shared.control.timeout();
+                self.shared.control.timeout(origin, "admission");
                 self.shared.control.ensure_protected()?;
                 self.check_scope(&scope)?;
                 return Err(RuntimeDbRetryableError::new(
@@ -517,7 +531,7 @@ impl RuntimeDbReaderPool {
                     .is_ok()
                 {
                     task.abort();
-                    self.shared.control.timeout();
+                    self.shared.control.timeout(origin, "blocking_admission");
                     self.shared.control.ensure_protected()?;
                     self.check_scope(&scope)?;
                     return Err(RuntimeDbRetryableError::new(
@@ -668,13 +682,47 @@ impl ReaderPoolControl {
         }
     }
 
-    fn timeout(&self) {
+    fn track_holder(&self, origin: read_block::ReadOrigin) -> Option<ReaderHolder<'_>> {
+        let mut holders = self.holders.lock().ok()?;
+        let slot = holders.iter().position(Option::is_none)?;
+        holders[slot] = Some((origin, Instant::now()));
+        Some(ReaderHolder {
+            control: self,
+            slot,
+        })
+    }
+
+    fn timeout(&self, origin: read_block::ReadOrigin, stage: &'static str) {
         self.stats.checkout_timeouts.fetch_add(1, Ordering::Relaxed);
         if should_log(&self.last_timeout_warning) {
+            let holders = self.holders.lock().ok().map(|holders| {
+                holders
+                    .iter()
+                    .flatten()
+                    .map(|(origin, acquired)| (*origin, acquired.elapsed().as_millis()))
+                    .collect::<Vec<_>>()
+            });
             tracing::warn!(
                 path = %self.writer.path.display(),
+                pool_role = self.role,
+                stage,
+                waiting_origin = ?origin,
+                active_holders_ms = ?holders,
                 "runtime db reader pool admission/checkout timed out"
             );
+        }
+    }
+}
+
+struct ReaderHolder<'a> {
+    control: &'a ReaderPoolControl,
+    slot: usize,
+}
+
+impl Drop for ReaderHolder<'_> {
+    fn drop(&mut self) {
+        if let Ok(mut holders) = self.control.holders.lock() {
+            holders[self.slot] = None;
         }
     }
 }

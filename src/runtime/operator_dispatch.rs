@@ -230,7 +230,7 @@ impl RuntimeHandle {
         }
         let (operator_binding_id, operator_reply_route_id) =
             Self::operator_transport_from_message(message);
-        if let Some(prior_closure) = dispatch_prior_closure {
+        let (dispatch_turn_id, _) = if let Some(prior_closure) = dispatch_prior_closure {
             self.begin_dispatch_turn(
                 message,
                 operator_binding_id.as_deref(),
@@ -238,7 +238,7 @@ impl RuntimeHandle {
                 execution_admission_provenance,
                 prior_closure,
             )
-            .await?;
+            .await?
         } else {
             self.begin_interactive_turn_with_provenance(
                 Some(message),
@@ -246,8 +246,10 @@ impl RuntimeHandle {
                 operator_reply_route_id.as_deref(),
                 execution_admission_provenance,
             )
-            .await?;
-        }
+            .await?
+        };
+        #[cfg(all(test, holon_lib_test_shard = "d"))]
+        self.check_operator_dispatch_reader_failure(false)?;
         let mut model_selection = TurnModelSelection::from_message(message)?;
         let provider_admission = self.active_provider_admission()?;
         model_selection.admitted_model = provider_admission
@@ -357,7 +359,7 @@ impl RuntimeHandle {
             let guard = self.inner.agent.lock().await;
             (guard.state.turn_index, guard.state.current_run_id.clone())
         };
-        self.append_original_audit_event(AuditEvent::legacy(
+        let mut context_built = AuditEvent::legacy(
             "turn_context_built",
             serde_json::json!({
                 "agent_id": message.agent_id.clone(),
@@ -369,8 +371,12 @@ impl RuntimeHandle {
                 "rendered_context_chars": built.rendered_context_attachment.chars().count(),
                 "rendered_system_chars": built.rendered_system_prompt.chars().count(),
             }),
-        ))
-        .await?;
+        );
+        if message.kind == MessageKind::OperatorPrompt && dispatch_prior_closure.is_some() {
+            context_built.id =
+                crate::runtime_db::dispatch_memory::operator_provider_entry_id(&dispatch_turn_id);
+        }
+        self.append_original_audit_event(context_built).await?;
         record_operator_span(
             trace_context.as_ref(),
             "holon.turn.context_build",
@@ -387,6 +393,8 @@ impl RuntimeHandle {
                 trace_context.clone(),
             )
             .await?;
+        #[cfg(all(test, holon_lib_test_shard = "d"))]
+        self.check_operator_dispatch_reader_failure(true)?;
         crate::diagnostics::record_turn_total(context_build_started.elapsed());
         let cleanup_started = std::time::Instant::now();
         let cleanup_started_at = chrono::Utc::now();

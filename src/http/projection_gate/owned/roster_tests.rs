@@ -82,16 +82,33 @@ async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
     assert!(runtime.accepts_execution_admission());
     let mut headers = HeaderMap::new();
     headers.insert(AUTHORIZATION, HeaderValue::from_static("Bearer secret"));
-    let response = crate::http::state::agent_state(
-        axum::extract::Path(default_agent_id),
-        State(state.clone()),
-        headers,
-    )
-    .await;
-    let status = response.status();
-    let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
-        .await
-        .unwrap();
+    // HTTP observers may report a moving publication while the just-enqueued
+    // work wakes the agent. Check that the same route converges without closing
+    // admission, and retry only that documented transient response.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
+    let (status, bytes) = loop {
+        let response = crate::http::state::agent_state(
+            axum::extract::Path(default_agent_id.clone()),
+            State(state.clone()),
+            headers.clone(),
+        )
+        .await;
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let moving_publication = status == StatusCode::SERVICE_UNAVAILABLE
+            && serde_json::from_slice::<Value>(&bytes).is_ok_and(|error| {
+                error["code"] == "runtime_db_busy"
+                    && error["context"]["operation"] == "observer publication"
+                    && error["retryable"] == true
+            });
+        if !moving_publication || tokio::time::Instant::now() >= deadline {
+            break (status, bytes);
+        }
+        assert!(runtime.accepts_execution_admission());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     assert_eq!(
         status,
         StatusCode::OK,

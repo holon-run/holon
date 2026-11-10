@@ -225,7 +225,30 @@ impl RuntimeHandle {
                 if target.kind == crate::types::TaskTargetKind::ChildAgent
                     && target.agent_id == child
                 {
-                    if let Some(observation) = bridge.child_observability(target).await? {
+                    // A child can be publishing a new snapshot while its
+                    // parent's TaskStatus is being rendered. Retry observation
+                    // within the same budget used by GetAgent, rechecking the
+                    // target incarnation on each read.
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+                    let observation = loop {
+                        match bridge.child_observability(target).await {
+                            Err(error)
+                                if crate::runtime_db::is_observer_publication_busy(&error) =>
+                            {
+                                let retry_at = tokio::time::Instant::now()
+                                    + std::time::Duration::from_millis(20);
+                                if retry_at >= deadline {
+                                    return Err(error);
+                                }
+                                tokio::time::sleep_until(retry_at).await;
+                                if tokio::time::Instant::now() >= deadline {
+                                    return Err(error);
+                                }
+                            }
+                            result => break result?,
+                        }
+                    };
+                    if let Some(observation) = observation {
                         // The bridge owns the external observation; this carrier
                         // accounts its transfer into the final DTO without a clone.
                         read.transfer_child_observation(
