@@ -237,6 +237,122 @@ fn context_scope_read_reuses_original_decode_without_more_material() -> Result<(
 }
 
 #[test]
+fn context_work_and_task_observations_require_one_current_scope_and_both_revisions() -> Result<()> {
+    use crate::{
+        runtime::{resident_task::TaskCaptureRequest, resident_work::WorkCaptureRequest},
+        runtime_db::{
+            task_snapshot::{
+                prepare_task_domain_snapshot_tx, TaskDomainLoadRequest, TaskSnapshotError,
+            },
+            work_snapshot::{
+                prepare_work_domain_snapshot_tx, WorkDomainLoadRequest, WorkSnapshotError,
+            },
+        },
+    };
+
+    let dir = tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        dir.path().join("runtime.sqlite"),
+        dir.path().join("runtime.lock"),
+    )?;
+    let scope = scope();
+    db.transaction(|tx| {
+        crate::runtime_db::evidence::upsert_agent_identity_tx(
+            tx,
+            &AgentIdentityRecord::new(
+                &scope.agent_id,
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            ),
+        )?;
+        upsert_agent_state_tx(tx, &AgentState::new(&scope.agent_id))?;
+        let work_request = WorkDomainLoadRequest {
+            capture: WorkCaptureRequest::current(),
+            record_limit: 1024,
+            byte_limit: 1024 * 1024,
+        };
+        let task_request = TaskDomainLoadRequest {
+            capture: TaskCaptureRequest::current(),
+            query: Default::default(),
+            recovery_at: None,
+            record_limit: 1024,
+            byte_limit: 1024 * 1024,
+        };
+        let work = prepare_work_domain_snapshot_tx(tx, &scope, &work_request)?
+            .require_current()?
+            .resident
+            .capture(&work_request.capture)?;
+        let tasks = prepare_task_domain_snapshot_tx(tx, &scope, &task_request)?
+            .require_current()?
+            .resident
+            .capture(&task_request.capture)?;
+
+        let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
+        let work_observation = (&work.scope, work.revision);
+        let task_observation = (&tasks.scope, tasks.revision);
+        read.validate_work_and_task_observations(tx, work_observation, task_observation)?;
+
+        let error = read
+            .validate_work_and_task_observations(
+                tx,
+                (&work.scope, work.revision + 1),
+                task_observation,
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<WorkSnapshotError>(),
+            Some(WorkSnapshotError::RevisionMismatch { .. })
+        ));
+        let error = read
+            .validate_work_and_task_observations(
+                tx,
+                work_observation,
+                (&tasks.scope, tasks.revision + 1),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskSnapshotError>(),
+            Some(TaskSnapshotError::RevisionMismatch { .. })
+        ));
+
+        let foreign_task = InputEvidenceScope {
+            identity_incarnation: scope.identity_incarnation + 1,
+            ..scope.clone()
+        };
+        assert_eq!(
+            read.validate_work_and_task_observations(
+                tx,
+                work_observation,
+                (&foreign_task, tasks.revision),
+            )
+            .unwrap_err()
+            .to_string(),
+            "context scope read belongs to another transaction or scope"
+        );
+
+        tx.execute("UPDATE agent_identities SET status='deleting'", [])?;
+        assert_eq!(
+            read.validate_work_and_task_observations(tx, work_observation, task_observation)
+                .unwrap_err()
+                .to_string(),
+            "context scope changed after its validated read"
+        );
+        let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
+        assert_eq!(
+            read.validate_work_and_task_observations(tx, work_observation, task_observation)
+                .unwrap_err()
+                .to_string(),
+            "context identity normalized/payload projection mismatch"
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn context_scope_read_rejects_foreign_transaction_and_incarnation() -> Result<()> {
     let (_home, db) = fixture()?;
     let (_other_home, other) = fixture()?;
