@@ -443,6 +443,30 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         };
     }
 
+    let resource_conflict = error
+        .chain()
+        .find_map(|source| {
+            source.downcast_ref::<crate::runtime::resource_observation::ResourceObservationError>()
+        })
+        .filter(|error| error.is_preparation_conflict())
+        .map(ToString::to_string)
+        .or_else(|| {
+            error
+                .downcast_ref::<crate::host::context_resources::ContextResourceWritersActive>()
+                .map(ToString::to_string)
+        });
+    if let Some(conflict) = resource_conflict {
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Conflict,
+            code: "context_resource_changed".into(),
+            retryable: true,
+            operator_message: conflict,
+            recovery_hint: Some("prepare Context again from current resources; the host may rebuild a failed runtime loop".into()),
+            safe_context: BTreeMap::new(),
+            source_chain,
+        };
+    }
+
     if let Some(io_error) = error
         .chain()
         .find_map(|source| source.downcast_ref::<std::io::Error>())
@@ -780,6 +804,36 @@ fn is_wait_owner_uniqueness_violation(source: &(dyn std::error::Error + 'static)
 mod tests {
     use super::*;
     use crate::runtime_db::PersistenceFailurePhase;
+
+    #[test]
+    fn context_resource_recovery_retries_conflicts_but_not_identity_or_closed_scopes() {
+        use crate::runtime::resource_observation::{
+            ResourceFreshness, ResourceObservationError as Error,
+        };
+        for error in [
+            Error::SourceChanged,
+            Error::ObsoleteRefresh,
+            Error::InventorySnapshotChanged,
+            Error::NotReady(ResourceFreshness::Dirty(
+                crate::runtime::resource_observation::ResourceInvalidation::KnownWrite,
+            )),
+        ] {
+            let error = AnyhowError::new(error).context("context acquisition");
+            let descriptor = describe_runtime_error(&error);
+            assert_eq!(descriptor.domain, RuntimeErrorDomain::Conflict);
+            assert_eq!(descriptor.code, "context_resource_changed");
+            assert!(descriptor.retryable);
+        }
+        for error in [
+            Error::ScopeChanged,
+            Error::NotReady(ResourceFreshness::Closed),
+            Error::GenerationExhausted,
+        ] {
+            assert!(!describe_runtime_error(&AnyhowError::new(error)).retryable);
+        }
+        let writer = AnyhowError::new(crate::host::context_resources::ContextResourceWritersActive);
+        assert!(describe_runtime_error(&writer).retryable);
+    }
 
     #[test]
     fn sqlite_lock_classification_requires_a_known_transaction_outcome() {

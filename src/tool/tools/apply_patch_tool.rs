@@ -94,18 +94,21 @@ pub(crate) async fn execute(
         .effective_execution(ExecutionScopeKind::AgentTurn)
         .await?;
     let admission = runtime.execution_admission_lease()?;
-    let writer = runtime.begin_context_resource_write()?;
+    let resource_runtime = runtime.clone();
     let (send, receive) = tokio::sync::oneshot::channel();
     runtime.spawn_owned_mutation(async move {
         let result = tokio::task::spawn_blocking(move || {
             let _admission = admission;
-            let _writer = writer;
-            _writer.enter_physical();
-            let outcome = apply_patch::apply_patch_with_material(
+            let outcome = apply_patch::apply_patch_with_material_and_writer(
                 execution.workspace.execution_root(),
                 &patch_input,
                 surface,
                 &input_material,
+                |paths| {
+                    let writer = resource_runtime.begin_context_resource_write_for_paths(paths)?;
+                    writer.enter_physical();
+                    Ok(writer)
+                },
             );
             (outcome, input_material)
         })

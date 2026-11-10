@@ -26,7 +26,6 @@ fn source() -> ContextResourceSource {
         execution_root: Some("/workspace/worktree".into()),
         include_user_skills: true,
         config_generation: 1,
-        host_generation: 0,
         active_skills_selector: [0; 32],
         work_revision: 0,
         plans: Vec::new(),
@@ -1298,7 +1297,7 @@ fn refresh_rejects_an_owner_from_another_agent_or_incarnation() {
             .unwrap_err();
         assert!(matches!(
             error.downcast_ref(),
-            Some(ResourceObservationError::SourceChanged)
+            Some(ResourceObservationError::ScopeChanged)
         ));
         assert_eq!(
             registry.freshness().unwrap(),
@@ -1364,7 +1363,7 @@ fn every_source_identity_component_fences_capture_and_unchanged_refresh_reuses_a
     let old = refresh(&registry, &source, "same");
     let same = refresh(&registry, &source, "same");
     assert!(Arc::ptr_eq(&old, &same));
-    for index in 0..15 {
+    for index in 0..14 {
         let mut changed = source.clone();
         match index {
             0 => changed.scope.agent_id.push('b'),
@@ -1377,10 +1376,9 @@ fn every_source_identity_component_fences_capture_and_unchanged_refresh_reuses_a
             7 => changed.execution_root = None,
             8 => changed.include_user_skills = false,
             9 => changed.config_generation += 1,
-            10 => changed.host_generation += 1,
-            11 => changed.active_skills_selector[0] = 1,
-            12 => changed.work_revision += 1,
-            13 => changed.plans.push(ContextPlanSource {
+            10 => changed.active_skills_selector[0] = 1,
+            11 => changed.work_revision += 1,
+            12 => changed.plans.push(ContextPlanSource {
                 work_item_id: "work-a".into(),
                 recorded: false,
             }),
@@ -1389,18 +1387,18 @@ fn every_source_identity_component_fences_capture_and_unchanged_refresh_reuses_a
                 recorded: true,
             }),
         }
-        assert!(matches!(
-            registry.capture(&changed).unwrap_err().downcast_ref(),
-            Some(ResourceObservationError::SourceChanged)
-        ));
-        if index < 12 {
-            assert!(matches!(
-                registry
-                    .capture_instructions(&changed)
-                    .unwrap_err()
-                    .downcast_ref(),
-                Some(ResourceObservationError::SourceChanged)
-            ));
+        let error = registry.capture(&changed).unwrap_err();
+        assert!(error.is::<ResourceObservationError>());
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).retryable,
+            index >= 2
+        );
+        if index < 11 {
+            let error = registry.capture_instructions(&changed).unwrap_err();
+            assert_eq!(
+                crate::runtime_error::describe_runtime_error(&error).retryable,
+                index >= 2
+            );
         } else {
             let instructions = registry.capture_instructions(&changed).unwrap();
             assert!(std::ptr::eq(instructions.guidance(), &old.body().guidance));

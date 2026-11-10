@@ -841,7 +841,7 @@ impl RuntimeHandle {
             );
             if let Err(error) = self.prepare_summary_instruction_resources().await {
                 if source_changes < super::resource_refresh::RESOURCE_SOURCE_CHANGE_REPREPARES
-                    && super::resource_refresh::is_source_changed_error(&error)
+                    && super::resource_refresh::is_resource_preparation_conflict(&error)
                 {
                     source_changes += 1;
                     continue;
@@ -869,7 +869,7 @@ impl RuntimeHandle {
                 Err(error)
                     if source_changes
                         < super::resource_refresh::RESOURCE_SOURCE_CHANGE_REPREPARES
-                        && super::resource_refresh::is_source_changed_error(&error) =>
+                        && super::resource_refresh::is_resource_preparation_conflict(&error) =>
                 {
                     // The published source moved between the typed preparation
                     // and the capture. Re-prepare on this bounded path instead

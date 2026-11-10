@@ -133,11 +133,11 @@ async fn remote_template_writer_outlives_request_and_shutdown_joins_actual_sync(
         }
     });
     let gate = state.host.context_resources();
-    let original_generation = gate.generation()?;
+    drop(gate.ready()?);
     // queue_sync consumes and drops the real request response before I/O exits.
     let id = queue_sync(&state).await?;
     tokio::time::timeout(Duration::from_secs(5), reached.notified()).await?;
-    assert!(gate.generation().is_err());
+    assert!(gate.ready().is_err());
     assert!(matches!(
         state.jobs.get(&id).unwrap().status,
         JobStatus::Running
@@ -152,7 +152,7 @@ async fn remote_template_writer_outlives_request_and_shutdown_joins_actual_sync(
             .await
             .is_err()
     );
-    assert!(gate.ready(original_generation).is_err());
+    assert!(gate.ready().is_err());
     release.notify_one();
     tokio::time::timeout(Duration::from_secs(5), remote).await???;
     let job = settled(&state, &id).await?;
@@ -165,7 +165,7 @@ async fn remote_template_writer_outlives_request_and_shutdown_joins_actual_sync(
         std::fs::read_to_string(user_home.join(".agents/agent_templates/worker/AGENTS.md"))?,
         "# Worker\n"
     );
-    assert!(gate.generation().is_err());
+    assert!(gate.ready().is_err());
     Ok(())
 }
 
@@ -196,19 +196,17 @@ async fn queued_remote_template_writer_cannot_enter_after_closing() -> Result<()
 }
 
 #[tokio::test]
-async fn failed_remote_template_sync_releases_writer_and_invalidates_old_generation() -> Result<()>
-{
+async fn failed_remote_template_sync_releases_physical_writer() -> Result<()> {
     let _env = crate::test_env::lock_env();
     let (home, state) = fixture("not-a-github-url")?;
     let user_home = home.path().join("user");
     let _home = EnvGuard::set("HOME", &user_home);
     let gate = state.host.context_resources();
-    let generation = gate.generation()?;
+    drop(gate.ready()?);
     let id = queue_sync(&state).await?;
     let job = settled(&state, &id).await?;
     assert!(matches!(job.status, JobStatus::Failed), "{job:?}");
-    assert_eq!(gate.generation()?, generation + 2);
-    assert!(gate.ready(generation).is_err());
+    drop(gate.ready()?);
     assert!(!user_home.join(".agents/agent_templates").exists());
     state.host.shutdown().await?;
     Ok(())
@@ -248,7 +246,7 @@ async fn empty_remote_template_sync_keeps_noop_semantics_without_writer_admissio
     let user_home = home.path().join("user");
     let _home = EnvGuard::set("HOME", &user_home);
     let gate = state.host.context_resources();
-    let generation = gate.generation()?;
+    drop(gate.ready()?);
     for closed in [false, true] {
         if closed {
             state.host.shutdown().await?;
@@ -270,7 +268,7 @@ async fn empty_remote_template_sync_keeps_noop_semantics_without_writer_admissio
             JobStatus::Completed
         ));
         if !closed {
-            assert_eq!(gate.generation()?, generation);
+            drop(gate.ready()?);
         }
     }
     assert!(!user_home.join(".agents/agent_templates").exists());

@@ -132,7 +132,7 @@ impl RuntimeHandle {
                 Err(error)
                     if source_changes
                         < super::resource_refresh::RESOURCE_SOURCE_CHANGE_REPREPARES
-                        && super::resource_refresh::is_source_changed_error(&error) =>
+                        && super::resource_refresh::is_resource_preparation_conflict(&error) =>
                 {
                     // The published source moved between the preparation and
                     // the capture. Re-prepare on this bounded Context

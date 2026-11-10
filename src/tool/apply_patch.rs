@@ -195,14 +195,25 @@ fn charge_lines(bytes: usize, lines: usize) -> Result<()> {
 }
 
 /// Owned by the original blocking mutation kernel; its TLS never crosses await.
+#[cfg(test)]
 pub(crate) fn apply_patch_with_material(
     workspace_root: &Path,
     input: &str,
     surface: ApplyPatchSurface,
     material: &ResourceReadMaterial,
 ) -> Result<ApplyPatchOutcome> {
+    apply_patch_with_material_and_writer(workspace_root, input, surface, material, |_| Ok(()))
+}
+
+pub(crate) fn apply_patch_with_material_and_writer<W>(
+    workspace_root: &Path,
+    input: &str,
+    surface: ApplyPatchSurface,
+    material: &ResourceReadMaterial,
+    begin_write: impl FnOnce(Vec<PathBuf>) -> Result<W>,
+) -> Result<ApplyPatchOutcome> {
     let _io = material.enter();
-    let result = apply_patch_sync(workspace_root, input, surface);
+    let result = apply_patch_sync(workspace_root, input, surface, begin_write);
     material.finish()?;
     result
 }
@@ -213,13 +224,14 @@ pub(crate) async fn apply_patch(
     input: &str,
     surface: ApplyPatchSurface,
 ) -> Result<ApplyPatchOutcome> {
-    apply_patch_sync(workspace_root, input, surface)
+    apply_patch_sync(workspace_root, input, surface, |_| Ok(()))
 }
 
-fn apply_patch_sync(
+fn apply_patch_sync<W>(
     workspace_root: &Path,
     input: &str,
     surface: ApplyPatchSurface,
+    begin_write: impl FnOnce(Vec<PathBuf>) -> Result<W>,
 ) -> Result<ApplyPatchOutcome> {
     // Covers the original parser's simultaneous line/path/hunk representations.
     // File bodies and execution copies are admitted separately from actual data.
@@ -280,7 +292,7 @@ fn apply_patch_sync(
     let file_count = patches.len();
     let hunk_count = patches.iter().map(|patch| patch.hunks.len()).sum::<usize>();
     let (changed_files, touched, ignored_metadata, diagnostics) =
-        apply_file_patches(workspace_root, &patches)?;
+        apply_file_patches(workspace_root, &patches, begin_write)?;
     let mut diagnostics = diagnostics;
     if let Some(compatibility) = compatibility {
         let diagnostic = match compatibility {
@@ -1052,15 +1064,17 @@ fn parse_range(range: &str, path: Option<&str>) -> Result<(usize, usize)> {
     ))
 }
 
-fn apply_file_patches(
+fn apply_file_patches<W>(
     workspace_root: &Path,
     patches: &[FilePatch],
+    begin_write: impl FnOnce(Vec<PathBuf>) -> Result<W>,
 ) -> Result<(
     Vec<ApplyPatchChangedFile>,
     Vec<String>,
     Vec<ApplyPatchIgnoredMetadata>,
     Vec<ApplyPatchDiagnostic>,
 )> {
+    let mut write_paths = Vec::new();
     for patch in patches {
         let path_bytes = patch.old_path.as_workspace_path().map_or(0, str::len)
             + patch.new_path.as_workspace_path().map_or(0, str::len)
@@ -1096,9 +1110,10 @@ fn apply_file_patches(
         .flatten()
         {
             let resolved = resolve_patch_path(workspace_root, path)?;
-            normalize_path(&resolved)?;
+            write_paths.push(normalize_path(&resolved)?);
         }
     }
+    let _writer = begin_write(write_paths)?;
 
     let mut state = HashMap::<PathBuf, Option<FileState>>::new();
     let mut originals = HashMap::<PathBuf, Option<FileState>>::new();

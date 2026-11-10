@@ -9,10 +9,11 @@ async fn actual_foreground_and_background_shell_invalidate_at_start_and_os_wait_
 ) -> Result<()> {
     use crate::types::{CommandTaskSpec, ExecCommandDuplicatePolicy, ExecCommandOutcome};
     let (home, host, runtime) = fixture().await?;
+    let preparation = runtime.hold_resource_preparation_for_test().await?;
     for background in [false, true] {
         let started = home.path().join(format!("shell-started-{background}"));
         let release = home.path().join(format!("shell-release-{background}"));
-        let before = runtime.inner.resources.gate.generation()?;
+        let before = runtime.inner.resources.registry.generation_for_test()?;
         let command = format!(
             "printf started > '{}'; while ! test -e '{}'; do sleep 0.01; done; printf finished",
             started.display(),
@@ -47,7 +48,7 @@ async fn actual_foreground_and_background_shell_invalidate_at_start_and_os_wait_
             }
         })
         .await?;
-        let running_generation = runtime.inner.resources.gate.generation()?;
+        let running_generation = runtime.inner.resources.registry.generation_for_test()?;
         assert_eq!(running_generation, before + 1);
         if background {
             let result = tokio::time::timeout(Duration::from_secs(10), request.take().unwrap())
@@ -72,16 +73,24 @@ async fn actual_foreground_and_background_shell_invalidate_at_start_and_os_wait_
             ));
         }
         tokio::time::timeout(Duration::from_secs(10), async {
-            while runtime.inner.resources.gate.generation().unwrap() == running_generation {
+            while runtime
+                .inner
+                .resources
+                .registry
+                .generation_for_test()
+                .unwrap()
+                == running_generation
+            {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
         .await?;
         assert_eq!(
-            runtime.inner.resources.gate.generation()?,
+            runtime.inner.resources.registry.generation_for_test()?,
             running_generation + 1
         );
     }
+    drop(preparation);
     tokio::time::timeout(Duration::from_secs(10), host.shutdown())
         .await
         .context("shell invalidation host shutdown did not finish")??;
@@ -119,6 +128,247 @@ async fn fixture() -> Result<(tempfile::TempDir, RuntimeHost, RuntimeHandle)> {
     }
     runtime.refresh_context_resources().await?;
     Ok((home, host, runtime))
+}
+
+#[tokio::test]
+async fn private_resource_writes_preserve_another_agents_ready_observation() -> Result<()> {
+    let (_home, host, writer_runtime) = fixture().await?;
+    host.create_named_agent("resource-peer", None).await?;
+    let peer = host.get_or_create_agent("resource-peer").await?;
+    let original = peer.ensure_context_resources().await?;
+    let preparation = peer.hold_resource_preparation_for_test().await?;
+    let generation = peer.inner.resources.registry.generation_for_test()?;
+    let writer = writer_runtime.begin_context_resource_write()?;
+    std::fs::write(
+        writer_runtime.agent_home().join("AGENTS.md"),
+        "PRIVATE_WRITE",
+    )?;
+    let denied = DenyResourceReaders::new();
+    let prompt = tokio::time::timeout(
+        Duration::from_secs(3),
+        peer.preview_prompt(
+            "unrelated agent".into(),
+            AuthorityClass::OperatorInstruction,
+        ),
+    )
+    .await??;
+    assert!(Arc::ptr_eq(
+        &original,
+        &prompt._resource_read_material.as_ref().unwrap().observation
+    ));
+    assert_eq!(
+        peer.inner.resources.registry.generation_for_test()?,
+        generation
+    );
+    assert_eq!(denied.attempts(), 0);
+    drop(writer);
+    assert_eq!(
+        peer.inner.resources.registry.generation_for_test()?,
+        generation
+    );
+    assert!(Arc::ptr_eq(
+        &original,
+        &tokio::time::timeout(Duration::from_secs(3), peer.ensure_context_resources()).await??
+    ));
+    drop((denied, preparation));
+    let changed = writer_runtime.ensure_context_resources().await?;
+    assert_eq!(
+        changed
+            .body()
+            .guidance
+            .agent_source
+            .as_ref()
+            .unwrap()
+            .content,
+        "PRIVATE_WRITE"
+    );
+    host.shutdown().await
+}
+
+#[tokio::test]
+async fn shared_guidance_write_invalidates_consumers_and_preserves_held_snapshots() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let user = home.path().join("user");
+    std::fs::create_dir_all(user.join(".agents"))?;
+    let guidance = user.join(".agents/AGENTS.md");
+    std::fs::write(&guidance, "OLD_SHARED_GUIDANCE")?;
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )?;
+    let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+    config.user_home_dir = Some(user);
+    let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
+    let first = host.default_runtime().await?;
+    host.create_named_agent("shared-resource-peer", None)
+        .await?;
+    let second = host.get_or_create_agent("shared-resource-peer").await?;
+    let old_first = first.ensure_context_resources().await?;
+    let old_second = second.ensure_context_resources().await?;
+    let held_first = first.hold_resource_preparation_for_test().await?;
+    let held_second = second.hold_resource_preparation_for_test().await?;
+    let writer = first.begin_context_resource_write_for_paths(vec![guidance.clone()])?;
+    std::fs::write(&guidance, "NEW_SHARED_GUIDANCE")?;
+    for runtime in [&first, &second] {
+        assert!(runtime
+            .inner
+            .resources
+            .gate
+            .ready_for(&runtime.inner.resources.registry)
+            .is_err());
+        assert!(capture_loaded_prompt(runtime, "during shared write")
+            .await
+            .is_err());
+    }
+    drop((writer, held_first, held_second));
+    for (runtime, old) in [(&first, old_first), (&second, old_second)] {
+        let prompt = runtime
+            .preview_prompt(
+                "after shared write".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        assert_eq!(
+            prompt
+                .loaded_agents_md
+                .user_global_source
+                .as_ref()
+                .unwrap()
+                .content,
+            "NEW_SHARED_GUIDANCE"
+        );
+        assert_eq!(
+            old.body()
+                .guidance
+                .user_global_source
+                .as_ref()
+                .unwrap()
+                .content,
+            "OLD_SHARED_GUIDANCE"
+        );
+        assert!(!Arc::ptr_eq(
+            &old,
+            &prompt._resource_read_material.as_ref().unwrap().observation
+        ));
+    }
+    // An absolute patch target can be outside the caller's execution root.
+    crate::tool::tools::apply_patch_tool::execute(
+        &first, first.instance_agent_id(), &AuthorityClass::OperatorInstruction,
+        &serde_json::json!({"patch": format!("--- {0}\n+++ {0}\n@@ -1,1 +1,1 @@\n-NEW_SHARED_GUIDANCE\n+PATCHED_SHARED_GUIDANCE\n", guidance.display())}),
+    ).await?;
+    let prompt = second
+        .preview_prompt(
+            "after another agents patch".into(),
+            AuthorityClass::OperatorInstruction,
+        )
+        .await?;
+    assert!(prompt
+        .loaded_agents_md
+        .user_global_source
+        .as_ref()
+        .unwrap()
+        .content
+        .contains("PATCHED_SHARED_GUIDANCE"));
+    host.shutdown().await
+}
+
+#[tokio::test]
+async fn source_change_exhaustion_recovers_queued_input_without_host_access() -> Result<()> {
+    let (_home, host, runtime) = fixture().await?;
+    let paused = runtime.pause_run_loop_for_monitor_test().await;
+    runtime
+        .inner
+        .context_capture_checkpoint
+        .before_resources
+        .store(true, Ordering::SeqCst);
+    let message = runtime
+        .enqueue(
+            MessageEnvelope::new(
+                runtime.instance_agent_id(),
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "recover resource preparation".into(),
+                },
+            )
+            .with_admission(
+                crate::types::MessageDeliverySurface::HttpControlPrompt,
+                crate::types::AdmissionContext::ControlAuthenticated,
+            ),
+        )
+        .await?;
+    drop(paused);
+    for attempt in 0..3 {
+        tokio::time::timeout(
+            Duration::from_secs(10),
+            runtime.inner.context_capture_checkpoint.reached.notified(),
+        )
+        .await
+        .with_context(|| format!("resource conflict checkpoint {attempt}"))?;
+        runtime.inner.resources.gate.publish_config(|| {
+            let mut config = runtime.inner.config_snapshot.load_full().as_ref().clone();
+            config.resource_generation += 1;
+            runtime.inner.config_snapshot.store(Arc::new(config));
+            runtime.inner.resources.registry.invalidate(
+                super::resource_observation::ResourceInvalidation::ConfigurationChange,
+            )?;
+            Ok(())
+        })?;
+        runtime
+            .inner
+            .context_capture_checkpoint
+            .before_resources
+            .store(attempt < 2, Ordering::SeqCst);
+        runtime
+            .inner
+            .context_capture_checkpoint
+            .release
+            .notify_one();
+    }
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            let events = runtime.storage().read_recent_events(256)?;
+            if let Some(failure) = events
+                .iter()
+                .find(|event| event.kind == "agent_runtime_loop_failed")
+            {
+                assert_eq!(failure.data["code"], "context_resource_changed");
+                assert_eq!(failure.data["retryable"], true);
+            }
+            if events
+                .iter()
+                .any(|event| event.kind == "runtime_loop_recovered")
+                && runtime
+                    .storage()
+                    .latest_queue_entries()?
+                    .iter()
+                    .any(|entry| {
+                        entry.message_id == message.id
+                            && entry.status == QueueEntryStatus::Processed
+                    })
+            {
+                assert_eq!(
+                    events
+                        .iter()
+                        .filter(|event| event.kind == "queue_entry_claimed"
+                            && event.data["message_id"] == message.id)
+                        .count(),
+                    1
+                );
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .context("automatic recovery must process the original queued input")??;
+    host.shutdown().await
 }
 
 async fn capture_loaded_prompt(runtime: &RuntimeHandle, text: &str) -> Result<EffectivePrompt> {
@@ -413,7 +663,7 @@ async fn explicit_resource_preparation_waits_for_writer_without_holding_owner_or
         .inner
         .resources
         .gate
-        .wait_for_writers()
+        .wait_for_writers(&runtime.inner.resources.registry)
         .await
         .is_err());
     assert!(runtime.ensure_context_resources().await.is_err());
@@ -740,7 +990,7 @@ async fn actual_cancelled_work_plan_file_keeps_physical_owner_until_shutdown_dra
         }
     });
     pause.wait().await;
-    assert!(gate.generation().is_err());
+    assert!(gate.ready().is_err());
     caller.abort();
     assert!(caller.await.unwrap_err().is_cancelled());
     let close = host.shutdown();
@@ -865,7 +1115,7 @@ async fn actual_source_ack_completes_during_refresh_io_and_late_source_cannot_in
 }
 
 #[tokio::test]
-async fn actual_config_and_host_generation_reject_io_candidates_frozen_before_publication(
+async fn actual_config_and_local_invalidation_reject_io_candidates_frozen_before_publication(
 ) -> Result<()> {
     let (_home, host, runtime) = fixture().await?;
     for config_change in [true, false] {
@@ -886,7 +1136,7 @@ async fn actual_config_and_host_generation_reject_io_candidates_frozen_before_pu
             let _writer = runtime.begin_context_resource_write()?;
             std::fs::write(
                 runtime.agent_home().join("AGENTS.md"),
-                "# HOST_GENERATION_GUIDANCE\n",
+                "# LOCAL_INVALIDATION_GUIDANCE\n",
             )?;
         }
         assert!(capture_loaded_prompt(&runtime, "new generation not ready")
@@ -928,10 +1178,6 @@ async fn actual_config_and_host_generation_reject_io_candidates_frozen_before_pu
             observation.source().config_generation,
             runtime.inner.config_snapshot.load().resource_generation
         );
-        assert_eq!(
-            observation.source().host_generation,
-            runtime.inner.resources.gate.generation()?
-        );
         if !config_change {
             assert!(observation
                 .body()
@@ -940,7 +1186,7 @@ async fn actual_config_and_host_generation_reject_io_candidates_frozen_before_pu
                 .as_ref()
                 .unwrap()
                 .content
-                .contains("HOST_GENERATION_GUIDANCE"));
+                .contains("LOCAL_INVALIDATION_GUIDANCE"));
         }
     }
     host.shutdown().await?;
@@ -1020,54 +1266,76 @@ async fn context_resource_preparation_waits_for_an_in_flight_publication() -> Re
 #[tokio::test]
 async fn loaded_context_re_prepares_after_the_published_source_moves_before_the_capture(
 ) -> Result<()> {
-    let (_home, host, runtime) = fixture().await?;
-    runtime.ensure_context_resources().await?;
-    // The capture stops right before the resource read, so the published source
-    // can move between the preparation and the capture.
-    runtime
-        .inner
-        .context_capture_checkpoint
-        .before_resources
-        .store(true, Ordering::SeqCst);
-    let mut preparation = tokio::spawn({
-        let runtime = runtime.clone();
-        async move {
-            runtime
-                .preview_prompt(
-                    "after the source moved".into(),
-                    AuthorityClass::OperatorInstruction,
-                )
-                .await
+    for config_change in [true, false] {
+        let (_home, host, runtime) = fixture().await?;
+        runtime.ensure_context_resources().await?;
+        // The capture stops right before the resource read, so the published source
+        // can move between the preparation and the capture.
+        runtime
+            .inner
+            .context_capture_checkpoint
+            .before_resources
+            .store(true, Ordering::SeqCst);
+        let mut preparation = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .preview_prompt(
+                        "after the source moved".into(),
+                        AuthorityClass::OperatorInstruction,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            runtime.inner.context_capture_checkpoint.reached.notified(),
+        )
+        .await?;
+        if config_change {
+            runtime.inner.resources.gate.publish_config(|| {
+                let mut config = runtime.inner.config_snapshot.load_full().as_ref().clone();
+                config.resource_generation += 1;
+                runtime.inner.config_snapshot.store(Arc::new(config));
+                Ok(())
+            })?;
+        } else {
+            let _writer = runtime.begin_context_resource_write()?;
+            std::fs::write(
+                runtime.agent_home().join("AGENTS.md"),
+                "WRITE_FINISHED_BEFORE_CAPTURE",
+            )?;
         }
-    });
-    tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        runtime.inner.context_capture_checkpoint.reached.notified(),
-    )
-    .await?;
-    runtime.inner.resources.gate.publish_config(|| {
-        let mut config = runtime.inner.config_snapshot.load_full().as_ref().clone();
-        config.resource_generation += 1;
-        runtime.inner.config_snapshot.store(Arc::new(config));
-        Ok(())
-    })?;
-    runtime
-        .inner
-        .context_capture_checkpoint
-        .release
-        .notify_one();
-    let prompt =
-        tokio::time::timeout(std::time::Duration::from_secs(10), &mut preparation).await???;
-    assert_eq!(
-        prompt
-            ._resource_read_material
-            .as_ref()
-            .unwrap()
-            .observation
-            .source()
-            .config_generation,
-        runtime.inner.config_snapshot.load().resource_generation
-    );
-    host.shutdown().await?;
+
+        runtime
+            .inner
+            .context_capture_checkpoint
+            .release
+            .notify_one();
+        let prompt =
+            tokio::time::timeout(std::time::Duration::from_secs(10), &mut preparation).await???;
+        assert_eq!(
+            prompt
+                ._resource_read_material
+                .as_ref()
+                .unwrap()
+                .observation
+                .source()
+                .config_generation,
+            runtime.inner.config_snapshot.load().resource_generation
+        );
+        if !config_change {
+            assert_eq!(
+                prompt
+                    .loaded_agents_md
+                    .agent_source
+                    .as_ref()
+                    .unwrap()
+                    .content,
+                "WRITE_FINISHED_BEFORE_CAPTURE"
+            );
+        }
+        host.shutdown().await?;
+    }
     Ok(())
 }
