@@ -291,6 +291,51 @@ async fn generic_transition_adapter_rejects_task_before_sql_or_owner_begin() -> 
 }
 
 #[tokio::test]
+async fn task_status_reducer_reports_canonical_mismatch_without_committing() -> Result<()> {
+    use crate::runtime_db::task_snapshot::TaskSnapshotError;
+    use crate::runtime_error::{describe_runtime_error, RuntimeErrorDomain};
+
+    let f = Fixture::new()?;
+    let mut task = f.command(false, None).task;
+    task.status = TaskStatus::Running;
+    f.runtime.reduce_task_status_message(task.clone()).await?;
+    let db = f.runtime.runtime_db();
+    // The projection changes independently of the canonical body and writer proof.
+    db.transaction(|tx| {
+        assert_eq!(
+            tx.execute(
+                "UPDATE tasks SET correlation_id='external-drift' WHERE task_id=?1",
+                [&task.id],
+            )?,
+            1
+        );
+        Ok(())
+    })?;
+    let before = db.tasks().latest(&task.id)?.expect("original Task");
+    let events = f.runtime.storage().read_recent_events(100)?;
+
+    task.status = TaskStatus::Cancelling;
+    task.updated_at = Utc::now();
+    let error = f
+        .runtime
+        .reduce_task_status_message(task)
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error.downcast_ref::<TaskSnapshotError>(),
+        Some(TaskSnapshotError::CanonicalChanged(_))
+    ));
+    let descriptor = describe_runtime_error(&error);
+    assert_eq!(descriptor.domain, RuntimeErrorDomain::Task);
+    assert_eq!(descriptor.code, "task_status_canonical_mismatch");
+    assert!(!descriptor.retryable);
+    assert!(descriptor.recovery_hint.is_some());
+    assert_eq!(db.tasks().latest(&before.id)?, Some(before));
+    assert_eq!(f.runtime.storage().read_recent_events(100)?, events);
+    Ok(())
+}
+
+#[tokio::test]
 async fn task_reducer_writes_typed_receipts_and_keeps_missing_child_fallback() -> Result<()> {
     let f = Fixture::new()?;
     let mut task = f.command(false, None).task;

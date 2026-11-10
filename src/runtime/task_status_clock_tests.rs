@@ -805,6 +805,16 @@ async fn accepted_running_expected_birth_cannot_borrow_a_later_actual_task_gener
                 .created_at(),
             original.created_at
         );
+        let mut wrong_binding = parsed;
+        wrong_binding.work_item_id = Some("work_wrong_binding".into());
+        let error = qualify(&inputs, &tasks, &accepted, &wrong_binding, None)
+            .err()
+            .context("accepted Running status acquired a mismatched binding")?;
+        let descriptor = crate::runtime_error::describe_runtime_error(&error);
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Task);
+        assert_eq!(descriptor.code, "task_status_binding_mismatch");
+        assert!(!descriptor.retryable);
+        assert!(descriptor.recovery_hint.is_some());
     }
     for case in ["missing", "null", "malformed", "different_birth"] {
         let mut bad = accepted.clone();
@@ -838,13 +848,11 @@ async fn accepted_running_expected_birth_cannot_borrow_a_later_actual_task_gener
         let error = qualify(&inputs, &tasks, &actual, &parsed, None)
             .err()
             .with_context(|| format!("actual native {case} header acquired a generation"))?;
-        assert!(
-            matches!(
-                error.downcast_ref::<TaskSnapshotError>(),
-                Some(TaskSnapshotError::CanonicalChanged(_))
-            ),
-            "{case}: {error:#}"
-        );
+        let descriptor = crate::runtime_error::describe_runtime_error(&error);
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Task, "{case}");
+        assert_eq!(descriptor.code, "task_status_generation_mismatch", "{case}");
+        assert!(!descriptor.retryable, "{case}");
+        assert!(descriptor.recovery_hint.is_some(), "{case}");
     }
     let mut changed = original.clone();
     changed.created_at += chrono::Duration::seconds(1);
@@ -859,10 +867,9 @@ async fn accepted_running_expected_birth_cannot_borrow_a_later_actual_task_gener
     let error = qualify(&inputs, &tasks, &accepted, &parsed, None)
         .err()
         .context("old accepted Source borrowed new actual Task birth")?;
-    assert!(matches!(
-        error.downcast_ref::<TaskSnapshotError>(),
-        Some(TaskSnapshotError::CanonicalChanged(_))
-    ));
+    let descriptor = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(descriptor.code, "task_status_generation_mismatch");
+    assert!(!descriptor.retryable);
     let CanonicalTaskFact::Task(actual) = &tasks
         .lookup(&TaskKey::new(TaskFamily::Task, &original.id))?
         .unwrap()

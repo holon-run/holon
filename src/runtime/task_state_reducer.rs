@@ -1053,8 +1053,32 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn reduce_task_status_message(&self, task: TaskRecord) -> Result<()> {
+        use crate::{
+            runtime_db::task_snapshot::TaskSnapshotError,
+            runtime_error::{RuntimeError, RuntimeErrorDomain},
+        };
+
         self.persist_task_transition(&task, "task_status_updated")
             .await
+            .map_err(|error| {
+                if matches!(
+                    error.downcast_ref::<TaskSnapshotError>(),
+                    Some(TaskSnapshotError::CanonicalChanged(_))
+                ) {
+                    error.context(
+                        RuntimeError::new(
+                            RuntimeErrorDomain::Task,
+                            "task_status_canonical_mismatch",
+                            "TaskStatus settlement found a canonical Task qualification mismatch",
+                        )
+                        .with_recovery_hint(
+                            "Inspect the persisted Task and its original qualification before recovery",
+                        ),
+                    )
+                } else {
+                    error
+                }
+            })
     }
 
     #[cfg(test)]
@@ -2613,14 +2637,21 @@ mod tests {
         runtime.inject_task_transition_conflicts(1);
 
         runtime
-            .apply_task_transition(TaskTransition::new(
-                &task("task-1", TaskStatus::Running, false),
-                "task_status_updated",
-            ))
+            .reduce_task_status_message(task("task-1", TaskStatus::Running, false))
             .await
             .unwrap();
 
         assert!(runtime.task_record("task-1").await.unwrap().is_some());
+        assert_eq!(
+            runtime
+                .storage()
+                .read_recent_events(100)
+                .unwrap()
+                .iter()
+                .filter(|event| event.kind == "task_status_updated")
+                .count(),
+            1
+        );
         let state = runtime.agent_state().await.unwrap();
         assert_eq!(state.status, AgentStatus::AwakeIdle);
         assert_eq!(
