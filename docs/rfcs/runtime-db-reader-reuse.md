@@ -80,8 +80,8 @@ before the default agent opens. Dropping the completion on any later startup
 failure closes the same batch. Daemon background workers start after release.
 
 Owner-held preparation reads, including bootstrap metadata and identity reads,
-use a reserved query-only pool bounded to one reader. Ordinary queries retain
-their separate four-reader pool: observer saturation must not fail cold runtime
+use a reserved query-only pool, defaulting to four readers. Ordinary queries retain
+their separate pool, defaulting to sixteen readers: observer saturation must not fail cold runtime
 construction before its asynchronous bootstrap handoff. Preparation saturation
 waits for existing capacity unless an explicit read scope expires or is
 cancelled; it cannot open an overflow connection or fall back to the writer.
@@ -111,8 +111,7 @@ the existing Tokio blocking boundary. This preserves thread-local material and
 mutation witnesses while allowing other async work to progress. It is not an
 enqueue-only acknowledgement or a second detached recovery worker.
 
-Clones of a RuntimeDb share both lazily used reader pools: four ordinary readers
-and one preparation reader. Neither role imposes an implicit acquisition
+Clones of a RuntimeDb share both lazily used reader pools. Neither role imposes an implicit acquisition
 deadline: a valid internal admission must not fail merely because a different
 agent holds a reader longer than 250 ms. Explicit scoped deadlines and
 cancellation still bound request reads, including pool and blocking-queue waits.
@@ -123,6 +122,40 @@ These bounds are not a claim of optimal sizing. Independently opened RuntimeDb
 handles and raw maintenance connections are separate owners and must not be
 counted as part of the same pool limit. There is no overflow connection or
 fallback to unbounded raw opens.
+
+### Configurable reader limits
+
+`runtime.db_readers.ordinary_max_connections` (default 16) and
+`runtime.db_readers.preparation_max_connections` (default 4) set the Host's two
+reader limits. Both must be positive integers and their sum must not exceed
+64. Validation applies to configuration loading, CLI/API set and unset, including
+defaults restored by unset. Independently opened/offline RuntimeDb owners use
+their own limits, so 64 is not a process-wide SQLite connection cap.
+
+An API batch stages both fields and validates their final effective pair before
+persisting any configuration. Valid updates and resets do not depend on entry
+order, even when an intermediate pair would exceed 64. Malformed individual
+values and invalid final pairs reject the whole batch. Single-key CLI set/unset
+still validates immediately.
+
+The Host resolves these limits once at construction. Configuration updates are
+persisted for the next daemon start; a model/config reload preserves the running
+Host's effective reader limits. Replacing live pools could leave old clones and
+leases using the previous capacity while new pools open more connections.
+
+Each limit controls r2d2 physical connections (including pending creation), async
+admission and diagnostic holder slots together. Existing lazy growth creates a
+connection only when idle capacity cannot serve demand. Healthy idle connections
+remain available for reuse; there is no automatic shrink or eager preallocation.
+Startup logs record both limits. More readers can reduce capacity waits across
+Agents, but also allow more concurrent SQL, page caches and file descriptors.
+The defaults are a bounded increase from 4/1, not a measured optimal size.
+
+Pool waiting retains the existing cancellation, scope and protection checks.
+No turn pause state or cross-daemon same-turn continuation is introduced. Writer
+serialization and receipt-based recovery remain unchanged. Genuine SQLite busy
+errors remain distinct from capacity waits; increasing readers does not make
+writes concurrent or fix slow SQL.
 
 Acquisition timeouts log the reader role, wait stage, waiting call site and
 active leases with their call sites and elapsed time. Operator execution context

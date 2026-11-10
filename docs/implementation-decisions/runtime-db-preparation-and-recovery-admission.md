@@ -1,10 +1,13 @@
 # Keep preparation reads and recovery writes on their respective DB roles
 
-Use a reserved one-reader pool for canonical preparation and reconstruction
-from existing Input/Scheduling qualification. The ordinary four-reader pool
+Use a reserved reader pool for canonical preparation and reconstruction
+from existing Input/Scheduling qualification. The ordinary reader pool
 cannot starve cold runtime construction before its asynchronous bootstrap
 handoff. Both pools share the original deadline, cancellation, cleanup and
 protection rules; neither may overflow or fall back to the writer.
+The [reader reuse RFC](../rfcs/runtime-db-reader-reuse.md#configurable-reader-limits)
+defines startup-configurable limits, defaulting to 16 ordinary and 4 preparation
+readers; reservation is per role, not a single cross-Agent preparation lock.
 Missing qualification alone may
 enter the original initialization transaction under the held mutation owner.
 Keep first initialization atomic; do not relax canonical drift, membership,

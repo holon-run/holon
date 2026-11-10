@@ -469,6 +469,8 @@ pub struct RuntimeConfigFile {
     pub disable_provider_fallback: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduler: Option<String>,
+    #[serde(default, skip_serializing_if = "RuntimeDbReadersConfigFile::is_empty")]
+    pub db_readers: RuntimeDbReadersConfigFile,
     #[serde(default, skip_serializing_if = "RuntimeRetentionConfigFile::is_empty")]
     pub retention: RuntimeRetentionConfigFile,
     #[serde(
@@ -884,6 +886,29 @@ impl RuntimeReclamationConfigFile {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct RuntimeDbReadersConfigFile {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ordinary_max_connections: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation_max_connections: Option<u32>,
+}
+
+impl RuntimeDbReadersConfigFile {
+    pub fn is_empty(&self) -> bool {
+        self.ordinary_max_connections.is_none() && self.preparation_max_connections.is_none()
+    }
+
+    pub fn resolve(&self) -> Result<crate::runtime_db::RuntimeDbReaderConfig> {
+        crate::runtime_db::RuntimeDbReaderConfig::new(
+            self.ordinary_max_connections
+                .unwrap_or(crate::runtime_db::DEFAULT_ORDINARY_MAX_CONNECTIONS),
+            self.preparation_max_connections
+                .unwrap_or(crate::runtime_db::DEFAULT_PREPARATION_MAX_CONNECTIONS),
+        )
+    }
+}
+
 impl RuntimeConfigFile {
     pub(crate) fn is_empty(&self) -> bool {
         self.timezone.is_none()
@@ -896,6 +921,7 @@ impl RuntimeConfigFile {
             && self.command_task_min_free_disk_percent.is_none()
             && self.disable_provider_fallback.is_none()
             && self.scheduler.is_none()
+            && self.db_readers.is_empty()
             && self.retention.is_empty()
             && self.state_memory.is_empty()
             && self.reclamation.is_empty()

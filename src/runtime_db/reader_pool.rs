@@ -16,8 +16,6 @@ use crate::diagnostics::attribution;
 use super::write_queue::RuntimeDbWriterState;
 use super::{read_block, RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
 
-const DEFAULT_CAPACITY: u32 = 4;
-pub(super) const PREPARATION_CAPACITY: u32 = 1;
 const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LOG_INTERVAL: Duration = Duration::from_secs(30);
 
@@ -130,11 +128,23 @@ impl r2d2::HandleError<ConnectError> for QuietConnectErrors {
 
 impl RuntimeDbReaderPool {
     pub(crate) fn new(writer: Arc<RuntimeDbWriterState>) -> Self {
-        Self::with_role(writer, DEFAULT_CAPACITY, None, "ordinary")
+        Self::with_capacity(writer, super::DEFAULT_ORDINARY_MAX_CONNECTIONS, "ordinary")
     }
 
     pub(crate) fn for_preparation(writer: Arc<RuntimeDbWriterState>) -> Self {
-        Self::with_role(writer, PREPARATION_CAPACITY, None, "preparation")
+        Self::with_capacity(
+            writer,
+            super::DEFAULT_PREPARATION_MAX_CONNECTIONS,
+            "preparation",
+        )
+    }
+
+    pub(crate) fn with_capacity(
+        writer: Arc<RuntimeDbWriterState>,
+        capacity: u32,
+        role: &'static str,
+    ) -> Self {
+        Self::with_role(writer, capacity, None, role)
     }
 
     #[cfg(test)]

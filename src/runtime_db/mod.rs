@@ -47,6 +47,7 @@ pub(crate) mod prepared_input_evidence;
 pub mod provider_admission;
 pub(crate) mod read_block;
 mod read_scope;
+mod reader_config;
 mod reader_pool;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
@@ -475,6 +476,11 @@ pub struct RuntimeDb {
     observer_sync_self_heal_last_attempt_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
+pub use reader_config::{
+    RuntimeDbReaderConfig, DEFAULT_ORDINARY_MAX_CONNECTIONS, DEFAULT_PREPARATION_MAX_CONNECTIONS,
+    MAX_READER_CONNECTIONS,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderQuotaIncident {
     pub identity_key: String,
@@ -510,12 +516,26 @@ impl RuntimeDb {
         path: impl Into<PathBuf>,
         lock_path: impl Into<PathBuf>,
     ) -> Result<Self> {
+        Self::open_and_migrate_with_reader_config(path, lock_path, RuntimeDbReaderConfig::default())
+    }
+
+    pub fn open_and_migrate_with_reader_config(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+        readers: RuntimeDbReaderConfig,
+    ) -> Result<Self> {
         let path = path.into();
         let writer = RuntimeDbWriter::open_starting(path.clone(), open_connection(&path)?)?;
         let db = Self {
-            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
-            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+            readers: reader_pool::RuntimeDbReaderPool::with_capacity(
                 std::sync::Arc::clone(&writer.state),
+                readers.ordinary_max_connections(),
+                "ordinary",
+            ),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::with_capacity(
+                std::sync::Arc::clone(&writer.state),
+                readers.preparation_max_connections(),
+                "preparation",
             ),
             writer,
             path,
@@ -526,6 +546,12 @@ impl RuntimeDb {
         };
         db.migrate()?;
         db.writer.activate_sidecar_protection()?;
+        tracing::info!(
+            path = %db.path.display(),
+            ordinary_max_connections = readers.ordinary_max_connections(),
+            preparation_max_connections = readers.preparation_max_connections(),
+            "runtime db reader pool limits initialized"
+        );
         Ok(db)
     }
 
@@ -815,7 +841,7 @@ impl RuntimeDb {
         );
         self.preparation_readers = reader_pool::RuntimeDbReaderPool::with_config(
             std::sync::Arc::clone(&self.writer.state),
-            reader_pool::PREPARATION_CAPACITY,
+            1,
             budget,
         );
         Ok(())

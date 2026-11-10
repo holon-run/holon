@@ -311,7 +311,8 @@ async fn bootstrap_claim_read_yields_while_runtime_readers_are_saturated() {
     let (ready, acquired) = std::sync::mpsc::channel();
     let mut releases = Vec::new();
     let mut readers = Vec::new();
-    for _ in 0..4 {
+    let capacity = runtime.runtime_db().reader_pool_stats_for_tests().capacity;
+    for _ in 0..capacity {
         let db = runtime.runtime_db().clone();
         let ready = ready.clone();
         let (release, released) = std::sync::mpsc::channel::<()>();
@@ -325,7 +326,7 @@ async fn bootstrap_claim_read_yields_while_runtime_readers_are_saturated() {
             .unwrap();
         }));
     }
-    for _ in 0..4 {
+    for _ in 0..capacity {
         acquired
             .recv_timeout(std::time::Duration::from_secs(5))
             .unwrap();

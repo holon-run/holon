@@ -1,4 +1,101 @@
 #[test]
+fn runtime_db_readers_config_round_trip_defaults_and_limits() {
+    use crate::runtime_db::RuntimeDbReaderConfig;
+    let ordinary = "runtime.db_readers.ordinary_max_connections";
+    let preparation = "runtime.db_readers.preparation_max_connections";
+    let mut config = HolonConfigFile::default();
+    assert!(set_config_key(&mut config, ordinary, "63").is_err());
+    assert!(config.runtime.db_readers.is_empty());
+    assert_eq!(
+        config.runtime.db_readers.resolve().unwrap(),
+        RuntimeDbReaderConfig::default()
+    );
+    assert!(serde_json::to_value(&config)
+        .unwrap()
+        .get("runtime")
+        .is_none());
+    let schema = config_schema();
+    for (key, default) in [(ordinary, 16), (preparation, 4)] {
+        assert_eq!(
+            schema
+                .iter()
+                .find(|entry| entry.key == key)
+                .unwrap()
+                .default,
+            json!(default)
+        );
+        assert_eq!(get_config_key(&config, key).unwrap(), Value::Null);
+        for invalid in ["0", "-1", "1.5", "65", "4294967295", "4294967296"] {
+            assert!(
+                set_config_key(&mut config, key, invalid).is_err(),
+                "{key}={invalid}"
+            );
+            assert!(config.runtime.db_readers.is_empty());
+        }
+    }
+    set_config_key(&mut config, preparation, "1").unwrap();
+    set_config_key(&mut config, ordinary, "63").unwrap();
+    assert_eq!(get_config_key(&config, ordinary).unwrap(), json!(63));
+    assert!(unset_config_key(&mut config, preparation).is_err());
+    assert_eq!(get_config_key(&config, preparation).unwrap(), json!(1));
+    let restored: HolonConfigFile =
+        serde_json::from_str(&serde_json::to_string(&config).unwrap()).unwrap();
+    assert_eq!(restored.runtime.db_readers, config.runtime.db_readers);
+    unset_config_key(&mut config, ordinary).unwrap();
+    unset_config_key(&mut config, preparation).unwrap();
+    assert!(config.runtime.db_readers.is_empty());
+    assert!(config.runtime.is_empty());
+}
+
+#[test]
+fn runtime_db_readers_load_validation_and_restart_boundary() {
+    let home = tempdir().unwrap();
+    let path = persisted_config_path(home.path());
+    let mut stored = HolonConfigFile::default();
+    set_config_key(&mut stored, "model.default", "openai/gpt-5.4").unwrap();
+    save_persisted_config_at(&path, &stored).unwrap();
+    let initial = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    set_config_key(
+        &mut stored,
+        "runtime.db_readers.ordinary_max_connections",
+        "8",
+    )
+    .unwrap();
+    set_config_key(
+        &mut stored,
+        "runtime.db_readers.preparation_max_connections",
+        "2",
+    )
+    .unwrap();
+    save_persisted_config_at(&path, &stored).unwrap();
+    let reloaded = initial.reload_runtime_config().unwrap();
+    assert_eq!(
+        reloaded.stored_config.runtime.db_readers,
+        initial.stored_config.runtime.db_readers
+    );
+    let restarted = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    assert_eq!(
+        restarted
+            .stored_config
+            .runtime
+            .db_readers
+            .resolve()
+            .unwrap(),
+        crate::runtime_db::RuntimeDbReaderConfig::new(8, 2).unwrap()
+    );
+    for (ordinary, preparation) in [(0, 1), (1, 0), (63, 2), (u32::MAX, u32::MAX)] {
+        stored.runtime.db_readers.ordinary_max_connections = Some(ordinary);
+        stored.runtime.db_readers.preparation_max_connections = Some(preparation);
+        save_persisted_config_at(&path, &stored).unwrap();
+        let error = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap_err();
+        assert!(
+            error.to_string().contains("runtime.db_readers"),
+            "{error:#}"
+        );
+    }
+}
+
+#[test]
 fn app_config_budget_defaults_match_context_and_catalog_defaults() {
     let mut env = EnvVarGuard::unset_many(&[
         "HOLON_PROMPT_BUDGET_ESTIMATED_TOKENS",

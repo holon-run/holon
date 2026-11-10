@@ -1190,8 +1190,11 @@ impl RuntimeHost {
             lease.path() == config.runtime_db_maintenance_lock_path(),
             "runtime maintenance lease path mismatch"
         );
-        let runtime_db =
-            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        let runtime_db = RuntimeDb::open_and_migrate_with_reader_config(
+            config.runtime_db_path(),
+            config.runtime_db_lock_path(),
+            config.stored_config.runtime.db_readers.resolve()?,
+        )?;
         // Pre-server preparation targets the *resolved* default agent. A fresh
         // install has no agent yet, so there is nothing to prepare for the
         // configured fallback id: doing so would seed runtime/index rows for a
@@ -1269,8 +1272,11 @@ impl RuntimeHost {
             crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
                 config.stored_config.runtime.state_memory.resolve()?,
             )?;
-        let runtime_db =
-            RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
+        let runtime_db = RuntimeDb::open_and_migrate_with_reader_config(
+            config.runtime_db_path(),
+            config.runtime_db_lock_path(),
+            config.stored_config.runtime.db_readers.resolve()?,
+        )?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
         registry.restore_default_agent_selection()?;
         let (runtime_recovery_tx, runtime_recovery_rx) = mpsc::unbounded_channel();
@@ -20801,7 +20807,8 @@ mod tests {
             workers: Vec::new(),
         };
         let (ready, acquired) = std::sync::mpsc::channel();
-        for _ in 0..4 {
+        let capacity = host.runtime_db().reader_pool_stats_for_tests().capacity;
+        for _ in 0..capacity {
             let db = host.runtime_db().clone();
             let ready = ready.clone();
             let (release, released) = std::sync::mpsc::channel();
@@ -20815,7 +20822,7 @@ mod tests {
                 .unwrap();
             }));
         }
-        for _ in 0..4 {
+        for _ in 0..capacity {
             acquired.recv_timeout(Duration::from_secs(5)).unwrap();
         }
         held
@@ -20823,22 +20830,33 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     fn saturate_runtime_preparation_reader(host: &RuntimeHost) -> SaturatedRuntimeReaders {
-        let db = host.runtime_db().clone();
+        let mut held = SaturatedRuntimeReaders {
+            release: Vec::new(),
+            workers: Vec::new(),
+        };
         let (ready, acquired) = std::sync::mpsc::channel();
-        let (release, released) = std::sync::mpsc::channel();
-        let worker = std::thread::spawn(move || {
-            db.read_for_preparation(|_| {
-                ready.send(()).unwrap();
-                let _ = released.recv();
-                Ok(())
-            })
-            .unwrap();
-        });
-        acquired.recv_timeout(Duration::from_secs(5)).unwrap();
-        SaturatedRuntimeReaders {
-            release: vec![release],
-            workers: vec![worker],
+        let capacity = host
+            .runtime_db()
+            .preparation_pool_stats_for_tests()
+            .capacity;
+        for _ in 0..capacity {
+            let db = host.runtime_db().clone();
+            let ready = ready.clone();
+            let (release, released) = std::sync::mpsc::channel();
+            held.release.push(release);
+            held.workers.push(std::thread::spawn(move || {
+                db.read_for_preparation(|_| {
+                    ready.send(()).unwrap();
+                    let _ = released.recv();
+                    Ok(())
+                })
+                .unwrap();
+            }));
         }
+        for _ in 0..capacity {
+            acquired.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        held
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -21313,11 +21331,15 @@ mod tests {
             .unwrap()
             .expect("cold activation must return a handle under read saturation");
         let ordinary = host.runtime_db().reader_pool_stats_for_tests();
-        assert_eq!(ordinary.current_connections, 4);
+        assert_eq!(ordinary.current_connections, ordinary.capacity);
         assert_eq!(ordinary.idle_connections, 0);
         let preparation = host.runtime_db().preparation_pool_stats_for_tests();
-        assert_eq!(preparation.capacity, 1);
-        assert_eq!(preparation.current_connections, 1);
+        assert_eq!(
+            preparation.capacity,
+            crate::runtime_db::DEFAULT_PREPARATION_MAX_CONNECTIONS
+        );
+        assert!(preparation.current_connections > 0);
+        assert!(preparation.current_connections <= preparation.capacity);
         assert!(
             heartbeat < saturation_heartbeat_budget(),
             "{heartbeat:?} exceeds saturation heartbeat budget"

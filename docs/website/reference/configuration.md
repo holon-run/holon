@@ -33,6 +33,31 @@ CLI surfaces that daemon note on stderr.
 Use `holon config schema` to see every available key with its type, default,
 and description.
 
+### Runtime Database Readers
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `runtime.db_readers.ordinary_max_connections` | positive_integer | `16` | Shared ordinary read pool maximum |
+| `runtime.db_readers.preparation_max_connections` | positive_integer | `4` | Shared reserved preparation read pool maximum |
+
+Both limits must be positive and total at most **64**. They apply to the
+RuntimeDb shared by all Agents in one Host, not separately to each Agent.
+Connections grow on demand up to each maximum and remain idle for reuse.
+The dedicated writer remains serialized. Higher limits allow more concurrent
+SQL and can increase memory, file descriptor and disk usage; they do not fix
+slow queries or database write locks.
+
+```bash
+holon config set runtime.db_readers.ordinary_max_connections 16
+holon config set runtime.db_readers.preparation_max_connections 4
+```
+
+Changes persist immediately and take effect after **daemon restart**. Runtime
+config/model reload keeps the existing pools and effective limits. Unset restores
+the corresponding default and is rejected if the resulting total exceeds 64.
+Internal readers wait for capacity; explicit request deadlines and cancellation
+still apply. These settings do not add a short checkout timeout.
+
 ### Model & Provider Settings
 
 | Key | Type | Description |
