@@ -19840,7 +19840,13 @@ mod tests {
         fixture.config.fallback_models =
             vec![ModelRouteRef::parse_compatible("anthropic/claude-sonnet-5").unwrap()];
         let host = RuntimeHost::new(fixture.config).unwrap();
-        let runtime = host.default_runtime().await.unwrap();
+        let runtime = host
+            .default_runtime_bootstrapped_observed(None)
+            .await
+            .unwrap();
+        // This test checks the model projection on committed state. Keep the
+        // idle scheduler from opening a publication fence during the reads.
+        let _run_loop = runtime.pause_run_loop_for_monitor_test().await;
 
         let inherited = runtime.agent_summary().await.unwrap();
         assert_eq!(
