@@ -212,6 +212,7 @@ pub(crate) fn prepare_episode_recovery_domains_tx(
         query,
         None,
         None,
+        true,
     )
 }
 
