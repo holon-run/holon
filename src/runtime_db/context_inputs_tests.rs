@@ -450,7 +450,8 @@ fn fixture() -> Result<(TempDir, RuntimeDb)> {
                 filesystem_path: dir.path().join(format!("root-{index}-{ordinal}")),
                 root_kind: WorkspaceProjectionKind::CanonicalRoot,
                 worktree: None,
-                created_at: at(ordinal),
+                // Active roots share a timestamp to cover ordering within a group.
+                created_at: at(0),
                 removed_at: if ordinal == 2 { Some(at(3)) } else { None },
             })?;
         }
@@ -488,11 +489,25 @@ fn transaction_inputs_preserve_existing_query_order_selection_and_wait_filter() 
         db.agent_states().latest("agent-a")?.as_ref(),
     );
     assert!(facts.control_revision.is_some());
+    let workspace_ids = [
+        "workspace-1".into(),
+        "unknown-workspace".into(),
+        "workspace-0".into(),
+        "workspace-1".into(),
+    ];
     same(
-        read.workspace_entries()?,
+        read.workspace_entries(&workspace_ids, Some("unattached-workspace"))?,
         db.workspace_entries().latest_all()?,
     );
-    let workspace_ids: Vec<String> = vec!["workspace-1".into(), "workspace-0".into()];
+    same(
+        read.workspace_entries(&[], Some("workspace-1"))?,
+        read.workspace_entries(&workspace_ids[..1], Some("workspace-0"))?,
+    );
+    assert!(read.workspace_entries(&[], None)?.is_empty());
+    assert!(read
+        .workspace_entries(&workspace_ids[1..2], None)?
+        .is_empty());
+    assert!(read.execution_roots_for_workspaces(&[])?.is_empty());
     let expected_roots = workspace_ids
         .iter()
         .map(|id| db.execution_root_entries().active_for_workspace(id))
@@ -686,10 +701,9 @@ fn transaction_inputs_keep_all_families_on_the_first_read_view() -> Result<()> {
         .any(|wait| wait.id == "agent-a-wait-live"));
     assert_eq!(read.work_queue()?.current.unwrap().id, work.id);
     assert!(read.brief_by_id("late-brief")?.is_none());
-    assert!(!read
-        .workspace_entries()?
-        .iter()
-        .any(|workspace| workspace.workspace_id == "late-workspace"));
+    assert!(read
+        .workspace_entries(&[], Some("late-workspace"))?
+        .is_empty());
     assert!(!read
         .execution_roots_for_workspaces(&["workspace-0".into()])?
         .iter()
@@ -710,15 +724,55 @@ fn transaction_inputs_keep_all_families_on_the_first_read_view() -> Result<()> {
         .any(|wait| wait.id == "agent-a-wait-live"));
     assert!(next.work_queue()?.current.is_none());
     same(next.brief_by_id("late-brief")?, Some(late_brief));
-    assert!(next
-        .workspace_entries()?
-        .iter()
-        .any(|workspace| workspace.workspace_id == "late-workspace"));
+    same(
+        next.workspace_entries(&[], Some("late-workspace"))?,
+        vec![late_workspace],
+    );
     assert!(next
         .execution_roots_for_workspaces(&["workspace-0".into()])?
         .iter()
         .any(|root| root.execution_root_id == "late-root"));
     Ok(())
+}
+
+#[test]
+fn transaction_workspace_reads_isolate_unselected_rows_and_validate_selected_projections(
+) -> Result<()> {
+    let (_dir, db) = fixture()?;
+    db.transaction(|tx| {
+        tx.execute(
+            "UPDATE workspace_entries SET payload_json='invalid' WHERE workspace_id='workspace-0'",
+            [],
+        )?;
+        let read = ContextDurableRead::new(tx, "agent-a");
+        let attached = ["workspace-1".into()];
+        assert_eq!(read.workspace_entries(&attached, None)?[0].workspace_id, "workspace-1");
+        assert!(read.workspace_entries(&[], Some("workspace-0")).is_err());
+
+        tx.execute(
+            "UPDATE workspace_entries SET payload_json=json_set(payload_json,'$.workspace_id','workspace-0')
+             WHERE workspace_id='workspace-1'",
+            [],
+        )?;
+        assert_eq!(
+            read.workspace_entries(&attached, None).unwrap_err().to_string(),
+            "context workspace projection mismatch"
+        );
+
+        assert_eq!(
+            tx.execute(
+                "UPDATE execution_root_entries SET payload_json=json_set(payload_json,'$.workspace_id','workspace-0')
+                 WHERE execution_root_id='workspace-1-root-0'",
+                [],
+            )?,
+            1
+        );
+        assert_eq!(
+            read.execution_roots_for_workspaces(&attached).unwrap_err().to_string(),
+            "context execution root workspace projection mismatch"
+        );
+        Ok(())
+    })
 }
 
 #[test]
