@@ -184,6 +184,37 @@ pub(crate) fn prepare_control_recovery_with_queries_tx(
     )
 }
 
+/// Positive Episode receipt recovery prepares the live domains from the same
+/// fresh transaction that resolved the original receipt. Receipt absence never
+/// reaches this helper; it never starts body preparation on its own.
+pub(crate) fn prepare_episode_recovery_domains_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work: &crate::runtime::resident_work::WorkCaptureRequest,
+    tasks: &crate::runtime::resident_task::TaskCaptureRequest,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_inner_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        Some(work),
+        true,
+        Some(tasks),
+        query,
+        None,
+        None,
+    )
+}
+
 /// Only a real Delivered Stop continuation may install fresh partial domains.
 /// Task remains explicitly unprepared; this is not the ordinary Task loader.
 pub(crate) fn prepare_partial_task_stop_input_recovery_tx(

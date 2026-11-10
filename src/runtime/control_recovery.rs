@@ -610,7 +610,8 @@ mod tests {
         assert!(!crate::runtime::episode_recovery::resolve_episode_recovery(
             &runtime.inner.runtime_db,
             &mut reservations,
-            12
+            12,
+            None
         )
         .unwrap());
         assert!(runtime.inner.mutation_owner.capture().is_err());

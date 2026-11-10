@@ -3758,13 +3758,29 @@ impl RuntimeHandle {
             &self.inner.input_evidence_budget,
         )
         .await?;
-        super::episode_recovery::resolve_episode_recovery(
-            &self.inner.runtime_db,
-            reservations,
-            self.current_context_config()
-                .await
-                .recent_episode_candidates,
-        )?;
+        let recent_limit = self
+            .current_context_config()
+            .await
+            .recent_episode_candidates;
+        for reservation in reservations.iter_mut() {
+            let runtime = if reservation
+                .validate_owner(&self.inner.mutation_owner)
+                .is_ok()
+            {
+                Some(self.clone())
+            } else {
+                match self.inner.host_bridge.as_ref() {
+                    Some(bridge) => bridge.runtime_for_mutation(reservation).await?,
+                    None => None,
+                }
+            };
+            super::episode_recovery::resolve_episode_recovery(
+                &self.inner.runtime_db,
+                std::slice::from_mut(reservation),
+                recent_limit,
+                runtime.as_ref(),
+            )?;
+        }
         let known = MutationReservation::validate_group_known(reservations).map_err(|error| {
             match error {
                 mutation_owner::MutationOwnerError::NeedsReconcile(key) => anyhow!(

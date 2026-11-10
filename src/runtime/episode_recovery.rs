@@ -11,8 +11,10 @@ use super::{
     mutation_owner::{IdentityMutationFacts, KnownCommit, MutationReservation},
     mutation_witness::MutationWitnessFamily,
     resident_state::ResidentEpisodes,
+    RuntimeHandle,
 };
 use crate::runtime_db::{
+    episode_memory::{EpisodeMemoryInvocation, EpisodeMemoryKey},
     episode_snapshot::{EpisodeMemoryBootstrapSnapshot, EpisodeMemoryLoadScope},
     RuntimeDb,
 };
@@ -24,19 +26,161 @@ pub(crate) fn resolve_episode_recovery(
     db: &RuntimeDb,
     reservations: &mut [MutationReservation],
     recent_limit: usize,
+    runtime: Option<&RuntimeHandle>,
 ) -> Result<bool> {
     let mut resolved = false;
     for reservation in reservations {
-        resolved |=
-            resolve_single_episode_recovery(db, std::slice::from_mut(reservation), recent_limit)?;
+        resolved |= resolve_single_episode_recovery(
+            db,
+            std::slice::from_mut(reservation),
+            recent_limit,
+            runtime,
+        )?;
     }
     Ok(resolved)
+}
+
+/// Live domains prepared in the same fresh transaction that resolved a
+/// positive Episode receipt. They complete the recovered publication so the
+/// owner root keeps State/binding, Task/Work, Scheduling and Input coverage in
+/// one cut; consumers never patch incomplete roots on their own.
+struct EpisodeRecoveryDomains {
+    inputs: Arc<super::resident_input_evidence::ResidentInputEvidence>,
+    work: Arc<super::resident_work::ResidentWorkDomain>,
+    tasks: Arc<super::resident_task::ResidentTaskDomain>,
+    scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
+}
+
+fn load_episode_recovery_with_domains(
+    db: &RuntimeDb,
+    runtime: &RuntimeHandle,
+    scope: &EpisodeMemoryLoadScope,
+    recent_limit: usize,
+    witness: (&EpisodeMemoryKey, &str, &EpisodeMemoryInvocation),
+    reservation: &MutationReservation,
+) -> Result<(
+    EpisodeMemoryBootstrapSnapshot,
+    Option<EpisodeRecoveryDomains>,
+)> {
+    let budget = &runtime.inner.input_evidence_budget;
+    let limits = budget.limits();
+    let record_limit = usize::try_from(limits.record_limit)?;
+    let byte_limit = usize::try_from(
+        limits
+            .history_per_agent_bytes
+            .checked_add(limits.pending_per_agent_bytes)
+            .context("Episode recovery byte limit overflow")?,
+    )?;
+    let input_scope = super::resident_input_evidence::InputEvidenceScope {
+        agent_id: scope.agent_id.clone(),
+        identity_incarnation: scope.identity_incarnation,
+    };
+    let owner_epoch = reservation.owner_epoch();
+    let input_roles = runtime.inner.input_queries.snapshot(
+        &input_scope,
+        owner_epoch,
+        budget,
+        (record_limit, byte_limit),
+    )?;
+    let task_recovery = runtime.task_recovery_queries(reservation, record_limit, byte_limit)?;
+    let task_selection = task_recovery.as_ref().and_then(|queries| {
+        queries.selection_for_owner(&scope.agent_id, scope.identity_incarnation, owner_epoch)
+    });
+    let mut base = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+        query: None,
+        windows: Vec::new(),
+        mandatory_roots: Default::default(),
+        interrupted_sources: Default::default(),
+        selected_completion_brief_ids: Default::default(),
+        record_limit,
+        byte_limit,
+    };
+    // Replacing Input must not invalidate the scheduler on the recovered root.
+    super::scheduler::include_scheduler_brief_window(&mut base.windows);
+    if input_roles.selection != super::resident_input_evidence::InputQuerySelection::default() {
+        base.query = Some(super::resident_input_evidence::InputQueryRead {
+            selection: input_roles.selection.clone(),
+            ledger: budget.clone(),
+        });
+    }
+    db.transaction(|tx| {
+        let snapshot = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
+            tx,
+            scope,
+            recent_limit,
+            Some(witness),
+        )?;
+        let EpisodeMemoryBootstrapSnapshot::Current(current) = &snapshot else {
+            return Ok((snapshot, None));
+        };
+        if current.receipt.is_none() {
+            // Receipt absence never authorizes body preparation.
+            return Ok((snapshot, None));
+        }
+        let state = current
+            .state
+            .as_ref()
+            .context("committed Episode receipt has no current canonical AgentState")?;
+        let mut request = base.clone();
+        {
+            use super::resident_input_evidence::{
+                InputEvidenceFamily as Family, InputEvidenceKey as Key,
+            };
+            if let Some(turn) = &state.current_turn_id {
+                request.mandatory_roots.insert(Key::new(Family::Turn, turn));
+            }
+            if let Some(binding) = &state.current_execution_binding {
+                request
+                    .mandatory_roots
+                    .insert(Key::new(Family::Turn, &binding.turn_id));
+                request
+                    .mandatory_roots
+                    .insert(Key::new(Family::Message, &binding.source_message_id));
+                if let Some(attempt) = &binding.activation_id {
+                    request
+                        .mandatory_roots
+                        .insert(Key::new(Family::Attempt, attempt));
+                }
+            }
+        }
+        let mut work = super::resident_work::WorkCaptureRequest::current();
+        work.include_live = true;
+        if let Some(binding) = &state.current_execution_binding {
+            work.required_turn_ids.insert(binding.turn_id.clone());
+            work.required_trigger_message_ids
+                .insert(binding.source_message_id.clone());
+        }
+        let tasks = super::resident_task::TaskCaptureRequest::current();
+        let prepared = crate::runtime_db::input_preparation::prepare_episode_recovery_domains_tx(
+            tx,
+            &input_scope,
+            state,
+            &request,
+            recent_limit,
+            budget,
+            &work,
+            &tasks,
+            task_selection,
+        )?;
+        let domains = EpisodeRecoveryDomains {
+            inputs: Arc::new(prepared.inputs.with_budget(budget.clone())?),
+            work: prepared
+                .work
+                .context("Episode recovery Work domain is absent")?,
+            tasks: prepared
+                .tasks
+                .context("Episode recovery Task domain is absent")?,
+            scheduling: prepared.scheduling,
+        };
+        Ok((snapshot, Some(domains)))
+    })
 }
 
 fn resolve_single_episode_recovery(
     db: &RuntimeDb,
     reservations: &mut [MutationReservation],
     recent_limit: usize,
+    runtime: Option<&RuntimeHandle>,
 ) -> Result<bool> {
     let Some(recovery) = reservations[0].recovery()? else {
         return Ok(false);
@@ -70,18 +214,40 @@ fn resolve_single_episode_recovery(
         "Episode recovery witness does not match its original owner ticket"
     );
 
-    // A fresh Deferred transaction fixes identity, exact digest/invocation receipt,
-    // current State, qualified Episode membership and coverage in one snapshot.
-    // In particular, this is not a latest-State acknowledgement query.
+    // One fresh transaction fixes identity, exact digest/invocation receipt,
+    // current State, qualified Episode membership and coverage in one cut.
+    // Loaded query preparation uses the writer's Immediate transaction; cold
+    // recovery remains a Deferred read. Neither is a latest-State ACK query.
     let scope = EpisodeMemoryLoadScope {
         agent_id: key.agent_id.clone(),
         identity_incarnation: key.identity_incarnation,
     };
-    let snapshot = db.load_episode_memory_snapshot(
-        &scope,
-        recent_limit,
-        Some((key, command_digest, invocation)),
-    )?;
+    let (snapshot, domains) = match runtime {
+        // A held runtime completes the recovered publication with the live
+        // domains from the same fresh transaction that resolved the receipt.
+        Some(runtime)
+            if reservations[0]
+                .validate_owner(&runtime.inner.mutation_owner)
+                .is_ok() =>
+        {
+            load_episode_recovery_with_domains(
+                db,
+                runtime,
+                &scope,
+                recent_limit,
+                (key, command_digest, invocation),
+                &reservations[0],
+            )?
+        }
+        _ => (
+            db.load_episode_memory_snapshot(
+                &scope,
+                recent_limit,
+                Some((key, command_digest, invocation)),
+            )?,
+            None,
+        ),
+    };
     let committed = match snapshot {
         EpisodeMemoryBootstrapSnapshot::Current(current) => {
             if current.receipt.is_none() {
@@ -98,13 +264,12 @@ fn resolve_single_episode_recovery(
                     current.episodes,
                 )?;
                 Some(KnownCommit::State {
-                    work: None,
-
-                    tasks: None,
-                    scheduling: None,
+                    work: domains.as_ref().map(|domains| domains.work.clone()),
+                    tasks: domains.as_ref().map(|domains| domains.tasks.clone()),
+                    scheduling: domains.as_ref().map(|domains| domains.scheduling.clone()),
                     state: Arc::new(state),
                     episodes: Some(Arc::new(episodes)),
-                    input_evidence: None,
+                    input_evidence: domains.as_ref().map(|domains| domains.inputs.clone()),
                     runtime: None,
                 })
             }
@@ -330,7 +495,7 @@ mod tests {
         witness.finish_original_attempt();
         let unrelated = MutationOwner::standalone("agent-b", 1);
         let mut reservations = vec![reservation, unrelated.try_reserve().unwrap()];
-        assert!(resolve_episode_recovery(&fixture.db, &mut reservations, 12).unwrap());
+        assert!(resolve_episode_recovery(&fixture.db, &mut reservations, 12, None).unwrap());
         let known = MutationReservation::validate_group_known(&reservations).unwrap();
         assert!(known[0].is_some());
         assert!(known[1].is_none());
@@ -348,7 +513,7 @@ mod tests {
             unrelated.try_reserve().unwrap(),
         ];
         MutationReservation::begin_all(&mut reservations, "multi-owner".into()).unwrap();
-        assert!(!resolve_episode_recovery(&fixture.db, &mut reservations, 12).unwrap());
+        assert!(!resolve_episode_recovery(&fixture.db, &mut reservations, 12, None).unwrap());
         for reservation in &reservations {
             assert!(reservation.recovery().unwrap().unwrap().known.is_none());
         }
@@ -392,10 +557,13 @@ mod tests {
         }))
         .unwrap();
         fixture.db.context_episodes().upsert(&legacy).unwrap();
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .unwrap());
         assert!(matches!(
             fixture.owner.capture(),
             Err(MutationOwnerError::NeedsReconcile(_))
@@ -444,10 +612,13 @@ mod tests {
             .commit_episode_memory(&command.with_fault(EpisodeMemoryFaultPoint::AfterReceiptWrite))
             .is_err());
         witness.finish_original_attempt();
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .unwrap());
         assert!(reservation.recovery().unwrap().is_none());
         assert!(Arc::ptr_eq(
             &before,
@@ -471,20 +642,26 @@ mod tests {
         let command = fixture.command(false, true);
         let (mut reservation, witness) = fixture.begin(&command);
         fixture.db.commit_episode_memory(&command).unwrap();
-        assert!(
-            !resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap()
-        );
+        assert!(!resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .unwrap());
         assert!(reservation.recovery().unwrap().unwrap().known.is_none());
         assert!(matches!(
             fixture.owner.capture(),
             Err(MutationOwnerError::NeedsReconcile(_))
         ));
         witness.finish_original_attempt();
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .unwrap());
     }
 
     #[test]
@@ -499,10 +676,13 @@ mod tests {
             )
             .is_err());
         witness.finish_original_attempt();
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 0)
-                .unwrap()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            0,
+            None
+        )
+        .unwrap());
         let recovery = reservation.recovery().unwrap().unwrap();
         assert!(matches!(recovery.known, Some(KnownCommit::State { .. })));
         assert_eq!(fixture.receipt_count(), 1);
@@ -542,10 +722,13 @@ mod tests {
                 .unwrap(),
             successor_state
         );
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .unwrap());
         let recovery = reservation.recovery().unwrap().unwrap();
         let Some(KnownCommit::Metadata(facts)) = recovery.known else {
             panic!("retired receipt needs metadata");
@@ -574,9 +757,13 @@ mod tests {
         let conflicting = fixture.command(false, false);
         let (mut reservation, witness) = fixture.begin(&conflicting);
         witness.finish_original_attempt();
-        let error =
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap_err();
+        let error = resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(
             error.downcast_ref::<EpisodeMemoryError>(),
             Some(&EpisodeMemoryError::CommandConflict)
@@ -603,10 +790,13 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .is_err()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .is_err());
         assert!(reservation.recovery().unwrap().unwrap().known.is_none());
         assert!(matches!(
             fixture.owner.capture(),
@@ -628,20 +818,26 @@ mod tests {
                 Ok(())
             })
             .unwrap();
-        assert!(
-            resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .is_err()
-        );
+        assert!(resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .is_err());
         assert!(reservation.recovery().unwrap().unwrap().known.is_none());
         drop(reservation);
 
         let fixture = Fixture::new();
         let mut reservation = fixture.owner.try_reserve().unwrap();
         reservation.begin("legacy-unknown".into()).unwrap();
-        assert!(
-            !resolve_episode_recovery(&fixture.db, std::slice::from_mut(&mut reservation), 12)
-                .unwrap()
-        );
+        assert!(!resolve_episode_recovery(
+            &fixture.db,
+            std::slice::from_mut(&mut reservation),
+            12,
+            None
+        )
+        .unwrap());
         assert!(matches!(
             fixture.owner.capture(),
             Err(MutationOwnerError::NeedsReconcile(_))
