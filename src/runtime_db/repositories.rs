@@ -5676,8 +5676,27 @@ impl EvidenceRepository<'_> {
     }
 
     pub fn append_delivery_summary(&self, record: &DeliverySummaryRecord) -> Result<()> {
+        let outcome = self
+            .db
+            .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record));
+        // An uncertain commit also requires the next compatibility read to
+        // reload. The write may have moved an existing ID to another WorkItem.
         self.db
-            .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record))
+            .writer
+            .state
+            .queue
+            .delivery_summary_generation
+            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        outcome
+    }
+
+    pub(crate) fn delivery_summary_generation(&self) -> u64 {
+        self.db
+            .writer
+            .state
+            .queue
+            .delivery_summary_generation
+            .load(std::sync::atomic::Ordering::Acquire)
     }
 
     pub fn query(&self, kind: EvidenceKind, query: EvidenceQuery<'_>) -> Result<Vec<EvidenceRow>> {

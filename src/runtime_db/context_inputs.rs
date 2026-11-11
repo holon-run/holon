@@ -750,8 +750,7 @@ impl<'a> ContextDurableRead<'a> {
         )
     }
 
-    /// Named legacy acquisition, not a resident hit. Selected Work/Input and
-    /// this transaction's owner/revision are validated by the loaded caller.
+    /// Legacy preview source for the Work owner's scoped preparation.
     pub(crate) fn completion_delivery_summaries<'id>(
         &self,
         work_item_ids: impl Iterator<Item = &'id str>,

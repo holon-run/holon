@@ -324,6 +324,14 @@ pub(crate) enum WorkReadError {
 }
 
 #[derive(Debug)]
+pub(crate) struct WorkCompletionDeliveries {
+    pub generation: u64,
+    // A present key with no text is an observed absence.
+    pub summaries: BTreeMap<String, Option<String>>,
+    pub _budget: Arc<BudgetViewGuard>,
+}
+
+#[derive(Debug, Clone)]
 pub(crate) struct ResidentWorkDomain {
     scope: InputEvidenceScope,
     coverage: WorkCoverage,
@@ -332,6 +340,7 @@ pub(crate) struct ResidentWorkDomain {
     byte_limit: usize,
     budget: Option<InputEvidenceBudgetLedger>,
     budget_views: Vec<Arc<BudgetViewGuard>>,
+    pub completion_deliveries: Option<Arc<WorkCompletionDeliveries>>,
 }
 
 /// Contains only selected record Arcs and copied selected coverage. No resident
@@ -375,6 +384,7 @@ impl ResidentWorkDomain {
             byte_limit,
             budget: None,
             budget_views: Vec::new(),
+            completion_deliveries: None,
         };
         for record in records {
             domain.insert(record)?;
@@ -487,6 +497,18 @@ impl ResidentWorkDomain {
     pub(crate) fn coverage(&self) -> &WorkCoverage {
         &self.coverage
     }
+    pub(crate) fn with_completion_deliveries(
+        &self,
+        deliveries: Arc<WorkCompletionDeliveries>,
+    ) -> Result<Self> {
+        let bytes = Self::metadata_bytes(&self.scope, &self.coverage, self.records.len())?;
+        crate::diagnostics::resource_io::charge_owned_metadata(bytes, 1)?;
+        let mut next = self.clone();
+        next.completion_deliveries = Some(deliveries);
+        next.refresh_budget_views()?;
+        Ok(next)
+    }
+
     pub(crate) fn with_committed(&self, delta: &CommittedWorkDelta) -> Result<Self> {
         ensure!(
             delta.scope == self.scope && delta.revision == delta.coverage.revision,
@@ -551,6 +573,7 @@ impl ResidentWorkDomain {
             byte_limit: self.byte_limit,
             budget: self.budget.clone(),
             budget_views: Vec::new(),
+            completion_deliveries: self.completion_deliveries.clone(),
         };
         for (key, availability) in &delta.removals {
             ensure!(
@@ -1045,6 +1068,11 @@ impl ResidentWorkDomain {
         self.coverage
             .latest_results
             .retain(|id, _| selected.contains(&WorkKey::new(WorkFamily::Work, id)));
+        self.completion_deliveries = self.completion_deliveries.take().filter(|view| {
+            view.summaries
+                .keys()
+                .all(|id| self.coverage.latest_results.contains_key(id))
+        });
         let _bytes = self.records.values().try_fold(
             serde_json::to_vec(&self.coverage)?.len(),
             |total, x| {

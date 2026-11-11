@@ -2411,7 +2411,10 @@ fn append_candidate_group(
             }
             lines.push(format!(
                 "  - Completion summary: {}",
-                truncate_text(&report.text.replace('\n', " "), 160)
+                truncate_text(
+                    &report.text.replace('\n', " "),
+                    COMPLETION_SUMMARY_CHAR_LIMIT
+                )
             ));
         }
         if let Some(plan_ref) = render_work_item_plan_ref(record, plan_observations) {
@@ -2441,6 +2444,8 @@ fn completion_report_for_work_item(
     }
     None
 }
+
+pub(crate) const COMPLETION_SUMMARY_CHAR_LIMIT: usize = 160;
 
 #[derive(Debug, Clone)]
 struct CompletionReportProjection {
@@ -2484,16 +2489,15 @@ fn latest_completion_report_by_work_item(
         .iter()
         .filter(|id| !summaries.contains_key(*id))
         .map(String::as_str);
-    let deliveries = inputs.completion_delivery_summaries(missing)?;
-    for summary in deliveries.into_iter().rev().filter(|summary| {
-        summary.agent_id == agent_id
-            && work_item_ids.contains(&summary.work_item_id)
-            && !summary.text.is_empty()
-    }) {
+    let deliveries = inputs.completion_delivery_summaries(agent_id, missing)?;
+    for (work_item_id, text) in deliveries.into_iter().rev() {
+        if !work_item_ids.contains(&work_item_id) {
+            continue;
+        }
         summaries
-            .entry(summary.work_item_id)
+            .entry(work_item_id)
             .or_insert_with(|| CompletionReportProjection {
-                text: summary.text,
+                text,
                 brief_id: None,
                 source_brief: None,
             });

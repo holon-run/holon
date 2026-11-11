@@ -488,6 +488,16 @@ impl RuntimeHandle {
             input_request.selected_completion_brief_ids =
                 selected_completion_brief_ids(&planned_work, &completion_work_ids)?;
         }
+        let completion_deliveries = capture_mode
+            .measure(
+                Stage::CompletionDeliveryPreparation,
+                Box::pin(mutation.prepare_owner_completion_deliveries(
+                    &planned_work,
+                    &completion_work_ids,
+                    &resource_material,
+                )),
+            )
+            .await?;
         // The owner adds the ordinary closure policy without changing this
         // frozen prompt selection. Do not copy its selectors a second time here.
         capture_mode
@@ -612,6 +622,7 @@ impl RuntimeHandle {
             );
             let inputs =
                 ResidentContextInputs::new(&durable_inputs, resident, work, state, &triggers)?
+                    .with_completion_deliveries(completion_deliveries.as_deref())
                     .with_tasks(tasks)?;
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
@@ -2240,11 +2251,16 @@ mod resource_read_tests {
             home.path().join("config.json"),
             r#"{"model":{"default":"openai/gpt-5.4"}}"#,
         )?;
-        let mut config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+        let (host, runtime) = open_resource_host(home.path()).await?;
+        Ok((home, host, runtime))
+    }
+
+    async fn open_resource_host(home: &std::path::Path) -> Result<(RuntimeHost, RuntimeHandle)> {
+        let mut config = crate::config::AppConfig::load_with_home(Some(home.to_path_buf()))?;
         config.user_home_dir = None;
         let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
         let runtime = host.default_runtime().await?;
-        Ok((home, host, runtime))
+        Ok((host, runtime))
     }
 
     #[tokio::test]
@@ -2711,6 +2727,76 @@ mod resource_read_tests {
         assert!(copied.upgrade().is_none());
         assert!(observation.upgrade().is_none());
         assert!(ledger.report()?.observed_bytes < with_clone);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn legacy_completion_delivery_recovers_then_uses_the_published_work_view() -> Result<()> {
+        use crate::runtime_db::cold_fixture::ColdFixtureWriter;
+        use crate::types::{ControlAction, DeliverySummaryRecord, WorkItemRecord};
+
+        let (home, host, runtime) = resource_host().await?;
+        runtime.control(ControlAction::Stop).await?;
+        let agent_id = runtime.agent_id().await?;
+        let db = runtime.inner.runtime_db.clone();
+        host.shutdown().await?;
+        drop((runtime, host));
+
+        let fixture = ColdFixtureWriter::new(&db, &agent_id)?;
+        let legacy = WorkItemRecord::new(&agent_id, "legacy work", WorkItemState::Completed);
+        fixture.insert_work(&legacy)?;
+        let mut absent =
+            WorkItemRecord::new(&agent_id, "no legacy summary", WorkItemState::Completed);
+        absent.result_summary = Some("WORK_FALLBACK_WITHOUT_DELIVERY".into());
+        fixture.insert_work(&absent)?;
+        let mut summary = DeliverySummaryRecord::new(
+            &agent_id,
+            &legacy.id,
+            "LEGACY_DELIVERY_FROM_DISK",
+            None,
+            None,
+        );
+        db.evidence().append_delivery_summary(&summary)?;
+        let mut empty = DeliverySummaryRecord::new(&agent_id, &legacy.id, "", None, None);
+        empty.created_at = summary.created_at + chrono::Duration::seconds(1);
+        db.evidence().append_delivery_summary(&empty)?;
+        drop(db);
+
+        let (host, runtime) = open_resource_host(home.path()).await?;
+        let preview = || {
+            runtime.preview_prompt(
+                "read completion".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+        };
+        let initial = preview().await?.rendered_context_attachment;
+        assert!(initial.contains("LEGACY_DELIVERY_FROM_DISK"));
+        assert!(initial.contains("WORK_FALLBACK_WITHOUT_DELIVERY"));
+
+        let db = &runtime.inner.runtime_db;
+        db.transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE delivery_summaries RENAME TO unavailable_delivery_summaries",
+            )?;
+            Ok(())
+        })?;
+        let warm = preview().await;
+        db.transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE unavailable_delivery_summaries RENAME TO delivery_summaries",
+            )?;
+            Ok(())
+        })?;
+        let warm = warm?.rendered_context_attachment;
+        assert!(warm.contains("LEGACY_DELIVERY_FROM_DISK"));
+        assert!(warm.contains("WORK_FALLBACK_WITHOUT_DELIVERY"));
+
+        summary.text = "LEGACY_DELIVERY_AFTER_REPOSITORY_WRITE".into();
+        db.evidence().append_delivery_summary(&summary)?;
+        let updated = preview().await?.rendered_context_attachment;
+        assert!(updated.contains("LEGACY_DELIVERY_AFTER_REPOSITORY_WRITE"));
+        assert!(!updated.contains("LEGACY_DELIVERY_FROM_DISK"));
+        host.shutdown().await?;
         Ok(())
     }
 

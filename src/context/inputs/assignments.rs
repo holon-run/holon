@@ -86,7 +86,7 @@ pub(super) fn selection<'id>(
 }
 
 pub(super) fn capture_view<'id>(
-    inputs: &ResidentContextInputs<'_, '_>,
+    inputs: &ResidentContextInputs<'_>,
     ids: impl Iterator<Item = &'id str> + Clone,
 ) -> Result<ContextHistoryAssignments> {
     // Check every finite source, including absence, before allocating selectors.
@@ -120,7 +120,7 @@ pub(super) fn capture_view<'id>(
 }
 
 pub(super) fn borrowed<'a>(
-    inputs: &'a ResidentContextInputs<'_, '_>,
+    inputs: &'a ResidentContextInputs<'_>,
     id: &str,
 ) -> Result<Option<&'a Option<String>>> {
     let Some(evidence) = inputs.captured.lookup_borrowed(Family::Message, id)? else {
@@ -147,7 +147,7 @@ pub(super) fn borrowed<'a>(
 }
 
 pub(super) fn capture(
-    inputs: &ResidentContextInputs<'_, '_>,
+    inputs: &ResidentContextInputs<'_>,
     ids: BTreeSet<String>,
 ) -> Result<BTreeMap<String, Option<String>>> {
     if ids.is_empty() {
@@ -158,11 +158,11 @@ pub(super) fn capture(
     for id in &ids {
         borrowed(inputs, id)?;
     }
-    struct Batch<'read, 'capture, 'db> {
-        inputs: &'read ResidentContextInputs<'capture, 'db>,
+    struct Batch<'read, 'capture> {
+        inputs: &'read ResidentContextInputs<'capture>,
         ids: &'read BTreeSet<String>,
     }
-    impl Serialize for Batch<'_, '_, '_> {
+    impl Serialize for Batch<'_, '_> {
         fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
             let mut map = serializer.serialize_map(Some(self.ids.len()))?;
             for id in self.ids {
