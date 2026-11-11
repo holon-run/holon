@@ -31,6 +31,7 @@ pub(crate) struct PreparedInputRead {
     pub episodes: ResidentEpisodes,
     pub inputs: ResidentInputEvidence,
     pub pending: Vec<MessageEnvelope>,
+    pub queue_posture: crate::queue::QueuePostureFacts,
     pub work: Option<std::sync::Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
     pub tasks: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
     pub scheduling: std::sync::Arc<crate::runtime::resident_scheduling::ResidentSchedulingDomain>,
@@ -440,6 +441,7 @@ fn prepare_input_domains_inner_tx(
         load_episode_memory_snapshot_in(tx, &episode_scope, recent_episode_limit, None)?
     }
     .require_current()?;
+    let queue_posture = pending_read.posture;
     let pending = pending_read.read_messages()?;
     let mut request = request.borrowed();
     for message in &pending {
@@ -615,6 +617,7 @@ fn prepare_input_domains_inner_tx(
         )?,
         inputs: input.resident,
         pending,
+        queue_posture,
         work,
         tasks: tasks.map(|tasks| tasks.resident),
         scheduling,

@@ -2,6 +2,13 @@ use std::{collections::VecDeque, sync::Arc};
 
 use crate::types::{MessageEnvelope, Priority};
 
+/// Presence of each pending Queue status in one confirmed Agent cut.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct QueuePostureFacts {
+    pub has_queued: bool,
+    pub has_interrupted: bool,
+}
+
 #[derive(Debug, Default, Clone)]
 pub struct RuntimeQueue {
     interject: VecDeque<Arc<MessageEnvelope>>,

@@ -10,6 +10,7 @@ use super::{
     repositories, RuntimeDb,
 };
 use crate::{
+    queue::QueuePostureFacts,
     runtime::{
         input_evidence_budget::{InputEvidenceBudgetLedger, PendingBodyCharge},
         resident_input_evidence::InputEvidenceScope,
@@ -20,6 +21,7 @@ use crate::{
 pub(crate) struct BootstrapPendingMetadata {
     pub facts: ContextScopeFacts,
     pub count: usize,
+    pub posture: QueuePostureFacts,
 }
 
 pub(crate) struct PreparedPendingQueue {
@@ -32,6 +34,7 @@ pub(crate) struct PendingQueueRead<'tx, 'conn> {
     tx: &'tx Transaction<'conn>,
     scope: &'tx InputEvidenceScope,
     pub count: usize,
+    pub posture: QueuePostureFacts,
 }
 
 impl RuntimeDb {
@@ -102,6 +105,7 @@ fn pending_metadata_inner_tx(
     Ok(BootstrapPendingMetadata {
         facts,
         count: pending.count,
+        posture: pending.posture,
     })
 }
 
@@ -110,12 +114,13 @@ pub(crate) fn prepare_pending_queue_read_tx<'tx, 'conn>(
     scope: &'tx InputEvidenceScope,
     budget: &InputEvidenceBudgetLedger,
 ) -> Result<PendingQueueRead<'tx, 'conn>> {
-    let (count, payload_bytes, missing): (i64, i64, i64) = tx.query_row(
+    let (count, payload_bytes, missing, has_queued, has_interrupted): (i64, i64, i64, bool, bool) = tx.query_row(
         "SELECT COUNT(*), COALESCE(SUM(length(CAST(q.payload_json AS BLOB)) + COALESCE(length(CAST(m.payload_json AS BLOB)),0)),0),
-                COALESCE(SUM(CASE WHEN m.message_id IS NULL OR m.agent_id != q.agent_id THEN 1 ELSE 0 END),0)
+                COALESCE(SUM(CASE WHEN m.message_id IS NULL OR m.agent_id != q.agent_id THEN 1 ELSE 0 END),0),
+                COALESCE(MAX(q.status='queued'),0), COALESCE(MAX(q.status='interrupted'),0)
          FROM queue_entries q LEFT JOIN messages m ON m.message_id=q.message_id
          WHERE q.agent_id=?1 AND q.status IN ('queued','interrupted')",
-        [&scope.agent_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        [&scope.agent_id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
     let count = u64::try_from(count)?;
 
     // Observe envelope/queue bytes without a cumulative admission quota;
@@ -129,6 +134,10 @@ pub(crate) fn prepare_pending_queue_read_tx<'tx, 'conn>(
         tx,
         scope,
         count: usize::try_from(count)?,
+        posture: QueuePostureFacts {
+            has_queued,
+            has_interrupted,
+        },
     })
 }
 
@@ -142,6 +151,7 @@ pub(crate) fn pending_queue_inputs_tx(
     let metadata = BootstrapPendingMetadata {
         facts,
         count: pending.count,
+        posture: pending.posture,
     };
     let messages = pending.read_messages()?;
     Ok(PreparedPendingQueue { metadata, messages })
@@ -149,7 +159,9 @@ pub(crate) fn pending_queue_inputs_tx(
 
 impl PendingQueueRead<'_, '_> {
     pub(crate) fn read_messages(self) -> Result<Vec<MessageEnvelope>> {
-        let Self { tx, scope, count } = self;
+        let Self {
+            tx, scope, count, ..
+        } = self;
         let mut statement = tx.prepare(
         "SELECT q.message_id,q.agent_id,q.status,q.payload_json,m.message_id,m.agent_id,m.message_seq,m.payload_json
          FROM queue_entries q JOIN messages m ON m.message_id=q.message_id

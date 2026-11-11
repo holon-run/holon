@@ -357,6 +357,7 @@ pub(crate) enum ControlCommit {
 #[derive(Debug, Clone)]
 pub(crate) struct ControlRecoveryFacts {
     pub current_queue_messages: Vec<MessageEnvelope>,
+    pub queue_posture: crate::queue::QueuePostureFacts,
     pub waits: Vec<WaitConditionRecord>,
     pub timer_wakes: Vec<ControlTimerWake>,
     pub workspace_occupancy: Option<WorkspaceOccupancyRecord>,
@@ -1954,7 +1955,7 @@ fn claimed_input_has_not_started(
 }
 
 fn load_recovery_facts_in(
-    connection: &Connection,
+    tx: &Transaction<'_>,
     snapshot: &ControlSnapshot,
     receipt: Option<&ControlReceipt>,
     prepared_pending: Option<Vec<MessageEnvelope>>,
@@ -1986,19 +1987,15 @@ fn load_recovery_facts_in(
             .map(|record| record.turn_id.clone()),
         outcome.map(|outcome| &outcome.interrupted_turn_ids),
     );
-    let tasks = records_by_ids(connection, "tasks", "task_id", &task_ids)?;
-    let timers = records_by_ids(connection, "timers", "timer_id", &timer_ids)?;
-    let external_triggers = records_by_ids(
-        connection,
-        "external_triggers",
-        "external_trigger_id",
-        &trigger_ids,
-    )?;
+    let tasks = records_by_ids(tx, "tasks", "task_id", &task_ids)?;
+    let timers = records_by_ids(tx, "timers", "timer_id", &timer_ids)?;
+    let external_triggers =
+        records_by_ids(tx, "external_triggers", "external_trigger_id", &trigger_ids)?;
     let waits = wait_ids
         .iter()
-        .map(|id| load_wait_by_id(connection, id))
+        .map(|id| load_wait_by_id(tx, id))
         .collect::<Result<Vec<_>>>()?;
-    let turns = records_by_ids(connection, "turn_records", "turn_id", &turn_ids)?;
+    let turns = records_by_ids(tx, "turn_records", "turn_id", &turn_ids)?;
     let current_queue_messages = if let Some(messages) = prepared_pending {
         let ids = messages
             .iter()
@@ -2029,7 +2026,7 @@ fn load_recovery_facts_in(
             )
         }) {
             let message: MessageEnvelope = payload_optional(
-                connection,
+                tx,
                 "SELECT payload_json FROM messages WHERE evidence_id = ?1",
                 &entry.message_id,
             )?
@@ -2052,7 +2049,7 @@ fn load_recovery_facts_in(
             .chain(&outcome.dropped_timer_queue_message_ids)
         {
             let entry: QueueEntryRecord = payload_optional(
-                connection,
+                tx,
                 "SELECT payload_json FROM queue_entries WHERE message_id = ?1",
                 id,
             )?
@@ -2071,7 +2068,7 @@ fn load_recovery_facts_in(
     }
     let result_messages = if let Some(outcome) = outcome {
         records_by_ids::<MessageEnvelope>(
-            connection,
+            tx,
             "messages",
             "evidence_id",
             &outcome.result_message_ids,
@@ -2083,7 +2080,7 @@ fn load_recovery_facts_in(
         if let Some(id) = outcome.and_then(|outcome| outcome.released_occupancy_id.as_deref()) {
             Some(
                 payload_optional(
-                    connection,
+                    tx,
                     "SELECT payload_json FROM workspace_occupancies WHERE occupancy_id = ?1",
                     id,
                 )?
@@ -2101,8 +2098,9 @@ fn load_recovery_facts_in(
     );
     Ok(ControlRecoveryFacts {
         current_queue_messages,
+        queue_posture: super::current_query::queue_posture_tx(tx, &snapshot.state.id)?,
         waits,
-        timer_wakes: load_timer_wakes_by_message_ids_in(connection, &snapshot.state.id, &wake_ids)?,
+        timer_wakes: load_timer_wakes_by_message_ids_in(tx, &snapshot.state.id, &wake_ids)?,
         workspace_occupancy,
         transition: TransitionCommit {
             applied: true,

@@ -64,16 +64,36 @@ pub(crate) fn has_queued_input(tx: &Transaction<'_>, agent_id: &str) -> Result<b
     )?)
 }
 
+pub(crate) fn queue_posture_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<crate::queue::QueuePostureFacts> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued'),
+                EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')",
+        [agent_id],
+        |row| {
+            Ok(crate::queue::QueuePostureFacts {
+                has_queued: row.get(0)?,
+                has_interrupted: row.get(1)?,
+            })
+        },
+    )?)
+}
+
 pub(crate) fn scheduler_metadata(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
 ) -> Result<CurrentSchedulerMetadata> {
-    let has_interrupted_replay = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')",
-        [&scope.agent_id],
-        |row| row.get(0),
-    )?;
-    let has_queued_input = has_queued_input(tx, &scope.agent_id)?;
+    let queue = queue_posture_tx(tx, &scope.agent_id)?;
+    scheduler_metadata_with_queue(tx, scope, queue)
+}
+
+fn scheduler_metadata_with_queue(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    queue: crate::queue::QueuePostureFacts,
+) -> Result<CurrentSchedulerMetadata> {
     // Keep the original window and ordering, including non-error events.
     let mut query = tx.prepare(
         "SELECT kind,created_at FROM audit_events WHERE agent_id=?1
@@ -95,8 +115,8 @@ pub(crate) fn scheduler_metadata(
     }
     let (recent_brief_count, recent_event_count) = summary_counts(tx, &scope.agent_id)?;
     Ok(CurrentSchedulerMetadata {
-        has_interrupted_replay,
-        has_queued_input,
+        has_interrupted_replay: queue.has_interrupted,
+        has_queued_input: queue.has_queued,
         latest_runtime_error,
         recent_brief_count,
         recent_event_count,
@@ -398,7 +418,10 @@ impl CurrentQuerySource {
             event_cursor: cursor,
             selection: self.selection.as_ref().clone(),
             identity: self.baseline.identity.clone(),
-            scheduler: scheduler_metadata(tx, &writes.scope)?,
+            scheduler: match writes.queue_posture {
+                Some(queue) => scheduler_metadata_with_queue(tx, &writes.scope, queue)?,
+                None => scheduler_metadata(tx, &writes.scope)?,
+            },
             queue,
             events,
             ledger: self.roles.ledger().clone(),

@@ -2983,13 +2983,14 @@ fn prepare_runtime_storage_owned(
         // not an in-place rewrite of that already acknowledged commit.
         reservation.publish(Arc::new(state.clone()))?;
         reservation.begin(crate::ids::audit_event_id())?;
-        reservation.committed_prepared_with_scheduling_domains(
+        reservation.committed_prepared_domains(
             Arc::new(state.clone()),
             Some(episodes),
             Some(inputs),
             Some(work),
             Some(tasks),
             Some(scheduling),
+            Some(pending.metadata.posture),
         )?;
     }
 

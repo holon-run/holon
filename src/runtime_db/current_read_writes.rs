@@ -184,6 +184,7 @@ pub(crate) struct CommittedCurrentWrites {
     pub scope: InputEvidenceScope,
     pub base_revision: u64,
     pub revision: u64,
+    pub(crate) queue_posture: Option<crate::queue::QueuePostureFacts>,
     /// Actual outcomes in original address slots, not complete-domain proof.
     addresses: BTreeMap<(CurrentFamily, String), CurrentAddressSlot>,
     _material: Vec<Arc<BudgetViewGuard>>,
@@ -606,8 +607,10 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
             .checked_add(1)
             .context("Current revision overflow")?;
         let mut touched = false;
+        let mut queue_touched = false;
         visit(&mut |family, id| {
             touched = true;
+            queue_touched |= family == CurrentFamily::Queue;
             // Prepared keys/tree slots already cover this in-place outcome.
             // A late address still needs admission and remains Unprepared.
             if !self
@@ -759,10 +762,14 @@ impl<'tx, 'conn> OriginalCurrentWrites<'tx, 'conn> {
             self.base_revision
         };
         let query_source = self.query_source.take();
+        let queue_posture = queue_touched
+            .then(|| super::current_query::queue_posture_tx(self.tx, &self.scope.agent_id))
+            .transpose()?;
         let mut writes = CommittedCurrentWrites {
             scope: self.scope,
             base_revision: u64::try_from(self.base_revision)?,
             revision: u64::try_from(revision)?,
+            queue_posture,
             addresses: self.observed,
             _material: self.guards,
             query: None,
@@ -884,6 +891,7 @@ impl CommittedCurrentWrites {
             scope: query.scope.clone(),
             base_revision: query.revision,
             revision: query.revision,
+            queue_posture: None,
             addresses: BTreeMap::new(),
             _material: Vec::new(),
             query: Some(query),

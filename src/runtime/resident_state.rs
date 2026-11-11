@@ -16,6 +16,7 @@ pub(crate) struct AgentSnapshot {
     pub token: PublicationToken,
     pub state: Arc<AgentState>,
     pub identity: Option<Arc<AgentIdentityRecord>>,
+    pub queue_posture: Option<crate::queue::QueuePostureFacts>,
     // None is an unprepared domain, never a ready empty collection.
     pub episodes: Option<Arc<ResidentEpisodes>>,
     pub input_evidence: Option<Arc<ResidentInputEvidence>>,
@@ -261,6 +262,7 @@ mod tests {
             tasks: None,
             scheduling: None,
             current: None,
+            queue_posture: None,
             token: PublicationToken {
                 identity_incarnation: 2,
                 owner_epoch: 1,
