@@ -123,6 +123,10 @@ fn query(path: String, key: &str, cursor: Option<&str>) -> String {
 }
 
 impl ConversationModel {
+    pub(super) fn state_refresh_head(&self) -> (&str, &str, &str, u64) {
+        (&self.runtime_id, &self.epoch, &self.scope, self.through_seq)
+    }
+
     fn snapshot(agent_id: String, mut page: SummaryPage) -> Result<Self> {
         ensure!(
             page.schema_version == 2 && page.query_version == 2,
@@ -756,6 +760,9 @@ pub(super) async fn observe(
                     return Err(error);
                 }
             };
+            tx.send(super::runtime::TuiRuntimeMessage::ConversationConnected {
+                generation, agent_id: agent_id.clone()
+            })?;
             let mut brief_retry_attempt = 0;
             let mut brief_retry_deadline = tokio::time::Instant::now()
                 + super::runtime::reconnect_delay_for_attempt(brief_retry_attempt);
@@ -1153,6 +1160,95 @@ mod tests {
         assert!(model
             .delta(json!({"type": "reset_required", "reason": "event_log_epoch_mismatch"}))
             .is_err());
+    }
+
+    #[test]
+    fn state_refresh_hints_follow_committed_heads_not_hydration_or_uncommitted_changes() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut current = model();
+        let mut app = app(current.clone());
+        app.state_refresh.started(now - Duration::from_secs(10));
+        app.state_refresh
+            .settled(now - Duration::from_secs(10), true);
+        let publish = |app: &mut TuiApp, model: ConversationModel| {
+            app.runtime_tx
+                .send(TuiRuntimeMessage::ConversationLoaded {
+                    generation: app.conversation_generation,
+                    agent_id: "default".into(),
+                    model,
+                })
+                .unwrap();
+            app.process_runtime_messages();
+        };
+        publish(&mut app, current.clone());
+        assert!(!app
+            .state_refresh
+            .is_due(Instant::now() + Duration::from_secs(1), false));
+        current.delta(begin(10, 11)).unwrap();
+        publish(&mut app, current.clone());
+        assert!(!app
+            .state_refresh
+            .is_due(Instant::now() + Duration::from_secs(1), false));
+        // No visible changes: the checkpoint alone advances source coverage.
+        current.delta(checkpoint(11)).unwrap();
+        publish(&mut app, current);
+        assert!(app
+            .state_refresh
+            .is_due(Instant::now() + Duration::from_secs(1), false));
+    }
+
+    #[test]
+    fn checkpoint_during_state_read_remains_dirty_after_the_read_settles() {
+        use std::time::{Duration, Instant};
+        let now = Instant::now();
+        let mut current = model();
+        let mut app = app(current.clone());
+        app.state_refresh.started(now);
+        current.delta(begin(10, 11)).unwrap();
+        current.delta(checkpoint(11)).unwrap();
+        app.runtime_tx
+            .send(TuiRuntimeMessage::ConversationLoaded {
+                generation: app.conversation_generation,
+                agent_id: "default".into(),
+                model: current,
+            })
+            .unwrap();
+        app.process_runtime_messages();
+        assert!(!app
+            .state_refresh
+            .is_due(now + Duration::from_secs(6), false));
+        app.state_refresh
+            .settled(now + Duration::from_millis(1), true);
+        assert!(app
+            .state_refresh
+            .is_due(now + Duration::from_secs(6), false));
+    }
+
+    #[test]
+    fn conversation_scope_reset_fences_only_its_own_pending_state_read() {
+        use std::time::Instant;
+        for (pending, cancelled) in [("default", true), ("other", false)] {
+            let mut app = app(model());
+            app.snapshot_refresh_request_id = 5;
+            app.snapshot_refresh_in_flight = true;
+            app.snapshot_refresh_agent_id = Some(pending.into());
+            app.state_refresh.started(Instant::now());
+            app.runtime_tx
+                .send(TuiRuntimeMessage::ConversationStatus {
+                    generation: app.conversation_generation,
+                    error: "epoch replaced".into(),
+                    reset: true,
+                })
+                .unwrap();
+            app.process_runtime_messages();
+            assert_eq!(
+                app.snapshot_refresh_request_id,
+                if cancelled { 6 } else { 5 }
+            );
+            assert_eq!(app.snapshot_refresh_in_flight, !cancelled);
+            assert!(app.conversation.is_none());
+        }
     }
 
     #[test]

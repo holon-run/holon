@@ -445,12 +445,6 @@ mod tests {
                 "reconnecting",
             ),
             (
-                TuiConnectionState::RefreshRequired {
-                    reason: format!("连接失败: snapshot expired {}", "detail/".repeat(40)),
-                },
-                "refresh-required",
-            ),
-            (
                 TuiConnectionState::Disconnected {
                     reason: format!("连接失败: daemon stopped {}", "detail/".repeat(40)),
                 },

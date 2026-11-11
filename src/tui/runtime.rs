@@ -1,12 +1,7 @@
-use super::projection::ProjectionSlice;
 use super::state::TuiClientState;
 use super::*;
-use crate::client::{
-    AgentStreamEvent, EventPageRequest, EventPageResponse, EventStreamRequest, LocalEventStream,
-    LocalHttpError, StreamEventEnvelope,
-};
+use crate::client::{AgentStreamEvent, EventStreamRequest, LocalEventStream, LocalHttpError};
 use crate::http_dto::AgentStateSnapshotDto;
-use crate::types::{BriefRecord, MessageEnvelope, TranscriptEntry};
 use anyhow::Context;
 use tokio::sync::mpsc;
 
@@ -14,8 +9,6 @@ const REFRESH_RETRY_DELAY: Duration = Duration::from_secs(1);
 const AGENT_LIST_REFRESH_INTERVAL: Duration = Duration::from_secs(2);
 const TASK_LIMIT: usize = 40;
 const OPTIMISTIC_OPERATOR_MESSAGE_LIMIT: usize = 64;
-pub(super) const BOOTSTRAP_EVENT_TAIL_LIMIT: usize = 20;
-pub(super) const EVENT_HISTORY_PAGE_LIMIT: usize = 32;
 const STREAM_RECONNECT_MAX_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone)]
@@ -27,9 +20,6 @@ pub(super) enum TuiConnectionState {
         attempt: u32,
         retry_after: Duration,
         last_error: String,
-    },
-    RefreshRequired {
-        reason: String,
     },
     Disconnected {
         reason: String,
@@ -47,8 +37,18 @@ pub(super) enum TuiRuntimeMessage {
         error: String,
         reset: bool,
     },
-    Event(AgentStreamEvent),
+    ConversationConnected {
+        generation: u64,
+        agent_id: String,
+    },
+    Event {
+        generation: u64,
+        agent_id: String,
+        event: AgentStreamEvent,
+    },
     Disconnected {
+        generation: u64,
+        agent_id: String,
         error: String,
     },
     AgentListLoaded(Result<Vec<AgentListEntry>, String>),
@@ -60,24 +60,6 @@ pub(super) enum TuiRuntimeMessage {
         checkpoint: Option<TuiRuntimeCheckpoint>,
         result: Result<SnapshotBootstrapResult, String>,
     },
-    SnapshotBootstrapStatus {
-        request_id: u64,
-        agent_id: String,
-        status_line: String,
-    },
-    EventHistoryPageLoaded {
-        request_id: u64,
-        agent_id: String,
-        result: Result<EventPageResponse, String>,
-    },
-    MessagesHydrated {
-        agent_id: String,
-        result: Result<Vec<MessageEnvelope>, String>,
-    },
-    BriefsHydrated {
-        agent_id: String,
-        result: Result<BriefHydrationResult, String>,
-    },
     EventStreamOpened {
         request_id: u64,
         agent_id: String,
@@ -85,19 +67,7 @@ pub(super) enum TuiRuntimeMessage {
     },
 }
 
-type SnapshotBootstrapResult = (
-    AgentStateSnapshotDto,
-    Vec<StreamEventEnvelope>,
-    String,
-    Option<u64>,
-    Option<u64>,
-    bool,
-);
-
-pub(super) struct BriefHydrationResult {
-    entries: Vec<TranscriptEntry>,
-    briefs: Vec<BriefRecord>,
-}
+type SnapshotBootstrapResult = AgentStateSnapshotDto;
 
 pub(super) struct EventStreamOpenError {
     message: String,
@@ -169,7 +139,6 @@ async fn preflight_agent(client: &LocalClient, agent_id: &str) -> Result<Vec<Age
 pub(super) struct TuiRuntimeCheckpoint {
     connection_state: TuiConnectionState,
     reconnect_deadline: Option<Instant>,
-    refresh_deadline: Option<Instant>,
     reconnect_attempt: u32,
 }
 
@@ -207,27 +176,14 @@ impl TuiApp {
             self.begin_load_agents();
         }
 
-        match self.connection_state.clone() {
-            TuiConnectionState::RefreshRequired { .. } => {
-                if self
-                    .refresh_deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline)
-                {
-                    self.begin_bootstrap_selected_agent();
-                }
-            }
-            TuiConnectionState::Reconnecting { .. } => {
-                if self
-                    .reconnect_deadline
-                    .is_some_and(|deadline| Instant::now() >= deadline)
-                {
-                    self.begin_connect_event_stream();
-                }
-            }
-            TuiConnectionState::Bootstrapping
-            | TuiConnectionState::Streaming
-            | TuiConnectionState::Disconnected { .. } => {}
+        let now = Instant::now();
+        let active = self.projection.as_ref().is_some_and(|projection| {
+            projection.agent.agent.current_run_id.is_some() || !projection.tasks.is_empty()
+        });
+        if !self.snapshot_refresh_in_flight && self.state_refresh.is_due(now, active) {
+            self.begin_bootstrap_agent_index(self.selected_agent);
         }
+        self.sync_diagnostic_stream();
 
         Ok(())
     }
@@ -307,6 +263,20 @@ impl TuiApp {
                 return;
             }
         };
+        if self
+            .snapshot_refresh_agent_id
+            .as_ref()
+            .is_some_and(|pending| {
+                !entries
+                    .iter()
+                    .any(|entry| entry.identity.agent_id == *pending)
+            })
+        {
+            self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
+            self.snapshot_refresh_in_flight = false;
+            self.snapshot_refresh_agent_id = None;
+            self.state_refresh.settled(Instant::now(), false);
+        }
         let selected_projection_agent = self.projection.as_ref().and_then(|projection| {
             let selected_agent_id = self.selected_agent_id()?;
             (projection.agent.identity.agent_id == selected_agent_id)
@@ -317,7 +287,9 @@ impl TuiApp {
             .map(|entry| {
                 let agent = entry.into_agent_summary_placeholder();
                 if let Some(selected) = selected_projection_agent.as_ref() {
-                    if selected.identity.agent_id == agent.identity.agent_id {
+                    if selected.identity.agent_id == agent.identity.agent_id
+                        && selected.identity.incarnation == agent.identity.incarnation
+                    {
                         return selected.clone();
                     }
                 }
@@ -359,9 +331,12 @@ impl TuiApp {
         }
 
         let selected_missing = previously_selected.as_ref().is_some_and(|agent_id| {
-            !agents
-                .iter()
-                .any(|agent| agent.identity.agent_id == *agent_id)
+            !agents.iter().any(|agent| {
+                agent.identity.agent_id == *agent_id
+                    && self.projection.as_ref().is_none_or(|projection| {
+                        projection.agent.identity.incarnation == agent.identity.incarnation
+                    })
+            })
         });
 
         self.selected_agent = previously_selected
@@ -490,20 +465,22 @@ impl TuiApp {
         self.projection = None;
         self.last_refresh_at = None;
         self.last_event_at = None;
-        self.refresh_deadline = None;
         self.reconnect_deadline = None;
         self.reconnect_attempt = 0;
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
-        self.event_history_load_in_flight = false;
-        self.message_hydration_in_flight = None;
-        self.brief_hydration_in_flight = None;
+        self.snapshot_refresh_agent_id = None;
+        self.state_refresh = Default::default();
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
-        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
     }
 
     pub(super) fn begin_bootstrap_selected_agent(&mut self) {
+        let now = Instant::now();
+        self.state_refresh.request(now);
+        if !self.state_refresh.is_due(now, false) {
+            return;
+        }
         self.begin_bootstrap_agent_index(self.selected_agent);
     }
 
@@ -545,53 +522,33 @@ impl TuiApp {
         }
         let switching_agents = target_index != self.selected_agent;
         let checkpoint = switching_agents.then(|| self.runtime_checkpoint());
-        self.refresh_deadline = None;
-        self.reconnect_deadline = None;
+        if self.snapshot_refresh_in_flight
+            && self.snapshot_refresh_agent_id.as_deref() == Some(&agent_id)
+        {
+            self.state_refresh.request(Instant::now());
+            return;
+        }
+        if self.snapshot_refresh_in_flight {
+            self.state_refresh = Default::default();
+        }
         self.snapshot_refresh_in_flight = true;
+        self.snapshot_refresh_agent_id = Some(agent_id.clone());
+        self.state_refresh.started(Instant::now());
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
-        self.event_history_load_in_flight = false;
-        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
         let request_id = self.snapshot_refresh_request_id;
-        self.connection_state = TuiConnectionState::Bootstrapping;
+        if self.projection.is_none() || switching_agents {
+            self.connection_state = TuiConnectionState::Bootstrapping;
+        }
         self.status_line = format!("Loading agent state for {agent_id}");
         let client = self.client.clone();
         let tx = self.runtime_tx.clone();
         tokio::spawn({
             let agent_id = agent_id.clone();
             async move {
-                let result = async {
-                    let snapshot = client.agent_state_snapshot(&agent_id).await?;
-                    let _ = tx.send(TuiRuntimeMessage::SnapshotBootstrapStatus {
-                        request_id,
-                        agent_id: agent_id.clone(),
-                        status_line: format!("Loading recent events for {agent_id}"),
-                    });
-                    let mut events_page = client
-                        .agent_events_page(
-                            &agent_id,
-                            EventPageRequest {
-                                limit: Some(BOOTSTRAP_EVENT_TAIL_LIMIT),
-                                order: Some("desc".into()),
-                                max_level: None,
-                                ..Default::default()
-                            },
-                        )
-                        .await?;
-                    let cursor_seq = events_page.cursor_seq.or(events_page.newest_seq);
-                    events_page.events.reverse();
-                    let oldest_seq = events_page.oldest_seq;
-                    let has_older = events_page.has_older;
-                    anyhow::Ok((
-                        snapshot,
-                        events_page.events,
-                        events_page.event_log_epoch,
-                        cursor_seq,
-                        oldest_seq,
-                        has_older,
-                    ))
-                }
-                .await
-                .map_err(|err| err.to_string());
+                let result = client
+                    .agent_state_snapshot(&agent_id)
+                    .await
+                    .map_err(|err| err.to_string());
                 let _ = tx.send(TuiRuntimeMessage::SnapshotLoaded {
                     request_id,
                     target_index,
@@ -606,7 +563,7 @@ impl TuiApp {
     pub(super) fn apply_snapshot_result(
         &mut self,
         request_id: u64,
-        target_index: usize,
+        _target_index: usize,
         agent_id: String,
         checkpoint: Option<TuiRuntimeCheckpoint>,
         result: Result<SnapshotBootstrapResult, String>,
@@ -621,88 +578,76 @@ impl TuiApp {
         {
             return;
         }
-        if !self
+        let Some(target_index) = self
             .agents
-            .get(target_index)
-            .is_some_and(|agent| agent.identity.agent_id == agent_id)
-        {
+            .iter()
+            .position(|agent| agent.identity.agent_id == agent_id)
+        else {
             return;
-        }
+        };
         self.snapshot_refresh_in_flight = false;
-        let (snapshot, events_tail, event_log_epoch, newest_seq, oldest_seq, has_older) =
-            match result {
-                Ok(result) => result,
-                Err(err) => {
-                    if self.initial_agent_id.is_some() {
-                        self.set_disconnected(format!(
-                            "failed to bootstrap startup agent {agent_id} from /state: {err}"
-                        ));
-                        return;
-                    }
-                    if let Some(checkpoint) = checkpoint {
-                        self.restore_runtime_checkpoint(checkpoint);
-                        self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
-                    } else {
-                        let reason = format!("failed to bootstrap {agent_id} from /state: {err}");
-                        self.schedule_refresh(reason);
-                        self.status_line = format!("Snapshot refresh failed for {agent_id}: {err}");
-                    }
+        self.snapshot_refresh_agent_id = None;
+        self.state_refresh.settled(Instant::now(), result.is_ok());
+        let snapshot = match result {
+            Ok(result) => result,
+            Err(err) => {
+                if self.initial_agent_id.is_some() {
+                    self.set_disconnected(format!(
+                        "failed to bootstrap startup agent {agent_id} from /state: {err}"
+                    ));
                     return;
                 }
-            };
-        let same_agent = self
-            .projection
-            .as_ref()
-            .is_some_and(|current| current.agent.identity.agent_id == agent_id);
-        let mut projection = if same_agent {
-            self.chat_scroll
-                .preserve_across_refresh(self.chat_max_scroll);
-            if let Some(mut projection) = self.projection.take() {
-                projection.reset_from_bootstrap_dto_preserving_event_history(snapshot);
-                projection
-            } else {
-                TuiProjection::from_bootstrap_dto(snapshot)
+                if let Some(checkpoint) = checkpoint {
+                    self.restore_runtime_checkpoint(checkpoint);
+                    self.status_line = format!("Failed to switch to agent {agent_id}: {err}");
+                } else {
+                    self.status_line = format!("Snapshot refresh failed for {agent_id}: {err}");
+                }
+                return;
+            }
+        };
+        let mut projection = TuiProjection::from_bootstrap_dto(snapshot);
+        if projection.agent.identity.agent_id != agent_id
+            || projection.agent.identity.incarnation
+                != self.agents[target_index].identity.incarnation
+        {
+            self.state_refresh.hint(Instant::now());
+            self.status_line = format!("State identity changed for {agent_id}; retrying");
+            return;
+        }
+        let same_agent = self.projection.as_ref().is_some_and(|current| {
+            current.agent.identity.agent_id == agent_id
+                && current.agent.identity.incarnation == projection.agent.identity.incarnation
+        });
+        if same_agent {
+            if let Some(previous) = &mut self.projection {
+                projection.take_diagnostics_from(previous);
             }
         } else {
-            TuiProjection::from_bootstrap_dto(snapshot)
-        };
-        projection.set_event_log_epoch(&event_log_epoch);
-        projection.merge_event_tail(events_tail, newest_seq);
-        projection.set_event_history_state_from_tail(oldest_seq, has_older);
-        let cursor = projection.cursor.clone();
-
-        self.stop_stream_task();
+            self.stop_stream_task();
+            self.reconnect_deadline = None;
+            self.reconnect_attempt = 0;
+            self.state_refresh = Default::default();
+            self.state_refresh.started(Instant::now());
+            self.state_refresh.settled(Instant::now(), true);
+        }
         self.selected_agent = target_index;
         self.initial_agent_id = None;
-        self.begin_conversation(agent_id.clone());
+        if !same_agent || self.conversation_task.is_none() {
+            self.begin_conversation(agent_id.clone());
+        }
         self.record_selected_agent(&agent_id);
         self.projection = Some(projection);
         self.apply_projection_view();
         self.last_refresh_at = Some(Local::now());
-        self.last_event_at = None;
-        self.reconnect_attempt = 0;
-        self.reconnect_deadline = None;
-        self.status_line = format!("Bootstrapped agent {agent_id} from /state");
-        self.begin_message_hydration_if_needed();
-        self.begin_brief_hydration_if_needed();
-
-        self.begin_connect_event_stream_for(agent_id, cursor);
-    }
-
-    pub(super) fn apply_snapshot_bootstrap_status(
-        &mut self,
-        request_id: u64,
-        agent_id: String,
-        status_line: String,
-    ) {
-        if request_id != self.snapshot_refresh_request_id {
-            return;
+        if self.conversation.is_some() {
+            if matches!(self.connection_state, TuiConnectionState::Bootstrapping) {
+                self.connection_state = TuiConnectionState::Streaming;
+            }
+            self.status_line = format!("Refreshed agent {agent_id} from /state");
+        } else {
+            self.status_line = format!("Loading conversation for {agent_id}");
         }
-        if !matches!(self.connection_state, TuiConnectionState::Bootstrapping) {
-            return;
-        }
-        let _ = agent_id;
-        self.status_line = status_line;
     }
 
     pub(super) fn begin_connect_event_stream(&mut self) {
@@ -718,6 +663,9 @@ impl TuiApp {
     }
 
     pub(super) fn begin_connect_event_stream_for(&mut self, agent_id: String, cursor: Option<u64>) {
+        if !matches!(self.overlay, OverlayState::Events { .. }) {
+            return;
+        }
         self.stream_connect_in_flight = true;
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
         let request_id = self.stream_connect_request_id;
@@ -757,21 +705,26 @@ impl TuiApp {
             return;
         }
         self.stream_connect_in_flight = false;
+        if self.selected_agent_id() != Some(agent_id.as_str())
+            || !matches!(self.overlay, OverlayState::Events { .. })
+        {
+            return;
+        }
         match result {
             Ok(stream) => {
                 self.spawn_stream_task(stream);
-                self.connection_state = TuiConnectionState::Streaming;
                 self.reconnect_attempt = 0;
                 self.reconnect_deadline = None;
-                self.refresh_deadline = None;
-                self.status_line.clear();
+                self.status_line = "Raw diagnostics connected (live events only)".into();
             }
             Err(err) if err.cursor_not_found => {
-                self.schedule_refresh(format!(
-                    "replay cursor not found for {agent_id}; rebuilding from /state"
-                ));
+                if let Some(projection) = &mut self.projection {
+                    projection.cursor = None;
+                    projection.clear_event_history();
+                }
+                self.schedule_reconnect(err.message);
                 self.status_line =
-                    format!("Replay cursor not found for {agent_id}; resetting from /state");
+                    format!("Raw diagnostic cursor expired for {agent_id}; reconnecting live");
             }
             Err(err) => {
                 self.schedule_reconnect(err.message.clone());
@@ -815,16 +768,27 @@ impl TuiApp {
     pub(super) fn spawn_stream_task(&mut self, mut stream: LocalEventStream) {
         self.stop_stream_task();
         let tx = self.runtime_tx.clone();
+        let generation = self.stream_connect_request_id;
+        let agent_id = self.selected_agent_id().unwrap_or_default().to_string();
         let task = tokio::spawn(async move {
             loop {
                 match stream.next_event().await {
                     Ok(event) => {
-                        if tx.send(TuiRuntimeMessage::Event(event)).is_err() {
+                        if tx
+                            .send(TuiRuntimeMessage::Event {
+                                generation,
+                                agent_id: agent_id.clone(),
+                                event,
+                            })
+                            .is_err()
+                        {
                             return;
                         }
                     }
                     Err(err) => {
                         let _ = tx.send(TuiRuntimeMessage::Disconnected {
+                            generation,
+                            agent_id: agent_id.clone(),
                             error: err.to_string(),
                         });
                         return;
@@ -839,6 +803,52 @@ impl TuiApp {
         if let Some(task) = self.stream_task.take() {
             task.abort();
         }
+        self.stream_connect_in_flight = false;
+        self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
+    }
+
+    fn accepts_diagnostic_message(&self, generation: u64, agent_id: &str) -> bool {
+        generation == self.stream_connect_request_id
+            && self.selected_agent_id() == Some(agent_id)
+            && matches!(self.overlay, OverlayState::Events { .. })
+    }
+
+    fn sync_diagnostic_stream(&mut self) {
+        if !matches!(self.overlay, OverlayState::Events { .. }) {
+            if self.stream_task.is_some() || self.stream_connect_in_flight {
+                self.stop_stream_task();
+            }
+            self.reconnect_deadline = None;
+            return;
+        }
+        if self.projection.is_some()
+            && self.stream_task.is_none()
+            && !self.stream_connect_in_flight
+            && self
+                .reconnect_deadline
+                .is_none_or(|deadline| Instant::now() >= deadline)
+        {
+            self.begin_connect_event_stream();
+        }
+    }
+
+    fn invalidate_conversation_scope(&mut self) {
+        self.stop_stream_task();
+        self.reconnect_deadline = None;
+        if let Some(projection) = &mut self.projection {
+            projection.clear_event_history();
+            projection.cursor = None;
+            projection.event_log_epoch = None;
+        }
+        if self.snapshot_refresh_in_flight
+            && self.snapshot_refresh_agent_id.as_deref() == self.selected_agent_id()
+        {
+            self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
+            self.snapshot_refresh_in_flight = false;
+            self.snapshot_refresh_agent_id = None;
+            self.state_refresh.settled(Instant::now(), true);
+        }
+        self.state_refresh.hint(Instant::now());
     }
 
     pub(super) fn process_runtime_messages(&mut self) -> bool {
@@ -873,12 +883,29 @@ impl TuiApp {
                     reset,
                 } => {
                     if generation == self.conversation_generation {
-                        if reset {
+                        if reset && self.conversation.is_some() {
+                            self.invalidate_conversation_scope();
                             self.conversation = None;
                             self.chat_scroll.follow_tail();
                             self.chat_text_cache.borrow_mut().take();
                         }
+                        self.connection_state = TuiConnectionState::Reconnecting {
+                            attempt: 1,
+                            retry_after: REFRESH_RETRY_DELAY,
+                            last_error: error.clone(),
+                        };
                         self.status_line = format!("Conversation reconnecting: {error}");
+                    }
+                }
+                TuiRuntimeMessage::ConversationConnected {
+                    generation,
+                    agent_id,
+                } => {
+                    if generation == self.conversation_generation
+                        && self.selected_agent_id() == Some(agent_id.as_str())
+                    {
+                        self.connection_state = TuiConnectionState::Streaming;
+                        self.state_refresh.hint(Instant::now());
                     }
                 }
                 TuiRuntimeMessage::ConversationLoaded {
@@ -894,15 +921,42 @@ impl TuiApp {
                             .iter()
                             .any(|agent| agent.identity.agent_id == agent_id)
                     {
+                        let scope_changed = self.conversation.as_ref().is_some_and(|previous| {
+                            let old = previous.state_refresh_head();
+                            let new = model.state_refresh_head();
+                            (old.0, old.1, old.2) != (new.0, new.1, new.2)
+                        });
+                        if scope_changed {
+                            self.invalidate_conversation_scope();
+                        }
+                        if self.conversation.as_ref().is_none_or(|previous| {
+                            previous.state_refresh_head() != model.state_refresh_head()
+                        }) {
+                            self.state_refresh.hint(Instant::now());
+                        }
                         self.conversation = Some(model);
                         self.chat_text_cache.borrow_mut().take();
                     }
                 }
-                TuiRuntimeMessage::Event(event) => self.apply_stream_event(event),
-                TuiRuntimeMessage::Disconnected { error } => {
-                    disconnected = true;
-                    self.schedule_reconnect(error.clone());
-                    self.status_line = format!("Event stream disconnected: {error}");
+                TuiRuntimeMessage::Event {
+                    generation,
+                    agent_id,
+                    event,
+                } => {
+                    if self.accepts_diagnostic_message(generation, &agent_id) {
+                        self.apply_stream_event(event);
+                    }
+                }
+                TuiRuntimeMessage::Disconnected {
+                    generation,
+                    agent_id,
+                    error,
+                } => {
+                    if self.accepts_diagnostic_message(generation, &agent_id) {
+                        self.stop_stream_task();
+                        self.schedule_reconnect(error.clone());
+                        self.status_line = format!("Raw diagnostics disconnected: {error}");
+                    }
                 }
                 TuiRuntimeMessage::AgentListLoaded(result) => self.apply_loaded_agents(result),
                 TuiRuntimeMessage::ModelsLoaded(result) => self.apply_loaded_models(result),
@@ -919,22 +973,6 @@ impl TuiApp {
                     checkpoint,
                     result,
                 ),
-                TuiRuntimeMessage::SnapshotBootstrapStatus {
-                    request_id,
-                    agent_id,
-                    status_line,
-                } => self.apply_snapshot_bootstrap_status(request_id, agent_id, status_line),
-                TuiRuntimeMessage::EventHistoryPageLoaded {
-                    request_id,
-                    agent_id,
-                    result,
-                } => self.apply_event_history_page_result(request_id, agent_id, result),
-                TuiRuntimeMessage::MessagesHydrated { agent_id, result } => {
-                    self.apply_messages_hydrated(agent_id, result)
-                }
-                TuiRuntimeMessage::BriefsHydrated { agent_id, result } => {
-                    self.apply_briefs_hydrated(agent_id, result)
-                }
                 TuiRuntimeMessage::EventStreamOpened {
                     request_id,
                     agent_id,
@@ -943,272 +981,27 @@ impl TuiApp {
             }
         }
 
-        if disconnected {
-            if matches!(self.connection_state, TuiConnectionState::Streaming) {
-                self.schedule_reconnect("event stream reader stopped".into());
-                self.status_line = "Event stream reader stopped unexpectedly".into();
-            }
-            self.stop_stream_task();
-        }
-
         disconnected
     }
 
     pub(super) fn apply_stream_event(&mut self, event: AgentStreamEvent) {
         if let Some(projection) = self.projection.as_mut() {
-            projection.apply_stream_event(event, &self.log_writer, OperatorDisplayMode::Info);
+            projection.append_diagnostic_event(event, &self.log_writer);
             self.last_event_at = Some(Local::now());
-            self.apply_projection_view();
-            self.schedule_projection_refresh_if_stale();
-            self.begin_message_hydration_if_needed();
-            self.begin_brief_hydration_if_needed();
         }
     }
 
-    pub(super) fn maybe_begin_load_older_events(&mut self) {
-        if let Some(model) = &self.conversation {
-            if model.has_older() && self.chat_scroll.is_at_top(self.chat_max_scroll) {
-                self.chat_scroll
-                    .prepare_for_history_prepend(self.chat_max_scroll);
-                if let Some(tx) = &self.conversation_history_tx {
-                    let _ = tx.try_send(super::conversation::ConversationRequest::Older);
-                }
+    pub(super) fn maybe_begin_load_older_conversation(&mut self) {
+        let Some(model) = &self.conversation else {
+            self.status_line = "Conversation loading or recovering; history is not ready".into();
+            return;
+        };
+        if model.has_older() && self.chat_scroll.is_at_top(self.chat_max_scroll) {
+            self.chat_scroll
+                .prepare_for_history_prepend(self.chat_max_scroll);
+            if let Some(tx) = &self.conversation_history_tx {
+                let _ = tx.try_send(super::conversation::ConversationRequest::Older);
             }
-            return;
-        }
-        if self.event_history_load_in_flight {
-            return;
-        }
-        if !self.chat_scroll.is_at_top(self.chat_max_scroll) {
-            return;
-        }
-        let Some(agent_id) = self.selected_agent_id().map(ToString::to_string) else {
-            return;
-        };
-        let Some(projection) = self.projection.as_ref() else {
-            return;
-        };
-        if !projection.history_has_older {
-            return;
-        }
-        let Some(cursor) = projection.history_oldest_cursor.clone() else {
-            return;
-        };
-
-        self.event_history_load_in_flight = true;
-        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
-        let request_id = self.event_history_request_id;
-        let client = self.client.clone();
-        let tx = self.runtime_tx.clone();
-        let max_level = OperatorDisplayMode::Info.name().to_string();
-        self.status_line = "Loading older events".into();
-        tokio::spawn({
-            let agent_id = agent_id.clone();
-            async move {
-                let result = client
-                    .agent_events_page(
-                        &agent_id,
-                        EventPageRequest {
-                            before_seq: Some(cursor),
-                            limit: Some(EVENT_HISTORY_PAGE_LIMIT),
-                            order: Some("desc".into()),
-                            max_level: Some(max_level),
-                            ..Default::default()
-                        },
-                    )
-                    .await
-                    .map_err(|err| err.to_string());
-                let _ = tx.send(TuiRuntimeMessage::EventHistoryPageLoaded {
-                    request_id,
-                    agent_id,
-                    result,
-                });
-            }
-        });
-    }
-
-    pub(super) fn apply_event_history_page_result(
-        &mut self,
-        request_id: u64,
-        agent_id: String,
-        result: Result<EventPageResponse, String>,
-    ) {
-        if request_id != self.event_history_request_id {
-            return;
-        }
-        self.event_history_load_in_flight = false;
-        let page = match result {
-            Ok(page) => page,
-            Err(error) => {
-                self.status_line = format!("Older event load failed for {agent_id}: {error}");
-                return;
-            }
-        };
-        self.chat_scroll
-            .prepare_for_history_prepend(self.chat_max_scroll);
-        let (added, has_older) = {
-            let Some(projection) = self.projection.as_mut() else {
-                return;
-            };
-            if projection.agent.identity.agent_id != agent_id {
-                return;
-            }
-            projection.set_event_log_epoch(&page.event_log_epoch);
-            if page.contract_version != crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION {
-                self.status_line = format!(
-                    "Older event load rejected: unsupported contract version {}",
-                    page.contract_version
-                );
-                return;
-            }
-            let added = projection.prepend_event_history_page_with_contract_version(
-                page.events,
-                page.oldest_seq,
-                page.has_older,
-                page.contract_version,
-            );
-            (added, projection.history_has_older)
-        };
-        if added > 0 {
-            self.chat_text_cache.borrow_mut().take();
-            self.apply_projection_view();
-            self.begin_message_hydration_if_needed();
-            self.begin_brief_hydration_if_needed();
-            self.status_line = format!("Loaded {added} older events");
-        } else if has_older {
-            self.status_line = "No new older events in page".into();
-        } else if self
-            .projection
-            .as_ref()
-            .is_some_and(|projection| projection.event_history_at_local_cap())
-        {
-            self.status_line = "Reached local event history limit".into();
-        } else {
-            self.status_line = "Reached beginning of event history".into();
-        }
-    }
-
-    pub(super) fn begin_message_hydration_if_needed(&mut self) {
-        let Some(projection) = self.projection.as_ref() else {
-            return;
-        };
-        let agent_id = projection.agent.identity.agent_id.clone();
-        if self.message_hydration_in_flight.as_ref() == Some(&agent_id) {
-            return;
-        }
-        let message_ids = projection.missing_message_ids_for_hydration();
-        if message_ids.is_empty() {
-            return;
-        }
-        self.message_hydration_in_flight = Some(agent_id.clone());
-        let client = self.client.clone();
-        let tx = self.runtime_tx.clone();
-        tokio::spawn(async move {
-            let result = client
-                .agent_messages_batch_get(&agent_id, message_ids)
-                .await
-                .map(|response| response.messages)
-                .map_err(|err| err.to_string());
-            let _ = tx.send(TuiRuntimeMessage::MessagesHydrated { agent_id, result });
-        });
-    }
-
-    pub(super) fn apply_messages_hydrated(
-        &mut self,
-        agent_id: String,
-        result: Result<Vec<MessageEnvelope>, String>,
-    ) {
-        if self.message_hydration_in_flight.as_ref() == Some(&agent_id) {
-            self.message_hydration_in_flight = None;
-        }
-        let Some(projection) = self.projection.as_mut() else {
-            self.begin_message_hydration_if_needed();
-            return;
-        };
-        if projection.agent.identity.agent_id != agent_id {
-            self.begin_message_hydration_if_needed();
-            return;
-        }
-        let messages = match result {
-            Ok(messages) => messages,
-            Err(error) => {
-                self.status_line = format!("Message hydration failed for {agent_id}: {error}");
-                return;
-            }
-        };
-        if projection.hydrate_messages(messages) {
-            self.chat_text_cache.borrow_mut().take();
-            self.prune_optimistic_operator_messages();
-            self.apply_projection_view();
-        }
-    }
-
-    pub(super) fn begin_brief_hydration_if_needed(&mut self) {
-        let Some(projection) = self.projection.as_ref() else {
-            return;
-        };
-        let agent_id = projection.agent.identity.agent_id.clone();
-        if self.brief_hydration_in_flight.as_ref() == Some(&agent_id) {
-            return;
-        }
-        let entry_ids = projection.missing_brief_entry_ids_for_hydration();
-        let brief_ids = projection.missing_inline_brief_ids_for_hydration();
-        if entry_ids.is_empty() && brief_ids.is_empty() {
-            return;
-        }
-        self.brief_hydration_in_flight = Some(agent_id.clone());
-        let client = self.client.clone();
-        let tx = self.runtime_tx.clone();
-        tokio::spawn(async move {
-            let result = async {
-                let entries = if entry_ids.is_empty() {
-                    Vec::new()
-                } else {
-                    client
-                        .agent_transcript_entries_batch_get(&agent_id, entry_ids)
-                        .await?
-                        .entries
-                };
-                let mut briefs = Vec::with_capacity(brief_ids.len());
-                for brief_id in brief_ids {
-                    briefs.push(client.agent_brief(&agent_id, &brief_id).await?);
-                }
-                Ok(BriefHydrationResult { entries, briefs })
-            }
-            .await
-            .map_err(|err: anyhow::Error| err.to_string());
-            let _ = tx.send(TuiRuntimeMessage::BriefsHydrated { agent_id, result });
-        });
-    }
-
-    pub(super) fn apply_briefs_hydrated(
-        &mut self,
-        agent_id: String,
-        result: Result<BriefHydrationResult, String>,
-    ) {
-        if self.brief_hydration_in_flight.as_ref() == Some(&agent_id) {
-            self.brief_hydration_in_flight = None;
-        }
-        let Some(projection) = self.projection.as_mut() else {
-            self.begin_brief_hydration_if_needed();
-            return;
-        };
-        if projection.agent.identity.agent_id != agent_id {
-            self.begin_brief_hydration_if_needed();
-            return;
-        }
-        let hydrated = match result {
-            Ok(hydrated) => hydrated,
-            Err(error) => {
-                self.status_line = format!("Brief hydration failed for {agent_id}: {error}");
-                return;
-            }
-        };
-        let changed = projection.hydrate_brief_texts(hydrated.entries)
-            | projection.hydrate_brief_records(hydrated.briefs);
-        if changed {
-            self.chat_text_cache.borrow_mut().take();
-            self.apply_projection_view();
         }
     }
 
@@ -1263,36 +1056,10 @@ impl TuiApp {
         self.reconnect_attempt = self.reconnect_attempt.saturating_add(1);
         let retry_after = reconnect_delay_for_attempt(self.reconnect_attempt);
         self.reconnect_deadline = Some(Instant::now() + retry_after);
-        self.refresh_deadline = None;
-        self.connection_state = TuiConnectionState::Reconnecting {
-            attempt: self.reconnect_attempt,
-            retry_after,
-            last_error: error,
-        };
-    }
-
-    pub(super) fn schedule_refresh(&mut self, reason: String) {
-        self.refresh_deadline = Some(Instant::now() + REFRESH_RETRY_DELAY);
-        self.reconnect_deadline = None;
-        self.connection_state = TuiConnectionState::RefreshRequired { reason };
-    }
-
-    pub(super) fn schedule_projection_refresh_if_stale(&mut self) {
-        let Some(projection) = self.projection.as_ref() else {
-            return;
-        };
-        if projection.stale_slices.is_empty() || self.refresh_deadline.is_some() {
-            return;
-        }
-        if !matches!(self.connection_state, TuiConnectionState::Streaming) {
-            return;
-        }
-        let summary = self
-            .stale_slice_summary()
-            .unwrap_or_else(|| "projection".into());
-        self.schedule_refresh(format!(
-            "projection stale: {summary}; refreshing from /state"
-        ));
+        self.status_line = format!(
+            "Raw diagnostics retrying in {}: {error}",
+            format_duration(retry_after)
+        );
     }
 
     pub(super) fn schedule_agent_list_refresh(&mut self) {
@@ -1305,16 +1072,13 @@ impl TuiApp {
 
     pub(super) fn set_disconnected(&mut self, reason: String) {
         self.stop_stream_task();
-        self.refresh_deadline = None;
         self.reconnect_deadline = None;
         self.snapshot_refresh_in_flight = false;
         self.stream_connect_in_flight = false;
-        self.event_history_load_in_flight = false;
-        self.message_hydration_in_flight = None;
-        self.brief_hydration_in_flight = None;
+        self.snapshot_refresh_agent_id = None;
+        self.state_refresh = Default::default();
         self.snapshot_refresh_request_id = self.snapshot_refresh_request_id.saturating_add(1);
         self.stream_connect_request_id = self.stream_connect_request_id.saturating_add(1);
-        self.event_history_request_id = self.event_history_request_id.saturating_add(1);
         self.connection_state = TuiConnectionState::Disconnected {
             reason: reason.clone(),
         };
@@ -1325,7 +1089,6 @@ impl TuiApp {
         TuiRuntimeCheckpoint {
             connection_state: self.connection_state.clone(),
             reconnect_deadline: self.reconnect_deadline,
-            refresh_deadline: self.refresh_deadline,
             reconnect_attempt: self.reconnect_attempt,
         }
     }
@@ -1333,7 +1096,6 @@ impl TuiApp {
     fn restore_runtime_checkpoint(&mut self, checkpoint: TuiRuntimeCheckpoint) {
         self.connection_state = checkpoint.connection_state;
         self.reconnect_deadline = checkpoint.reconnect_deadline;
-        self.refresh_deadline = checkpoint.refresh_deadline;
         self.reconnect_attempt = checkpoint.reconnect_attempt;
     }
 
@@ -1351,7 +1113,6 @@ impl TuiApp {
                     format_duration(*retry_after)
                 )
             }
-            TuiConnectionState::RefreshRequired { .. } => "refresh-required".into(),
             TuiConnectionState::Disconnected { .. } => "disconnected".into(),
         };
         format!("{state} via {}", self.client.connection_summary())
@@ -1361,33 +1122,9 @@ impl TuiApp {
     pub(super) fn connection_detail(&self) -> Option<&str> {
         match &self.connection_state {
             TuiConnectionState::Reconnecting { last_error, .. } => Some(last_error.as_str()),
-            TuiConnectionState::RefreshRequired { reason } => Some(reason.as_str()),
             TuiConnectionState::Disconnected { reason } => Some(reason.as_str()),
             TuiConnectionState::Bootstrapping | TuiConnectionState::Streaming => None,
         }
-    }
-
-    pub(super) fn stale_slice_summary(&self) -> Option<String> {
-        let projection = self.projection.as_ref()?;
-        if projection.stale_slices.is_empty() {
-            return None;
-        }
-
-        let labels = projection
-            .stale_slices
-            .iter()
-            .map(|slice| match slice {
-                ProjectionSlice::Agent => "agent",
-                ProjectionSlice::Session => "session",
-                ProjectionSlice::Tasks => "tasks",
-                ProjectionSlice::Timers => "timers",
-                ProjectionSlice::WorkItems => "work-items",
-                ProjectionSlice::ExternalTriggers => "external-triggers",
-                ProjectionSlice::OperatorNotifications => "operator-notifications",
-                ProjectionSlice::Workspace => "workspace",
-            })
-            .collect::<Vec<_>>();
-        Some(labels.join(", "))
     }
 }
 

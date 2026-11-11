@@ -213,6 +213,30 @@ roster (`/agents/list` for bootstrap, `/agents/snapshot` for refresh), not the
 complete operator tree. Private child identities remain available to explicit
 control-plane inspection; they are not default conversation navigation entries.
 
+State bootstrap, refresh and recovery read `/state` without waiting for a raw
+event page. Conversation owns the first page and all historical navigation;
+while unavailable the client shows loading/recovery rather than falling back to
+`/events`. Replacing State for the same agent incarnation must not restart its
+Conversation observer or discard loaded history and scroll anchors.
+
+As in the Web GUI, Conversation readiness, a committed scope/`through_seq`
+change (including an empty change batch), and stream reconnection invalidate
+the selected agent's State view. Checkpoints are refresh hints, not an atomic
+State watermark. Coalesce hints for 300ms, allow one State request in flight,
+retain hints received during that request, and start automatic reads no more
+often than every 5s. Poll only the selected agent: 5s while running or with
+active tasks, 30s otherwise. Failures retain the last successful view and retry
+with bounded backoff. Explicit refresh may bypass the automatic interval but
+not failure backoff. These rules provide eventual convergence even when an
+immediate read hits an older server cache; they do not promise atomic snapshots
+across resources.
+
+Normal conversation navigation does not attach `/events/stream`. The Raw Events
+overlay attaches it on demand for a bounded, live diagnostic tail only, and
+detaches on close. Diagnostic payloads never reduce into State or Conversation.
+Diagnostic reconnect/cursor expiry must not reset Conversation or block State
+refresh. Selection generations fence late diagnostic events and disconnects.
+
 The TUI has one conversation page rather than separate result and execution
 pages or an operator-selected display level. Historical turns load summaries
 and canonical Briefs without replaying verbose event history. Active turns

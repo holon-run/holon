@@ -12,8 +12,7 @@ use super::{
     render::draw,
     runtime::{
         is_cursor_not_found_error, reconnect_delay_for_attempt, AgentListChange,
-        TuiConnectionState, TuiRuntimeMessage, BOOTSTRAP_EVENT_TAIL_LIMIT,
-        EVENT_HISTORY_PAGE_LIMIT,
+        TuiConnectionState, TuiRuntimeMessage,
     },
     state::{tui_state_path, TuiClientState},
     view_model::{HeaderViewModel, StatusbarViewModel},
@@ -45,6 +44,9 @@ use std::{path::PathBuf, time::Instant};
 
 #[cfg(holon_lib_test_shard = "d")]
 mod startup;
+
+#[cfg(holon_lib_test_shard = "d")]
+mod sync;
 
 pub(super) fn test_config() -> AppConfig {
     let temp = tempfile::tempdir().unwrap().keep();
@@ -3798,16 +3800,15 @@ fn projection_deduplicates_stream_events_using_outer_id_fallback() {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[test]
-fn projection_deduplicates_duplicates_within_history_page() {
+fn projection_deduplicates_duplicates_within_replaced_event_window() {
     let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "evt-0"));
-    projection.replace_event_window(Vec::new(), None);
-    let event = work_item_written_event_envelope("evt-history-work", 42, "default", "history work");
+    let event = work_item_written_event_envelope("evt-window-work", 42, "default", "window work");
 
-    let added = projection.prepend_event_history_page(vec![event.clone(), event], Some(42), true);
+    projection.replace_event_window(vec![event.clone(), event], Some(42));
 
-    assert_eq!(added, 1);
     assert_eq!(projection.event_log().len(), 1);
-    assert_eq!(projection.event_log()[0].id, "evt-history-work");
+    assert_eq!(projection.event_log()[0].id, "evt-window-work");
+    assert_eq!(projection.cursor, Some(42));
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -3971,33 +3972,6 @@ fn slim_projection_operator_message_hydrates_from_message_evidence() {
             ..
         } if body == "durable hydrated text"
     ));
-}
-
-#[cfg(holon_lib_test_shard = "d")]
-#[tokio::test]
-async fn stale_message_hydration_completion_does_not_block_selected_agent() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-
-    let snapshot = sample_snapshot("default", "evt-0");
-    let mut projection = TuiProjection::from_snapshot(snapshot);
-    projection.replace_event_window(
-        vec![slim_operator_message_event_envelope(
-            "message-1",
-            0,
-            "default",
-        )],
-        Some(0),
-    );
-    app.projection = Some(projection);
-    app.message_hydration_in_flight = Some("stale-agent".into());
-
-    app.apply_messages_hydrated("stale-agent".into(), Ok(Vec::new()));
-
-    assert_eq!(app.message_hydration_in_flight, Some("default".to_string()));
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -4206,7 +4180,7 @@ fn events_overlay_selection_stays_pinned_to_same_event_id() {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[test]
-fn snapshot_refresh_failure_updates_status_line() {
+fn snapshot_refresh_failure_preserves_view_and_uses_state_backoff() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -4215,6 +4189,17 @@ fn snapshot_refresh_failure_updates_status_line() {
     app.agents = vec![sample_agent_summary("default")];
     app.selected_agent = 0;
     app.snapshot_refresh_request_id = 7;
+    app.snapshot_refresh_in_flight = true;
+    app.snapshot_refresh_agent_id = Some("default".into());
+    let mut snapshot = sample_snapshot("default", "evt-0");
+    snapshot.session.pending_count = 3;
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    app.connection_state = TuiConnectionState::Streaming;
+    app.chat_max_scroll = 12;
+    app.chat_scroll.scroll_with_key(KeyCode::Up, 12);
+    let generation = app.conversation_generation;
+    let now = Instant::now();
+    app.state_refresh.started(now);
 
     app.apply_snapshot_result(7, 0, "default".into(), None, Err("network down".into()));
 
@@ -4224,8 +4209,20 @@ fn snapshot_refresh_failure_updates_status_line() {
     );
     assert!(matches!(
         app.connection_state,
-        TuiConnectionState::RefreshRequired { .. }
+        TuiConnectionState::Streaming
     ));
+    assert_eq!(app.projection.as_ref().unwrap().session.pending_count, 3);
+    assert_eq!(app.conversation_generation, generation);
+    assert_eq!(app.chat_scroll.effective_scroll(12), 11);
+    assert!(!app.snapshot_refresh_in_flight);
+    assert!(app.snapshot_refresh_agent_id.is_none());
+    app.state_refresh.request(now);
+    assert!(!app
+        .state_refresh
+        .is_due(now + std::time::Duration::from_secs(4), false));
+    assert!(app
+        .state_refresh
+        .is_due(Instant::now() + std::time::Duration::from_secs(6), false));
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -4447,89 +4444,239 @@ fn reconnect_backoff_increases_and_caps() {
 }
 
 #[cfg(holon_lib_test_shard = "d")]
-#[test]
-fn bootstrap_event_tail_limit_stays_small_for_remote_startup() {
-    assert_eq!(BOOTSTRAP_EVENT_TAIL_LIMIT, 20);
-}
-
-#[cfg(holon_lib_test_shard = "d")]
-#[test]
-fn event_history_page_limit_stays_screen_sized_for_filtered_loads() {
-    assert_eq!(EVENT_HISTORY_PAGE_LIMIT, 32);
-}
-
-#[cfg(holon_lib_test_shard = "d")]
-#[test]
-fn reader_idle_timeout_message_schedules_reconnect() {
-    let client = LocalClient::new(test_config()).unwrap();
+#[tokio::test]
+async fn raw_diagnostic_stream_is_opened_only_for_events_overlay_and_stopped_on_close() {
+    let client = slow_remote_client().await;
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
+    app.agents = vec![sample_agent_summary("default")];
+    app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+        "default", "cursor-1",
+    )));
     app.connection_state = TuiConnectionState::Streaming;
-    let tx = app.runtime_tx.clone();
+    let generation = app.stream_connect_request_id;
 
-    tx.send(TuiRuntimeMessage::Disconnected {
-        error: "event stream idle timeout after 45s".into(),
-    })
-    .unwrap();
-    assert!(app.process_runtime_messages());
+    for overlay in [
+        OverlayState::None,
+        OverlayState::AgentState { scroll: 0 },
+        OverlayState::Transcript { scroll: 0 },
+        OverlayState::TurnDetails {
+            selected_id: None,
+            detail_scroll: 0,
+        },
+        OverlayState::Agents { selected: 0 },
+        OverlayState::Tasks {
+            selected: 0,
+            detail_scroll: 0,
+        },
+    ] {
+        app.overlay = overlay;
+        app.tick().await.unwrap();
+        assert!(!app.stream_connect_in_flight);
+        assert!(app.stream_task.is_none());
+        assert_eq!(app.stream_connect_request_id, generation);
+    }
 
+    app.overlay = OverlayState::Events {
+        selected_event_id: None,
+        detail_scroll: 0,
+    };
+    app.tick().await.unwrap();
+    assert!(app.stream_connect_in_flight);
+    let opening_generation = app.stream_connect_request_id;
+    assert!(opening_generation > generation);
+
+    app.overlay = OverlayState::None;
+    app.tick().await.unwrap();
+    assert!(!app.stream_connect_in_flight);
+    assert!(app.stream_task.is_none());
+    assert!(app.stream_connect_request_id > opening_generation);
+    assert!(app.reconnect_deadline.is_none());
+    assert!(!app.snapshot_refresh_in_flight);
     assert!(matches!(
         app.connection_state,
-        TuiConnectionState::Reconnecting { attempt: 1, .. }
+        TuiConnectionState::Streaming
     ));
-    assert_eq!(
-        app.connection_detail(),
-        Some("event stream idle timeout after 45s")
-    );
-    assert!(app.reconnect_deadline.is_some());
 }
 
 #[cfg(holon_lib_test_shard = "d")]
 #[test]
-fn disconnect_message_schedules_reconnect() {
-    let client = LocalClient::new(test_config()).unwrap();
+fn diagnostic_disconnect_retries_without_reconnecting_conversation_or_refreshing_state() {
+    for error in ["event stream idle timeout after 45s", "socket closed"] {
+        let mut app = test_app();
+        app.agents = vec![sample_agent_summary("default")];
+        app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+            "default", "cursor-1",
+        )));
+        app.overlay = OverlayState::Events {
+            selected_event_id: None,
+            detail_scroll: 0,
+        };
+        app.connection_state = TuiConnectionState::Streaming;
+        app.stream_connect_request_id = 7;
+        let generation = app.conversation_generation;
+
+        app.runtime_tx
+            .send(TuiRuntimeMessage::Disconnected {
+                generation: 7,
+                agent_id: "default".into(),
+                error: error.into(),
+            })
+            .unwrap();
+        assert!(!app.process_runtime_messages());
+
+        assert!(matches!(
+            app.connection_state,
+            TuiConnectionState::Streaming
+        ));
+        assert!(app.connection_detail().is_none());
+        assert_eq!(app.conversation_generation, generation);
+        assert_eq!(app.reconnect_attempt, 1);
+        assert!(app.reconnect_deadline.is_some());
+        assert!(app.status_line.contains(error));
+        assert!(!app.snapshot_refresh_in_flight);
+        assert!(!app
+            .state_refresh
+            .is_due(Instant::now() + std::time::Duration::from_secs(60), false));
+    }
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[test]
+fn stale_or_hidden_diagnostic_messages_are_ignored() {
+    for (generation, agent_id, overlay) in [
+        (
+            6,
+            "default",
+            OverlayState::Events {
+                selected_event_id: None,
+                detail_scroll: 0,
+            },
+        ),
+        (
+            7,
+            "beta",
+            OverlayState::Events {
+                selected_event_id: None,
+                detail_scroll: 0,
+            },
+        ),
+        (7, "default", OverlayState::None),
+    ] {
+        let mut app = test_app();
+        app.agents = vec![sample_agent_summary("default")];
+        app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
+            "default", "cursor-1",
+        )));
+        app.connection_state = TuiConnectionState::Streaming;
+        app.stream_connect_request_id = 7;
+        app.overlay = overlay;
+        let status = app.status_line.clone();
+        let envelope = work_item_written_event_envelope("evt-old", 42, "default", "old work");
+        app.runtime_tx
+            .send(TuiRuntimeMessage::Event {
+                generation,
+                agent_id: agent_id.into(),
+                event: AgentStreamEvent {
+                    contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
+                    id: envelope.id.clone(),
+                    event: envelope.event_type.clone(),
+                    data: envelope,
+                },
+            })
+            .unwrap();
+        app.runtime_tx
+            .send(TuiRuntimeMessage::Disconnected {
+                generation,
+                agent_id: agent_id.into(),
+                error: "stale disconnect".into(),
+            })
+            .unwrap();
+        assert!(!app.process_runtime_messages());
+
+        assert!(app.projection.as_ref().unwrap().event_log().is_empty());
+        assert!(matches!(
+            app.connection_state,
+            TuiConnectionState::Streaming
+        ));
+        assert_eq!(app.status_line, status);
+        assert_eq!(app.stream_connect_request_id, 7);
+        assert_eq!(app.reconnect_attempt, 0);
+        assert!(app.reconnect_deadline.is_none());
+        assert!(!app
+            .state_refresh
+            .is_due(Instant::now() + std::time::Duration::from_secs(60), false));
+    }
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn diagnostic_cursor_expiry_reconnects_live_without_rebuilding_state() {
+    let router = axum::Router::new().fallback(|| async {
+        (
+            axum::http::StatusCode::NOT_FOUND,
+            axum::Json(json!({
+                "error": "cursor evt_123 was not found",
+                "code": "cursor_not_found",
+            })),
+        )
+    });
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let client = LocalClient::remote(test_config(), format!("http://{addr}"), "secret").unwrap();
     let mut app = TuiApp::new(
         client,
         crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
     );
-    let tx = app.runtime_tx.clone();
+    app.agents = vec![sample_agent_summary("default")];
+    let mut projection = TuiProjection::from_snapshot(sample_snapshot("default", "cursor-1"));
+    projection.replace_event_window(
+        vec![work_item_written_event_envelope(
+            "evt-old", 42, "default", "old work",
+        )],
+        Some(42),
+    );
+    app.projection = Some(projection);
     app.connection_state = TuiConnectionState::Streaming;
-
-    tx.send(TuiRuntimeMessage::Disconnected {
-        error: "socket closed".into(),
-    })
+    app.overlay = OverlayState::Events {
+        selected_event_id: None,
+        detail_scroll: 0,
+    };
+    let generation = app.conversation_generation;
+    let request_id = app.snapshot_refresh_request_id;
+    app.begin_connect_event_stream();
+    let message = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        app.runtime_messages.recv(),
+    )
+    .await
+    .expect("diagnostic stream open should settle")
     .unwrap();
-    assert!(app.process_runtime_messages());
+    assert!(matches!(
+        &message,
+        TuiRuntimeMessage::EventStreamOpened { .. }
+    ));
+    app.runtime_tx.send(message).unwrap();
+    assert!(!app.process_runtime_messages());
 
+    assert!(app.projection.as_ref().unwrap().cursor.is_none());
+    assert!(app.projection.as_ref().unwrap().event_log().is_empty());
     assert!(matches!(
         app.connection_state,
-        TuiConnectionState::Reconnecting { attempt: 1, .. }
+        TuiConnectionState::Streaming
     ));
-    assert_eq!(app.connection_detail(), Some("socket closed"));
+    assert_eq!(app.conversation_generation, generation);
+    assert_eq!(app.snapshot_refresh_request_id, request_id);
+    assert!(!app.snapshot_refresh_in_flight);
     assert!(app.reconnect_deadline.is_some());
-}
-
-#[cfg(holon_lib_test_shard = "d")]
-#[test]
-fn cursor_expiry_marks_refresh_required() {
-    let client = LocalClient::new(test_config()).unwrap();
-    let mut app = TuiApp::new(
-        client,
-        crate::tui::logging::TuiLogWriter::new_temp().unwrap(),
-    );
-    app.schedule_refresh("cursor evt_123 was not found".into());
-
-    assert!(matches!(
-        app.connection_state,
-        TuiConnectionState::RefreshRequired { .. }
-    ));
-    assert_eq!(
-        app.connection_detail(),
-        Some("cursor evt_123 was not found")
-    );
-    assert!(app.refresh_deadline.is_some());
+    assert!(app.status_line.contains("reconnecting live"));
+    assert!(!app
+        .state_refresh
+        .is_due(Instant::now() + std::time::Duration::from_secs(60), false));
+    server.abort();
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -4552,7 +4699,7 @@ fn cursor_not_found_detection_uses_typed_http_error() {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[test]
-fn stale_projection_event_schedules_refresh() {
+fn diagnostic_event_does_not_reduce_state_or_schedule_refresh() {
     let client = LocalClient::new(test_config()).unwrap();
     let mut app = TuiApp::new(
         client,
@@ -4560,43 +4707,58 @@ fn stale_projection_event_schedules_refresh() {
     );
     app.agents = vec![sample_agent_summary("default")];
     app.selected_agent = 0;
-    app.projection = Some(TuiProjection::from_snapshot(sample_snapshot(
-        "default", "cursor-1",
-    )));
+    let mut snapshot = sample_snapshot("default", "cursor-1");
+    snapshot.session.pending_count = 3;
+    app.projection = Some(TuiProjection::from_snapshot(snapshot));
+    app.overlay = OverlayState::Events {
+        selected_event_id: None,
+        detail_scroll: 0,
+    };
     app.connection_state = TuiConnectionState::Streaming;
     let tx = app.runtime_tx.clone();
 
-    tx.send(TuiRuntimeMessage::Event(AgentStreamEvent {
-        contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-        id: "evt-stale".into(),
-        event: "callback_delivered".into(),
-        data: StreamEventEnvelope {
-            projection_effect: None,
-            event_log_epoch: Some("epoch-test".into()),
-            payload_schema: None,
-            payload_schema_version: None,
+    tx.send(TuiRuntimeMessage::Event {
+        generation: app.stream_connect_request_id,
+        agent_id: "default".into(),
+        event: AgentStreamEvent {
+            contract_version: crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
             id: "evt-stale".into(),
-            event_seq: 2,
-            ts: Utc::now(),
-            agent_id: "default".into(),
-            event_type: "callback_delivered".into(),
-            payload: json!({
-                "external_trigger_id": "cb-2",
-                "agent_id": "default"
-            }),
+            event: "callback_delivered".into(),
+            data: StreamEventEnvelope {
+                projection_effect: None,
+                event_log_epoch: Some("epoch-test".into()),
+                payload_schema: None,
+                payload_schema_version: None,
+                id: "evt-stale".into(),
+                event_seq: 2,
+                ts: Utc::now(),
+                agent_id: "default".into(),
+                event_type: "callback_delivered".into(),
+                payload: json!({
+                    "external_trigger_id": "cb-2",
+                    "agent_id": "default"
+                }),
+            },
         },
-    }))
+    })
     .unwrap();
 
     assert!(!app.process_runtime_messages());
     assert!(matches!(
         app.connection_state,
-        TuiConnectionState::RefreshRequired { .. }
+        TuiConnectionState::Streaming
     ));
-    assert!(app
-        .connection_detail()
-        .is_some_and(|detail| detail.contains("projection stale")));
-    assert!(app.refresh_deadline.is_some());
+    assert!(app.connection_detail().is_none());
+    assert_eq!(app.projection.as_ref().unwrap().session.pending_count, 3);
+    assert_eq!(app.projection.as_ref().unwrap().event_log().len(), 1);
+    assert_eq!(
+        app.projection.as_ref().unwrap().event_log()[0].id,
+        "evt-stale"
+    );
+    assert!(!app.snapshot_refresh_in_flight);
+    assert!(!app
+        .state_refresh
+        .is_due(Instant::now() + std::time::Duration::from_secs(60), false));
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -4906,8 +5068,7 @@ async fn remote_tick_does_not_await_slow_snapshot_refresh() {
     );
     app.agents = vec![sample_agent_summary("default")];
     app.selected_agent = 0;
-    app.schedule_refresh("test refresh".into());
-    app.refresh_deadline = Some(std::time::Instant::now());
+    app.state_refresh.request(std::time::Instant::now());
 
     tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
         .await
@@ -4936,6 +5097,11 @@ async fn remote_tick_does_not_await_slow_event_stream_reconnect() {
     )));
     app.schedule_reconnect("test reconnect".into());
     app.reconnect_deadline = Some(std::time::Instant::now());
+
+    app.overlay = OverlayState::Events {
+        selected_event_id: None,
+        detail_scroll: 0,
+    };
 
     tokio::time::timeout(std::time::Duration::from_millis(50), app.tick())
         .await
