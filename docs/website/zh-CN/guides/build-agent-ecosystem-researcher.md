@@ -52,7 +52,7 @@ order: 85
 Holon 提供了面向深度调研场景的 Agent 模板 `research-steward`，预置了严谨的证据收集契约。
 
 > **默认携带技能说明**：
-> `research-steward` 模板在创建时已默认包含技术调研所需的技能集（如 `ghx` 用于获取 GitHub 数据与源码检索、`sview` 用于结构化只读代码审查、`writing-clearly-and-concisely` 保证简报精炼严谨等）。**创建完成后即可直接使用，无需再单独配置或手动启用这些技能**。
+> `research-steward` 模板在创建时已默认包含技术调研所需的技能集（如 `citation-verifier` 与 `research-artifact` 用于主张核验和可审计研究包、`ghx` 用于获取 GitHub 数据与源码检索、`sview` 用于结构化只读代码审查、`writing-clearly-and-concisely` 保证简报精炼严谨等）。**创建完成后即可直接使用，无需再单独配置或手动启用这些技能**。
 
 #### 方式 A：通过 Web GUI 操作
 

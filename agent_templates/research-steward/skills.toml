@@ -1,0 +1,29 @@
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/ghx"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/sview"
+path = "skills/sview"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/agentinbox"
+path = "skills/agentinbox"
+
+[[skills]]
+kind = "github"
+repo = "obra/the-elements-of-style"
+path = "skills/writing-clearly-and-concisely"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/citation-verifier"
+
+[[skills]]
+kind = "github"
+repo = "holon-run/holon"
+path = "skills/research-artifact"
