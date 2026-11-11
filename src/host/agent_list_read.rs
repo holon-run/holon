@@ -182,9 +182,13 @@ impl RuntimeHost {
                     .filter(|entry| !entry.task.is_finished())
                     .map(|entry| entry.runtime.clone())
             };
-            let entry = self
-                .agent_list_entry_with_material_in(&identity, &material, runtime, db)
-                .await?;
+            let entry = if let Some(runtime) = runtime {
+                runtime
+                    .agent_list_entry_read(&identity, &material, db)
+                    .await?
+            } else {
+                material.read(|| self.agent_list_entry_from_storage(&identity))?
+            };
             db.check_read_scope()?;
             material.read(|| {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut entries)?;
@@ -198,30 +202,6 @@ impl RuntimeHost {
         // Inventory is already ordered by its unique canonical ID.
         db.check_read_scope()?;
         Ok(OwnedAgentListRead { entries })
-    }
-
-    pub(super) async fn agent_list_entry_with_material(
-        &self,
-        identity: &AgentIdentityRecord,
-        material: &ResourceReadMaterial,
-        runtime: Option<RuntimeHandle>,
-    ) -> Result<AgentListEntry> {
-        self.agent_list_entry_with_material_in(identity, material, runtime, self.runtime_db())
-            .await
-    }
-
-    async fn agent_list_entry_with_material_in(
-        &self,
-        identity: &AgentIdentityRecord,
-        material: &ResourceReadMaterial,
-        runtime: Option<RuntimeHandle>,
-        db: &RuntimeDb,
-    ) -> Result<AgentListEntry> {
-        if let Some(runtime) = runtime {
-            runtime.agent_list_entry_read(identity, material, db).await
-        } else {
-            material.read(|| self.agent_list_entry_from_storage(identity))
-        }
     }
 }
 

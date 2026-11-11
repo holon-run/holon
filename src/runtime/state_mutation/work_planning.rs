@@ -752,11 +752,7 @@ impl RuntimeHandle {
                     )?;
                 }
                 let interrupted: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')", [&state.id], |row| row.get(0))?;
-                let queued: bool = tx.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
-                    [&state.id],
-                    |row| row.get(0),
-                )?;
+                let queued = crate::runtime_db::current_query::has_queued_input(tx, &state.id)?;
                 let latest_error = scheduler_latest_runtime_error_on(tx, &state.id)?;
                 Ok((interrupted, queued, latest_error))
             };
@@ -1014,7 +1010,7 @@ pub(crate) fn derive_scheduler_read(
         &execution_snapshot,
     )?;
     let scheduling_posture =
-        work.scheduler_work_posture(&state, has_queued_input, &ranked_work, &active_waits)?;
+        work.scheduler_work_posture(&state, has_queued_input, &ranked_work, active_waits.iter())?;
     SchedulerProjection::admit_canonical_slots(execution_snapshot.as_ref(), material)?;
     crate::diagnostics::resource_io::admit_cloned_value(&(&state.id, &state.current_run_id))?;
     let projection = SchedulerProjection::from_selected_observations(

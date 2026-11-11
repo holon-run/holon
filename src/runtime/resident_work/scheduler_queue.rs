@@ -44,12 +44,12 @@ impl CapturedWork {
         })
     }
 
-    pub(crate) fn scheduler_work_posture(
+    pub(crate) fn scheduler_work_posture<'a>(
         &self,
         state: &AgentState,
         has_queued_input: bool,
         ranked: &[QueueWorkRank<'_>],
-        active_waits: &[WaitConditionRecord],
+        active_waits: impl Iterator<Item = &'a WaitConditionRecord>,
     ) -> Result<AgentPostureProjection> {
         let first_class = |class| ranked.iter().find(|rank| rank.candidate_class == class);
         let current_state = |scheduling_state| {

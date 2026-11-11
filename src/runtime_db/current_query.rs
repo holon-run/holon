@@ -56,6 +56,14 @@ pub(crate) struct CurrentSchedulerMetadata {
     pub recent_event_count: usize,
 }
 
+pub(crate) fn has_queued_input(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
+    Ok(tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
+        [agent_id],
+        |row| row.get(0),
+    )?)
+}
+
 pub(crate) fn scheduler_metadata(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -65,11 +73,7 @@ pub(crate) fn scheduler_metadata(
         [&scope.agent_id],
         |row| row.get(0),
     )?;
-    let has_queued_input = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
-        [&scope.agent_id],
-        |row| row.get(0),
-    )?;
+    let has_queued_input = has_queued_input(tx, &scope.agent_id)?;
     // Keep the original window and ordering, including non-error events.
     let mut query = tx.prepare(
         "SELECT kind,created_at FROM audit_events WHERE agent_id=?1
