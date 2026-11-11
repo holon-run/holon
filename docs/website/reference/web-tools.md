@@ -125,6 +125,10 @@ Holon uses a provider-based search model with multiple provider options:
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these when available.
+- **SearXNG (self-hosted)** — an open-source meta-search engine backend requiring
+  no external API credentials, ideal for self-hosted and privacy-conscious environments.
+  Configure with `holon config set web.providers.searxng.kind searxng` and `holon config set web.providers.searxng.base_url <url>`.
+  See the [Self-hosted SearXNG setup guide](/guides/searxng-websearch-provider.md) for deployment and tuning details.
 
 Search results from all providers are standardized into a consistent format
 with title, URL, and snippet text. Citations are preserved so agents can

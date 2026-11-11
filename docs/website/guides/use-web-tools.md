@@ -78,4 +78,5 @@ relying only on a search snippet. Check dates when freshness matters.
 ## Options
 
 `extract_mode`, `max_chars`, search providers, and the fields each tool returns
-are in the [Web tools reference](../reference/web-tools.md).
+are in the [Web tools reference](../reference/web-tools.md). If you want to host
+a credential-free search backend locally, see the [Self-hosted SearXNG setup guide](./searxng-websearch-provider.md).

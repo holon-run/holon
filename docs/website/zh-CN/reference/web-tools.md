@@ -113,6 +113,7 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选：
   在 "Auto" 模式下，Holon 会优先使用它们。
 - **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
   任意对话模型均可使用。
+- **SearXNG（自托管）**：开源元搜索引擎后端，无需 API 凭据，适合自托管与本地私密网络环境。配置方式：`holon config set web.providers.searxng.kind searxng` 与 `holon config set web.providers.searxng.base_url <url>`。详细部署与排错请参阅[用自托管 SearXNG 配置搜索后端指南](/zh-CN/guides/searxng-websearch-provider.md)。
 
 所有提供商返回的搜索结果都会标准化为一致格式，包含标题、URL 和摘要文本。引用会被保留，
 以便 Agent 用 `WebFetch` 跟进读取完整页面。

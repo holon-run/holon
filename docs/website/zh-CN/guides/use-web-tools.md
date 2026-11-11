@@ -61,4 +61,4 @@ Agent 会调用 `XSearch`。其可用性与普通的对话模型相互独立；�
 
 ## 参数配置
 
-关于 `extract_mode`、`max_chars`、搜索服务商选择以及各工具返回的完整字段，请参阅[网络工具参考](../reference/web-tools.md)。
+关于 `extract_mode`、`max_chars`、搜索服务商选择以及各工具返回的完整字段，请参阅[网络工具参考](../reference/web-tools.md)。如果你希望在本地自建免云端凭据的搜索后端，请参阅[用自托管 SearXNG 配置搜索后端指南](./searxng-websearch-provider.md)。

@@ -140,6 +140,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Choose between search and fetch, then read the result without trusting it blindly.
   <!-- mdorigin:index kind=article -->
 
+- [Set Up Self-Hosted SearXNG as Holon WebSearch Provider](./searxng-websearch-provider.md)
+  Deploy self-hosted SearXNG with Docker as a credential-free search backend for Holon WebSearch: network tuning, Holon provider configuration, and end-to-end troubleshooting.
+  <!-- mdorigin:index kind=article -->
+
 - [Generate an image](./generate-image.md)
   Write a prompt, generate an image, and find the result on disk.
   <!-- mdorigin:index kind=article -->

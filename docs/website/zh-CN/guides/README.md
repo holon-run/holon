@@ -138,6 +138,10 @@ order: 30
   在搜索与抓取之间做取舍，并在保持审慎的前提下阅读外部网页产物。
   <!-- mdorigin:index kind=article -->
 
+- [用自托管 SearXNG 配置 Holon WebSearch 搜索后端](./searxng-websearch-provider.md)
+  使用 Docker 自托管 SearXNG 开源元搜索引擎，为 Holon 提供免云端凭据的 WebSearch 本地搜索后端：容器部署调优、配置接入与端到端验证排错。
+  <!-- mdorigin:index kind=article -->
+
 - [生成图片](./generate-image.md)
   编写提示词、生成图片并在磁盘中定位产物。
   <!-- mdorigin:index kind=article -->
