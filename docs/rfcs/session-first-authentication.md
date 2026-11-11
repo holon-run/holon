@@ -42,6 +42,20 @@ and optional revocation timestamp. A session is active only when it is not
 revoked, has not passed its absolute expiry, and has not exceeded its idle
 expiry.
 
+Request activity updates a daemon-wide in-memory last-seen timestamp shared by
+all HTTP listeners. Idle expiry uses the maximum of persisted and in-memory
+activity. Successful admissions coalesce into one background checkpoint batch
+every `min(60 seconds, idle TTL / 4)`; clean rounds submit no write transaction.
+Session creation, revocation, disabled-user and absolute-expiry checks retain
+their durable admission boundaries. Checkpoints never move activity backwards
+or clear revocation, and do not block request admission on the writer queue.
+The daemon joins the checkpoint worker and saves remaining activity during
+graceful shutdown. On a crash, activity since the last successful checkpoint
+can be lost and idle expiry can occur earlier after restart; under healthy
+storage this window is one checkpoint interval plus checkpoint execution time.
+Checkpoint failures retain dirty activity for retry and are logged; they can
+extend that restart-loss window.
+
 Interactive clients should use a cookie jar or an equivalent secure session
 store. A bearer form may be supported by protocol adapters, but it carries
 the opaque session rather than a long-lived control token.
@@ -53,9 +67,9 @@ The HTTP authentication boundary distinguishes two failure classes:
 - `Rejected`: missing, invalid, expired, or revoked credentials, disabled
   users, and existing static-token rejection reasons.
 - `Infrastructure`: a dependency failed while checking a credential or
-  resolving its actor. Session lookup, user lookup, and updating session
-  last-seen time preserve the original error chain in this class; updating
-  last-seen time is not best-effort.
+  resolving its actor. Session and user lookup preserve the original error
+  chain in this class. Activity checkpoint failures are reported by the
+  background worker rather than failing an otherwise valid request.
 
 Session authentication tries an opaque Bearer session before the session
 cookie. Only `Rejected` permits trying the next supplied session credential.

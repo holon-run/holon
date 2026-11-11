@@ -324,38 +324,171 @@ fn local_static_token_and_independent_admission_keep_their_boundaries() {
 }
 
 #[test]
-fn unhealthy_session_user_lookup_and_touch_keep_sqlite_sources() {
-    for (sql, expected_context) in [
-        (
-            "ALTER TABLE auth_users RENAME TO unavailable_auth_users",
-            "looking up authenticated user by id",
-        ),
-        (
-            "CREATE TRIGGER fail_session_touch BEFORE UPDATE OF last_seen_at
+fn unhealthy_session_user_lookup_keeps_sqlite_sources() {
+    let sql = "ALTER TABLE auth_users RENAME TO unavailable_auth_users";
+    let expected_context = "looking up authenticated user by id";
+    let (_home, host) = tests::control_token_test_host();
+    let secret = issue_session(&host);
+    host.runtime_db()
+        .transaction(|tx| Ok(tx.execute_batch(sql)?))
+        .unwrap();
+    let state = AppState::for_tcp(host);
+    let AuthenticationError::Infrastructure(source) =
+        authenticate_session(&session_headers(&secret), &state).unwrap_err()
+    else {
+        panic!("database failure must not become a credential rejection");
+    };
+    assert!(source.downcast_ref::<rusqlite::Error>().is_some());
+    assert!(format!("{source:#}").contains(expected_context));
+    assert!(!describe_runtime_error(&source).source_chain.is_empty());
+    let (status, Json(body)) =
+        authentication_error_response(AuthenticationError::Infrastructure(source));
+    assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(body["retryable"], false);
+    assert_ne!(body["code"], "auth_required");
+    assert_ne!(body["code"], "runtime_db_busy");
+}
+
+#[tokio::test]
+async fn session_admission_never_writes_and_shutdown_saves_shared_activity() {
+    let (_home, host) = tests::control_token_test_host();
+    let secret = issue_session(&host);
+    let digest = crate::authentication::digest_secret(&secret);
+    let persisted = host
+        .runtime_db()
+        .authentication()
+        .find_session(&digest)
+        .unwrap()
+        .unwrap();
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_session_touch BEFORE UPDATE OF last_seen_at
              ON auth_sessions BEGIN SELECT RAISE(ABORT, 'session touch unavailable'); END",
-            "session touch unavailable",
-        ),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    let writer = host
+        .runtime_db()
+        .reader_pool_writer_weak_for_tests()
+        .upgrade()
+        .unwrap();
+    let before = writer.write_channel_admissions_for_tests().unwrap();
+    let tcp = AppState::for_tcp(host.clone());
+    let other_listener = AppState::for_tcp(host.clone());
+    host.spawn_daemon_session_activity();
+    let mut latest = persisted.last_seen_at;
+    for state in [&tcp, &other_listener].into_iter().cycle().take(100) {
+        latest = authenticate_session(&session_headers(&secret), state)
+            .unwrap()
+            .last_seen_at;
+    }
+    assert_eq!(writer.write_channel_admissions_for_tests().unwrap(), before);
+    assert_eq!(
+        host.runtime_db()
+            .authentication()
+            .find_session(&digest)
+            .unwrap()
+            .unwrap()
+            .last_seen_at,
+        persisted.last_seen_at
+    );
+    assert!(host.shutdown_daemon_session_activity().await.is_err());
+    assert!(authenticate_session(&session_headers(&secret), &tcp).is_ok());
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER fail_session_touch")?;
+            Ok(())
+        })
+        .unwrap();
+    host.shutdown_daemon_session_activity().await.unwrap();
+    assert!(
+        host.runtime_db()
+            .authentication()
+            .find_session(&digest)
+            .unwrap()
+            .unwrap()
+            .last_seen_at
+            .timestamp_millis()
+            >= latest.timestamp_millis()
+    );
+    host.runtime_db()
+        .authentication()
+        .revoke_session(&digest, Utc::now())
+        .unwrap();
+    assert!(matches!(
+        authenticate_session(&session_headers(&secret), &other_listener),
+        Err(AuthenticationError::Rejected(_)),
+    ));
+}
+
+#[tokio::test]
+async fn short_idle_policy_checkpoints_in_background_without_request_writes() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"},"auth":{"session":{"idle_ttl_seconds":1}}}"#,
+    )
+    .unwrap();
+    let config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host = RuntimeHost::new_with_provider(
+        config,
+        Arc::new(crate::provider::StubProvider::new("done")),
+    )
+    .unwrap();
+    let secret = issue_session(&host);
+    let digest = crate::authentication::digest_secret(&secret);
+    let state = AppState::for_tcp(host.clone());
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let admitted = authenticate_session(&session_headers(&secret), &state).unwrap();
+    host.spawn_daemon_session_activity();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let saved = host
+                .runtime_db()
+                .authentication()
+                .find_session(&digest)
+                .unwrap()
+                .unwrap();
+            if saved.last_seen_at.timestamp_millis() == admitted.last_seen_at.timestamp_millis() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .unwrap();
+    host.shutdown_daemon_session_activity().await.unwrap();
+    let writer = host
+        .runtime_db()
+        .reader_pool_writer_weak_for_tests()
+        .upgrade()
+        .unwrap();
+    let before = writer.write_channel_admissions_for_tests().unwrap();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(writer.write_channel_admissions_for_tests().unwrap(), before);
+}
+
+#[test]
+fn cached_activity_does_not_override_durable_session_rejection() {
+    for sql in [
+        "UPDATE auth_sessions SET expires_at = '2000-01-01T00:00:00Z'",
+        "UPDATE auth_sessions SET revoked_at = '2000-01-01T00:00:00Z'",
+        "UPDATE auth_users SET disabled_at = '2000-01-01T00:00:00Z'",
     ] {
         let (_home, host) = tests::control_token_test_host();
         let secret = issue_session(&host);
+        let state = AppState::for_tcp(host.clone());
+        let headers = session_headers(&secret);
+        assert!(authenticate_session(&headers, &state).is_ok());
         host.runtime_db()
             .transaction(|tx| Ok(tx.execute_batch(sql)?))
             .unwrap();
-        let state = AppState::for_tcp(host);
-        let AuthenticationError::Infrastructure(source) =
-            authenticate_session(&session_headers(&secret), &state).unwrap_err()
-        else {
-            panic!("database failure must not become a credential rejection");
-        };
-        assert!(source.downcast_ref::<rusqlite::Error>().is_some());
-        assert!(format!("{source:#}").contains(expected_context));
-        assert!(!describe_runtime_error(&source).source_chain.is_empty());
-        let (status, Json(body)) =
-            authentication_error_response(AuthenticationError::Infrastructure(source));
-        assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
-        assert_eq!(body["retryable"], false);
-        assert_ne!(body["code"], "auth_required");
-        assert_ne!(body["code"], "runtime_db_busy");
+        assert!(matches!(
+            authenticate_session(&headers, &state),
+            Err(AuthenticationError::Rejected(_)),
+        ));
     }
 }
 

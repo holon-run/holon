@@ -257,11 +257,14 @@ fn retiring_audit_observation_is_scope_checked_raw_and_never_a_command() -> Resu
     let event = AuditEvent::legacy("retiring_observation", serde_json::json!({}));
     let receipts = f.receipt_count()?;
     let state = f.state()?;
+    let writer = f.db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+    let admissions = writer.write_channel_admissions_for_tests()?;
     assert!(f
         .db
         .audit_events()
         .append_retiring_observation(&f.scope, &event)?
         .is_none());
+    assert_eq!(writer.write_channel_admissions_for_tests()?, admissions);
     assert!(!f.db.audit_events().has_event_by_id(&event.id)?);
     f.db.transaction(|tx| {
         tx.execute(
@@ -332,5 +335,67 @@ fn retiring_audit_observation_is_scope_checked_raw_and_never_a_command() -> Resu
     assert!(!f.db.audit_events().has_event_by_id(&rejected.id)?);
     assert_eq!(f.receipt_count()?, receipts);
     assert_eq!(f.state()?, state);
+    Ok(())
+}
+
+#[test]
+fn retiring_audit_rechecks_identity_after_waiting_for_writer() -> Result<()> {
+    for change in [
+        "status='deleted',payload_json=json_set(payload_json,'$.status','deleted')",
+        "status='active',payload_json=json_set(payload_json,'$.status','active')",
+        "status='active',payload_json=json_set(payload_json,'$.status','active','$.incarnation',2)",
+    ] {
+        let f = Fixture::new()?;
+        f.db.transaction(|tx| {
+            tx.execute(
+                "UPDATE agent_identities SET status='deleting',
+                 payload_json=json_set(payload_json,'$.status','deleting') WHERE agent_id=?1",
+                [&f.scope.agent_id],
+            )?;
+            Ok(())
+        })?;
+        let event = AuditEvent::legacy("retiring_race", serde_json::json!({}));
+        let writer = f.db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        std::thread::scope(|threads| -> Result<()> {
+            let (held_tx, held_rx) = std::sync::mpsc::channel();
+            let (release_tx, release_rx) = std::sync::mpsc::channel();
+            let db = &f.db;
+            let agent_id = &f.scope.agent_id;
+            let blocker = threads.spawn(move || {
+                db.transaction(|tx| {
+                    held_tx.send(())?;
+                    let _ = release_rx.recv();
+                    tx.execute(
+                        &format!("UPDATE agent_identities SET {change} WHERE agent_id=?1"),
+                        [agent_id],
+                    )?;
+                    Ok(())
+                })
+            });
+            held_rx.recv_timeout(std::time::Duration::from_secs(5))?;
+            let before = writer.write_channel_admissions_for_tests()?;
+            let observation = threads.spawn(|| {
+                f.db.audit_events()
+                    .append_retiring_observation(&f.scope, &event)
+            });
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while writer.write_channel_admissions_for_tests()? == before
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+            }
+            let queued = writer.write_channel_admissions_for_tests()? > before;
+            release_tx.send(())?;
+            blocker.join().unwrap()?;
+            assert!(
+                queued,
+                "retirement append must have queued behind identity change"
+            );
+            assert!(observation.join().unwrap().is_err());
+            Ok(())
+        })?;
+        assert!(!f.db.audit_events().has_event_by_id(&event.id)?);
+        assert_eq!(f.receipt_count()?, 0);
+    }
     Ok(())
 }
