@@ -426,7 +426,7 @@ pub(crate) fn provider_transport_error(
     provider_transport_error_with_code(classification, None, status, diagnostics, message)
 }
 
-fn provider_transport_error_with_evidence(
+pub(crate) fn provider_transport_error_with_evidence(
     classification: ProviderFailureClassification,
     code: Option<&str>,
     status: Option<u16>,

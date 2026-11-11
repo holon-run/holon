@@ -19,6 +19,401 @@ mod retained_sources;
 #[cfg(holon_lib_test_shard = "a")]
 mod task_rejoin_recovery;
 
+#[cfg(holon_lib_test_shard = "a")]
+struct GeminiRefusalFixture {
+    home: TempDir,
+    runtime: RuntimeHandle,
+    requests: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    server: tokio::task::JoinHandle<()>,
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+impl Drop for GeminiRefusalFixture {
+    fn drop(&mut self) {
+        self.server.abort();
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn gemini_refusal_fixture(
+    responses: Vec<serde_json::Value>,
+    fallback: bool,
+) -> GeminiRefusalFixture {
+    use crate::config::{ModelRouteRef, ProviderId, RuntimeModelCatalog};
+    use axum::{extract::OriginalUri, routing::post, Json, Router};
+
+    let home = tempdir().unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let observed = requests.clone();
+    let app = Router::new().route(
+        "/{*path}",
+        post(
+            move |OriginalUri(uri): OriginalUri, Json(body): Json<serde_json::Value>| {
+                let observed = observed.clone();
+                let responses = responses.clone();
+                async move {
+                    let mut requests = observed.lock().await;
+                    let index = requests.len().min(responses.len() - 1);
+                    requests.push((uri.path().to_string(), body));
+                    Json(responses[index].clone())
+                }
+            },
+        ),
+    );
+    let mut config =
+        AppConfig::load_with_home_for_config_inspection(Some(home.path().to_path_buf())).unwrap();
+    config.user_home_dir = None;
+    config.default_model = ModelRouteRef::parse("gemini@default/gemini-2.5-flash").unwrap();
+    config.fallback_models = if fallback {
+        vec![ModelRouteRef::parse("gemini@default/gemini-2.5-pro").unwrap()]
+    } else {
+        Vec::new()
+    };
+    config.disable_provider_fallback = false;
+    let gemini = config.providers.get_mut(&ProviderId::gemini()).unwrap();
+    gemini.base_url = format!("http://{}", listener.local_addr().unwrap());
+    gemini.credential = Some("local-refusal-test-key".into());
+    let provider = crate::provider::build_provider_from_config(&config).unwrap();
+    let runtime = RuntimeHandle::new(
+        "batch-target",
+        home.path().join("target-state"),
+        home.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        provider,
+        "batch-target".into(),
+        context_config(),
+    )
+    .unwrap();
+    let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+    snapshot.user_home_dir = None;
+    snapshot.model_catalog = RuntimeModelCatalog::from_config(&config);
+    snapshot.provider_reconfig = Some(super::super::bootstrap::ProviderReconfigurator { config });
+    runtime.inner.config_snapshot.store(Arc::new(snapshot));
+    let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    GeminiRefusalFixture {
+        home,
+        runtime,
+        requests,
+        server,
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+fn gemini_blocked_response(reason: &str, parts: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "candidates": [{
+            "content": {"role": "model", "parts": parts},
+            "finishReason": reason
+        }],
+        "usageMetadata": {
+            "promptTokenCount": 13,
+            "candidatesTokenCount": 3,
+            "totalTokenCount": 16
+        }
+    })
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn enqueue_gemini_refusal_prompt(runtime: &RuntimeHandle) -> String {
+    runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "batch-target",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "exercise the local Gemini refusal fixture".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::CliPrompt,
+                AdmissionContext::LocalProcess,
+            ),
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn assert_gemini_refusal_settlement(runtime: &RuntimeHandle, message_id: &str, reason: &str) {
+    let scheduled = claim_model_input(runtime).await;
+    assert_eq!(scheduled.message.id, message_id);
+    let message = scheduled.message.clone();
+    let run_id = scheduled.running_state.current_run_id.clone().unwrap();
+    let started = std::time::Instant::now();
+    let result = Box::pin(runtime.process_message_with_plan_deferred(
+        scheduled.message,
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ))
+    .await;
+    let error = match &result {
+        Err(error) => error,
+        Ok(_) => panic!("Gemini refusal must abort rather than deliver partial content"),
+    };
+    assert_eq!(
+        crate::provider::provider_error_code(error),
+        Some("gemini_content_blocked")
+    );
+    let descriptor = crate::runtime_error::describe_runtime_error(error);
+    assert_eq!(descriptor.code, "gemini_content_blocked");
+    assert_eq!(
+        descriptor.domain,
+        crate::runtime_error::RuntimeErrorDomain::Provider
+    );
+    assert!(!descriptor.retryable);
+    assert!(descriptor
+        .source_chain
+        .iter()
+        .any(|source| source.contains(reason)));
+    let timeline = crate::provider::provider_attempt_timeline(error).unwrap();
+    assert_eq!(timeline.attempts.len(), 1);
+    assert!(timeline.pending_fallback_model_ref.is_none());
+    assert!(timeline.pending_fallback_disposition.is_none());
+    assert!(timeline.winning_model_ref.is_none());
+    let attempt = &timeline.attempts[0];
+    assert_eq!(attempt.failure_kind.as_deref(), Some("invalid_response"));
+    assert_eq!(attempt.disposition.as_deref(), Some("fail_fast"));
+    assert_eq!(attempt.outcome, ProviderAttemptOutcome::FailFastAborted);
+    assert!(!attempt.advanced_to_fallback);
+    assert_eq!(
+        attempt.transport_diagnostics.as_ref().unwrap().stage,
+        "response_protocol"
+    );
+    assert_eq!(
+        timeline.aggregated_token_usage,
+        Some(crate::types::TokenUsage::new(13, 3))
+    );
+    runtime
+        .finish_scheduled_message_processing(&message, &run_id, started, result)
+        .await
+        .unwrap();
+    drop(scheduled.run_completion);
+
+    let briefs = runtime.storage().read_recent_briefs(10).unwrap();
+    assert_eq!(
+        briefs.len(),
+        1,
+        "refused partial content must not become a success brief"
+    );
+    let brief = &briefs[0];
+    assert_eq!(brief.kind, BriefKind::Failure);
+    assert_eq!(brief.related_message_id.as_deref(), Some(message_id));
+    let turns = runtime.storage().read_recent_turns(10).unwrap();
+    assert_eq!(turns.len(), 1);
+    let turn = &turns[0];
+    assert_eq!(brief.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+    assert_eq!(brief.turn_index, Some(turn.turn_index));
+    let trigger = turn.trigger.as_ref().unwrap();
+    assert_eq!(trigger.message_id.as_deref(), Some(message_id));
+    assert_eq!(trigger.origin, message.origin);
+    assert_eq!(trigger.authority_class, message.authority_class);
+    assert_eq!(turn.run_id.as_deref(), Some(run_id.as_str()));
+    assert_eq!(turn.input_message_ids, [message_id]);
+    assert_eq!(turn.produced_brief_ids, [brief.id.clone()]);
+    assert_eq!(turn.runtime_failure.as_ref(), Some(&descriptor));
+    let terminal = turn.terminal.as_ref().unwrap();
+    assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
+    assert!(terminal.no_brief_reason.is_none());
+    let state = runtime.agent_state().await.unwrap();
+    let last_terminal = state.last_turn_terminal.as_ref().unwrap();
+    assert_eq!(last_terminal.turn_id, turn.turn_id);
+    assert_eq!(last_terminal.kind, TurnTerminalKind::Aborted);
+    assert!(last_terminal.no_brief_reason.is_none());
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Aborted
+    );
+    assert!(runtime.inner.agent.lock().await.queue.is_empty());
+    let events = runtime.storage().read_recent_events(100).unwrap();
+    let failure = events
+        .iter()
+        .find(|event| event.kind == "runtime_error")
+        .unwrap();
+    assert_eq!(failure.data["code"], "gemini_content_blocked");
+    assert_eq!(failure.data["message_id"], message_id);
+    assert_eq!(failure.data["turn_id"], turn.turn_id);
+    assert_eq!(failure.data["token_usage"]["total_tokens"], 16);
+    assert!(!events.iter().any(|event| matches!(
+        event.kind.as_str(),
+        "terminal_missing_brief_settlement" | "turn_terminal_brief_settlement_failed"
+    )));
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_gemini_refusal_without_fallback_commits_failure_brief_and_aborted_queue() {
+    for reason in [
+        "SAFETY",
+        "RECITATION",
+        "BLOCKLIST",
+        "PROHIBITED_CONTENT",
+        "SPII",
+        "IMAGE_SAFETY",
+    ] {
+        let fixture = gemini_refusal_fixture(
+            vec![gemini_blocked_response(reason, serde_json::json!([]))],
+            false,
+        )
+        .await;
+        let message_id = enqueue_gemini_refusal_prompt(&fixture.runtime).await;
+        assert_gemini_refusal_settlement(&fixture.runtime, &message_id, reason).await;
+        assert_eq!(fixture.requests.lock().await.len(), 1);
+        assert!(fixture
+            .runtime
+            .storage()
+            .read_recent_tool_executions(10)
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_gemini_prompt_refusal_preserves_sender_binding_without_calling_fallback() {
+    let mut blocked = gemini_blocked_response("STOP", serde_json::json!([]));
+    blocked["candidates"] = serde_json::json!([]);
+    blocked["promptFeedback"] = serde_json::json!({"blockReason": "PROHIBITED_CONTENT"});
+    let fixture = gemini_refusal_fixture(vec![blocked], true).await;
+    let sender = RuntimeHandle::new(
+        "refusal-sender",
+        fixture.home.path().join("sender-state"),
+        fixture.home.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(BatchProvider::default()),
+        "refusal-sender".into(),
+        context_config(),
+    )
+    .unwrap();
+    let message_id = send(
+        &sender,
+        &fixture.runtime,
+        "blocked-source",
+        "source-bound request",
+    )
+    .await;
+    let before = fixture
+        .runtime
+        .storage()
+        .read_message_by_id(&message_id)
+        .unwrap()
+        .unwrap();
+    assert_gemini_refusal_settlement(&fixture.runtime, &message_id, "PROHIBITED_CONTENT").await;
+    assert_eq!(fixture.requests.lock().await.len(), 1);
+    let after = fixture
+        .runtime
+        .storage()
+        .read_message_by_id(&message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(after.origin, before.origin);
+    assert_eq!(after.authority_class, before.authority_class);
+    assert_eq!(after.routing_context, before.routing_context);
+    let turn = fixture
+        .runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .remove(0);
+    let batch = turn.idle_input_batch.unwrap();
+    assert_eq!(batch.anchor_message_id, message_id);
+    assert_eq!(batch.sender_agent_id, "refusal-sender");
+    assert_eq!(batch.items.len(), 1);
+    assert_eq!(batch.items[0].message_id, message_id);
+    assert_eq!(batch.items[0].source_ref, format!("message:{message_id}"));
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_gemini_refused_partial_text_and_tool_are_never_executed_or_published() {
+    let fixture = gemini_refusal_fixture(
+        vec![gemini_blocked_response(
+            "SAFETY",
+            serde_json::json!([
+                {"text": "REFUSED_PARTIAL_OUTPUT_MUST_NOT_BE_PUBLISHED"},
+                {"functionCall": {"name": "ExecCommand", "args": {
+                    "cmd": "printf forbidden > refused-tool-ran"
+                }}}
+            ]),
+        )],
+        true,
+    )
+    .await;
+    let message_id = enqueue_gemini_refusal_prompt(&fixture.runtime).await;
+    assert_gemini_refusal_settlement(&fixture.runtime, &message_id, "SAFETY").await;
+    assert_eq!(fixture.requests.lock().await.len(), 1);
+    assert!(!fixture.home.path().join("refused-tool-ran").exists());
+    assert!(fixture
+        .runtime
+        .storage()
+        .read_recent_tool_executions(10)
+        .unwrap()
+        .is_empty());
+    let briefs = fixture.runtime.storage().read_recent_briefs(10).unwrap();
+    assert!(!briefs[0]
+        .text
+        .contains("REFUSED_PARTIAL_OUTPUT_MUST_NOT_BE_PUBLISHED"));
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_gemini_refusal_after_tool_execution_does_not_replay_side_effects() {
+    let fixture = gemini_refusal_fixture(
+        vec![
+            serde_json::json!({
+                "candidates": [{
+                    "content": {"role": "model", "parts": [{
+                        "functionCall": {"name": "ExecCommand", "args": {
+                            "cmd": "printf once >> completed-tool",
+                            "yield_time_ms": 1000
+                        }}
+                    }]},
+                    "finishReason": "STOP"
+                }]
+            }),
+            gemini_blocked_response("RECITATION", serde_json::json!([])),
+        ],
+        true,
+    )
+    .await;
+    let message_id = enqueue_gemini_refusal_prompt(&fixture.runtime).await;
+    assert_gemini_refusal_settlement(&fixture.runtime, &message_id, "RECITATION").await;
+    let requests = fixture.requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert_eq!(requests[0].0, requests[1].0);
+    let executions = fixture
+        .runtime
+        .storage()
+        .read_recent_tool_executions(10)
+        .unwrap();
+    assert_eq!(executions.len(), 1);
+    assert_eq!(executions[0].tool_name, "ExecCommand");
+    assert_eq!(
+        std::fs::read_to_string(fixture.home.path().join("completed-tool")).unwrap(),
+        "once"
+    );
+    let turn = fixture
+        .runtime
+        .storage()
+        .read_recent_turns(1)
+        .unwrap()
+        .remove(0);
+    assert_eq!(turn.tool_execution_ids, [executions[0].id.clone()]);
+}
+
 #[derive(Default)]
 struct BatchProvider {
     requests: Mutex<Vec<ProviderTurnRequest>>,

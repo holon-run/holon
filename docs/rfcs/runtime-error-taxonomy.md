@@ -89,6 +89,22 @@ do not create a stable code. Upstream provider codes such as
 `context_length_exceeded` are stored on the typed transport error and queried
 directly.
 
+Gemini GenerateContent content refusals use `gemini_content_blocked` with
+`InvalidResponse` / `FailFast`. Known refusal finish reasons take precedence
+over partial text and tool calls; prompt feedback can also reject a response
+without candidates. Only allowlisted reasons enter diagnostics; unknown prompt
+block reasons are represented by a fixed label. These refusals do not retry or
+schedule a fallback provider: changing the input requires an explicit decision,
+not availability recovery. This is a runtime routing policy, not a requirement
+of the Gemini protocol.
+
+Ordinary Gemini responses with no usable text or tool call use the existing
+retryable `EmptyResponse` budget, including responses with no candidates.
+`MAX_TOKENS` remains eligible for the existing continuation path even with
+empty content. Both failure classes preserve reported token usage. Fallback
+wrapping retains the typed cause so runtime failure artifacts and the Failure
+Brief can identify the provider error without weakening terminal settlement.
+
 TaskStatus settlement distinguishes an unproven Task generation
 (`task_status_generation_mismatch`), a mismatched Running status binding
 (`task_status_binding_mismatch`), and canonical Task qualification drift during
