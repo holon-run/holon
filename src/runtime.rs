@@ -218,7 +218,7 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use bootstrap::ConfigSnapshot;
 pub(crate) use bootstrap::{
     append_unloaded_audit_event, ViewImageCandidateFailureStatus,
@@ -822,6 +822,7 @@ struct RuntimeInner {
     operator_interjection_notify: Notify,
     operator_interjection_revision: Arc<AtomicU64>,
     scheduler_audit_frontier: Arc<AtomicU64>,
+    preview_tool_policy: ArcSwapOption<context_capture::PreviewToolPolicy>,
     provider_cooldown_wait: StdMutex<Option<crate::types::ProviderCooldownWait>>,
     storage: AppStorage,
     runtime_db: RuntimeDb,

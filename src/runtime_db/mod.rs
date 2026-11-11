@@ -760,6 +760,16 @@ impl RuntimeDb {
         self.writer.state.queue.register_audit_frontier(agent_id)
     }
 
+    pub(crate) fn capability_policy_generation(&self) -> Option<u64> {
+        let generation = self
+            .writer
+            .state
+            .queue
+            .capability_policy_generation
+            .load(std::sync::atomic::Ordering::Acquire);
+        (generation % 2 == 0).then_some(generation)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }

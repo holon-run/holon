@@ -4358,8 +4358,18 @@ committing an Event, including diagnostics written outside a runtime ACK.
 The online Audit retention floor preserves the scheduler window.
 Covered preview closure reads the published facts without taking the owner
 reservation or opening SQLite. Missing coverage enters preparation under the
-original owner and republishes the required facts. The subsequent Context
-capture retains its existing preparation and execution fences.
+original owner and republishes the required facts. A covered Prompt Preview
+captures the closure, continuation and Context from the same Ready Agent root.
+It consumes a matching Ready resource observation, the committed workspace
+view and a bounded tool-policy projection for the active identity revision.
+The policy write transaction fences earlier tool projections before changing
+policy rows and advances the generation after the transaction resolves. Policy
+preparation reads the canonical policy and identity in one transaction. For an
+Agent that is running, a qualified active default Trigger with a token supplies
+the existing ingress proof. A missing or tokenless Trigger goes through the
+original ingress writer. Missing coverage, invalidated resources and pending
+recovery enter the existing preparation paths. Admission planning and execution
+retain their owner reservations and execution validation.
 
 The operator State endpoint now uses one held parent owner cut for
 State/Work/Task/Scheduling and Current metadata. Explicit Current preparation

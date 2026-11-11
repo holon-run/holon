@@ -149,6 +149,8 @@ capture mode (preview, admission planning, or execution) and stage:
 | Stage | Measured boundary |
 | --- | --- |
 | `preview_scheduler_preflight` | Preview closure calculation before Context capture |
+| `preview_ready_capture` | Optimistic Preview closure, continuation and Context capture from a Ready Agent publication |
+| `preview_tool_policy_preparation` | Scoped policy read when Preview tool families need preparation |
 | `owner_acquisition` | Context owner reservation, reconciliation and identity validation from a matching Ready publication or durable fallback |
 | `task_preparation` | Each of the two Task preparation requests |
 | `work_preparation` | Work preparation request |

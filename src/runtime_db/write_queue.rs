@@ -116,6 +116,7 @@ pub(crate) struct RuntimeDbWriteQueue {
     pub(crate) state: Mutex<RuntimeDbWriteQueueState>,
     pub(crate) available: Condvar,
     pub(super) delivery_summary_generation: AtomicU64,
+    pub(super) capability_policy_generation: AtomicU64,
     audit_event_frontiers: Mutex<BTreeMap<Arc<str>, Weak<AtomicU64>>>,
     workspace_context: Mutex<Option<SharedWorkspaceContext>>,
 }
@@ -581,14 +582,14 @@ impl RuntimeDbWriterState {
         mutex_wait: std::time::Duration,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let audit = AuditWriteAttempt::begin(&self.queue);
+        let observations = TransactionObservation::begin(&self.queue);
         let result = self.finish_transaction_attempt(
             connection,
             run_transaction_on_connection(
                 connection, &self.path, context, queue_wait, mutex_wait, f,
             ),
         );
-        let mut writes = audit.finish();
+        let mut writes = observations.finish();
         if let Err(error) = &result {
             if super::persistence::persistence_certainty(error)
                 == Some(PersistenceCertainty::Indeterminate)
@@ -650,12 +651,23 @@ fn before_begin_failure(error: anyhow::Error) -> anyhow::Error {
 
 thread_local! {
     // Original transactions run synchronously under the shared write turn.
-    static AUDIT_WRITES: RefCell<Option<AuditWrites>> = const { RefCell::new(None) };
+    static TRANSACTION_WRITES: RefCell<Option<TransactionWrites>> = const { RefCell::new(None) };
 }
 
-struct AuditWrites {
+struct TransactionWrites {
     queue: Arc<RuntimeDbWriteQueue>,
-    pending: Vec<ObservedAuditWrite>,
+    audit: Vec<ObservedAuditWrite>,
+    capability_policy: Option<CapabilityPolicyWrite>,
+}
+
+struct CapabilityPolicyWrite(Arc<RuntimeDbWriteQueue>);
+
+impl Drop for CapabilityPolicyWrite {
+    fn drop(&mut self) {
+        self.0
+            .capability_policy_generation
+            .fetch_add(1, Ordering::Release);
+    }
 }
 
 struct ObservedAuditWrite {
@@ -664,18 +676,19 @@ struct ObservedAuditWrite {
     sequence: u64,
 }
 
-struct AuditWriteAttempt {
-    previous: Option<AuditWrites>,
+struct TransactionObservation {
+    previous: Option<TransactionWrites>,
     active: bool,
 }
 
-impl AuditWriteAttempt {
+impl TransactionObservation {
     fn begin(queue: &Arc<RuntimeDbWriteQueue>) -> Self {
         Self {
-            previous: AUDIT_WRITES.with(|writes| {
-                writes.replace(Some(AuditWrites {
+            previous: TRANSACTION_WRITES.with(|writes| {
+                writes.replace(Some(TransactionWrites {
                     queue: queue.clone(),
-                    pending: Vec::new(),
+                    audit: Vec::new(),
+                    capability_policy: None,
                 }))
             }),
             active: true,
@@ -684,28 +697,28 @@ impl AuditWriteAttempt {
 
     fn finish(mut self) -> Vec<ObservedAuditWrite> {
         self.active = false;
-        AUDIT_WRITES.with(|writes| {
+        TRANSACTION_WRITES.with(|writes| {
             writes
                 .replace(self.previous.take())
-                .map_or_else(Vec::new, |writes| writes.pending)
+                .map_or_else(Vec::new, |writes| writes.audit)
         })
     }
 }
 
-impl Drop for AuditWriteAttempt {
+impl Drop for TransactionObservation {
     fn drop(&mut self) {
         if self.active {
-            AUDIT_WRITES.with(|writes| writes.replace(self.previous.take()));
+            TRANSACTION_WRITES.with(|writes| writes.replace(self.previous.take()));
         }
     }
 }
 
 pub(super) fn record_audit_insert(agent_id: &str, sequence: u64) {
-    AUDIT_WRITES.with(|writes| {
+    TRANSACTION_WRITES.with(|writes| {
         let mut slot = writes.borrow_mut();
         let Some(writes) = slot.as_mut() else { return };
         if let Some(write) = writes
-            .pending
+            .audit
             .iter_mut()
             .find(|write| write.agent_id.as_ref() == agent_id)
         {
@@ -721,13 +734,28 @@ pub(super) fn record_audit_insert(agent_id: &str, sequence: u64) {
             .expect("Audit frontiers poisoned");
         if let Some((agent_id, frontier)) = frontiers.get_key_value(agent_id) {
             if let Some(frontier) = frontier.upgrade() {
-                writes.pending.push(ObservedAuditWrite {
+                writes.audit.push(ObservedAuditWrite {
                     agent_id: agent_id.clone(),
                     frontier,
                     sequence,
                 });
             }
         }
+    });
+}
+
+pub(super) fn begin_capability_policy_write() {
+    TRANSACTION_WRITES.with(|writes| {
+        let mut slot = writes.borrow_mut();
+        let Some(writes) = slot.as_mut() else { return };
+        writes.capability_policy.get_or_insert_with(|| {
+            // Readers must decline a cached policy before the first change can commit.
+            writes
+                .queue
+                .capability_policy_generation
+                .fetch_add(1, Ordering::AcqRel);
+            CapabilityPolicyWrite(writes.queue.clone())
+        });
     });
 }
 
@@ -846,6 +874,7 @@ fn runtime_db_write_queue(path: &Path) -> Result<Arc<RuntimeDbWriteQueue>> {
             state: Mutex::new(RuntimeDbWriteQueueState::default()),
             available: Condvar::new(),
             delivery_summary_generation: AtomicU64::new(0),
+            capability_policy_generation: AtomicU64::new(0),
             audit_event_frontiers: Mutex::default(),
             workspace_context: Mutex::default(),
         })

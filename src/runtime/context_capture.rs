@@ -19,13 +19,16 @@ use crate::{
     runtime::resident_work::{CapturedWork, WorkCaptureRequest, WorkFamily, WorkKey},
     runtime::{
         resident_task::CapturedTasks,
-        task_reads::{active_task_request, context_task_request},
+        task_reads::{active_task_request, context_task_request, TaskReadSnapshot},
     },
     runtime_db::input_evidence_snapshot::{
         InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
     },
     types::TurnOwner,
 };
+
+mod preview;
+pub(super) use preview::{PreviewToolFamilies, PreviewToolPolicy};
 
 #[derive(Debug, thiserror::Error)]
 #[error("context configuration changed during acquisition")]
@@ -44,6 +47,31 @@ struct PreparedLoadedContext {
     identity: AgentIdentityView,
     material: crate::prompt::ResourcePromptMaterial,
     tools: Option<(Vec<crate::tool::ToolSpec>, crate::tool::ApplyPatchSurface)>,
+    preview_media_defaults: Option<crate::provider::media::MediaToolDefaults>,
+}
+
+enum ContextPublication<'a> {
+    Ready(&'a Arc<resident_state::AgentSnapshot>),
+    Reserved(&'a mut state_mutation::RuntimeMutation),
+}
+
+impl ContextPublication<'_> {
+    fn root(&self) -> Result<Arc<resident_state::AgentSnapshot>> {
+        match self {
+            Self::Ready(root) => Ok(Arc::clone(root)),
+            Self::Reserved(owner) => owner.capture_published_root(),
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("loaded Preview requires preparation")]
+struct PreviewNeedsPreparation;
+
+#[derive(Default)]
+struct ContextPreparationRetries {
+    writers: usize,
+    sources: usize,
 }
 
 #[cfg(test)]
@@ -57,6 +85,21 @@ pub(super) struct ContextCaptureCheckpoint {
 }
 
 impl RuntimeHandle {
+    pub(super) fn context_input_evidence_policy(
+        &self,
+    ) -> Result<(BTreeSet<InputEvidenceKey>, usize, usize)> {
+        let limits = self.inner.input_evidence_budget.limits();
+        let bytes = limits
+            .history_per_agent_bytes
+            .checked_add(limits.pending_per_agent_bytes)
+            .context("input evidence byte limit overflow")?;
+        Ok((
+            Default::default(),
+            usize::try_from(limits.record_limit)?,
+            usize::try_from(bytes)?,
+        ))
+    }
+
     pub(super) async fn prepare_loaded_context_prompt(
         &self,
         message: &MessageEnvelope,
@@ -71,6 +114,7 @@ impl RuntimeHandle {
                 fallback_model,
                 require_execution,
                 None,
+                ContextPreparationRetries::default(),
             )
             .await?;
         self.project_loaded_context_prompt(prepared, fallback_model)
@@ -84,7 +128,14 @@ impl RuntimeHandle {
         admission: ContextAdmissionPlan<'_>,
     ) -> Result<usize> {
         let prepared = self
-            .prepare_loaded_context_snapshot(message, continuation, None, false, Some(admission))
+            .prepare_loaded_context_snapshot(
+                message,
+                continuation,
+                None,
+                false,
+                Some(admission),
+                ContextPreparationRetries::default(),
+            )
             .await?;
         crate::context::input_admission_tokens_from_snapshot(
             &prepared.snapshot,
@@ -99,9 +150,8 @@ impl RuntimeHandle {
         fallback_model: Option<&ModelRouteRef>,
         require_execution: bool,
         admission: Option<ContextAdmissionPlan<'_>>,
+        mut retries: ContextPreparationRetries,
     ) -> Result<PreparedLoadedContext> {
-        let mut writer_retries = 0;
-        let mut source_changes = 0usize;
         loop {
             self.ensure_context_resources().await?;
             match self
@@ -115,26 +165,26 @@ impl RuntimeHandle {
                 .await
             {
                 Err(error)
-                    if writer_retries < 2
+                    if retries.writers < 2
                         && error
                             .downcast_ref::<crate::host::context_resources::ContextResourceWritersActive>()
                             .is_some() =>
                 {
                     // The failed capture has released its owner before refresh.
-                    writer_retries += 1;
-                    tracing::debug!(agent_id = %message.agent_id, writer_retries,
+                    retries.writers += 1;
+                    tracing::debug!(agent_id = %message.agent_id, writer_retries = retries.writers,
                         "re-entering explicit Context preparation after a resource writer raced capture");
                 }
                 Err(error)
-                    if source_changes
+                    if retries.sources
                         < super::resource_refresh::RESOURCE_SOURCE_CHANGE_REPREPARES
                         && super::resource_refresh::is_resource_preparation_conflict(&error) =>
                 {
                     // The published source moved between the preparation and
                     // the capture. Re-prepare on this bounded Context
                     // preparation path instead of returning the stale source.
-                    source_changes += 1;
-                    tracing::debug!(agent_id = %message.agent_id, source_changes,
+                    retries.sources += 1;
+                    tracing::debug!(agent_id = %message.agent_id, source_changes = retries.sources,
                         "re-preparing Context after the resource source changed");
                 }
                 result => return result,
@@ -261,6 +311,28 @@ impl RuntimeHandle {
         let mut mutation = capture_mode
             .measure(Stage::OwnerAcquisition, self.begin_context_capture())
             .await?;
+        self.capture_loaded_context(
+            ContextPublication::Reserved(&mut mutation),
+            capture_mode,
+            message,
+            continuation,
+            fallback_model,
+            require_execution,
+            admission,
+        )
+        .await
+    }
+
+    async fn capture_loaded_context(
+        &self,
+        mut publication: ContextPublication<'_>,
+        capture_mode: ContextCaptureMode,
+        message: &MessageEnvelope,
+        continuation: Option<&ContinuationResolution>,
+        fallback_model: Option<&ModelRouteRef>,
+        require_execution: bool,
+        admission: Option<ContextAdmissionPlan<'_>>,
+    ) -> Result<PreparedLoadedContext> {
         // D3 Message writers publish the exact count with the accepted payload;
         // this consumer never repairs it by counting historical Message rows.
         // Derive from one immutable config publication, not the independently
@@ -268,26 +340,30 @@ impl RuntimeHandle {
         let config_version = self.inner.config_snapshot.load_full();
         // Complete metadata names only this binding's admitted settlements;
         // retry eligibility must not exclude still-Open CallerAdmitted facts.
-        let (mandatory_roots, record_limit, byte_limit) =
-            mutation.context_input_evidence_policy()?;
+        let (mandatory_roots, record_limit, byte_limit) = self.context_input_evidence_policy()?;
+        let scope = &self.inner.resources.scope;
         let metadata_request = active_task_request();
-        capture_mode
-            .measure(
-                Stage::TaskPreparation,
-                mutation.prepare_owner_task_request(&metadata_request),
-            )
-            .await?;
-        let metadata = mutation.capture_task_read(&metadata_request)?;
+        if let ContextPublication::Reserved(owner) = &mut publication {
+            capture_mode
+                .measure(
+                    Stage::TaskPreparation,
+                    owner.prepare_owner_task_request(&metadata_request),
+                )
+                .await?;
+        }
+        let root = publication.root()?;
+        let metadata = capture_context_tasks(&root, &metadata_request, scope)?;
+        let state = metadata.state.clone();
         anyhow::ensure!(
-            metadata.token.identity_incarnation == metadata.tasks.scope.identity_incarnation
-                && metadata.state.id == metadata.tasks.scope.agent_id,
+            metadata.token.identity_incarnation == scope.identity_incarnation
+                && state.id == scope.agent_id,
             "context Task publication differs"
         );
         // Start the same phase before Current request keys or recovery decoding.
         // Only synchronous constructors enter it; preparation awaits never do.
         let resource_material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
             &self.inner.input_evidence_budget,
-            &metadata.tasks.scope,
+            scope,
         )?;
         // Freeze Ready resources before the remaining domain preparation. Later
         // writes block new captures, while this admitted immutable read survives.
@@ -305,8 +381,13 @@ impl RuntimeHandle {
                 .notified()
                 .await;
         }
-        let observation =
-            self.capture_context_resources(&mutation.state, &config_version, &resource_material)?;
+        let observation = self.capture_context_resources_from_root(
+            &state,
+            &root,
+            &config_version,
+            &resource_material,
+        )?;
+        drop(root);
 
         #[cfg(test)]
         if self
@@ -325,9 +406,9 @@ impl RuntimeHandle {
         let model = super::prepare_agent_model_state_for_turn(
             &config_version.model_catalog,
             &config_version.base_context_config,
-            &mutation.state,
+            &state,
             fallback_model,
-            &metadata.tasks.scope,
+            scope,
             &resource_material,
         )?;
         let config = resource_material.read(|| {
@@ -357,30 +438,32 @@ impl RuntimeHandle {
         })?;
         let (task_request, _task_selector_budget) = context_task_request(
             &metadata.tasks,
-            &metadata.state,
+            &state,
             &self.inner.input_evidence_budget,
             record_limit,
             byte_limit,
         )?;
         drop(metadata);
-        capture_mode
-            .measure(
-                Stage::TaskPreparation,
-                mutation.prepare_owner_task_request(&task_request),
-            )
-            .await?;
-        let planned_tasks = mutation.capture_task_read(&task_request)?.tasks;
+        if let ContextPublication::Reserved(owner) = &mut publication {
+            capture_mode
+                .measure(
+                    Stage::TaskPreparation,
+                    owner.prepare_owner_task_request(&task_request),
+                )
+                .await?;
+        }
+        let planned_tasks =
+            capture_context_tasks(publication.root()?.as_ref(), &task_request, scope)?.tasks;
         let work_request = {
             let _resource_io = resource_material.enter();
             crate::diagnostics::resource_io::admit_cloned_value(&(
-                &mutation.state.current_work_item_id,
-                mutation
-                    .state
+                &state.current_work_item_id,
+                state
                     .current_execution_binding
                     .as_ref()
                     .and_then(|binding| binding.work_item_id.as_ref()),
             ))?;
-            let mut request = context_work_capture_request(&mutation.state);
+            let mut request = context_work_capture_request(&state);
             if let Some(id) = admission.and_then(|plan| plan.work_item_id) {
                 crate::diagnostics::resource_io::admit_cloned_value(&id)?;
                 request
@@ -389,37 +472,48 @@ impl RuntimeHandle {
             }
             request
         };
-        capture_mode
-            .measure(
-                Stage::WorkPreparation,
-                mutation
-                    .prepare_owner_work_request_with_material(&work_request, &resource_material),
-            )
-            .await?;
-        let state = &mutation.state;
+        if let ContextPublication::Reserved(owner) = &mut publication {
+            capture_mode
+                .measure(
+                    Stage::WorkPreparation,
+                    owner.prepare_owner_work_request_with_material(
+                        &work_request,
+                        &resource_material,
+                    ),
+                )
+                .await?;
+        }
+        let state = state.as_ref();
         anyhow::ensure!(state.id == message.agent_id, "context input agent mismatch");
         let workspace = self.workspace_view_from_state(state)?;
         let history_policy =
             turn::context_history_preparation(&state.id, &model.model.effective_model);
-        capture_mode
-            .measure(
-                Stage::SchedulingPreparation,
-                mutation.prepare_owner_scheduling_request_with_material(
-                    &super::resident_scheduling::SchedulingCaptureRequest::current(),
-                    &resource_material,
-                ),
-            )
-            .await?;
-        let state = &mutation.state;
+        if let ContextPublication::Reserved(owner) = &mut publication {
+            capture_mode
+                .measure(
+                    Stage::SchedulingPreparation,
+                    owner.prepare_owner_scheduling_request_with_material(
+                        &super::resident_scheduling::SchedulingCaptureRequest::current(),
+                        &resource_material,
+                    ),
+                )
+                .await?;
+        }
+        let root = publication.root()?;
         let planned_scheduling = {
             let _resource_io = resource_material.enter();
-            mutation.capture_context_scheduling_plan()?
+            match &publication {
+                ContextPublication::Ready(_) => root.capture_context_scheduling_plan(scope)?,
+                ContextPublication::Reserved(owner) => owner.capture_context_scheduling_plan()?,
+            }
         };
-        let planned_work = mutation.capture_work(&work_request)?;
-        anyhow::ensure!(
-            planned_work.scope.agent_id == state.id,
-            "context Work scope mismatch"
-        );
+        let planned_work = root
+            .work
+            .as_ref()
+            .ok_or(super::resident_work::WorkReadError::IncompleteLive)?
+            .capture(&work_request)?;
+        drop(root);
+        anyhow::ensure!(planned_work.scope == *scope, "context Work scope mismatch");
         anyhow::ensure!(
             planned_scheduling.read.state.as_ref() == state
                 && planned_scheduling.read.scheduling.scope == planned_work.scope,
@@ -482,29 +576,46 @@ impl RuntimeHandle {
             input_request.selected_completion_brief_ids =
                 selected_completion_brief_ids(&planned_work, &completion_work_ids)?;
         }
-        let completion_deliveries = capture_mode
-            .measure(
-                Stage::CompletionDeliveryPreparation,
-                Box::pin(mutation.prepare_owner_completion_deliveries(
-                    &planned_work,
-                    &completion_work_ids,
-                    &resource_material,
-                )),
-            )
-            .await?;
-        // The owner adds the ordinary closure policy without changing this
-        // frozen prompt selection. Do not copy its selectors a second time here.
-        capture_mode
-            .measure(
-                Stage::InputPreparation,
-                mutation.prepare_owner_input_request_with_material(
-                    &input_request,
-                    config.recent_episode_candidates,
-                    &resource_material,
-                ),
-            )
-            .await?;
-        let captured = mutation.capture_context_with_inputs_and_work_and_tasks(
+        let completion_deliveries = if let ContextPublication::Reserved(owner) = &mut publication {
+            let deliveries = capture_mode
+                .measure(
+                    Stage::CompletionDeliveryPreparation,
+                    Box::pin(owner.prepare_owner_completion_deliveries(
+                        &planned_work,
+                        &completion_work_ids,
+                        &resource_material,
+                    )),
+                )
+                .await?;
+            // The owner adds the scheduler policy without changing the prompt selection.
+            capture_mode
+                .measure(
+                    Stage::InputPreparation,
+                    owner.prepare_owner_input_request_with_material(
+                        &input_request,
+                        config.recent_episode_candidates,
+                        &resource_material,
+                    ),
+                )
+                .await?;
+            deliveries
+        } else {
+            self.preview_completion_deliveries(
+                publication.root()?.as_ref(),
+                &planned_work,
+                &completion_work_ids,
+            )?
+        };
+        let root = publication.root()?;
+        if matches!(&publication, ContextPublication::Ready(_))
+            && root
+                .episodes
+                .as_ref()
+                .is_none_or(|episodes| !episodes.covers(config.recent_episode_candidates))
+        {
+            return Err(PreviewNeedsPreparation.into());
+        }
+        let captured = root.capture_context_with_inputs_and_work_and_tasks(
             config.recent_episode_candidates,
             &input_request,
             &work_request,
@@ -512,6 +623,7 @@ impl RuntimeHandle {
             &resource_material,
             planned_scheduling,
         )?;
+        drop(root);
         let work = captured
             .work
             .as_ref()
@@ -530,8 +642,8 @@ impl RuntimeHandle {
         let state = captured.state.as_ref();
         let identity_record = captured
             .identity
-            .as_deref()
-            .ok_or_else(|| anyhow!("context identity is not published"))?;
+            .as_ref()
+            .context("context identity is not published")?;
         anyhow::ensure!(
             identity_record.agent_id == state.id
                 && identity_record.incarnation == captured.token.identity_incarnation
@@ -546,7 +658,21 @@ impl RuntimeHandle {
             )
         })?;
 
-        let tools = if admission.is_none() {
+        let tools = if capture_mode == ContextCaptureMode::Preview {
+            let policy = match &publication {
+                ContextPublication::Ready(_) => self
+                    .ready_preview_tool_policy(identity_record)
+                    .ok_or(PreviewNeedsPreparation)?,
+                ContextPublication::Reserved(_) => capture_mode
+                    .measure_sync(Stage::PreviewToolPolicyPreparation, || {
+                        self.prepare_preview_tool_policy(identity_record)
+                    })?,
+            };
+            Some(
+                self.preview_provider_tools(state, fallback_model, policy)
+                    .await?,
+            )
+        } else if admission.is_none() {
             let (_, tools, surface, _, _) = self
                 .provider_tool_selection_for_turn(fallback_model)
                 .await?;
@@ -611,6 +737,14 @@ impl RuntimeHandle {
             resource_material.finish()?;
             snapshot?
         };
+        let preview_media_defaults = if matches!(&publication, ContextPublication::Ready(_)) {
+            Some(
+                self.media_tool_defaults_for_state(state, &config_version, fallback_model)
+                    .await,
+            )
+        } else {
+            None
+        };
         drop(acquisition_timer);
         #[cfg(test)]
         if self
@@ -627,10 +761,7 @@ impl RuntimeHandle {
                 .await;
         }
         anyhow::ensure!(
-            mutation
-                .capture_context(config.recent_episode_candidates)?
-                .token
-                == captured.token,
+            publication.root()?.token == captured.token,
             "context publication changed during acquisition"
         );
         if !Arc::ptr_eq(&config_version, &self.inner.config_snapshot.load_full()) {
@@ -646,7 +777,6 @@ impl RuntimeHandle {
             resource_digest = %snapshot.resources().digest,
             "captured context from the resident publication"
         );
-        drop(mutation);
         Ok(PreparedLoadedContext {
             snapshot,
             identity,
@@ -656,6 +786,7 @@ impl RuntimeHandle {
                 model: Some(model),
             },
             tools,
+            preview_media_defaults,
         })
     }
 
@@ -669,6 +800,7 @@ impl RuntimeHandle {
             identity,
             material,
             tools,
+            preview_media_defaults,
         } = prepared;
         let observation = &material.observation;
         let loaded_agents_md =
@@ -678,7 +810,10 @@ impl RuntimeHandle {
         let (prompt_tools, apply_patch_surface) =
             tools.ok_or_else(|| anyhow!("admission snapshot has no execution tool selection"))?;
         let agent_home = self.agent_home();
-        let media_defaults = self.media_tool_defaults(fallback_model).await?;
+        let media_defaults = match preview_media_defaults {
+            Some(defaults) => defaults,
+            None => self.media_tool_defaults(fallback_model).await?,
+        };
         let mut prompt = build_effective_prompt_from_context_snapshot(
             &snapshot,
             &snapshot.execution().execution_root,
@@ -695,6 +830,23 @@ impl RuntimeHandle {
         prompt._resource_read_material = Some(material);
         Ok(prompt)
     }
+}
+
+fn capture_context_tasks(
+    root: &resident_state::AgentSnapshot,
+    request: &super::resident_task::TaskCaptureRequest,
+    scope: &super::resident_input_evidence::InputEvidenceScope,
+) -> Result<TaskReadSnapshot> {
+    let tasks = root
+        .tasks
+        .as_ref()
+        .ok_or(super::resident_task::TaskReadError::IncompleteActive)?;
+    anyhow::ensure!(tasks.scope() == scope, "context Task scope differs");
+    Ok(TaskReadSnapshot {
+        token: root.token,
+        state: root.state.clone(),
+        tasks: tasks.capture(request)?,
+    })
 }
 
 /// Shared with bootstrap/writers: State focus and the actual execution owner
@@ -1132,6 +1284,7 @@ mod tests {
                     work_item_id: Some(&owner.id),
                     token_budget: usize::MAX,
                 }),
+                ContextPreparationRetries::default(),
             )
             .await?;
         let published = runtime.inner.mutation_owner.capture()?.unwrap();
@@ -2296,6 +2449,149 @@ mod resource_read_tests {
     }
 
     #[tokio::test]
+    async fn ready_preview_bypasses_owner_and_storage_with_an_active_default_ingress() -> Result<()>
+    {
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.wait_for_bootstrap().await?;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        runtime.await_initial_resources().await;
+        let refresh = runtime.hold_resource_refresh_for_test().await?;
+        let original = runtime
+            .preview_prompt(
+                "inspect ready context".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        let owner = runtime.inner.mutation_owner.reserve().await?;
+        let root = owner
+            .capture_ready_snapshot()?
+            .context("missing Preview publication")?;
+        assert_ne!(root.state.status, AgentStatus::Stopped);
+        assert!(root
+            .scheduling
+            .as_ref()
+            .unwrap()
+            .active_default_trigger()?
+            .is_some());
+
+        let db = runtime.runtime_db();
+        let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        let writes = writer.write_channel_admissions_for_tests()?;
+        let ordinary = db.reader_pool_stats_for_tests().checkout_attempts;
+        let preparation = db.preparation_pool_stats_for_tests().checkout_attempts;
+        let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+        let captured = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runtime.preview_prompt(
+                "inspect ready context".into(),
+                AuthorityClass::OperatorInstruction,
+            ),
+        )
+        .await??;
+        assert_eq!(denied.attempts(), 0);
+        drop(denied);
+        assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, ordinary);
+        assert_eq!(
+            db.preparation_pool_stats_for_tests().checkout_attempts,
+            preparation
+        );
+        assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+        assert_eq!(owner.capture_ready_snapshot()?.unwrap().token, root.token);
+        assert_eq!(captured.identity, original.identity);
+        assert_eq!(
+            captured.rendered_system_prompt,
+            original.rendered_system_prompt
+        );
+        assert!(captured
+            .rendered_context_attachment
+            .contains("inspect ready context"));
+
+        let cancelled_runtime = runtime.clone();
+        let cancelled = tokio::task::spawn_blocking(move || {
+            let scope = crate::runtime_db::RuntimeDbReadScope::new(
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+            );
+            scope.cancel();
+            crate::runtime_db::read_block::with_scope(scope, || {
+                tokio::runtime::Handle::current().block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        cancelled_runtime.preview_prompt(
+                            "cancelled preview".into(),
+                            AuthorityClass::OperatorInstruction,
+                        ),
+                    )
+                    .await?
+                })
+            })
+        })
+        .await?;
+        let error = cancelled
+            .err()
+            .context("Ready Preview ignored a cancelled read scope")?;
+        assert_eq!(
+            error
+                .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                .map(|error| error.operation()),
+            Some("scoped reader"),
+        );
+        drop((owner, refresh, run_loop));
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preview_requalifies_tool_policy_after_a_committed_change() -> Result<()> {
+        use crate::types::{AgentCapabilityFamily, AgentCapabilityPolicyRule, AgentPolicyEffect};
+
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.control(crate::types::ControlAction::Stop).await?;
+        runtime
+            .preview_prompt(
+                "before policy change".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        let root = runtime.inner.mutation_owner.capture()?.unwrap();
+        let identity = root.identity.as_deref().unwrap();
+        let original = runtime
+            .ready_preview_tool_policy(identity)
+            .context("policy not prepared")?;
+        assert!(original.allows(AgentCapabilityFamily::AgentCreation));
+
+        let mut policy = runtime
+            .agent_capability_policy()
+            .await?
+            .context("canonical policy missing")?;
+        policy.revision += 1;
+        policy.rules.push(AgentCapabilityPolicyRule {
+            family: AgentCapabilityFamily::AgentCreation,
+            effect: AgentPolicyEffect::Deny,
+        });
+        host.runtime_db()
+            .agent_canonical_relations()
+            .upsert_capability_policy(&policy)?;
+        assert!(runtime.ready_preview_tool_policy(identity).is_none());
+
+        runtime
+            .preview_prompt(
+                "after policy change".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        let updated = runtime
+            .ready_preview_tool_policy(identity)
+            .context("updated policy not prepared")?;
+        assert!(!updated.allows(AgentCapabilityFamily::AgentCreation));
+        assert_eq!(
+            updated.allows(AgentCapabilityFamily::CoreAgent),
+            original.allows(AgentCapabilityFamily::CoreAgent)
+        );
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn covered_preview_uses_the_publication_without_scope_tables() -> Result<()> {
         let (_home, host, runtime) = resource_host().await?;
         runtime.control(crate::types::ControlAction::Stop).await?;
@@ -2371,8 +2667,27 @@ mod resource_read_tests {
         let original_identity = original.identity.as_ref().unwrap();
         assert_eq!(prompt.identity.name, original_identity.name);
 
-        host.rename_public_agent(agent_id, "First name", "context-test")
-            .await?;
+        let checkpoint = &runtime.inner.context_capture_checkpoint;
+        checkpoint.after_resources.store(true, Ordering::SeqCst);
+        let racing_preview = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .preview_prompt("racing rename".into(), AuthorityClass::OperatorInstruction)
+                    .await
+            }
+        });
+        let timeout = std::time::Duration::from_secs(5);
+        tokio::time::timeout(timeout, checkpoint.reached.notified()).await?;
+        let rename = tokio::time::timeout(
+            timeout,
+            host.rename_public_agent(agent_id, "First name", "context-test"),
+        )
+        .await;
+        checkpoint.release.notify_one();
+        rename??;
+        let prompt = tokio::time::timeout(timeout, racing_preview).await???;
+        assert_eq!(prompt.identity.name.as_deref(), Some("First name"));
         let renamed = owner.capture()?.unwrap();
         assert_eq!(
             renamed.identity.as_ref().unwrap().name.as_deref(),
@@ -2395,7 +2710,6 @@ mod resource_read_tests {
             owner.capture(),
             Err(super::super::mutation_owner::MutationOwnerError::NeedsReconcile(_))
         ));
-        drop(runtime.begin_context_capture().await?);
         let prompt = runtime
             .preview_prompt(
                 "recovered identity".into(),

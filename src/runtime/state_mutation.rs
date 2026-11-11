@@ -1106,16 +1106,7 @@ impl RuntimeMutation {
         usize,
         usize,
     )> {
-        let limits = self.runtime.inner.input_evidence_budget.limits();
-        let bytes = limits
-            .history_per_agent_bytes
-            .checked_add(limits.pending_per_agent_bytes)
-            .context("input evidence byte limit overflow")?;
-        Ok((
-            Default::default(),
-            usize::try_from(limits.record_limit)?,
-            usize::try_from(bytes)?,
-        ))
+        self.runtime.context_input_evidence_policy()
     }
 
     #[cfg(test)]
@@ -2196,6 +2187,7 @@ impl RuntimeMutation {
         Ok(root)
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "a"))]
     pub(super) fn capture_context(
         &self,
         episode_limit: usize,

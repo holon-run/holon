@@ -20,7 +20,7 @@ pub(super) struct RuntimeResources {
     initial_done: AtomicBool,
     initial: Notify,
     closed: AtomicBool,
-    scope: InputEvidenceScope,
+    pub(super) scope: InputEvidenceScope,
     standalone_skills: Arc<RwLock<SkillsRegistry>>,
     refresh_admission: Arc<RwLock<()>>,
     refresh_lock: Arc<Mutex<()>>,
@@ -990,8 +990,23 @@ impl RuntimeHandle {
         config: &ConfigSnapshot,
         material: &ResourceReadMaterial,
     ) -> Result<Arc<ResourceObservation>> {
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("plan source has no root")?;
+        self.capture_context_resources_from_root(state, &root, config, material)
+    }
+
+    pub(super) fn capture_context_resources_from_root(
+        &self,
+        state: &AgentState,
+        root: &super::resident_state::AgentSnapshot,
+        config: &ConfigSnapshot,
+        material: &ResourceReadMaterial,
+    ) -> Result<Arc<ResourceObservation>> {
         let _io = material.enter();
-        let source = self.context_resource_source(state, config)?;
+        let source = self.context_resource_source_with_root(state, config, root)?;
         let _fence = self
             .inner
             .resources

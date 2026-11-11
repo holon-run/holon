@@ -135,9 +135,13 @@ impl ResidentEpisodes {
         Ok(Some(next))
     }
 
+    pub(super) fn covers(&self, limit: usize) -> bool {
+        limit <= self.limit
+    }
+
     pub(crate) fn selected(&self, limit: usize) -> Result<Vec<Arc<ContextEpisodeRecord>>> {
         ensure!(
-            limit <= self.limit,
+            self.covers(limit),
             "episode window expansion needs explicit hydration"
         );
         Ok(self
