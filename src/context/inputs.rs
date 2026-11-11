@@ -575,15 +575,13 @@ pub(crate) struct ResidentContextInputs<'a> {
 }
 impl<'a> ResidentContextInputs<'a> {
     pub(crate) fn new(
-        durable: &ContextDurableRead<'_>,
         captured: &'a CapturedInputEvidence,
         work: &'a CapturedWork,
         state: &'a AgentState,
         triggers: &'a [ExternalTriggerRecord],
     ) -> Result<Self> {
         ensure!(
-            durable.agent_id() == captured.scope.agent_id
-                && captured.scope.identity_incarnation > 0
+            captured.scope.identity_incarnation > 0
                 && work.scope == captured.scope
                 && state.id == captured.scope.agent_id
                 && triggers
@@ -1374,12 +1372,9 @@ mod resident_tests {
         resident
             .turn_transcript_keys
             .insert("turn-a".into(), keys.into_iter().collect());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 4_000_000, 8192)?;
         let selected = {
@@ -1477,12 +1472,9 @@ mod resident_tests {
             resident
                 .turn_transcript_keys
                 .insert("turn-a".into(), BTreeSet::from([key]));
-            let mut connection = rusqlite::Connection::open_in_memory()?;
-            let tx = connection.transaction()?;
-            let durable = ContextDurableRead::new(&tx, "default");
             let work = empty_work();
             let state = AgentState::new("default");
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             for by_turn in [false, true] {
                 let phase =
@@ -1516,9 +1508,6 @@ mod resident_tests {
         );
         let key = Key::new(Family::Transcript, &entry.id);
         let original = evidence(PreparedInputEvidence::Transcript(entry));
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         for wrong_scope in [false, true] {
@@ -1541,7 +1530,7 @@ mod resident_tests {
             resident
                 .turn_transcript_keys
                 .insert("turn-a".into(), BTreeSet::from([key.clone()]));
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             assert!(inputs
                 .history_transcript(1)
                 .unwrap_err()
@@ -1560,7 +1549,7 @@ mod resident_tests {
         resident
             .turn_transcript_keys
             .insert("pruned".into(), BTreeSet::from([key]));
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(inputs
             .history_transcript_for_turns(&["pruned".into()])?
             .is_empty());
@@ -1614,12 +1603,9 @@ mod resident_tests {
         let resident = captured(vec![evidence(PreparedInputEvidence::Message(
             source.clone(),
         ))]);
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
         {
@@ -1651,16 +1637,13 @@ mod resident_tests {
 
     #[test]
     fn resident_message_existence_preserves_absence_preparation_scope_and_family() -> Result<()> {
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         let mut resident = captured(Vec::new());
         resident
             .unavailable
             .insert(Key::new(Family::Message, "pruned"));
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(!inputs.message_exists("pruned")?);
         assert!(matches!(
             inputs.message_exists("unprepared").unwrap_err().downcast_ref(),
@@ -1688,7 +1671,7 @@ mod resident_tests {
             (wrong_family, "family mismatch"),
         ] {
             let resident = captured(vec![record]);
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             assert!(inputs
                 .message_exists(&source.id)
                 .unwrap_err()
@@ -1731,12 +1714,9 @@ mod resident_tests {
                 2,
             ));
         }
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         for selected_owner in [None, Some(&owner)] {
             let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
@@ -1814,12 +1794,9 @@ mod resident_tests {
                 1,
             ),
         ];
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64 * 1024, 1024)?;
         let active = phase.enter();
         let selected_message = inputs.history_message_by_id(&source.id)?.unwrap();
@@ -1898,9 +1875,6 @@ mod resident_tests {
         })?;
         resident.budget_views.push(origin.guard()?);
         resident.query_acquisition = Some(origin.clone());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         for wrong_scope in [false, true] {
@@ -1912,11 +1886,11 @@ mod resident_tests {
             }
             let mut invalid = captured(vec![Arc::new(invalid)]);
             invalid.windows = resident.windows.clone();
-            let inputs = ResidentContextInputs::new(&durable, &invalid, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&invalid, &work, &state, &[])?;
             assert!(inputs.history_briefs(1).is_err());
             assert!(inputs.history_brief_by_id(&brief.id).is_err());
         }
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(inputs.history_brief_by_id("absent")?.is_none());
         assert!(inputs.history_brief_by_id("unprepared").is_err());
         let header = (scope().agent_id.len() as u64 + 256) * 8;
@@ -2025,9 +1999,6 @@ mod resident_tests {
         })?;
         resident.budget_views.push(origin.guard()?);
         resident.query_acquisition = Some(origin.clone());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         for wrong_scope in [false, true] {
@@ -2039,11 +2010,11 @@ mod resident_tests {
             }
             let mut invalid = captured(vec![Arc::new(invalid)]);
             invalid.windows = resident.windows.clone();
-            let inputs = ResidentContextInputs::new(&durable, &invalid, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&invalid, &work, &state, &[])?;
             assert!(inputs.history_tools(1).is_err());
             assert!(inputs.history_tool_by_id(&tool.id).is_err());
         }
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(inputs.history_tool_by_id("absent")?.is_none());
         assert!(inputs.history_tool_by_id("unprepared").is_err());
         let header = (scope().agent_id.len() as u64 + 256) * 8;
@@ -2170,12 +2141,9 @@ mod resident_tests {
         })?;
         resident.budget_views.push(origin.guard()?);
         resident.query_acquisition = Some(origin.clone());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let header = (scope().agent_id.len() as u64 + 256) * 8;
         let bytes = header
             + 8 * (std::mem::size_of::<turns::HistoryTurnMaterial>()
@@ -2242,12 +2210,9 @@ mod resident_tests {
         })?;
         resident.budget_views.push(origin.guard()?);
         resident.query_acquisition = Some(origin.clone());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let header = (scope().agent_id.len() as u64 + 256) * 8;
         let bytes = header
             + 8 * (std::mem::size_of::<turns::HistoryTurnMaterial>()
@@ -2307,12 +2272,9 @@ mod resident_tests {
         })?;
         resident.budget_views.push(origin.guard()?);
         resident.query_acquisition = Some(origin.clone());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let header = (scope().agent_id.len() as u64 + 256) * 8;
         let bytes = header
             + 8 * (std::mem::size_of::<turns::HistoryTurnMaterial>()
@@ -2371,21 +2333,18 @@ mod resident_tests {
         wrong_scope.locator.scope.identity_incarnation += 1;
         let mut wrong_family = valid.as_ref().clone();
         wrong_family.record = PreparedInputEvidence::Turn(TurnRecord::new("default", "turn", 1));
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         for record in [Arc::new(wrong_scope), Arc::new(wrong_family)] {
             let resident = captured(vec![record]);
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             assert!(inputs.history_message_by_id(&id).is_err());
         }
         let mut resident = captured(vec![valid]);
         resident
             .unavailable
             .insert(Key::new(Family::Message, "absent"));
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(inputs.history_message_by_id("absent")?.is_none());
         assert!(inputs.history_message_by_id("unprepared").is_err());
         Ok(())
@@ -2402,9 +2361,6 @@ mod resident_tests {
         let mut turn = TurnRecord::new("default", "canonical-turn", 1);
         turn.input_message_ids = vec![source.id.clone()];
         turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&source));
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -2426,7 +2382,7 @@ mod resident_tests {
             }
             Arc::make_mut(&mut resident.message_turn_keys)
                 .insert(source.id.clone(), assignment.map(str::to_owned));
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
             {
                 let _active = phase.enter();
@@ -2526,12 +2482,9 @@ mod resident_tests {
             .insert(Key::new(Family::Attempt, "pruned"));
         // The retained partition is valid; only its unnecessary owning copy fails.
         assert_invariants(&resident.protocol_state()?).map_err(anyhow::Error::msg)?;
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
         let base = phase.finish()?;
@@ -2594,12 +2547,9 @@ mod resident_tests {
             runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         };
         let resident = captured(Vec::new());
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
         let exact = phase.finish()?;
@@ -2627,19 +2577,13 @@ mod resident_tests {
             diagnostics::resource_io::{charge_owned_metadata, ResourceReadMaterial},
             runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         };
-        let directory = tempfile::tempdir()?;
-        let storage = AppStorage::new_for_test(directory.path())?;
-        let db = storage.runtime_db()?.unwrap();
-        let mut connection = db.connection()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let original = message(&"body".repeat(2048));
         let captured = captured(vec![evidence(PreparedInputEvidence::Message(
             original.clone(),
         ))]);
         let state = AgentState::new("default");
         let work = empty_work();
-        let inputs = ResidentContextInputs::new(&durable, &captured, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&captured, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
 
         for window in [false, true] {
@@ -2706,9 +2650,6 @@ mod resident_tests {
             diagnostics::resource_io::{cloned_value_material, ResourceReadMaterial},
             runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         };
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         let mut resident = captured(Vec::new());
@@ -2730,7 +2671,7 @@ mod resident_tests {
             .insert(Key::new(Family::Message, "pruned"));
         expected.insert("pruned".into(), None);
         let ids = expected.keys().cloned().collect::<BTreeSet<_>>();
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1_000_000, 65_536)?;
         let base = phase.finish()?;
@@ -2758,7 +2699,7 @@ mod resident_tests {
         drop(inputs);
         let mut incomplete = resident;
         Arc::make_mut(&mut incomplete.message_turn_keys).remove("assignment-0");
-        let inputs = ResidentContextInputs::new(&durable, &incomplete, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&incomplete, &work, &state, &[])?;
         let error = inputs.history_message_assignments(ids).unwrap_err();
         assert!(matches!(
             error.downcast_ref(),
@@ -2777,9 +2718,6 @@ mod resident_tests {
             config::StateMemoryLimits, diagnostics::resource_io::ResourceReadMaterial,
             runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         };
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let source = message("selected assignment");
         let hidden = message("unselected assignment");
         let mut resident = captured(vec![
@@ -2796,7 +2734,7 @@ mod resident_tests {
             .insert("pruned".into(), Some("stale-pruned-assignment".into()));
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ids = [source.id.as_str(), "pruned", source.id.as_str()];
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 1_000_000, 8192)?;
@@ -2864,7 +2802,7 @@ mod resident_tests {
         let mut incomplete = captured(vec![evidence(PreparedInputEvidence::Message(
             source.clone(),
         ))]);
-        let inputs = ResidentContextInputs::new(&durable, &incomplete, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&incomplete, &work, &state, &[])?;
         let error = inputs
             .history_assignment_view([source.id.as_str()].into_iter())
             .unwrap_err();
@@ -2877,7 +2815,7 @@ mod resident_tests {
             .locator
             .scope
             .identity_incarnation += 1;
-        let inputs = ResidentContextInputs::new(&durable, &incomplete, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&incomplete, &work, &state, &[])?;
         assert!(inputs
             .history_assignment_view([source.id.as_str()].into_iter())
             .is_err());
@@ -2890,12 +2828,6 @@ mod resident_tests {
             config::StateMemoryLimits, diagnostics::resource_io::ResourceReadMaterial,
             runtime::input_evidence_budget::InputEvidenceBudgetLedger,
         };
-        let directory = tempfile::tempdir()?;
-        let storage = AppStorage::new_for_test(directory.path())?;
-        let db = storage.runtime_db()?.unwrap();
-        let mut connection = db.connection()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let original = message("assignment");
         let mut captured = captured(vec![evidence(PreparedInputEvidence::Message(
             original.clone(),
@@ -2907,7 +2839,7 @@ mod resident_tests {
             .insert(Key::new(Family::Message, "absent"));
         let state = AgentState::new("default");
         let work = empty_work();
-        let inputs = ResidentContextInputs::new(&durable, &captured, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&captured, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 4096, 64)?;
         let baseline = phase.finish()?;
@@ -2980,10 +2912,6 @@ mod resident_tests {
             runtime::input_evidence_budget::InputEvidenceBudgetLedger,
             types::{IdleInputBatchItem, IdleInputBatchRecord},
         };
-        // Any accidental durable fallback encounters a missing table.
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let mut absent = TurnRecord::new("default", "absent-batch", 1);
         absent.input_message_ids = vec!["unrelated".repeat(64 * 1024)];
         let mut present = absent.clone();
@@ -3015,7 +2943,7 @@ mod resident_tests {
             .insert(Key::new(Family::Turn, "pruned"));
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let header_only = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 4096, 64)?;
         let baseline = header_only.finish()?;
@@ -3089,7 +3017,7 @@ mod resident_tests {
             .locator
             .scope
             .identity_incarnation += 1;
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(inputs.idle_input_batch_for_turn("absent-batch").is_err());
         assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
@@ -3097,10 +3025,6 @@ mod resident_tests {
 
     #[test]
     fn migrated_reads_need_no_sql_tables_and_keep_both_history_windows() {
-        // Any accidental durable fallback encounters a missing table here.
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = ContextDurableRead::new(&tx, "default");
         let anchor = message("trusted anchor");
         let turn_a = TurnRecord::new("default", "turn-a", 1);
         let turn_b = TurnRecord::new("default", "turn-b", 2);
@@ -3174,7 +3098,7 @@ mod resident_tests {
         Arc::make_mut(&mut resident.message_turn_keys).insert(anchor.id.clone(), None);
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[]).unwrap();
         assert_eq!(inputs.assigned_turn_for_message(&anchor.id).unwrap(), None);
         assert_eq!(inputs.anchor_messages().unwrap(), vec![anchor.clone()]);
         assert_eq!(inputs.message_by_id(&anchor.id).unwrap(), Some(anchor));
@@ -3290,7 +3214,7 @@ mod resident_tests {
             .insert(source.id.clone(), Some(turn.turn_id.clone()));
         let work = empty_work();
         let state = AgentState::new("default");
-        let resident = ResidentContextInputs::new(&durable, &selected, &work, &state, &[]).unwrap();
+        let resident = ResidentContextInputs::new(&selected, &work, &state, &[]).unwrap();
         assert_eq!(
             resident
                 .assigned_turn_for_message(&source.id)
@@ -3361,7 +3285,7 @@ mod resident_tests {
         ))]);
         let work = empty_work();
         let state = AgentState::new("default");
-        let missing = ResidentContextInputs::new(&durable, &selected, &work, &state, &[]).unwrap();
+        let missing = ResidentContextInputs::new(&selected, &work, &state, &[]).unwrap();
         assert!(missing
             .assigned_turn_for_message(&source.id)
             .unwrap_err()
@@ -3370,7 +3294,7 @@ mod resident_tests {
         Arc::make_mut(&mut selected.message_turn_keys).insert(source.id.clone(), None);
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &selected, &work, &state, &[]).unwrap();
+        let inputs = ResidentContextInputs::new(&selected, &work, &state, &[]).unwrap();
         assert!(inputs
             .assigned_turn_for_message(&source.id)
             .unwrap()
@@ -3434,12 +3358,9 @@ mod resident_tests {
             evidence(PreparedInputEvidence::Transcript(transcript)),
             evidence(PreparedInputEvidence::Message(source)),
         ]);
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
         {
@@ -3519,12 +3440,9 @@ mod resident_tests {
             let original = brief_text::borrowed_text(&resident.records[0].record)
                 .expect("single selected text")
                 .as_ptr();
-            let mut connection = rusqlite::Connection::open_in_memory()?;
-            let tx = connection.transaction()?;
-            let durable = ContextDurableRead::new(&tx, "default");
             let work = empty_work();
             let state = AgentState::new("default");
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             if uses_fallback {
                 let mut changed = brief.clone();
                 changed.text.push_str(" changed");
@@ -3552,17 +3470,14 @@ mod resident_tests {
                     let mut records = resident.records.clone();
                     records[index] = Arc::new(invalid);
                     let invalid = captured(records);
-                    let inputs =
-                        ResidentContextInputs::new(&durable, &invalid, &work, &state, &[])?;
+                    let inputs = ResidentContextInputs::new(&invalid, &work, &state, &[])?;
                     assert!(inputs.history_brief_text(&brief).is_err());
                 }
             }
             let unprepared = captured(Vec::new());
-            assert!(
-                ResidentContextInputs::new(&durable, &unprepared, &work, &state, &[])?
-                    .history_brief_text(&brief)
-                    .is_err()
-            );
+            assert!(ResidentContextInputs::new(&unprepared, &work, &state, &[])?
+                .history_brief_text(&brief)
+                .is_err());
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             let bytes = (scope().agent_id.len() as u64 + 256) * 8
                 + 8 * (std::mem::size_of::<turns::HistoryTurnMaterial>()
@@ -3633,12 +3548,9 @@ mod resident_tests {
                 evidence(PreparedInputEvidence::Message(source)),
                 evidence(PreparedInputEvidence::Brief(brief.clone())),
             ]);
-            let mut connection = rusqlite::Connection::open_in_memory()?;
-            let tx = connection.transaction()?;
-            let durable = ContextDurableRead::new(&tx, "default");
             let work = empty_work();
             let state = AgentState::new("default");
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             assert_eq!(inputs.history_brief_text(&brief)?.as_str(), expected);
             assert_eq!(inputs.resolved_brief_text(&brief)?, expected);
         }
@@ -3679,12 +3591,9 @@ mod resident_tests {
                 records.push(evidence(PreparedInputEvidence::Message(source)));
             }
             let resident = captured(records);
-            let mut connection = rusqlite::Connection::open_in_memory()?;
-            let tx = connection.transaction()?;
-            let durable = ContextDurableRead::new(&tx, "default");
             let work = empty_work();
             let state = AgentState::new("default");
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
             {
@@ -3724,12 +3633,9 @@ mod resident_tests {
             evidence(PreparedInputEvidence::Transcript(transcript)),
             evidence(PreparedInputEvidence::Message(source)),
         ]);
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
         {
@@ -3762,9 +3668,6 @@ mod resident_tests {
             entry_id: transcript.id.clone(),
             relation: BriefContentSourceRelation::Finalizes,
         };
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         for missing_transcript in [false, true] {
@@ -3784,7 +3687,7 @@ mod resident_tests {
                         transcript.clone(),
                     )));
             }
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             assert_eq!(
                 inputs.resolved_brief_text(&brief)?,
                 if missing_transcript {
@@ -3809,7 +3712,7 @@ mod resident_tests {
             .scope
             .identity_incarnation += 1;
         let resident = captured(vec![wrong_scope]);
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
         assert!(inputs
             .resolved_brief_text(&brief)
             .unwrap_err()
@@ -3864,12 +3767,9 @@ mod resident_tests {
             let resident = captured(vec![evidence(PreparedInputEvidence::Transcript(
                 transcript,
             ))]);
-            let mut connection = rusqlite::Connection::open_in_memory()?;
-            let tx = connection.transaction()?;
-            let durable = ContextDurableRead::new(&tx, "default");
             let work = empty_work();
             let state = AgentState::new("default");
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
             {
@@ -3911,12 +3811,9 @@ mod resident_tests {
             let resident = captured(vec![evidence(PreparedInputEvidence::Transcript(
                 transcript,
             ))]);
-            let mut connection = rusqlite::Connection::open_in_memory()?;
-            let tx = connection.transaction()?;
-            let durable = ContextDurableRead::new(&tx, "default");
             let work = empty_work();
             let state = AgentState::new("default");
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
             let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), 64_000, 2048)?;
             {
@@ -3937,9 +3834,6 @@ mod resident_tests {
 
     #[test]
     fn resident_brief_text_preserves_json_blank_and_block_semantics() -> Result<()> {
-        let mut connection = rusqlite::Connection::open_in_memory()?;
-        let tx = connection.transaction()?;
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         for (kind, body, data, expected) in [
@@ -3982,7 +3876,7 @@ mod resident_tests {
                 evidence(PreparedInputEvidence::Transcript(transcript)),
                 evidence(PreparedInputEvidence::Message(source)),
             ]);
-            let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[])?;
+            let inputs = ResidentContextInputs::new(&resident, &work, &state, &[])?;
             assert_eq!(inputs.resolved_brief_text(&brief)?, expected);
         }
         Ok(())
@@ -3990,9 +3884,6 @@ mod resident_tests {
 
     #[test]
     fn unprepared_brief_source_cannot_silently_render_fallback_text() {
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = ContextDurableRead::new(&tx, "default");
         let mut brief = BriefRecord::new(
             "default",
             BriefKind::Result,
@@ -4007,7 +3898,7 @@ mod resident_tests {
         let resident = captured(vec![evidence(PreparedInputEvidence::Brief(brief.clone()))]);
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[]).unwrap();
         let error = crate::context::snapshot::HistoryObservations::capture_inputs(
             &inputs,
             &[] as &[TurnRecord],
@@ -4045,10 +3936,6 @@ mod resident_tests {
             relation: BriefContentSourceRelation::Finalizes,
         };
         storage.append_brief(&brief).unwrap();
-        let db = storage.runtime_db().unwrap().unwrap();
-        let mut connection = db.connection().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = ContextDurableRead::new(&tx, "default");
         let resident = captured(vec![
             evidence(PreparedInputEvidence::Brief(brief.clone())),
             evidence(PreparedInputEvidence::Transcript(transcript.clone())),
@@ -4076,7 +3963,7 @@ mod resident_tests {
             )]),
         );
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[]).unwrap();
         assert!(
             inputs.briefs(1).is_err(),
             "a focused completion head does not grant a history window"
@@ -4218,7 +4105,7 @@ mod resident_tests {
         let resident = captured(Vec::new());
         let work = empty_work();
         let state = AgentState::new("default");
-        let inputs = ResidentContextInputs::new(&durable, &resident, &work, &state, &[]).unwrap();
+        let inputs = ResidentContextInputs::new(&resident, &work, &state, &[]).unwrap();
         assert!(inputs.message_by_id(&reply.id).is_err());
         assert!(inputs
             .admitted_settlement_inputs("default", "activation", &current.id, 1)
@@ -4249,9 +4136,6 @@ mod resident_tests {
         messages.last_mut().unwrap().body = MessageBody::Text {
             text: "r".repeat(256 * 1024),
         };
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let state = AgentState::new("default");
         let selected = captured(
@@ -4261,7 +4145,7 @@ mod resident_tests {
                 .map(|message| evidence(PreparedInputEvidence::Message(message)))
                 .collect(),
         );
-        let inputs = ResidentContextInputs::new(&durable, &selected, &work, &state, &[])
+        let inputs = ResidentContextInputs::new(&selected, &work, &state, &[])
             .unwrap()
             .with_tasks(&tasks)
             .unwrap();
@@ -4316,7 +4200,7 @@ mod resident_tests {
                 .map(|message| evidence(PreparedInputEvidence::Message(message)))
                 .collect(),
         );
-        let inputs = ResidentContextInputs::new(&durable, &missing_reply, &work, &state, &[])
+        let inputs = ResidentContextInputs::new(&missing_reply, &work, &state, &[])
             .unwrap()
             .with_tasks(&tasks)
             .unwrap();
@@ -4335,9 +4219,6 @@ mod resident_tests {
     #[test]
     fn resident_task_context_reads_only_selected_roots_after_current_reply_exclusion() {
         let (tasks, messages) = crate::runtime::task_reads::tests::admitted_fixture().unwrap();
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = ContextDurableRead::new(&tx, "default");
         let work = empty_work();
         let mut state = AgentState::new("default");
         state.current_execution_binding = Some(crate::types::WorkItemExecutionBinding {
@@ -4390,7 +4271,7 @@ mod resident_tests {
                     .map(|message| evidence(PreparedInputEvidence::Message(message)))
                     .collect(),
             );
-            let inputs = ResidentContextInputs::new(&durable, &selected, &work, &state, &[])
+            let inputs = ResidentContextInputs::new(&selected, &work, &state, &[])
                 .unwrap()
                 .with_tasks(&tasks)
                 .unwrap();

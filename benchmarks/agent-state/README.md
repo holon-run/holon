@@ -154,7 +154,8 @@ capture mode (preview, admission planning, or execution) and stage:
 | `scheduling_preparation` | Scheduling preparation request, including Input preparation it invokes |
 | `input_preparation` | Input preparation request for the selected context |
 | `workspace_publication` | Capture of selected workspace anchors and execution roots from the shared memory view |
-| `durable_capture` | Final SQLite connection and transaction, including scope and revision validation, remaining source reads, and snapshot assembly |
+| `resident_capture` | Final snapshot assembly from reserved resident material |
+| `durable_capture` | Historical final assembly stage including the SQLite connection, transaction and canonical scope and revision validation |
 
 `owner_reservation_wait` measures acquisition through the reservation return
 and is included in `owner_acquisition` latency. It is absent when the
@@ -165,11 +166,10 @@ on unobserved connections remain outside the stage counts. The process totals
 continue to include concurrent work. Samples count completed calls, including
 errors and retries, so sample counts need not match constructed requests.
 `samples_without_sql` counts calls with no attributed statement of any kind.
-The final transaction's stage includes connection configuration and transaction
-control statements. This attribution establishes a baseline for removing
-loaded context reads and reservations. Reports from the original baseline
-include an `identity_lookup` stage. Capture now takes identity from the
-published root; the final transaction still validates it.
+The historical `durable_capture` stage includes connection configuration and
+transaction-control statements. Reports from the original baseline also include
+an `identity_lookup` stage. Resident assembly takes identity from the published
+root. Owner acquisition and named preparation have separate SQL attribution.
 
 Memory reports instrumented System-allocator requested live/phase-peak bytes
 and process lifetime peak RSS (`getrusage`). SQLite native allocations and

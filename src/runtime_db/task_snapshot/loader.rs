@@ -975,7 +975,7 @@ pub(crate) fn validate_task_domain_observation_with_scope_tx(
     validate_task_observation_revision_tx(tx, scope, revision)
 }
 
-pub(in crate::runtime_db) fn validate_task_observation_revision_tx(
+fn validate_task_observation_revision_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     revision: u64,

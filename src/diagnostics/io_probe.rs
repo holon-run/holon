@@ -154,6 +154,7 @@ pub enum ContextCaptureStage {
     InputPreparation,
     WorkspacePublication,
     DurableCapture,
+    ResidentCapture,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

@@ -242,10 +242,12 @@ fn context_work_and_task_observations_require_one_current_scope_and_both_revisio
         runtime::{resident_task::TaskCaptureRequest, resident_work::WorkCaptureRequest},
         runtime_db::{
             task_snapshot::{
-                prepare_task_domain_snapshot_tx, TaskDomainLoadRequest, TaskSnapshotError,
+                prepare_task_domain_snapshot_tx, validate_task_domain_observation_with_scope_tx,
+                TaskDomainLoadRequest, TaskSnapshotError,
             },
             work_snapshot::{
-                prepare_work_domain_snapshot_tx, WorkDomainLoadRequest, WorkSnapshotError,
+                prepare_work_domain_snapshot_tx, validate_work_domain_observation_with_scope_tx,
+                WorkDomainLoadRequest, WorkSnapshotError,
             },
         },
     };
@@ -292,28 +294,27 @@ fn context_work_and_task_observations_require_one_current_scope_and_both_revisio
             .capture(&task_request.capture)?;
 
         let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
-        let work_observation = (&work.scope, work.revision);
-        let task_observation = (&tasks.scope, tasks.revision);
-        read.validate_work_and_task_observations(tx, work_observation, task_observation)?;
+        validate_work_domain_observation_with_scope_tx(tx, &work.scope, work.revision, &read)?;
+        validate_task_domain_observation_with_scope_tx(tx, &tasks.scope, tasks.revision, &read)?;
 
-        let error = read
-            .validate_work_and_task_observations(
-                tx,
-                (&work.scope, work.revision + 1),
-                task_observation,
-            )
-            .unwrap_err();
+        let error = validate_work_domain_observation_with_scope_tx(
+            tx,
+            &work.scope,
+            work.revision + 1,
+            &read,
+        )
+        .unwrap_err();
         assert!(matches!(
             error.downcast_ref::<WorkSnapshotError>(),
             Some(WorkSnapshotError::RevisionMismatch { .. })
         ));
-        let error = read
-            .validate_work_and_task_observations(
-                tx,
-                work_observation,
-                (&tasks.scope, tasks.revision + 1),
-            )
-            .unwrap_err();
+        let error = validate_task_domain_observation_with_scope_tx(
+            tx,
+            &tasks.scope,
+            tasks.revision + 1,
+            &read,
+        )
+        .unwrap_err();
         assert!(matches!(
             error.downcast_ref::<TaskSnapshotError>(),
             Some(TaskSnapshotError::RevisionMismatch { .. })
@@ -324,10 +325,11 @@ fn context_work_and_task_observations_require_one_current_scope_and_both_revisio
             ..scope.clone()
         };
         assert_eq!(
-            read.validate_work_and_task_observations(
+            validate_task_domain_observation_with_scope_tx(
                 tx,
-                work_observation,
-                (&foreign_task, tasks.revision),
+                &foreign_task,
+                tasks.revision,
+                &read
             )
             .unwrap_err()
             .to_string(),
@@ -336,14 +338,14 @@ fn context_work_and_task_observations_require_one_current_scope_and_both_revisio
 
         tx.execute("UPDATE agent_identities SET status='deleting'", [])?;
         assert_eq!(
-            read.validate_work_and_task_observations(tx, work_observation, task_observation)
+            validate_work_domain_observation_with_scope_tx(tx, &work.scope, work.revision, &read)
                 .unwrap_err()
                 .to_string(),
             "context scope changed after its validated read"
         );
         let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
         assert_eq!(
-            read.validate_work_and_task_observations(tx, work_observation, task_observation)
+            validate_work_domain_observation_with_scope_tx(tx, &work.scope, work.revision, &read)
                 .unwrap_err()
                 .to_string(),
             "context identity normalized/payload projection mismatch"
