@@ -109,7 +109,7 @@ impl SessionActivity {
     }
 }
 
-#[cfg(all(test, holon_lib_test_shard = "b"))]
+#[cfg(all(test, holon_lib_test_shard = "d"))]
 mod tests {
     use super::*;
     use crate::authentication::AuthUserRecord;
