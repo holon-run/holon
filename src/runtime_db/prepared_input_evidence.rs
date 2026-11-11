@@ -419,8 +419,15 @@ impl PreparedInputEvidence {
         event: AuditEvent,
         prior: Option<TurnRecord>,
     ) -> Result<Self> {
+        let original_execution_audit = event.kind == "tool_executed"
+            || (event.kind == "tool_execution_failed"
+                && record.tool_name == crate::tool::names::EXEC_COMMAND
+                && record.status == crate::types::ToolExecutionStatus::Error
+                && prior
+                    .as_ref()
+                    .is_some_and(|turn| turn.external_side_effect_tool_call_id.is_some()));
         ensure!(
-            event.kind == "tool_executed"
+            original_execution_audit
                 && event
                     .data
                     .get("tool_execution_id")

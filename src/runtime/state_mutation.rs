@@ -382,6 +382,22 @@ impl RuntimeMutationFacts {
         }
     }
 
+    pub(super) fn restore_tool_result_event_reads(
+        &mut self,
+        tx: &rusqlite::Transaction<'_>,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+        ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+        limits: (usize, usize),
+    ) -> Result<()> {
+        crate::runtime_db::current_query::restore_tool_result_event_reads_tx(
+            tx,
+            scope,
+            ledger,
+            limits,
+            &mut self.effects.audit_events,
+        )
+    }
+
     pub(super) fn suppress_observed_input_replay_publication(&mut self) {
         // Fresh current installation is still necessary. The new invocation
         // cannot reissue old notifications or signal a newly prepared abort.

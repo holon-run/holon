@@ -732,6 +732,13 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
     );
     assert!(!diagnostic.retryable);
 
+    runtime
+        .storage()
+        .enable_event_bus(crate::storage::EventBus::new(16))?;
+    let mut events = runtime
+        .storage()
+        .subscribe_events()?
+        .context("tool result event bus")?;
     let mut mutation = runtime.begin_mutation().await?;
     let prepared = runtime.storage().prepare_input_evidence(
         mutation.input_evidence_scope(),
@@ -763,6 +770,23 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         Ok(())
     })?;
     settle.await?;
+    for kind in ["tool_executed", "external_command_checkpoint_durable"] {
+        let published = events.try_recv()?;
+        assert_eq!(published.event.kind, kind);
+        let qualified = published
+            .qualified
+            .context("recovered live Event qualification")?;
+        assert_eq!(qualified.event(), &*published.event);
+        qualified.validate(
+            &mutation.input_evidence_scope(),
+            &runtime.inner.input_evidence_budget,
+        )?;
+    }
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
     let settled = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
     assert!(!settled.external_side_effect_possible);
     assert!(settled.external_side_effect_tool_call_id.is_none());
@@ -786,5 +810,73 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         Ok(())
     })?;
     assert_eq!(std::fs::read(&effect)?, b"x");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_command_spawn_failure_allows_correction_in_the_same_turn() -> Result<()> {
+    use crate::provider::test_support::{ScriptedAgentProvider, ScriptedProviderStep};
+    use crate::runtime::{tests::support::test_effective_prompt, turn::LoopControlOptions};
+    use crate::tool::names::EXEC_COMMAND;
+
+    let bad_command = |id, tty| {
+        ScriptedProviderStep::tool_use(
+            id,
+            EXEC_COMMAND,
+            serde_json::json!({
+                "cmd": "printf x >> spawn-correction",
+                "shell": "/definitely/not/a/real/shell",
+                "login": false,
+                "tty": tty,
+            }),
+        )
+    };
+    let provider = Arc::new(
+        ScriptedAgentProvider::new([
+            bad_command("missing-shell", false),
+            bad_command("missing-pty-shell", true),
+            ScriptedProviderStep::tool_use(
+                "corrected-command",
+                EXEC_COMMAND,
+                serde_json::json!({"cmd": "printf x >> spawn-correction", "login": false}),
+            ),
+            ScriptedProviderStep::text("Corrected command completed."),
+        ])
+        .with_configured_model_refs(["default"]),
+    );
+    let harness = LifecycleHarness::with_provider(provider.clone());
+    let runtime = harness.runtime();
+    let effect = runtime.workspace_root().join("spawn-correction");
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await?;
+    assert_eq!(outcome.final_text, "Corrected command completed.");
+    assert_eq!(provider.request_count(), 4);
+    assert_eq!(std::fs::read(effect)?, b"x");
+
+    let events = runtime.storage().read_recent_events(100)?;
+    let completed = events
+        .iter()
+        .find(|event| {
+            event.kind == "tool_executed" && event.data["tool_call_id"] == "corrected-command"
+        })
+        .context("corrected command did not execute")?;
+    for id in ["missing-shell", "missing-pty-shell"] {
+        let failed = events
+            .iter()
+            .find(|event| event.kind == "tool_execution_failed" && event.data["tool_call_id"] == id)
+            .context("original spawn failure missing")?;
+        assert_eq!(failed.data["error_kind"], "command_spawn_failed");
+        assert_eq!(failed.data["turn_id"], completed.data["turn_id"]);
+    }
     Ok(())
 }

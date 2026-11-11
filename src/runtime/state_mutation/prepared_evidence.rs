@@ -64,15 +64,20 @@ impl RuntimeMutation {
                     },
                 )?,
         };
-        let result = self.commit_prepared_evidence_once(&prepared, fault).await;
-        if prepared.is_fenced_tool_result() && result.as_ref().is_err_and(tool_result_not_committed)
-        {
+        let mut retried = false;
+        loop {
+            let result = self.commit_prepared_evidence_once(&prepared, fault).await;
+            if retried
+                || !prepared.is_fenced_tool_result()
+                || !result.as_ref().is_err_and(tool_result_not_committed)
+            {
+                return result;
+            }
             // Keep the original result, owner and command identity through one
             // retry. The writer has released its transaction during the delay.
+            retried = true;
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            return self.commit_prepared_evidence_once(&prepared, fault).await;
         }
-        result
     }
 
     async fn commit_prepared_evidence_once(
@@ -279,7 +284,15 @@ impl RuntimeMutation {
 }
 
 impl RuntimeHandle {
-    pub(crate) async fn persist_prepared_evidence(&self, write: InputEvidenceWrite) -> Result<()> {
+    #[inline(never)]
+    pub(crate) fn persist_prepared_evidence(
+        &self,
+        write: InputEvidenceWrite,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + '_>> {
+        Box::pin(self.persist_prepared_evidence_inner(write))
+    }
+
+    async fn persist_prepared_evidence_inner(&self, write: InputEvidenceWrite) -> Result<()> {
         let external_tool = match &write {
             InputEvidenceWrite::ToolResult { record, .. }
                 if matches!(

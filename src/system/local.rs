@@ -15,7 +15,7 @@ use tokio::{
 
 use super::{
     file::FileHost,
-    process::{ProcessHost, ProcessOutput, RunningProcess},
+    process::{ProcessHost, ProcessNotStarted, ProcessOutput, RunningProcess},
     DirEntry, EditOptions, EffectiveExecution, FileContent, FileRead, FileStat, ProcessRequest,
     ProcessResult, ProgramInvocation, RemoveOptions, RunningProcessExitStatus, StdioSpec,
     StopSignal, WorkspaceView, WriteOptions,
@@ -234,9 +234,16 @@ impl LocalSystem {
         let pty_system = native_pty_system();
         let pair = pty_system
             .openpty(PtySize::default())
-            .context("failed to allocate pty")?;
-        let command = self.build_pty_command(execution, &req)?;
-        let child = pair.slave.spawn_command(command)?;
+            .context("failed to allocate pty")
+            .context(ProcessNotStarted)?;
+        let command = self
+            .build_pty_command(execution, &req)
+            .context(ProcessNotStarted)?;
+        let child = pair.slave.spawn_command(command);
+        // The Unix PTY backend returns errors before the command starts.
+        #[cfg(unix)]
+        let child = child.context(ProcessNotStarted);
+        let child = child?;
         let process_group_id = child.process_id().map(|pid| ProcessGroupId { pid });
         let killer = child.clone_killer();
         let child = Arc::new(Mutex::new(child));
@@ -322,10 +329,27 @@ impl ProcessHost for LocalSystem {
         execution: &EffectiveExecution,
         req: ProcessRequest,
     ) -> Result<Box<dyn RunningProcess>> {
+        if let ProgramInvocation::Shell {
+            shell: Some(shell), ..
+        } = &req.program
+        {
+            let shell = Path::new(shell);
+            // Tokio may return an error while attaching I/O after spawning.
+            // Detect an absent explicit shell while launch is still impossible.
+            if shell.is_absolute() {
+                if let Err(error) = std::fs::metadata(shell) {
+                    if error.kind() == std::io::ErrorKind::NotFound {
+                        return Err(anyhow!(error).context(ProcessNotStarted));
+                    }
+                }
+            }
+        }
         if req.tty {
             return self.spawn_pty_process(execution, req);
         }
-        let mut command = self.build_command(execution, &req)?;
+        let mut command = self
+            .build_command(execution, &req)
+            .context(ProcessNotStarted)?;
         command.stdout(if req.capture.stdout {
             Stdio::piped()
         } else {

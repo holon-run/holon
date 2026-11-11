@@ -111,7 +111,7 @@ impl OwnedCurrentRecord {
 
 /// Only an original qualified Current ACK can supply a live notification body.
 #[derive(Debug, Clone)]
-pub(crate) struct CommittedEventRead(Arc<OwnedCurrentRecord>);
+pub(crate) struct CommittedEventRead(pub(super) Arc<OwnedCurrentRecord>);
 
 impl CommittedEventRead {
     pub(crate) fn event(&self) -> &crate::types::AuditEvent {

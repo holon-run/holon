@@ -21,11 +21,13 @@ whole result; receipt replay cannot rewrite a later Turn. Prepared Wait and
 Work completion retain their existing terminal transaction boundaries.
 
 Ordinary `ExecCommand` binds the pre-execution barrier to the original tool
-call in the current Turn. The matching result transaction clears it. While the
-returned result is in memory, settlement resolves an uncertain commit from its
+call in the current Turn. The matching result transaction clears it, including
+a failure with proof that the command never started. While the returned result
+is in memory, settlement resolves an uncertain commit from its
 original receipt and retries a confirmed uncommitted transaction once with
-the same prepared command and reservation. A committed result resumes the tool
-loop after publication. If recovery fails, the operator receives
+the same prepared command and reservation. Receipt recovery restores the original
+Current qualification for live Event notifications. A committed result resumes the
+tool loop after publication. If recovery fails, the operator receives
 `tool_result_settlement_pending` and the dependent model round stops.
 Startup recovery reports the recorded call when only its execution barrier
 survives and blocks automatic replay.
