@@ -585,6 +585,7 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
         statements(&legacy_sql),
         statements(&new_sql)
     );
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     let operation = if tool_name == SCHEDULE_DESTRUCTIVE_OPERATION {
         let operation = DestructiveOperationRecord {
             operation_id: "pending-operation".into(),
@@ -599,7 +600,7 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
         };
         assert!(
             db.destructive_operations()
-                .plan_and_schedule_in_scope(&f.scope, &operation)?
+                .plan_and_schedule_in_scope(&f.scope, &operation, &ledger, None)?
                 .record
                 .should_dispatch
         );
@@ -616,7 +617,6 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
     let capability =
         ExclusiveStartupInputRecovery::for_pre_activation_host(db, &lease, &path, &guard)?;
     let scopes = db.startup_input_recovery_scopes(std::slice::from_ref(&f.scope.agent_id))?;
-    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     let recovered = db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
         &scopes,
         &capability,
@@ -629,7 +629,7 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
         assert_eq!(pending_verification[0].operation_id, operation.operation_id);
         let retry = db
             .destructive_operations()
-            .plan_and_schedule_in_scope(&f.scope, &operation)?;
+            .plan_and_schedule_in_scope(&f.scope, &operation, &ledger, None)?;
         assert!(!retry.record.should_dispatch);
         assert_eq!(
             retry.record.record.phase,

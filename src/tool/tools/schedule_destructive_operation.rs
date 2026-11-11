@@ -81,13 +81,7 @@ pub(crate) async fn execute(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    let db = runtime.runtime_db().clone();
-    let planned = runtime
-        .commit_input_evidence(record.operation_id.clone(), move |scope| {
-            db.destructive_operations()
-                .plan_and_schedule_in_scope(scope, &record)
-        })
-        .await?;
+    let planned = runtime.plan_destructive_operation(record).await?;
     let should_dispatch = planned.should_dispatch;
     let operation = planned.record;
     if !should_dispatch {

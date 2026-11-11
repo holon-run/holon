@@ -181,10 +181,13 @@ fn original_destructive_operation_tx_qualifies_only_fresh_turn_write() -> Result
         created_at: now,
         updated_at: now,
     };
+    let ledger =
+        crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(Default::default())?;
     let first =
         f.db.destructive_operations()
-            .plan_and_schedule_in_scope(&f.scope, &command)?;
+            .plan_and_schedule_in_scope(&f.scope, &command, &ledger, None)?;
     assert!(first.record.should_dispatch);
+    assert!(first.input_delta.query_advance.is_some());
     assert!(first
         .input_delta
         .records
@@ -192,9 +195,10 @@ fn original_destructive_operation_tx_qualifies_only_fresh_turn_write() -> Result
         .any(|r| r.locator.key == Key::new(Family::Turn, "turn-a") && r.locator.revision == 2));
     let replay =
         f.db.destructive_operations()
-            .plan_and_schedule_in_scope(&f.scope, &command)?;
+            .plan_and_schedule_in_scope(&f.scope, &command, &ledger, None)?;
     assert!(!replay.record.should_dispatch);
     assert!(replay.input_delta.records.is_empty());
+    assert!(replay.input_delta.query_advance.is_none());
     Ok(())
 }
 fn retention_policy() -> RuntimeDbRetentionPolicy {

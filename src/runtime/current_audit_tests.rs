@@ -1053,7 +1053,10 @@ async fn destructive_operation_checks_pending_registration_before_launch_and_kee
         .await
         .unwrap_err();
     assert!(error.is::<ExternalCommandRegistrationFailed>(), "{error:#}");
-    assert!(format!("{error:#}").contains("fixture rejects launcher registration"));
+    assert!(
+        format!("{error:#}").contains("fixture rejects launcher registration"),
+        "{error:#}"
+    );
     let operation = db
         .destructive_operations()
         .by_id("schedule-fixture")?

@@ -952,7 +952,7 @@ impl RuntimeDb {
                         use crate::runtime::resident_input_evidence::{InputEvidenceFamily as Family, InputEvidenceKey as Key};
                         anyhow::ensure!(input_scopes.is_none() || current_members.get(&turn.agent_id)
                             .is_some_and(|members| members.contains(&Key::new(Family::ToolExecution, &id))),
-                            "startup ExecCommand attempt lacks its original writer qualification");
+                            "startup external command attempt lacks its original writer qualification");
                         let mut record = super::evidence::committed_tool_tx(tx, &turn.agent_id, &id)?;
                         pending_call_id = record.call_binding.as_ref().map(|binding| binding.tool_call_id.clone());
                         super::external_command_attempts::interrupt(&mut record, recovered_at);
