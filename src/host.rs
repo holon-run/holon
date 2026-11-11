@@ -3211,6 +3211,10 @@ impl RuntimeHost {
         };
         self.stop_task_stop_supervisor_discovery();
         self.shutdown_runtime_recovery_coordinator().await;
+        self.inner
+            .mutation_owners
+            .shutdown_agent_list_repairs()
+            .await;
         self.shutdown_daemon_runtime_db_retention().await;
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;

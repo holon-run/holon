@@ -56,6 +56,12 @@ outlives unloading and retains only list fields and their model inputs, scoped
 to the identity incarnation and revision. A pending or missing publication
 returns the existing retryable observer error. The list does not reserve an
 execution owner, read SQLite, or prepare missing domains on demand.
+If list preparation fails after a commit, the Host retains a repair obligation.
+One background worker retries with backoff using the ordinary query-only reader
+pool. It installs the result only for the current identity revision and the
+captured owner epoch and publication generation. A pending execution
+reconciliation prevents repair.
+This worker never replays the mutation and stops with the Host.
 
 State supplies posture for stopped Agents and active turns. The loaded list
 uses `queued` to detect pending input. The cold list uses either `queued` or
