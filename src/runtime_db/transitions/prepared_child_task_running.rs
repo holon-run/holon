@@ -371,16 +371,17 @@ pub(super) fn existing_input_projection_tx(
     {
         expected.status = crate::types::AgentStatus::AwakeIdle;
     }
-    let (pending, count, queued, present): (usize, usize, bool, bool) = tx.query_row(
-        "SELECT (SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')),(SELECT COUNT(*) FROM messages WHERE agent_id=?1),EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND message_id=?2 AND status IN ('queued','dequeued','interrupted')),EXISTS(SELECT 1 FROM messages WHERE agent_id=?1 AND evidence_id=?2)",
-        params![scope.agent_id, exact.message().id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+    let (pending, queued, present): (usize, bool, bool) = tx.query_row(
+        "SELECT (SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')),EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND message_id=?2 AND status IN ('queued','dequeued','interrupted')),EXISTS(SELECT 1 FROM messages WHERE agent_id=?1 AND evidence_id=?2)",
+        params![scope.agent_id, exact.message().id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
     )?;
     expected.pending = pending
         .checked_add(usize::from(!queued))
         .context("Running pending overflow")?;
-    expected.total_message_count = count
-        .checked_add(usize::from(!present))
-        .context("Running count overflow")?;
+    expected.total_message_count =
+        crate::runtime_db::message_count::for_agent(tx, &scope.agent_id)?
+            .checked_add(usize::from(!present))
+            .context("Running count overflow")?;
     expected.last_wake_reason = Some("TaskStatus".into());
     crate::runtime::original_task_message_wake_projection(&mut expected);
     anyhow::ensure!(

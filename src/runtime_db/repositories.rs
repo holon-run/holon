@@ -5426,15 +5426,11 @@ impl MessageRepository<'_> {
     }
 
     fn count_on(connection: &Connection, agent_id: Option<&str>) -> Result<usize> {
-        let count: i64 = if let Some(agent_id) = agent_id {
-            connection.query_row(
-                "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get(0),
-            )?
-        } else {
-            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
-        };
+        if let Some(agent_id) = agent_id {
+            return super::message_count::for_agent(connection, agent_id);
+        }
+        let count: i64 =
+            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
         Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 

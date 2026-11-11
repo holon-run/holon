@@ -4402,6 +4402,11 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "index_recent_transcript_window",
         sql: "",
     },
+    Migration {
+        version: 107,
+        name: "message_row_counts",
+        sql: super::message_count::SCHEMA,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
