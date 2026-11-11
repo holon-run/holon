@@ -38,6 +38,13 @@ class UIStallTimeout(UICaseFailure):
     """An xcodebuild run produced no output for longer than its idle budget."""
 
 
+class FixtureControlError(RuntimeError):
+    def __init__(self, path, status, data):
+        super().__init__(f"fixture control {path}: HTTP {status}: {data}")
+        self.status = status
+        self.data = data
+
+
 def report(message):
     """Write a CI annotation without ever raising.
 
@@ -305,6 +312,23 @@ def monitor_xcodebuild(command, env, idle_budget, subprocess_module=None,
             f"xcodebuild watchdog did not report back within "
             f"{state['wait_timed_out']:.0f}s")
     return returncode
+
+
+def wait_for_agent_state(local, agent, timeout=15):
+    """Wait only for the runtime's explicit transient reconciliation state."""
+    deadline = time.monotonic() + timeout
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise RuntimeError("fixture agent state reconciliation timed out")
+        try:
+            return local("GET", f"/agents/{agent}/state", timeout=min(10, remaining))
+        except FixtureControlError as error:
+            if not (error.status == 503
+                    and error.data.get("code") == "agent_reconciliation_pending"
+                    and error.data.get("retryable") is True):
+                raise
+        time.sleep(min(.1, max(0, deadline - time.monotonic())))
 
 
 def wait_for_agent_bootstrap(local, created, timeout=30):
@@ -584,6 +608,9 @@ history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
 if report_acceptance and not rich_acceptance:
     raise RuntimeError("Content-report acceptance requires IOS_RICH_ACCEPTANCE=1")
+# Compile before starting the fixture; pairing TTL covers only SDK execution.
+subprocess.run(["swift", "build", "--build-tests",
+                "--package-path", repo + "/packages/client-sdk-swift"], check=True)
 with fixture_directory(repo) as root:
     fixture_evidence = root / "evidence" if os.environ.get("IOS_UI_FIXTURE_PATH") is not None else None
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -950,20 +977,6 @@ with fixture_directory(repo) as root:
                     self.sock.settimeout(self.timeout)
                     self.sock.connect(env["HOLON_SOCKET_PATH"])
 
-            # Pairing issuance requires existing admission, even on loopback.
-            # Use this isolated daemon's trusted local control transport.
-            control = LocalControlConnection("localhost", timeout=3)
-            try:
-                control.request("POST", "/api/auth/pairing/issue")
-                response = control.getresponse()
-                if response.status != 200:
-                    raise RuntimeError(f"local pairing issuance failed: {response.status}")
-                pairing = json.loads(response.read())
-                if not pairing.get("ticket") or not pairing.get("expires_at"):
-                    raise RuntimeError("local pairing issuance returned no ticket or expiry")
-            finally:
-                control.close()
-
             def local(method, path, payload=None, ok=(200,), timeout=10):
                 connection = LocalControlConnection("localhost", timeout=timeout)
                 try:
@@ -973,7 +986,7 @@ with fixture_directory(repo) as root:
                     response = connection.getresponse()
                     data = json.loads(response.read())
                     if response.status not in ok:
-                        raise RuntimeError(f"fixture control {path}: HTTP {response.status}: {data}")
+                        raise FixtureControlError(path, response.status, data)
                     return data
                 finally:
                     connection.close()
@@ -1032,7 +1045,7 @@ with fixture_directory(repo) as root:
                 ".catch(function () {"
                 "document.getElementById('session').textContent = 'SESSION_ERROR'; })"
                 "</script></body></html>\n")
-            state = local("GET", f"/agents/{agent}/state")
+            state = wait_for_agent_state(local, agent)
             workspace_id = next(w["workspace_id"] for w in state["workspace"]["workspaces"]
                                 if w.get("kind") == "agent_home" or w.get("workspace_id", "").startswith("agent_home"))
             rich_turn = None
@@ -1164,14 +1177,19 @@ with fixture_directory(repo) as root:
             # The per-case execution allowance has to cover the stretched
             # waits; otherwise a healthy but slow case is killed by a
             # timeout that no longer matches its budget.
-            test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
+            test_env.update(HOLON_UI_BASE_URL=base,
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
                 HOLON_UI_BRIEF_MARKER="IOS_POPULATED_BRIEF")
             if rich_turn:
                 test_env["HOLON_UI_RICH_TURN_ID"] = rich_turn
+            # Issue only after fixture preparation, through trusted local control.
+            pairing = local("POST", "/auth/pairing/issue")
+            if not pairing.get("ticket") or not pairing.get("expires_at"):
+                raise RuntimeError("local pairing issuance returned no ticket or expiry")
+            test_env["HOLON_UI_PAIRING_TICKET"] = pairing["ticket"]
             print("真实隔离 populated daemon 已就绪；临时凭据不输出", flush=True)
-            result = subprocess.run(["swift", "test", "--package-path", repo + "/packages/client-sdk-swift",
+            result = subprocess.run(["swift", "test", "--skip-build", "--package-path", repo + "/packages/client-sdk-swift",
                                      "--filter", "LiveDaemonPopulatedProbeTests"], env=test_env)
             if result.returncode:
                 raise RuntimeError("真实 populated SDK probes 失败")
