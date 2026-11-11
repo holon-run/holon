@@ -1388,10 +1388,13 @@ snapshots may include newly committed tool results and admitted input. A retry
 of one snapshot with a smaller budget preserves its input set and state
 identity; it cannot consume queued input again.
 
-After owner preparation, loaded Context assembles the final snapshot under the
-held reservation from one Ready publication. The published identity must be
-Active and match the State and incarnation. The planned Work, Task and
-Scheduling selections must still match that publication. Execution capture
+Loaded Context acquires its owner reservation and resolves any pending original
+commit before checking identity. A matching Active identity in the Ready
+publication qualifies the reserved Agent and incarnation. Without that proof,
+acquisition uses the durable identity check. After owner preparation, Context
+assembles the final snapshot under the held reservation from one Ready
+publication. The planned Work, Task and Scheduling selections must still
+match that publication. Execution capture
 checks the bound Message, Turn and open Attempt from resident Input evidence.
 Configuration and publication tokens fence the assembled snapshot. SQLite
 qualification and readback belong to named preparation, commit and recovery.

@@ -259,7 +259,7 @@ impl RuntimeHandle {
         };
         // The reservation fences owner preparation and the final publication.
         let mut mutation = capture_mode
-            .measure(Stage::OwnerAcquisition, self.begin_mutation())
+            .measure(Stage::OwnerAcquisition, self.begin_context_capture())
             .await?;
         // D3 Message writers publish the exact count with the accepted payload;
         // this consumer never repairs it by counting historical Message rows.
@@ -2207,6 +2207,95 @@ mod resource_read_tests {
     }
 
     #[tokio::test]
+    async fn context_owner_acquisition_uses_the_ready_identity() -> Result<()> {
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.control(crate::types::ControlAction::Stop).await?;
+        let owner = &runtime.inner.mutation_owner;
+        let token = owner.capture()?.unwrap().token;
+        let db = host.runtime_db();
+        db.transaction(|tx| {
+            tx.execute_batch("ALTER TABLE agent_identities RENAME TO unavailable_identities;")?;
+            Ok(())
+        })?;
+        let context = runtime
+            .begin_context_capture()
+            .await
+            .and_then(|capture| Ok(capture.capture_published_root()?.token));
+        let writer = runtime.begin_mutation().await.map(drop);
+        db.transaction(|tx| {
+            tx.execute_batch("ALTER TABLE unavailable_identities RENAME TO agent_identities;")?;
+            Ok(())
+        })?;
+        assert_eq!(context?, token);
+        let error = writer.unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("no such table: agent_identities"),
+            "{error:#}"
+        );
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_owner_acquisition_rejects_a_replaced_runtime() -> Result<()> {
+        use super::super::mutation_owner::MutationOwnerError;
+
+        let (_home, host, old) = resource_host().await?;
+        old.control(crate::types::ControlAction::Stop).await?;
+        host.unload_runtime(old.inner.mutation_owner.agent_id())
+            .await;
+        let current = host.default_runtime().await?;
+        current.wait_for_bootstrap().await?;
+        assert_eq!(
+            current.inner.identity_incarnation,
+            old.inner.identity_incarnation
+        );
+        assert_ne!(current.instance_owner_epoch(), old.instance_owner_epoch());
+
+        let error = old.begin_context_capture().await.map(drop).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<MutationOwnerError>(),
+            Some(MutationOwnerError::Replaced)
+        ));
+        drop(current.begin_context_capture().await?);
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn context_owner_acquisition_rejects_an_old_incarnation() -> Result<()> {
+        use super::super::state_mutation::RuntimeMutationIdentityRetired;
+
+        let (_home, host, _default) = resource_host().await?;
+        let agent_id = "context-owner-reincarnation";
+        host.create_public_named_agent(agent_id, None, None, None)
+            .await?;
+        let old = host.get_public_agent(agent_id).await?;
+        let (_, job, _) = host
+            .begin_public_agent_deletion(agent_id, false, "context-test")
+            .await?;
+        host.execute_deletion_job(job).await?;
+        host.create_public_named_agent(agent_id, None, None, None)
+            .await?;
+        let current = host.get_public_agent(agent_id).await?;
+        current.wait_for_bootstrap().await?;
+        assert!(current.inner.identity_incarnation > old.inner.identity_incarnation);
+
+        let error = old.begin_context_capture().await.map(drop).unwrap_err();
+        assert!(
+            error
+                .downcast_ref::<RuntimeMutationIdentityRetired>()
+                .is_some(),
+            "{error:#}"
+        );
+        drop(current.begin_context_capture().await?);
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn covered_preview_uses_the_publication_without_scope_tables() -> Result<()> {
         let (_home, host, runtime) = resource_host().await?;
         runtime.control(crate::types::ControlAction::Stop).await?;
@@ -2306,6 +2395,7 @@ mod resource_read_tests {
             owner.capture(),
             Err(super::super::mutation_owner::MutationOwnerError::NeedsReconcile(_))
         ));
+        drop(runtime.begin_context_capture().await?);
         let prompt = runtime
             .preview_prompt(
                 "recovered identity".into(),
@@ -2364,6 +2454,7 @@ mod resource_read_tests {
                 &operation,
             )?;
         }
+        drop(runtime.begin_context_capture().await?);
         let prompt = runtime
             .preview_prompt(
                 "rename committed".into(),

@@ -75,6 +75,11 @@ pub(super) struct RuntimeMutationIdentityRetired {
     status: crate::types::AgentRegistryStatus,
 }
 
+enum PrimaryIdentityCheck {
+    Durable,
+    ContextPublication,
+}
+
 #[derive(Default)]
 pub(super) struct OwnedMutationTasks {
     closed: bool,
@@ -3158,6 +3163,19 @@ impl RuntimeHandle {
         Box::pin(self.begin_mutation_with_owners(vec![self.inner.mutation_owner.clone()]))
     }
 
+    #[inline(never)]
+    pub(super) fn begin_context_capture(
+        &self,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<RuntimeMutation>> + Send + '_>>
+    {
+        Box::pin(self.begin_mutation_with_owners_in(
+            vec![self.inner.mutation_owner.clone()],
+            None,
+            None,
+            PrimaryIdentityCheck::ContextPublication,
+        ))
+    }
+
     pub(super) async fn begin_supervised_invocation_mutation(
         &self,
         parent_task: &TaskRecord,
@@ -3381,8 +3399,13 @@ impl RuntimeHandle {
         owners: Vec<mutation_owner::MutationOwner>,
         readonly_child: Option<&crate::runtime_db::task_stop::TaskStopChildTarget>,
     ) -> Result<RuntimeMutation> {
-        self.begin_mutation_with_owners_in(owners, readonly_child, None)
-            .await
+        self.begin_mutation_with_owners_in(
+            owners,
+            readonly_child,
+            None,
+            PrimaryIdentityCheck::Durable,
+        )
+        .await
     }
 
     async fn begin_mutation_with_owners_in(
@@ -3390,6 +3413,7 @@ impl RuntimeHandle {
         owners: Vec<mutation_owner::MutationOwner>,
         readonly_child: Option<&crate::runtime_db::task_stop::TaskStopChildTarget>,
         read_db: Option<&RuntimeDb>,
+        identity_check: PrimaryIdentityCheck,
     ) -> Result<RuntimeMutation> {
         let measurement_started = crate::diagnostics::io_probe::start_timer();
         // reserve_all also acquires every member of a pending recovery group.
@@ -3434,13 +3458,27 @@ impl RuntimeHandle {
             agent_id: self.inner.mutation_owner.agent_id().to_owned(),
             identity_incarnation: self.inner.identity_incarnation,
         };
+        // Identity transitions publish through this reservation. Use the Ready
+        // identity only after the original recovery group has been resolved.
+        let published_context_identity =
+            matches!(identity_check, PrimaryIdentityCheck::ContextPublication)
+                && observation.as_ref().is_some_and(|root| {
+                    root.token.owner_epoch == reservations[primary_index].owner_epoch()
+                        && root.token.identity_incarnation == scope.identity_incarnation
+                        && root.identity.as_ref().is_some_and(|identity| {
+                            identity.agent_id == scope.agent_id
+                                && identity.incarnation == scope.identity_incarnation
+                                && identity.status == crate::types::AgentRegistryStatus::Active
+                        })
+                });
         match read_db {
             Some(db) => crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(
                 &self.inner.input_evidence_budget,
                 &scope,
             )?
             .read(|| self.validate_mutation_identity_in(Some(db)))?,
-            None => self.validate_mutation_identity()?,
+            None if !published_context_identity => self.validate_mutation_identity()?,
+            None => {}
         }
         let mut metadata = Vec::with_capacity(reservations.len());
         let mut task_stop_readonly = Vec::new();
