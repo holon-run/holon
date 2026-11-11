@@ -4,6 +4,10 @@ use crate::runtime::resident_input_evidence::{
     InputQueryCoverage, InputQueryError, InputQuerySelection,
 };
 
+#[derive(Debug, thiserror::Error)]
+#[error("Input query birth cursor is missing")]
+pub(crate) struct MissingInputBirthCursor;
+
 pub(super) struct PreparedInputQuery {
     pub coverage: InputQueryCoverage,
     pub guards: Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
@@ -30,13 +34,13 @@ pub(super) fn prepare_tx(
         Some(cursor) => cursor,
         None if prepare => {
             // This creates only an empty baseline, never historical membership.
-            tx.execute(
-                "INSERT INTO input_query_birth_cursors(agent_id,identity_incarnation,high_water) VALUES(?1,?2,0)",
-                params![scope.agent_id, scope.identity_incarnation],
-            )?;
+            native_birth::ensure_cursor_tx(tx, scope)?;
             0
         }
-        None => return Err(InputQueryError::NeedsPreparation.into()),
+        None => {
+            return Err(anyhow::Error::from(InputQueryError::NeedsPreparation)
+                .context(MissingInputBirthCursor))
+        }
     };
     let highest: u64 = tx.query_row(
         "SELECT COALESCE(MAX(birth_seq),0) FROM input_query_birth_members WHERE agent_id=?1 AND identity_incarnation=?2",

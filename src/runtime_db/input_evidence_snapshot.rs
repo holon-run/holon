@@ -73,6 +73,18 @@ pub(in crate::runtime_db) mod native_birth;
 pub(crate) use native_birth::CommittedInputQueryAdvance;
 #[path = "input_query_source.rs"]
 mod query_source;
+pub(crate) use query_source::MissingInputBirthCursor;
+
+pub(super) fn initialize_birth_cursor_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+) -> Result<()> {
+    ensure!(
+        native_birth::installed(tx)?,
+        crate::runtime::resident_input_evidence::InputQueryError::NeedsPreparation
+    );
+    native_birth::ensure_cursor_tx(tx, scope)
+}
 
 const BOUNDARY_KEY: &str = "input_evidence/v1/fixed_upgrade";
 const MAX_RECORDS: usize = 65_536;

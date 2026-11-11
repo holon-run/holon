@@ -661,3 +661,114 @@ async fn expired_preparation_read_does_not_initialize_qualification() -> Result<
     assert_eq!(fixture.owner.capture()?.unwrap().token, original.token);
     Ok(())
 }
+
+#[tokio::test]
+async fn input_birth_cursor_preparation_preserves_qualified_history() -> Result<()> {
+    use crate::{
+        runtime::resident_input_evidence::{InputQueryRead, InputWindowSelector},
+        runtime_db::{
+            evidence::append_transcript_entry_tx, input_evidence_snapshot::InputWindowRequest,
+        },
+        types::{TranscriptEntry, TranscriptEntryKind},
+    };
+
+    for history_len in [16, 256] {
+        let fixture = Fixture::new().await?;
+        let reservation = fixture.owner.reserve().await?;
+        let original = fixture.owner.capture()?.unwrap();
+        // Warm Scheduling first. The missing query cursor is then the only
+        // reason the requested history cannot load on the reader.
+        drop(fixture.prepare(&reservation, &original, &fixture.request())?);
+        fixture.db.transaction(|tx| {
+            let mut history = Vec::new();
+            for _ in 0..history_len {
+                let entry = TranscriptEntry::new(
+                    &fixture.scope.agent_id,
+                    TranscriptEntryKind::AssistantRound,
+                    Some(1),
+                    None,
+                    serde_json::json!({"blocks": [{"type":"text","text":"x".repeat(8192)}]}),
+                );
+                let (entry, inserted) = append_transcript_entry_tx(tx, &entry)?;
+                assert!(inserted);
+                history.push(CanonicalInputEvidence::Transcript(entry));
+            }
+            register_committed_input_evidence_tx(tx, &fixture.scope, &history)?;
+            Ok(())
+        })?;
+        let cursor = || {
+            fixture.db.read_for_preparation(|tx| {
+                use rusqlite::OptionalExtension;
+                Ok(tx.query_row(
+                    "SELECT high_water FROM input_query_birth_cursors WHERE agent_id=?1 AND identity_incarnation=?2",
+                    rusqlite::params![fixture.scope.agent_id, fixture.scope.identity_incarnation],
+                    |row| row.get::<_, u64>(0),
+                ).optional()?)
+            })
+        };
+        assert_eq!(cursor()?, None);
+        fixture.db.transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER reject_scheduling_rewrite
+                 BEFORE UPDATE ON scheduling_domain_current
+                 BEGIN SELECT RAISE(ABORT, 'birth cursor repair must leave Scheduling to the reader'); END;",
+            )?;
+            Ok(())
+        })?;
+        let mut request = fixture.request();
+        request.query = Some(InputQueryRead {
+            selection: Default::default(),
+            ledger: fixture.budget.clone(),
+        });
+        let selector = InputWindowSelector::RecentTranscript;
+        request.windows.push(InputWindowRequest {
+            selector: selector.clone(),
+            limit: history_len,
+        });
+
+        let trace = std::env::var_os("HOLON_TRACE_INPUT_PREPARATION_FIXTURE").map(|_| {
+            tracing::subscriber::set_default(
+                tracing_subscriber::fmt()
+                    .without_time()
+                    .with_ansi(false)
+                    .with_test_writer()
+                    .with_env_filter(tracing_subscriber::EnvFilter::new(
+                        "holon::runtime_db::connection=trace,holon::runtime::input_preparation=trace",
+                    ))
+                    .finish(),
+            )
+        });
+        let load = || -> Result<Vec<Key>> {
+            let InputPreparation::Prepared(prepared) =
+                fixture.prepare(&reservation, &original, &request)?
+            else {
+                anyhow::bail!("the prepared cut has not been published");
+            };
+            assert_eq!(prepared.original_token, original.token);
+            assert_eq!(prepared.inputs.query_coverage()?.birth_cursor, 0);
+            let capture = prepared.inputs.capture_for_request(&request)?;
+            let records = capture.window(&selector, history_len)?;
+            assert_eq!(records.len(), history_len);
+            Ok(records
+                .iter()
+                .map(|record| record.locator.key.clone())
+                .collect())
+        };
+        let cold = std::time::Instant::now();
+        let first = load()?;
+        let cold_elapsed = cold.elapsed();
+        let warm = std::time::Instant::now();
+        assert_eq!(load()?, first);
+        if trace.is_some() {
+            eprintln!(
+                "input preparation fixture history={history_len} cold_us={} warm_us={}",
+                cold_elapsed.as_micros(),
+                warm.elapsed().as_micros()
+            );
+        }
+        assert_eq!(cursor()?, Some(0));
+        assert!(Arc::ptr_eq(&original, &fixture.owner.capture()?.unwrap()));
+        assert!(reservation.recovery()?.is_none());
+    }
+    Ok(())
+}

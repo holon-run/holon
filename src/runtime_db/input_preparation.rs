@@ -380,6 +380,40 @@ pub(crate) fn load_input_with_scheduling_tx(
     )
 }
 
+/// A missing query cursor requires only an empty sidecar. The caller must
+/// reload the complete view in one reader transaction before publishing it.
+pub(crate) fn initialize_input_birth_cursor_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    original_recovery: bool,
+) -> Result<()> {
+    let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
+    validate_preparation_scope(&facts, scope, published_state, original_recovery)?;
+    super::input_evidence_snapshot::initialize_birth_cursor_tx(tx, scope)
+}
+
+fn validate_preparation_scope(
+    facts: &ContextScopeFacts,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    original_recovery: bool,
+) -> Result<()> {
+    if !facts.identity.as_ref().is_some_and(|identity| {
+        identity.agent_id == scope.agent_id
+            && identity.incarnation == scope.identity_incarnation
+            && (identity.status == AgentRegistryStatus::Active
+                || (original_recovery && identity.status == AgentRegistryStatus::Deleting))
+    }) {
+        return Err(InputEvidenceSnapshotError::RetiredScope.into());
+    }
+    ensure!(
+        facts.state.as_deref() == Some(published_state) && facts.control_revision.is_some(),
+        "input preparation canonical State differs from its published root"
+    );
+    Ok(())
+}
+
 fn prepare_input_domains_inner_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -398,18 +432,7 @@ fn prepare_input_domains_inner_tx(
 ) -> Result<PreparedInputRead> {
     let scope_read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
     let facts = scope_read.facts();
-    if !facts.identity.as_ref().is_some_and(|identity| {
-        identity.agent_id == scope.agent_id
-            && identity.incarnation == scope.identity_incarnation
-            && (identity.status == AgentRegistryStatus::Active
-                || (original_recovery && identity.status == AgentRegistryStatus::Deleting))
-    }) {
-        return Err(InputEvidenceSnapshotError::RetiredScope.into());
-    }
-    ensure!(
-        facts.state.as_deref() == Some(published_state) && facts.control_revision.is_some(),
-        "input preparation canonical State differs from its published root"
-    );
+    validate_preparation_scope(facts, scope, published_state, original_recovery)?;
     // The owned Scheduling selector must be admitted before its first clone.
     // Its guard lives beside the request through the nested Scheduling read.
     let scheduling_request = scheduling_capture::PreparedSchedulingRequest::new(
