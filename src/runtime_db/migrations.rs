@@ -4400,11 +4400,7 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
     Migration {
         version: 106,
         name: "index_recent_transcript_window",
-        sql: "CREATE INDEX IF NOT EXISTS idx_transcript_entries_recent
-              ON transcript_entries(
-                agent_id, COALESCE(transcript_seq, 9223372036854775807) DESC,
-                created_at DESC, evidence_id ASC
-              );",
+        sql: "",
     },
 ];
 
@@ -4855,6 +4851,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     }
     if migration.name == "briefs_agent_latest_index" {
         migrate_briefs_agent_latest_index(transaction)?;
+    }
+    if migration.name == "index_recent_transcript_window" {
+        migrate_recent_transcript_window_index(transaction)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -6845,6 +6844,20 @@ fn migrate_briefs_agent_latest_index(connection: &Connection) -> Result<()> {
         connection.execute_batch(
             "CREATE INDEX IF NOT EXISTS idx_briefs_agent_latest
              ON briefs(agent_id, created_at DESC, evidence_id DESC);",
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_recent_transcript_window_index(connection: &Connection) -> Result<()> {
+    // Synthetic compatibility databases can omit the evidence tables.
+    if table_exists_internal(connection, "transcript_entries")? {
+        connection.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_transcript_entries_recent
+             ON transcript_entries(
+               agent_id, COALESCE(transcript_seq, 9223372036854775807) DESC,
+               created_at DESC, evidence_id ASC
+             );",
         )?;
     }
     Ok(())
