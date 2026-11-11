@@ -46,3 +46,7 @@ Context snapshot assembly skips the aggregate encoded-size estimate of the
 assembled inputs. The snapshot retains its selected record holders and
 resource acquisition guards. Source validation, actual read failures, and
 explicit test faults still run at their existing boundaries.
+
+Native Input birth preparation uses the identity row's encoded size for
+accounting. It checks identity status and incarnation with the existing scalar
+query, without a separate SQLite JSON tree traversal under the writer lock.

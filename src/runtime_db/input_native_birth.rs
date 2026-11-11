@@ -167,20 +167,6 @@ impl<'tx, 'conn> NativeInputWriteProof<'tx, 'conn> {
                 )
             })
         } else {
-            // The raw guard bounds SQLite's identity tree before its scalar probes.
-            let nodes: usize = tx.query_row(
-                "SELECT COUNT(*)+COUNT(CASE WHEN typeof(j.key)='text' THEN 1 END) FROM agent_identities i,json_tree(i.payload_json) j WHERE i.agent_id=?1",
-                [&scope.agent_id], |row| row.get(0),
-            )?;
-            let nodes = nodes
-                .checked_add(32)
-                .context("Input birth identity nodes overflow")?;
-            material.observe_native_footprint(
-                nodes
-                    .checked_mul(256)
-                    .context("Input birth identity bytes overflow")?,
-                nodes,
-            )?;
             tx.query_row(
                 "SELECT EXISTS(SELECT 1 FROM agent_identities WHERE agent_id=?1 AND status IN ('active','deleting') AND json_extract(payload_json,'$.agent_id')=?1 AND CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1 WHEN json_type(payload_json,'$.incarnation')='integer' THEN json_extract(payload_json,'$.incarnation') END=?2 AND json_extract(payload_json,'$.status')=status)",
                 params![scope.agent_id, scope.identity_incarnation], |row| row.get(0),
