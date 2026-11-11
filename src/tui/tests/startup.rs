@@ -104,7 +104,7 @@ fn finish_bootstrap(app: &mut TuiApp, index: usize, id: &str) {
         index,
         id.into(),
         None,
-        Ok((snapshot(id), vec![], "epoch".into(), None, None, false)),
+        Ok(snapshot(id)),
     );
 }
 
@@ -357,13 +357,7 @@ async fn startup_roster_race_and_old_snapshot_cannot_fall_back() {
             .contains("startup agent beta"));
         assert_eq!(app.selected_agent_id(), None);
         assert_eq!(app.initial_agent_id.as_deref(), Some("beta"));
-        app.apply_snapshot_result(
-            7,
-            1,
-            "beta".into(),
-            None,
-            Ok((snapshot("beta"), vec![], "epoch".into(), None, None, false)),
-        );
+        app.apply_snapshot_result(7, 1, "beta".into(), None, Ok(snapshot("beta")));
         assert!(app.projection.is_none());
         assert_eq!(app.initial_agent_id.as_deref(), Some("beta"));
         assert!(!app.state_path.exists());
@@ -387,20 +381,7 @@ async fn startup_bootstrap_failure_is_fatal_without_fallback_or_memory_write() {
     assert_eq!(app.snapshot_refresh_request_id, 7);
     assert_eq!(app.selected_agent_id(), Some("beta"));
     // A completion for another agent cannot satisfy the explicit startup constraint.
-    app.apply_snapshot_result(
-        7,
-        0,
-        "default".into(),
-        None,
-        Ok((
-            snapshot("default"),
-            vec![],
-            "epoch".into(),
-            None,
-            None,
-            false,
-        )),
-    );
+    app.apply_snapshot_result(7, 0, "default".into(), None, Ok(snapshot("default")));
     assert!(app.projection.is_none());
     assert_eq!(app.initial_agent_id.as_deref(), Some("beta"));
     app.apply_snapshot_result(7, 1, "beta".into(), None, Err("agent_deleted".into()));
@@ -410,7 +391,9 @@ async fn startup_bootstrap_failure_is_fatal_without_fallback_or_memory_write() {
         .contains("failed to bootstrap startup agent beta"));
     assert!(err.to_string().contains("agent_deleted"));
     assert_eq!(app.selected_agent_id(), Some("beta"));
-    assert!(app.refresh_deadline.is_none());
+    assert!(!app
+        .state_refresh
+        .is_due(Instant::now() + std::time::Duration::from_secs(60), false));
     assert!(!app.state_path.exists());
 }
 
@@ -457,7 +440,9 @@ async fn startup_failure_is_not_overwritten_by_queued_roster_refresh() {
         assert_eq!(app.tick().await.unwrap_err().to_string(), expected);
         assert_eq!(app.snapshot_refresh_request_id, request_id);
         assert!(!app.snapshot_refresh_in_flight);
-        assert!(app.refresh_deadline.is_none());
+        assert!(!app
+            .state_refresh
+            .is_due(Instant::now() + std::time::Duration::from_secs(60), false));
         assert!(app.projection.is_none());
         assert_eq!(app.initial_agent_id.as_deref(), Some("beta"));
         assert!(!app.state_path.exists());

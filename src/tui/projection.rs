@@ -40,7 +40,6 @@ use crate::{
 const TASK_TAIL_LIMIT: usize = 50;
 const TIMER_TAIL_LIMIT: usize = 50;
 pub(crate) const EVENT_LOG_LIMIT: usize = 1024;
-const EVENT_HISTORY_LOG_LIMIT: usize = 16_384;
 const DURABLE_CONVERSATION_LOG_LIMIT: usize = 256;
 static TUI_EVENT_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
 static TUI_PRESENTATION_LOG_WRITE_WARNED: AtomicBool = AtomicBool::new(false);
@@ -95,9 +94,6 @@ pub(crate) struct TuiProjection {
     pub(crate) workspace: StateWorkspaceSnapshot,
     pub(crate) event_log_epoch: Option<String>,
     pub(crate) cursor: Option<u64>,
-    pub(crate) history_oldest_cursor: Option<u64>,
-    pub(crate) history_has_older: bool,
-    history_paging_active: bool,
     pub(crate) stale_slices: BTreeSet<ProjectionSlice>,
     event_log: Vec<ProjectionEventRecord>,
     event_fingerprints: BTreeMap<u64, String>,
@@ -108,6 +104,47 @@ pub(crate) struct TuiProjection {
 }
 
 impl TuiProjection {
+    pub(crate) fn take_diagnostics_from(&mut self, previous: &mut Self) {
+        self.event_log_epoch = previous.event_log_epoch.take();
+        self.cursor = previous.cursor.take();
+        self.event_log = mem::take(&mut previous.event_log);
+        self.event_fingerprints = mem::take(&mut previous.event_fingerprints);
+    }
+
+    /// Raw diagnostics never reduce payloads into the authoritative State view.
+    pub(crate) fn append_diagnostic_event(
+        &mut self,
+        event: AgentStreamEvent,
+        log_writer: &TuiLogWriter,
+    ) {
+        self.adopt_event_log_epoch(event.data.event_log_epoch.as_deref());
+        if self.has_event_identity(effective_stream_event_id(&event), event.data.event_seq) {
+            return;
+        }
+        let fingerprint = event_content_fingerprint(&event.data);
+        if self
+            .event_fingerprints
+            .get(&event.data.event_seq)
+            .is_some_and(|previous| previous != &fingerprint)
+        {
+            self.clear_event_history();
+        }
+        self.event_fingerprints
+            .insert(event.data.event_seq, fingerprint);
+        let record = projection_event_record_from_stream_event(
+            &event,
+            &self.operator_presentation_context(),
+        );
+        self.cursor = Some(event.data.event_seq);
+        push_limited(&mut self.event_log, record.clone(), EVENT_LOG_LIMIT);
+        self.prune_event_fingerprints();
+        if let Err(error) = log_writer.write_event(&record) {
+            if !TUI_EVENT_LOG_WRITE_WARNED.swap(true, Ordering::Relaxed) {
+                tracing::warn!("failed to persist TUI diagnostic event: {error}");
+            }
+        }
+    }
+
     pub(crate) fn from_bootstrap_dto(snapshot: AgentStateSnapshotDto) -> Self {
         Self::from_snapshot(tui_snapshot_from_dto(snapshot))
     }
@@ -130,9 +167,6 @@ impl TuiProjection {
             workspace: snapshot.workspace,
             event_log_epoch: None,
             cursor: None,
-            history_oldest_cursor: None,
-            history_has_older: false,
-            history_paging_active: false,
             stale_slices: BTreeSet::new(),
             event_log: Vec::new(),
             event_fingerprints: BTreeMap::new(),
@@ -162,9 +196,6 @@ impl TuiProjection {
         let mut refreshed = Self::from_snapshot(snapshot);
         refreshed.event_log_epoch = self.event_log_epoch.take();
         refreshed.cursor = self.cursor.take();
-        refreshed.history_oldest_cursor = self.history_oldest_cursor.take();
-        refreshed.history_has_older = self.history_has_older;
-        refreshed.history_paging_active = self.history_paging_active;
         refreshed.event_log = mem::take(&mut self.event_log);
         refreshed.event_fingerprints = mem::take(&mut self.event_fingerprints);
         refreshed.durable_conversation_log = mem::take(&mut self.durable_conversation_log);
@@ -189,9 +220,6 @@ impl TuiProjection {
         self.event_log.clear();
         self.event_fingerprints.clear();
         self.durable_conversation_log.clear();
-        self.history_oldest_cursor = None;
-        self.history_has_older = false;
-        self.history_paging_active = false;
     }
 
     pub(crate) fn set_event_log_epoch(&mut self, event_log_epoch: &str) {
@@ -205,11 +233,7 @@ impl TuiProjection {
     ) {
         self.adopt_event_log_epoch(event_log_epoch(&events_tail));
         self.cursor = cursor.or_else(|| self.cursor.clone());
-        let event_log_limit = if self.history_paging_active {
-            EVENT_HISTORY_LOG_LIMIT
-        } else {
-            EVENT_LOG_LIMIT
-        };
+        let event_log_limit = EVENT_LOG_LIMIT;
         let mut existing_ids = self
             .event_log
             .iter()
@@ -256,116 +280,6 @@ impl TuiProjection {
         }
     }
 
-    pub(crate) fn set_event_history_state(&mut self, oldest_cursor: Option<u64>, has_older: bool) {
-        self.history_oldest_cursor = oldest_cursor;
-        self.history_has_older = has_older;
-    }
-
-    pub(crate) fn set_event_history_state_from_tail(
-        &mut self,
-        oldest_cursor: Option<u64>,
-        has_older: bool,
-    ) {
-        if self.history_paging_active && self.history_oldest_cursor.is_some() {
-            self.history_has_older = self.history_has_older || has_older;
-            return;
-        }
-        self.set_event_history_state(oldest_cursor, has_older);
-    }
-
-    pub(crate) fn prepend_event_history_page(
-        &mut self,
-        events: Vec<StreamEventEnvelope>,
-        oldest_cursor: Option<u64>,
-        has_older: bool,
-    ) -> usize {
-        self.prepend_event_history_page_with_contract_version(
-            events,
-            oldest_cursor,
-            has_older,
-            crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
-        )
-    }
-
-    pub(crate) fn prepend_event_history_page_with_contract_version(
-        &mut self,
-        mut events: Vec<StreamEventEnvelope>,
-        oldest_cursor: Option<u64>,
-        has_older: bool,
-        contract_version: u32,
-    ) -> usize {
-        self.adopt_event_log_epoch(event_log_epoch(&events));
-        self.history_paging_active = true;
-        let available = EVENT_HISTORY_LOG_LIMIT.saturating_sub(self.event_log.len());
-        if available == 0 {
-            self.history_has_older = false;
-            return 0;
-        }
-        if events.is_empty() {
-            self.history_oldest_cursor = oldest_cursor;
-            self.history_has_older = has_older;
-            return 0;
-        }
-
-        let mut existing_ids = self
-            .event_log
-            .iter()
-            .filter(|event| !event.id.is_empty())
-            .map(|event| event.id.clone())
-            .collect::<BTreeSet<_>>();
-        let mut existing_seqs_without_ids = self
-            .event_log
-            .iter()
-            .filter_map(|event| {
-                (event.id.is_empty() && event.event_seq != 0).then_some(event.event_seq)
-            })
-            .collect::<BTreeSet<_>>();
-        events.reverse();
-
-        let mut prepended = Vec::new();
-        for envelope in events {
-            if !self.accept_event_identity(&envelope) {
-                return 0;
-            }
-            if !envelope.id.is_empty() && !existing_ids.insert(envelope.id.clone()) {
-                continue;
-            }
-            if envelope.id.is_empty()
-                && envelope.event_seq != 0
-                && !existing_seqs_without_ids.insert(envelope.event_seq)
-            {
-                continue;
-            }
-            prepended.push(
-                self.projection_event_record_from_envelope_with_contract_version(
-                    envelope,
-                    contract_version,
-                ),
-            );
-        }
-        let capped = prepended.len() > available;
-        if capped {
-            let first_retained = prepended.len() - available;
-            prepended.drain(0..first_retained);
-        }
-        let added = prepended.len();
-        if added == 0 {
-            self.history_oldest_cursor = oldest_cursor;
-            self.history_has_older = has_older;
-            return 0;
-        }
-
-        self.history_oldest_cursor = prepended.first().map(|event| event.event_seq);
-        self.history_has_older = has_older
-            && !capped
-            && self.event_log.len().saturating_add(added) < EVENT_HISTORY_LOG_LIMIT;
-        prepended.extend(mem::take(&mut self.event_log));
-        self.event_log = prepended;
-        self.prune_event_fingerprints();
-        self.rebuild_durable_conversation_log();
-        added
-    }
-
     pub(crate) fn apply_event(&mut self, event: AgentStreamEvent, log_writer: &TuiLogWriter) {
         self.apply_event_internal(event, log_writer, None);
     }
@@ -407,11 +321,7 @@ impl TuiProjection {
             )
         });
         if cache_event {
-            let event_log_limit = if self.history_paging_active {
-                EVENT_HISTORY_LOG_LIMIT
-            } else {
-                EVENT_LOG_LIMIT
-            };
+            let event_log_limit = EVENT_LOG_LIMIT;
             push_limited(&mut self.event_log, record.clone(), event_log_limit);
             if is_durable_conversation_kind(&record.kind) {
                 push_limited(
@@ -741,7 +651,7 @@ impl TuiProjection {
     }
 
     fn prune_event_fingerprints(&mut self) {
-        while self.event_fingerprints.len() > EVENT_HISTORY_LOG_LIMIT {
+        while self.event_fingerprints.len() > EVENT_LOG_LIMIT {
             let Some(oldest) = self.event_fingerprints.keys().next().copied() else {
                 break;
             };
@@ -816,12 +726,6 @@ impl TuiProjection {
 
     pub(crate) fn event_log(&self) -> &[ProjectionEventRecord] {
         &self.event_log
-    }
-
-    pub(crate) fn event_history_at_local_cap(&self) -> bool {
-        self.history_paging_active
-            && !self.history_has_older
-            && self.event_log.len() >= EVENT_HISTORY_LOG_LIMIT
     }
 
     pub(crate) fn timeline_events(&self) -> impl Iterator<Item = &ProjectionEventRecord> {
@@ -2036,6 +1940,43 @@ mod tests {
 
     static NEXT_SAMPLE_EVENT_SEQ: AtomicU64 = AtomicU64::new(1_000_000);
 
+    #[test]
+    fn raw_diagnostics_never_overwrite_authoritative_state() {
+        let mut projection = TuiProjection::from_snapshot(sample_snapshot());
+        let pending = projection.agent.agent.pending;
+        let mut old_state = projection.agent.agent.clone();
+        old_state.pending = pending + 10;
+        projection.append_diagnostic_event(
+            sample_event(
+                "agent_state_changed",
+                serde_json::to_value(old_state).unwrap(),
+            ),
+            &test_log_writer(),
+        );
+        assert_eq!(projection.agent.agent.pending, pending);
+        assert!(projection.stale_slices.is_empty());
+        assert_eq!(projection.event_log().len(), 1);
+    }
+
+    #[test]
+    fn diagnostic_tail_is_bounded_and_survives_state_replacement_only() {
+        let writer = test_log_writer();
+        let mut previous = TuiProjection::from_snapshot(sample_snapshot());
+        for index in 0..=EVENT_LOG_LIMIT {
+            previous.append_diagnostic_event(
+                sample_event_with_id(&format!("diagnostic-{index}"), "runtime_error", json!({})),
+                &writer,
+            );
+        }
+        let mut refreshed = TuiProjection::from_snapshot(sample_snapshot());
+        refreshed.take_diagnostics_from(&mut previous);
+        assert_eq!(refreshed.event_log().len(), EVENT_LOG_LIMIT);
+        assert!(previous.event_log().is_empty());
+        assert_eq!(refreshed.event_log()[0].id, "diagnostic-1");
+        assert!(refreshed.durable_conversation_log.is_empty());
+        assert!(refreshed.stale_slices.is_empty());
+    }
+
     fn test_log_writer() -> crate::tui::logging::TuiLogWriter {
         crate::tui::logging::TuiLogWriter::new_temp().unwrap()
     }
@@ -2219,77 +2160,11 @@ mod tests {
     }
 
     #[test]
-    fn projection_prepends_older_event_page_and_updates_history_cursor() {
-        let snapshot = sample_snapshot();
-        let events_tail = vec![sample_event_envelope("evt-newer", 3)];
-        let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some(3));
-
-        let added = projection.prepend_event_history_page(
-            vec![
-                sample_event_envelope("evt-older-2", 2),
-                sample_event_envelope("evt-older-1", 1),
-            ],
-            Some(1),
-            true,
-        );
-
-        let ids = projection
-            .event_log()
-            .iter()
-            .map(|event| event.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(added, 2);
-        assert_eq!(ids, vec!["evt-older-1", "evt-older-2", "evt-newer"]);
-        assert_eq!(projection.history_oldest_cursor, Some(1));
-        assert!(projection.history_has_older);
-    }
-
-    #[test]
-    fn projection_merges_tail_refresh_without_dropping_paged_history() {
-        let snapshot = sample_snapshot();
-        let events_tail = vec![sample_event_envelope("evt-newer", 3)];
-        let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some(3));
-        projection.set_event_history_state(Some(3), true);
-
-        let added = projection.prepend_event_history_page(
-            vec![
-                sample_event_envelope("evt-older-2", 2),
-                sample_event_envelope("evt-older-1", 1),
-            ],
-            Some(1),
-            true,
-        );
-        assert_eq!(added, 2);
-
-        projection.merge_event_tail(
-            vec![
-                sample_event_envelope("evt-newer", 3),
-                sample_event_envelope("evt-live", 4),
-            ],
-            Some(4),
-        );
-
-        let ids = projection
-            .event_log()
-            .iter()
-            .map(|event| event.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(
-            ids,
-            vec!["evt-older-1", "evt-older-2", "evt-newer", "evt-live"]
-        );
-        assert_eq!(projection.cursor, Some(4));
-    }
-
-    #[test]
     fn projection_resets_event_history_when_epoch_changes() {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let mut old_event = sample_event_envelope("evt-old-epoch", 7);
         old_event.event_log_epoch = Some("epoch-old".into());
         projection.replace_event_window(vec![old_event], Some(7));
-        projection.set_event_history_state(Some(7), true);
 
         let mut new_event = sample_event_envelope("evt-new-epoch", 1);
         new_event.event_log_epoch = Some("epoch-new".into());
@@ -2297,8 +2172,6 @@ mod tests {
 
         assert_eq!(projection.event_log_epoch.as_deref(), Some("epoch-new"));
         assert_eq!(projection.cursor, Some(1));
-        assert_eq!(projection.history_oldest_cursor, None);
-        assert!(!projection.history_has_older);
         assert_eq!(
             projection
                 .event_log()
@@ -2412,42 +2285,6 @@ mod tests {
         assert!(ids.contains(&"evt-live"));
         assert!(!ids.contains(&"evt-old-refresh"));
         assert_eq!(projection.cursor, Some(EVENT_LOG_LIMIT as u64 + 1));
-    }
-
-    #[test]
-    fn projection_caps_prepended_history_and_keeps_cursor_on_retained_oldest() {
-        let snapshot = sample_snapshot();
-        let events_tail = vec![sample_event_envelope("evt-live", 20_000)];
-        let mut projection = TuiProjection::from_snapshot(snapshot);
-        projection.replace_event_window(events_tail, Some(20_000));
-
-        let first_page = (0..16_378)
-            .rev()
-            .map(|seq| sample_event_envelope(&format!("evt-page-a-{seq}"), seq))
-            .collect::<Vec<_>>();
-        let first_added = projection.prepend_event_history_page(first_page, Some(0), true);
-        assert_eq!(first_added, 16_378);
-        assert_eq!(projection.event_log().len(), 16_379);
-        assert!(projection.history_has_older);
-
-        let second_page = (16_378..16_398)
-            .rev()
-            .map(|seq| sample_event_envelope(&format!("evt-page-b-{seq}"), seq))
-            .collect::<Vec<_>>();
-        let second_added = projection.prepend_event_history_page(second_page, Some(16_378), true);
-
-        assert_eq!(second_added, 5);
-        assert_eq!(projection.event_log().len(), 16_384);
-        assert_eq!(
-            projection
-                .event_log()
-                .first()
-                .map(|event| event.id.as_str()),
-            Some("evt-page-b-16393")
-        );
-        assert_eq!(projection.history_oldest_cursor, Some(16_393));
-        assert!(!projection.history_has_older);
-        assert!(projection.event_history_at_local_cap());
     }
 
     #[test]

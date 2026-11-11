@@ -1670,7 +1670,7 @@ impl TuiApp {
             }
             self.chat_scroll
                 .scroll_with_key(key.code, self.chat_max_scroll);
-            self.maybe_begin_load_older_events();
+            self.maybe_begin_load_older_conversation();
             return Ok(());
         }
 
@@ -1710,7 +1710,7 @@ impl TuiApp {
             TuiKeyAction::ChatScroll(action) => {
                 self.chat_scroll
                     .scroll_with_key(scroll_action_key_code(action), self.chat_max_scroll);
-                self.maybe_begin_load_older_events();
+                self.maybe_begin_load_older_conversation();
             }
             TuiKeyAction::HistoryPrevious | TuiKeyAction::HistoryNext => {
                 let action = match key.code {

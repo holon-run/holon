@@ -488,14 +488,6 @@ impl ChatScrollState {
         self.offset_from_bottom = max_scroll.saturating_sub(preserved_scroll.min(max_scroll));
     }
 
-    pub(super) fn preserve_across_refresh(&mut self, max_scroll: u16) {
-        if self.follow_tail {
-            return;
-        }
-        self.offset_from_bottom = self.offset_from_bottom.min(max_scroll);
-        self.pending_prepend_anchor = None;
-    }
-
     #[cfg(test)]
     pub(super) fn is_following_tail(&self) -> bool {
         self.follow_tail
@@ -626,7 +618,18 @@ pub(super) fn collect_chat_items(app: &TuiApp) -> Vec<ConversationCell> {
         return cells;
     }
     if app.conversation_task.is_some() {
-        return Vec::new();
+        return vec![ConversationCell::SystemNotice {
+            created_at: app
+                .last_refresh_at
+                .map(|at| at.with_timezone(&chrono::Utc))
+                .unwrap_or_default(),
+            event_seq: 0,
+            speaker: "conversation".into(),
+            body: "Conversation loading or recovering; retrying automatically.".into(),
+            display_kind: ConversationDisplayKind::Narrative,
+            group_id: None,
+            header_hint: None,
+        }];
     }
     let mut cells = Vec::new();
     let mut durable_operator_message_bodies = std::collections::BTreeMap::new();
@@ -1855,12 +1858,10 @@ mod tests {
     }
 
     #[test]
-    fn chat_scroll_clamps_non_tail_refresh_without_following_tail() {
+    fn chat_scroll_clamps_non_tail_view_without_following_tail() {
         let mut scroll = super::ChatScrollState::new();
         scroll.scroll_with_key(crossterm::event::KeyCode::PageUp, 20);
         assert!(!scroll.is_following_tail());
-
-        scroll.preserve_across_refresh(5);
 
         assert!(!scroll.is_following_tail());
         assert_eq!(scroll.effective_scroll(5), 0);
