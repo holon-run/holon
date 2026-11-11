@@ -1171,6 +1171,156 @@ fn command_preview_is_safe_and_writer_cold_projection_match() -> Result<()> {
 }
 
 #[test]
+fn tool_projection_matches_writer_for_arbitrary_json_fields() -> Result<()> {
+    use serde_json::{json, Value};
+
+    let (_directory, db) = fresh()?;
+    let mut template = tool();
+    template.output = json!({});
+    db.transaction(|tx| {
+        for (index, value) in [
+            Value::Null,
+            json!({"cmd": "printf hello"}),
+            json!(["printf hello"]),
+            json!(false),
+            json!(true),
+            json!(0),
+            json!(-1),
+            json!(1.5),
+            json!(u64::MAX),
+            json!("1"),
+            json!("promoted_to_task"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let mut tool = template.clone();
+            tool.id = format!("tool-fields-{index}");
+            tool.input = json!({"cmd": value, "items": value});
+            tool.output = json!({"result": {
+                "disposition": value, "task_handle": {"task_id": value},
+                "exit_status": value, "exit_code": 0,
+                "truncated": value, "stdout_truncated": value,
+                "artifacts": value, "stdout_preview": value,
+            }});
+            insert_tool_evidence_tx(tx, &tool)?;
+            assert_eq!(
+                tool_projection_on(tx, &tool.agent_id, &tool.id)?,
+                project_tool_record(&tool)?,
+                "field type: {value:?}"
+            );
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn tool_projection_matches_writer_for_wrapped_and_batch_results() -> Result<()> {
+    use serde_json::{json, Value};
+
+    let (_directory, db) = fresh()?;
+    let mut tool = tool();
+    tool.tool_name = "ExecCommandBatch".into();
+    tool.input = json!({"items": [{}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}]});
+    let items = json!([
+        null, "not JSON", 0, true, [],
+        {"disposition": {}, "exit_status": "0"},
+        {"exit_status": null, "exit_code": 0},
+        {"exit_status": 18446744073709551615_u64},
+        {"result": null, "exit_status": 0},
+        {"result": {"exit_code": 0}},
+        {"result": {"exit_status": 1}},
+        {"result": {"disposition": "promoted_to_task"}},
+        {"exit_status": 0}
+    ]);
+    db.transaction(|tx| {
+        for (index, output) in [
+            Value::Null,
+            json!("not JSON"),
+            json!(false),
+            json!(1),
+            json!([]),
+            json!({"exit_code": 0}),
+            json!({"result": null, "exit_code": 0}),
+            json!({"result": "not JSON", "exit_code": 0}),
+            json!({"envelope": {"result": {"exit_code": 0}}}),
+            json!({"envelope": {"result": null}, "exit_code": 0}),
+            json!({"result": null, "envelope": {"result": {"exit_code": 0}}}),
+            json!({"items": {"not_an_array": {"exit_status": 0}}}),
+            json!({"items": items}),
+            json!({"result": {"items": items}}),
+            json!({"envelope": {"result": {"items": items}}}),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            tool.id = format!("tool-output-{index}");
+            tool.output = output;
+            insert_tool_evidence_tx(tx, &tool)?;
+            assert_eq!(
+                tool_projection_on(tx, &tool.agent_id, &tool.id)?,
+                project_tool_record(&tool)?,
+                "output: {:?}",
+                tool.output
+            );
+        }
+        Ok(())
+    })
+}
+
+#[test]
+fn failed_legacy_tool_arguments_qualify_and_reload_after_reopen() -> Result<()> {
+    let mut tool = tool();
+    tool.tool_name = "ExecCommandBatch".into();
+    tool.status = ToolExecutionStatus::Error;
+    tool.input = serde_json::json!({"cmd": {"cmd": "printf hello", "max_output_tokens": 100}});
+    tool.output = serde_json::json!({"error": "invalid arguments"});
+    let (_directory, db) = legacy(|tx| {
+        insert_tool_evidence_tx(tx, &tool)?;
+        let mut turn = TurnRecord::new("agent-a", "legacy-turn", 1);
+        turn.tool_execution_ids.push(tool.id.clone());
+        upsert_turn_record_tx(tx, &turn)
+    })?;
+    let mut policy = request(InputWindowSelector::RecentTools, 0);
+    policy.windows.clear();
+    policy
+        .mandatory_roots
+        .insert(Key::new(Family::Turn, "legacy-turn"));
+    let mandatory: bool = db.connection()?.query_row(
+        "SELECT mandatory FROM input_evidence_eligibility WHERE family='tool_execution' AND record_id=?1",
+        [&tool.id], |row| row.get(0),
+    )?;
+    assert!(mandatory);
+    let key = Key::new(Family::ToolExecution, &tool.id);
+    let prepared =
+        current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?)
+            .resident
+            .capture()?;
+    let expected = project_tool_record(&tool)?;
+    assert!(expected.command.command_preview.is_none());
+    assert_eq!(
+        prepared.lookup(&key)?.map(|record| &record.record),
+        Some(&PreparedInputEvidence::ToolExecution(expected)),
+    );
+    let path = db.path().to_owned();
+    let lock = db.lock_path().to_owned();
+    drop(db);
+    let reopened = RuntimeDb::open_and_migrate(path, lock)?;
+    let reloaded =
+        current(reopened.transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope(), &policy))?)
+            .resident
+            .capture()?;
+    assert_eq!(reloaded.records, prepared.records);
+    let payload: String = reopened.connection()?.query_row(
+        "SELECT payload_json FROM tool_executions WHERE evidence_id=?1",
+        [&tool.id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(serde_json::from_str::<ToolExecutionRecord>(&payload)?, tool);
+    Ok(())
+}
+
+#[test]
 fn qualified_related_projection_refresh_uses_original_transaction() -> Result<()> {
     let (_directory, db) = fresh()?;
     let input = db.transaction(|tx| {

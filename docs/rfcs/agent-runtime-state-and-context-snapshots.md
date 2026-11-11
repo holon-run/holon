@@ -3580,6 +3580,13 @@ never the original tool input/output or an additional history cache. Full owning
 tool reads still admit their copies. Scope, family, recorded absence,
 preparation and failure-latch checks are unchanged.
 
+Cold Tool SQL projections follow the writer's typed JSON accessors. Failed calls
+can retain arbitrary arguments and results: optional strings, signed integers
+and boolean flags accept only their matching JSON types. Result wrappers and
+exit-code fallbacks distinguish absent fields from present JSON nulls. Scalar
+results and batch items are inspected through paths in the canonical document,
+without reparsing string values as JSON or loading full bodies into Rust.
+
 ### Original Input Native writer phase
 
 When queue selection has no runnable candidate, the scheduler retains the

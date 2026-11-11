@@ -3232,18 +3232,90 @@ fn tool_projection_on(
     agent: &str,
     id: &str,
 ) -> Result<ToolContextProjection> {
-    let output="COALESCE(json_extract(payload_json,'$.output.result'),json_extract(payload_json,'$.output.envelope.result'),json_extract(payload_json,'$.output'))";
-    let sql=format!("SELECT json_object('id',evidence_id,'agent_id',agent_id,'work_item_id',work_item_id,'turn_id',turn_id,'turn_index',COALESCE(json_extract(payload_json,'$.turn_index'),0),'tool_name',json_extract(payload_json,'$.tool_name'),'created_at',json_extract(payload_json,'$.created_at'),'authority_class',COALESCE(json_extract(payload_json,'$.authority_class'),json_extract(payload_json,'$.trust')),'status',json_extract(payload_json,'$.status'),'summary',substr(COALESCE(json_extract(payload_json,'$.summary'),''),1,{TOOL_SUMMARY_CHARS}),'command',json_object('command_preview',CASE WHEN length(CAST(json_extract(payload_json,'$.input.cmd') AS BLOB))>{MAX_COMMAND_PREVIEW_INPUT_BYTES} THEN '{OVERSIZED_COMMAND_PREVIEW}' ELSE json_extract(payload_json,'$.input.cmd') END,'disposition',json_extract({output},'$.disposition'),'task_id',json_extract({output},'$.task_handle.task_id'),'exit_status',COALESCE(json_extract({output},'$.exit_status'),json_extract({output},'$.exit_code')),'has_output_evidence',json(CASE WHEN json_type({output},'$.stdout_preview') IS NOT NULL OR json_type({output},'$.stderr_preview') IS NOT NULL OR json_type({output},'$.initial_output_preview') IS NOT NULL OR json_type({output},'$.stdout_artifact') IS NOT NULL OR json_type({output},'$.stderr_artifact') IS NOT NULL THEN 'true' ELSE 'false' END),'truncated',json(CASE WHEN COALESCE(json_extract({output},'$.truncated'),0) OR COALESCE(json_extract({output},'$.initial_output_truncated'),0) OR COALESCE(json_extract({output},'$.stdout_truncated'),0) OR COALESCE(json_extract({output},'$.stderr_truncated'),0) OR COALESCE(json_extract({output},'$.output_truncated'),0) THEN 'true' ELSE 'false' END),'has_artifact',json(CASE WHEN COALESCE(json_array_length({output},'$.artifacts'),0)>0 OR json_type({output},'$.artifact') IS NOT NULL OR json_type({output},'$.stdout_artifact') IS NOT NULL OR json_type({output},'$.stderr_artifact') IS NOT NULL OR json_type({output},'$.output_artifact') IS NOT NULL THEN 'true' ELSE 'false' END)),'batch_total',COALESCE(json_array_length(payload_json,'$.input.items'),0),'batch_succeeded',0,'batch_failed',0,'batch_promoted',0,'batch_unknown',0) FROM tool_executions WHERE agent_id=?1 AND evidence_id=?2 AND COALESCE(json_extract(payload_json,'$.agent_id'),json_extract(payload_json,'$.session_id'))=?1 AND json_extract(payload_json,'$.id')=?2");
+    // Failed calls retain arbitrary JSON arguments/results. Match the writer's
+    // Value accessors, including present-null precedence, without loading bodies.
+    let source = "WITH tool AS (
+        SELECT *, CASE
+            WHEN json_type(payload_json,'$.output.result') IS NOT NULL
+                THEN '$.output.result'
+            WHEN json_type(payload_json,'$.output.envelope.result') IS NOT NULL
+                THEN '$.output.envelope.result'
+            ELSE '$.output' END AS output_path
+        FROM tool_executions WHERE agent_id=?1 AND evidence_id=?2
+            AND COALESCE(json_extract(payload_json,'$.agent_id'),json_extract(payload_json,'$.session_id'))=?1
+            AND json_extract(payload_json,'$.id')=?2
+    )";
+    let text_at = |path: &str| {
+        format!("CASE WHEN json_type(payload_json,{path})='text' THEN json_extract(payload_json,{path}) END")
+    };
+    let exit_status_at = |path: &str| {
+        let field = format!("CASE WHEN json_type(payload_json,{path}||'.exit_status') IS NOT NULL THEN {path}||'.exit_status' ELSE {path}||'.exit_code' END");
+        format!("CASE WHEN json_type(payload_json,{field})='integer' AND typeof(json_extract(payload_json,{field}))='integer' THEN json_extract(payload_json,{field}) END")
+    };
+    let disposition = text_at("output_path||'.disposition'");
+    let task_id = text_at("output_path||'.task_handle.task_id'");
+    let exit_status = exit_status_at("output_path");
+    let truncated = [
+        "truncated",
+        "initial_output_truncated",
+        "stdout_truncated",
+        "stderr_truncated",
+        "output_truncated",
+    ]
+    .map(|field| format!("json_type(payload_json,output_path||'.{field}')='true'"))
+    .join(" OR ");
+    let sql = format!(
+        "{source} SELECT json_object(
+            'id',evidence_id,'agent_id',agent_id,'work_item_id',work_item_id,'turn_id',turn_id,
+            'turn_index',COALESCE(json_extract(payload_json,'$.turn_index'),0),
+            'tool_name',json_extract(payload_json,'$.tool_name'),
+            'created_at',json_extract(payload_json,'$.created_at'),
+            'authority_class',COALESCE(json_extract(payload_json,'$.authority_class'),json_extract(payload_json,'$.trust')),
+            'status',json_extract(payload_json,'$.status'),
+            'summary',substr(COALESCE(json_extract(payload_json,'$.summary'),''),1,{TOOL_SUMMARY_CHARS}),
+            'command',json_object(
+                'command_preview',CASE WHEN json_type(payload_json,'$.input.cmd')='text' THEN
+                    CASE WHEN length(CAST(json_extract(payload_json,'$.input.cmd') AS BLOB))>{MAX_COMMAND_PREVIEW_INPUT_BYTES}
+                        THEN '{OVERSIZED_COMMAND_PREVIEW}' ELSE json_extract(payload_json,'$.input.cmd') END END,
+                'disposition',{disposition},'task_id',{task_id},'exit_status',{exit_status},
+                'has_output_evidence',json(CASE WHEN
+                    json_type(payload_json,output_path||'.stdout_preview') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.stderr_preview') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.initial_output_preview') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.stdout_artifact') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.stderr_artifact') IS NOT NULL THEN 'true' ELSE 'false' END),
+                'truncated',json(CASE WHEN {truncated} THEN 'true' ELSE 'false' END),
+                'has_artifact',json(CASE WHEN
+                    COALESCE(json_array_length(payload_json,output_path||'.artifacts'),0)>0 OR
+                    json_type(payload_json,output_path||'.artifact') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.stdout_artifact') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.stderr_artifact') IS NOT NULL OR
+                    json_type(payload_json,output_path||'.output_artifact') IS NOT NULL THEN 'true' ELSE 'false' END)),
+            'batch_total',COALESCE(json_array_length(payload_json,'$.input.items'),0),
+            'batch_succeeded',0,'batch_failed',0,'batch_promoted',0,'batch_unknown',0
+        ) FROM tool"
+    );
     let json: String = tx.query_row(&sql, params![agent, id], |r| r.get(0))?;
-    let mut record: ToolContextProjection = serde_json::from_str(&json)?;
+    let mut record: ToolContextProjection = serde_json::from_str(&json).with_context(|| {
+        format!("decoding tool_execution {id} context projection for agent {agent}")
+    })?;
     record.command.command_preview = record
         .command
         .command_preview
         .as_deref()
         .map(safe_command_preview);
     if record.tool_name == "ExecCommandBatch" {
-        // SQLite emits only disposition/status scalars for each batch item.
-        let sql=format!("SELECT json_extract(COALESCE(json_extract(j.value,'$.result'),j.value),'$.disposition'),COALESCE(json_extract(COALESCE(json_extract(j.value,'$.result'),j.value),'$.exit_status'),json_extract(COALESCE(json_extract(j.value,'$.result'),j.value),'$.exit_code')) FROM tool_executions r,json_each({output},'$.items') j WHERE r.agent_id=?1 AND r.evidence_id=?2 LIMIT ?3");
+        let disposition = text_at("item_path||'.disposition'");
+        let exit_status = exit_status_at("item_path");
+        // Keep values in SQLite; even scalar or null items have no typed body.
+        let sql = format!(
+            "{source}, items AS (
+                SELECT payload_json, CASE WHEN json_type(payload_json,j.fullkey||'.result') IS NOT NULL
+                    THEN j.fullkey||'.result' ELSE j.fullkey END AS item_path
+                FROM tool,json_each(payload_json,output_path||'.items') j
+                WHERE json_type(payload_json,output_path||'.items')='array' LIMIT ?3
+            ) SELECT {disposition},{exit_status} FROM items"
+        );
         let mut statement = tx.prepare(&sql)?;
         let rows = statement.query_map(
             params![agent, id, i64::try_from(record.batch_total)?],
