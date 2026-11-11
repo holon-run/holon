@@ -147,7 +147,7 @@ capture mode (preview, admission planning, or execution) and stage:
 
 | Stage | Measured boundary |
 | --- | --- |
-| `owner_acquisition` | `begin_mutation`, including reservation, identity validation, and any reconciliation |
+| `owner_acquisition` | Context owner reservation, reconciliation and identity validation from a matching Ready publication or durable fallback |
 | `task_preparation` | Each of the two Task preparation requests |
 | `work_preparation` | Work preparation request |
 | `completion_delivery_preparation` | Bounded legacy completion preview coverage for selected Work without a Result Brief |
