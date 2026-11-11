@@ -301,20 +301,26 @@ class LivePairingTicketContracts(unittest.TestCase):
                              "with open(os.environ['TEST_ARGS'], 'w') as f: json.dump(sys.argv[1:], f)\n"
                              "sys.exit(37)\n")
             binary = directory / "holon"
-            binary.write_text("#!/bin/sh\nprintf started > \"$TEST_DAEMON\"\nexit 99\n")
+            binary.write_text("#!" + sys.executable + "\nfrom pathlib import Path\n"
+                              f"Path({str(daemon_log)!r}).write_text('started')\n"
+                              "raise SystemExit(99)\n")
             swift.chmod(0o755)
             binary.chmod(0o755)
+            self.assertEqual(subprocess.run([str(binary)]).returncode, 99)
+            self.assertTrue(daemon_log.exists(), "The fake daemon must record its own startup")
             env = {key: value for key, value in os.environ.items() if not key.startswith("IOS_")}
             env.update(PATH=str(directory) + os.pathsep + os.environ["PATH"],
-                       TEST_ARGS=str(args_log), TEST_DAEMON=str(daemon_log),
+                       TEST_ARGS=str(args_log),
                        HOLON_CONTRACT_BIN=str(binary))
             for command in (["bash", str(ROOT / "scripts/test-ios-contract.sh")],
                             [sys.executable, str(ROOT / "scripts/ios_ui_fixture.py"),
                              str(binary), str(ROOT), "--sdk-only"]):
                 with self.subTest(entrypoint=command[1]):
                     args_log.unlink(missing_ok=True)
+                    daemon_log.unlink(missing_ok=True)
                     result = subprocess.run(command, env=env, capture_output=True, text=True)
-                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(result.returncode, 1)
+                    self.assertIn("returned non-zero exit status 37.", result.stderr)
                     self.assertEqual(json.loads(args_log.read_text()),
                                      ["build", "--build-tests", "--package-path",
                                       str(ROOT / "packages/client-sdk-swift")])
