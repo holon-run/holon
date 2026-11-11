@@ -420,14 +420,7 @@ async fn readonly_scoped_roster_prepares_scheduling_after_active_metadata_ack() 
         .agent_list_entry_read(&identity, &material, &db)
         .await?;
     assert_eq!(entry.identity.agent_id, "scheduling-reader");
-    assert!(runtime
-        .inner
-        .mutation_owner
-        .capture()?
-        .unwrap()
-        .scheduling
-        .is_none());
-    let root = runtime.capture_observer_root(&runtime.inner.runtime_db)?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
     let selected = root
         .scheduling
         .as_ref()

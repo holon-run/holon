@@ -126,6 +126,7 @@ pub(crate) struct RuntimeMutationFacts {
     tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
     queue: RuntimeQueue,
+    pub(super) queue_posture: Option<crate::queue::QueuePostureFacts>,
     pub(crate) current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
     _queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     _readonly_queue_metadata: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
@@ -201,6 +202,7 @@ impl RuntimeMutationFacts {
             scheduling: None,
             current: None,
             queue: RuntimeQueue::default(),
+            queue_posture: None,
             _queue_budget_view: None,
             plan_preparation: None,
             _readonly_queue_metadata: None,
@@ -264,6 +266,12 @@ impl RuntimeMutationFacts {
         self.tasks = tasks;
         // Cold/external installation does not attest the old Current body cut.
         self.current = None;
+        if effects.changes_queue() {
+            self.queue_posture = effects
+                .current_read_writes
+                .as_ref()
+                .and_then(|writes| writes.queue_posture);
+        }
         self.recovered_install = None;
         self.effects = effects;
         strip_input_evidence_payloads(&mut self.effects);
@@ -281,6 +289,7 @@ impl RuntimeMutationFacts {
         work: Arc<super::resident_work::ResidentWorkDomain>,
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
+        queue_posture: crate::queue::QueuePostureFacts,
         messages: Vec<MessageEnvelope>,
         budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         original: Option<&Self>,
@@ -325,6 +334,7 @@ impl RuntimeMutationFacts {
             scheduling: Some(scheduling),
             current: None,
             queue,
+            queue_posture: Some(queue_posture),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
             current_run_abort,
@@ -459,6 +469,7 @@ impl RuntimeMutationFacts {
             scheduling: Some(domains.scheduling),
             current: None,
             queue,
+            queue_posture: Some(facts.queue_posture),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
             current_run_abort,
@@ -486,6 +497,7 @@ pub(super) struct RuntimeMutation {
     scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
     candidate: Box<RuntimeAgent>,
     current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
+    queue_posture: Option<crate::queue::QueuePostureFacts>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
@@ -831,6 +843,7 @@ impl RuntimeMutation {
         self.episodes = Some(prepared.episodes);
         self.input_evidence = Some(prepared.inputs);
         self.current = prepared.current;
+        self.queue_posture = Some(prepared.queue_posture);
         self.scheduling = Some(prepared.scheduling);
         self.candidate.queue = prepared.queue;
         self.candidate._queue_budget_view = Some(prepared.queue_budget_view);
@@ -1915,10 +1928,11 @@ impl RuntimeMutation {
             self.control_cancellation = None;
         }
         let mut projection_error = None;
-        let has_current_effects = !committed.effects.queued_messages.is_empty()
-            || !committed.effects.removed_queue_message_ids.is_empty()
-            || !committed.effects.current_queue_write_ids.is_empty()
-            || !committed.effects.audit_events.is_empty();
+        let changes_queue = committed.effects.changes_queue();
+        let has_current_effects = changes_queue || !committed.effects.audit_events.is_empty();
+        if changes_queue {
+            self.queue_posture = None;
+        }
         if let Some(mut current) = committed.effects.current_read_writes.take() {
             let install: Result<()> = (|| {
                 current.validate_binding(
@@ -1947,6 +1961,9 @@ impl RuntimeMutation {
                 self.current = None;
                 projection_error = Some(error);
             } else {
+                if let Some(queue_posture) = current.queue_posture {
+                    self.queue_posture = Some(queue_posture);
+                }
                 // The baseline is an installation fence, not historical retention.
                 current.query_publication = None;
                 if !current.is_empty() || current.query.is_some() {
@@ -2362,6 +2379,7 @@ impl RuntimeMutation {
         self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
         self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
         self.current = root.as_ref().and_then(|root| root.current.clone());
+        self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
         self.work = root.as_ref().and_then(|root| root.work.clone());
         self.tasks = root.as_ref().and_then(|root| root.tasks.clone());
         self.base = self.candidate.clone();
@@ -2548,6 +2566,7 @@ impl RuntimeMutation {
             tasks: self.tasks.clone(),
             scheduling: self.scheduling.clone(),
             queue: self.candidate.queue.clone(),
+            queue_posture: self.queue_posture,
             current: self.current.clone(),
             _queue_budget_view: self.candidate._queue_budget_view.clone(),
             _readonly_queue_metadata: None,
@@ -2755,6 +2774,9 @@ impl RuntimeHandle {
             scheduling: reservation.prepared_scheduling_for_state_only_commit()?,
             current: None,
             queue: agent.queue.clone(),
+            queue_posture: reservation
+                .capture_ready_snapshot()?
+                .and_then(|root| root.queue_posture),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: Some(queue_metadata),
             plan_preparation: None,
@@ -3586,7 +3608,10 @@ impl RuntimeHandle {
             work: observation.as_ref().and_then(|root| root.work.clone()),
             tasks: observation.as_ref().and_then(|root| root.tasks.clone()),
             current: observation.as_ref().and_then(|root| root.current.clone()),
-            scheduling: observation.and_then(|root| root.scheduling.clone()),
+            scheduling: observation
+                .as_ref()
+                .and_then(|root| root.scheduling.clone()),
+            queue_posture: observation.and_then(|root| root.queue_posture),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,

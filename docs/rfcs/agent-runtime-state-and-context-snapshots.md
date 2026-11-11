@@ -49,22 +49,32 @@ Task/Work/Input selection. Missing Current needs only pooled Queue/error scalar
 reads and generation validation, without decoding canonical State or Task bodies.
 
 The loaded roster derives its entry from the Ready State and identity. Stopped
-Agents and active turns have State-defined posture. For other Agents, a published
-queued-input fact takes precedence over posture derived from Work, active waits
-and the active trigger. When either the queue fact or the required Scheduling
-domain is unavailable, a query-only transaction reads whether queued input
-exists and validates the durable State and incarnation. It reconstructs missing
-Scheduling from existing qualification only when needed for Work posture.
-The observer rechecks the Ready publication after this fallback.
+Agents and active turns have State-defined posture. For other Agents, the same
+publication supplies Queue posture and, when needed, Work, active waits and the
+active trigger for the existing scheduling calculation. Queue posture has two
+independent facts, for canonical `queued` and `interrupted` entries. The loaded
+roster tests only `queued`. Cold roster reconstruction treats either status as
+pending input.
 
-If a metadata ACK leaves Current/Scheduling unprepared, the observer may derive
-response-local material through a pooled, query-only deferred transaction. It
-validates existing qualification and canonical State, then verifies that the
-original publication is still current. A changed publication or pending recovery
-rejects the derived result. The observer does not publish these domains, write
-qualification, repair canonical state, or promote its response into execution
-authority. Incarnation, owner epoch, read deadline, cancellation, protection and
-last-holder material ownership remain required.
+The original Queue transaction captures both facts after its mutations, using
+indexed existence checks. Bootstrap and recovery derive them in the same
+qualified read that reconstructs State and pending input. A Queue write without
+a qualified result invalidates coverage. A covered loaded roster entry needs no
+Current query or durable read.
+
+When roster coverage is missing, the observer reserves the original owner,
+rechecks the Ready publication and prepares the required facts in a query-only
+transaction. It validates the durable State and active incarnation, reuses
+existing Work and Scheduling qualification, and publishes the prepared domains
+with a new generation. The preparation does not execute a business mutation or
+repair qualification. A changed publication, pending recovery, expired read
+scope or unqualified durable record rejects the preparation.
+
+Other metadata observers may still derive response-local Current or Scheduling
+material through a pooled, query-only deferred transaction. Those reads validate
+existing qualification and canonical State, then verify the original publication
+before returning. Incarnation, owner epoch, read deadline, cancellation,
+protection and last-holder material ownership remain required.
 
 Cold State, summary and roster observations prefer pooled query-only
 reconstruction and validate the original owner epoch and generation after

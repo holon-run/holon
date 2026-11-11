@@ -250,6 +250,14 @@ pub(crate) struct PostCommitEffects {
     pub fault: Option<TransitionFaultPoint>,
 }
 
+impl PostCommitEffects {
+    pub(crate) fn changes_queue(&self) -> bool {
+        !self.queued_messages.is_empty()
+            || !self.removed_queue_message_ids.is_empty()
+            || !self.current_queue_write_ids.is_empty()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct WorkInputPreparation {
     pub scope: InputEvidenceScope,

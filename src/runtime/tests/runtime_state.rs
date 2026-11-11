@@ -7688,6 +7688,17 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     message.turn_id = Some("turn-canonical-production-loop".into());
     let message = runtime.enqueue(message).await.unwrap();
 
+    let published_queue = || {
+        runtime
+            .inner
+            .mutation_owner
+            .capture()
+            .unwrap()
+            .unwrap()
+            .queue_posture
+            .unwrap()
+    };
+    assert!(published_queue().has_queued);
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
         .await
@@ -7695,6 +7706,8 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
         panic!("fixture source must be claimed");
     };
+    assert!(!published_queue().has_queued);
+    assert!(!published_queue().has_interrupted);
     let terminal_source = start_protocol_settlement_fixture(&runtime, &scheduled).await;
 
     let activation_id = scheduler_executor::canonical_activation_id(&message.id);
@@ -7741,6 +7754,9 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         )
         .await
         .unwrap();
+
+    assert!(!published_queue().has_queued);
+    assert!(!published_queue().has_interrupted);
 
     let settled = runtime
         .inner

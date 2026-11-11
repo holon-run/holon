@@ -39,6 +39,7 @@ pub(crate) struct PreparedInputDomains {
     pub current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
     pub scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
     pub queue: RuntimeQueue,
+    pub queue_posture: crate::queue::QueuePostureFacts,
     /// Retain the observation with the prepared queue until core installs a
     /// Current view. This guard owns no body and never grants queue authority.
     pub queue_budget_view: Arc<BudgetViewGuard>,
@@ -284,6 +285,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         owner_epoch=published.token.owner_epoch, generation=published.token.generation,
         ?cause, "prepared input domains at explicit owner boundary");
     Ok(InputPreparation::Prepared(PreparedInputDomains {
+        queue_posture: prepared.queue_posture,
         original_token: published.token,
         facts: prepared.facts,
         state: published.state.clone(),

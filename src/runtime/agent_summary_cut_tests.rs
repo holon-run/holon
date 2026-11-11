@@ -223,7 +223,12 @@ async fn pinned_summary_and_child_cut_survive_a_new_pending_mutation() -> Result
 async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Result<()> {
     use crate::diagnostics::resource_io::ResourceReadMaterial;
 
-    for (queued, resident_scheduling) in [(false, true), (false, false), (true, false)] {
+    for (queued, resident_work, resident_scheduling) in [
+        (false, true, true),
+        (false, true, false),
+        (false, false, false),
+        (true, false, false),
+    ] {
         let harness = LifecycleHarness::new();
         let runtime = harness.runtime();
         runtime.await_initial_resources().await;
@@ -276,7 +281,7 @@ async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Re
             root.state.clone(),
             root.episodes.clone(),
             None,
-            root.work.clone(),
+            resident_work.then(|| root.work.clone()).flatten(),
             None,
             if resident_scheduling {
                 root.scheduling.clone()
@@ -287,6 +292,7 @@ async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Re
         let unprepared = reservation.publish(root.state.clone())?;
         drop(reservation);
         assert!(unprepared.current.is_none());
+        assert_eq!(unprepared.work.is_some(), resident_work);
         assert_eq!(unprepared.scheduling.is_some(), resident_scheduling);
         runtime.runtime_db().transaction(|tx| {
             tx.execute_batch(
@@ -306,17 +312,29 @@ async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Re
         assert_eq!(entry.scheduling_posture, expected);
         assert_eq!(entry.identity, identity);
         assert_eq!(entry.pending, root.state.pending);
-        assert!(Arc::ptr_eq(
-            &unprepared,
-            &runtime.inner.mutation_owner.capture()?.unwrap(),
-        ));
-        material.finish()?;
+        let published = runtime.inner.mutation_owner.capture()?.unwrap();
+        assert_eq!(published.token.generation, unprepared.token.generation + 1);
+        assert_eq!(published.queue_posture.unwrap().has_queued, queued);
+        assert_eq!(
+            published.scheduling.is_some(),
+            resident_scheduling || !queued
+        );
+        assert!(published.current.is_none());
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE queue_entries RENAME TO roster_forbidden_queue;
+                 ALTER TABLE agent_states RENAME TO roster_forbidden_state;",
+            )?;
+            Ok(())
+        })?;
+        assert_eq!(
+            runtime
+                .agent_list_entry_read(&identity_record, &material, runtime.runtime_db())
+                .await?,
+            entry
+        );
         if queued {
-            runtime.runtime_db().transaction(|tx| {
-                tx.execute_batch("ALTER TABLE queue_entries RENAME TO roster_forbidden_queue")?;
-                Ok(())
-            })?;
-            // A fallback read can fail after its original cut is superseded.
+            // Superseded preparations are rejected before the database read.
             let error = runtime
                 .read_missing_roster_facts(&root, &material, runtime.runtime_db())
                 .await
@@ -328,7 +346,133 @@ async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Re
                 Some(RuntimeHandle::OBSERVER_PUBLICATION_OPERATION),
             );
         }
+        material.finish()?;
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()> {
+    use crate::diagnostics::resource_io::ResourceReadMaterial;
+    use crate::queue::QueuePostureFacts;
+    use crate::runtime_db::transitions::{
+        PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+        TransitionFaultPoint,
+    };
+    use crate::types::AgentSchedulingPosture;
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let owner = &runtime.inner.mutation_owner;
+    let db = runtime.runtime_db();
+    let id = owner.agent_id();
+    let identity = db
+        .agent_identities()
+        .latest(id)?
+        .context("missing identity")?;
+    let material = ResourceReadMaterial::current_or_new_for_identity(
+        &runtime.inner.input_evidence_budget,
+        id,
+        identity.incarnation,
+    )?;
+    let check = |has_queued, has_interrupted| -> Result<_> {
+        let root = owner.capture()?.context("missing root")?;
+        assert_eq!(
+            root.queue_posture,
+            Some(QueuePostureFacts {
+                has_queued,
+                has_interrupted,
+            })
+        );
+        assert!(root
+            .current
+            .as_ref()
+            .and_then(|current| current.query.as_ref())
+            .is_none());
+        assert_eq!(
+            db.queue_entries().has_queued_for_agent(id)?,
+            has_queued || has_interrupted
+        );
+        Ok(root.token)
+    };
+    let prompt = || {
+        MessageEnvelope::new(
+            id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "roster Queue publication".into(),
+            },
+        )
+    };
+    check(false, false)?;
+    let message = runtime.enqueue(prompt()).await?;
+    check(true, false)?;
+    let expected = db
+        .queue_entries()
+        .latest(&message.id)?
+        .context("missing queued source")?;
+    let mut interrupted = expected.clone();
+    interrupted.status = QueueEntryStatus::Interrupted;
+    interrupted.updated_at = runtime.now();
+    let mut mutation = runtime.begin_mutation().await?;
+    let error = mutation
+        .commit_prepared_queue(
+            "roster-queue-interrupted".into(),
+            PreparedQueueTransition::new(QueueTransitionCommand {
+                agent_id: id.to_owned(),
+                operation: QueueOperation::Settle,
+                mutation: QueueMutation::CompareAndSet {
+                    expected,
+                    record: interrupted,
+                },
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: vec![message],
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: Some(TransitionFaultPoint::BeforeCacheUpdate),
+                brief_evidence: Vec::new(),
+            }),
+        )
+        .await
+        .expect_err("fixture must lose cache installation after the original commit");
+    assert!(error.to_string().contains("reconciliation"), "{error:#}");
+    drop(mutation);
+    assert!(owner.capture().is_err());
+    runtime.reconcile_posture_observation().await?;
+    let interrupted_cut = check(false, true)?;
+    let entry = runtime
+        .agent_list_entry_read(&identity, &material, db)
+        .await?;
+    assert_ne!(
+        entry.scheduling_posture.posture,
+        AgentSchedulingPosture::HasQueuedInput
+    );
+    assert_eq!(entry.pending, 1);
+    assert_eq!(check(false, true)?, interrupted_cut);
+
+    runtime.enqueue(prompt()).await?;
+    let mixed_cut = check(true, true)?;
+    let entry = runtime
+        .agent_list_entry_read(&identity, &material, db)
+        .await?;
+    assert_eq!(
+        entry.scheduling_posture.posture,
+        AgentSchedulingPosture::HasQueuedInput
+    );
+    assert_eq!(entry.pending, 2);
+    assert_eq!(check(true, true)?, mixed_cut);
+    material.finish()?;
     Ok(())
 }
 
