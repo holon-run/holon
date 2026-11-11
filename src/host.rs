@@ -1,4 +1,5 @@
 mod runtime_loop_exit;
+mod session_activity;
 pub(crate) use runtime_loop_exit::JoinedRuntimeLoopExit;
 mod scoped_projection;
 #[path = "host/task_stop_original.rs"]
@@ -466,6 +467,9 @@ impl std::error::Error for PublicAgentError {}
 pub(crate) struct HostInner {
     registry: RuntimeRegistry,
     runtime_db: RuntimeDb,
+    session_activity: Arc<crate::authentication::activity::SessionActivity>,
+    session_activity_token: CancellationToken,
+    session_activity_handle: Mutex<Option<JoinHandle<()>>>,
     event_bus: EventBus,
     memory_index_notify: Arc<Notify>,
     daemon_indexer_token: CancellationToken,
@@ -1284,6 +1288,9 @@ impl RuntimeHost {
             inner: Arc::new(HostInner {
                 registry,
                 runtime_db,
+                session_activity: Arc::new(Default::default()),
+                session_activity_token: CancellationToken::new(),
+                session_activity_handle: Mutex::new(None),
                 event_bus: EventBus::new(event_bus_capacity),
                 memory_index_notify: Arc::new(Notify::new()),
                 daemon_indexer_token: CancellationToken::new(),
@@ -3202,6 +3209,10 @@ impl RuntimeHost {
         self.stop_task_stop_supervisor_discovery();
         self.shutdown_runtime_recovery_coordinator().await;
         self.shutdown_daemon_runtime_db_retention().await;
+        if let Err(error) = self.shutdown_daemon_session_activity().await {
+            // Let listeners drain before serve retries the final activity save.
+            tracing::warn!(error = %error, "session activity save failed during host shutdown; retaining dirty activity for final flush");
+        }
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
         let mut external_error = None;

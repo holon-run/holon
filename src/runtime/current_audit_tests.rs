@@ -42,7 +42,14 @@ async fn independent_audit_entry_is_pointer_sized_and_lazy() -> Result<()> {
         .runtime_db()
         .audit_events()
         .has_event_by_id(&event.id)?);
+    let writer = runtime
+        .runtime_db()
+        .reader_pool_writer_weak_for_tests()
+        .upgrade()
+        .unwrap();
+    let admissions = writer.write_channel_admissions_for_tests()?;
     runtime.append_original_audit_event(event.clone()).await?;
+    assert_eq!(writer.write_channel_admissions_for_tests()?, admissions + 1);
     assert!(runtime
         .runtime_db()
         .audit_events()

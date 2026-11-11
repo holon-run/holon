@@ -4237,6 +4237,13 @@ identity fails closed. This path creates neither a command receipt nor Current
 or Input body qualification, and preserves raw publication's best-effort policy.
 It is not admission for new work, and never borrows a successor's namespace.
 
+The retirement dispatch check uses a reserved preparation reader and submits no writer ticket
+for Active identities. It is only a routing hint: the prepared Audit writer
+still validates Active identity in its original transaction, and the raw
+retirement writer rechecks incarnation and both Deleting status fields inside
+the append transaction. A concurrent identity change cannot authorize a stale
+observation or reuse a successor's namespace.
+
 The runtime, HTTP and advisory-tool adapters await that writer after their
 original business ACK. Cancellation while waiting for the owner starts no SQL;
 after SQL, the existing Known/Unknown and original receipt fences apply.
