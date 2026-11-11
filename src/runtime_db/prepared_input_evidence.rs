@@ -654,7 +654,16 @@ impl EvidenceRepository<'_> {
     ) -> Result<InputMutationExecution<InputEvidenceCommit<PreparedEvidenceValue>>> {
         let scope = &prepared.primary_scope;
         let (agent, id, family, result_family) = prepared.command.identity();
-        self.db.transaction(|tx| {
+        let tool_result = matches!(
+            prepared.command.as_ref(),
+            EvidenceCommand::ToolResult { .. }
+        );
+        let context = if tool_result {
+            RuntimeDbWriteContext::sync("runtime_db.tool_result", "tool_executions")
+        } else {
+            RuntimeDbWriteContext::TRANSACTION
+        };
+        self.db.transaction_with_context(context, |tx| {
             ensure!(
                 scope.agent_id == agent && prepared.descriptor.scopes().contains(scope),
                 "prepared evidence primary scope differs from its command group"
@@ -772,8 +781,14 @@ impl EvidenceRepository<'_> {
                     })?;
             }
             validate_existing_input_evidence_tx(tx, scope, &InputEvidenceKey::new(family, id))?;
-            let before = canonical_marker_tx(tx, agent, id, family)?;
-            let before_index = index_frontier_tx(tx, agent)?;
+            let before = if tool_result {
+                None
+            } else {
+                Some((
+                    canonical_marker_tx(tx, agent, id, family)?,
+                    index_frontier_tx(tx, agent)?,
+                ))
+            };
             let (record, fact, actual_seq, created_event_seq, mut audit_events) =
                 match prepared.command.as_ref() {
                     #[cfg(test)]
@@ -912,7 +927,7 @@ impl EvidenceRepository<'_> {
             // Original acknowledgement closes qualification and actual Message
             // count before the receipt. These are never reconstructed late.
             let mut value = acknowledge_input_evidence_tx(tx, scope, record, &facts)?;
-            if matches!(prepared.command.as_ref(), EvidenceCommand::ToolResult { .. }) {
+            if tool_result {
                 value.record = PreparedEvidenceValue::ToolResult(super::transitions::AuditEventAck::clone_batch(&audit_events)?);
             }
             let mut result_work_ids = std::collections::BTreeSet::new();
@@ -964,10 +979,15 @@ impl EvidenceRepository<'_> {
             if let Some(native) = native_input {
                 native.finish_delta_tx(tx, &mut value.input_delta, ledger, None)?;
             }
-            let applied = value.agent_state.is_some()
-                || before != canonical_marker_tx(tx, agent, id, family)?
-                || before_index != index_frontier_tx(tx, agent)?
-                || !audit_events.is_empty();
+            let applied = if let Some((before_marker, before_index)) = before {
+                value.agent_state.is_some()
+                    || before_marker != canonical_marker_tx(tx, agent, id, family)?
+                    || before_index != index_frontier_tx(tx, agent)?
+                    || !audit_events.is_empty()
+            } else {
+                // A settled ToolResult always acknowledges its execution Event.
+                !audit_events.is_empty()
+            };
             let mut receipt_events = super::transitions::AuditEventAck::clone_batch(&audit_events)?;
             let outcome = InputMutationOutcome {
                 result: InputMutationResult::Evidence {
@@ -992,7 +1012,7 @@ impl EvidenceRepository<'_> {
                         let primary = reserved_scope == scope;
                         InputMutationScopeOutcome {
                             install_keys: super::input_recovery_install::InputMutationInstallKeys {
-                                input_roots: if primary && matches!(prepared.command.as_ref(), EvidenceCommand::ToolResult { .. }) {
+                                input_roots: if primary && tool_result {
                                     facts.iter().map(Fact::key).collect()
                                 } else { Default::default() },
                                 work_items: if primary {

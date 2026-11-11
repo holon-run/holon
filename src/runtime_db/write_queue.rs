@@ -152,6 +152,8 @@ pub(crate) struct RuntimeDbWriteContext {
 }
 
 impl RuntimeDbWriteContext {
+    pub(crate) const TRANSACTION: Self = Self::sync("runtime_db.transaction", "unknown");
+
     pub(crate) const fn new(
         operation: &'static str,
         table: &'static str,
@@ -486,10 +488,7 @@ impl RuntimeDbWriterState {
     }
 
     fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        self.append_wait_with_context(
-            RuntimeDbWriteContext::sync("runtime_db.transaction", "unknown"),
-            f,
-        )
+        self.append_wait_with_context(RuntimeDbWriteContext::TRANSACTION, f)
     }
 
     fn append_wait_with_context<T>(
