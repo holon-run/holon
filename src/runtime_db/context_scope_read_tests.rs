@@ -48,14 +48,14 @@ fn native_original_material_hints_do_not_gate_preparation() -> Result<()> {
 }
 
 #[test]
-fn native_birth_borrows_validated_scope_without_another_identity_tree() -> Result<()> {
+fn native_birth_borrows_validated_scope_with_same_encoded_charge() -> Result<()> {
     use crate::runtime::resident_input_evidence::InputEvidenceFamily;
     use crate::runtime_db::input_evidence_snapshot::native_birth::NativeInputWriteProof;
     let (_home, db) = fixture()?;
     let scope = scope();
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    // Original material header (2), one native scope/address group (257).
-    // There is no allowance for another decoded identity tree.
+    // Both paths charge the original material header (2) and one native
+    // scope/address group (257).
     let limits = (64 * 1024 * 1024, 259);
     db.transaction(|tx| {
         let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
@@ -65,6 +65,7 @@ fn native_birth_borrows_validated_scope_without_another_identity_tree() -> Resul
             })?
             .expect("native source");
         let independent_bytes = ledger.report()?.observed_bytes;
+        assert!(independent_bytes > 0);
         drop(independent);
         assert_eq!(ledger.report()?.observed_bytes, 0);
         let proof = NativeInputWriteProof::prepare_with_scope_read_tx(
@@ -77,8 +78,7 @@ fn native_birth_borrows_validated_scope_without_another_identity_tree() -> Resul
             |visit| visit(InputEvidenceFamily::Transcript, "native-scope-read"),
         )?
         .expect("installed native source");
-        assert!(ledger.report()?.observed_bytes > 0);
-        assert!(ledger.report()?.observed_bytes < independent_bytes);
+        assert_eq!(ledger.report()?.observed_bytes, independent_bytes);
         drop(proof);
         assert_eq!(ledger.report()?.observed_bytes, 0);
         tx.execute(
