@@ -329,7 +329,7 @@ mod tests {
             {
                 let mut guard = runtime.begin_mutation().await.unwrap();
                 assert!(guard.state.provider_cooldown_wait.is_none());
-                assert!(guard.last_persisted_state.provider_cooldown_wait.is_none());
+                assert!(guard.committed_state().provider_cooldown_wait.is_none());
                 guard.state.total_model_rounds = before + 1;
                 guard.persist_state(&runtime.inner.storage).await.unwrap();
             }

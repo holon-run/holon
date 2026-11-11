@@ -929,7 +929,6 @@ impl RuntimeHandle {
                 agent: Mutex::new(RuntimeAgent {
                     #[cfg(test)]
                     mutation_owner,
-                    last_persisted_state: state.clone(),
                     state,
                     queue,
                     current_run_abort: None,

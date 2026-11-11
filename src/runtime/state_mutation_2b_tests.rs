@@ -148,7 +148,7 @@ async fn rejected_compound_candidate_does_not_install_transient_queue_changes() 
         agent_id: "default".into(),
         expected_incarnation: None,
         agent_state: crate::runtime_db::transitions::AgentStateMutation {
-            expected: Some(Box::new(candidate.last_persisted_state.clone())),
+            expected: Some(Box::new(candidate.committed_state().clone())),
             record: Box::new(candidate.state.clone()),
         },
         audit_events: vec![AuditEvent::legacy(

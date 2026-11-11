@@ -550,7 +550,7 @@ async fn legacy_force_write_cannot_bypass_an_unknown_posture_operation() {
         agent.state.pending = 42;
         let error = agent.persist_state(&runtime.inner.storage).unwrap_err();
         assert!(error.downcast_ref::<MutationOwnerError>().is_some());
-        assert_eq!(agent.state, agent.last_persisted_state);
+        assert_eq!(agent.state, before);
     }
     assert_eq!(
         runtime
@@ -858,7 +858,7 @@ async fn unchanged_input_commit_preserves_published_arc() {
     let (runtime, _data, _workspace) = stale_runtime().await;
     let mut mutation = runtime.begin_mutation().await.unwrap();
     let inputs = Arc::clone(mutation.input_evidence.as_ref().unwrap());
-    let previous = mutation.last_persisted_state.clone();
+    let previous = mutation.committed_state().clone();
     let mut next = previous.clone();
     next.total_output_tokens += 11;
     let event = AuditEvent::legacy("unchanged_input_publication_fixture", serde_json::json!({}));
@@ -913,7 +913,7 @@ async fn acknowledged_input_projection_error_keeps_known_state_and_original_effe
     let (runtime, _data, _workspace) = stale_runtime().await;
     let mut mutation = runtime.begin_mutation().await.unwrap();
     assert!(mutation.input_evidence.is_some());
-    let previous = mutation.last_persisted_state.clone();
+    let previous = mutation.committed_state().clone();
     let mut next = previous.clone();
     next.total_output_tokens += 11;
     let event = AuditEvent::legacy("input_projection_error_fixture", serde_json::json!({}));

@@ -689,7 +689,7 @@ impl RuntimeHandle {
                 let command = EpisodeMemoryTransitionCommand::new(
                     key,
                     invocation,
-                    guard.last_persisted_state.clone(),
+                    guard.committed_state().clone(),
                     plan,
                     frozen.timestamp,
                 )?;

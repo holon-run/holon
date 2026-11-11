@@ -561,7 +561,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     ) -> Result<StaleRunProjectionReconciliation> {
         let needs_reconciliation = self
             .runtime
-            .read_committed_agent(|guard| {
+            .read_committed_agent(|guard, _| {
                 guard.state.status != AgentStatus::Stopped
                     && (guard.state.status == AgentStatus::AwakeRunning
                         || guard.state.current_run_id.is_some())
@@ -672,7 +672,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             agent_id: recovered_state.id.clone(),
             expected_incarnation: Some(self.runtime.inner.identity_incarnation),
             agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                expected: Some(Box::new(guard.last_persisted_state.clone())),
+                expected: Some(Box::new(guard.committed_state().clone())),
                 record: Box::new(recovered_state.clone()),
             },
             audit_events: vec![event],
@@ -748,7 +748,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     format!("occupancy_to_release={occupancy_to_release:?}"),
                 ],
             ))?;
-        if guard.state == guard.last_persisted_state {
+        if &guard.state == guard.committed_state() {
             guard.install_transient().await?;
         } else {
             guard.persist_state(&self.runtime.inner.storage).await?;
@@ -780,7 +780,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }
 
         if should_write {
-            if guard.state == guard.last_persisted_state {
+            if &guard.state == guard.committed_state() {
                 guard.install_transient().await?;
             } else {
                 guard.persist_state(&self.runtime.inner.storage).await?;
@@ -6094,7 +6094,17 @@ mod tests {
 
         let guard = runtime.inner.agent.lock().await;
         assert_eq!(guard.state, previous_state);
-        assert_eq!(guard.last_persisted_state, previous_state);
+        assert_eq!(
+            runtime
+                .inner
+                .mutation_owner
+                .capture()
+                .unwrap()
+                .unwrap()
+                .state
+                .as_ref(),
+            &previous_state
+        );
         assert_eq!(
             runtime
                 .inner

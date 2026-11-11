@@ -526,12 +526,49 @@ pub(super) struct RuntimeMutation {
     current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
     queue_posture: Option<crate::queue::QueuePostureFacts>,
     scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
-    base: Box<RuntimeAgent>,
+    base: RuntimeMutationBaseline,
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
     measurement_started: Option<std::time::Instant>,
     _candidate_budget_views: Vec<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     plan_preparation: Option<Arc<super::resource_refresh::WorkPlanPreparation>>,
+}
+
+struct RuntimeMutationBaseline {
+    state: Arc<AgentState>,
+    queue: RuntimeQueue,
+    queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
+    current_run_abort: Option<CurrentRunAbortHandle>,
+}
+
+impl RuntimeMutationBaseline {
+    fn new(state: Arc<AgentState>, candidate: &RuntimeAgent) -> Self {
+        Self {
+            state,
+            queue: candidate.queue.clone(),
+            queue_budget_view: candidate._queue_budget_view.clone(),
+            current_run_abort: candidate.current_run_abort.clone(),
+        }
+    }
+}
+
+impl RuntimeMutation {
+    pub(super) fn committed_state(&self) -> &AgentState {
+        self.base.state.as_ref()
+    }
+
+    fn refresh_baseline(&mut self) -> Result<()> {
+        let root = self.capture_published_root()?;
+        self.base = RuntimeMutationBaseline::new(root.state.clone(), &self.candidate);
+        Ok(())
+    }
+
+    fn restore_candidate(&mut self) {
+        self.candidate.state = self.base.state.as_ref().clone();
+        self.candidate.queue = self.base.queue.clone();
+        self.candidate._queue_budget_view = self.base.queue_budget_view.clone();
+        self.candidate.current_run_abort = self.base.current_run_abort.clone();
+    }
 }
 
 impl std::ops::Deref for RuntimeMutation {
@@ -899,7 +936,7 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.runtime.inner.resources.notify();
-        self.base = self.candidate.clone();
+        self.refresh_baseline()?;
         Ok(())
     }
 
@@ -1095,7 +1132,7 @@ impl RuntimeMutation {
         for observation in observations.into_iter().flatten() {
             trace_publication(observation.token);
         }
-        self.base = self.candidate.clone();
+        self.refresh_baseline()?;
         Ok(())
     }
 
@@ -1163,7 +1200,7 @@ impl RuntimeMutation {
         original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
     ) -> Result<()> {
         self.validate_candidate_identity()?;
-        if self.candidate.state == self.base.state && started_turn.is_none() {
+        if &self.candidate.state == self.committed_state() && started_turn.is_none() {
             return self.install_transient().await;
         }
         let started = std::time::Instant::now();
@@ -1177,7 +1214,7 @@ impl RuntimeMutation {
             agent_id: self.candidate.state.id.clone(),
             expected_incarnation: Some(self.runtime.inner.identity_incarnation),
             agent_state: crate::runtime_db::transitions::AgentStateMutation {
-                expected: Some(Box::new(self.base.last_persisted_state.clone())),
+                expected: Some(Box::new(self.committed_state().clone())),
                 record: Box::new(self.candidate.state.clone()),
             },
             audit_events: vec![event.clone()],
@@ -1206,7 +1243,7 @@ impl RuntimeMutation {
         let result = self.commit_prepared_input_transition(prepared).await;
         crate::diagnostics::record_storage_persist_state(started.elapsed());
         let commit = result?;
-        if !commit.applied && intended_state.as_ref() != &self.base.last_persisted_state {
+        if !commit.applied && intended_state.as_ref() != self.committed_state() {
             return Err(
                 crate::runtime_db::RuntimeStateTransitionConflict::concurrent_mutation(
                     "agent_state",
@@ -1349,7 +1386,7 @@ impl RuntimeMutation {
     pub(super) async fn append_original_audit_event(&mut self, event: AuditEvent) -> Result<()> {
         self.runtime.inner.storage.event_log().ensure_writable()?;
         anyhow::ensure!(
-            self.state == self.last_persisted_state,
+            &self.state == self.committed_state(),
             "independent Audit requires the original acknowledged State"
         );
         let scope = self.input_evidence_scope();
@@ -1390,7 +1427,7 @@ impl RuntimeMutation {
     ) -> Result<()> {
         self.runtime.inner.storage.event_log().ensure_writable()?;
         anyhow::ensure!(
-            self.state == self.last_persisted_state,
+            &self.state == self.committed_state(),
             "independent Audit requires the original acknowledged State"
         );
         let prepared = crate::runtime_db::transitions::PreparedInputTransition::audit_many(
@@ -1596,9 +1633,9 @@ impl RuntimeMutation {
         self.runtime.attach_dispatch_memory_with_binding(prepared, |tx, prepared| {
             if let Some(turn_id) = prepared.actual_memory_terminal_turn_id() {
                 if let Some(source) = prepared
-                    .claim_only_queue_terminal_source(&self.base.last_persisted_state)
+                    .claim_only_queue_terminal_source(self.committed_state())
                 {
-                    let state = &self.base.last_persisted_state;
+                    let state = self.committed_state();
                     let run_id = state.current_run_id.as_deref().context("claim run missing")?;
                     let lease = self.runtime.inner.control_cancellations.run_for(run_id)
                         .context("claim-only terminal has no original processing lease")?;
@@ -1614,12 +1651,12 @@ impl RuntimeMutation {
                 }
                 load_dispatch_memory_binding_by_turn_tx(tx, &scope, turn_id)
             } else if let Some(turn_id) = prepared
-                .inactive_queue_memory_turn_id(&self.base.last_persisted_state)
+                .inactive_queue_memory_turn_id(self.committed_state())
                 .filter(|_| self.current_run_abort.is_none())
             {
                 // Bootstrap has no physical producer. Ordinary business
                 // commands still require their exact live run below.
-                let state = &self.base.last_persisted_state;
+                let state = self.committed_state();
                 let unchanged: bool = tx.query_row(
                     "SELECT payload_json=?2 FROM agent_states WHERE agent_id=?1",
                     rusqlite::params![scope.agent_id, serde_json::to_string(state)?],
@@ -1630,7 +1667,7 @@ impl RuntimeMutation {
             } else {
                 // Work and Focus candidates may already change fields. The
                 // original published State, never that candidate, locates the seed.
-                load_dispatch_memory_binding_tx(tx, &scope, &self.base.last_persisted_state)
+                load_dispatch_memory_binding_tx(tx, &scope, self.committed_state())
             }
         })
     }
@@ -1797,7 +1834,7 @@ impl RuntimeMutation {
                     .reconcile_reserved_mutations(&mut self.reservations)
                     .await?;
                 self.candidate = Box::new(self.runtime.inner.agent.lock().await.clone());
-                self.base = self.candidate.clone();
+                self.refresh_baseline()?;
                 let root = self.runtime.inner.mutation_owner.capture()?;
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
@@ -1924,7 +1961,7 @@ impl RuntimeMutation {
                         witness.release_pending_not_committed(false)?;
                     }
                     MutationReservation::definitely_not_committed_all(&mut self.reservations)?;
-                    self.candidate = self.base.clone();
+                    self.restore_candidate();
                     self.deferred_abort = None;
                     self.control_cancellation = None;
                 } else if let Some(witness) = input_witness {
@@ -1938,13 +1975,13 @@ impl RuntimeMutation {
         }
         if !committed.applied && input_witness.is_none() {
             MutationReservation::definitely_not_committed_all(&mut self.reservations)?;
-            self.candidate = self.base.clone();
+            self.restore_candidate();
             self.deferred_abort = None;
             self.control_cancellation = None;
             return Ok(committed);
         }
         if !committed.applied {
-            self.candidate = self.base.clone();
+            self.restore_candidate();
             self.deferred_abort = None;
             self.control_cancellation = None;
         }
@@ -2014,10 +2051,9 @@ impl RuntimeMutation {
                 "committed runtime state identity mismatch"
             );
             self.candidate.state = mutation.record.as_ref().clone();
-            self.candidate.last_persisted_state = self.candidate.state.clone();
         } else {
             anyhow::ensure!(
-                self.candidate.state == self.base.state,
+                &self.candidate.state == self.committed_state(),
                 "typed commit omitted a changed agent state"
             );
         }
@@ -2152,7 +2188,7 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.runtime.inner.resources.notify();
-        self.base = self.candidate.clone();
+        self.refresh_baseline()?;
         self.deferred_abort = None;
         if let Some(cancellation) = self.control_cancellation.take() {
             self.runtime
@@ -2359,19 +2395,19 @@ impl RuntimeMutation {
 
     pub(super) async fn install_transient(&mut self) -> Result<()> {
         anyhow::ensure!(
-            self.candidate.state == self.base.state
-                && self.candidate.last_persisted_state == self.base.last_persisted_state,
+            &self.candidate.state == self.committed_state(),
             "transient installation cannot change durable agent state"
         );
-        self.install_durable_readback().await
+        self.publish_installed_state().await
     }
 
-    pub(super) async fn install_durable_readback(&mut self) -> Result<()> {
+    pub(super) async fn install_durable_readback(&mut self, state: AgentState) -> Result<()> {
+        self.candidate.state = state;
+        self.publish_installed_state().await
+    }
+
+    async fn publish_installed_state(&mut self) -> Result<()> {
         self.validate_candidate_identity()?;
-        anyhow::ensure!(
-            self.candidate.state == self.candidate.last_persisted_state,
-            "durable readback must install one exact persisted state"
-        );
         MutationReservation::begin_all(&mut self.reservations, crate::ids::audit_event_id())?;
         let facts = Arc::new(self.facts(Default::default()));
         self.record_committed_facts(facts.clone(), &Default::default(), &[])?;
@@ -2381,7 +2417,7 @@ impl RuntimeMutation {
             trace_publication(observation.token);
         }
         self.runtime.inner.resources.notify();
-        self.base = self.candidate.clone();
+        self.refresh_baseline()?;
         self.deferred_abort = None;
         Ok(())
     }
@@ -2414,7 +2450,7 @@ impl RuntimeMutation {
         self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
         self.work = root.as_ref().and_then(|root| root.work.clone());
         self.tasks = root.as_ref().and_then(|root| root.tasks.clone());
-        self.base = self.candidate.clone();
+        self.refresh_baseline()?;
         self.deferred_abort = None;
         self.control_cancellation = None;
         Ok(true)
@@ -2591,7 +2627,11 @@ impl RuntimeMutation {
         strip_input_evidence_payloads(&mut effects);
         RuntimeMutationFacts {
             owner_epoch: self.reservations[self.primary_index].owner_epoch(),
-            state: Arc::new(self.candidate.state.clone()),
+            state: if &self.candidate.state == self.committed_state() {
+                self.base.state.clone()
+            } else {
+                Arc::new(self.candidate.state.clone())
+            },
             episodes: self.episodes.clone(),
             input_evidence: self.input_evidence.clone(),
             work: self.work.clone(),
@@ -3576,18 +3616,26 @@ impl RuntimeHandle {
                 state: state.map(Arc::new),
             })));
         }
-        let mut candidate = match read_db {
-            Some(db) => Box::new(
-                db.wait_for_memory_lock(self.inner.agent.lock())
-                    .await?
-                    .clone(),
-            ),
-            None => Box::new(self.inner.agent.lock().await.clone()),
+        let baseline = observation
+            .as_ref()
+            .context("loaded mutation has no committed State publication")?;
+        let (candidate, base) = {
+            let cache = match read_db {
+                Some(db) => db.wait_for_memory_lock(self.inner.agent.lock()).await?,
+                None => self.inner.agent.lock().await,
+            };
+            let base = RuntimeMutationBaseline::new(baseline.state.clone(), &cache);
+            // The compatibility cache supplies only transient fields.
+            let candidate = Box::new(RuntimeAgent {
+                #[cfg(test)]
+                mutation_owner: cache.mutation_owner.clone(),
+                state: base.state.as_ref().clone(),
+                queue: base.queue.clone(),
+                _queue_budget_view: base.queue_budget_view.clone(),
+                current_run_abort: base.current_run_abort.clone(),
+            });
+            (candidate, base)
         };
-        if let Some(root) = observation.as_ref() {
-            // The compatibility cache cannot grant unpublished State to a new command.
-            candidate.state = root.state.as_ref().clone();
-        }
         let mut candidate_budget_views =
             vec![self.inner.input_evidence_budget.register_queue_view(
                 &scope,
@@ -3646,7 +3694,7 @@ impl RuntimeHandle {
                 .and_then(|root| root.scheduling.clone()),
             queue_posture: observation.as_ref().and_then(|root| root.queue_posture),
             scheduler_events: observation.and_then(|root| root.scheduler_events),
-            base: candidate.clone(),
+            base,
             candidate,
             deferred_abort: None,
             control_cancellation: None,
@@ -3727,7 +3775,6 @@ impl RuntimeHandle {
                     .fetch_add(1, Ordering::AcqRel);
             }
             agent.state = facts.state.as_ref().clone();
-            agent.last_persisted_state = facts.state.as_ref().clone();
             agent.queue = facts.queue.clone();
             agent._queue_budget_view = Some(queue_budget_view);
             // An old ACK may still settle during retirement, but cannot
@@ -3997,7 +4044,7 @@ impl RuntimeHandle {
             mutation: crate::runtime_db::transitions::QueueMutation::Upsert(aborted_queue),
             scheduler_claim_work_item: None,
             agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                expected: Some(Box::new(mutation.committed_state().clone())),
                 record: Box::new(expected_state.clone()),
             }),
             message_evidence: Vec::new(),
@@ -4069,28 +4116,32 @@ impl RuntimeHandle {
         {
             return Ok(None);
         }
-        match known {
-            KnownCommit::State {
-                state,
-                runtime: facts,
-                ..
-            } => {
-                if let Some(facts) = facts
-                    .as_ref()
-                    .filter(|facts| facts.owner_epoch == reservation.owner_epoch())
-                {
-                    self.install_mutation_facts(facts).await?;
-                    // Notifications borrow the original ACK and retain its
-                    // resident/material holders until the whole group settles.
-                    return Ok(Some(facts.clone()));
-                }
-                self.install_exact_durable_readback(state).await?;
+        if let KnownCommit::State {
+            runtime: Some(facts),
+            ..
+        } = known
+        {
+            if facts.owner_epoch == reservation.owner_epoch() {
+                self.install_mutation_facts(facts).await?;
+                // Notifications borrow the original ACK and retain its
+                // resident/material holders until the whole group settles.
+                return Ok(Some(facts.clone()));
             }
-            KnownCommit::Metadata(metadata) => {
-                if let Some(state) = &metadata.state {
-                    self.install_exact_durable_readback(state).await?;
-                }
-            }
+        }
+        if let Some(state) = known.state() {
+            let recovery = reservation.recovery()?.context("missing recovery record")?;
+            anyhow::ensure!(
+                recovery.known.as_ref().and_then(KnownCommit::state) == Some(state),
+                "State readback differs from the original commit"
+            );
+            let original = recovery
+                .original_state
+                .as_deref()
+                .context("loaded recovery has no committed State baseline")?;
+            let already_installed = recovery.installed_state_readback.as_ref() == Some(state);
+            self.install_exact_durable_readback(state, original, already_installed)
+                .await?;
+            reservation.mark_state_readback_installed(&recovery.key, state)?;
         }
         Ok(None)
     }
@@ -4104,10 +4155,15 @@ impl RuntimeHandle {
         self.apply_transition_notifications(effects).await;
     }
 
-    async fn install_exact_durable_readback(&self, state: &Arc<AgentState>) -> Result<()> {
+    async fn install_exact_durable_readback(
+        &self,
+        state: &Arc<AgentState>,
+        original: &AgentState,
+        already_installed: bool,
+    ) -> Result<()> {
         let mut agent = self.inner.agent.lock().await;
         anyhow::ensure!(
-            agent.state == agent.last_persisted_state,
+            &agent.state == original || (already_installed && &agent.state == state.as_ref()),
             "runtime recovery cannot discard unpersisted state"
         );
         // An identical durable readback does not replace transient run handles.
@@ -4122,7 +4178,6 @@ impl RuntimeHandle {
             "runtime recovery conflicts with a live run handle"
         );
         agent.state = state.as_ref().clone();
-        agent.last_persisted_state = state.as_ref().clone();
         Ok(())
     }
 }

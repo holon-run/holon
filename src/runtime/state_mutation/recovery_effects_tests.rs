@@ -19,6 +19,17 @@ async fn fixture() -> Result<(RuntimeHandle, TempDir)> {
     Ok((runtime, home))
 }
 
+fn published_state(runtime: &RuntimeHandle) -> Arc<AgentState> {
+    runtime
+        .inner
+        .mutation_owner
+        .capture()
+        .unwrap()
+        .unwrap()
+        .state
+        .clone()
+}
+
 async fn terminal_handle_fixture() -> Result<(RuntimeHandle, TempDir, CurrentRunAbortHandle)> {
     let (runtime, home) = fixture().await?;
     let handle = CurrentRunAbortHandle {
@@ -29,7 +40,7 @@ async fn terminal_handle_fixture() -> Result<(RuntimeHandle, TempDir, CurrentRun
     {
         let mut agent = runtime.inner.agent.lock().await;
         assert!(agent.state.current_run_id.is_none());
-        assert_eq!(agent.state, agent.last_persisted_state);
+        assert_eq!(&agent.state, published_state(&runtime).as_ref());
         // Terminal ACK installed State; the next mutation owns handle cleanup.
         agent.current_run_abort = Some(handle.clone());
     }
@@ -40,10 +51,12 @@ async fn terminal_handle_fixture() -> Result<(RuntimeHandle, TempDir, CurrentRun
 async fn durable_readback_preserves_the_same_state_terminal_handle() -> Result<()> {
     let (runtime, _home, handle) = terminal_handle_fixture().await?;
     let state = Arc::new(runtime.inner.agent.lock().await.state.clone());
-    runtime.install_exact_durable_readback(&state).await?;
+    runtime
+        .install_exact_durable_readback(&state, &state, false)
+        .await?;
     let agent = runtime.inner.agent.lock().await;
     assert_eq!(&agent.state, state.as_ref());
-    assert_eq!(agent.state, agent.last_persisted_state);
+    assert_eq!(&agent.state, published_state(&runtime).as_ref());
     let installed = agent.current_run_abort.as_ref().unwrap();
     assert_eq!(installed.run_id, handle.run_id);
     assert!(Arc::ptr_eq(&installed.reason, &handle.reason));
@@ -60,7 +73,7 @@ async fn durable_readback_rejects_changed_state_with_a_conflicting_handle() -> R
     let mut changed = before.clone();
     changed.total_input_tokens += 1;
     let error = runtime
-        .install_exact_durable_readback(&Arc::new(changed))
+        .install_exact_durable_readback(&Arc::new(changed), &before, false)
         .await
         .unwrap_err();
     assert!(error
@@ -68,7 +81,7 @@ async fn durable_readback_rejects_changed_state_with_a_conflicting_handle() -> R
         .contains("conflicts with a live run handle"));
     let agent = runtime.inner.agent.lock().await;
     assert_eq!(agent.state, before);
-    assert_eq!(agent.last_persisted_state, before);
+    assert_eq!(published_state(&runtime).as_ref(), &before);
     assert!(Arc::ptr_eq(
         &agent.current_run_abort.as_ref().unwrap().reason,
         &handle.reason
@@ -82,12 +95,12 @@ async fn durable_readback_rejects_unpersisted_state_even_when_readback_matches()
     let (runtime, _home, handle) = terminal_handle_fixture().await?;
     let (persisted, dirty) = {
         let mut agent = runtime.inner.agent.lock().await;
-        let persisted = agent.last_persisted_state.clone();
+        let persisted = published_state(&runtime);
         agent.state.pending += 1;
         (persisted, Arc::new(agent.state.clone()))
     };
     let error = runtime
-        .install_exact_durable_readback(&dirty)
+        .install_exact_durable_readback(&dirty, &persisted, false)
         .await
         .unwrap_err();
     assert!(error
@@ -95,8 +108,52 @@ async fn durable_readback_rejects_unpersisted_state_even_when_readback_matches()
         .contains("cannot discard unpersisted state"));
     let agent = runtime.inner.agent.lock().await;
     assert_eq!(&agent.state, dirty.as_ref());
-    assert_eq!(agent.last_persisted_state, persisted);
+    assert!(Arc::ptr_eq(&published_state(&runtime), &persisted));
     assert!(!handle.token.is_cancelled());
+    Ok(())
+}
+
+#[tokio::test]
+async fn known_state_readback_can_resume_after_cache_installation() -> Result<()> {
+    use super::super::mutation_owner::IdentityMutationFacts;
+
+    let (runtime, _home) = fixture().await?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let mut next = root.state.as_ref().clone();
+    next.total_input_tokens += 1;
+    let next = Arc::new(next);
+    let mut reservations = vec![runtime.inner.mutation_owner.reserve().await?];
+    MutationReservation::begin_all(&mut reservations, crate::ids::audit_event_id())?;
+    runtime.storage().write_agent_for_fixture(&next)?;
+    let known = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+        identity: root.identity.clone(),
+        state: Some(next.clone()),
+    }));
+    MutationReservation::committed_all(&mut reservations, vec![known.clone()])?;
+    let mut unrelated = next.as_ref().clone();
+    unrelated.total_input_tokens += 1;
+    let unrelated = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+        identity: root.identity.clone(),
+        state: Some(Arc::new(unrelated)),
+    }));
+    assert!(runtime
+        .install_saved_mutation(&reservations[0], &unrelated)
+        .await
+        .is_err());
+    assert_eq!(&runtime.inner.agent.lock().await.state, root.state.as_ref());
+    runtime
+        .install_saved_mutation(&reservations[0], &known)
+        .await?;
+    assert_eq!(&runtime.inner.agent.lock().await.state, next.as_ref());
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    drop(reservations);
+
+    let mut reservations = vec![runtime.inner.mutation_owner.reserve().await?];
+    runtime
+        .install_saved_mutation(&reservations[0], &known)
+        .await?;
+    MutationReservation::reconcile_all(&mut reservations, vec![Some(known)])?;
+    assert_eq!(published_state(&runtime).as_ref(), next.as_ref());
     Ok(())
 }
 
@@ -323,7 +380,7 @@ async fn borrowed_recovery_notifications_preserve_faults_without_installing_auth
 #[tokio::test]
 async fn borrowed_recovery_keeps_foreign_owner_and_old_epoch_fences() -> Result<()> {
     let (runtime, _home) = fixture().await?;
-    let mutation = runtime.begin_mutation().await?;
+    let mut mutation = runtime.begin_mutation().await?;
     let mut facts = mutation.facts(Default::default());
     facts.owner_epoch += 1;
     let facts = Arc::new(facts);
@@ -336,11 +393,14 @@ async fn borrowed_recovery_keeps_foreign_owner_and_old_epoch_fences() -> Result<
         .await?
         .is_none());
     let weak = Arc::downgrade(&facts);
+    MutationReservation::begin_all(&mut mutation.reservations, crate::ids::audit_event_id())?;
+    MutationReservation::committed_all(&mut mutation.reservations, vec![known.clone()])?;
     assert!(runtime
         .install_saved_mutation(&mutation.reservations[0], &known)
         .await?
         .is_none());
-    drop((known, facts));
+    MutationReservation::reconcile_all(&mut mutation.reservations, vec![Some(known)])?;
+    drop(facts);
     assert!(weak.upgrade().is_none());
     assert!(runtime.take_transition_warnings().is_empty());
     Ok(())

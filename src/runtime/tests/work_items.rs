@@ -9936,7 +9936,7 @@ async fn explicit_pick_unwinds_nested_continuations_and_canonical_parents() {
 }
 
 /// When `persist_state()` is called between completion preparation and the
-/// canonical terminal settlement commit, the baseline (`last_persisted_state`)
+/// canonical terminal settlement commit, the published State baseline
 /// may diverge from `expected_agent_state` (captured from `guard.state` at
 /// preparation time). The rebase must not bail — the committed values are
 /// applied unconditionally and the DB-level OCC check catches real conflicts.

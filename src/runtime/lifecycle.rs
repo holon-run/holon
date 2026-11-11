@@ -619,7 +619,7 @@ impl RuntimeHandle {
 
     pub async fn agent_state(&self) -> Result<AgentState> {
         let mut state = self
-            .read_committed_agent(|guard| {
+            .read_committed_agent(|guard, _| {
                 let _clone = attribution::AGENT_CLONE.start();
                 guard.state.clone()
             })

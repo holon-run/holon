@@ -354,22 +354,9 @@ fn rebase_prepared_completion_agent_state(
     prepared: &PreparedWorkItemCompletion,
     baseline: &AgentState,
 ) -> Result<AgentState> {
-    // The expected_agent_state was captured from guard.state (in-memory) at
-    // completion preparation time, while baseline is guard.last_persisted_state
-    // at commit time. Between these two reads, persist_state() may be called
-    // (e.g. by promote_turn_active_skills or concurrent wake_hint coalescing),
-    // updating last_persisted_state to the current guard.state. If guard.state
-    // changed in any tracked field during that window, the strict equality
-    // check would bail even though the completion is still valid.
-    //
-    // The committed_agent_state already contains the correct final values for
-    // status, current_run_id, current_work_item_id, current_turn_work_item_id,
-    // and current_execution_binding — they are unconditionally applied on top
-    // of the baseline below. The DB-level OCC check (expected =
-    // last_persisted_state) in the commit transaction catches real concurrent
-    // writes. The work item revision is validated in the execution protocol
-    // commit. Removing this redundant TOCTOU guard avoids false-positive
-    // bail-outs from benign persist_state() calls.
+    // Apply the completion-owned fields over the State published at commit
+    // time. The transaction validates that State via OCC and checks the Work
+    // revision, allowing unrelated State updates after preparation.
     anyhow::ensure!(
         baseline.id == prepared.expected_agent_state.id,
         "completion commit agent identity changed before settlement"
@@ -3147,7 +3134,6 @@ struct RuntimeAgent {
     #[cfg(test)]
     mutation_owner: mutation_owner::MutationOwner,
     state: AgentState,
-    last_persisted_state: AgentState,
     queue: RuntimeQueue,
     _queue_budget_view: Option<Arc<input_evidence_budget::BudgetViewGuard>>,
     current_run_abort: Option<CurrentRunAbortHandle>,
@@ -3158,20 +3144,23 @@ impl RuntimeAgent {
     fn persist_state(&mut self, storage: &AppStorage) -> Result<()> {
         let started = std::time::Instant::now();
         // Fixture setup bypasses OCC but must not erase pending recovery.
-        if let Err(error) = self.mutation_owner.capture() {
-            self.state = self.last_persisted_state.clone();
-            crate::diagnostics::record_storage_persist_state(started.elapsed());
-            return Err(error.into());
+        let result = (|| {
+            let root = self
+                .mutation_owner
+                .capture()?
+                .context("fixture has no committed State publication")?;
+            storage.write_agent_for_fixture(&self.state)?;
+            self.mutation_owner
+                .publish_fixture_state(&root, Arc::new(self.state.clone()))?;
+            Ok(())
+        })();
+        if result.is_err() {
+            if let Some(state) = self.mutation_owner.state_for_fixture_rollback() {
+                self.state = state.as_ref().clone();
+            }
         }
-        // Keep the fixture's durable baseline aligned with its resident state.
-        if let Err(error) = storage.write_agent_for_fixture(&self.state) {
-            self.state = self.last_persisted_state.clone();
-            crate::diagnostics::record_storage_persist_state(started.elapsed());
-            return Err(error);
-        }
-        self.last_persisted_state = self.state.clone();
         crate::diagnostics::record_storage_persist_state(started.elapsed());
-        Ok(())
+        result
     }
 }
 
@@ -3253,14 +3242,17 @@ impl CurrentRunAbortSnapshot {
 impl RuntimeHandle {
     async fn read_committed_agent<T>(
         &self,
-        read: impl FnOnce(&RuntimeAgent) -> T + Send,
+        read: impl FnOnce(&RuntimeAgent, &AgentState) -> T + Send,
     ) -> Result<T> {
         loop {
             let lock_wait = crate::diagnostics::attribution::AGENT_LOCK.start();
             let guard = self.inner.agent.lock().await;
             drop(lock_wait);
             match self.inner.mutation_owner.capture() {
-                Ok(_) => return Ok(read(&guard)),
+                Ok(root) => {
+                    let root = root.context("loaded agent has no committed State publication")?;
+                    return Ok(read(&guard, &root.state));
+                }
                 Err(mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {}
                 Err(error) => return Err(error.into()),
             }
@@ -4734,7 +4726,7 @@ impl RuntimeHandle {
                     },
                     source,
                     prior_closure.clone(),
-                    guard.last_persisted_state.working_memory.clone(),
+                    guard.committed_state().working_memory.clone(),
                 )?;
                 guard
                     .persist_started_dispatch(started_turn, start, original_claim)
@@ -5258,7 +5250,7 @@ impl RuntimeHandle {
                 .queue
                 .peek_next_matching(|queued| queued.id == message.id)
                 .is_none();
-            let expected_persisted_state = guard.last_persisted_state.clone();
+            let expected_persisted_state = guard.committed_state().clone();
             let mut committed_state = guard.state.clone();
             let discard_due_to_stop = committed_state.status == AgentStatus::Stopped;
             if matches!(&message.origin, MessageOrigin::System { subsystem } if subsystem == "subagent_reclamation")
@@ -5383,7 +5375,7 @@ impl RuntimeHandle {
             // Candidate State comes from publication, so inspect the cache under
             // the reservation before accepting a different durable baseline.
             let cache = self.inner.agent.lock().await;
-            if cache.state != cache.last_persisted_state {
+            if &cache.state != guard.committed_state() {
                 return Ok(false);
             }
         }
@@ -5397,14 +5389,14 @@ impl RuntimeHandle {
         };
         if latest_persisted_state.id != agent_id
             || guard.state.id != agent_id
-            || guard.state != guard.last_persisted_state
+            || &guard.state != guard.committed_state()
             || latest_persisted_state.pending != guard.queue.len()
         {
             return Ok(false);
         }
-        guard.state = latest_persisted_state.clone();
-        guard.last_persisted_state = latest_persisted_state;
-        guard.install_durable_readback().await?;
+        guard
+            .install_durable_readback(latest_persisted_state)
+            .await?;
         Ok(true)
     }
 
@@ -5715,7 +5707,7 @@ impl RuntimeHandle {
                 state.current_turn_id = Some(terminal_transition.terminal.turn_id.clone());
                 state.last_turn_terminal = Some(terminal_transition.terminal.clone());
                 crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(guard.last_persisted_state.clone())),
+                    expected: Some(Box::new(guard.committed_state().clone())),
                     record: Box::new(state),
                 }
             };
@@ -6035,7 +6027,7 @@ impl RuntimeHandle {
                     state.last_runtime_failure = None;
                     state
                 } else if let Some(prepared) = prepared_completion {
-                    rebase_prepared_completion_agent_state(prepared, &guard.last_persisted_state)?
+                    rebase_prepared_completion_agent_state(prepared, guard.committed_state())?
                 } else if let Some(prepared) = prepared_wait.as_deref() {
                     if let Some(mutation) = prepared.command.agent_state.as_ref() {
                         rebase_committed_agent_state(
@@ -6109,7 +6101,7 @@ impl RuntimeHandle {
                     state.current_turn_id = Some(transition.terminal.turn_id.clone());
                     state.last_turn_terminal = Some(transition.terminal.clone());
                     Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(guard.last_persisted_state.clone())),
+                        expected: Some(Box::new(guard.committed_state().clone())),
                         record: Box::new(state.clone()),
                     })
                 } else {
@@ -6365,9 +6357,7 @@ impl RuntimeHandle {
             durable.pending == mutation.queue.len(),
             "parked provider readback pending differs from committed queue"
         );
-        mutation.state = durable.clone();
-        mutation.last_persisted_state = durable;
-        mutation.install_durable_readback().await?;
+        mutation.install_durable_readback(durable).await?;
         drop(mutation);
         self.inner.notify.notify_one();
         Ok(())
@@ -6740,7 +6730,7 @@ impl RuntimeHandle {
                 },
                 scheduler_claim_work_item: None,
                 agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
-                    expected: Some(Box::new(guard.last_persisted_state.clone())),
+                    expected: Some(Box::new(guard.committed_state().clone())),
                     record: Box::new(next_state.clone()),
                 }),
                 message_evidence: Vec::new(),

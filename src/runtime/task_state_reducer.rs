@@ -474,7 +474,7 @@ impl RuntimeHandle {
         }
 
         let (mut state, expected_state) = if let Some(guard) = agent_guard.as_ref() {
-            (guard.state.clone(), guard.last_persisted_state.clone())
+            (guard.state.clone(), guard.committed_state().clone())
         } else {
             let state = self.agent_state().await?;
             let expected_state = state.clone();

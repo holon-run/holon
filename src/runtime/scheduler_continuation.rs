@@ -1129,7 +1129,7 @@ impl RuntimeHandle {
                     ));
                 }
                 let mut guard = self.begin_mutation().await?;
-                let expected_persisted_state = guard.last_persisted_state.clone();
+                let expected_persisted_state = guard.committed_state().clone();
                 let mut committed_state = guard.state.clone();
                 let previous_status = committed_state.status.clone();
                 let previous_sleeping_until = committed_state.sleeping_until;

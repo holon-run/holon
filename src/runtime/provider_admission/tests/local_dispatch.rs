@@ -580,7 +580,17 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         let guard = runtime.inner.agent.lock().await;
         assert_eq!(guard.queue.len(), 2);
         assert_eq!(guard.state.pending, 2);
-        assert_eq!(guard.last_persisted_state.pending, 2);
+        assert_eq!(
+            runtime
+                .inner
+                .mutation_owner
+                .capture()
+                .unwrap()
+                .unwrap()
+                .state
+                .pending,
+            2
+        );
         assert_eq!(
             runtime
                 .runtime_db()
@@ -664,7 +674,17 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         let guard = runtime.inner.agent.lock().await;
         assert_eq!(guard.queue.len(), 2);
         assert_eq!(guard.state.pending, 2);
-        assert_eq!(guard.last_persisted_state.pending, 2);
+        assert_eq!(
+            runtime
+                .inner
+                .mutation_owner
+                .capture()
+                .unwrap()
+                .unwrap()
+                .state
+                .pending,
+            2
+        );
         assert_eq!(
             runtime
                 .runtime_db()
@@ -749,7 +769,17 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         assert_eq!(&paused, original_state);
         let guard = runtime.inner.agent.lock().await;
         assert_eq!(&guard.state, original_state);
-        assert_eq!(&guard.last_persisted_state, original_state);
+        assert_eq!(
+            runtime
+                .inner
+                .mutation_owner
+                .capture()
+                .unwrap()
+                .unwrap()
+                .state
+                .as_ref(),
+            original_state
+        );
         assert!(guard
             .queue
             .peek_next_matching(|queued| queued.id == input.id)
@@ -899,7 +929,12 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             // The writer committed, but its in-memory effects never ran.
             let mut guard = runtime.inner.agent.lock().await;
             guard.state = unapplied_state.clone();
-            guard.last_persisted_state = unapplied_state;
+            let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+            runtime
+                .inner
+                .mutation_owner
+                .publish_fixture_state(&root, Arc::new(unapplied_state))
+                .unwrap();
             assert!(guard
                 .queue
                 .pop_next_matching(|queued| queued.id == input.id)
@@ -913,7 +948,17 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             let guard = runtime.inner.agent.lock().await;
             assert_eq!(guard.queue.len(), 1);
             assert_eq!(guard.state, durable);
-            assert_eq!(guard.last_persisted_state, durable);
+            assert_eq!(
+                runtime
+                    .inner
+                    .mutation_owner
+                    .capture()
+                    .unwrap()
+                    .unwrap()
+                    .state
+                    .as_ref(),
+                &durable
+            );
             assert_eq!(
                 runtime
                     .runtime_db()

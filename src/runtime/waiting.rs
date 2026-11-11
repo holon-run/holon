@@ -1385,19 +1385,19 @@ impl RuntimeHandle {
         let execution_protocol = self
             .execution_wait_settlement_transition(&condition, work_item.as_ref(), now)
             .await?;
-        let (already_in_memory, queue_len, expected_state, mut committed_state) = self
-            .read_committed_agent(|guard| {
+        let (already_in_memory, queue_len, expected_state) = self
+            .read_committed_agent(|guard, state| {
                 (
                     guard
                         .queue
                         .peek_next_matching(|message| message.id == result_message_id)
                         .is_some(),
                     guard.queue.len(),
-                    guard.last_persisted_state.clone(),
-                    guard.state.clone(),
+                    state.clone(),
                 )
             })
             .await?;
+        let mut committed_state = expected_state.clone();
         committed_state.pending = queue_len.saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
         let storage = self.inner.storage.clone();
@@ -1979,7 +1979,7 @@ impl RuntimeHandle {
                     .peek_next_matching(|message| message.id == wake.message_id)
                     .is_some()
             });
-            let expected_state = guard.last_persisted_state.clone();
+            let expected_state = guard.committed_state().clone();
             let mut committed_state = guard.state.clone();
             committed_state.pending = guard
                 .queue
@@ -2297,7 +2297,7 @@ impl RuntimeHandle {
             let _route_material = route.material;
             let pending = route.pending;
 
-            let expected_state = guard.last_persisted_state.clone();
+            let expected_state = guard.committed_state().clone();
             let mut committed_state = guard.state.clone();
             committed_state.pending = guard.queue.len().saturating_add(1);
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
