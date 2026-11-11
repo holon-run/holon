@@ -9,6 +9,95 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-11 incremental review
+
+Baseline main is `a7d285db`; November 10 UTC sampling corresponds to this
+Beijing cycle. [Field evidence](metadata-evidence.md#incremental-review-2026-11-11)
+records the fixed payload and first-party contracts.
+
+### Accepted increment
+
+The only new checked-in route is `gemini@default/gemini-4-carbon`.
+The exact native projection uses the documented 1,048,576 context and 65,536
+synchronous output, correcting Google's stale 32,768 snapshot value without
+editing the pinned payload. Existing GenerateContent request construction
+omits sampling parameters and explicit cache references and retains the
+model's automatic thinking default. The catalog's upstream effort enum does
+not constitute a new transport control or an exercised reasoning selection.
+Million-token long decode, Interactions, background execution, and explicit
+caching are not added. Exact-model regression isolates Argon, preview suffixes,
+and the same model name on Go.
+
+All 634 existing effective route objects and review facts are preserved.
+Only two existing complete objects change, both at Moonshot K3.1
+Pro/Highspeed's `raw_model.description`. Aliases, preferred/default mappings,
+static routes, and cache policy are unchanged. Generated discovery adds seven
+models and removes one OpenRouter listing; it also updates aggregator
+capacities and Kimi descriptions. These are not new special-endpoint grants.
+
+### Special endpoint audit and unresolved evidence
+
+The two read-only groups independently sampled 37 and 36 public official
+sources; the first group additionally sampled Baidu's function-calling guide.
+Fresh CLI objects, not Rust text reconstruction, cover all 30 endpoints:
+332 objects in the first group and 142 in the second. Endpoint selection
+splits at the first `/`, preserving model IDs containing `/`; the initial
+311 count omitted 21 such objects and is superseded. The first group's
+objects are identical; the second has only the two descriptions above.
+Source hashes and object equality do not certify every model or field.
+
+- The first 15 are `dashscope@default`, `dashscope@token-plan`,
+  `dashscope@coding-plan`, `dashscope@coding-plan-intl`, `volcengine@default`,
+  `volcengine@coding`, `volcengine@plan`, `tencent-tokenhub@default`,
+  `tencent-tokenhub@messages`, `tencent-tokenhub@responses`, `qianfan@default`,
+  `bigmodel@default`, `zai@default`, `xiaomi@default`, and `xiaomi@token-plan`.
+  No confirmed production patch is proposed. Plan, region, account, SPA,
+  per-model effort/cache/vision and capacity evidence gaps remain.
+- The next 15 are `minimax@default`, `minimax@m-plan`, `minimax-cn@default`,
+  `minimax-cn@m-plan`, `moonshot@default`, `moonshot-cn@default`, `kimi@default`,
+  `kimi@coding`, `qwen-portal@default`, `nvidia@default`, `opencode-go@default`,
+  `opencode-go@messages`, `opencode-go@responses`, `fireworks@default`, and
+  `xiaomi@responses`. No confirmed static admission or removal is proposed.
+  The group's initial report used historical objects; the parent subsequently
+  verified the fresh complete CLI objects and did not call them vendor
+  certification.
+- [Qianfan's model table](https://cloud.baidu.com/doc/qianfan/s/rmh4stp0j)
+  adds `ernie-5.5-flash-preview`, but the exact model's tool/agent-turn,
+  vision, effort, cache and default-output contracts remain unconfirmed.
+  Its native route is not admitted merely because OpenRouter lists it.
+- Fresh Go and Zen listings remain separate. Zen's Carbon is not Go evidence;
+  LongCat is already registered. Missing/deprecated Crouton entries do not
+  prove retirement. Luna cache-write price maps do not prove protocol TTLs.
+  MiniMax H3 image-plan benefits do not expand the text routes. Fireworks
+  Serverless, US-only, Dedicated and mode-router boundaries remain unchanged;
+  account and per-field qualifications are still incomplete.
+
+### Verification status
+
+The exact native Carbon regression first failed at 32,768 versus 65,536.
+The same fully qualified regression then passed once after the exact native
+projection fix. Fixed refresh and validation, 635 reviewed coverage rows,
+preservation of all 634 old review facts, and strict complete-object comparison
+passed. All eight frozen file hashes matched before and after the full gates.
+
+On Rust 1.99.1, the complete CI library shard `c` recorded **1,954 passed,
+2 failed, 7 ignored**. The unchanged
+`http::tailscale_serve::tests::ipv6_wildcard_listener_accepts_selected_backend_target`
+and `http::tailscale_serve::tests::localhost_legacy_rule_can_migrate_to_resolved_listener`
+failed with `NetworkUnreachable` and `AddrNotAvailable`, respectively. This is
+not a fully passing local suite; remote CI must still verify those tests.
+The `models_dev_adapter` and `context_budget` integration targets passed
+11 and 1 tests. Format, diff, and all-targets `-D warnings` checks passed;
+Cargo still emitted the existing redundant-homepage and unused-`rpassword`
+manifest notices.
+
+Every gate ran and recorded its exit code before the outer zsh wrapper failed
+while assigning its read-only `status` variable. The inner suite's recorded
+failure flag was already 1; the wrapper error does not replace the test results.
+Independent review remains limited, with no confirmed finding in the inspected
+scope; outstanding request-construction and evidence checks must not be called
+complete. No paid inference or account discovery was run.
+
 ## 2026-11-10 incremental review
 
 Baseline main is `567d5a46`. The November 10 Beijing cycle fixes the

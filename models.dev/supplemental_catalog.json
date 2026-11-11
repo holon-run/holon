@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
-  "adapter_version": "0.59.0 (567d5a466-dirty)",
+  "upstream_revision": "f312cd2d4640b2876c8ac0b1f1878a6727f893ff38fd2a56b09fc8cb086dd433",
+  "adapter_version": "0.59.0 (a7d285db3)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -526,6 +526,32 @@
       "source": "models_dev_supplement"
     },
     {
+      "model_ref": "gemini/gemini-4-carbon",
+      "display_name": "Gemini 4 Carbon",
+      "description": "Google's most capable reasoning model for complex software engineering, deep math and science, high factual accuracy, and long-horizon autonomous agents",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
       "model_ref": "gemini/gemini-flash-latest",
       "display_name": "Gemini Flash Latest",
       "description": "High-efficiency Gemini model for agentic workflows, coding, and multimodal reasoning",
@@ -736,7 +762,7 @@
     {
       "model_ref": "moonshot/kimi-k3.1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -762,7 +788,7 @@
     {
       "model_ref": "moonshot/kimi-k3.1-pro-highspeed",
       "display_name": "Kimi K3.1 Pro Highspeed",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
