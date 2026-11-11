@@ -59,15 +59,14 @@ pending input.
 The original Queue transaction captures both facts after its mutations, using
 indexed existence checks. Bootstrap and recovery derive them in the same
 qualified read that reconstructs State and pending input. A Queue write without
-a qualified result invalidates coverage. A covered loaded roster entry needs no
-Current query or durable read.
+a qualified result invalidates coverage. A covered loaded roster entry reads
+directly from its in-memory publication.
 
 When roster coverage is missing, the observer reserves the original owner,
 rechecks the Ready publication and prepares the required facts in a query-only
 transaction. It validates the durable State and active incarnation, reuses
 existing Work and Scheduling qualification, and publishes the prepared domains
-with a new generation. The preparation does not execute a business mutation or
-repair qualification. A changed publication, pending recovery, expired read
+with a new generation. A changed publication, pending recovery, expired read
 scope or unqualified durable record rejects the preparation.
 
 Other metadata observers may still derive response-local Current or Scheduling
