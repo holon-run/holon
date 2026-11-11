@@ -343,7 +343,7 @@ async fn independent_audit_turn_barriers_publish_original_qualified_notification
         .state
         .clone();
     runtime
-        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND, None)
         .await?;
     let turn = runtime
         .runtime_db()
@@ -373,7 +373,7 @@ async fn independent_audit_turn_barriers_publish_original_qualified_notification
     drop(captured);
     drop(root);
     runtime
-        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND, None)
         .await?;
     runtime
         .clear_current_turn_external_side_effect_possible(
@@ -509,7 +509,7 @@ async fn independent_audit_turn_barrier_keeps_turn_ack_when_later_audit_fails() 
         Ok(())
     })?;
     let error = runtime
-        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND, None)
         .await
         .unwrap_err();
     assert!(
@@ -576,7 +576,7 @@ async fn tool_result_has_one_receipt_and_publishes_both_audits_with_the_barrier(
         .begin_interactive_turn_with_provenance(None, None, None, None)
         .await?;
     runtime
-        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
+        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND, None)
         .await?;
     let bus = crate::storage::EventBus::new(16);
     runtime.storage().enable_event_bus(bus.clone())?;
@@ -646,5 +646,237 @@ async fn tool_result_has_one_receipt_and_publishes_both_audits_with_the_barrier(
         kinds,
         ["tool_executed", "external_command_checkpoint_durable"]
     );
+    Ok(())
+}
+
+#[tokio::test]
+async fn exec_command_settlement_retries_its_original_result_after_audit_rollback() -> Result<()> {
+    use crate::runtime_db::prepared_input_evidence::InputEvidenceWrite;
+    use crate::tool::{spec::ToolExecutionContext, ToolCall};
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let (_, _session) = runtime.begin_task_birth_session().await?;
+    let (turn_id, _) = runtime
+        .begin_interactive_turn_with_provenance(None, None, None, None)
+        .await?;
+    let effect = runtime.workspace_root().join("settlement-effect");
+    let call = ToolCall {
+        id: "original-command-call".into(),
+        name: crate::tool::names::EXEC_COMMAND.into(),
+        input: serde_json::json!({
+            "cmd": "printf x >> settlement-effect; printf original-result",
+            "login": false,
+        }),
+    };
+    let (result, mut record) = runtime
+        .inner
+        .tools
+        .execute_with_context(
+            runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+            &ToolExecutionContext {
+                turn_id: Some(turn_id.clone()),
+                tool_call_id: Some(call.id.clone()),
+                ..Default::default()
+            },
+        )
+        .await?;
+    assert!(!result.is_error());
+    assert_eq!(std::fs::read(&effect)?, b"x");
+
+    let db = runtime.runtime_db();
+    let prior = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
+    assert!(prior.external_side_effect_possible);
+    assert_eq!(
+        prior.external_side_effect_tool_call_id.as_deref(),
+        Some(call.id.as_str())
+    );
+    record.turn_index = prior.turn_index;
+    record.turn_id = Some(turn_id.clone());
+    let execution_id = record.id.clone();
+    let original_output = record.output.clone();
+    assert!(original_output.to_string().contains("original-result"));
+    let event = AuditEvent::legacy(
+        "tool_executed",
+        serde_json::json!({
+            "agent_id": "default",
+            "tool_call_id": call.id,
+            "tool_execution_id": record.id,
+        }),
+    );
+    db.transaction(|tx| {
+        tx.execute_batch(
+            "CREATE TRIGGER reject_tool_settlement BEFORE INSERT ON audit_events
+                          WHEN NEW.kind='tool_executed'
+                          BEGIN SELECT RAISE(ABORT,'tool audit unavailable'); END;",
+        )?;
+        Ok(())
+    })?;
+    let error = runtime
+        .persist_tool_result_evidence(&record, event.clone())
+        .await
+        .unwrap_err();
+    let diagnostic = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(
+        diagnostic.code,
+        crate::runtime_error::TOOL_RESULT_SETTLEMENT_PENDING
+    );
+    assert_eq!(
+        diagnostic.safe_context.get("status").map(String::as_str),
+        Some("not_persisted")
+    );
+    assert!(!diagnostic.retryable);
+
+    runtime
+        .storage()
+        .enable_event_bus(crate::storage::EventBus::new(16))?;
+    let mut events = runtime
+        .storage()
+        .subscribe_events()?
+        .context("tool result event bus")?;
+    let mut mutation = runtime.begin_mutation().await?;
+    let prepared = runtime.storage().prepare_input_evidence(
+        mutation.input_evidence_scope(),
+        "original-tool-settlement".into(),
+        Utc::now(),
+        InputEvidenceWrite::ToolResult {
+            record,
+            event: event.clone(),
+            barrier: Some(prior.clone()),
+        },
+    )?;
+    let descriptor = prepared.descriptor().clone();
+    let mut settle = mutation.commit_prepared_evidence(
+        prepared,
+        Some(TransitionFaultPoint::ToolResultCommitAckLost),
+    );
+    assert!(futures_util::poll!(settle.as_mut()).is_pending());
+    assert_eq!(
+        db.turn_records().by_id(Some("default"), &turn_id)?,
+        Some(prior)
+    );
+    assert!(!db.audit_events().has_event_by_id(&event.id)?);
+    assert!(db
+        .evidence()
+        .tool_execution_by_id("default", &execution_id)?
+        .is_none());
+    db.transaction(|tx| {
+        tx.execute_batch("DROP TRIGGER reject_tool_settlement")?;
+        Ok(())
+    })?;
+    settle.await?;
+    for kind in ["tool_executed", "external_command_checkpoint_durable"] {
+        let published = events.try_recv()?;
+        assert_eq!(published.event.kind, kind);
+        let qualified = published
+            .qualified
+            .context("recovered live Event qualification")?;
+        assert_eq!(qualified.event(), &*published.event);
+        qualified.validate(
+            &mutation.input_evidence_scope(),
+            &runtime.inner.input_evidence_budget,
+        )?;
+    }
+    assert!(matches!(
+        events.try_recv(),
+        Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+    ));
+
+    let settled = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
+    assert!(!settled.external_side_effect_possible);
+    assert!(settled.external_side_effect_tool_call_id.is_none());
+    assert!(db.audit_events().has_event_by_id(&event.id)?);
+    assert_eq!(
+        db.evidence()
+            .tool_execution_by_id("default", &execution_id)?
+            .unwrap()
+            .output,
+        original_output
+    );
+    assert!(runtime.inner.mutation_owner.capture()?.is_some());
+    db.read_for_preparation(|tx| {
+        assert!(
+            crate::runtime_db::input_mutation_receipts::lookup_input_mutation_receipt_tx(
+                tx,
+                &descriptor
+            )?
+            .is_some()
+        );
+        Ok(())
+    })?;
+    assert_eq!(std::fs::read(&effect)?, b"x");
+    Ok(())
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn exec_command_spawn_failure_allows_correction_in_the_same_turn() -> Result<()> {
+    use crate::provider::test_support::{ScriptedAgentProvider, ScriptedProviderStep};
+    use crate::runtime::{tests::support::test_effective_prompt, turn::LoopControlOptions};
+    use crate::tool::names::EXEC_COMMAND;
+
+    let bad_command = |id, tty| {
+        ScriptedProviderStep::tool_use(
+            id,
+            EXEC_COMMAND,
+            serde_json::json!({
+                "cmd": "printf x >> spawn-correction",
+                "shell": "/definitely/not/a/real/shell",
+                "login": false,
+                "tty": tty,
+            }),
+        )
+    };
+    let provider = Arc::new(
+        ScriptedAgentProvider::new([
+            bad_command("missing-shell", false),
+            bad_command("missing-pty-shell", true),
+            ScriptedProviderStep::tool_use(
+                "corrected-command",
+                EXEC_COMMAND,
+                serde_json::json!({"cmd": "printf x >> spawn-correction", "login": false}),
+            ),
+            ScriptedProviderStep::text("Corrected command completed."),
+        ])
+        .with_configured_model_refs(["default"]),
+    );
+    let harness = LifecycleHarness::with_provider(provider.clone());
+    let runtime = harness.runtime();
+    let effect = runtime.workspace_root().join("spawn-correction");
+
+    let outcome = runtime
+        .run_agent_loop(
+            "default",
+            AuthorityClass::OperatorInstruction,
+            test_effective_prompt(),
+            LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await?;
+    assert_eq!(outcome.final_text, "Corrected command completed.");
+    assert_eq!(provider.request_count(), 4);
+    assert_eq!(std::fs::read(effect)?, b"x");
+
+    let events = runtime.storage().read_recent_events(100)?;
+    let completed = events
+        .iter()
+        .find(|event| {
+            event.kind == "tool_executed" && event.data["tool_call_id"] == "corrected-command"
+        })
+        .context("corrected command did not execute")?;
+    for id in ["missing-shell", "missing-pty-shell"] {
+        let failed = events
+            .iter()
+            .find(|event| event.kind == "tool_execution_failed" && event.data["tool_call_id"] == id)
+            .context("original spawn failure missing")?;
+        assert_eq!(failed.data["error_kind"], "command_spawn_failed");
+        assert_eq!(failed.data["turn_id"], completed.data["turn_id"]);
+    }
     Ok(())
 }

@@ -20,6 +20,18 @@ Input/Current delta, and saves one idempotent receipt. Failure rolls back the
 whole result; receipt replay cannot rewrite a later Turn. Prepared Wait and
 Work completion retain their existing terminal transaction boundaries.
 
+Ordinary `ExecCommand` binds the pre-execution barrier to the original tool
+call in the current Turn. The matching result transaction clears it, including
+a failure with proof that the command never started. While the returned result
+is in memory, settlement resolves an uncertain commit from its
+original receipt and retries a confirmed uncommitted transaction once with
+the same prepared command and reservation. Receipt recovery restores the original
+Current qualification for live Event notifications. A committed result resumes the
+tool loop after publication. If recovery fails, the operator receives
+`tool_result_settlement_pending` and the dependent model round stops.
+Startup recovery reports the recorded call when only its execution barrier
+survives and blocks automatic replay.
+
 Loaded State, summary, child summary, runtime activity and roster observations
 capture a Ready immutable root without acquiring its mutation reservation or reconciling an
 unfinished operation. Pending responsibility returns a retryable unavailable
@@ -4249,8 +4261,9 @@ the prior business ACK, Audit and later notification as separate phases; they
 do not qualify the remaining raw maintenance or other runtime emitters.
 External-command barriers also preserve the preceding Turn write as its own
 prepared Evidence command. The held owner explicitly prepares the qualified
-current Turn, freezes its complete prior digest, and changes only the
-`external_side_effect_possible` flag. The original transaction checks that prior,
+current Turn and freezes its complete prior digest. The command sets
+`external_side_effect_possible` and can associate the original tool call ID.
+The original transaction checks that prior,
 the unfinished/current Turn and scope, admits its raw/typed material through the
 original Native Input allowance, and installs the acknowledged Input delta before
 starting the independent Audit. No-op flags produce no new Audit; later Audit

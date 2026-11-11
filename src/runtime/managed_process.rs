@@ -24,6 +24,7 @@ pub(in crate::runtime) struct OriginalManagedProcess {
     scope: InputEvidenceScope,
     token: String,
     attached: AtomicBool,
+    not_started: AtomicBool,
     successful_exit: AtomicBool,
     group: Mutex<Option<Arc<dyn RegisteredProcessGroupProbe>>>,
     material_bytes: u64,
@@ -56,6 +57,7 @@ impl OriginalManagedProcess {
             scope: scope.clone(),
             token: uuid::Uuid::new_v4().to_string(),
             attached: AtomicBool::new(false),
+            not_started: AtomicBool::new(false),
             successful_exit: AtomicBool::new(false),
             group: Mutex::new(None),
             material_bytes: bytes,
@@ -89,6 +91,10 @@ impl OriginalManagedProcess {
         *group = process.registered_group_probe();
         Ok(())
     }
+    pub(super) fn record_not_started(&self) {
+        self.not_started.store(true, Ordering::Release);
+    }
+
     pub(super) fn record_successful_exit(&self) {
         if self.attached.load(Ordering::Acquire) {
             self.successful_exit.store(true, Ordering::Release);
@@ -113,12 +119,13 @@ impl OriginalManagedProcess {
         self.material_bytes
     }
     pub(in crate::runtime) fn group_is_empty(&self) -> bool {
-        self.successful_exit.load(Ordering::Acquire)
-            && self.group.lock().ok().is_some_and(|group| {
-                group
-                    .as_ref()
-                    .is_some_and(|p| p.observe() == RegisteredProcessGroupQuiescence::Empty)
-            })
+        self.not_started.load(Ordering::Acquire)
+            || (self.successful_exit.load(Ordering::Acquire)
+                && self.group.lock().ok().is_some_and(|group| {
+                    group
+                        .as_ref()
+                        .is_some_and(|p| p.observe() == RegisteredProcessGroupQuiescence::Empty)
+                }))
     }
 }
 

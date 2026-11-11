@@ -35,6 +35,7 @@ fn prepare(f: &Fixture, prior: &TurnRecord) -> Result<PreparedInputEvidence> {
         f.at,
         prior,
         true,
+        None,
         &InputEvidenceBudgetLedger::new(Default::default())?,
     )
 }
@@ -56,6 +57,7 @@ fn turn_barrier_command_admits_before_digest_and_retains_original_material() -> 
             f.at,
             &prior,
             true,
+            None,
             &ledger,
         )
     })?;
@@ -78,6 +80,7 @@ fn turn_barrier_command_admits_before_digest_and_retains_original_material() -> 
                     f.at,
                     &prior,
                     true,
+                    None,
                     &ledger,
                 )
             })

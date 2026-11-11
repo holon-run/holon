@@ -5,7 +5,8 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use super::current_read_writes::{
-    digest, CurrentAddressFact, CurrentFamily, CurrentRecord, OwnedCurrentRecord,
+    digest, CommittedEventRead, CurrentAddressFact, CurrentFamily, CurrentRecord,
+    OwnedCurrentRecord,
 };
 use super::input_evidence_snapshot::read_material::InputReadMaterial;
 use crate::runtime::{
@@ -604,6 +605,38 @@ fn prepare_inner(
         _scope_material: Some(material.scope_guard()?),
         _identity_material: crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?,
     }))
+}
+
+/// Reattach live read capabilities to exact Events from a committed Tool receipt.
+pub(crate) fn restore_tool_result_event_reads_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    ledger: &InputEvidenceBudgetLedger,
+    limits: (usize, usize),
+    events: &mut [super::transitions::AuditEventAck],
+) -> Result<()> {
+    if events.is_empty() {
+        return Ok(());
+    }
+    let mut material = InputReadMaterial::new(scope, ledger, limits, None)?;
+    for event in events {
+        let body = load_body(
+            tx,
+            scope,
+            CurrentFamily::Event,
+            &event.id,
+            &mut material,
+            false,
+        )?
+        .context("committed tool result Event is absent")?;
+        let read = CommittedEventRead(body);
+        ensure!(
+            read.event() == &**event,
+            "committed tool result Event differs from its receipt"
+        );
+        event.set_current_record(Some(read));
+    }
+    Ok(())
 }
 
 fn load_body(

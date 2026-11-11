@@ -3252,10 +3252,11 @@ impl RuntimeHandle {
     pub(crate) async fn mark_current_turn_external_side_effect_possible(
         &self,
         tool_name: &str,
+        turn_tool_call: Option<(&str, &str)>,
     ) -> Result<()> {
         self.begin_mutation()
             .await?
-            .set_current_turn_external_side_effect_possible(tool_name, true)
+            .set_current_turn_external_side_effect_possible(tool_name, true, turn_tool_call)
             .await
     }
 
@@ -3278,7 +3279,7 @@ impl RuntimeHandle {
         }
         self.begin_mutation()
             .await?
-            .set_current_turn_external_side_effect_possible(tool_name, false)
+            .set_current_turn_external_side_effect_possible(tool_name, false, None)
             .await
     }
 
@@ -7100,7 +7101,13 @@ impl RuntimeHandle {
             // settle the exact dispatch and decide whether the source may replay.
             Err(error)
                 if message.kind == MessageKind::OperatorPrompt
-                    && crate::runtime_db::is_reader_checkout_pressure(&error) =>
+                    && crate::runtime_db::is_reader_checkout_pressure(&error)
+                    && !error
+                        .downcast_ref::<crate::runtime_error::RuntimeError>()
+                        .is_some_and(|report| {
+                            report.descriptor().code
+                                == crate::runtime_error::TOOL_RESULT_SETTLEMENT_PENDING
+                        }) =>
             {
                 return Err(error);
             }

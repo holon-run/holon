@@ -7,6 +7,11 @@ use super::{
     EffectiveExecution, ProcessRequest, ProcessResult,
 };
 
+/// The requested command did not start. Errors after spawn carry no such proof.
+#[derive(Debug, thiserror::Error)]
+#[error("command process did not start")]
+pub(crate) struct ProcessNotStarted;
+
 pub trait ProcessOutput: AsyncRead + Unpin + Send {}
 
 impl<T> ProcessOutput for T where T: AsyncRead + Unpin + Send {}
