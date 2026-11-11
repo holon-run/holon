@@ -3209,10 +3209,13 @@ impl RuntimeHost {
         self.stop_task_stop_supervisor_discovery();
         self.shutdown_runtime_recovery_coordinator().await;
         self.shutdown_daemon_runtime_db_retention().await;
-        let session_activity_error = self.shutdown_daemon_session_activity().await.err();
+        if let Err(error) = self.shutdown_daemon_session_activity().await {
+            // Let listeners drain before serve retries the final activity save.
+            tracing::warn!(error = %error, "session activity save failed during host shutdown; retaining dirty activity for final flush");
+        }
         self.shutdown_daemon_memory_indexer().await;
         self.shutdown_daemon_deletion_coordinator().await;
-        let mut external_error = session_activity_error;
+        let mut external_error = None;
         let mut retired_temporary = Vec::new();
         for (agent_id, runtime, abort, phase) in &temporary {
             let mut phase = phase.clone();

@@ -424,6 +424,68 @@ async fn session_admission_never_writes_and_shutdown_saves_shared_activity() {
 }
 
 #[tokio::test]
+async fn failed_activity_save_does_not_block_listener_shutdown_or_final_retry() {
+    let (_home, host) = tests::control_token_test_host();
+    let secret = issue_session(&host);
+    let digest = crate::authentication::digest_secret(&secret);
+    let persisted = host
+        .runtime_db()
+        .authentication()
+        .find_session(&digest)
+        .unwrap()
+        .unwrap();
+    let service = RuntimeServiceHandle::new(&host.config()).unwrap();
+    let mut shutdown = service.shutdown_signal();
+    let state = AppState::for_tcp(host.clone());
+    tokio::time::sleep(Duration::from_millis(5)).await;
+    let admitted = authenticate_session(&session_headers(&secret), &state).unwrap();
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute_batch(
+                "CREATE TRIGGER fail_shutdown_activity BEFORE UPDATE OF last_seen_at
+            ON auth_sessions BEGIN SELECT RAISE(ABORT,'shutdown activity unavailable'); END",
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    host.spawn_daemon_session_activity();
+
+    graceful_runtime_shutdown(&host, &service).await.unwrap();
+    assert!(
+        *shutdown.borrow_and_update(),
+        "listeners must receive the shutdown signal"
+    );
+    assert_eq!(
+        host.runtime_db()
+            .authentication()
+            .find_session(&digest)
+            .unwrap()
+            .unwrap()
+            .last_seen_at,
+        persisted.last_seen_at,
+    );
+    host.runtime_db()
+        .transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER fail_shutdown_activity")?;
+            Ok(())
+        })
+        .unwrap();
+    // Host's cached result must allow the final serve cleanup to run after recovery.
+    graceful_runtime_shutdown(&host, &service).await.unwrap();
+    host.shutdown_daemon_session_activity().await.unwrap();
+    assert_eq!(
+        host.runtime_db()
+            .authentication()
+            .find_session(&digest)
+            .unwrap()
+            .unwrap()
+            .last_seen_at
+            .timestamp_millis(),
+        admitted.last_seen_at.timestamp_millis(),
+    );
+}
+
+#[tokio::test]
 async fn short_idle_policy_checkpoints_in_background_without_request_writes() {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(

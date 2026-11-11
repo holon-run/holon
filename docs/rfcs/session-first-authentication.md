@@ -50,7 +50,10 @@ Session creation, revocation, disabled-user and absolute-expiry checks retain
 their durable admission boundaries. Checkpoints never move activity backwards
 or clear revocation, and do not block request admission on the writer queue.
 The daemon joins the checkpoint worker and saves remaining activity during
-graceful shutdown. On a crash, activity since the last successful checkpoint
+graceful shutdown. A failed activity save is logged and retains dirty activity;
+it does not become a cached fatal Host shutdown result or prevent listeners
+from stopping. Once listeners drain, serve retries the final save and reports
+any remaining save error. On a crash, activity since the last successful checkpoint
 can be lost and idle expiry can occur earlier after restart; under healthy
 storage this window is one checkpoint interval plus checkpoint execution time.
 Checkpoint failures retain dirty activity for retry and are logged; they can
