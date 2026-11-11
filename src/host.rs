@@ -15385,12 +15385,34 @@ mod tests {
     }
 
     #[cfg(holon_lib_test_shard = "d")]
+    /// Await reconciliation convergence for an `agent_summary()` read instead
+    /// of racing the production observer publication bound (issue #4015).
+    async fn agent_summary_settled(
+        runtime: &RuntimeHandle,
+    ) -> crate::runtime::OwnedAgentSummaryRead {
+        let settled = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match runtime.agent_summary().await {
+                    Ok(summary) => break Ok(summary),
+                    Err(error) if error.is::<crate::runtime_db::RuntimeDbRetryableError>() => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
+        })
+        .await
+        .expect("agent summary read should settle within the test-local window");
+        settled.expect("non-retryable agent summary read error")
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn spawn_public_named_rejects_existing_default_agent_without_side_effects() {
         let fixture = provider_test_config(Some("dummy-token"));
         let host = RuntimeHost::new(fixture.config).unwrap();
         let parent = host.default_runtime().await.unwrap();
-        let before = parent.agent_summary().await.unwrap();
+        let before = agent_summary_settled(&parent).await;
         assert!(before.agent.model_override.is_none());
 
         let error = host
@@ -15405,7 +15427,7 @@ mod tests {
             .await
             .expect_err("public named spawn must not reuse the default agent");
 
-        let after = parent.agent_summary().await.unwrap();
+        let after = agent_summary_settled(&parent).await;
         assert!(after.agent.model_override.is_none());
         let tool_error = ToolError::from_anyhow(&error);
         assert_eq!(tool_error.kind, "already_exists");
