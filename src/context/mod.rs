@@ -3701,19 +3701,15 @@ fn render_turn_execution_sequence(
                     RecentTurnProjectionMode::Nearby => 240,
                     RecentTurnProjectionMode::Older => 120,
                 };
-                let tool_ids = entry
-                    .data
-                    .get("refs")
-                    .and_then(Value::as_array)
-                    .into_iter()
-                    .flatten()
-                    .filter_map(|reference| {
-                        reference
-                            .get("tool_execution_id")
-                            .and_then(Value::as_str)
-                            .filter(|id| !id.trim().is_empty())
-                    });
-                for tool_id in tool_ids {
+                let recovered = entry.data["recovered_exec_command_result"] == Value::Bool(true);
+                let refs = entry.data.get("refs").and_then(Value::as_array);
+                for reference in refs.into_iter().flatten() {
+                    let Some(tool_id) = reference["tool_execution_id"]
+                        .as_str()
+                        .filter(|id| !id.trim().is_empty())
+                    else {
+                        continue;
+                    };
                     let Some(tool) = tools
                         .iter()
                         .map(std::borrow::Borrow::<ToolContextProjection>::borrow)
@@ -3726,6 +3722,18 @@ fn render_turn_execution_sequence(
                     };
                     if !rendered_tool_ids.insert(tool.id.as_str()) {
                         continue;
+                    }
+                    if recovered {
+                        if let Some(content) = reference["provider_visible_text"].as_str() {
+                            rendered.push(format!(
+                                "    - tool: {} result={} tool_execution_id={}{}",
+                                sanitize_inline(&tool.tool_name),
+                                sanitize_inline(&truncate_text(content, limit)),
+                                sanitize_inline(&tool.id),
+                                command_output_refs(tool),
+                            ));
+                            continue;
+                        }
                     }
                     rendered.push(format!(
                         "    - tool: {} summary={} tool_execution_id={}",
@@ -3941,6 +3949,7 @@ fn status_label(status: &ToolExecutionStatus) -> &'static str {
         ToolExecutionStatus::Success => "success",
         ToolExecutionStatus::Error => "error",
         ToolExecutionStatus::Interrupted => "interrupted",
+        ToolExecutionStatus::Pending => "pending",
     }
 }
 
@@ -5111,6 +5120,7 @@ mod tests {
                     input: json!({"cmd": "verify"}),
                     output: json!({"exit_code": 0}),
                     summary: "oldest owner tool evidence".into(),
+                    call_binding: None,
                     invocation_surface: None,
                 };
                 storage.append_tool_execution(&tool).unwrap();
@@ -6121,6 +6131,7 @@ mod tests {
             input: json!({}),
             output: json!({}),
             summary: "owned tool".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&owned_tool).unwrap();
@@ -6290,6 +6301,7 @@ mod tests {
                     input: json!({}),
                     output: json!({}),
                     summary: summary.into(),
+                    call_binding: None,
                     invocation_surface: None,
                 })
                 .unwrap();
@@ -6408,6 +6420,7 @@ mod tests {
             input: json!({}),
             output: json!({}),
             summary: summary.into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let sequenced_tool = make_tool("tool-sequenced", "sequenced tool summary");
@@ -6812,6 +6825,7 @@ mod tests {
             input: json!({"cmd": "echo hydrated"}),
             output: json!({"exit_code": 0}),
             summary: "hydrated tool execution by turn record id".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&tool).unwrap();
@@ -7294,6 +7308,7 @@ mod tests {
             input: json!({"cmd": "cargo test"}),
             output: json!({"exit_code": 0}),
             summary: "Verified with cargo test".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&tool_record).unwrap();
@@ -7422,6 +7437,7 @@ mod tests {
             input: json!({"cmd": "cargo test context::tests::orphan_recent_evidence"}),
             output: json!({"exit_code": 0}),
             summary: "verified orphan recent evidence fallback".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&tool_record).unwrap();
@@ -7496,6 +7512,7 @@ mod tests {
                 "artifacts": []
             }),
             summary: "command exited with status 0".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -7541,6 +7558,7 @@ mod tests {
                 }
             }),
             summary: "ExecCommandBatch completed 2/2 items".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -7583,6 +7601,7 @@ mod tests {
             input: json!({"cmd": "echo old_context_1246"}),
             output: json!({"exit_code": 0}),
             summary: "command exited with status 0".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -7629,6 +7648,7 @@ mod tests {
             input: json!({"cmd": "rg old_context_path src"}),
             output: json!({"exit_status": 0}),
             summary: "older successful tool summary should be compacted".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&older_tool).unwrap();
@@ -7669,6 +7689,7 @@ mod tests {
             input: json!({"cmd": "rg new_context_path src"}),
             output: json!({"exit_status": 0}),
             summary: "newer detailed tool summary remains visible".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&newer_tool).unwrap();
@@ -7747,6 +7768,7 @@ mod tests {
             input: json!({"cmd": "echo ok"}),
             output: json!({"exit_status": 0}),
             summary: "successful old command should not get alert".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let failed = ToolExecutionRecord {
@@ -7764,6 +7786,7 @@ mod tests {
             input: json!({"cmd": "cargo test failing_path"}),
             output: json!({"exit_status": 101, "stderr_preview": "failed"}),
             summary: "cargo test failing_path failed".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let promoted = ToolExecutionRecord {
@@ -7788,6 +7811,7 @@ mod tests {
                 }
             }),
             summary: "sleep promoted to task".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let projected = [&success, &failed, &promoted]
@@ -8370,6 +8394,7 @@ mod tests {
             input: json!({"cmd": "cargo test wake_path"}),
             output: json!({"exit_code": 1}),
             summary: "cargo test wake_path still flakes under load".to_string(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&tool).unwrap();
@@ -8903,6 +8928,7 @@ mod tests {
                 input: json!({"cmd": "cargo test -p holon context"}),
                 output: json!({}),
                 summary: "Verified current WorkItem projection".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -8922,6 +8948,7 @@ mod tests {
                 input: json!({"cmd": "echo other"}),
                 output: json!({}),
                 summary: "Other agent tool must not leak".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -12237,6 +12264,7 @@ mod tests {
             input: json!({"cmd": "cargo test"}),
             output: json!({"exit_code": 0}),
             summary: "ran cargo test for the wake-path fix".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&tool_record).unwrap();

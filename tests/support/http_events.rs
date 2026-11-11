@@ -875,6 +875,7 @@ pub async fn tool_execution_route_returns_canonical_output() -> Result<()> {
             "stdout_preview": "full-output".repeat(128)
         }),
         summary: "command completed".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     runtime.storage().append_tool_execution(&record)?;
@@ -936,6 +937,7 @@ pub async fn tool_execution_artifact_route_reads_scoped_content() -> Result<()> 
             }
         }),
         summary: "command completed".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     runtime.storage().append_tool_execution(&record)?;
@@ -992,6 +994,7 @@ pub async fn tool_execution_artifact_route_rejects_outside_data_dir() -> Result<
             "stdout_artifact": 0
         }),
         summary: "command completed".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     runtime.storage().append_tool_execution(&record)?;

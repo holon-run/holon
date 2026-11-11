@@ -2900,6 +2900,7 @@ mod resident_tests {
             input: serde_json::json!({"cmd":"printf hello"}),
             output: serde_json::json!({"exit_code":0,"stdout_preview":"x".repeat(10*1024*1024),"stdout_truncated":true}),
             summary: "completed with large output".into(),
+            call_binding: None,
             invocation_surface: None,
         }
     }

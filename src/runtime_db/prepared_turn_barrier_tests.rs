@@ -2,9 +2,18 @@ use super::*;
 use crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger;
 
 fn start_turn(f: &Fixture, qualified: bool) -> Result<TurnRecord> {
+    start_turn_with(f, qualified, |_| {})
+}
+
+fn start_turn_with(
+    f: &Fixture,
+    qualified: bool,
+    initialize: impl FnOnce(&mut TurnRecord),
+) -> Result<TurnRecord> {
     let mut record = TurnRecord::new(&f.scope.agent_id, "barrier-turn", 1);
     record.run_id = Some("barrier-run".into());
     record.created_at = f.at;
+    initialize(&mut record);
     f.db.transaction(|tx| {
         let mut state = AgentState::new(&f.scope.agent_id);
         state.turn_index = record.turn_index;
@@ -390,5 +399,239 @@ fn tool_result_without_command_barrier_still_has_one_original_audit() -> Result<
     assert!(receipt.outcome.applied);
     assert_eq!(receipt.outcome.scopes[0].audit_events.len(), 1);
     assert_eq!(f.count("tool_executions")?, 1);
+    Ok(())
+}
+
+#[test]
+fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt() -> Result<()> {
+    use crate::diagnostics::io_probe::IoProbe;
+    use crate::runtime::resident_input_evidence::InputEvidenceKey as Key;
+    use crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery;
+    use crate::tool::names::EXEC_COMMAND;
+    use crate::types::ToolExecutionCallBinding;
+    use serde_json::json;
+
+    let mut probe = IoProbe::start();
+    let f = Fixture::new()?;
+    let mut message = crate::types::MessageEnvelope::new(
+        &f.scope.agent_id,
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "Run command".into(),
+        },
+    );
+    let turn = start_turn_with(&f, true, |turn| {
+        message.turn_id = Some(turn.turn_id.clone());
+        turn.trigger = Some(crate::types::TurnTriggerSummary::from_message(&message));
+        turn.input_message_ids.push(message.id.clone());
+    })?;
+    f.db.evidence()
+        .commit_prepared_input_evidence(&PreparedInputEvidence::message(
+            f.scope.clone(),
+            "original-trigger".into(),
+            f.at,
+            message.clone(),
+            Vec::new(),
+        )?)?;
+    f.db.queue_entries()
+        .upsert(&crate::types::QueueEntryRecord {
+            message_id: message.id,
+            agent_id: f.scope.agent_id.clone(),
+            priority: Priority::Normal,
+            status: crate::types::QueueEntryStatus::Dequeued,
+            created_at: f.at,
+            updated_at: f.at,
+        })?;
+    let mut assistant_round = f.transcript();
+    assistant_round.kind = TranscriptEntryKind::AssistantRound;
+    assistant_round.round = Some(1);
+    assistant_round.data = json!({
+        "turn_id": turn.turn_id,
+        "blocks": [
+            {"type":"tool_use", "id":"settled", "name":EXEC_COMMAND},
+            {"type":"tool_use", "id":"pending", "name":EXEC_COMMAND},
+        ],
+    });
+    let db = &f.db;
+    let repo = db.evidence();
+    repo.commit_prepared_input_evidence(&PreparedInputEvidence::transcript(
+        f.scope.clone(),
+        "original-round".into(),
+        f.at,
+        assistant_round.clone(),
+    )?)?;
+    let begin = |call: &str| -> Result<ToolExecutionRecord> {
+        let mut record = f.tool();
+        record.id = format!("tool:{call}");
+        record.turn_id = Some(turn.turn_id.clone());
+        record.turn_index = turn.turn_index;
+        record.status = ToolExecutionStatus::Pending;
+        record.completed_at = None;
+        record.output = serde_json::Value::Null;
+        record.call_binding = Some(ToolExecutionCallBinding {
+            incarnation: f.scope.identity_incarnation,
+            assistant_round_id: assistant_round.id.clone(),
+            tool_call_id: call.into(),
+            model_output_budget: 4096,
+        });
+        repo.commit_prepared_input_evidence(&PreparedInputEvidence::tool(
+            f.scope.clone(),
+            format!("start:{call}"),
+            f.at,
+            record.clone(),
+            Vec::new(),
+        )?)?;
+        Ok(record)
+    };
+    let legacy = Fixture::new()?;
+    let mut legacy_turn = start_turn(&legacy, true)?;
+    let legacy_begin = prepare(&legacy, &legacy_turn)?;
+    legacy_turn.external_side_effect_possible = true;
+    let legacy_result = prepared_tool_result(&legacy, Some(legacy_turn.clone()))?;
+    probe.reset();
+    let started = std::time::Instant::now();
+    legacy
+        .db
+        .evidence()
+        .commit_prepared_input_evidence(&legacy_begin)?;
+    legacy.db.transaction(|tx| {
+        let event = AuditEvent::legacy(
+            "external_command_no_replay_barrier",
+            json!({"turn_id": legacy_turn.turn_id}),
+        );
+        let (event, _) = crate::runtime_db::evidence::append_audit_event_tx(
+            tx,
+            Some(&legacy.scope.agent_id),
+            &event,
+        )?;
+        crate::runtime_db::current_read_writes::append_event_history_ack_tx(
+            tx,
+            &legacy.scope,
+            &event.id,
+        )
+    })?;
+    legacy
+        .db
+        .evidence()
+        .commit_prepared_input_evidence(&legacy_result)?;
+    let legacy_elapsed = started.elapsed();
+    let legacy_sql = probe.snapshot().counters;
+    probe.reset();
+
+    let started = std::time::Instant::now();
+    let mut settled = begin("settled")?;
+    let result = crate::tool::ToolResult::success(
+        EXEC_COMMAND,
+        json!({
+            "disposition":"completed", "exit_status":0, "stdout_preview":"original stdout",
+            "truncated":false, "output_ref":format!("tool_execution:{}:output", settled.id),
+        }),
+        None,
+    );
+    settled.output = serde_json::to_value(&result)?;
+    settled.status = ToolExecutionStatus::Success;
+    settled.completed_at = Some(f.at);
+    let event = AuditEvent::legacy(
+        "tool_executed",
+        json!({
+            "agent_id": f.scope.agent_id,
+            "tool_execution_id": settled.id,
+            "tool_call_id": "settled",
+        }),
+    );
+    repo.commit_prepared_input_evidence(&PreparedInputEvidence::tool_result(
+        f.scope.clone(),
+        "original-settlement".into(),
+        f.at,
+        settled.clone(),
+        Vec::new(),
+        event,
+        None,
+    )?)?;
+    let new_elapsed = started.elapsed();
+    let new_sql = probe.snapshot().counters;
+    drop(probe);
+    let statements = |sql: &crate::diagnostics::io_probe::IoProbeCounters| {
+        sql.sql_read_statements + sql.sql_write_statements + sql.sql_control_statements
+    };
+    eprintln!(
+        "ExecCommand writer fixture old={} SQL ({legacy_elapsed:?}), new={} SQL ({new_elapsed:?})",
+        statements(&legacy_sql),
+        statements(&new_sql)
+    );
+    let pending = begin("pending")?;
+
+    let path = f._dir.path().join("runtime-maintenance.lock");
+    let lease = crate::runtime_db::RuntimeDbLock::try_lock(&path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let guard = handoff.try_lock()?;
+    let capability =
+        ExclusiveStartupInputRecovery::for_pre_activation_host(db, &lease, &path, &guard)?;
+    let scopes = db.startup_input_recovery_scopes(std::slice::from_ref(&f.scope.agent_id))?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let recovered = db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+        &scopes,
+        &capability,
+        &ledger,
+        None,
+    )?;
+    assert_eq!(recovered.report.interrupted_turns, 1);
+    assert_eq!(
+        db.queue_entries().latest_all()?[0].status,
+        crate::types::QueueEntryStatus::Aborted,
+    );
+    let interrupted = repo
+        .tool_execution_by_id(&f.scope.agent_id, &pending.id)?
+        .unwrap();
+    assert_eq!(interrupted.status, ToolExecutionStatus::Interrupted);
+    assert_eq!(interrupted.output["reason"], "external_outcome_unknown");
+    let current = db
+        .turn_records()
+        .by_id(Some(&f.scope.agent_id), &turn.turn_id)?
+        .unwrap();
+    assert!(!current.external_side_effect_possible);
+    assert_eq!(current.tool_execution_ids, [settled.id.clone()]);
+    assert_eq!(
+        current.terminal.unwrap().reason.as_deref(),
+        Some("startup_recovery/external_side_effect_indeterminate"),
+    );
+    let recovered_id = format!("transcript:recovered-tool-result:{}", settled.id);
+    db.transaction(|tx| {
+        let entry = crate::runtime_db::evidence::committed_transcript_tx(
+            tx,
+            &f.scope.agent_id,
+            &recovered_id,
+        )?;
+        assert_eq!(entry.round, assistant_round.round);
+        let reference = &entry.data["refs"][0];
+        assert_eq!(reference["tool_call_id"], "settled");
+        assert_eq!(reference["tool_execution_id"], settled.id);
+        assert_eq!(reference["is_error"], false);
+        assert_eq!(
+            reference["provider_visible_text"],
+            crate::tool::tools::render_tool_result_for_model(&result)?
+        );
+        for key in [
+            Key::new(Family::Transcript, &recovered_id),
+            Key::new(Family::ToolExecution, &pending.id),
+        ] {
+            validate_existing_input_evidence_tx(tx, &f.scope, &key)?;
+        }
+        Ok(())
+    })?;
+    let repeated = db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
+        &scopes,
+        &capability,
+        &ledger,
+        None,
+    )?;
+    assert_eq!(repeated.report.interrupted_turns, 0);
+    assert_eq!(f.count("transcript_entries")?, 2);
     Ok(())
 }

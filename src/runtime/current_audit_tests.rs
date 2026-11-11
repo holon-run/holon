@@ -610,6 +610,7 @@ async fn tool_result_has_one_receipt_and_publishes_both_audits_with_the_barrier(
         input: serde_json::json!({}),
         output: serde_json::json!({}),
         summary: "done".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     let event = AuditEvent::legacy(
@@ -678,7 +679,39 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
             "login": false,
         }),
     };
-    let (result, mut record) = runtime
+    let assistant_round = crate::types::TranscriptEntry::new(
+        "default",
+        crate::types::TranscriptEntryKind::AssistantRound,
+        Some(1),
+        None,
+        serde_json::json!({
+            "turn_id": turn_id,
+            "blocks": [{"type":"tool_use", "id":call.id, "name":call.name, "input":call.input}],
+        }),
+    );
+    runtime
+        .persist_transcript_evidence(&assistant_round)
+        .await?;
+    let context = ToolExecutionContext {
+        turn_id: Some(turn_id.clone()),
+        tool_call_id: Some(call.id.clone()),
+        exec_command_attempt: Some(Arc::new(crate::tool::spec::ExecCommandAttempt {
+            assistant_round_id: assistant_round.id,
+            model_output_budget: 4096,
+            submitted: Default::default(),
+        })),
+        ..Default::default()
+    };
+    let db = runtime.runtime_db();
+    db.transaction(|tx| {
+        tx.execute_batch(
+            "CREATE TRIGGER reject_exec_command_begin BEFORE INSERT ON tool_executions
+             WHEN json_extract(NEW.payload_json,'$.status')='pending'
+             BEGIN SELECT RAISE(ABORT,'attempt registration unavailable'); END;",
+        )?;
+        Ok(())
+    })?;
+    let error = runtime
         .inner
         .tools
         .execute_with_context(
@@ -686,26 +719,53 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
             "default",
             &AuthorityClass::OperatorInstruction,
             &call,
-            &ToolExecutionContext {
-                turn_id: Some(turn_id.clone()),
-                tool_call_id: Some(call.id.clone()),
-                ..Default::default()
-            },
+            &context,
+        )
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("attempt registration unavailable"));
+    assert!(
+        !effect.exists(),
+        "failed registration must prevent spawning"
+    );
+    db.transaction(|tx| {
+        tx.execute_batch("DROP TRIGGER reject_exec_command_begin")?;
+        Ok(())
+    })?;
+    let attempt = context.exec_command_attempt.as_ref().unwrap();
+    let context = ToolExecutionContext {
+        exec_command_attempt: Some(Arc::new(crate::tool::spec::ExecCommandAttempt {
+            assistant_round_id: attempt.assistant_round_id.clone(),
+            model_output_budget: attempt.model_output_budget,
+            submitted: Default::default(),
+        })),
+        ..context
+    };
+    let (result, record) = runtime
+        .inner
+        .tools
+        .execute_with_context(
+            runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+            &context,
         )
         .await?;
     assert!(!result.is_error());
     assert_eq!(std::fs::read(&effect)?, b"x");
 
-    let db = runtime.runtime_db();
     let prior = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
-    assert!(prior.external_side_effect_possible);
-    assert_eq!(
-        prior.external_side_effect_tool_call_id.as_deref(),
-        Some(call.id.as_str())
-    );
-    record.turn_index = prior.turn_index;
-    record.turn_id = Some(turn_id.clone());
+    assert!(!prior.external_side_effect_possible);
+    assert!(prior.external_side_effect_tool_call_id.is_none());
     let execution_id = record.id.clone();
+    let pending = db
+        .evidence()
+        .tool_execution_by_id("default", &execution_id)?
+        .unwrap();
+    assert_eq!(pending.status, crate::types::ToolExecutionStatus::Pending);
+    assert_eq!(pending.call_binding, record.call_binding);
+    assert!(pending.output.is_null());
     let original_output = record.output.clone();
     assert!(original_output.to_string().contains("original-result"));
     let event = AuditEvent::legacy(
@@ -754,7 +814,7 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         InputEvidenceWrite::ToolResult {
             record,
             event: event.clone(),
-            barrier: Some(prior.clone()),
+            barrier: None,
         },
     )?;
     let descriptor = prepared.descriptor().clone();
@@ -768,18 +828,19 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         Some(prior)
     );
     assert!(!db.audit_events().has_event_by_id(&event.id)?);
-    assert!(db
-        .evidence()
-        .tool_execution_by_id("default", &execution_id)?
-        .is_none());
+    assert_eq!(
+        db.evidence()
+            .tool_execution_by_id("default", &execution_id)?,
+        Some(pending),
+    );
     db.transaction(|tx| {
         tx.execute_batch("DROP TRIGGER reject_tool_settlement")?;
         Ok(())
     })?;
     settle.await?;
-    for kind in ["tool_executed", "external_command_checkpoint_durable"] {
+    {
         let published = events.try_recv()?;
-        assert_eq!(published.event.kind, kind);
+        assert_eq!(published.event.kind, "tool_executed");
         let qualified = published
             .qualified
             .context("recovered live Event qualification")?;

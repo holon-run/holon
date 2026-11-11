@@ -626,6 +626,7 @@ fn tool() -> ToolExecutionRecord {
         input: serde_json::json!({"cmd":"printf hello"}),
         output: serde_json::json!({"result":{"exit_status":0,"stdout_preview":"x".repeat(10*1024*1024),"stdout_artifact":{"id":"artifact-a"}}}),
         summary: "command completed".into(),
+        call_binding: None,
         invocation_surface: None,
     }
 }

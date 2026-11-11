@@ -86,6 +86,7 @@ fn tool(terminal: &TurnTerminalRecord, index: usize) -> ToolExecutionRecord {
         input: serde_json::json!({}),
         output: serde_json::json!({"artifact": "x".repeat(8192)}),
         summary: "generated attachment".into(),
+        call_binding: None,
         invocation_surface: None,
     }
 }

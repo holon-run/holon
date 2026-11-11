@@ -372,6 +372,7 @@ fn seed_conversation(host: &RuntimeHost) -> Result<()> {
         input: json!({"cmd": "cat secret", "raw": "must-not-leak"}),
         output: json!({"artifact": "must-not-leak"}),
         summary: "inspected bounded state".into(),
+        call_binding: None,
         invocation_surface: None,
     })?;
 

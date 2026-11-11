@@ -50,6 +50,7 @@ fn tool() -> ToolExecutionRecord {
         input: serde_json::json!({}),
         output: serde_json::json!({}),
         summary: "pending".into(),
+        call_binding: None,
         invocation_surface: None,
     }
 }

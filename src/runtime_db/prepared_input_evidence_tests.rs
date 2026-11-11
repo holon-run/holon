@@ -612,6 +612,7 @@ impl Fixture {
             input: serde_json::json!({"cmd":"printf ok"}),
             output: serde_json::json!({"stdout":"ok"}),
             summary: "done".into(),
+            call_binding: None,
             invocation_surface: None,
         }
     }

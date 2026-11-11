@@ -2080,6 +2080,7 @@ mod tests {
                     "workspace": {"root": "must-not-leak"}
                 }),
                 summary: "inspected state".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();

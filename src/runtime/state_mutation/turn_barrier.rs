@@ -12,6 +12,9 @@ impl RuntimeMutation {
         &mut self,
         record: &ToolExecutionRecord,
     ) -> Result<Option<TurnRecord>> {
+        if record.call_binding.is_some() {
+            return Ok(None);
+        }
         if !matches!(
             record.status,
             ToolExecutionStatus::Success | ToolExecutionStatus::Error

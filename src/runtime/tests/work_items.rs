@@ -1010,6 +1010,7 @@ async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_togeth
         input: serde_json::json!({"work_item_id": detached.id}),
         output: serde_json::json!({"envelope": result.envelope}),
         summary: "completed detached WorkItem".into(),
+        call_binding: None,
         invocation_surface: None,
     });
     runtime.inject_next_transition_fault(
@@ -7103,6 +7104,7 @@ async fn operator_prompt_completion_uses_pre_tool_effective_work_item_as_bound_t
                 message_id: None,
                 tool_call_id: None,
                 trace_context: None,
+                exec_command_attempt: None,
                 decision_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             },
         )
@@ -7206,6 +7208,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
                 message_id: None,
                 tool_call_id: None,
                 trace_context: None,
+                exec_command_attempt: None,
                 decision_tool_calls: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             },
         )

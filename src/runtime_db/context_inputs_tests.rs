@@ -322,6 +322,7 @@ fn fixture() -> Result<(TempDir, RuntimeDb)> {
                 input: json!({}),
                 output: json!({"ok":true}),
                 summary: "ok".into(),
+                call_binding: None,
                 invocation_surface: None,
             })?;
             let mut delivery = DeliverySummaryRecord::new(

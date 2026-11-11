@@ -306,6 +306,7 @@ fn retention_protects_deleting_evidence_without_granting_or_pruning_qualificatio
             input: serde_json::json!({}),
             output: serde_json::json!({}),
             summary: id.into(),
+            call_binding: None,
             invocation_surface: None,
         };
         f.db.evidence()
@@ -581,6 +582,7 @@ fn fresh_scope_cannot_requalify_equal_tool_or_brief() -> Result<()> {
         input: serde_json::json!({}),
         output: serde_json::json!({}),
         summary: "test".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     let brief = crate::types::BriefRecord::new(

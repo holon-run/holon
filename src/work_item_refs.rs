@@ -510,6 +510,7 @@ mod tests {
             turn_index: 1,
             turn_id: Some("turn-1".into()),
             work_item_id: Some("work-1".into()),
+            call_binding: None,
             invocation_surface: None,
         }
     }

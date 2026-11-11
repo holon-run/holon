@@ -118,6 +118,7 @@ impl Fixture {
                 input: json!({"cmd": "fixture only; no command was executed"}),
                 output: json!({"exit_code": 0, "observation": index}),
                 summary: format!("Fixed local evidence for observation {index}"),
+                call_binding: None,
                 invocation_surface: Some("commentary".into()),
             })?;
 

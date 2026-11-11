@@ -707,6 +707,7 @@ fn seed_history(storage: &AppStorage, db: &RuntimeDb, agent_id: &str) -> Result<
                 input: json!({"cmd": "synthetic; no process was executed"}),
                 output: json!({"stdout": "z".repeat(TOOL_STDOUT_BYTES), "stdout_preview": "D0_STDOUT_PREVIEW", "exit_code": 0}),
                 summary: "D0_STDOUT_PREVIEW: 10 MiB synthetic stdout, bounded visible receipt".into(),
+                call_binding: None,
                 invocation_surface: Some("commentary".into()),
             }))?;
             turn.tool_execution_ids = vec![tool_id];

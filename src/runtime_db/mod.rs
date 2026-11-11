@@ -34,6 +34,7 @@ pub(crate) mod dispatch_memory;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;
+mod exec_command_attempts;
 pub(crate) mod input_evidence_snapshot;
 pub(crate) mod input_evidence_writes;
 pub(crate) mod input_mutation_receipts;

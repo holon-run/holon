@@ -4460,7 +4460,7 @@ fn extend_cleanup_turn_tx(
             .as_ref()
             .and_then(|trigger| trigger.message_id.clone()),
     );
-    let mut statement = tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id")?;
+    let mut statement = tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status') IN ('deferred','pending') ORDER BY evidence_id")?;
     let ids = statement
         .query_map(params![scope.agent_id, old.turn_id], |row| {
             row.get::<_, String>(0)

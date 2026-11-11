@@ -3931,6 +3931,7 @@ impl RuntimeHandle {
                             "tool_error": &error,
                         }),
                         summary: format!("Failed: {tool_name} not exposed for round"),
+                        call_binding: None,
                         invocation_surface: None,
                     };
                     runtime
@@ -4063,9 +4064,22 @@ impl RuntimeHandle {
                             },
                         ),
                     effective_work_item_id: pre_tool_work_item_id.clone(),
-                    turn_id: execution_binding
-                        .as_ref()
-                        .map(|binding| binding.turn_id.clone()),
+                    turn_id: if tool_name == crate::tool::names::EXEC_COMMAND {
+                        turn_id.clone()
+                    } else {
+                        execution_binding
+                            .as_ref()
+                            .map(|binding| binding.turn_id.clone())
+                    },
+                    exec_command_attempt: (tool_name == crate::tool::names::EXEC_COMMAND
+                        && turn_id.is_some())
+                    .then(|| {
+                        std::sync::Arc::new(crate::tool::spec::ExecCommandAttempt {
+                            assistant_round_id: assistant_round_id.clone(),
+                            model_output_budget: tool_output_budget_estimated_tokens,
+                            submitted: Default::default(),
+                        })
+                    }),
                     message_id: execution_binding
                         .as_ref()
                         .map(|binding| binding.source_message_id.clone()),
@@ -4177,7 +4191,11 @@ impl RuntimeHandle {
                                 ),
                             );
                         }
-                        let result_content = render_result?;
+                        let render_result = if record.call_binding.is_some() {
+                            render_result
+                        } else {
+                            Ok(render_result?)
+                        };
                         let loop_directive = result.loop_directive.take();
                         let duration_ms = record.duration_ms;
                         let (turn_index, turn_id, run_id, current_work_item_id) = {
@@ -4193,13 +4211,15 @@ impl RuntimeHandle {
                                     .or_else(|| guard.state.current_work_item_id.clone()),
                             )
                         };
-                        record.turn_index = turn_index;
-                        record.turn_id = turn_id;
-                        if record.work_item_id.is_none() {
-                            record.work_item_id = pre_tool_work_item_id
-                                .clone()
-                                .or(current_work_item_id)
-                                .or_else(|| result_work_item_id(&result.envelope));
+                        if record.call_binding.is_none() {
+                            record.turn_index = turn_index;
+                            record.turn_id = turn_id;
+                            if record.work_item_id.is_none() {
+                                record.work_item_id = pre_tool_work_item_id
+                                    .clone()
+                                    .or(current_work_item_id)
+                                    .or_else(|| result_work_item_id(&result.envelope));
+                            }
                         }
 
                         if result.should_sleep {
@@ -4307,6 +4327,7 @@ impl RuntimeHandle {
                             );
                         }
                         persist_result?;
+                        let result_content = render_result?;
                         if let Some(crate::tool::spec::ToolLoopDirective::AwaitCompletionReport(
                             directive,
                         )) = loop_directive.as_ref()
@@ -4413,6 +4434,17 @@ impl RuntimeHandle {
                                 .await?;
                             return Err(err);
                         }
+                        let pending = tool_execution_context
+                            .exec_command_attempt
+                            .as_ref()
+                            .and_then(|attempt| attempt.submitted.get());
+                        if pending.is_some()
+                            && !err.is::<crate::system::process::ProcessNotStarted>()
+                        {
+                            return Err(err.context(
+                                "ExecCommand result is unavailable after attempt submission",
+                            ));
+                        }
                         let error = ToolError::from_anyhow(&err);
                         let audit_error = error.render();
                         let result = crate::tool::ToolResult::error(&tool_name, error.clone());
@@ -4433,25 +4465,36 @@ impl RuntimeHandle {
                                 guard.state.current_turn_id.clone(),
                             )
                         };
-                        let failed_id = crate::ids::tool_execution_id();
+                        let failed_id = pending
+                            .map_or_else(crate::ids::tool_execution_id, |record| record.id.clone());
+                        let mut failed_output = serde_json::json!({
+                            "error": audit_error,
+                            "tool_error": &error,
+                        });
+                        if pending.is_some() {
+                            failed_output["envelope"] = serde_json::to_value(&result.envelope)?;
+                            failed_output["should_sleep"] = serde_json::Value::Bool(false);
+                        }
                         let failed_record = crate::types::ToolExecutionRecord {
                             id: failed_id.clone(),
                             agent_id: agent_id.to_string(),
-                            work_item_id: work_item_id.clone(),
+                            work_item_id: pending.map_or_else(
+                                || work_item_id.clone(),
+                                |record| record.work_item_id.clone(),
+                            ),
                             turn_index,
                             turn_id: turn_id.clone(),
                             tool_name: tool_name.clone(),
-                            created_at: chrono::Utc::now(),
+                            created_at: pending
+                                .map_or_else(chrono::Utc::now, |record| record.created_at),
                             completed_at: Some(chrono::Utc::now()),
                             duration_ms: tool_exec_started.elapsed().as_millis() as u64,
                             authority_class: authority_class.clone(),
                             status: crate::types::ToolExecutionStatus::Error,
                             input: call.input.clone(),
-                            output: serde_json::json!({
-                                "error": audit_error,
-                                "tool_error": &error,
-                            }),
+                            output: failed_output,
                             summary: format!("Failed: {tool_name}"),
+                            call_binding: pending.and_then(|record| record.call_binding.clone()),
                             invocation_surface: None,
                         };
                         let failed_event = AuditEvent::legacy(
@@ -4491,7 +4534,9 @@ impl RuntimeHandle {
                             }),
                         );
                         if tool_name == crate::tool::names::EXEC_COMMAND
-                            && tool_execution_context.turn_id.is_some()
+                            && (pending.is_some()
+                                || (tool_execution_context.exec_command_attempt.is_none()
+                                    && tool_execution_context.turn_id.is_some()))
                             && err.is::<crate::system::process::ProcessNotStarted>()
                         {
                             runtime

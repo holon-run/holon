@@ -8469,6 +8469,14 @@ export interface components {
             agent_id: string;
             /** @enum {string} */
             authority_class: "operator_instruction" | "runtime_instruction" | "integration_signal" | "external_evidence";
+            call_binding?: {
+                assistant_round_id: string;
+                /** Format: uint64 */
+                incarnation: number;
+                /** Format: uint */
+                model_output_budget: number;
+                tool_call_id: string;
+            } | null;
             /**
              * Format: date-time
              * @default null
@@ -8486,7 +8494,7 @@ export interface components {
             invocation_surface?: string | null;
             output: unknown;
             /** @enum {string} */
-            status: "deferred" | "success" | "error" | "interrupted";
+            status: "pending" | "deferred" | "success" | "error" | "interrupted";
             summary: string;
             tool_name: string;
             turn_id?: string | null;

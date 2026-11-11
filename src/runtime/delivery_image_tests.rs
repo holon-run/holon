@@ -112,6 +112,7 @@ fn tool(turn: &str, index: usize) -> ToolExecutionRecord {
             conversion: Vec::new(),
         }}),
         summary: "generated".into(),
+        call_binding: None,
         invocation_surface: None,
     }
 }

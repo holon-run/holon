@@ -25,6 +25,7 @@ impl ManagedTaskSupervisor<'_> {
         authority_class: &AuthorityClass,
         trace_context: Option<&TraceContext>,
         turn_tool_call: Option<(&str, &str)>,
+        attempt: Option<(&crate::tool::spec::ExecCommandAttempt, &serde_json::Value)>,
     ) -> Result<ExecCommandResult> {
         self.runtime
             .execute_exec_command(
@@ -33,6 +34,7 @@ impl ManagedTaskSupervisor<'_> {
                 authority_class,
                 trace_context,
                 turn_tool_call,
+                attempt,
             )
             .await
     }

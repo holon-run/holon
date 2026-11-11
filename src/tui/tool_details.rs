@@ -25,6 +25,7 @@ pub(super) fn tool_detail_text(record: &ToolExecutionRecord, expanded: bool) -> 
         ToolExecutionStatus::Success => "success",
         ToolExecutionStatus::Error => "error",
         ToolExecutionStatus::Interrupted => "interrupted",
+        ToolExecutionStatus::Pending => "pending",
     };
     text.field(&record.tool_name, &format!("tool {status}"));
     text.field("duration", &format!("{}ms", record.duration_ms));
@@ -692,6 +693,7 @@ mod tests {
             input,
             output: json!({"envelope": {"tool_name": name, "status": "success", "result": result}}),
             summary: "not a source of details".into(),
+            call_binding: None,
             invocation_surface: None,
         }
     }

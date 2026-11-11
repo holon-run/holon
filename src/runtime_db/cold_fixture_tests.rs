@@ -241,6 +241,7 @@ fn full_cold_combination_preserves_qualification_birth_queue_and_result_head() -
         input: serde_json::json!({"cmd":"synthetic"}),
         output: serde_json::json!({"stdout":"x".repeat(1024 * 1024)}),
         summary: "bounded summary".into(),
+        call_binding: None,
         invocation_surface: Some("commentary".into()),
     };
     writer.insert(ColdFixtureEvidence::Tool(&tool))?;

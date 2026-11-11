@@ -314,6 +314,7 @@ async fn task_detail_http_incarnation_binding_fences_status_output_and_tool_exec
             input: serde_json::json!({"cmd": "echo ok"}),
             output: serde_json::json!({"exit_status": 0}),
             summary: "detail read".into(),
+            call_binding: None,
             invocation_surface: None,
         })
         .unwrap();

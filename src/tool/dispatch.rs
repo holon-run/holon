@@ -199,7 +199,13 @@ impl ToolRegistry {
             ))
             .await;
         let mut result = result?;
-        let execution_id = crate::ids::tool_execution_id();
+        let pending = context
+            .exec_command_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.submitted.get());
+        let execution_id =
+            pending.map_or_else(crate::ids::tool_execution_id, |record| record.id.clone());
+        let started_at = pending.map_or(started_at, |record| record.created_at);
         if !result.is_error() {
             result.envelope.input_coercion = input_coercion;
         }
@@ -240,9 +246,9 @@ impl ToolRegistry {
         let record = ToolExecutionRecord {
             id: execution_id,
             agent_id: agent_id.to_string(),
-            work_item_id: None,
-            turn_index: 0,
-            turn_id: None,
+            work_item_id: pending.and_then(|record| record.work_item_id.clone()),
+            turn_index: pending.map_or(0, |record| record.turn_index),
+            turn_id: pending.and_then(|record| record.turn_id.clone()),
             tool_name: call.name.clone(),
             created_at: started_at,
             completed_at,
@@ -256,6 +262,7 @@ impl ToolRegistry {
             input: call.input.clone(),
             output: output_value,
             summary: super::summary::tool_result_summary(&result.envelope),
+            call_binding: pending.and_then(|record| record.call_binding.clone()),
             invocation_surface: tool_invocation_surface(call),
         };
         Ok((result, record))

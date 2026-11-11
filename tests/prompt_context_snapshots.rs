@@ -792,6 +792,7 @@ fn recent_turns_snapshot_links_task_result_continuation_to_operator_turn() -> Re
         input: json!({ "fixture": true }),
         output: json!({ "exit": 0 }),
         summary: "Run command: cargo test runtime_flow".into(),
+        call_binding: None,
         invocation_surface: Some("commentary".into()),
     })?;
     let mut turn =
@@ -2048,6 +2049,7 @@ fn multi_turn_context_eval_preserves_long_task_continuity_and_efficiency() -> Re
         input: json!({ "cmd": "cargo test -q --test prompt_context_snapshots" }),
         output: json!({ "exit_status": 0 }),
         summary: "Run command: cargo test -q --test prompt_context_snapshots".into(),
+        call_binding: None,
         invocation_surface: Some("commentary".into()),
     })?;
     let mut first_turn =
@@ -2249,6 +2251,7 @@ fn multi_turn_context_eval_preserves_initial_issue_list_during_item_by_item_disc
         input: json!({ "cmd": "rg -n \"build_effective_prompt|recent_turns\" src tests" }),
         output: json!({ "exit_status": 0 }),
         summary: "Inspected prompt projection and produced a five-item issue list.".into(),
+        call_binding: None,
         invocation_surface: Some("commentary".into()),
     })?;
     let mut first_brief = BriefRecord::new(

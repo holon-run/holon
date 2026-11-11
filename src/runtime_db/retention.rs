@@ -245,6 +245,7 @@ struct EvidenceCandidate {
     task_id: Option<String>,
     work_item_id: Option<String>,
     payload_json: Option<String>,
+    pending_command: bool,
 }
 
 struct DatabasePageStats {
@@ -893,7 +894,8 @@ fn plan_evidence_table(
     let removable_capacity = report.observed_rows.saturating_sub(minimum_rows as u64);
     let sql = format!(
         "SELECT evidence_id, turn_id, message_id, task_id, work_item_id,
-                CASE WHEN ?2 THEN payload_json ELSE NULL END, agent_id
+                CASE WHEN ?2 THEN payload_json ELSE NULL END, agent_id,
+                CASE WHEN ?2 THEN COALESCE(json_extract(payload_json,'$.status')='pending',0) ELSE 0 END
          FROM {table}
          WHERE created_at < ?1
          ORDER BY created_at ASC, evidence_id ASC"
@@ -908,6 +910,7 @@ fn plan_evidence_table(
             task_id: row.get(3)?,
             work_item_id: row.get(4)?,
             payload_json: row.get(5)?,
+            pending_command: row.get(7)?,
         })
     })?;
     let mut deletions = Vec::new();
@@ -925,6 +928,8 @@ fn plan_evidence_table(
         };
         let protection = if identity_deleting {
             Some("identity_deleting")
+        } else if candidate.pending_command {
+            Some("pending_command")
         } else {
             candidate_protection_reason(&candidate, roots)
         };
@@ -1406,6 +1411,7 @@ mod tests {
             input: serde_json::json!({}),
             output: serde_json::json!({"ok": true}),
             summary: id.into(),
+            call_binding: None,
             invocation_surface: None,
         }
     }
