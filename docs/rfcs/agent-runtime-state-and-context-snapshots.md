@@ -1688,12 +1688,16 @@ Completion reports retain the original selected Work head and frozen Input
 source closure, independently of the plan registry. Before cloning selected
 Brief/Transcript/Message bodies or resolving report text, loaded acquisition
 admits their JSON-shaped material against the resource phase's used remainder.
-For selected Work without a Result, a named legacy SQL adapter borrows each
-candidate payload in the same validated transaction and admits it before Rust
-body allocation/JSON decoding. It keeps the original created-at/evidence-ID
-ordering and first nonempty result, without materializing unrelated history.
-The original writer-maintained Work selector column, not JSON body extraction,
-selects candidates; decoded payload scope and Work identity are still checked.
+For selected Work without a Result, the owner prepares legacy completion
+previews when the selected Work first needs that coverage. The scope read and
+the selected rows share one read transaction. The loader uses the stored Work
+selector column and admits each payload before decoding. It preserves the
+created-at/evidence-ID ordering, the latest nonempty result, and the scope and
+Work identity checks. The owner publishes the display-length preview or an
+observed absence with the Work view. Covered captures use that publication.
+The compatibility repository advances the shared generation after an append
+attempt, so a later capture refreshes coverage after a commit or an uncertain
+result.
 Context precedence remains latest nonempty Result, then delivery summary, then
 Work result-summary fallback; Get/List keep their different binding-first policy.
 The phase allocation follows the frozen snapshot as well as the real prompt,

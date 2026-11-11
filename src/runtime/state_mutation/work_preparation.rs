@@ -1,8 +1,17 @@
 //! Named owner preparation. A capture never invokes this storage boundary.
 
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::{
-    runtime::resident_work::{WorkCaptureRequest, WorkReadError},
+    runtime::{
+        input_evidence_budget::{serialized_bytes, InputMemoryCategory, OwnedBytesEstimate},
+        resident_state::AgentSnapshot,
+        resident_work::{
+            CapturedWork, ResidentWorkDomain, WorkCaptureRequest, WorkCompletionDeliveries,
+            WorkReadError,
+        },
+    },
     runtime_db::{
         context_inputs::ContextDurableRead,
         work_snapshot::{self, WorkDomainLoadRequest},
@@ -132,7 +141,106 @@ impl RuntimeMutation {
                 .resident
                 .with_budget(self.runtime.inner.input_evidence_budget.clone())
         })?;
-        let work = Arc::new(work);
+        self.publish_prepared_work(&root, work).await
+    }
+
+    pub(in crate::runtime) async fn prepare_owner_completion_deliveries(
+        &mut self,
+        planned_work: &CapturedWork,
+        work_item_ids: &BTreeSet<String>,
+        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+    ) -> Result<Option<Arc<WorkCompletionDeliveries>>> {
+        let needed = work_item_ids.iter().filter_map(|id| {
+            matches!(planned_work.latest_results.get(id), Some(None)).then_some(id.as_str())
+        });
+        if needed.clone().next().is_none() {
+            return Ok(None);
+        }
+        let root = self.capture_published_root()?;
+        let work = root.work.as_ref().context("Work domain is not published")?;
+        anyhow::ensure!(
+            work.scope() == &planned_work.scope
+                && work.coverage().revision == planned_work.revision,
+            "completion delivery scope or Work revision changed"
+        );
+        let db = &self.runtime.inner.runtime_db;
+        // Read the generation before acquiring the SQLite view. An overlapping
+        // append can invalidate this projection but cannot make it current.
+        let generation = db.evidence().delivery_summary_generation();
+        let prior = work
+            .completion_deliveries
+            .as_ref()
+            .filter(|view| view.generation == generation);
+        if let Some(view) = prior {
+            if needed.clone().all(|id| view.summaries.contains_key(id)) {
+                return Ok(Some(view.clone()));
+            }
+        }
+        let (next, deliveries) = material.read(|| {
+            let mut summaries = BTreeMap::new();
+            let retained = prior
+                .into_iter()
+                .flat_map(|view| view.summaries.keys().map(String::as_str))
+                .filter(|id| matches!(work.coverage().latest_results.get(*id), Some(None)));
+            for id in needed.chain(retained) {
+                if !summaries.contains_key(id) {
+                    crate::diagnostics::resource_io::admit_cloned_value(&id)?;
+                    summaries.insert(id.to_owned(), None);
+                }
+            }
+            let selected = db.read_for_preparation(|tx| {
+                let read = ContextDurableRead::new(tx, &planned_work.scope.agent_id);
+                let identity = read
+                    .identity_fact()?
+                    .context("completion delivery identity missing")?;
+                anyhow::ensure!(
+                    Some(&identity) == root.identity.as_deref()
+                        && identity.incarnation == planned_work.scope.identity_incarnation
+                        && identity.status == crate::types::AgentRegistryStatus::Active,
+                    "completion delivery identity differs from the published Work scope"
+                );
+                read.completion_delivery_summaries(summaries.keys().map(String::as_str))
+            })?;
+            for summary in selected {
+                let preview = crate::tool::helpers::truncate_text(
+                    &summary.text,
+                    crate::context::COMPLETION_SUMMARY_CHAR_LIMIT,
+                );
+                *summaries
+                    .get_mut(&summary.work_item_id)
+                    .context("unselected completion delivery")? = Some(preview);
+            }
+            let budget = self
+                .runtime
+                .inner
+                .input_evidence_budget
+                .register_owned_bytes(
+                    &planned_work.scope,
+                    InputMemoryCategory::Current,
+                    OwnedBytesEstimate {
+                        payload_bytes: 0,
+                        metadata_estimate_bytes: serialized_bytes(&summaries)?,
+                    },
+                )?;
+            let deliveries = Arc::new(WorkCompletionDeliveries {
+                generation,
+                summaries,
+                _budget: budget,
+            });
+            Ok((
+                work.with_completion_deliveries(deliveries.clone())?,
+                deliveries,
+            ))
+        })?;
+        self.publish_prepared_work(&root, next).await?;
+        Ok(Some(deliveries))
+    }
+
+    async fn publish_prepared_work(
+        &mut self,
+        root: &AgentSnapshot,
+        work: ResidentWorkDomain,
+    ) -> Result<()> {
         let current = self.reservations[self.primary_index]
             .capture_ready_snapshot()?
             .context("Work preparation lost its published root")?;
@@ -142,7 +250,7 @@ impl RuntimeMutation {
                 && current.token.owner_epoch == self.reservations[self.primary_index].owner_epoch(),
             "Work preparation reservation/publication generation differs"
         );
-        self.work = Some(work);
+        self.work = Some(Arc::new(work));
         let facts = Arc::new(self.facts(Default::default()));
         let reservation = &mut self.reservations[self.primary_index];
         reservation.begin(crate::ids::audit_event_id())?;

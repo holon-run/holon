@@ -42,7 +42,7 @@ use crate::{
         InputEvidenceKey as Key, InputWindowSelector, PreparedInputEvidence,
         QualifiedInputEvidence, ToolContextProjection,
     },
-    runtime::resident_work::CapturedWork,
+    runtime::resident_work::{CapturedWork, WorkCompletionDeliveries},
     runtime_db::{
         context_inputs::{
             prepare_admitted_settlement_inputs, CompletionBriefInput, ContextDurableRead,
@@ -242,14 +242,11 @@ pub(crate) trait ContextInputs {
     fn external_triggers(&self) -> Result<Vec<ExternalTriggerRecord>>;
     /// Existing active_for_agent ordering, unbounded so count and display share a view.
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>>;
-    fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>>;
-    /// Cold adapters keep their independent compatibility policy.
     fn completion_delivery_summaries<'a>(
         &self,
-        _work_item_ids: impl Iterator<Item = &'a str>,
-    ) -> Result<Vec<DeliverySummaryRecord>> {
-        self.delivery_summaries(usize::MAX)
-    }
+        agent_id: &str,
+        work_item_ids: impl Iterator<Item = &'a str>,
+    ) -> Result<Vec<(String, String)>>;
     /// Selected Task settlement facts and exact Message/reply sources share one view.
     fn admitted_settlement_inputs(
         &self,
@@ -399,8 +396,15 @@ impl ContextInputs for AppStorage {
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
         self.latest_active_task_records_for_agent(agent_id, usize::MAX)
     }
-    fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>> {
-        self.read_recent_delivery_summaries(limit)
+    fn completion_delivery_summaries<'a>(
+        &self,
+        agent_id: &str,
+        _work_item_ids: impl Iterator<Item = &'a str>,
+    ) -> Result<Vec<(String, String)>> {
+        Ok(legacy_completion_texts(
+            self.read_recent_delivery_summaries(usize::MAX)?,
+            agent_id,
+        ))
     }
     fn admitted_settlement_inputs(
         &self,
@@ -501,8 +505,15 @@ impl ContextInputs for ContextDurableRead<'_> {
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
         ContextDurableRead::active_tasks(self, agent_id)
     }
-    fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>> {
-        ContextDurableRead::delivery_summaries(self, limit)
+    fn completion_delivery_summaries<'a>(
+        &self,
+        agent_id: &str,
+        _work_item_ids: impl Iterator<Item = &'a str>,
+    ) -> Result<Vec<(String, String)>> {
+        Ok(legacy_completion_texts(
+            ContextDurableRead::delivery_summaries(self, usize::MAX)?,
+            agent_id,
+        ))
     }
     fn admitted_settlement_inputs(
         &self,
@@ -540,21 +551,31 @@ impl ContextInputs for ContextDurableRead<'_> {
     }
 }
 
-/// Migrated input/evidence and Work reads use selected resident allocations.
-/// Remaining Timer/Trigger adapters explicitly borrow one durable view.
-pub(crate) struct ResidentContextInputs<'a, 'db> {
-    durable: &'a ContextDurableRead<'db>,
+fn legacy_completion_texts(
+    summaries: Vec<DeliverySummaryRecord>,
+    agent_id: &str,
+) -> Vec<(String, String)> {
+    summaries
+        .into_iter()
+        .filter(|summary| summary.agent_id == agent_id && !summary.text.is_empty())
+        .map(|summary| (summary.work_item_id, summary.text))
+        .collect()
+}
+
+/// Input/evidence and Work reads use selected resident allocations.
+pub(crate) struct ResidentContextInputs<'a> {
     captured: &'a CapturedInputEvidence,
     work: &'a CapturedWork,
+    completion_deliveries: Option<&'a WorkCompletionDeliveries>,
     tasks: Option<&'a crate::runtime::resident_task::CapturedTasks>,
     task_projection_guards: tasks::TaskProjectionGuards,
     history_material: std::cell::RefCell<std::sync::Weak<turns::HistoryTurnMaterial>>,
     state: &'a AgentState,
     triggers: &'a [ExternalTriggerRecord],
 }
-impl<'a, 'db> ResidentContextInputs<'a, 'db> {
+impl<'a> ResidentContextInputs<'a> {
     pub(crate) fn new(
-        durable: &'a ContextDurableRead<'db>,
+        durable: &ContextDurableRead<'_>,
         captured: &'a CapturedInputEvidence,
         work: &'a CapturedWork,
         state: &'a AgentState,
@@ -571,9 +592,9 @@ impl<'a, 'db> ResidentContextInputs<'a, 'db> {
             "resident context input scope mismatch"
         );
         Ok(Self {
-            durable,
             captured,
             work,
+            completion_deliveries: None,
             tasks: None,
             task_projection_guards: Default::default(),
             history_material: Default::default(),
@@ -581,6 +602,14 @@ impl<'a, 'db> ResidentContextInputs<'a, 'db> {
             triggers,
         })
     }
+    pub(crate) fn with_completion_deliveries(
+        mut self,
+        deliveries: Option<&'a WorkCompletionDeliveries>,
+    ) -> Self {
+        self.completion_deliveries = deliveries;
+        self
+    }
+
     pub(crate) fn with_tasks(
         mut self,
         tasks: &'a crate::runtime::resident_task::CapturedTasks,
@@ -695,7 +724,7 @@ impl<'a, 'db> ResidentContextInputs<'a, 'db> {
         Ok(entries)
     }
 }
-impl ContextInputs for ResidentContextInputs<'_, '_> {
+impl ContextInputs for ResidentContextInputs<'_> {
     fn input_budget(
         &self,
     ) -> Option<(
@@ -1164,14 +1193,25 @@ impl ContextInputs for ResidentContextInputs<'_, '_> {
     fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
         self.resident_active_tasks(agent_id)
     }
-    fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>> {
-        self.durable.delivery_summaries(limit)
-    }
     fn completion_delivery_summaries<'a>(
         &self,
+        agent_id: &str,
         work_item_ids: impl Iterator<Item = &'a str>,
-    ) -> Result<Vec<DeliverySummaryRecord>> {
-        self.durable.completion_delivery_summaries(work_item_ids)
+    ) -> Result<Vec<(String, String)>> {
+        self.check_scope(agent_id)?;
+        crate::diagnostics::resource_io::check_active_budget()?;
+        let mut selected = Vec::new();
+        for id in work_item_ids {
+            let text = self
+                .completion_deliveries
+                .and_then(|deliveries| deliveries.summaries.get(id))
+                .ok_or_else(|| anyhow::anyhow!("completion delivery was not prepared"))?;
+            if let Some(text) = text {
+                crate::diagnostics::resource_io::admit_cloned_value(&(id, text))?;
+                selected.push((id.to_owned(), text.clone()));
+            }
+        }
+        Ok(selected)
     }
     fn admitted_settlements(
         &self,

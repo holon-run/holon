@@ -150,6 +150,7 @@ capture mode (preview, admission planning, or execution) and stage:
 | `owner_acquisition` | `begin_mutation`, including reservation, identity validation, and any reconciliation |
 | `task_preparation` | Each of the two Task preparation requests |
 | `work_preparation` | Work preparation request |
+| `completion_delivery_preparation` | Bounded legacy completion preview coverage for selected Work without a Result Brief |
 | `scheduling_preparation` | Scheduling preparation request, including Input preparation it invokes |
 | `input_preparation` | Input preparation request for the selected context |
 | `workspace_publication` | Capture of selected workspace anchors and execution roots from the shared memory view |

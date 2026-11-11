@@ -148,6 +148,7 @@ pub enum ContextCaptureStage {
     OwnerAcquisition,
     TaskPreparation,
     WorkPreparation,
+    CompletionDeliveryPreparation,
     IdentityLookup,
     SchedulingPreparation,
     InputPreparation,

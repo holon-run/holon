@@ -2099,6 +2099,9 @@ class DockerE2ERunnerTests(unittest.TestCase):
         cases = [
             ("GET", "runtime_db_busy", True, True),
             ("GET", "projection_stale_unhandled", True, True),
+            ("GET", "agent_reconciliation_pending", True, True),
+            ("POST", "agent_reconciliation_pending", True, False),
+            ("GET", "agent_reconciliation_pending", False, False),
             ("POST", "runtime_db_busy", True, False),
             ("GET", "runtime_db_quarantined", True, False),
             ("GET", "runtime_db_busy", False, False),

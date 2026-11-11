@@ -109,7 +109,7 @@ pub(crate) fn pending_task_input_roots(
     })
 }
 
-impl ResidentContextInputs<'_, '_> {
+impl ResidentContextInputs<'_> {
     fn task_inputs(&self) -> Result<&CapturedTasks> {
         self.tasks
             .ok_or_else(|| TaskReadError::IncompleteActive.into())

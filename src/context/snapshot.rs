@@ -1678,10 +1678,7 @@ mod coherent_acquisition_tests {
         projection_eval::HistorySelector,
         runtime::mutation_owner::PublicationToken,
         runtime_db::context_inputs::ContextDurableRead,
-        types::{
-            BriefContentSource, BriefContentSourceRelation, BriefKind, DeliverySummaryRecord,
-            Priority, TurnOwner,
-        },
+        types::{BriefContentSource, BriefContentSourceRelation, BriefKind, Priority, TurnOwner},
     };
     use std::cell::{Cell, RefCell};
 
@@ -2240,7 +2237,11 @@ mod coherent_acquisition_tests {
         fn active_tasks(&self, agent_id: &str) -> Result<Vec<TaskRecord>> {
             panic!("durable reads must not precede resident scope validation")
         }
-        fn delivery_summaries(&self, limit: usize) -> Result<Vec<DeliverySummaryRecord>> {
+        fn completion_delivery_summaries<'a>(
+            &self,
+            agent_id: &str,
+            work_item_ids: impl Iterator<Item = &'a str>,
+        ) -> Result<Vec<(String, String)>> {
             panic!("durable reads must not precede resident scope validation")
         }
         fn admitted_settlements(

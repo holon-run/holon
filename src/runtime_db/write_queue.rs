@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicU64;
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock, Weak};
 use std::thread;
 #[cfg(test)]
@@ -113,6 +114,7 @@ impl RuntimeDbFileIdentity {
 pub(crate) struct RuntimeDbWriteQueue {
     pub(crate) state: Mutex<RuntimeDbWriteQueueState>,
     pub(crate) available: Condvar,
+    pub(super) delivery_summary_generation: AtomicU64,
     workspace_context: Mutex<Option<SharedWorkspaceContext>>,
 }
 
@@ -711,6 +713,7 @@ fn runtime_db_write_queue(path: &Path) -> Result<Arc<RuntimeDbWriteQueue>> {
         Arc::new(RuntimeDbWriteQueue {
             state: Mutex::new(RuntimeDbWriteQueueState::default()),
             available: Condvar::new(),
+            delivery_summary_generation: AtomicU64::new(0),
             workspace_context: Mutex::default(),
         })
     })))
