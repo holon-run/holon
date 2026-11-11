@@ -201,6 +201,13 @@
         "summary": "持续负责软件发布与交付工作。"
       }
     },
+    "research-steward": {
+      "category": "productivity",
+      "zh-CN": {
+        "name": "研究证据管家",
+        "summary": "把开放问题收敛成可追溯的来源账本、主张核验和决策简报；默认不发布、不联系外部方，也不替用户做产品或专业决定。"
+      }
+    },
     "reverse-engineer": {
       "category": "engineering",
       "en": {

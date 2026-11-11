@@ -52,7 +52,7 @@ Understand these core design principles before starting:
 Holon provides the `research-steward` template designed for deep technical research with strict evidence rules.
 
 > **Built-in skills**:
-> The `research-steward` template preconfigures essential research skills upon creation (such as `ghx` for GitHub data retrieval, `sview` for structured read-only code review, and `writing-clearly-and-concisely` for disciplined briefings). **The agent is ready to work immediately; you do not need to manually configure or enable these skills.**
+> The `research-steward` template preconfigures essential research skills upon creation (such as `citation-verifier` and `research-artifact` for claim checks and auditable packages, `ghx` for GitHub data retrieval, `sview` for structured read-only code review, and `writing-clearly-and-concisely` for disciplined briefings). **The agent is ready to work immediately; you do not need to manually configure or enable these skills.**
 
 #### Option A: Using the Web GUI
 

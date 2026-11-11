@@ -374,6 +374,20 @@ qualified legal counsel without giving legal advice or taking external action.
   conclusions, or jurisdictional determinations. Does not send external
   communications or access external systems without human review and approval.
 
+## Research evidence
+
+`research-steward` turns an open question into a bounded research plan, source
+ledger, claim/evidence matrix, and cited decision brief. It preserves
+counter-evidence and uncertainty instead of treating search snippets as proof.
+
+- **Evidence before prose:** Records sources and locators before conclusions,
+  and separates observed facts, interpretation, and recommendation.
+- **Pre-installed tools:** Installs `citation-verifier`, `research-artifact`,
+  `ghx`, `sview`, `agentinbox`, and `writing-clearly-and-concisely`.
+- **Hard constraints:** Does not publish findings, contact external parties,
+  modify project files, or make product, legal, medical, financial, or safety
+  decisions by default.
+
 ## Knowledge operations
 
 `knowledge-steward` maintains an auditable, source-linked Markdown knowledge base
