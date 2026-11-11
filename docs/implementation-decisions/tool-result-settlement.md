@@ -21,3 +21,9 @@ Observer HTTP requests return a retryable error while publication is pending.
 for up to one second before returning it to the model. This adapter retry never
 reserves an execution owner or reconciles another operation; cancellation drops
 the read future without leaving a retry worker behind.
+
+The writer labels ToolResult transactions as `runtime_db.tool_result`. The
+label carries queue wait and held-lock timing through the existing writer logs.
+A successful ToolResult transaction always returns its execution Event ACK,
+which is sufficient to mark the receipt applied. The writer skips the before
+and after evidence marker and index frontier reads for this command.

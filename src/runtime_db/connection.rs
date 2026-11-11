@@ -641,6 +641,7 @@ fn run_transaction_attempt<T>(
                 begin_wait_ms = begin_wait.as_millis(),
                 begin_retry_count,
                 elapsed_ms = elapsed.as_millis(),
+                held_write_lock_us = held_write_lock.as_micros(),
                 "runtime db write committed"
             );
             Ok(value)

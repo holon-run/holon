@@ -285,6 +285,7 @@ fn tool_result_commits_evidence_audits_and_barrier_once_and_replays_after_later_
     assert_eq!(events[0].kind, "tool_executed");
     assert_eq!(events[1].kind, "external_command_checkpoint_durable");
     assert!(events[0].event_seq < events[1].event_seq);
+    assert!(receipt.outcome.applied);
     assert_eq!(receipt.outcome.scopes[0].audit_events.len(), 2);
     assert!(value
         .input_delta
@@ -386,6 +387,7 @@ fn tool_result_without_command_barrier_still_has_one_original_audit() -> Result<
         panic!("tool ACK")
     };
     assert_eq!(events.len(), 1);
+    assert!(receipt.outcome.applied);
     assert_eq!(receipt.outcome.scopes[0].audit_events.len(), 1);
     assert_eq!(f.count("tool_executions")?, 1);
     Ok(())
