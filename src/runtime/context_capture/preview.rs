@@ -104,6 +104,7 @@ impl RuntimeHandle {
         &self,
         message: &MessageEnvelope,
     ) -> Result<PreparedLoadedContext> {
+        self.inner.runtime_db.check_read_scope()?;
         let root = self
             .inner
             .mutation_owner

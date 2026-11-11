@@ -2505,6 +2505,36 @@ mod resource_read_tests {
         assert!(captured
             .rendered_context_attachment
             .contains("inspect ready context"));
+
+        let cancelled_runtime = runtime.clone();
+        let cancelled = tokio::task::spawn_blocking(move || {
+            let scope = crate::runtime_db::RuntimeDbReadScope::new(
+                std::time::Instant::now() + std::time::Duration::from_secs(5),
+            );
+            scope.cancel();
+            crate::runtime_db::read_block::with_scope(scope, || {
+                tokio::runtime::Handle::current().block_on(async {
+                    tokio::time::timeout(
+                        std::time::Duration::from_secs(2),
+                        cancelled_runtime.preview_prompt(
+                            "cancelled preview".into(),
+                            AuthorityClass::OperatorInstruction,
+                        ),
+                    )
+                    .await?
+                })
+            })
+        })
+        .await?;
+        let error = cancelled
+            .err()
+            .context("Ready Preview ignored a cancelled read scope")?;
+        assert_eq!(
+            error
+                .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                .map(|error| error.operation()),
+            Some("scoped reader"),
+        );
         drop((owner, refresh, run_loop));
         host.shutdown().await?;
         Ok(())
