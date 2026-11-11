@@ -33,6 +33,126 @@ fn scope() -> InputEvidenceScope {
 }
 
 #[test]
+fn recent_transcript_upgrade_preserves_qualification_and_bounds_window_work() -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut connection = Connection::open_in_memory()?;
+    ensure_migration_table(&connection)?;
+    let migration = MIGRATIONS
+        .iter()
+        .find(|migration| migration.name == "index_recent_transcript_window")
+        .context("missing recent transcript index migration")?;
+    for predecessor in MIGRATIONS
+        .iter()
+        .take_while(|m| m.version < migration.version)
+    {
+        apply_migration(&mut connection, predecessor)?;
+    }
+    let tx = connection.transaction()?;
+    tx.execute_batch(
+        "INSERT INTO episode_continuity_seeds(
+           seed_id,agent_id,policy_version,boundary_id,identity_incarnation,
+           source_kind,roots_json,candidate_payloads_json,import_required,captured_at
+         ) VALUES
+           ('seed-a','agent-a',1,'fixture',1,'upgrade_identity','{}','[]',0,'2026-10-01'),
+           ('seed-b','agent-b',1,'fixture',1,'upgrade_identity','{}','[]',0,'2026-10-01');
+         WITH RECURSIVE history(seq) AS (
+           VALUES(1) UNION ALL SELECT seq+1 FROM history WHERE seq<50000
+         )
+         INSERT INTO transcript_entries(evidence_id,agent_id,transcript_seq,created_at,kind,payload_json)
+         SELECT printf('old-%05d',seq),'agent-a',seq,'2026-10-01','text','{}' FROM history;
+         INSERT INTO transcript_entries(evidence_id,agent_id,transcript_seq,created_at,kind,payload_json)
+         VALUES
+           ('legacy-a','agent-a',NULL,'2026-10-12','text','{}'),
+           ('legacy-b','agent-a',NULL,'2026-10-12','text','{}'),
+           ('legacy-z','agent-a',NULL,'2026-10-11','text','{}'),
+           ('current-head','agent-a',60000,'2026-10-13','text','{}'),
+           ('tombstone','agent-a',NULL,'2026-10-13','text','{}'),
+           ('other-incarnation','agent-a',NULL,'2026-10-13','text','{}'),
+           ('wrong-seed','agent-a',NULL,'2026-10-13','text','{}'),
+           ('foreign-agent','agent-b',NULL,'2026-10-13','text','{}');
+         INSERT INTO input_evidence_eligibility(
+           seed_id,capture_phase,family,record_id,fingerprint_json,mandatory
+         )
+         SELECT 'seed-a','upgrade','transcript',evidence_id,'{}',0
+           FROM transcript_entries WHERE transcript_seq<=50000
+              OR evidence_id IN ('legacy-a','legacy-z','tombstone');
+         INSERT INTO input_evidence_eligibility VALUES
+           ('seed-b','upgrade','transcript','wrong-seed','{}',0);
+         INSERT INTO input_evidence_seed_recovery_current(
+           seed_id,family,record_id,revision,fingerprint_json,origin_kind
+         ) VALUES
+           ('seed-a','transcript','legacy-b',1,'{}','fixed_member'),
+           ('seed-a','transcript','legacy-z',1,'{}','fixed_member'),
+           ('seed-a','transcript','tombstone',1,'{}','fixed_member');
+         INSERT INTO input_evidence_current(
+           agent_id,identity_incarnation,family,record_id,revision,
+           fingerprint_json,availability,qualification
+         ) VALUES
+           ('agent-a',1,'transcript','current-head',1,'{}','present','committed_writer'),
+           ('agent-a',1,'transcript','tombstone',1,'{}','pruned','committed_writer'),
+           ('agent-a',2,'transcript','other-incarnation',1,'{}','present','committed_writer'),
+           ('agent-b',1,'transcript','foreign-agent',1,'{}','present','committed_writer');",
+    )?;
+    tx.commit()?;
+
+    let select = |connection: &mut Connection, seed: Option<&str>| -> Result<Vec<String>> {
+        let tx = connection.transaction()?;
+        Ok(qualified_window_keys(
+            &tx,
+            &scope(),
+            &Binding {
+                seed_id: seed.map(str::to_owned),
+            },
+            &InputWindowSelector::RecentTranscript,
+            6,
+        )?
+        .into_iter()
+        .map(|key| key.id)
+        .collect())
+    };
+    let expected = [
+        "legacy-a",
+        "legacy-b",
+        "legacy-z",
+        "current-head",
+        "old-50000",
+        "old-49999",
+    ];
+    assert_eq!(select(&mut connection, Some("seed-a"))?, expected);
+    apply_migration(&mut connection, migration)?;
+    assert_eq!(
+        crate::runtime_db::migrations::current_schema_version(&connection)?,
+        migration.version
+    );
+
+    // Count VM work instead of wall time. A large legacy tail must not be
+    // sorted or materialized just to choose six qualified records.
+    let ticks = Arc::new(AtomicUsize::new(0));
+    connection.progress_handler(
+        1_000,
+        Some({
+            let ticks = ticks.clone();
+            move || {
+                ticks.fetch_add(1, Ordering::Relaxed);
+                false
+            }
+        }),
+    );
+    let result = select(&mut connection, Some("seed-a"));
+    connection.progress_handler(0, None::<fn() -> bool>);
+    assert_eq!(result?, expected);
+    let ticks = ticks.load(Ordering::Relaxed);
+    assert!(
+        ticks < 10,
+        "recent window used at least {} VM steps",
+        ticks * 1_000
+    );
+    assert_eq!(select(&mut connection, None)?, ["current-head"]);
+    Ok(())
+}
+
+#[test]
 fn request_root_union_borrows_duplicates_and_preserves_failed_material() -> Result<()> {
     use crate::{
         config::StateMemoryLimits, diagnostics::resource_io::ResourceReadMaterial,
