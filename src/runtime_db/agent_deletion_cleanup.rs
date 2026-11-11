@@ -185,6 +185,7 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     ("artifact_metadata", "agent_id"),
     ("briefs", "agent_id"),
     ("messages", "agent_id"),
+    ("message_counts", "agent_id"),
     ("turn_records", "agent_id"),
     ("audit_events", "agent_id"),
     // Callback messages/audits use agent_id; capabilities use target_agent_id.
@@ -2362,6 +2363,10 @@ mod tests {
             assert!(!exported.contains_key(table), "{table}");
         }
         assert_eq!(exported["messages"][0]["agent_id"], "a");
+        assert_eq!(
+            exported["message_counts"],
+            serde_json::json!([{"agent_id":"a","message_count":1}])
+        );
         let triggers = exported["external_triggers"].as_array().unwrap();
         assert_eq!(triggers.len(), 2);
         for status in ["active", "revoked"] {
@@ -2788,6 +2793,8 @@ mod tests {
         assert_eq!(private_rows(&db, "b")?, foreign_before);
         db.transaction(|tx| {
             assert_private_history_cleared_tx(tx, "a")?;
+            assert_eq!(super::super::message_count::for_agent(tx, "a")?, 0);
+            assert_eq!(super::super::message_count::for_agent(tx, "b")?, 1);
             assert!(exists(
                 tx,
                 "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
