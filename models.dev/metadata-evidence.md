@@ -5,6 +5,45 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-11
+
+Pinned models.dev payload:
+`f312cd2d4640b2876c8ac0b1f1878a6727f893ff38fd2a56b09fc8cb086dd433`,
+sampled November 10 at 21:05:47 UTC. The
+[endpoint review](endpoint-review.md#2026-11-11-incremental-review) records
+the independently checked route boundary and unresolved evidence.
+
+The native [Carbon model card](https://aistudio.google.com/docs/models/gemini-4-carbon)
+and [migration guide](https://aistudio.google.com/docs/whats-new-gemini-4-carbon)
+confirm the exact `gemini-4-carbon` ID, 1,048,576-token unified context,
+65,536-token synchronous output, image input, text output, function calling,
+structured outputs, and always-on thinking with low/medium/high levels
+(default medium). Neither image generation nor explicit context caching is
+supported. Long decode beyond 65,536 needs a separate continuation/background
+protocol; it is not enabled by this update. Native Google projection corrects
+the snapshot's stale 32,768 output value only for this exact model. Argon,
+preview suffixes, resellers, and Go do not inherit the correction.
+
+The model and migration page SHA-256 values are respectively:
+
+- `41d56d4c27341f265c1fa822c2981fbfa8da3e53545aea5c698a3c322c1f0b5c`
+- `2e036561544f22805bb165cfa0a9efe494f40f064aed53750277415c3f7d313e`
+
+The [public OpenRouter model list](https://openrouter.ai/api/v1/models),
+sampled November 10 at 22:09:29 UTC, has SHA-256
+`16452f62718c997cc42c9c52ee0f6b25977416a55ef410a93213c0a01ca247e0`.
+It corroborates the new OpenRouter discovery IDs and changed output limits.
+Its overall `context_length` agrees with the snapshot for Qwen3.8-27B
+(1,048,575), but its `top_provider.context_length` is only 262,144; this remains
+an aggregator/provider distinction, not a certified limit for every backend.
+The discovery-only removal of `stealth/crouton-alpha` and OpenCode's newly
+deprecated Crouton metadata do not prove a checked-in route retired.
+
+The freshly sampled [active Codex catalog](https://github.com/openai/codex/blob/126a0ee92ed2c5e73cd8a8f7e37563e8527552d7/codex-rs/models-manager/models.json)
+is unchanged from the previous cycle (SHA-256
+`1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10`).
+The retired `core/models.json` location is not the active source.
+
 ## Incremental review: 2026-11-10
 
 Pinned payload:

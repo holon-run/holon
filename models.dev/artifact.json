@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
+  "revision": "models-dev-f312cd2d4640b2876c8ac0b1f1878a6727f893ff38fd2a56b09fc8cb086dd433",
   "upstream": {
     "source": "models.dev",
-    "revision": "b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
-    "fetched_at": "2026-11-10T12:08:01.202380990+00:00",
-    "content_sha256": "b93c6e319c6ccec47273ecbee54934fbdaf1e1863407fd19e7cd42a833e23496",
-    "adapter_version": "0.59.0 (567d5a466-dirty)"
+    "revision": "f312cd2d4640b2876c8ac0b1f1878a6727f893ff38fd2a56b09fc8cb086dd433",
+    "fetched_at": "2026-11-10T22:13:35.401405204+00:00",
+    "content_sha256": "f312cd2d4640b2876c8ac0b1f1878a6727f893ff38fd2a56b09fc8cb086dd433",
+    "adapter_version": "0.59.0 (a7d285db3)"
   },
   "models": [
     {
@@ -1111,6 +1111,27 @@
       "auto_compact_token_limit": 190000,
       "default_max_output_tokens": 131072,
       "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "chutes/Qwen/Qwen3.5-27B-TEE",
+      "display_name": "Qwen3.5 27B TEE",
+      "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 262144,
+      "max_output_tokens_upper_limit": 262144,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -2909,7 +2930,7 @@
     {
       "model_ref": "fireworks/accounts/fireworks/models/kimi-k3p1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -4071,6 +4092,32 @@
       "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 32768,
       "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "gemini/gemini-4-carbon",
+      "display_name": "Gemini 4 Carbon",
+      "description": "Google's most capable reasoning model for complex software engineering, deep math and science, high factual accuracy, and long-horizon autonomous agents",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -7240,7 +7287,7 @@
     {
       "model_ref": "moonshot/kimi-k3.1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -7266,7 +7313,7 @@
     {
       "model_ref": "moonshot/kimi-k3.1-pro-highspeed",
       "display_name": "Kimi K3.1 Pro Highspeed",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -8005,7 +8052,7 @@
     {
       "model_ref": "nearai/moonshotai/kimi-k3.1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -11875,6 +11922,57 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/baidu/ernie-5.5-flash-preview",
+      "display_name": "ERNIE-5.5-Flash-Preview",
+      "description": "Flagship model for demanding analysis, coding, and production agent workflows",
+      "context_window_tokens": 1024000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 972800,
+      "default_max_output_tokens": 921600,
+      "max_output_tokens_upper_limit": 921600,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/baidu/ernie-light-dt-1.0-intl",
+      "display_name": "ERNIE-Light-DT-1.0",
+      "description": "Reasoning model for deliberate analysis, multi-step problem solving, and tool use",
+      "context_window_tokens": 1024000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 972800,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/bytedance-seed/seed-1.6",
       "display_name": "Seed 1.6",
       "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
@@ -13112,6 +13210,32 @@
       "source": "remote_discovered"
     },
     {
+      "model_ref": "openrouter/google/gemini-4-carbon",
+      "display_name": "Gemini 4 Carbon",
+      "description": "Gemini multimodal model for text, image, audio, video, and document tasks",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 943718,
+      "max_output_tokens_upper_limit": 943718,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
       "model_ref": "openrouter/google/gemini-nano-banana-2.1",
       "display_name": "Nano Banana 2.1",
       "description": "Image model for prompt-driven generation, editing, and visual design workflows",
@@ -13278,8 +13402,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 128000,
+      "max_output_tokens_upper_limit": 128000,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13808,8 +13932,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 115200,
+      "max_output_tokens_upper_limit": 115200,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14090,8 +14214,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "default_max_output_tokens": 262144,
+      "max_output_tokens_upper_limit": 262144,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -14994,6 +15118,31 @@
       },
       "reasoning_effort_options": [
         "none",
+        "medium",
+        "high"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/nex-agi/nex-n2.6",
+      "display_name": "Nex-N2.6",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 262144,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 249036,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
         "medium",
         "high"
       ],
@@ -16606,8 +16755,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 32768,
-      "max_output_tokens_upper_limit": 32768,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17141,8 +17290,8 @@
       "context_window_tokens": 40960,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 38912,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 36864,
+      "max_output_tokens_upper_limit": 36864,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -17794,9 +17943,9 @@
       "model_ref": "openrouter/qwen/qwen3.8-27b",
       "display_name": "Qwen3.8 27B",
       "description": "Qwen vision-language model for visual reasoning, documents, and agent tasks",
-      "context_window_tokens": 1024000,
+      "context_window_tokens": 1048575,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 972800,
+      "auto_compact_token_limit": 996146,
       "default_max_output_tokens": 235929,
       "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
@@ -18257,35 +18406,6 @@
       "source": "remote_discovered"
     },
     {
-      "model_ref": "openrouter/stealth/crouton-alpha",
-      "display_name": "Crouton Alpha",
-      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
-      "context_window_tokens": 1048576,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943718,
-      "max_output_tokens_upper_limit": 943718,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": true,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "minimal",
-        "low",
-        "medium",
-        "high",
-        "xhigh",
-        "max"
-      ],
-      "source": "remote_discovered"
-    },
-    {
       "model_ref": "openrouter/stepfun/step-3.5-flash",
       "display_name": "Step 3.5 Flash",
       "description": "StepFun flash lane for quick multimodal reasoning and coding assistance",
@@ -18630,6 +18750,34 @@
       },
       "reasoning_effort_options": [
         "none",
+        "minimal",
+        "low",
+        "medium",
+        "high",
+        "max"
+      ],
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "openrouter/thinkingmachines/inkling-2-small:free",
+      "display_name": "Inkling 2 Small (free)",
+      "description": "Multimodal reasoning model for visual analysis, planning, and tool use",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
         "minimal",
         "low",
         "medium",
@@ -19382,8 +19530,8 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
-      "default_max_output_tokens": 943717,
-      "max_output_tokens_upper_limit": 943717,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -20672,7 +20820,7 @@
     {
       "model_ref": "together/moonshotai/Kimi-K3.1-Pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -22392,7 +22540,7 @@
     {
       "model_ref": "venice/kimi-k3-1-pro",
       "display_name": "Kimi K3.1 Pro",
-      "description": "Multimodal Kimi model with 1M context and always-on reasoning for coding, 3D creation, financial research, and agentic work",
+      "description": "Multimodal Kimi model with a 1M-token context window and always-on reasoning, for coding, 3D creation and financial research",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,

@@ -1,6 +1,6 @@
 # models.dev refresh summary
 
-- Supplement models: 56 (drafted this run: 0, retained: 56, removed: 0)
+- Supplement models: 57 (drafted this run: 0, retained: 57, removed: 0)
 - Deferred candidates: 189 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 634; unknown context: 227; unknown output ceiling: 261.
+Routes: 635; unknown context: 227; unknown output ceiling: 261.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -87,6 +87,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `deepseek@responses/deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | context_window_tokens, max_output_tokens_upper_limit |
 | `deepseek@responses/deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | context_window_tokens, max_output_tokens_upper_limit |
 | `fireworks@default/accounts/fireworks/models/kimi-k3p1-pro` | `fireworks-ai/accounts/fireworks/models/kimi-k3p1-pro` | max_output_tokens_upper_limit |
+| `gemini@default/gemini-4-carbon` | `google/gemini-4-carbon` | max_output_tokens_upper_limit |
 | `huggingface@default/openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | max_output_tokens_upper_limit |
 | `minimax@default/MiniMax-M2.5` | `minimax/MiniMax-M2.5` | max_output_tokens_upper_limit |
 | `minimax@default/MiniMax-M2.5-highspeed` | `minimax/MiniMax-M2.5-highspeed` | max_output_tokens_upper_limit |
@@ -207,7 +208,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@messages/kimi-k3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/kimi-k3.1-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/longcat-2.0` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
-| `opencode-go@messages/longcat-2.5-free` | Unknown | Unknown | no_exact_endpoint_upstream_evidence; no_exact_endpoint_upstream_evidence |
+| `opencode-go@messages/longcat-2.5-free` | Unknown | Unknown | Only the native Go Chat contract is independently published. This translated text route does not inherit capacity, vision, reasoning, effort, explicit cache support, or agent-turn certification. |
 | `opencode-go@messages/mimo-v2.5` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@messages/mimo-v2.5-pro` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@messages/mimo-v2.6-flash` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
@@ -233,7 +234,7 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@responses/kimi-k3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/kimi-k3.1-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/longcat-2.0` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
-| `opencode-go@responses/longcat-2.5-free` | Unknown | Unknown | no_exact_endpoint_upstream_evidence; no_exact_endpoint_upstream_evidence |
+| `opencode-go@responses/longcat-2.5-free` | Unknown | Unknown | Only the native Go Chat contract is independently published. This translated text route does not inherit capacity, vision, reasoning, effort, explicit cache support, or agent-turn certification. |
 | `opencode-go@responses/mimo-v2.5` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@responses/mimo-v2.5-pro` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
 | `opencode-go@responses/mimo-v2.6-flash` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
