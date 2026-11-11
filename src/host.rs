@@ -28160,14 +28160,32 @@ mod tests {
     }
 
     #[cfg(holon_lib_test_shard = "d")]
+    /// Await reconciliation convergence for a `default_runtime()` activation
+    /// instead of racing the production observer publication bound (issue #4035).
+    async fn default_runtime_settled(host: &RuntimeHost) -> RuntimeHandle {
+        let settled = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                match host.default_runtime().await {
+                    Ok(runtime) => break Ok(runtime),
+                    Err(error) if error.is::<crate::runtime_db::RuntimeDbRetryableError>() => {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Err(error) => break Err(error),
+                }
+            }
+        })
+        .await
+        .expect("default runtime activation should settle within the test-local window");
+        settled.expect("non-retryable default runtime error")
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn parent_cleanup_exits_runtime_and_preserves_parent_result() {
         let (_home, host) = test_host();
-        let parent = host.default_runtime().await.unwrap();
-        let parent_id = parent
-            .agent_summary()
+        let parent = default_runtime_settled(&host).await;
+        let parent_id = agent_summary_settled(&parent)
             .await
-            .unwrap()
             .identity
             .agent_id
             .clone();
