@@ -1859,7 +1859,13 @@ fn prepare_input_records_tx(
         if depth > MAX_DEPTH {
             return Err(InputEvidenceSnapshotError::ResourceExhausted("reference depth").into());
         }
+        // Completion edges need persisted aliases. Keep walking independent
+        // records so their missing qualifications can share one writer.
+        let is_completion_edge = !matches!(path, CompletionInputPath::Strict);
         if let Some(record) = records.get(&key) {
+            if is_completion_edge && !missing_qualifications.is_empty() {
+                continue;
+            }
             let head = match &path {
                 CompletionInputPath::Strict => None,
                 CompletionInputPath::Head(_) => Some(record.as_ref()),
@@ -1867,8 +1873,7 @@ fn prepare_input_records_tx(
                     records.get(&Key::new(Family::Brief, id)).map(Arc::as_ref)
                 }
             };
-            if !matches!(path, CompletionInputPath::Strict) {
-                InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
+            if is_completion_edge {
                 for proof in super::work_snapshot::completion_source_observations_with_scope_tx(
                     tx,
                     scope,
@@ -2009,6 +2014,10 @@ fn prepare_input_records_tx(
             refs.extend(keys.iter().cloned());
             turn_transcript_keys.insert(turn.turn_id.clone(), keys);
         }
+        if is_completion_edge && !missing_qualifications.is_empty() {
+            records.insert(key, qualified);
+            continue;
+        }
         let head = match &path {
             CompletionInputPath::Strict => None,
             CompletionInputPath::Head(_) => Some(qualified.as_ref()),
@@ -2016,8 +2025,7 @@ fn prepare_input_records_tx(
                 records.get(&Key::new(Family::Brief, id)).map(Arc::as_ref)
             }
         };
-        if !matches!(path, CompletionInputPath::Strict) {
-            InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
+        if is_completion_edge {
             for proof in super::work_snapshot::completion_source_observations_with_scope_tx(
                 tx,
                 scope,

@@ -1,6 +1,8 @@
 use super::*;
 use crate::runtime_db::input_evidence_snapshot::{
-    prepare_input_evidence_snapshot_tx, InputEvidenceBootstrapSnapshot, InputEvidenceLoadRequest,
+    load_or_plan_input_qualification_with_scope_read_tx, prepare_input_evidence_snapshot_tx,
+    qualify_planned_input_tx, InputEvidenceBootstrapSnapshot, InputEvidenceLoadRequest,
+    InputQualificationPlan,
 };
 
 fn input_request(heads: &[&str]) -> InputEvidenceLoadRequest {
@@ -193,9 +195,8 @@ fn input_loader_uses_the_incoming_transcript_edge_for_missing_message_only() -> 
     Ok(())
 }
 
-#[test]
-fn two_fixed_heads_can_materialize_aliases_in_order_without_adopting_new_sources() -> Result<()> {
-    let (_dir, db) = legacy(|tx| {
+fn two_fixed_heads() -> Result<(tempfile::TempDir, RuntimeDb)> {
+    let (dir, db) = legacy(|tx| {
         for (id, owner, source) in [
             ("a-head", "a-work", "a-source"),
             ("z-head", "z-work", "z-source"),
@@ -212,6 +213,15 @@ fn two_fixed_heads_can_materialize_aliases_in_order_without_adopting_new_sources
             .latest_result_work_ids
             .extend(["a-work".into(), "z-work".into()]);
         prepare_work_domain_snapshot_tx(tx, &scope(), &policy)?.require_current()?;
+        Ok(())
+    })?;
+    Ok((dir, db))
+}
+
+#[test]
+fn two_fixed_heads_can_materialize_aliases_in_order_without_adopting_new_sources() -> Result<()> {
+    let (_dir, db) = two_fixed_heads()?;
+    db.transaction(|tx| {
         let request = input_request(&["a-head", "z-head"]);
         let resident = input_resident(tx, &request)?;
         let captured = resident.capture_for_request(&request)?;
@@ -219,6 +229,42 @@ fn two_fixed_heads_can_materialize_aliases_in_order_without_adopting_new_sources
         assert_eq!(captured.completion_source_observations.len(), 2);
         Ok(())
     })?;
+    Ok(())
+}
+
+#[test]
+fn read_only_qualification_batches_fixed_completion_heads() -> Result<()> {
+    let (_dir, db) = two_fixed_heads()?;
+    let scope = scope();
+    let request = input_request(&["a-head", "z-head"]);
+    let read = || {
+        db.read_for_preparation(|tx| {
+            let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
+            load_or_plan_input_qualification_with_scope_read_tx(
+                tx,
+                &scope,
+                request.borrowed(),
+                false,
+                read,
+            )
+        })
+    };
+    let error = read().err().context("fixed heads need qualification")?;
+    let plan = error
+        .downcast_ref::<InputQualificationPlan>()
+        .with_context(|| format!("missing qualification plan: {error:#}"))?;
+    let expected = ["a-head", "z-head"]
+        .into_iter()
+        .map(|id| InputEvidenceKey::new(InputEvidenceFamily::Brief, id))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(plan.keys(), &expected);
+    db.transaction(|tx| qualify_planned_input_tx(tx, &scope, plan))?;
+    let InputEvidenceBootstrapSnapshot::Current(snapshot) = read()? else {
+        anyhow::bail!("fixture unexpectedly retired");
+    };
+    let captured = snapshot.resident.capture_for_request(&request)?;
+    assert_eq!(captured.records.len(), 2);
+    assert_eq!(captured.completion_source_observations.len(), 2);
     Ok(())
 }
 
