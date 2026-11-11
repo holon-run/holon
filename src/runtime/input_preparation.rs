@@ -207,54 +207,89 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
             })
             .transpose()
     };
-    let read = db.read_for_preparation(|tx| {
-        let prepared = crate::runtime_db::input_preparation::load_input_with_scheduling_tx(
-            tx,
-            &scope,
-            &published.state,
-            request,
-            recent_episode_limit,
-            budget,
-            scheduling,
-            cause == InputPreparationCause::ExistingAdmissionCleanup,
-        )?;
-        let current = current_query(tx)?;
-        Ok((prepared, current))
-    });
-    let (prepared, current) = match read {
-        Ok(read) => read,
-        Err(error) if needs_qualification_preparation(&error) => db.transaction_with_context(
+    let original_recovery = cause == InputPreparationCause::ExistingAdmissionCleanup;
+    let read = || {
+        let started = std::time::Instant::now();
+        let result = db.read_for_preparation(|tx| {
+            let prepared = crate::runtime_db::input_preparation::load_input_with_scheduling_tx(
+                tx,
+                &scope,
+                &published.state,
+                request,
+                recent_episode_limit,
+                budget,
+                scheduling,
+                original_recovery,
+            )?;
+            Ok((prepared, current_query(tx)?))
+        });
+        tracing::trace!(
+            agent_id = %scope.agent_id,
+            elapsed_us = started.elapsed().as_micros(),
+            qualification_miss = ?result.as_ref().err().and_then(qualification_miss),
+            success = result.is_ok(),
+            "input preparation reader finished"
+        );
+        result
+    };
+    let mut loaded = read();
+    let allows_empty_birth_cursor = request
+        .query
+        .as_ref()
+        .and_then(|query| query.selection.birth_after)
+        .unwrap_or(0)
+        == 0;
+    if allows_empty_birth_cursor
+        && loaded.as_ref().err().and_then(qualification_miss)
+            == Some(QualificationMiss::BirthCursor)
+    {
+        db.transaction_with_context(
             crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
                 "runtime_db.input_preparation",
-                "qualified_domains",
+                "input_query_birth_cursors",
             ),
             |tx| {
-                let prepared = if cause == InputPreparationCause::ExistingAdmissionCleanup {
-                    crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx(
-                        tx,
-                        &scope,
-                        &published.state,
-                        request,
-                        recent_episode_limit,
-                        budget,
-                        scheduling,
-                    )?
-                } else {
-                    crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
-                        tx,
-                        &scope,
-                        &published.state,
-                        request,
-                        recent_episode_limit,
-                        budget,
-                        scheduling,
-                    )?
-                };
-                let current = current_query(tx)?;
-                Ok((prepared, current))
+                crate::runtime_db::input_preparation::initialize_input_birth_cursor_tx(
+                    tx,
+                    &scope,
+                    &published.state,
+                    original_recovery,
+                )
             },
-        )?,
-        Err(error) => return Err(error),
+        )?;
+        loaded = read();
+    }
+    let (prepared, current) = match loaded {
+        Ok(read) => read,
+        Err(error) => {
+            let Some(reason) = qualification_miss(&error) else {
+                return Err(error);
+            };
+            tracing::debug!(agent_id = %scope.agent_id, ?reason, "input preparation needs writer qualification");
+            db.transaction_with_context(
+                crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                    "runtime_db.input_preparation",
+                    "qualified_domains",
+                ),
+                |tx| {
+                    let prepare = if original_recovery {
+                        crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx
+                    } else {
+                        crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx
+                    };
+                    let prepared = prepare(
+                        tx,
+                        &scope,
+                        &published.state,
+                        request,
+                        recent_episode_limit,
+                        budget,
+                        scheduling,
+                    )?;
+                    Ok((prepared, current_query(tx)?))
+                },
+            )?
+        }
     };
     // Sidecar preparation is idempotent and cannot change canonical facts.
     // A failed/indeterminate transaction leaves the old published root intact;
@@ -298,27 +333,48 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
     }))
 }
 
-fn needs_qualification_preparation(error: &anyhow::Error) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+enum QualificationMiss {
+    BirthCursor,
+    InputEvidence,
+    SchedulingEvidence,
+    SchedulingCoverage,
+    InputQuery,
+}
+
+fn qualification_miss(error: &anyhow::Error) -> Option<QualificationMiss> {
     use crate::runtime::{
         resident_input_evidence::InputQueryError, resident_scheduling::SchedulingReadError,
     };
     use crate::runtime_db::{
-        input_evidence_snapshot::InputEvidenceSnapshotError,
+        input_evidence_snapshot::{InputEvidenceSnapshotError, MissingInputBirthCursor},
         scheduling_snapshot::SchedulingSnapshotError,
     };
-    matches!(
+    if error.is::<MissingInputBirthCursor>() {
+        Some(QualificationMiss::BirthCursor)
+    } else if matches!(
         error.downcast_ref::<InputEvidenceSnapshotError>(),
         Some(InputEvidenceSnapshotError::NeedsPreparation(_))
-    ) || matches!(
+    ) {
+        Some(QualificationMiss::InputEvidence)
+    } else if matches!(
         error.downcast_ref::<SchedulingSnapshotError>(),
         Some(SchedulingSnapshotError::NeedsPreparation(_))
-    ) || matches!(
+    ) {
+        Some(QualificationMiss::SchedulingEvidence)
+    } else if matches!(
         error.downcast_ref::<SchedulingReadError>(),
         Some(SchedulingReadError::IncompleteLive)
-    ) || matches!(
+    ) {
+        Some(QualificationMiss::SchedulingCoverage)
+    } else if matches!(
         error.downcast_ref::<InputQueryError>(),
         Some(InputQueryError::NeedsPreparation)
-    )
+    ) {
+        Some(QualificationMiss::InputQuery)
+    } else {
+        None
+    }
 }
 
 fn validate_ready_root(

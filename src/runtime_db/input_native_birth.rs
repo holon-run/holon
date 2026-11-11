@@ -187,10 +187,7 @@ impl<'tx, 'conn> NativeInputWriteProof<'tx, 'conn> {
             )?
         };
         ensure!(current, InputEvidenceSnapshotError::RetiredScope);
-        tx.execute(
-            "INSERT INTO input_query_birth_cursors(agent_id,identity_incarnation,high_water) VALUES(?1,?2,0) ON CONFLICT(agent_id,identity_incarnation) DO NOTHING",
-            params![scope.agent_id, scope.identity_incarnation],
-        )?;
+        ensure_cursor_tx(tx, scope)?;
         let base_cursor = cursor_tx(tx, scope)?;
         let mut copied_bytes = base_bytes;
         let mut copied_records = 16usize;
@@ -525,6 +522,14 @@ fn address_bytes(scope: &InputEvidenceScope, id: &str) -> Result<usize> {
         .and_then(|n| n.checked_add(scope.agent_id.len()))
         .and_then(|n| n.checked_add(512))
         .context("Input birth address overflow")
+}
+
+pub(super) fn ensure_cursor_tx(tx: &Transaction<'_>, scope: &InputEvidenceScope) -> Result<()> {
+    tx.execute(
+        "INSERT INTO input_query_birth_cursors(agent_id,identity_incarnation,high_water) VALUES(?1,?2,0) ON CONFLICT(agent_id,identity_incarnation) DO NOTHING",
+        params![scope.agent_id, scope.identity_incarnation],
+    )?;
+    Ok(())
 }
 
 fn cursor_tx(tx: &Transaction<'_>, scope: &InputEvidenceScope) -> Result<u64> {
