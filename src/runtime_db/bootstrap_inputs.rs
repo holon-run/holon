@@ -27,6 +27,7 @@ pub(crate) struct BootstrapPendingMetadata {
 pub(crate) struct PreparedPendingQueue {
     pub metadata: BootstrapPendingMetadata,
     pub messages: Vec<MessageEnvelope>,
+    pub scheduler_events: super::current_query::SchedulerEventFacts,
 }
 
 /// Count/preflight and payload acquisition share this exact transaction.
@@ -154,7 +155,12 @@ pub(crate) fn pending_queue_inputs_tx(
         posture: pending.posture,
     };
     let messages = pending.read_messages()?;
-    Ok(PreparedPendingQueue { metadata, messages })
+    let scheduler_events = super::current_query::SchedulerEventFacts::read(tx, &scope.agent_id)?;
+    Ok(PreparedPendingQueue {
+        metadata,
+        messages,
+        scheduler_events,
+    })
 }
 
 impl PendingQueueRead<'_, '_> {

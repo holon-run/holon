@@ -534,6 +534,7 @@ pub(crate) fn resolve_input_recovery_with_queries(
                         Some(tasks.clone()),
                         current.scheduling.clone(),
                         current.queue_posture,
+                        current.scheduler_events,
                         current.pending,
                         budget,
                         witness.input_runtime(&scope.agent_id).map(Arc::as_ref),

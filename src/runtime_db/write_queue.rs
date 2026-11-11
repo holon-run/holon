@@ -1,8 +1,9 @@
 //! Background writer task, write queue, and write context.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::AtomicU64;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock, Weak};
 use std::thread;
 #[cfg(test)]
@@ -12,7 +13,7 @@ use std::time::Instant;
 use super::blocking::at_blocking_boundary;
 use super::workspace_context::WorkspaceContextPublication;
 use anyhow::{anyhow, bail, Context, Result};
-use rusqlite::{Connection, Transaction};
+use rusqlite::{Connection, OptionalExtension, Transaction};
 
 #[cfg(target_os = "linux")]
 use crate::runtime_db::connection::RuntimeDbSidecarGuard;
@@ -115,6 +116,7 @@ pub(crate) struct RuntimeDbWriteQueue {
     pub(crate) state: Mutex<RuntimeDbWriteQueueState>,
     pub(crate) available: Condvar,
     pub(super) delivery_summary_generation: AtomicU64,
+    audit_event_frontiers: Mutex<BTreeMap<String, Weak<AtomicU64>>>,
     workspace_context: Mutex<Option<SharedWorkspaceContext>>,
 }
 
@@ -512,15 +514,9 @@ impl RuntimeDbWriterState {
         let mut next_warn_at = RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
         loop {
             self.ensure_protected().map_err(before_begin_failure)?;
-            let result = run_transaction_on_connection(
-                &connection,
-                &self.path,
-                context,
-                queue_wait,
-                mutex_wait,
-                |tx| f(tx),
-            );
-            match self.finish_transaction_attempt(&connection, result) {
+            match self
+                .run_transaction_attempt(&connection, context, queue_wait, mutex_wait, |tx| f(tx))
+            {
                 Ok(value) => return Ok(value),
                 Err(error) if is_retryable_transaction_error(&error) => {
                     retry_count += 1;
@@ -575,15 +571,47 @@ impl RuntimeDbWriterState {
             .map_err(|_| before_begin_failure(anyhow!("runtime db writer mutex poisoned")))?;
         let mutex_wait = mutex_wait_started_at.elapsed();
         self.ensure_protected().map_err(before_begin_failure)?;
-        let result = run_transaction_on_connection(
-            &connection,
-            &self.path,
-            context,
-            queue_wait,
-            mutex_wait,
-            f,
+        self.run_transaction_attempt(&connection, context, queue_wait, mutex_wait, f)
+    }
+
+    fn run_transaction_attempt<T>(
+        &self,
+        connection: &Connection,
+        context: RuntimeDbWriteContext,
+        queue_wait: std::time::Duration,
+        mutex_wait: std::time::Duration,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let audit = AuditWriteAttempt::begin();
+        let result = self.finish_transaction_attempt(
+            connection,
+            run_transaction_on_connection(
+                connection, &self.path, context, queue_wait, mutex_wait, f,
+            ),
         );
-        self.finish_transaction_attempt(&connection, result)
+        let mut writes = audit.finish();
+        if let Err(error) = &result {
+            if super::persistence::persistence_certainty(error)
+                == Some(PersistenceCertainty::Indeterminate)
+                && connection.is_autocommit()
+            {
+                // Recheck under the original write turn when COMMIT returned
+                // an uncertain result. On a failed read, fence the older cut.
+                for (agent, sequence) in &mut writes {
+                    if let Ok(latest) = connection.query_row(
+                        "SELECT event_seq FROM audit_events WHERE agent_id=?1 ORDER BY event_seq DESC LIMIT 1",
+                        [agent.as_str()],
+                        |row| row.get(0),
+                    ).optional() {
+                        *sequence = latest.unwrap_or(0);
+                    }
+                }
+            } else {
+                writes.clear();
+            }
+        }
+        self.queue.publish_audit_frontiers(writes);
+        result
     }
 
     fn finish_transaction_attempt<T>(
@@ -619,7 +647,82 @@ fn before_begin_failure(error: anyhow::Error) -> anyhow::Error {
     )
 }
 
+thread_local! {
+    // Original transactions run synchronously under the shared write turn.
+    static AUDIT_WRITES: RefCell<Option<BTreeMap<String, u64>>> = const { RefCell::new(None) };
+}
+
+struct AuditWriteAttempt {
+    previous: Option<BTreeMap<String, u64>>,
+    active: bool,
+}
+
+impl AuditWriteAttempt {
+    fn begin() -> Self {
+        Self {
+            previous: AUDIT_WRITES.with(|writes| writes.replace(Some(BTreeMap::new()))),
+            active: true,
+        }
+    }
+
+    fn finish(mut self) -> BTreeMap<String, u64> {
+        self.active = false;
+        AUDIT_WRITES.with(|writes| writes.replace(self.previous.take()).unwrap_or_default())
+    }
+}
+
+impl Drop for AuditWriteAttempt {
+    fn drop(&mut self) {
+        if self.active {
+            AUDIT_WRITES.with(|writes| writes.replace(self.previous.take()));
+        }
+    }
+}
+
+pub(super) fn record_audit_insert(agent_id: &str, sequence: u64) -> Result<()> {
+    AUDIT_WRITES.with(|writes| {
+        if let Some(writes) = writes.borrow_mut().as_mut() {
+            if let Some(latest) = writes.get_mut(agent_id) {
+                *latest = (*latest).max(sequence);
+            } else {
+                crate::diagnostics::resource_io::admit_cloned_value(&agent_id)?;
+                writes.insert(agent_id.to_owned(), sequence);
+            }
+        }
+        Ok(())
+    })
+}
+
 impl RuntimeDbWriteQueue {
+    pub(super) fn register_audit_frontier(&self, agent_id: &str) -> Arc<AtomicU64> {
+        let mut frontiers = self
+            .audit_event_frontiers
+            .lock()
+            .expect("Audit frontiers poisoned");
+        if let Some(frontier) = frontiers.get(agent_id).and_then(Weak::upgrade) {
+            return frontier;
+        }
+        frontiers.retain(|_, frontier| frontier.strong_count() > 0);
+        let frontier = Arc::new(AtomicU64::new(0));
+        frontiers.insert(agent_id.to_owned(), Arc::downgrade(&frontier));
+        frontier
+    }
+
+    fn publish_audit_frontiers(&self, writes: BTreeMap<String, u64>) {
+        if writes.is_empty() {
+            return;
+        }
+        let frontiers = self
+            .audit_event_frontiers
+            .lock()
+            .expect("Audit frontiers poisoned");
+        for (agent_id, sequence) in writes {
+            if let Some(frontier) = frontiers.get(&agent_id).and_then(Weak::upgrade) {
+                frontier.fetch_max(sequence, Ordering::Release);
+            }
+        }
+    }
+
     fn workspace_context(
         &self,
         #[cfg(unix)] database_identity: RuntimeDbFileIdentity,
@@ -714,6 +817,7 @@ fn runtime_db_write_queue(path: &Path) -> Result<Arc<RuntimeDbWriteQueue>> {
             state: Mutex::new(RuntimeDbWriteQueueState::default()),
             available: Condvar::new(),
             delivery_summary_generation: AtomicU64::new(0),
+            audit_event_frontiers: Mutex::default(),
             workspace_context: Mutex::default(),
         })
     })))

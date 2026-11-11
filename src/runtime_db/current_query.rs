@@ -56,6 +56,19 @@ pub(crate) struct CurrentSchedulerMetadata {
     pub recent_event_count: usize,
 }
 
+/// Error metadata from the scheduler's bounded Event window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SchedulerEventFacts {
+    pub event_cursor: u64,
+    pub latest_runtime_error: Option<chrono::DateTime<chrono::Utc>>,
+}
+
+impl SchedulerEventFacts {
+    pub(crate) fn read(connection: &rusqlite::Connection, agent_id: &str) -> Result<Self> {
+        super::repositories::scheduler_event_facts_on(connection, agent_id)
+    }
+}
+
 pub(crate) fn has_queued_input(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {
     Ok(tx.query_row(
         "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued')",
@@ -85,39 +98,28 @@ pub(crate) fn scheduler_metadata(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
 ) -> Result<CurrentSchedulerMetadata> {
-    let queue = queue_posture_tx(tx, &scope.agent_id)?;
-    scheduler_metadata_with_queue(tx, scope, queue)
+    scheduler_metadata_with_facts(tx, scope, None, None)
 }
 
-fn scheduler_metadata_with_queue(
+fn scheduler_metadata_with_facts(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
-    queue: crate::queue::QueuePostureFacts,
+    queue: Option<crate::queue::QueuePostureFacts>,
+    events: Option<SchedulerEventFacts>,
 ) -> Result<CurrentSchedulerMetadata> {
-    // Keep the original window and ordering, including non-error events.
-    let mut query = tx.prepare(
-        "SELECT kind,created_at FROM audit_events WHERE agent_id=?1
-         ORDER BY event_seq DESC,created_at DESC LIMIT 64",
-    )?;
-    let mut rows = query.query([&scope.agent_id])?;
-    let mut latest_runtime_error = None;
-    while let Some(row) = rows.next()? {
-        let kind = super::repositories::borrowed_sql_text(row, 0)?;
-        let at =
-            super::repositories::parse_timestamp(super::repositories::borrowed_sql_text(row, 1)?)?;
-        if kind == "runtime_error" {
-            latest_runtime_error = Some(
-                latest_runtime_error.map_or(at, |previous: chrono::DateTime<chrono::Utc>| {
-                    previous.max(at)
-                }),
-            );
-        }
-    }
+    let queue = match queue {
+        Some(queue) => queue,
+        None => queue_posture_tx(tx, &scope.agent_id)?,
+    };
+    let events = match events {
+        Some(events) => events,
+        None => SchedulerEventFacts::read(tx, &scope.agent_id)?,
+    };
     let (recent_brief_count, recent_event_count) = summary_counts(tx, &scope.agent_id)?;
     Ok(CurrentSchedulerMetadata {
         has_interrupted_replay: queue.has_interrupted,
         has_queued_input: queue.has_queued,
-        latest_runtime_error,
+        latest_runtime_error: events.latest_runtime_error,
         recent_brief_count,
         recent_event_count,
     })
@@ -418,10 +420,12 @@ impl CurrentQuerySource {
             event_cursor: cursor,
             selection: self.selection.as_ref().clone(),
             identity: self.baseline.identity.clone(),
-            scheduler: match writes.queue_posture {
-                Some(queue) => scheduler_metadata_with_queue(tx, &writes.scope, queue)?,
-                None => scheduler_metadata(tx, &writes.scope)?,
-            },
+            scheduler: scheduler_metadata_with_facts(
+                tx,
+                &writes.scope,
+                writes.queue_posture,
+                writes.scheduler_events,
+            )?,
             queue,
             events,
             ledger: self.roles.ledger().clone(),

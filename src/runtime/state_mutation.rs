@@ -127,6 +127,7 @@ pub(crate) struct RuntimeMutationFacts {
     scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
     queue: RuntimeQueue,
     pub(super) queue_posture: Option<crate::queue::QueuePostureFacts>,
+    pub(super) scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
     pub(crate) current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
     _queue_budget_view: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     _readonly_queue_metadata: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
@@ -203,6 +204,7 @@ impl RuntimeMutationFacts {
             current: None,
             queue: RuntimeQueue::default(),
             queue_posture: None,
+            scheduler_events: None,
             _queue_budget_view: None,
             plan_preparation: None,
             _readonly_queue_metadata: None,
@@ -272,6 +274,12 @@ impl RuntimeMutationFacts {
                 .as_ref()
                 .and_then(|writes| writes.queue_posture);
         }
+        if !effects.audit_events.is_empty() {
+            self.scheduler_events = effects
+                .current_read_writes
+                .as_ref()
+                .and_then(|writes| writes.scheduler_events);
+        }
         self.recovered_install = None;
         self.effects = effects;
         strip_input_evidence_payloads(&mut self.effects);
@@ -290,6 +298,7 @@ impl RuntimeMutationFacts {
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
         queue_posture: crate::queue::QueuePostureFacts,
+        scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
         messages: Vec<MessageEnvelope>,
         budget: &super::input_evidence_budget::InputEvidenceBudgetLedger,
         original: Option<&Self>,
@@ -335,6 +344,7 @@ impl RuntimeMutationFacts {
             current: None,
             queue,
             queue_posture: Some(queue_posture),
+            scheduler_events,
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
             current_run_abort,
@@ -470,6 +480,7 @@ impl RuntimeMutationFacts {
             current: None,
             queue,
             queue_posture: Some(facts.queue_posture),
+            scheduler_events: Some(facts.scheduler_events),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: None,
             current_run_abort,
@@ -498,6 +509,7 @@ pub(super) struct RuntimeMutation {
     candidate: Box<RuntimeAgent>,
     current: Option<Arc<crate::runtime_db::current_read_writes::CommittedCurrentWrites>>,
     queue_posture: Option<crate::queue::QueuePostureFacts>,
+    scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
     base: Box<RuntimeAgent>,
     deferred_abort: Option<DeferredRunAbort>,
     control_cancellation: Option<SavedControlCancellation>,
@@ -1783,6 +1795,8 @@ impl RuntimeMutation {
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
                 self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
+                self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
                 self.tasks = root.and_then(|root| root.tasks.clone());
                 self.deferred_abort = None;
                 Ok((
@@ -1929,9 +1943,13 @@ impl RuntimeMutation {
         }
         let mut projection_error = None;
         let changes_queue = committed.effects.changes_queue();
-        let has_current_effects = changes_queue || !committed.effects.audit_events.is_empty();
+        let changes_events = !committed.effects.audit_events.is_empty();
+        let has_current_effects = changes_queue || changes_events;
         if changes_queue {
             self.queue_posture = None;
+        }
+        if changes_events {
+            self.scheduler_events = None;
         }
         if let Some(mut current) = committed.effects.current_read_writes.take() {
             let install: Result<()> = (|| {
@@ -1963,6 +1981,9 @@ impl RuntimeMutation {
             } else {
                 if let Some(queue_posture) = current.queue_posture {
                     self.queue_posture = Some(queue_posture);
+                }
+                if let Some(scheduler_events) = current.scheduler_events {
+                    self.scheduler_events = Some(scheduler_events);
                 }
                 // The baseline is an installation fence, not historical retention.
                 current.query_publication = None;
@@ -2132,10 +2153,12 @@ impl RuntimeMutation {
         }
         strip_authoritative_effects(&mut committed.effects);
         if let Some(started) = self.measurement_started.take() {
-            crate::diagnostics::io_probe::record_timing(
-                crate::diagnostics::io_probe::TimingKind::CommitPublication,
-                started.elapsed(),
-            );
+            use crate::diagnostics::io_probe::{record_timing, TimingKind};
+            let elapsed = started.elapsed();
+            record_timing(TimingKind::CommitPublication, elapsed);
+            if changes_events {
+                record_timing(TimingKind::AuditCommitPublication, elapsed);
+            }
         }
         self.measurement_started = crate::diagnostics::io_probe::start_timer();
         Ok(committed)
@@ -2380,6 +2403,7 @@ impl RuntimeMutation {
         self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
         self.current = root.as_ref().and_then(|root| root.current.clone());
         self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
+        self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
         self.work = root.as_ref().and_then(|root| root.work.clone());
         self.tasks = root.as_ref().and_then(|root| root.tasks.clone());
         self.base = self.candidate.clone();
@@ -2567,6 +2591,7 @@ impl RuntimeMutation {
             scheduling: self.scheduling.clone(),
             queue: self.candidate.queue.clone(),
             queue_posture: self.queue_posture,
+            scheduler_events: self.scheduler_events,
             current: self.current.clone(),
             _queue_budget_view: self.candidate._queue_budget_view.clone(),
             _readonly_queue_metadata: None,
@@ -2764,6 +2789,7 @@ impl RuntimeHandle {
             super::input_evidence_budget::InputMemoryCategory::Candidate,
             agent.queue.shared_messages(),
         )?;
+        let root = reservation.capture_ready_snapshot()?;
         Ok(RuntimeMutationFacts {
             owner_epoch: reservation.owner_epoch(),
             state,
@@ -2774,9 +2800,8 @@ impl RuntimeHandle {
             scheduling: reservation.prepared_scheduling_for_state_only_commit()?,
             current: None,
             queue: agent.queue.clone(),
-            queue_posture: reservation
-                .capture_ready_snapshot()?
-                .and_then(|root| root.queue_posture),
+            queue_posture: root.as_ref().and_then(|root| root.queue_posture),
+            scheduler_events: root.and_then(|root| root.scheduler_events),
             _queue_budget_view: Some(queue_view),
             _readonly_queue_metadata: Some(queue_metadata),
             plan_preparation: None,
@@ -3611,7 +3636,8 @@ impl RuntimeHandle {
             scheduling: observation
                 .as_ref()
                 .and_then(|root| root.scheduling.clone()),
-            queue_posture: observation.and_then(|root| root.queue_posture),
+            queue_posture: observation.as_ref().and_then(|root| root.queue_posture),
+            scheduler_events: observation.and_then(|root| root.scheduler_events),
             base: candidate.clone(),
             candidate,
             deferred_abort: None,

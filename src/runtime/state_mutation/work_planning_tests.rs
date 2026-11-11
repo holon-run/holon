@@ -1435,3 +1435,335 @@ async fn activation_prepares_original_closure_brief_policy_without_ordinary_hydr
     assert_eq!(mutation.capture_published_root()?.token, before.token);
     Ok(())
 }
+
+#[tokio::test]
+async fn preview_closure_uses_ready_facts_while_the_owner_is_held() -> Result<()> {
+    use crate::runtime::tests::support::LifecycleHarness;
+    use crate::types::{ClosureOutcome, WaitingReason};
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    runtime.schedule_timer(3_600_000, None, None).await?;
+    let expected = runtime.current_closure_decision().await?;
+    assert_eq!(expected.outcome, ClosureOutcome::Waiting);
+    assert_eq!(expected.waiting_reason, Some(WaitingReason::AwaitingTimer));
+
+    let owner = runtime.inner.mutation_owner.reserve().await?;
+    let before = owner
+        .capture_ready_snapshot()?
+        .context("missing preview root")?;
+    assert!(before
+        .current
+        .as_ref()
+        .and_then(|writes| writes.query.as_ref())
+        .is_none());
+    runtime.runtime_db().transaction(|tx| {
+        tx.execute_batch(
+            "ALTER TABLE agent_states RENAME TO preview_forbidden_states;
+             ALTER TABLE agent_identities RENAME TO preview_forbidden_identities;
+             ALTER TABLE queue_entries RENAME TO preview_forbidden_queue;
+             ALTER TABLE audit_events RENAME TO preview_forbidden_events;",
+        )?;
+        Ok(())
+    })?;
+    let actual = tokio::time::timeout(
+        std::time::Duration::from_secs(1),
+        runtime.preview_closure_decision(),
+    )
+    .await??;
+    assert_eq!(actual, expected);
+    assert_eq!(owner.capture_ready_snapshot()?.unwrap().token, before.token);
+    Ok(())
+}
+
+#[tokio::test]
+async fn preview_error_window_survives_ack_recovery_and_tracks_briefs_and_eviction() -> Result<()> {
+    use crate::runtime::tests::support::LifecycleHarness;
+    use crate::runtime_db::{
+        prepared_input_evidence::InputEvidenceWrite, transitions::TransitionFaultPoint,
+    };
+    use crate::types::{brief_created_event_for, BriefKind, BriefRecord, ClosureOutcome};
+
+    let mut harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
+    let event = |at| AuditEvent {
+        created_at: at,
+        ..AuditEvent::legacy("runtime_error", serde_json::json!({}))
+    };
+    let assert_cut = |runtime: &RuntimeHandle, at| -> Result<_> {
+        let root = runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("missing preview root")?;
+        let facts = root.scheduler_events.context("missing Event window")?;
+        assert_eq!(facts.latest_runtime_error, at);
+        assert!(
+            facts.event_cursor
+                >= runtime
+                    .inner
+                    .scheduler_audit_frontier
+                    .load(Ordering::Acquire)
+        );
+        assert!(root
+            .current
+            .as_ref()
+            .and_then(|writes| writes.query.as_ref())
+            .is_none());
+        Ok(root.token)
+    };
+
+    assert_cut(runtime, None)?;
+    let base =
+        chrono::DateTime::from_timestamp_millis(chrono::Utc::now().timestamp_millis() - 10_000)
+            .unwrap();
+    harness.arm_fault(TransitionFaultPoint::BeforeCacheUpdate);
+    let error = runtime
+        .append_original_audit_event(event(base))
+        .await
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("publication requires reconciliation"),
+        "{error:#}"
+    );
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+    runtime.reconcile_posture_observation().await?;
+    assert_cut(runtime, Some(base))?;
+    assert_eq!(
+        runtime.preview_closure_decision().await?.outcome,
+        ClosureOutcome::Failed
+    );
+    assert_eq!(
+        runtime.preview_closure_decision().await?,
+        runtime.current_closure_decision().await?
+    );
+
+    let mut brief = BriefRecord::new("default", BriefKind::Result, "done", None, None);
+    brief.created_at = base + chrono::Duration::seconds(1);
+    runtime
+        .persist_prepared_evidence(InputEvidenceWrite::BriefCreated {
+            event: brief_created_event_for(&brief)?,
+            brief,
+        })
+        .await?;
+    assert_cut(runtime, Some(base))?;
+    assert_ne!(
+        runtime.preview_closure_decision().await?.outcome,
+        ClosureOutcome::Failed
+    );
+    assert_eq!(
+        runtime.preview_closure_decision().await?,
+        runtime.current_closure_decision().await?
+    );
+
+    let latest_error = base + chrono::Duration::seconds(2);
+    runtime
+        .append_original_audit_event(event(latest_error))
+        .await?;
+    assert_cut(runtime, Some(latest_error))?;
+    let mut mutation = runtime.begin_mutation().await?;
+    let info = || AuditEvent::legacy("preview_window_info", serde_json::json!({}));
+    mutation
+        .append_original_audit_events((0..63).map(|_| info()).collect())
+        .await?;
+    assert_cut(runtime, Some(latest_error))?;
+    mutation.append_original_audit_event(info()).await?;
+    assert_cut(runtime, None)?;
+    drop(mutation);
+    assert_ne!(
+        runtime.preview_closure_decision().await?.outcome,
+        ClosureOutcome::Failed
+    );
+    assert_eq!(
+        runtime.preview_closure_decision().await?,
+        runtime.current_closure_decision().await?
+    );
+
+    runtime
+        .append_original_audit_event(event(latest_error))
+        .await?;
+    drop(refresh);
+    harness.restart();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    assert_cut(runtime, Some(latest_error))?;
+    assert_eq!(
+        runtime.preview_closure_decision().await?,
+        runtime.current_closure_decision().await?
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn preview_prepares_missing_facts_once_and_keeps_interrupted_queue_semantics() -> Result<()> {
+    use crate::runtime::tests::support::LifecycleHarness;
+    use crate::runtime_db::transitions::{
+        PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+    };
+    use crate::types::QueueEntryStatus;
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let message = runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "preview replay source".into(),
+            },
+        ))
+        .await?;
+    let expected = runtime
+        .runtime_db()
+        .queue_entries()
+        .latest(&message.id)?
+        .context("missing Queue row")?;
+    let mut interrupted = expected.clone();
+    interrupted.status = QueueEntryStatus::Interrupted;
+    let mut mutation = runtime.begin_mutation().await?;
+    let commit = mutation
+        .commit_prepared_queue(
+            crate::ids::audit_event_id(),
+            PreparedQueueTransition::new(QueueTransitionCommand {
+                agent_id: message.agent_id.clone(),
+                operation: QueueOperation::Settle,
+                mutation: QueueMutation::CompareAndSet {
+                    expected,
+                    record: interrupted,
+                },
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: vec![message],
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            }),
+        )
+        .await?;
+    drop(mutation);
+    runtime.apply_transition_commit(commit).await;
+    let expected = runtime.current_closure_decision().await?;
+    assert_eq!(runtime.preview_closure_decision().await?, expected);
+
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    let old = owner.capture_ready_snapshot()?.unwrap();
+    owner.begin(crate::ids::audit_event_id())?;
+    owner.committed_prepared_with_scheduling_domains(
+        old.state.clone(),
+        old.episodes.clone(),
+        old.input_evidence.clone(),
+        old.work.clone(),
+        old.tasks.clone(),
+        old.scheduling.clone(),
+    )?;
+    let missing = owner.publish(old.state.clone())?;
+    drop(owner);
+    assert!(missing.queue_posture.is_none());
+    assert!(missing.scheduler_events.is_none());
+    assert_eq!(runtime.preview_closure_decision().await?, expected);
+    let prepared = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(prepared.token.generation, missing.token.generation + 1);
+    assert_eq!(
+        prepared.queue_posture,
+        Some(crate::queue::QueuePostureFacts {
+            has_queued: false,
+            has_interrupted: true,
+        })
+    );
+    assert!(prepared.scheduler_events.is_some());
+    assert!(prepared.current.is_none());
+    assert_eq!(runtime.preview_closure_decision().await?, expected);
+    assert_eq!(
+        runtime.inner.mutation_owner.capture()?.unwrap().token,
+        prepared.token
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn preview_refreshes_the_window_after_an_audit_commit_without_a_runtime_ack() -> Result<()> {
+    use crate::runtime::tests::support::LifecycleHarness;
+    use crate::types::ClosureOutcome;
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    runtime
+        .append_original_audit_event(AuditEvent::legacy("runtime_error", serde_json::json!({})))
+        .await?;
+    assert_eq!(
+        runtime.preview_closure_decision().await?.outcome,
+        ClosureOutcome::Failed
+    );
+    let original = runtime.inner.mutation_owner.capture()?.unwrap();
+    let cursor = original.scheduler_events.unwrap().event_cursor;
+    let audit = || AuditEvent::legacy("unprojected_preview_audit", serde_json::json!({}));
+
+    let rollback: Result<()> = runtime.runtime_db().transaction(|tx| {
+        crate::runtime_db::evidence::append_audit_event_tx(tx, Some(&original.state.id), &audit())?;
+        anyhow::bail!("fixture rolls back the original Audit");
+    });
+    assert!(rollback.is_err());
+    assert_eq!(
+        runtime
+            .inner
+            .scheduler_audit_frontier
+            .load(Ordering::Acquire),
+        cursor
+    );
+    runtime.preview_closure_decision().await?;
+    assert_eq!(
+        runtime.inner.mutation_owner.capture()?.unwrap().token,
+        original.token
+    );
+
+    runtime
+        .storage()
+        .append_events(&(0..64).map(|_| audit()).collect::<Vec<_>>())?;
+    assert!(
+        runtime
+            .inner
+            .scheduler_audit_frontier
+            .load(Ordering::Acquire)
+            > cursor
+    );
+    assert_eq!(
+        runtime.inner.mutation_owner.capture()?.unwrap().token,
+        original.token
+    );
+
+    let refreshed = runtime.preview_closure_decision().await?;
+    assert_ne!(refreshed.outcome, ClosureOutcome::Failed);
+    assert_eq!(refreshed, runtime.current_closure_decision().await?);
+    let prepared = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(prepared.token.generation, original.token.generation + 1);
+    assert_eq!(
+        prepared.scheduler_events.unwrap().latest_runtime_error,
+        None
+    );
+    assert_eq!(runtime.preview_closure_decision().await?, refreshed);
+    assert_eq!(
+        runtime.inner.mutation_owner.capture()?.unwrap().token,
+        prepared.token
+    );
+    Ok(())
+}

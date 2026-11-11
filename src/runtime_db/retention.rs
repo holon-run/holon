@@ -93,10 +93,11 @@ impl RuntimeDbRetentionPolicy {
             self.tool_executions_days,
             MAX_RETENTION_DAYS,
         )?;
-        if self.audit_events_min_rows_per_scope < crate::http::MAX_EVENT_STREAM_WINDOW {
+        let event_window =
+            crate::http::MAX_EVENT_STREAM_WINDOW.max(super::repositories::SCHEDULER_EVENT_WINDOW);
+        if self.audit_events_min_rows_per_scope < event_window {
             bail!(
-                "runtime.retention.audit_events_min_rows_per_scope must be at least {}",
-                crate::http::MAX_EVENT_STREAM_WINDOW
+                "runtime.retention.audit_events_min_rows_per_scope must be at least {event_window}"
             );
         }
         validate_positive_bounded(

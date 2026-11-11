@@ -131,6 +131,7 @@ impl IoProbeCounters {
 pub enum TimingKind {
     ContextPreparationToRequest,
     CommitPublication,
+    AuditCommitPublication,
     ContextCaptureStage,
 }
 
@@ -155,6 +156,7 @@ pub enum ContextCaptureStage {
     WorkspacePublication,
     DurableCapture,
     ResidentCapture,
+    PreviewSchedulerPreflight,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -164,7 +166,7 @@ pub struct ContextCaptureSample {
     pub sql_read_statements: u64,
     pub sql_write_statements: u64,
     pub sql_control_statements: u64,
-    /// Subset of OwnerAcquisition. The rest includes identity and recovery work.
+    /// Time spent acquiring the owner when this stage takes a reservation.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner_reservation_wait_micros: Option<u64>,
 }
@@ -236,8 +238,11 @@ pub(crate) fn record_context_owner_reserved(started: Option<Instant>) {
     if let Some(started) = started {
         let _ = CONTEXT_CAPTURE.try_with(|current| {
             let mut sample = current.get();
-            if sample.stage == ContextCaptureStage::OwnerAcquisition
-                && sample.owner_reservation_wait_micros.is_none()
+            if matches!(
+                sample.stage,
+                ContextCaptureStage::OwnerAcquisition
+                    | ContextCaptureStage::PreviewSchedulerPreflight
+            ) && sample.owner_reservation_wait_micros.is_none()
             {
                 sample.owner_reservation_wait_micros = Some(elapsed_micros(started.elapsed()));
                 current.set(sample);

@@ -171,6 +171,8 @@ impl RuntimeMutation {
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
                 self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
+                self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
                 self.tasks = root.and_then(|root| root.tasks.clone());
                 self.deferred_abort = None;
                 Ok(receipt.outcome.result)

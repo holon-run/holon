@@ -172,6 +172,7 @@ pub(crate) struct RecoveryRecord {
     original_identity: Option<Arc<AgentIdentityRecord>>,
     identity_rename: Option<Arc<AgentIdentityRecord>>,
     prepared_queue_posture: Option<crate::queue::QueuePostureFacts>,
+    prepared_scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
     _original_input_evidence: Option<Arc<OriginalInputRecoveryEvidence>>,
     group: Arc<RecoveryGroup>,
 }
@@ -820,6 +821,7 @@ impl MutationReservation {
                 original_identity: original_root.and_then(|root| root.identity.clone()),
                 identity_rename: None,
                 prepared_queue_posture: None,
+                prepared_scheduler_events: None,
                 _original_input_evidence: None,
                 group: group.clone(),
             });
@@ -1698,6 +1700,7 @@ impl MutationReservation {
             tasks,
             scheduling,
             None,
+            None,
         )
     }
 
@@ -1711,6 +1714,7 @@ impl MutationReservation {
         tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
         scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
         queue_posture: Option<crate::queue::QueuePostureFacts>,
+        scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
     ) -> Result<(), MutationOwnerError> {
         let mut publication = self
             .owner
@@ -1734,12 +1738,15 @@ impl MutationReservation {
         };
         self.validate_known(&known)?;
         if recovery.known.as_ref().is_some_and(|saved| {
-            !saved.same_facts(&known) || recovery.prepared_queue_posture != queue_posture
+            !saved.same_facts(&known)
+                || recovery.prepared_queue_posture != queue_posture
+                || recovery.prepared_scheduler_events != scheduler_events
         }) {
             return Err(MutationOwnerError::TicketMismatch);
         }
         let saved = publication.recovery.as_mut().expect("checked ticket");
         saved.prepared_queue_posture = queue_posture;
+        saved.prepared_scheduler_events = scheduler_events;
         saved.set_known(known);
         Ok(())
     }
@@ -1750,6 +1757,36 @@ impl MutationReservation {
         queue_posture: crate::queue::QueuePostureFacts,
         work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
         scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
+    ) -> Result<Arc<PostureObservation>, MutationOwnerError> {
+        self.publish_prepared_snapshot(original, |next| {
+            next.queue_posture = Some(queue_posture);
+            if let Some(work) = work {
+                next.work = Some(work);
+            }
+            if let Some(scheduling) = scheduling {
+                next.scheduling = Some(scheduling);
+            }
+        })
+    }
+
+    pub(super) fn publish_prepared_scheduler_facts(
+        &self,
+        original: &Arc<PostureObservation>,
+        identity: Arc<AgentIdentityRecord>,
+        queue_posture: crate::queue::QueuePostureFacts,
+        scheduler_events: crate::runtime_db::current_query::SchedulerEventFacts,
+    ) -> Result<Arc<PostureObservation>, MutationOwnerError> {
+        self.publish_prepared_snapshot(original, |next| {
+            next.identity = Some(identity);
+            next.queue_posture = Some(queue_posture);
+            next.scheduler_events = Some(scheduler_events);
+        })
+    }
+
+    fn publish_prepared_snapshot(
+        &self,
+        original: &Arc<PostureObservation>,
+        prepare: impl FnOnce(&mut PostureObservation),
     ) -> Result<Arc<PostureObservation>, MutationOwnerError> {
         let mut publication = self
             .owner
@@ -1775,16 +1812,10 @@ impl MutationReservation {
             .generation
             .checked_add(1)
             .expect("publication generation exhausted");
-        let next = Arc::new(PostureObservation {
-            token: PublicationToken {
-                generation: publication.generation,
-                ..original.token
-            },
-            queue_posture: Some(queue_posture),
-            work: work.or_else(|| original.work.clone()),
-            scheduling: scheduling.or_else(|| original.scheduling.clone()),
-            ..original.as_ref().clone()
-        });
+        let mut next = original.as_ref().clone();
+        next.token.generation = publication.generation;
+        prepare(&mut next);
+        let next = Arc::new(next);
         self.owner.slot.root.store(Some(next.clone()));
         Ok(next)
     }
@@ -1894,6 +1925,15 @@ impl MutationReservation {
                 .map_or(recovery.prepared_queue_posture, |facts| facts.queue_posture),
             KnownCommit::Metadata(_) => rename_root.and_then(|root| root.queue_posture),
         };
+        let scheduler_events = match &known {
+            KnownCommit::State { runtime, .. } => runtime
+                .as_ref()
+                .map_or(recovery.prepared_scheduler_events, |facts| {
+                    facts.scheduler_events
+                }),
+            // Even a rename appends an Event which can evict an older error.
+            KnownCommit::Metadata(_) => None,
+        };
         let (episodes, input_evidence, work, tasks, scheduling, current) = match &known {
             KnownCommit::State {
                 episodes,
@@ -1940,6 +1980,7 @@ impl MutationReservation {
                 state: state.clone(),
                 identity,
                 queue_posture,
+                scheduler_events,
                 episodes,
                 input_evidence,
                 work,

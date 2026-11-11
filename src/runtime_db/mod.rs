@@ -752,6 +752,13 @@ impl RuntimeDb {
         Ok(db)
     }
 
+    pub(crate) fn register_audit_frontier(
+        &self,
+        agent_id: &str,
+    ) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
+        self.writer.state.queue.register_audit_frontier(agent_id)
+    }
+
     pub fn path(&self) -> &Path {
         &self.path
     }
