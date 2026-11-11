@@ -233,16 +233,40 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         result
     };
     let mut loaded = read();
-    let allows_empty_birth_cursor = request
-        .query
-        .as_ref()
-        .and_then(|query| query.selection.birth_after)
-        .unwrap_or(0)
-        == 0;
-    if allows_empty_birth_cursor
-        && loaded.as_ref().err().and_then(qualification_miss)
-            == Some(QualificationMiss::BirthCursor)
-    {
+    if matches!(
+        loaded.as_ref().err().and_then(qualification_miss),
+        Some(QualificationMiss::SchedulingCoverage | QualificationMiss::SchedulingEvidence)
+    ) {
+        db.transaction_with_context(
+            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                "runtime_db.input_preparation",
+                "scheduling_qualification",
+            ),
+            |tx| {
+                crate::runtime_db::input_preparation::prepare_scheduling_for_input_tx(
+                    tx,
+                    &scope,
+                    &published.state,
+                    request,
+                    budget,
+                    scheduling,
+                    original_recovery,
+                )
+            },
+        )?;
+        loaded = read();
+    }
+    if loaded.as_ref().err().and_then(qualification_miss) == Some(QualificationMiss::BirthCursor) {
+        use super::resident_input_evidence::InputQueryError;
+        ensure!(
+            request
+                .query
+                .as_ref()
+                .and_then(|query| query.selection.birth_after)
+                .unwrap_or(0)
+                == 0,
+            InputQueryError::FrontierNotPrepared
+        );
         db.transaction_with_context(
             crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
                 "runtime_db.input_preparation",
@@ -259,38 +283,38 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
         )?;
         loaded = read();
     }
-    let (prepared, current) = match loaded {
-        Ok(read) => read,
-        Err(error) => {
-            let Some(reason) = qualification_miss(&error) else {
-                return Err(error);
-            };
-            tracing::debug!(agent_id = %scope.agent_id, ?reason, "input preparation needs writer qualification");
-            db.transaction_with_context(
-                crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
-                    "runtime_db.input_preparation",
-                    "qualified_domains",
-                ),
-                |tx| {
-                    let prepare = if original_recovery {
-                        crate::runtime_db::input_preparation::prepare_original_input_with_scheduling_tx
-                    } else {
-                        crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx
-                    };
-                    let prepared = prepare(
-                        tx,
-                        &scope,
-                        &published.state,
-                        request,
-                        recent_episode_limit,
-                        budget,
-                        scheduling,
-                    )?;
-                    Ok((prepared, current_query(tx)?))
-                },
-            )?
+    let mut attempted_keys = std::collections::BTreeSet::new();
+    while let Some(plan) = loaded.as_ref().err().and_then(|error| {
+        error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputQualificationPlan>()
+    }) {
+        // Completion edges require the previous batch to be qualified before
+        // the reader can discover another batch. Repeated keys cannot progress.
+        if !plan
+            .keys()
+            .iter()
+            .all(|key| attempted_keys.insert(key.clone()))
+        {
+            break;
         }
-    };
+        tracing::debug!(agent_id = %scope.agent_id, keys = plan.keys().len(), "qualifying selected Input evidence");
+        db.transaction_with_context(
+            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                "runtime_db.input_preparation",
+                "input_evidence_qualification",
+            ),
+            |tx| {
+                crate::runtime_db::input_preparation::qualify_input_for_preparation_tx(
+                    tx,
+                    &scope,
+                    &published.state,
+                    plan,
+                    original_recovery,
+                )
+            },
+        )?;
+        loaded = read();
+    }
+    let (prepared, current) = loaded?;
     // Sidecar preparation is idempotent and cannot change canonical facts.
     // A failed/indeterminate transaction leaves the old published root intact;
     // it does not resolve a business family's unknown ticket.
@@ -347,15 +371,19 @@ fn qualification_miss(error: &anyhow::Error) -> Option<QualificationMiss> {
         resident_input_evidence::InputQueryError, resident_scheduling::SchedulingReadError,
     };
     use crate::runtime_db::{
-        input_evidence_snapshot::{InputEvidenceSnapshotError, MissingInputBirthCursor},
+        input_evidence_snapshot::{
+            InputEvidenceSnapshotError, InputQualificationPlan, MissingInputBirthCursor,
+        },
         scheduling_snapshot::SchedulingSnapshotError,
     };
     if error.is::<MissingInputBirthCursor>() {
         Some(QualificationMiss::BirthCursor)
-    } else if matches!(
-        error.downcast_ref::<InputEvidenceSnapshotError>(),
-        Some(InputEvidenceSnapshotError::NeedsPreparation(_))
-    ) {
+    } else if error.is::<InputQualificationPlan>()
+        || matches!(
+            error.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::NeedsPreparation(_))
+        )
+    {
         Some(QualificationMiss::InputEvidence)
     } else if matches!(
         error.downcast_ref::<SchedulingSnapshotError>(),

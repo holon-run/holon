@@ -1325,7 +1325,14 @@ pub(crate) fn prepare_input_evidence_with_scope_read_tx(
     original_recovery: bool,
     read: ContextScopeRead<'_>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_request_tx(tx, scope, request, true, original_recovery, Some(read))
+    snapshot_request_tx(
+        tx,
+        scope,
+        request,
+        QualificationMode::Write,
+        original_recovery,
+        Some(read),
+    )
 }
 pub(crate) fn load_input_evidence_with_scope_read_tx(
     tx: &Transaction<'_>,
@@ -1333,17 +1340,31 @@ pub(crate) fn load_input_evidence_with_scope_read_tx(
     request: InputEvidenceLoadRequestView<'_>,
     read: ContextScopeRead<'_>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_request_tx(tx, scope, request, false, false, Some(read))
+    snapshot_request_tx(
+        tx,
+        scope,
+        request,
+        QualificationMode::Read,
+        false,
+        Some(read),
+    )
 }
 
-pub(crate) fn load_existing_input_evidence_with_scope_read_tx(
+pub(crate) fn load_or_plan_input_qualification_with_scope_read_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: InputEvidenceLoadRequestView<'_>,
     original_recovery: bool,
     read: ContextScopeRead<'_>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_request_tx(tx, scope, request, false, original_recovery, Some(read))
+    snapshot_request_tx(
+        tx,
+        scope,
+        request,
+        QualificationMode::Plan,
+        original_recovery,
+        Some(read),
+    )
 }
 
 fn snapshot_tx(
@@ -1358,7 +1379,11 @@ fn snapshot_tx(
         tx,
         scope,
         request.borrowed(),
-        prepare,
+        if prepare {
+            QualificationMode::Write
+        } else {
+            QualificationMode::Read
+        },
         original_recovery,
         scope_read,
     )
@@ -1367,7 +1392,7 @@ fn snapshot_request_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: InputEvidenceLoadRequestView<'_>,
-    prepare: bool,
+    qualification: QualificationMode,
     original_recovery: bool,
     scope_read: Option<ContextScopeRead<'_>>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
@@ -1387,7 +1412,7 @@ fn snapshot_request_tx(
                 tx,
                 scope,
                 request,
-                prepare,
+                qualification,
                 original_recovery,
                 acquisition.clone(),
                 scope_read,
@@ -1398,7 +1423,7 @@ fn snapshot_request_tx(
             tx,
             scope,
             request,
-            prepare,
+            qualification,
             original_recovery,
             None,
             scope_read,
@@ -1409,7 +1434,7 @@ fn snapshot_inner_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: InputEvidenceLoadRequestView<'_>,
-    prepare: bool,
+    qualification: QualificationMode,
     original_recovery: bool,
     acquisition: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
     scope_read: Option<ContextScopeRead<'_>>,
@@ -1443,7 +1468,7 @@ fn snapshot_inner_tx(
         tx,
         scope,
         request,
-        prepare,
+        qualification,
         acquisition,
         scope_read.as_ref(),
         true,
@@ -1479,14 +1504,205 @@ pub(crate) fn prepare_named_input_evidence_tx(
             .is_some_and(|identity| identity.status == AgentRegistryStatus::Active),
         "named input read scope retired"
     );
-    prepare_input_records_tx(tx, scope, request.borrowed(), true, None, Some(read), false)
+    prepare_input_records_tx(
+        tx,
+        scope,
+        request.borrowed(),
+        QualificationMode::Write,
+        None,
+        Some(read),
+        false,
+    )
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum QualificationMode {
+    Read,
+    Plan,
+    Write,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("selected Input evidence requires scoped qualification")]
+pub(crate) struct InputQualificationPlan {
+    scope: InputEvidenceScope,
+    keys: BTreeSet<Key>,
+}
+
+impl InputQualificationPlan {
+    pub(crate) fn keys(&self) -> &BTreeSet<Key> {
+        &self.keys
+    }
+
+    fn defer(scope: &InputEvidenceScope, keys: &mut BTreeSet<Key>) -> Result<()> {
+        if !keys.is_empty() {
+            return Err(Self {
+                scope: scope.clone(),
+                keys: std::mem::take(keys),
+            }
+            .into());
+        }
+        Ok(())
+    }
+}
+
+struct ObservedInputQualification {
+    fingerprint: Fingerprint,
+    digest: String,
+    canonical: Option<CanonicalInputEvidence>,
+    attempt_turn_proof: Option<AttemptTurnProof>,
+    revision: u64,
+    needs_qualification: bool,
+}
+
+impl ObservedInputQualification {
+    fn qualify_tx(
+        &self,
+        tx: &Transaction<'_>,
+        scope: &InputEvidenceScope,
+        binding: &Binding,
+        key: &Key,
+    ) -> Result<u64> {
+        upsert_alias_tx(
+            tx,
+            scope,
+            key,
+            &self.fingerprint,
+            Some(&self.digest),
+            true,
+            self.attempt_turn_proof.as_ref(),
+            "legacy_prepared",
+            binding.seed_id.as_deref(),
+        )
+    }
+}
+
+fn observe_input_qualification_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    binding: &Binding,
+    key: &Key,
+    fingerprint: Fingerprint,
+    allow_qualification: bool,
+) -> Result<ObservedInputQualification> {
+    let alias = alias_on(tx, scope, key)?;
+    let mut fixed_body_digests = BTreeSet::new();
+    if let Some(alias) = alias.as_ref() {
+        ensure!(
+            alias.present,
+            "pruned evidence reappeared without committed writer"
+        );
+        if alias.fingerprint != fingerprint {
+            return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
+        }
+    } else {
+        if !allow_qualification {
+            return Err(InputEvidenceSnapshotError::NeedsPreparation(key.id.clone()).into());
+        }
+        fixed_body_digests = require_eligible_metadata(tx, binding, key, &fingerprint)?;
+    }
+    // One materialization per selected body, reused for decode and digest.
+    let payload = if key.family == Family::ToolExecution {
+        None
+    } else {
+        Some(payload_on(tx, &scope.agent_id, key)?.context("prepared evidence disappeared")?)
+    };
+    let actual_digest = match payload.as_ref() {
+        Some(payload) => bytes_digest(payload.as_bytes()),
+        None => normalized_payload_digest(
+            fingerprint
+                .content_hash
+                .as_deref()
+                .context("Tool projection needs canonical normalized content hash")?,
+        )?,
+    };
+    if key.family != Family::ToolExecution {
+        legacy_brief::validate_payload_digest(
+            tx,
+            &scope.agent_id,
+            key,
+            &fingerprint,
+            payload.as_deref().context("selected input body missing")?,
+            &actual_digest,
+        )?;
+        if alias.is_none() && requires_frozen_body_digest(key, &fingerprint) {
+            validate_fixed_body_digest(key, &fixed_body_digests, &actual_digest)?;
+        }
+    }
+    let canonical = payload
+        .as_ref()
+        .map(|payload| decode_canonical(key, payload))
+        .transpose()?;
+    let attempt_turn_proof = match canonical.as_ref() {
+        Some(CanonicalInputEvidence::Attempt(attempt)) => {
+            Some(attempt_turn::for_current(tx, scope, binding, attempt)?)
+        }
+        _ => None,
+    };
+    let (revision, needs_qualification) = if let Some(alias) = alias {
+        ensure!(
+            alias.digest.as_deref() == Some(actual_digest.as_str()),
+            "prepared evidence raw/normalized digest mismatch"
+        );
+        if alias.attempt_turn_proof == attempt_turn_proof {
+            (alias.revision, false)
+        } else {
+            if !allow_qualification {
+                return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
+                    "Attempt Turn relation {} advanced",
+                    key.id
+                ))
+                .into());
+            }
+            (
+                alias
+                    .revision
+                    .checked_add(1)
+                    .context("input evidence revision overflow")?,
+                true,
+            )
+        }
+    } else {
+        (1, true)
+    };
+    Ok(ObservedInputQualification {
+        fingerprint,
+        digest: actual_digest,
+        canonical,
+        attempt_turn_proof,
+        revision,
+        needs_qualification,
+    })
+}
+
+/// Revalidate just the planned keys under the caller's original owner. A
+/// plan never promotes raw evidence outside the fixed eligibility set.
+pub(super) fn qualify_planned_input_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    plan: &InputQualificationPlan,
+) -> Result<()> {
+    ensure!(
+        plan.scope == *scope,
+        "planned Input qualification scope differs"
+    );
+    let binding = binding_on(tx, scope)?;
+    for key in &plan.keys {
+        let fingerprint = fingerprint_on(tx, &scope.agent_id, key)?
+            .context("planned Input evidence disappeared")?;
+        let observed = observe_input_qualification_tx(tx, scope, &binding, key, fingerprint, true)?;
+        if observed.needs_qualification {
+            observed.qualify_tx(tx, scope, &binding, key)?;
+        }
+    }
+    Ok(())
 }
 
 fn prepare_input_records_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     request: InputEvidenceLoadRequestView<'_>,
-    prepare: bool,
+    qualification: QualificationMode,
     acquisition: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
     scope_read: Option<&ContextScopeRead<'_>>,
     include_live_protocol: bool,
@@ -1502,7 +1718,7 @@ fn prepare_input_records_tx(
                 &query.selection,
                 &query.ledger,
                 (request.byte_limit, request.record_limit),
-                prepare,
+                qualification == QualificationMode::Write,
             )
         })
         .transpose()?;
@@ -1622,6 +1838,7 @@ fn prepare_input_records_tx(
     let mut expanded_paths = BTreeSet::new();
     let mut completion_source_observations = Vec::new();
     let mut records: BTreeMap<Key, Arc<QualifiedInputEvidence>> = BTreeMap::new();
+    let mut missing_qualifications = BTreeSet::new();
     let mut turn_transcript_keys = BTreeMap::new();
     let mut message_turn_keys = BTreeMap::new();
     let mut unavailable = BTreeSet::new();
@@ -1651,6 +1868,7 @@ fn prepare_input_records_tx(
                 }
             };
             if !matches!(path, CompletionInputPath::Strict) {
+                InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
                 for proof in super::work_snapshot::completion_source_observations_with_scope_tx(
                     tx,
                     scope,
@@ -1696,102 +1914,31 @@ fn prepare_input_records_tx(
             ))
             .into());
         };
-        let alias = alias_on(tx, scope, &key)?;
-        let mut fixed_body_digests = BTreeSet::new();
-        if let Some(alias) = alias.as_ref() {
-            ensure!(
-                alias.present,
-                "pruned evidence reappeared without committed writer"
-            );
-            if alias.fingerprint != fingerprint {
-                return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
-            }
+        let observed = observe_input_qualification_tx(
+            tx,
+            scope,
+            &binding,
+            &key,
+            fingerprint,
+            qualification != QualificationMode::Read,
+        )?;
+        let revision = if observed.needs_qualification && qualification == QualificationMode::Write
+        {
+            observed.qualify_tx(tx, scope, &binding, &key)?
         } else {
-            if !prepare {
-                return Err(InputEvidenceSnapshotError::NeedsPreparation(key.id.clone()).into());
+            if observed.needs_qualification {
+                missing_qualifications.insert(key.clone());
             }
-            fixed_body_digests = require_eligible_metadata(tx, &binding, &key, &fingerprint)?;
-        }
-        // One materialization per selected body, reused for decode and digest.
-        let payload = if key.family == Family::ToolExecution {
-            None
-        } else {
-            Some(payload_on(tx, &scope.agent_id, &key)?.context("prepared evidence disappeared")?)
+            observed.revision
         };
-        let actual_digest = match payload.as_ref() {
-            Some(payload) => bytes_digest(payload.as_bytes()),
-            None => normalized_payload_digest(
-                fingerprint
-                    .content_hash
-                    .as_deref()
-                    .context("Tool projection needs canonical normalized content hash")?,
-            )?,
-        };
-        if key.family != Family::ToolExecution {
-            legacy_brief::validate_payload_digest(
-                tx,
-                &scope.agent_id,
-                &key,
-                &fingerprint,
-                payload.as_deref().context("selected input body missing")?,
-                &actual_digest,
-            )?;
-            if alias.is_none() && requires_frozen_body_digest(&key, &fingerprint) {
-                validate_fixed_body_digest(&key, &fixed_body_digests, &actual_digest)?;
-            }
-        }
-        let canonical = payload
-            .as_ref()
-            .map(|payload| decode_canonical(&key, payload))
-            .transpose()?;
-        let attempt_turn_proof = match canonical.as_ref() {
-            Some(CanonicalInputEvidence::Attempt(attempt)) => {
-                Some(attempt_turn::for_current(tx, scope, &binding, attempt)?)
-            }
-            _ => None,
-        };
-        let revision = if let Some(alias) = alias {
-            ensure!(
-                alias.digest.as_deref() == Some(actual_digest.as_str()),
-                "prepared evidence raw/normalized digest mismatch"
-            );
-            if alias.attempt_turn_proof != attempt_turn_proof {
-                if !prepare {
-                    return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
-                        "Attempt Turn relation {} advanced",
-                        key.id
-                    ))
-                    .into());
-                }
-                upsert_alias_tx(
-                    tx,
-                    scope,
-                    &key,
-                    &fingerprint,
-                    Some(&actual_digest),
-                    true,
-                    attempt_turn_proof.as_ref(),
-                    "legacy_prepared",
-                    binding.seed_id.as_deref(),
-                )?
-            } else {
-                alias.revision
-            }
-        } else {
-            upsert_alias_tx(
-                tx,
-                scope,
-                &key,
-                &fingerprint,
-                Some(&actual_digest),
-                true,
-                attempt_turn_proof.as_ref(),
-                "legacy_prepared",
-                binding.seed_id.as_deref(),
-            )?
-        };
+        let ObservedInputQualification {
+            canonical,
+            digest,
+            fingerprint,
+            attempt_turn_proof,
+            ..
+        } = observed;
         let record = prepare_record_on(tx, &scope.agent_id, &key, canonical)?;
-        let digest = actual_digest;
         let qualified = Arc::new(qualified(
             scope,
             key.clone(),
@@ -1870,6 +2017,7 @@ fn prepare_input_records_tx(
             }
         };
         if !matches!(path, CompletionInputPath::Strict) {
+            InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
             for proof in super::work_snapshot::completion_source_observations_with_scope_tx(
                 tx,
                 scope,
@@ -2054,6 +2202,7 @@ fn prepare_input_records_tx(
             provider_replay::validate(&records, &execution_coverage, source, turn, assigned)?;
         }
     }
+    InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
     let (query, query_guards) = query
         .map(|query| (Some(query.coverage), query.guards))
         .unwrap_or_default();
