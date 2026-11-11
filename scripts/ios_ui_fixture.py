@@ -584,6 +584,9 @@ history_acceptance = os.environ.get("IOS_HISTORY_ACCEPTANCE") == "1"
 share_acceptance = os.environ.get("IOS_SHARE_ACCEPTANCE") == "1"
 if report_acceptance and not rich_acceptance:
     raise RuntimeError("Content-report acceptance requires IOS_RICH_ACCEPTANCE=1")
+# Compile before starting the fixture; pairing TTL covers only SDK execution.
+subprocess.run(["swift", "build", "--build-tests",
+                "--package-path", repo + "/packages/client-sdk-swift"], check=True)
 with fixture_directory(repo) as root:
     fixture_evidence = root / "evidence" if os.environ.get("IOS_UI_FIXTURE_PATH") is not None else None
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -950,20 +953,6 @@ with fixture_directory(repo) as root:
                     self.sock.settimeout(self.timeout)
                     self.sock.connect(env["HOLON_SOCKET_PATH"])
 
-            # Pairing issuance requires existing admission, even on loopback.
-            # Use this isolated daemon's trusted local control transport.
-            control = LocalControlConnection("localhost", timeout=3)
-            try:
-                control.request("POST", "/api/auth/pairing/issue")
-                response = control.getresponse()
-                if response.status != 200:
-                    raise RuntimeError(f"local pairing issuance failed: {response.status}")
-                pairing = json.loads(response.read())
-                if not pairing.get("ticket") or not pairing.get("expires_at"):
-                    raise RuntimeError("local pairing issuance returned no ticket or expiry")
-            finally:
-                control.close()
-
             def local(method, path, payload=None, ok=(200,), timeout=10):
                 connection = LocalControlConnection("localhost", timeout=timeout)
                 try:
@@ -1164,14 +1153,19 @@ with fixture_directory(repo) as root:
             # The per-case execution allowance has to cover the stretched
             # waits; otherwise a healthy but slow case is killed by a
             # timeout that no longer matches its budget.
-            test_env.update(HOLON_UI_BASE_URL=base, HOLON_UI_PAIRING_TICKET=pairing["ticket"],
+            test_env.update(HOLON_UI_BASE_URL=base,
                 HOLON_UI_AGENT_ID=agent, HOLON_UI_WORK_ID=work_id, HOLON_UI_TASK_ID=task["id"],
                 HOLON_UI_FILE_PATH=file_path, HOLON_UI_WORKSPACE_ID=workspace_id,
                 HOLON_UI_BRIEF_MARKER="IOS_POPULATED_BRIEF")
             if rich_turn:
                 test_env["HOLON_UI_RICH_TURN_ID"] = rich_turn
+            # Issue only after fixture preparation, through trusted local control.
+            pairing = local("POST", "/auth/pairing/issue")
+            if not pairing.get("ticket") or not pairing.get("expires_at"):
+                raise RuntimeError("local pairing issuance returned no ticket or expiry")
+            test_env["HOLON_UI_PAIRING_TICKET"] = pairing["ticket"]
             print("真实隔离 populated daemon 已就绪；临时凭据不输出", flush=True)
-            result = subprocess.run(["swift", "test", "--package-path", repo + "/packages/client-sdk-swift",
+            result = subprocess.run(["swift", "test", "--skip-build", "--package-path", repo + "/packages/client-sdk-swift",
                                      "--filter", "LiveDaemonPopulatedProbeTests"], env=test_env)
             if result.returncode:
                 raise RuntimeError("真实 populated SDK probes 失败")

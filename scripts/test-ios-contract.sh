@@ -26,6 +26,9 @@ import time
 import urllib.request
 
 binary, repo = sys.argv[1:]
+# Cold compilation must not consume the single-use pairing ticket's TTL.
+subprocess.run(["swift", "build", "--build-tests",
+                "--package-path", repo + "/packages/client-sdk-swift"], check=True)
 with tempfile.TemporaryDirectory(prefix="holon-ios-contract-") as temporary:
     root = pathlib.Path(temporary)
     # Do not inherit provider credentials, production paths or daemon settings.
@@ -125,7 +128,7 @@ with tempfile.TemporaryDirectory(prefix="holon-ios-contract-") as temporary:
                 HOLON_LIVE_PROXY_BASE=f"http://127.0.0.1:{proxy.server_port}/isolated/holon/api")
             print(f"真实隔离 daemon: {binary}; HTTP 与 prefix proxy 已就绪", flush=True)
             result = subprocess.run(
-                ["swift", "test", "--package-path", repo + "/packages/client-sdk-swift",
+                ["swift", "test", "--skip-build", "--package-path", repo + "/packages/client-sdk-swift",
                  "--filter", "LiveDaemonProbeTests"], env=test_env)
             if result.returncode:
                 raise RuntimeError(f"Swift live probe failed: {result.returncode}")

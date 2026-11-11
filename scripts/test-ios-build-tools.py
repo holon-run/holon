@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sqlite3
 import struct
+import sys
 import tempfile
 import threading
 import time
@@ -245,6 +246,79 @@ class BuildToolContracts(unittest.TestCase):
         Path(self.env["IOS_ARCHIVE_PATH"]).mkdir()
         self.run_tool("package-ios-archive.sh", expected=2)
         self.assertFalse(self.log.exists())
+
+
+class LivePairingTicketContracts(unittest.TestCase):
+    def programs(self):
+        contract = ROOT / "scripts/test-ios-contract.sh"
+        embedded = contract.read_text().split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        fixture = ROOT / "scripts/ios_ui_fixture.py"
+        return ((contract, ast.parse(embedded)), (fixture, ast.parse(fixture.read_text())))
+
+    def test_compile_before_fixture_and_never_rebuild_with_an_issued_ticket(self):
+        for source, tree in self.programs():
+            with self.subTest(source=source.name):
+                commands = {}
+                for node in ast.walk(tree):
+                    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                            and isinstance(node.func.value, ast.Name)
+                            and node.func.value.id == "subprocess" and node.func.attr == "run"
+                            and node.args and isinstance(node.args[0], ast.List)
+                            and isinstance(node.args[0].elts[0], ast.Constant)
+                            and node.args[0].elts[0].value == "swift"):
+                        args = eval(compile(ast.Expression(node.args[0]), str(source), "eval"),
+                                    {"repo": str(ROOT)})
+                        commands[args[1]] = (node, args)
+                build, args = commands["build"]
+                self.assertEqual(args, ["swift", "build", "--build-tests",
+                                        "--package-path", str(ROOT / "packages/client-sdk-swift")])
+                self.assertTrue(any(isinstance(node, ast.Expr) and node.value is build
+                                    for node in tree.body), "Build before entering the isolated fixture")
+                self.assertTrue(any(keyword.arg == "check" and ast.literal_eval(keyword.value)
+                                    for keyword in build.keywords))
+                test, args = commands["test"]
+                self.assertIn("--skip-build", args, "No build work may consume the issued ticket TTL")
+                issuance = [node for node in ast.walk(tree)
+                            if isinstance(node, ast.Call) and len(node.args) >= 2
+                            and isinstance(node.args[1], ast.Constant)
+                            and node.args[1].value in ("/api/auth/pairing/issue", "/auth/pairing/issue")
+                            and node.lineno < test.lineno]
+                issued = max(issuance, key=lambda node: node.lineno)
+                self.assertLess(build.lineno, issued.lineno)
+                if source.suffix == ".py":
+                    environment = next(node for node in ast.walk(tree) if isinstance(node, ast.Assign)
+                                       and any(isinstance(target, ast.Name) and target.id == "test_env"
+                                               for target in node.targets))
+                    self.assertGreater(issued.lineno, environment.lineno,
+                                       "Populate the daemon before issuing the SDK ticket")
+
+    def test_prebuild_failure_stops_both_real_entrypoints_before_daemon_start(self):
+        with tempfile.TemporaryDirectory(prefix="holon-ios-pairing-tools-") as temporary:
+            directory = Path(temporary)
+            args_log, daemon_log = directory / "args.json", directory / "daemon-started"
+            swift = directory / "swift"
+            swift.write_text("#!" + sys.executable + "\nimport json, os, sys\n"
+                             "with open(os.environ['TEST_ARGS'], 'w') as f: json.dump(sys.argv[1:], f)\n"
+                             "sys.exit(37)\n")
+            binary = directory / "holon"
+            binary.write_text("#!/bin/sh\nprintf started > \"$TEST_DAEMON\"\nexit 99\n")
+            swift.chmod(0o755)
+            binary.chmod(0o755)
+            env = {key: value for key, value in os.environ.items() if not key.startswith("IOS_")}
+            env.update(PATH=str(directory) + os.pathsep + os.environ["PATH"],
+                       TEST_ARGS=str(args_log), TEST_DAEMON=str(daemon_log),
+                       HOLON_CONTRACT_BIN=str(binary))
+            for command in (["bash", str(ROOT / "scripts/test-ios-contract.sh")],
+                            [sys.executable, str(ROOT / "scripts/ios_ui_fixture.py"),
+                             str(binary), str(ROOT), "--sdk-only"]):
+                with self.subTest(entrypoint=command[1]):
+                    args_log.unlink(missing_ok=True)
+                    result = subprocess.run(command, env=env, capture_output=True, text=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertEqual(json.loads(args_log.read_text()),
+                                     ["build", "--build-tests", "--package-path",
+                                      str(ROOT / "packages/client-sdk-swift")])
+                    self.assertFalse(daemon_log.exists(), "A failed prebuild must not start a daemon")
 
 
 class UIFixtureTaskResultContracts(unittest.TestCase):
