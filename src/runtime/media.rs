@@ -10,9 +10,20 @@ impl RuntimeHandle {
         pending_fallback: Option<&ModelRouteRef>,
     ) -> Result<MediaToolDefaults> {
         let state = self.agent_state().await?;
+        let snap = self.inner.config_snapshot.load_full();
+        Ok(self
+            .media_tool_defaults_for_state(&state, &snap, pending_fallback)
+            .await)
+    }
+
+    pub(super) async fn media_tool_defaults_for_state(
+        &self,
+        state: &crate::types::AgentState,
+        snap: &super::ConfigSnapshot,
+        pending_fallback: Option<&ModelRouteRef>,
+    ) -> MediaToolDefaults {
         let current_fallback = self.inner.turn_fallback_model.read().await.clone();
         let pending_fallback = pending_fallback.or(current_fallback.as_ref());
-        let snap = self.inner.config_snapshot.load();
         // Discovery is side-effect free: do not advance the vision health cursor.
         let vision = snap
             .model_catalog
@@ -26,10 +37,10 @@ impl RuntimeHandle {
             state.model_override.as_ref(),
             pending_fallback,
         );
-        Ok(MediaToolDefaults {
+        MediaToolDefaults {
             view_image: vision.selected_route.map(|route| route.as_string()),
             generate_image: generation.map(|route| route.route_ref.as_string()),
             output_format: "png".into(),
-        })
+        }
     }
 }

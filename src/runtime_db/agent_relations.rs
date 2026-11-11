@@ -108,6 +108,22 @@ impl AgentCanonicalRelationRepository<'_> {
             .with_read(|connection| canonical_relations_from_connection(connection, agent_id))
     }
 
+    pub(crate) fn prepare_capability_policy(
+        &self,
+        identity: &AgentIdentityRecord,
+    ) -> Result<Option<AgentCapabilityPolicyRecord>> {
+        self.db.read_for_preparation(|tx| {
+            anyhow::ensure!(
+                projection_identity(tx, &identity.agent_id)?.as_ref() == Some(identity),
+                "capability policy identity differs from the Agent publication"
+            );
+            match latest_capability_policy(tx, &identity.agent_id)? {
+                Some(policy) => Ok(Some(policy)),
+                None => legacy_capability_policy(identity, &mut Vec::new()),
+            }
+        })
+    }
+
     pub fn lineage_children(&self, parent_agent_id: &str) -> Result<AgentLineageChildrenSnapshot> {
         self.db.with_read(|connection| {
             let mut records: Vec<(String, usize, AgentLineageRecord)> = Vec::new();
@@ -806,6 +822,7 @@ fn upsert_capability_policy_tx(
     tx: &Transaction<'_>,
     record: &AgentCapabilityPolicyRecord,
 ) -> Result<()> {
+    super::write_queue::begin_capability_policy_write();
     insert_versioned_record_tx(
         tx,
         "agent_capability_policy_records",

@@ -73,6 +73,32 @@ impl RuntimeMutation {
         })
     }
 }
+
+impl super::resident_state::AgentSnapshot {
+    pub(in crate::runtime) fn capture_context_scheduling_plan(
+        &self,
+        scope: &super::resident_input_evidence::InputEvidenceScope,
+    ) -> Result<ContextSchedulingPlan> {
+        let source = self
+            .scheduling
+            .as_ref()
+            .ok_or(SchedulingReadError::IncompleteLive)?;
+        ensure!(
+            source.scope() == scope && self.state.id == scope.agent_id,
+            "context Scheduling scope differs"
+        );
+        let scheduling = source.capture(&SchedulingCaptureRequest::current())?;
+        crate::diagnostics::resource_io::charge_owned_metadata(128, 1)?;
+        Ok(ContextSchedulingPlan {
+            read: SchedulingReadSnapshot {
+                token: self.token,
+                state: self.state.clone(),
+                scheduling,
+            },
+            source: source.clone(),
+        })
+    }
+}
 impl RuntimeHandle {
     pub(in crate::runtime) async fn capture_scheduling_read(
         &self,

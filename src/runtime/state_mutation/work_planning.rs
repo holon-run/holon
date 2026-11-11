@@ -843,7 +843,7 @@ impl RuntimeHandle {
         self.preview_closure_from_root(mutation.capture_published_root()?.as_ref())
     }
 
-    fn preview_scheduler_has_facts(
+    pub(in crate::runtime) fn preview_scheduler_has_facts(
         &self,
         root: &super::super::resident_state::AgentSnapshot,
     ) -> Result<bool> {
@@ -864,7 +864,7 @@ impl RuntimeHandle {
         }
     }
 
-    fn preview_closure_from_root(
+    pub(in crate::runtime) fn preview_closure_from_root(
         &self,
         root: &super::super::resident_state::AgentSnapshot,
     ) -> Result<crate::types::ClosureDecision> {

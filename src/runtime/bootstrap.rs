@@ -8,7 +8,7 @@ use std::{
 };
 
 use anyhow::{anyhow, Context, Result};
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 use base64::{engine::general_purpose::STANDARD as BASE64_STANDARD, Engine as _};
 use sha2::{Digest, Sha256};
 use tokio::sync::{Mutex, Notify, RwLock};
@@ -913,6 +913,7 @@ impl RuntimeHandle {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
                 scheduler_audit_frontier,
+                preview_tool_policy: ArcSwapOption::empty(),
                 mutation_owner: mutation_owner.clone(),
                 resources: super::resource_refresh::RuntimeResources::new(
                     &input_evidence_budget,

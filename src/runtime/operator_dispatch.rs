@@ -3,7 +3,7 @@ use crate::config::ModelRouteRef;
 use crate::runtime::turn::TurnModelSelection;
 use crate::runtime::turn::TurnTerminalTransition;
 use crate::tool::{ApplyPatchSurface, ToolSpec};
-use crate::types::ExecutionAdmissionProvenance;
+use crate::types::{AgentCapabilityFamily, ExecutionAdmissionProvenance};
 
 pub(super) fn idle_input_budget(
     built: &EffectivePrompt,
@@ -552,16 +552,24 @@ impl RuntimeHandle {
         apply_patch_surface: ApplyPatchSurface,
     ) -> Result<Vec<crate::tool::ToolSpec>> {
         let capability_policy = self.agent_capability_policy().await?;
+        self.tool_specs_for_apply_patch_surface(apply_patch_surface, |family| {
+            capability_policy
+                .as_ref()
+                .is_none_or(|policy| policy.allows(family))
+        })
+    }
+
+    fn tool_specs_for_apply_patch_surface(
+        &self,
+        apply_patch_surface: ApplyPatchSurface,
+        allows: impl Fn(AgentCapabilityFamily) -> bool,
+    ) -> Result<Vec<ToolSpec>> {
         Ok(self
             .inner
             .tools
             .tool_specs_with_families_for_apply_patch_surface(apply_patch_surface)?
             .into_iter()
-            .filter(|(family, _)| {
-                capability_policy
-                    .as_ref()
-                    .is_none_or(|policy| policy.allows(*family))
-            })
+            .filter(|(family, _)| allows(*family))
             .filter(|(_, tool)| {
                 tool.name != crate::tool::names::X_SEARCH || self.x_search_config().is_some()
             })
@@ -593,20 +601,7 @@ impl RuntimeHandle {
             MessageDeliverySurface::CliPrompt,
             AdmissionContext::LocalProcess,
         );
-        let prior_closure = crate::diagnostics::io_probe::ContextCaptureMode::Preview
-            .measure(
-                crate::diagnostics::io_probe::ContextCaptureStage::PreviewSchedulerPreflight,
-                self.preview_closure_decision(),
-            )
-            .await?;
-        let continuation = ContinuationTrigger::from_message(&message, None)
-            .map(|trigger| resolve_continuation(&prior_closure, &trigger));
-        if self.agent_state().await?.status != AgentStatus::Stopped {
-            self.ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
-                .await?;
-        }
-        self.prepare_loaded_context_prompt(&message, continuation.as_ref(), None, false)
-            .await
+        self.prepare_prompt_preview(&message).await
     }
 
     pub(super) async fn build_subagent_prompt_for_workspace(
@@ -725,6 +720,32 @@ impl RuntimeHandle {
         Option<ProviderNativeWebSearchRequest>,
         BuiltinWebSearchSelectionDiagnostics,
     )> {
+        self.select_provider_tools(fallback_model, None).await
+    }
+
+    pub(super) async fn preview_provider_tools(
+        &self,
+        state: &AgentState,
+        fallback_model: Option<&ModelRouteRef>,
+        allowed: super::context_capture::PreviewToolFamilies,
+    ) -> Result<(Vec<ToolSpec>, ApplyPatchSurface)> {
+        let (_, tools, surface, _, _) = self
+            .select_provider_tools(fallback_model, Some((state, allowed)))
+            .await?;
+        Ok((tools, surface))
+    }
+
+    async fn select_provider_tools(
+        &self,
+        fallback_model: Option<&ModelRouteRef>,
+        preview: Option<(&AgentState, super::context_capture::PreviewToolFamilies)>,
+    ) -> Result<(
+        Arc<dyn AgentProvider>,
+        Vec<ToolSpec>,
+        ApplyPatchSurface,
+        Option<ProviderNativeWebSearchRequest>,
+        BuiltinWebSearchSelectionDiagnostics,
+    )> {
         let provider = self.current_provider().await;
         let web_config = self.web_config();
         let native_search_provider = web_config.native_search_provider();
@@ -734,15 +755,22 @@ impl RuntimeHandle {
             &web_config.search,
         );
         let native_web_search = native_web_search_selection.request;
-        let apply_patch_surface = {
+        let (apply_patch_surface, available_tools) = if let Some((state, allowed)) = preview {
+            let surface = self.apply_patch_surface_for_turn(state, fallback_model);
+            let tools =
+                self.tool_specs_for_apply_patch_surface(surface, |family| allowed.allows(family))?;
+            (surface, tools)
+        } else {
             let guard = self.inner.agent.lock().await;
-            self.apply_patch_surface_for_turn(&guard.state, fallback_model)
+            let surface = self.apply_patch_surface_for_turn(&guard.state, fallback_model);
+            drop(guard);
+            let tools = self
+                .filtered_tool_specs_for_apply_patch_surface(surface)
+                .await?;
+            (surface, tools)
         };
-        let available_tools = filter_native_web_search_tools(
-            self.filtered_tool_specs_for_apply_patch_surface(apply_patch_surface)
-                .await?,
-            native_web_search.is_some(),
-        );
+        let available_tools =
+            filter_native_web_search_tools(available_tools, native_web_search.is_some());
         let available_tools = provider.prompt_tool_specs(&available_tools);
         Ok((
             provider,

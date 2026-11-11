@@ -322,7 +322,9 @@ impl RuntimeMutation {
             tasks,
         })
     }
+}
 
+impl super::resident_state::AgentSnapshot {
     /// One final token for every domain used by loaded context acquisition.
     pub(in crate::runtime) fn capture_context_with_inputs_and_work_and_tasks(
         &self,
@@ -333,7 +335,7 @@ impl RuntimeMutation {
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
         scheduling_plan: super::scheduling_reads::ContextSchedulingPlan,
     ) -> Result<super::resident_state::CapturedAgentContext> {
-        let root = self.capture_published_root()?;
+        let root = self;
         let inputs=root.input_evidence.as_ref().ok_or_else(||
             crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(
                 "resident input domain has not been prepared".into()))?;
@@ -345,7 +347,8 @@ impl RuntimeMutation {
         anyhow::ensure!(
             inputs.scope() == work.scope()
                 && work.scope() == tasks.scope()
-                && tasks.scope() == &self.input_evidence_scope(),
+                && material
+                    .matches_identity(&tasks.scope().agent_id, tasks.scope().identity_incarnation),
             "context domain scope differs"
         );
         let mut captured = root.capture_context(episode_limit)?;

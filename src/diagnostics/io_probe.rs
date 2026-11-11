@@ -157,6 +157,8 @@ pub enum ContextCaptureStage {
     DurableCapture,
     ResidentCapture,
     PreviewSchedulerPreflight,
+    PreviewToolPolicyPreparation,
+    PreviewReadyCapture,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
