@@ -2841,9 +2841,26 @@ fn qualified_window_keys(
             .clone()
             .map_or(rusqlite::types::Value::Null, rusqlite::types::Value::Text),
     );
-    let current=format!("c.agent_id=r.agent_id AND c.identity_incarnation=?{inc_index} AND c.family='{}' AND c.record_id=r.{id}",family.as_str());
-    let qualification=format!("(EXISTS(SELECT 1 FROM input_evidence_current c WHERE {current} AND c.availability='present') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current c WHERE {current}) AND EXISTS(SELECT 1 FROM input_evidence_seed_membership e WHERE e.seed_id=?{seed_index} AND e.family='{}' AND e.record_id=r.{id})))",family.as_str());
-    let sql=format!("SELECT r.{id} FROM {table} r WHERE r.agent_id=?1 AND {filter} AND {qualification} ORDER BY {order} LIMIT ?2");
+    let family_name = family.as_str();
+    let current = format!(
+        "c.agent_id=r.agent_id AND c.identity_incarnation=?{inc_index}
+         AND c.family='{family_name}' AND c.record_id=r.{id}"
+    );
+    let seed_member =
+        format!("e.seed_id=?{seed_index} AND e.family='{family_name}' AND e.record_id=r.{id}");
+    // The membership view substitutes recovery rows for original members.
+    // Either keyed row proves existence without materializing that view.
+    let sql = format!(
+        "SELECT r.{id} FROM {table} r
+         WHERE r.agent_id=?1 AND {filter}
+           AND (EXISTS(SELECT 1 FROM input_evidence_current c
+                       WHERE {current} AND c.availability='present')
+                OR (NOT EXISTS(SELECT 1 FROM input_evidence_current c WHERE {current})
+                    AND (EXISTS(SELECT 1 FROM input_evidence_eligibility e WHERE {seed_member})
+                         OR EXISTS(SELECT 1 FROM input_evidence_seed_recovery_current e
+                                   WHERE {seed_member}))))
+         ORDER BY {order} LIMIT ?2"
+    );
     let mut statement = tx.prepare(&sql)?;
     let rows = statement.query_map(rusqlite::params_from_iter(values), |r| {
         r.get::<_, String>(0)

@@ -4397,6 +4397,15 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "index_receipt_scope_for_deletion_maintenance",
         sql: super::agent_deletion_cleanup::RECEIPT_SCOPE_INDEX_SCHEMA,
     },
+    Migration {
+        version: 106,
+        name: "index_recent_transcript_window",
+        sql: "CREATE INDEX IF NOT EXISTS idx_transcript_entries_recent
+              ON transcript_entries(
+                agent_id, COALESCE(transcript_seq, 9223372036854775807) DESC,
+                created_at DESC, evidence_id ASC
+              );",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
