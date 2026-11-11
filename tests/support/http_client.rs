@@ -79,7 +79,8 @@ where
                     .is_some_and(|wire| {
                         wire.status_code == 503
                             && (wire.has_code("runtime_db_busy")
-                                || wire.has_code("projection_stale_unhandled"))
+                                || wire.has_code("projection_stale_unhandled")
+                                || wire.has_code("agent_reconciliation_pending"))
                             && wire.retryable == Some(true)
                     }) =>
             {

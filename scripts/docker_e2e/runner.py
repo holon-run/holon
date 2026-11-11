@@ -1020,7 +1020,11 @@ class CaseHarness:
                 method == "GET"
                 and status == 503
                 and error_body.get("code")
-                in ("runtime_db_busy", "projection_stale_unhandled")
+                in (
+                    "runtime_db_busy",
+                    "projection_stale_unhandled",
+                    "agent_reconciliation_pending",
+                )
             )
             if error_body.get("retryable") is not True or not (
                 retryable_projection or retryable_observer
