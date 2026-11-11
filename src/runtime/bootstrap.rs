@@ -913,7 +913,7 @@ impl RuntimeHandle {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
                 scheduler_audit_frontier,
-                preview_tool_policy: ArcSwapOption::empty(),
+                context_tool_policy: ArcSwapOption::empty(),
                 mutation_owner: mutation_owner.clone(),
                 resources: super::resource_refresh::RuntimeResources::new(
                     &input_evidence_budget,

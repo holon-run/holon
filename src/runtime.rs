@@ -822,7 +822,7 @@ struct RuntimeInner {
     operator_interjection_notify: Notify,
     operator_interjection_revision: Arc<AtomicU64>,
     scheduler_audit_frontier: Arc<AtomicU64>,
-    preview_tool_policy: ArcSwapOption<context_capture::PreviewToolPolicy>,
+    context_tool_policy: ArcSwapOption<context_capture::ContextToolPolicy>,
     provider_cooldown_wait: StdMutex<Option<crate::types::ProviderCooldownWait>>,
     storage: AppStorage,
     runtime_db: RuntimeDb,

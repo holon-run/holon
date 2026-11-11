@@ -5,19 +5,15 @@ use serde::ser::SerializeMap;
 use sha2::{Digest, Sha256};
 use std::{borrow::Cow, fmt, mem::size_of};
 
-use crate::{
-    storage::AppStorage,
-    types::{
-        AuthorityClass, IdleInputBatchItem, MessageBody, MessageEnvelope, MessageKind,
-        MessageOrigin,
-    },
+use crate::types::{
+    AuthorityClass, IdleInputBatchItem, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
 };
 
 use super::{BATCH_HEADER, INPUT_BATCH_BYTES};
-#[cfg(test)]
-use crate::context::estimate_text_tokens;
 use crate::diagnostics::resource_io;
 use crate::runtime::RuntimeHandle;
+#[cfg(test)]
+use crate::{context::estimate_text_tokens, storage::AppStorage};
 
 /// The source body is qualified by the current finite IdleRead cut.
 pub(in crate::runtime) fn qualified_item_after(
@@ -404,6 +400,7 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         state: &crate::types::AgentState,
         continuation: Option<&crate::types::ContinuationResolution>,
+        expected: Option<&std::sync::Arc<super::super::resident_state::AgentSnapshot>>,
     ) -> Result<Option<IdleInputBatchItem>> {
         let mut config = self.current_context_config().await;
         config.prompt_budget_estimated_tokens = config
@@ -426,10 +423,13 @@ impl RuntimeHandle {
                     work_item_id,
                     token_budget: config.prompt_budget_estimated_tokens,
                 },
+                expected,
             )
             .await?;
-        persisted_item_after(
-            &self.inner.storage,
+        let Some(tokens) = tokens else {
+            return Ok(None);
+        };
+        project_item_after(
             message,
             tokens,
             INPUT_BATCH_BYTES.saturating_sub(BATCH_HEADER.len()),
@@ -445,31 +445,28 @@ pub(in crate::runtime) fn persisted_item(
     token_limit: usize,
     byte_limit: usize,
 ) -> Result<Option<IdleInputBatchItem>> {
-    persisted_item_after(storage, message, token_limit, byte_limit, "")
-}
-
-pub(in crate::runtime) fn persisted_item_after(
-    storage: &AppStorage,
-    message: &MessageEnvelope,
-    token_limit: usize,
-    byte_limit: usize,
-    preceding: &str,
-) -> Result<Option<IdleInputBatchItem>> {
     let Some(original) = storage.read_message_by_id(&message.id)? else {
         return Ok(None);
     };
-    if original.agent_id != message.agent_id
-        || original.body != message.body
-        || original.origin != message.origin
-        || original.authority_class != message.authority_class
-        || original.routing_context != message.routing_context
-        || original.source_refs != message.source_refs
-        || original.work_item_id != message.work_item_id
-        || original.task_id != message.task_id
-    {
+    if !input_projection_source_matches(&original, message) {
         return Ok(None);
     }
-    project_item_after(message, token_limit, byte_limit, preceding)
+    project_item_after(message, token_limit, byte_limit, "")
+}
+
+pub(in crate::runtime) fn input_projection_source_matches(
+    original: &MessageEnvelope,
+    message: &MessageEnvelope,
+) -> bool {
+    original.id == message.id
+        && original.agent_id == message.agent_id
+        && original.body == message.body
+        && original.origin == message.origin
+        && original.authority_class == message.authority_class
+        && original.routing_context == message.routing_context
+        && original.source_refs == message.source_refs
+        && original.work_item_id == message.work_item_id
+        && original.task_id == message.task_id
 }
 
 #[cfg(test)]

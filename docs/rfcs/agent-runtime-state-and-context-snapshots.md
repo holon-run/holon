@@ -4368,8 +4368,14 @@ preparation reads the canonical policy and identity in one transaction. For an
 Agent that is running, a qualified active default Trigger with a token supplies
 the existing ingress proof. A missing or tokenless Trigger goes through the
 original ingress writer. Missing coverage, invalidated resources and pending
-recovery enter the existing preparation paths. Admission planning and execution
-retain their owner reservations and execution validation.
+recovery enter the existing preparation paths. Admission and Execution also
+capture covered Context from a Ready Agent root without a separate owner
+reservation. Admission qualifies the original Message in the captured Input
+domain and checks the scheduler's planned root. The original Claim transaction
+still validates the selected source and admission facts. Execution qualifies
+the original dispatch Turn and retains the provider admission and cancellation
+fences. Both modes enter owner-reserved preparation when the publication lacks
+coverage.
 
 The operator State endpoint now uses one held parent owner cut for
 State/Work/Task/Scheduling and Current metadata. Explicit Current preparation

@@ -1550,17 +1550,25 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     owner: Some(owner),
                     claimed_work_revision: attempt.admitted_fences.work_item_source_revision,
                 });
-            // Context capture owns its reservation; never re-enter the planner's.
+            let admission_root = planning_guard
+                .as_ref()
+                .context("scheduler planning owner missing")?
+                .capture_published_root()?;
+            // The Ready capture can use the plan's root. Preparation takes its own reservation.
             drop(planning_guard.take());
             // Preserve ingress provenance; isolated caller bindings only affect dispatch.
             let projection = match Box::pin(self.runtime.prepare_input_projection(
                 &candidate.message,
                 &admission_state,
                 dispatch_plan.continuation_resolution.as_ref(),
+                Some(&admission_root),
             ))
             .await
             {
                 Ok(projection) => projection,
+                Err(error) if error.is::<super::context_capture::AdmissionContextChanged>() => {
+                    return Ok(PrepareMessageOutcome::Replan);
+                }
                 Err(error) if error.is::<crate::context::ContextPlanningError>() => None,
                 Err(error)
                     if super::resource_refresh::is_resource_preparation_conflict(&error)
