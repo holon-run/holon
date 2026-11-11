@@ -81,7 +81,7 @@ async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
             .unwrap()
             .scheduling_posture
             .posture,
-        crate::types::AgentSchedulingPosture::HasQueuedInput
+        crate::types::AgentSchedulingPosture::HasRunnableWork
     );
     assert!(runtime.accepts_execution_admission());
     let mut headers = HeaderMap::new();
