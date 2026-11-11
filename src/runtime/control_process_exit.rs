@@ -137,8 +137,8 @@ impl ControlCancellationRegistry {
             .managed_processes
             .lock()
             .map_err(|_| anyhow!("original processes poisoned"))?;
-        // Successful wait plus ESRCH is the only eager release. Live/unknown
-        // groups and cancelled spawn windows remain owned by this registry.
+        // Release a proven no-start or a successfully waited, empty group.
+        // Live groups and cancelled spawn windows remain owned by this registry.
         processes.retain(|_, original| !original.group_is_empty());
         let _count = processes
             .len()

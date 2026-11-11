@@ -4454,48 +4454,56 @@ impl RuntimeHandle {
                             summary: format!("Failed: {tool_name}"),
                             invocation_surface: None,
                         };
-                        runtime
-                            .persist_tool_execution_evidence(&failed_record)
-                            .await?;
-                        tool_execution_refs.push((tool_call_id.clone(), failed_id.clone()));
-                        runtime
-                            .append_original_audit_event(AuditEvent::legacy(
-                                "tool_execution_failed",
-                                to_json_value(&ToolExecutionAuditEvent {
-                                    tool_call_id: tool_call_id.clone(),
-                                    tool_execution_id: failed_id,
-                                    agent_id: failed_record.agent_id.clone(),
-                                    tool_name: tool_name.clone(),
-                                    turn_index,
-                                    turn_id,
-                                    run_id,
-                                    work_item_id,
-                                    status: failed_record.status.clone(),
-                                    duration_ms: failed_record.duration_ms,
-                                    summary: failed_record.summary.clone(),
-                                    input: tool_audit_input_field(&call),
-                                    exec_command_cmd: command_preview_field(&call),
-                                    exec_command_display: command_display_field(&call),
-                                    exec_command_batch_items: command_batch_preview_field(&call),
-                                    exec_command_cost: command_cost_field(
-                                        &call,
-                                        runtime
-                                            .inner
-                                            .config_snapshot
-                                            .load()
-                                            .default_tool_output_tokens,
-                                        runtime.inner.config_snapshot.load().max_tool_output_tokens,
-                                    ),
-                                    exec_command_disposition: None,
-                                    exit_status: None,
-                                    task_handle: None,
-                                    error: Some(audit_error),
-                                    error_kind: Some(error.kind.clone()),
-                                    tool_error: Some(error.clone()),
-                                    reason: None,
-                                }),
-                            ))
-                            .await?;
+                        let failed_event = AuditEvent::legacy(
+                            "tool_execution_failed",
+                            to_json_value(&ToolExecutionAuditEvent {
+                                tool_call_id: tool_call_id.clone(),
+                                tool_execution_id: failed_id,
+                                agent_id: failed_record.agent_id.clone(),
+                                tool_name: tool_name.clone(),
+                                turn_index,
+                                turn_id,
+                                run_id,
+                                work_item_id,
+                                status: failed_record.status.clone(),
+                                duration_ms: failed_record.duration_ms,
+                                summary: failed_record.summary.clone(),
+                                input: tool_audit_input_field(&call),
+                                exec_command_cmd: command_preview_field(&call),
+                                exec_command_display: command_display_field(&call),
+                                exec_command_batch_items: command_batch_preview_field(&call),
+                                exec_command_cost: command_cost_field(
+                                    &call,
+                                    runtime
+                                        .inner
+                                        .config_snapshot
+                                        .load()
+                                        .default_tool_output_tokens,
+                                    runtime.inner.config_snapshot.load().max_tool_output_tokens,
+                                ),
+                                exec_command_disposition: None,
+                                exit_status: None,
+                                task_handle: None,
+                                error: Some(audit_error),
+                                error_kind: Some(error.kind.clone()),
+                                tool_error: Some(error.clone()),
+                                reason: None,
+                            }),
+                        );
+                        if tool_name == crate::tool::names::EXEC_COMMAND
+                            && tool_execution_context.turn_id.is_some()
+                            && err.is::<crate::system::process::ProcessNotStarted>()
+                        {
+                            runtime
+                                .persist_tool_result_evidence(&failed_record, failed_event)
+                                .await?;
+                        } else {
+                            runtime
+                                .persist_tool_execution_evidence(&failed_record)
+                                .await?;
+                            runtime.append_original_audit_event(failed_event).await?;
+                        }
+                        tool_execution_refs.push((tool_call_id.clone(), failed_record.id));
                         tool_results.push(ToolResultBlock {
                             tool_use_id: tool_call_id,
                             content: result_content,

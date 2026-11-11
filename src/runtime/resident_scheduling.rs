@@ -522,6 +522,10 @@ impl ResidentSchedulingDomain {
     pub(crate) fn coverage(&self) -> &SchedulingCoverage {
         &self.coverage
     }
+    pub(super) fn active_default_trigger(&self) -> Result<Option<&ExternalTriggerRecord>> {
+        self.coverage
+            .active_default_trigger(|key| self.lookup(key).map(|record| record.map(AsRef::as_ref)))
+    }
     #[cfg(test)]
     pub(crate) fn records_for_test(
         &self,
@@ -1034,28 +1038,35 @@ impl CapturedScheduling {
         Ok(found)
     }
     pub(crate) fn active_default_trigger(&self) -> Result<Option<&ExternalTriggerRecord>> {
+        self.coverage
+            .active_default_trigger(|key| self.lookup(key).map(|record| record.map(AsRef::as_ref)))
+    }
+}
+
+impl SchedulingCoverage {
+    fn active_default_trigger<'a>(
+        &self,
+        lookup: impl FnOnce(&SchedulingKey) -> Result<Option<&'a QualifiedSchedulingFact>>,
+    ) -> Result<Option<&'a ExternalTriggerRecord>> {
         ensure!(
-            self.coverage.active_triggers_complete,
+            self.active_triggers_complete,
             SchedulingReadError::IncompleteLive
         );
         ensure!(
-            self.coverage.active_triggers.len() <= 1,
+            self.active_triggers.len() <= 1,
             "multiple active default Triggers"
         );
-        self.coverage
-            .active_triggers
-            .iter()
-            .next()
-            .map(|key| {
-                let record = self.lookup(key)?.context("active Trigger body missing")?;
-                let CanonicalSchedulingFact::ExternalTrigger(x) = &record.fact else {
-                    anyhow::bail!("active Trigger family differs")
-                };
-                Ok(x)
-            })
-            .transpose()
+        let Some(key) = self.active_triggers.iter().next() else {
+            return Ok(None);
+        };
+        let record = lookup(key)?.context("active Trigger body missing")?;
+        let CanonicalSchedulingFact::ExternalTrigger(trigger) = &record.fact else {
+            anyhow::bail!("active Trigger family differs");
+        };
+        Ok(Some(trigger))
     }
 }
+
 fn metadata_bytes(
     scope: &InputEvidenceScope,
     coverage: &SchedulingCoverage,

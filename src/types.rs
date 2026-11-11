@@ -2595,6 +2595,9 @@ pub struct TurnRecord {
     /// reached a durable tool-result checkpoint. Such turns are never replayed.
     #[serde(default)]
     pub external_side_effect_possible: bool,
+    /// The original tool call protected by the external side effect fence.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) external_side_effect_tool_call_id: Option<String>,
     /// This operator dispatch must commit its provider entry receipt before execution.
     #[serde(default, skip_serializing_if = "is_false")]
     pub(crate) operator_dispatch_fenced: bool,
@@ -2624,6 +2627,7 @@ impl TurnRecord {
             replay: None,
             destructive_operation_id: None,
             external_side_effect_possible: false,
+            external_side_effect_tool_call_id: None,
             operator_dispatch_fenced: false,
             created_at: Utc::now(),
         }

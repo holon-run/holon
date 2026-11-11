@@ -221,25 +221,24 @@ async fn pinned_summary_and_child_cut_survive_a_new_pending_mutation() -> Result
 
 #[tokio::test]
 async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Result<()> {
-    use crate::diagnostics::resource_io::ResourceReadMaterial;
-
     for (queued, resident_work, resident_scheduling) in [
         (false, true, true),
         (false, true, false),
         (false, false, false),
         (true, false, false),
     ] {
-        let harness = LifecycleHarness::new();
-        let runtime = harness.runtime();
+        let (_home, host, runtime) =
+            crate::runtime::tests::support::host_backed_test_runtime().await;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
         runtime.await_initial_resources().await;
-        let _refresh = runtime.hold_resource_refresh_for_test().await?;
+        let refresh = runtime.hold_resource_refresh_for_test().await?;
         runtime
             .create_work_item("roster work".into(), None, None, Vec::new())
             .await?;
         if queued {
             runtime
                 .enqueue(MessageEnvelope::new(
-                    "default",
+                    runtime.inner.mutation_owner.agent_id(),
                     MessageKind::OperatorPrompt,
                     MessageOrigin::Operator {
                         actor_id: None,
@@ -268,13 +267,6 @@ async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Re
                 crate::types::AgentSchedulingPosture::HasRunnableWork
             }
         );
-        let identity_record = root
-            .current
-            .as_ref()
-            .and_then(|current| current.query.as_ref())
-            .context("expected prepared Current fixture")?
-            .identity
-            .clone();
         let mut reservation = runtime.inner.mutation_owner.reserve().await?;
         reservation.begin("roster-without-current".into())?;
         reservation.committed_prepared_with_scheduling_domains(
@@ -297,63 +289,37 @@ async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Re
         runtime.runtime_db().transaction(|tx| {
             tx.execute_batch(
                 "ALTER TABLE audit_events RENAME TO roster_forbidden_events;
-                 ALTER TABLE briefs RENAME TO roster_forbidden_briefs;",
-            )?;
-            Ok(())
-        })?;
-        let material = ResourceReadMaterial::current_or_new_for_identity(
-            &runtime.inner.input_evidence_budget,
-            &root.state.id,
-            root.token.identity_incarnation,
-        )?;
-        let entry = runtime
-            .agent_list_entry_read(&identity_record, &material, runtime.runtime_db())
-            .await?;
-        assert_eq!(entry.scheduling_posture, expected);
-        assert_eq!(entry.identity, identity);
-        assert_eq!(entry.pending, root.state.pending);
-        let published = runtime.inner.mutation_owner.capture()?.unwrap();
-        assert_eq!(published.token.generation, unprepared.token.generation + 1);
-        assert_eq!(published.queue_posture.unwrap().has_queued, queued);
-        assert_eq!(
-            published.scheduling.is_some(),
-            resident_scheduling || !queued
-        );
-        assert!(published.current.is_none());
-        runtime.runtime_db().transaction(|tx| {
-            tx.execute_batch(
-                "ALTER TABLE queue_entries RENAME TO roster_forbidden_queue;
+                 ALTER TABLE briefs RENAME TO roster_forbidden_briefs;
+                 ALTER TABLE queue_entries RENAME TO roster_forbidden_queue;
                  ALTER TABLE agent_states RENAME TO roster_forbidden_state;",
             )?;
             Ok(())
         })?;
-        assert_eq!(
-            runtime
-                .agent_list_entry_read(&identity_record, &material, runtime.runtime_db())
-                .await?,
-            entry
-        );
-        if queued {
-            // Superseded preparations are rejected before the database read.
-            let error = runtime
-                .read_missing_roster_facts(&root, &material, runtime.runtime_db())
-                .await
-                .unwrap_err();
-            assert_eq!(
-                error
-                    .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
-                    .map(|error| error.operation()),
-                Some(RuntimeHandle::OBSERVER_PUBLICATION_OPERATION),
-            );
-        }
-        material.finish()?;
+        let entries = host.list_agent_entries().await?;
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].scheduling_posture, expected);
+        assert_eq!(entries[0].identity, identity);
+        assert_eq!(entries[0].pending, root.state.pending);
+        let published = runtime.inner.mutation_owner.capture()?.unwrap();
+        assert!(Arc::ptr_eq(&unprepared, &published));
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE roster_forbidden_events RENAME TO audit_events;
+                 ALTER TABLE roster_forbidden_briefs RENAME TO briefs;
+                 ALTER TABLE roster_forbidden_queue RENAME TO queue_entries;
+                 ALTER TABLE roster_forbidden_state RENAME TO agent_states;",
+            )?;
+            Ok(())
+        })?;
+        drop(refresh);
+        drop(run_loop);
+        host.shutdown().await?;
     }
     Ok(())
 }
 
 #[tokio::test]
 async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()> {
-    use crate::diagnostics::resource_io::ResourceReadMaterial;
     use crate::queue::QueuePostureFacts;
     use crate::runtime_db::transitions::{
         PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
@@ -361,22 +327,13 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
     };
     use crate::types::AgentSchedulingPosture;
 
-    let harness = LifecycleHarness::new();
-    let runtime = harness.runtime();
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    let run_loop = runtime.pause_run_loop_for_monitor_test().await;
     runtime.await_initial_resources().await;
-    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
     let owner = &runtime.inner.mutation_owner;
     let db = runtime.runtime_db();
     let id = owner.agent_id();
-    let identity = db
-        .agent_identities()
-        .latest(id)?
-        .context("missing identity")?;
-    let material = ResourceReadMaterial::current_or_new_for_identity(
-        &runtime.inner.input_evidence_budget,
-        id,
-        identity.incarnation,
-    )?;
     let check = |has_queued, has_interrupted| -> Result<_> {
         let root = owner.capture()?.context("missing root")?;
         assert_eq!(
@@ -451,9 +408,8 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
     assert!(owner.capture().is_err());
     runtime.reconcile_posture_observation().await?;
     let interrupted_cut = check(false, true)?;
-    let entry = runtime
-        .agent_list_entry_read(&identity, &material, db)
-        .await?;
+    let entries = host.list_agent_entries().await?;
+    let entry = &entries[0];
     assert_ne!(
         entry.scheduling_posture.posture,
         AgentSchedulingPosture::HasQueuedInput
@@ -463,25 +419,25 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
 
     runtime.enqueue(prompt()).await?;
     let mixed_cut = check(true, true)?;
-    let entry = runtime
-        .agent_list_entry_read(&identity, &material, db)
-        .await?;
+    let entries = host.list_agent_entries().await?;
+    let entry = &entries[0];
     assert_eq!(
         entry.scheduling_posture.posture,
         AgentSchedulingPosture::HasQueuedInput
     );
     assert_eq!(entry.pending, 2);
     assert_eq!(check(true, true)?, mixed_cut);
-    material.finish()?;
+    drop(refresh);
+    drop(run_loop);
+    host.shutdown().await?;
     Ok(())
 }
 
 #[tokio::test]
 async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_root_retention(
 ) -> Result<()> {
-    use crate::diagnostics::resource_io::ResourceReadMaterial;
-    let harness = LifecycleHarness::new();
-    let runtime = harness.runtime();
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    let _run_loop = runtime.pause_run_loop_for_monitor_test().await;
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
     let mut prepare = runtime.begin_mutation().await?;
@@ -490,15 +446,6 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
     drop(runtime.agent_summary().await?);
     let expected = runtime.agent_list_entry().await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
-    let identity = root
-        .current
-        .as_ref()
-        .unwrap()
-        .query
-        .as_ref()
-        .unwrap()
-        .identity
-        .clone();
     let old_root = Arc::downgrade(&root);
     drop(root);
     runtime
@@ -520,61 +467,28 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
         )?;
         Ok(())
     })?;
-    let phase = ResourceReadMaterial::current_or_new_for_identity(
-        &runtime.inner.input_evidence_budget,
-        &identity.agent_id,
-        identity.incarnation,
-    )?;
     let _agent = runtime.inner.agent.lock().await;
     let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
-    let actual = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        runtime.agent_list_entry_read(&identity, &phase, &runtime.inner.runtime_db),
-    )
-    .await??;
+    let actual = tokio::time::timeout(std::time::Duration::from_secs(5), host.list_agent_entries())
+        .await??;
     assert_eq!(denied.attempts(), 0);
-    drop(denied);
-    assert_eq!(actual, expected);
-    let mut foreign = identity.as_ref().clone();
-    foreign.incarnation += 1;
-    assert!(runtime
-        .agent_list_entry_read(&foreign, &phase, &runtime.inner.runtime_db)
-        .await
-        .is_err());
+    assert_eq!(actual.len(), 1);
+    assert_eq!(*actual[0], expected);
     Ok(())
 }
 
 #[tokio::test]
 async fn fleet_loaded_entry_ignores_reserved_owner_but_observes_cancellation_and_deadline(
 ) -> Result<()> {
-    use crate::{diagnostics::resource_io::ResourceReadMaterial, runtime_db::RuntimeDbReadScope};
+    use crate::runtime_db::RuntimeDbReadScope;
     use std::time::{Duration, Instant};
-    let harness = LifecycleHarness::new();
-    let runtime = harness.runtime();
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    let _run_loop = runtime.pause_run_loop_for_monitor_test().await;
     runtime.await_initial_resources().await;
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
-    let root = runtime.capture_observer_root(runtime.runtime_db())?;
-    let identity = root
-        .current
-        .as_ref()
-        .unwrap()
-        .query
-        .as_ref()
-        .unwrap()
-        .identity
-        .clone();
-    let phase = ResourceReadMaterial::current_or_new_for_identity(
-        &runtime.inner.input_evidence_budget,
-        &identity.agent_id,
-        identity.incarnation,
-    )?;
     let owner = runtime.inner.mutation_owner.reserve().await?;
     let _agent = runtime.inner.agent.lock().await;
-    tokio::time::timeout(
-        Duration::from_secs(5),
-        runtime.agent_list_entry_read(&identity, &phase, runtime.runtime_db()),
-    )
-    .await??;
+    tokio::time::timeout(Duration::from_secs(5), host.list_agent_entries()).await??;
     for cancel in [true, false] {
         let deadline = if cancel {
             Instant::now() + Duration::from_secs(30)
@@ -586,8 +500,8 @@ async fn fleet_loaded_entry_ignores_reserved_owner_but_observes_cancellation_and
             scope.cancel();
         }
         let db = runtime.runtime_db().with_read_scope(scope);
-        assert!(runtime
-            .agent_list_entry_read(&identity, &phase, &db)
+        assert!(host
+            .list_agent_entries_for_parent_in(None, &db)
             .await
             .is_err());
     }

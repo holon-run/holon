@@ -1502,6 +1502,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     startup_dispatch.release();
     host.spawn_daemon_memory_indexer();
     host.spawn_daemon_runtime_db_retention();
+    host.spawn_daemon_session_activity();
     host.spawn_daemon_deletion_coordinator();
     spawn_stale_agent_template_remote_source_sync(&config, &host);
     #[cfg(not(unix))]
@@ -1577,11 +1578,12 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         };
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
+        let session_activity_result = host.shutdown_daemon_session_activity().await;
         if let Some(exporter) = otlp_exporter {
             exporter.shutdown()?;
         }
         diagnostics_writer.shutdown()?;
-        return result.and(tunnel_result);
+        return result.and(tunnel_result).and(session_activity_result);
     }
 
     #[cfg(not(unix))]
@@ -1624,11 +1626,12 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         };
         let _ = runtime_service.cleanup_state_files(&config);
         host.shutdown_daemon_memory_indexer().await;
+        let session_activity_result = host.shutdown_daemon_session_activity().await;
         if let Some(exporter) = otlp_exporter {
             exporter.shutdown()?;
         }
         diagnostics_writer.shutdown()?;
-        result.and(tunnel_result)
+        result.and(tunnel_result).and(session_activity_result)
     }
 }
 

@@ -252,6 +252,15 @@ impl ResourceReadMaterial {
             _thread: PhantomData,
         }
     }
+    /// Prepare independently owned material outside the caller's observation.
+    pub(crate) fn without_current<T>(operation: impl FnOnce() -> T) -> T {
+        let _entry = ResourceReadBudget {
+            previous: ACTIVE.with(|slot| slot.replace(None)),
+            _thread: PhantomData,
+        };
+        operation()
+    }
+
     /// One synchronous acquisition, including nested source adapters. The
     /// caller retains this phase's guard with the returned owning material.
     pub(crate) fn read<T>(&self, read: impl FnOnce() -> anyhow::Result<T>) -> anyhow::Result<T> {

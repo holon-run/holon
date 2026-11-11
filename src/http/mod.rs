@@ -1728,7 +1728,7 @@ fn authenticate_session_credential(
     state: &AppState,
 ) -> AuthenticationResult<crate::authentication::AuthSessionRecord> {
     let digest = crate::authentication::digest_secret(credential);
-    let session = state
+    let mut session = state
         .host
         .runtime_db()
         .authentication()
@@ -1738,7 +1738,11 @@ fn authenticate_session_credential(
     let config = state.host.config();
     let now = Utc::now();
     let idle_ttl = std::time::Duration::from_secs(config.auth.session.idle_ttl_seconds);
-    if !session.is_active_at(now, idle_ttl) {
+    if !state
+        .host
+        .session_activity()
+        .is_active(&mut session, now, idle_ttl)
+    {
         return Err(AuthenticationError::Rejected(
             "session is expired or revoked",
         ));
@@ -1751,14 +1755,18 @@ fn authenticate_session_credential(
         .map_err(AuthenticationError::Infrastructure)?
         .is_some_and(|user| user.disabled_at.is_some())
     {
+        state.host.session_activity().forget(&digest);
         return Err(AuthenticationError::Rejected("session user is disabled"));
     }
-    state
+    if !state
         .host
-        .runtime_db()
-        .authentication()
-        .touch_session(&session.session_digest, now)
-        .map_err(AuthenticationError::Infrastructure)?;
+        .session_activity()
+        .touch(&mut session, now, idle_ttl)
+    {
+        return Err(AuthenticationError::Rejected(
+            "session is expired or revoked",
+        ));
+    }
     Ok(session)
 }
 

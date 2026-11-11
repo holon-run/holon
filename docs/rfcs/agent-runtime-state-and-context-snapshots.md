@@ -20,6 +20,18 @@ Input/Current delta, and saves one idempotent receipt. Failure rolls back the
 whole result; receipt replay cannot rewrite a later Turn. Prepared Wait and
 Work completion retain their existing terminal transaction boundaries.
 
+Ordinary `ExecCommand` binds the pre-execution barrier to the original tool
+call in the current Turn. The matching result transaction clears it, including
+a failure with proof that the command never started. While the returned result
+is in memory, settlement resolves an uncertain commit from its
+original receipt and retries a confirmed uncommitted transaction once with
+the same prepared command and reservation. Receipt recovery restores the original
+Current qualification for live Event notifications. A committed result resumes the
+tool loop after publication. If recovery fails, the operator receives
+`tool_result_settlement_pending` and the dependent model round stops.
+Startup recovery reports the recorded call when only its execution barrier
+survives and blocks automatic replay.
+
 Loaded State, summary, child summary, runtime activity and roster observations
 capture a Ready immutable root without acquiring its mutation reservation or reconciling an
 unfinished operation. Pending responsibility returns a retryable unavailable
@@ -48,26 +60,26 @@ With Scheduling prepared, child observability keeps its existing published
 Task/Work/Input selection. Missing Current needs only pooled Queue/error scalar
 reads and generation validation, without decoding canonical State or Task bodies.
 
-The loaded roster derives its entry from the Ready State and identity. Stopped
-Agents and active turns have State-defined posture. For other Agents, the same
-publication supplies Queue posture and, when needed, Work, active waits and the
-active trigger for the existing scheduling calculation. Queue posture has two
-independent facts, for canonical `queued` and `interrupted` entries. The loaded
-roster tests only `queued`. Cold roster reconstruction treats either status as
-pending input.
+The lightweight `/api/agents/list` roster captures one committed memory
+projection per Active/Public identity. Host initialization and startup recovery
+prepare cold members without activating them. The original mutation publication
+updates the list projection for both loaded and cold Agents. The projection
+outlives unloading and retains only list fields and their model inputs, scoped
+to the identity incarnation and revision. A pending or missing publication
+returns the existing retryable observer error. The list does not reserve an
+execution owner, read SQLite, or prepare missing domains on demand.
+If list preparation fails after a commit, the Host retains a repair obligation.
+One background worker retries with backoff using the ordinary query-only reader
+pool. It installs the result only for the current identity revision and the
+captured owner epoch and publication generation. A pending execution
+reconciliation prevents repair.
+This worker never replays the mutation and stops with the Host.
 
-The original Queue transaction captures both facts after its mutations, using
-indexed existence checks. Bootstrap and recovery derive them in the same
-qualified read that reconstructs State and pending input. A Queue write without
-a qualified result invalidates coverage. A covered loaded roster entry reads
-directly from its in-memory publication.
-
-When roster coverage is missing, the observer reserves the original owner,
-rechecks the Ready publication and prepares the required facts in a query-only
-transaction. It validates the durable State and active incarnation, reuses
-existing Work and Scheduling qualification, and publishes the prepared domains
-with a new generation. A changed publication, pending recovery, expired read
-scope or unqualified durable record rejects the preparation.
+State supplies posture for stopped Agents and active turns. The loaded list
+uses `queued` to detect pending input. The cold list uses either `queued` or
+`interrupted`. The original Queue transaction captures both facts after its
+mutations. For other postures, the producer prepares the Work, wait, continuation,
+and active trigger inputs before publishing the resulting list entry.
 
 Other metadata observers may still derive response-local Current or Scheduling
 material through a pooled, query-only deferred transaction. Those reads validate
@@ -75,7 +87,7 @@ existing qualification and canonical State, then verify the original publication
 before returning. Incarnation, owner epoch, read deadline, cancellation,
 protection and last-holder material ownership remain required.
 
-Cold State, summary and roster observations prefer pooled query-only
+Cold State and summary observations prefer pooled query-only
 reconstruction and validate the original owner epoch and generation after
 freezing their facts, including
 metadata ACKs that leave no resident root. Previously prepared qualification is
@@ -4225,6 +4237,13 @@ identity fails closed. This path creates neither a command receipt nor Current
 or Input body qualification, and preserves raw publication's best-effort policy.
 It is not admission for new work, and never borrows a successor's namespace.
 
+The retirement dispatch check uses a reserved preparation reader and submits no writer ticket
+for Active identities. It is only a routing hint: the prepared Audit writer
+still validates Active identity in its original transaction, and the raw
+retirement writer rechecks incarnation and both Deleting status fields inside
+the append transaction. A concurrent identity change cannot authorize a stale
+observation or reuse a successor's namespace.
+
 The runtime, HTTP and advisory-tool adapters await that writer after their
 original business ACK. Cancellation while waiting for the owner starts no SQL;
 after SQL, the existing Known/Unknown and original receipt fences apply.
@@ -4249,8 +4268,9 @@ the prior business ACK, Audit and later notification as separate phases; they
 do not qualify the remaining raw maintenance or other runtime emitters.
 External-command barriers also preserve the preceding Turn write as its own
 prepared Evidence command. The held owner explicitly prepares the qualified
-current Turn, freezes its complete prior digest, and changes only the
-`external_side_effect_possible` flag. The original transaction checks that prior,
+current Turn and freezes its complete prior digest. The command sets
+`external_side_effect_possible` and can associate the original tool call ID.
+The original transaction checks that prior,
 the unfinished/current Turn and scope, admits its raw/typed material through the
 original Native Input allowance, and installs the acknowledged Input delta before
 starting the independent Audit. No-op flags produce no new Audit; later Audit

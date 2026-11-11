@@ -81,6 +81,21 @@ impl std::fmt::Display for DeletionMetadataPending {
 
 impl std::error::Error for DeletionMetadataPending {}
 
+fn deletion_reconciliation_error(error: anyhow::Error) -> anyhow::Error {
+    use crate::runtime::mutation_owner::MutationOwnerError;
+
+    if matches!(
+        error.downcast_ref::<MutationOwnerError>(),
+        Some(MutationOwnerError::NeedsReconcile(_) | MutationOwnerError::Replaced)
+    ) || crate::runtime_db::persistence_certainty(&error)
+        == Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
+    {
+        error.context(DeletionMetadataPending)
+    } else {
+        error
+    }
+}
+
 impl RuntimeHost {
     async fn commit_deletion_identity_metadata<T: Send + 'static>(
         &self,
@@ -108,25 +123,10 @@ impl RuntimeHost {
         self.run_owned_external_mutation(async move {
             let bootstrap_lock = host.agent_bootstrap_lock(&agent_id);
             let _bootstrap = bootstrap_lock.lock().await;
-            let mut reservations =
-                host.reserve_agent_mutations(&scopes)
-                    .await
-                    .map_err(|error| {
-                        if error
-                            .downcast_ref::<crate::runtime::mutation_owner::MutationOwnerError>()
-                            .is_some_and(|error| {
-                                matches!(error,
-                        crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(_)
-                        | crate::runtime::mutation_owner::MutationOwnerError::Replaced)
-                            })
-                            || crate::runtime_db::persistence_certainty(&error)
-                                == Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
-                        {
-                            error.context(DeletionMetadataPending)
-                        } else {
-                            error
-                        }
-                    })?;
+            let mut reservations = host
+                .reserve_agent_mutations(&scopes)
+                .await
+                .map_err(deletion_reconciliation_error)?;
             let _home_guard = host.inner.agent_home_cleanup_lock.lock().await;
             let mut facts = host.external_identity_facts(&reservations)?;
             let target = reservations
@@ -1091,23 +1091,35 @@ impl RuntimeHost {
         }
     }
 
-    /// Fence: verify the identity is in Deleting state and the runtime is
-    /// unloaded. Phase 0-1 already sets the identity and unloads; this is a
-    /// safety check for crash recovery.
+    /// Wait for the deletion admission's identity publication before draining
+    /// the runtime. The coordinator can see the committed job before its ACK.
     async fn deletion_phase_fence(
         &self,
         agent_id: &str,
         policy: AgentDeletionPolicy,
     ) -> Result<()> {
+        let scope = self
+            .agent_identity_record(agent_id)?
+            .ok_or_else(|| anyhow!("agent {agent_id} identity not found"))?;
+        let reservations = self
+            .reserve_mutation_scopes(&[(scope.agent_id, scope.incarnation)])
+            .await
+            .map_err(deletion_reconciliation_error)?;
         let identity = self
             .agent_identity_record(agent_id)?
             .ok_or_else(|| anyhow!("agent {agent_id} identity not found"))?;
+        anyhow::ensure!(
+            identity.incarnation == scope.incarnation,
+            "deletion target identity incarnation changed"
+        );
         if identity.status != AgentRegistryStatus::Deleting {
             return Err(anyhow!(
                 "agent {agent_id} identity is {:?}, expected Deleting",
                 identity.status
             ));
         }
+        // The runtime drain can require the same reservation to finish.
+        drop(reservations);
         if policy == AgentDeletionPolicy::PreserveProtectedResources {
             self.finish_idle_runtime_exit(agent_id, None).await
         } else {
@@ -2087,6 +2099,53 @@ mod tests {
             "finalize must release its short reservation"
         );
         host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
+    #[tokio::test]
+    async fn deletion_fence_reconciles_the_original_admission_ack() -> Result<()> {
+        let (_home, host) = metadata_test_host();
+        let identity = metadata_identity(&host, "pending-deletion-fence");
+        host.cache_agent_identity(&identity)?;
+        let mut reservations = host
+            .reserve_mutation_scopes(&[(identity.agent_id.clone(), identity.incarnation)])
+            .await?;
+        let mut facts = host.external_identity_facts(&reservations)?;
+        host.acknowledge_external_metadata(
+            &mut reservations,
+            crate::ids::audit_event_id(),
+            || {
+                let (deleting, _, _) = host.runtime_db().agent_deletions().begin(
+                    &identity.agent_id,
+                    identity.revision,
+                    "fixture",
+                    false,
+                )?;
+                facts[0].identity = Some(Arc::new(deleting));
+                Ok(((), facts))
+            },
+        )?;
+        assert_eq!(
+            host.agent_identity_record(&identity.agent_id)?
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active
+        );
+
+        let mut fence = Box::pin(
+            host.deletion_phase_fence(&identity.agent_id, AgentDeletionPolicy::DeleteAgentData),
+        );
+        assert!(futures_util::poll!(fence.as_mut()).is_pending());
+        drop(reservations);
+        fence.await?;
+        assert_eq!(
+            host.agent_identity_record(&identity.agent_id)?
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Deleting
+        );
+        host.shutdown().await?;
+        Ok(())
     }
 
     #[cfg(holon_lib_test_shard = "d")]

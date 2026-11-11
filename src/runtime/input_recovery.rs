@@ -16,8 +16,8 @@ use crate::{
     runtime_db::{
         context_inputs::ContextDurableRead,
         input_mutation_receipts::{
-            with_fresh_input_mutation_preparation_and_preflight, InputMutationResolution,
-            InputMutationResult,
+            with_fresh_input_mutation_preparation_and_preflight, InputMutationEvidenceFamily,
+            InputMutationResolution, InputMutationResult,
         },
         input_preparation::prepare_original_input_recovery_with_queries_tx,
         RuntimeDb,
@@ -525,6 +525,10 @@ pub(crate) fn resolve_input_recovery_with_queries(
                             scope,
                             &outcome.install_keys,
                         )?;
+                    let active = facts
+                        .identity
+                        .as_ref()
+                        .is_some_and(|identity| identity.status == AgentRegistryStatus::Active);
                     let mut runtime = RuntimeMutationFacts::for_input_recovery(
                         reservation.owner_epoch(),
                         state.clone(),
@@ -558,10 +562,25 @@ pub(crate) fn resolve_input_recovery_with_queries(
                             crate::runtime_db::current_read_writes::CommittedCurrentWrites::prepared_query(query),
                         ));
                     }
-                    acquisition.finish()?;
                     if witness.input_storage_replayed() {
                         runtime.suppress_observed_input_replay_publication();
+                    } else if active
+                        && matches!(
+                            &receipt.outcome.result,
+                            InputMutationResult::Evidence {
+                                family: InputMutationEvidenceFamily::ToolExecution,
+                                ..
+                            }
+                        )
+                    {
+                        runtime.restore_tool_result_event_reads(
+                            tx,
+                            scope,
+                            budget,
+                            (request.byte_limit, request.record_limit),
+                        )?;
                     }
+                    acquisition.finish()?;
                     let runtime = Arc::new(runtime);
                     known.push(KnownCommit::State {
                         work: Some(work),

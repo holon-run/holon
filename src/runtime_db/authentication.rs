@@ -138,6 +138,30 @@ impl AuthenticationRepository<'_> {
         })
     }
 
+    pub(crate) fn checkpoint_session_activity(
+        &self,
+        sessions: &[(String, DateTime<Utc>)],
+    ) -> Result<()> {
+        self.db.transaction_with_context(
+            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                "authentication.checkpoint_session_activity",
+                "auth_sessions",
+            ),
+            |tx| {
+                let mut statement = tx.prepare_cached(
+                    "UPDATE auth_sessions SET last_seen_at = ?2
+                     WHERE session_digest = ?1 AND revoked_at IS NULL
+                       AND (expires_at IS NULL OR expires_at > ?2)
+                       AND last_seen_at < ?2",
+                )?;
+                for (digest, last_seen_at) in sessions {
+                    statement.execute(params![digest, timestamp(*last_seen_at)])?;
+                }
+                Ok(())
+            },
+        )
+    }
+
     pub fn revoke_session(&self, session_digest: &str, revoked_at: DateTime<Utc>) -> Result<bool> {
         self.db.transaction(|tx| {
             Ok(tx.execute(

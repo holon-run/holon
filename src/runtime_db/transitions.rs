@@ -110,6 +110,8 @@ pub(crate) enum TransitionFaultPoint {
     BeforeCacheUpdate,
     BeforeEventPublication,
     BeforeSchedulerNotification,
+    #[cfg(test)]
+    ToolResultCommitAckLost,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1061,8 +1063,9 @@ impl RuntimeDb {
                             data: serde_json::json!({
                                 "agent_id": &turn.agent_id,
                                 "turn_id": &turn.turn_id,
+                                "tool_call_id": &turn.external_side_effect_tool_call_id,
                                 "recovery_policy": "never_replay_unknown_external_side_effect",
-                                "operator_action": "submit_explicit_recovery_or_retry",
+                                "operator_action": "inspect_external_state_before_retry",
                             }),
                         },
                     )?;
@@ -11142,6 +11145,7 @@ mod tests {
         })?;
         let mut turn = active_turn(agent_id, turn_id, 1, Some(message_id), created_at);
         turn.external_side_effect_possible = true;
+        turn.external_side_effect_tool_call_id = Some("external-tool-call".into());
         db.turn_records().upsert(&turn)?;
 
         let report = db.recover_interrupted_runtime_state_at_startup()?;
@@ -11161,7 +11165,10 @@ mod tests {
             db.audit_events()
                 .recent(Some(agent_id), 20)?
                 .into_iter()
-                .filter(|event| event.kind == "startup_external_side_effect_indeterminate")
+                .filter(
+                    |event| event.kind == "startup_external_side_effect_indeterminate"
+                        && event.data["tool_call_id"] == "external-tool-call"
+                )
                 .count(),
             1
         );

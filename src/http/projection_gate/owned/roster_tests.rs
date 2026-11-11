@@ -44,6 +44,10 @@ async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
             .unwrap();
     }
     let runtime = host.default_runtime().await.unwrap();
+    runtime.wait_for_bootstrap().await.unwrap();
+    let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+    runtime.await_initial_resources_for_test().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
     let default_agent_id = runtime.agent_state().await.unwrap().id;
     for index in 0..200 {
         let result = runtime
@@ -77,7 +81,7 @@ async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
             .unwrap()
             .scheduling_posture
             .posture,
-        crate::types::AgentSchedulingPosture::HasQueuedInput
+        crate::types::AgentSchedulingPosture::HasRunnableWork
     );
     assert!(runtime.accepts_execution_admission());
     let mut headers = HeaderMap::new();
@@ -118,19 +122,38 @@ async fn newly_bootstrapped_roster_keeps_runtime_admission_open() {
     );
     assert!(runtime.accepts_execution_admission());
     state.projection_gate.close_and_drain().await;
+    drop(refresh);
+    drop(run_loop);
     host.shutdown().await.unwrap();
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn unloaded_roster_acquisition_does_not_read_on_the_async_worker() {
+async fn first_unloaded_roster_uses_no_database_admission() {
     let (_home, host) = control_token_test_host();
     host.ensure_default_agent_identity().unwrap();
-    let state = Arc::new(AppState::for_tcp(host.clone()));
+    let db = host.runtime_db();
+    let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+    let before_writes = writer.write_channel_admissions_for_tests().unwrap();
+    let before_reads = db.reader_pool_stats_for_tests().checkout_attempts;
+    let before_preparation_reads = db.preparation_pool_stats_for_tests().checkout_attempts;
+    let state = Arc::new(AppState::for_unix(host.clone()));
     let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
     let response = tokio::time::timeout(Duration::from_secs(5), roster_request(state.clone()))
         .await
         .unwrap();
     assert_eq!(denied.attempts(), 0);
+    assert_eq!(
+        db.reader_pool_stats_for_tests().checkout_attempts,
+        before_reads
+    );
+    assert_eq!(
+        db.preparation_pool_stats_for_tests().checkout_attempts,
+        before_preparation_reads
+    );
+    assert_eq!(
+        writer.write_channel_admissions_for_tests().unwrap(),
+        before_writes
+    );
     drop(denied);
     assert_eq!(response.status(), StatusCode::OK);
     let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
@@ -156,7 +179,6 @@ async fn loaded_roster_ready_cut_does_not_wait_for_reserved_owner() {
     let run_loop = runtime.pause_run_loop_for_monitor_test().await;
     runtime.await_initial_resources_for_test().await;
     let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
-    drop(host.list_agent_entries().await.unwrap());
     let agent_id = host.config().default_agent_id.clone();
     let incarnation = host
         .agent_identity_record(&agent_id)

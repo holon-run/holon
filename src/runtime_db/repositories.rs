@@ -5953,6 +5953,31 @@ impl EvidenceRepository<'_> {
     }
 }
 
+fn retiring_audit_identity(
+    connection: &Connection,
+    scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+) -> Result<bool> {
+    let mut statement = connection.prepare(
+        "SELECT COALESCE(json_extract(payload_json,'$.incarnation'),1),
+         status,json_extract(payload_json,'$.status')
+         FROM agent_identities WHERE agent_id=?1",
+    )?;
+    let mut rows = statement.query([&scope.agent_id])?;
+    let row = rows.next()?.context("retiring Audit identity is missing")?;
+    let incarnation: i64 = row.get(0)?;
+    let status = row.get_ref(1)?.as_str()?;
+    let payload_status = row.get_ref(2)?.as_str()?;
+    anyhow::ensure!(
+        u64::try_from(incarnation)? == scope.identity_incarnation && status == payload_status,
+        "retiring Audit observation identity mismatch"
+    );
+    match status {
+        "active" => Ok(false),
+        "deleting" => Ok(true),
+        _ => anyhow::bail!("retired identity cannot append an Audit observation"),
+    }
+}
+
 impl AuditEventSink<'_> {
     /// Retirement observations do not admit commands or qualify event bodies.
     pub(crate) fn append_retiring_observation(
@@ -5960,30 +5985,23 @@ impl AuditEventSink<'_> {
         scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
         event: &AuditEvent,
     ) -> Result<Option<AuditEvent>> {
+        // Active observations use the canonical writer, which checks identity
+        // again in its own transaction. Only retirement needs this raw writer.
+        if !self
+            .db
+            .read_for_preparation(|connection| retiring_audit_identity(connection, scope))?
+        {
+            return Ok(None);
+        }
         self.db.transaction_with_context(
             RuntimeDbWriteContext::sync("audit_events.retiring_observation", "audit_events"),
             |tx| {
-                let mut statement = tx.prepare(
-                    "SELECT COALESCE(json_extract(payload_json,'$.incarnation'),1),
-                     status,json_extract(payload_json,'$.status')
-                     FROM agent_identities WHERE agent_id=?1",
-                )?;
-                let mut rows = statement.query([&scope.agent_id])?;
-                let row = rows.next()?.context("retiring Audit identity is missing")?;
-                let incarnation: i64 = row.get(0)?;
-                let status = row.get_ref(1)?.as_str()?;
-                let payload_status = row.get_ref(2)?.as_str()?;
                 anyhow::ensure!(
-                    u64::try_from(incarnation)? == scope.identity_incarnation
-                        && status == payload_status,
-                    "retiring Audit observation identity mismatch"
+                    retiring_audit_identity(tx, scope)?,
+                    "retiring Audit identity is no longer deleting"
                 );
-                match status {
-                    "active" => Ok(None),
-                    "deleting" => append_audit_event_tx(tx, Some(&scope.agent_id), event)
-                        .map(|(event, _)| Some(event)),
-                    _ => anyhow::bail!("retired identity cannot append an Audit observation"),
-                }
+                append_audit_event_tx(tx, Some(&scope.agent_id), event)
+                    .map(|(event, _)| Some(event))
             },
         )
     }

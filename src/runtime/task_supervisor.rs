@@ -24,9 +24,16 @@ impl ManagedTaskSupervisor<'_> {
         duplicate_policy: ExecCommandDuplicatePolicy,
         authority_class: &AuthorityClass,
         trace_context: Option<&TraceContext>,
+        turn_tool_call: Option<(&str, &str)>,
     ) -> Result<ExecCommandResult> {
         self.runtime
-            .execute_exec_command(spec, duplicate_policy, authority_class, trace_context)
+            .execute_exec_command(
+                spec,
+                duplicate_policy,
+                authority_class,
+                trace_context,
+                turn_tool_call,
+            )
             .await
     }
 

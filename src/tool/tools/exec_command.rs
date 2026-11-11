@@ -73,6 +73,10 @@ pub(crate) async fn execute(
             duplicate_policy,
             authority_class,
             context.trace_context.as_ref(),
+            context
+                .turn_id
+                .as_deref()
+                .zip(context.tool_call_id.as_deref()),
         )
         .await?;
     serialize_success(NAME, &result)
