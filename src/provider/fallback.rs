@@ -7,8 +7,8 @@ use tracing::warn;
 use super::{
     aggregate_attempt_token_usage,
     catalog::ProviderCandidate,
-    provider_error_token_usage, provider_transport_diagnostics, provider_transport_error_with_code,
-    provider_turn_error,
+    provider_error_code, provider_error_token_usage, provider_transport_diagnostics,
+    provider_transport_error_with_code, provider_turn_error,
     quota::ProviderQuotaCoordinator,
     retry::{
         classify_provider_error, format_provider_failure, provider_error_retry_after,
@@ -845,6 +845,123 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn gemini_refusal_stops_fallback_but_other_response_failures_keep_existing_policy() {
+        for (body, blocked, expected_attempts) in [
+            (
+                serde_json::json!({
+                    "candidates": [{"finishReason": "PROHIBITED_CONTENT"}],
+                    "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 2}
+                }),
+                true,
+                1,
+            ),
+            (
+                serde_json::json!({
+                    "promptFeedback": {"blockReason": "SAFETY"},
+                    "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 2}
+                }),
+                true,
+                1,
+            ),
+            (
+                serde_json::json!({
+                    "candidates": [{
+                        "finishReason": "SAFETY",
+                        "content": {"parts": [{"functionCall": {"args": {}}}]}
+                    }],
+                    "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 2}
+                }),
+                true,
+                1,
+            ),
+            (
+                serde_json::json!({
+                    "promptFeedback": {"blockReason": "SAFETY"},
+                    "candidates": [{"content": {"parts": [{"functionCall": {"args": {}}}]}}],
+                    "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 2}
+                }),
+                true,
+                1,
+            ),
+            (
+                serde_json::json!({
+                    "candidates": [{"finishReason": "STOP", "content": {}}],
+                    "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 2}
+                }),
+                false,
+                provider_max_attempts(),
+            ),
+            (serde_json::json!({"candidates": "invalid"}), false, 1),
+            (
+                serde_json::json!({
+                    "candidates": [{"content": {"parts": [{"functionCall": {"args": {}}}]}}]
+                }),
+                false,
+                1,
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base_url = format!("http://{}", listener.local_addr().unwrap());
+            let requests = Arc::new(AtomicUsize::new(0));
+            let observed = requests.clone();
+            let app = Router::new().fallback(post(move || {
+                observed.fetch_add(1, Ordering::SeqCst);
+                let body = body.clone();
+                async move { Json(body) }
+            }));
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let home = tempfile::tempdir().unwrap();
+            let provider = FallbackProvider {
+                candidates: vec![
+                    http_candidate(
+                        &base_url,
+                        home.path(),
+                        ProviderTransportKind::GeminiGenerateContent,
+                    ),
+                    scripted_candidate("openai/fallback", vec![ScriptedFailure::Succeed]),
+                ],
+            };
+            let error = provider
+                .complete_turn(plain_turn_request())
+                .await
+                .unwrap_err();
+            server.abort();
+            let timeline = provider_attempt_timeline(&error).unwrap();
+            assert_eq!(requests.load(Ordering::SeqCst), expected_attempts);
+            assert_eq!(timeline.attempts.len(), expected_attempts);
+            assert_eq!(timeline.pending_fallback_model_ref.is_none(), blocked);
+            assert_eq!(timeline.pending_fallback_disposition.is_none(), blocked);
+            assert_eq!(
+                timeline.attempts.last().unwrap().advanced_to_fallback,
+                !blocked
+            );
+            let descriptor = crate::runtime_error::describe_runtime_error(&error);
+            if blocked {
+                assert_eq!(provider_error_code(&error), Some("gemini_content_blocked"));
+                assert_eq!(descriptor.code, "gemini_content_blocked");
+                assert!(!descriptor.retryable);
+                assert_eq!(
+                    timeline.attempts[0].outcome,
+                    ProviderAttemptOutcome::FailFastAborted
+                );
+            } else if expected_attempts > 1 {
+                assert_eq!(descriptor.code, "empty_response");
+                assert_eq!(
+                    timeline.pending_fallback_disposition,
+                    Some(crate::provider::ProviderFallbackDisposition::Immediate)
+                );
+            } else {
+                assert_eq!(descriptor.code, "invalid_response");
+            }
+            if blocked || expected_attempts > 1 {
+                let usage = timeline.aggregated_token_usage.as_ref().unwrap();
+                assert_eq!(usage.input_tokens, 11 * expected_attempts as u64);
+                assert_eq!(usage.output_tokens, 2 * expected_attempts as u64);
+            }
+        }
+    }
+
     #[tokio::test(start_paused = true)]
     async fn retry_without_server_hint_keeps_computed_backoff() {
         let provider = FallbackProvider {
@@ -1472,7 +1589,7 @@ impl AgentProvider for FallbackProvider {
             .first()
             .map(|candidate| candidate.model_ref.clone())
             .unwrap_or_default();
-        let pending_fallback_model_ref = self
+        let mut pending_fallback_model_ref = self
             .candidates
             .get(1)
             .map(|candidate| candidate.model_ref.clone());
@@ -1726,6 +1843,10 @@ impl AgentProvider for FallbackProvider {
                         attempt = attempt.saturating_add(1);
                         continue;
                     }
+                    // Content refusal is not an availability failure to route around.
+                    if provider_error_code(&error) == Some("gemini_content_blocked") {
+                        pending_fallback_model_ref = None;
+                    }
                     pending_fallback_disposition = pending_fallback_model_ref
                         .as_ref()
                         .map(|_| provider_fallback_disposition(classification.kind));
@@ -1792,7 +1913,9 @@ impl AgentProvider for FallbackProvider {
         } else {
             "all configured providers failed for this turn"
         };
-        let source = anyhow!("{source_prefix}: {error_summary}");
+        let source = last_error
+            .unwrap_or_else(|| anyhow!("provider failed without an error"))
+            .context(format!("{source_prefix}: {error_summary}"));
         Err(provider_turn_error(
             source.to_string(),
             ProviderAttemptTimeline {

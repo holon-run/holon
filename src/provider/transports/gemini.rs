@@ -9,12 +9,12 @@ use std::path::{Path, PathBuf};
 use crate::{
     config::ProviderRuntimeConfig,
     provider::{
-        http_trace::ProviderHttpTrace, AgentProvider, ConversationMessage, ModelBlock,
-        ModelToolCallKind, ProviderBlockData, ProviderCacheUsage, ProviderContextBudgetDiagnostics,
-        ProviderImageData, ProviderPromptCapability, ProviderRequestDiagnostics,
-        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
-        ProviderTransportDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
-        ProviderTurnResponse,
+        http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
+        AgentProvider, ConversationMessage, ModelBlock, ModelToolCallKind, ProviderBlockData,
+        ProviderCacheUsage, ProviderContextBudgetDiagnostics, ProviderImageData,
+        ProviderPromptCapability, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
+        ProviderResponseFormatRequest, ProviderTransportDiagnostics, ProviderTransportTimeline,
+        ProviderTurnRequest, ProviderTurnResponse,
     },
 };
 
@@ -22,10 +22,12 @@ use super::{build_http_client, response_body_timeout, send_provider_request, Req
 use crate::provider::budget::{effective_output_tokens, estimate_context_budget, ContextBudget};
 use crate::provider::retry::{
     classify_reqwest_transport_error_with_trace, classify_status_error_with_trace,
-    invalid_response_error, parse_retry_after, provider_transport_error_with_code,
+    empty_response_error_with_trace, invalid_response_error_with_trace, parse_retry_after,
+    provider_transport_error_with_code, provider_transport_error_with_evidence,
     sanitize_transport_url, timeout_transport_error_with_trace, ProviderFailureClassification,
     ProviderFailureKind, RetryDisposition,
 };
+use crate::types::TokenUsage;
 
 #[derive(Clone)]
 pub struct GeminiProvider {
@@ -34,6 +36,7 @@ pub struct GeminiProvider {
     api_key: String,
     quota_identity: Option<crate::provider::ProviderQuotaIdentity>,
     model: String,
+    model_ref: String,
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
     trace_home_dir: PathBuf,
@@ -115,14 +118,23 @@ struct GeminiFunctionResponse {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GenerateContentResponse {
+    #[serde(default)]
     candidates: Vec<GeminiCandidate>,
     usage_metadata: Option<GeminiUsageMetadata>,
+    prompt_feedback: Option<GeminiPromptFeedback>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GeminiPromptFeedback {
+    block_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GeminiCandidate {
-    content: Option<GeminiContent>,
+    // Decode partial content only after refusal metadata has been checked.
+    content: Option<Value>,
     finish_reason: Option<String>,
 }
 
@@ -178,6 +190,12 @@ impl GeminiProvider {
                 provider_config,
             ),
             model: model.to_string(),
+            model_ref: format!(
+                "{}@{}/{}",
+                provider_config.route_provider.as_str(),
+                provider_config.route_endpoint.as_str(),
+                model
+            ),
             max_output_tokens,
             context_window_tokens,
             trace_home_dir: trace_home_dir.to_path_buf(),
@@ -196,7 +214,7 @@ impl AgentProvider for GeminiProvider {
         material.validate_images(&request.conversation)?;
         material
             .complete_turn(async {
-                let model_ref = format!("gemini/{}", self.model);
+                let model_ref = self.model_ref.clone();
                 let url = format!(
                     "{}/models/{}:generateContent",
                     self.base_url,
@@ -350,8 +368,23 @@ impl AgentProvider for GeminiProvider {
                     trace.write_response_body(&response_body);
                 }
                 let parsed: GenerateContentResponse = serde_json::from_str(&response_body)
-                    .map_err(|error| invalid_response_error("invalid Gemini JSON", error))?;
-                let mut response = gemini_response_to_provider_turn_response(parsed)?;
+                    .map_err(|error| {
+                        invalid_response_error_with_trace(
+                            "invalid Gemini JSON",
+                            "response_protocol",
+                            "gemini",
+                            Some(&model_ref),
+                            Some(url.as_str()),
+                            format!(
+                                "JSON {:?} error at line {} column {}",
+                                error.classify(), error.line(), error.column()
+                            ),
+                            request_trace.as_ref(),
+                        )
+                    })?;
+                let mut response = gemini_response_to_provider_turn_response(
+                    parsed, Some(&model_ref), Some(url.as_str()), request_trace.as_ref()
+                )?;
                 let parse_completed_at = chrono::Utc::now();
                 let diagnostics = response
                     .request_diagnostics
@@ -645,31 +678,133 @@ fn conversation_message_to_gemini_content(message: &ConversationMessage) -> Opti
     }
 }
 
+fn gemini_refusal_reason(reason: &str) -> Option<&'static str> {
+    match reason {
+        "SAFETY" => Some("SAFETY"),
+        "RECITATION" => Some("RECITATION"),
+        "BLOCKLIST" => Some("BLOCKLIST"),
+        "PROHIBITED_CONTENT" => Some("PROHIBITED_CONTENT"),
+        "SPII" => Some("SPII"),
+        "IMAGE_SAFETY" => Some("IMAGE_SAFETY"),
+        "IMAGE_PROHIBITED_CONTENT" => Some("IMAGE_PROHIBITED_CONTENT"),
+        "IMAGE_RECITATION" => Some("IMAGE_RECITATION"),
+        _ => None,
+    }
+}
+
 fn gemini_response_to_provider_turn_response(
     parsed: GenerateContentResponse,
+    model_ref: Option<&str>,
+    url: Option<&str>,
+    trace: Option<&ProviderHttpTraceRequest>,
 ) -> Result<ProviderTurnResponse> {
-    let candidate = parsed
-        .candidates
-        .into_iter()
-        .next()
-        .ok_or_else(|| anyhow!("Gemini response contained no candidates"))?;
-    let blocks = candidate
-        .content
-        .map(|content| gemini_parts_to_model_blocks(content.parts))
-        .unwrap_or_default();
-    let usage = parsed.usage_metadata;
-    Ok(ProviderTurnResponse {
-        material: Default::default(),
-        blocks,
-        stop_reason: candidate.finish_reason,
-        input_tokens: usage
+    let usage = TokenUsage::new(
+        parsed
+            .usage_metadata
             .as_ref()
             .and_then(|usage| usage.prompt_token_count)
             .unwrap_or(0),
-        output_tokens: usage
+        parsed
+            .usage_metadata
             .as_ref()
             .and_then(|usage| usage.candidates_token_count)
             .unwrap_or(0),
+    );
+    let candidate = parsed.candidates.into_iter().next();
+    let prompt_block = parsed
+        .prompt_feedback
+        .as_ref()
+        .and_then(|feedback| feedback.block_reason.as_deref())
+        .filter(|reason| !matches!(*reason, "" | "BLOCK_REASON_UNSPECIFIED"));
+    let refusal = prompt_block
+        .map(|reason| {
+            gemini_refusal_reason(reason).unwrap_or(if reason == "OTHER" {
+                "OTHER"
+            } else {
+                "UNKNOWN_BLOCK_REASON"
+            })
+        })
+        .or_else(|| {
+            candidate
+                .as_ref()
+                .and_then(|candidate| candidate.finish_reason.as_deref())
+                .and_then(gemini_refusal_reason)
+        });
+    // Refusal metadata takes precedence over any partial text or tool calls.
+    if let Some(reason) = refusal {
+        let message = format!("Gemini content blocked ({reason})");
+        return Err(provider_transport_error_with_evidence(
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::InvalidResponse,
+                disposition: RetryDisposition::FailFast,
+            },
+            Some("gemini_content_blocked"),
+            None,
+            Some(ProviderTransportDiagnostics {
+                stage: "response_protocol".into(),
+                streaming: Some(false),
+                provider: Some("gemini".into()),
+                model_ref: model_ref.map(ToString::to_string),
+                url: url.map(sanitize_transport_url),
+                status: None,
+                reqwest: None,
+                context_budget: None,
+                http_trace: trace.and_then(|trace| trace.diagnostics(None)),
+                quota_identity: None,
+                retry_after_not_before: None,
+                throttle: None,
+                source_chain: vec![message.clone()],
+            }),
+            Some(usage),
+            None,
+            message,
+        ));
+    }
+    let stop_reason = candidate
+        .as_ref()
+        .and_then(|candidate| candidate.finish_reason.clone());
+    let blocks = candidate
+        .and_then(|candidate| candidate.content)
+        .map(|content| {
+            serde_json::from_value::<GeminiContent>(content).map_err(|error| {
+                invalid_response_error_with_trace(
+                    "invalid Gemini content",
+                    "response_protocol",
+                    "gemini",
+                    model_ref,
+                    url,
+                    format!("JSON {:?} error in candidate content", error.classify()),
+                    trace,
+                )
+            })
+        })
+        .transpose()?
+        .map(|content| gemini_parts_to_model_blocks(content.parts))
+        .unwrap_or_default();
+    if stop_reason.as_deref() != Some("MAX_TOKENS")
+        && !blocks.iter().any(|block| match block {
+            ModelBlock::Text { text } => !text.trim().is_empty(),
+            ModelBlock::ToolUse { .. } => true,
+            _ => false,
+        })
+    {
+        return Err(empty_response_error_with_trace(
+            "empty Gemini response",
+            "response_protocol",
+            "gemini",
+            model_ref,
+            url,
+            "response contained no usable text or tool calls",
+            trace,
+            usage,
+        ));
+    }
+    Ok(ProviderTurnResponse {
+        material: Default::default(),
+        blocks,
+        stop_reason,
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
         cache_usage: Some(ProviderCacheUsage {
             read_input_tokens: 0,
             creation_input_tokens: 0,
@@ -679,7 +814,7 @@ fn gemini_response_to_provider_turn_response(
         request_diagnostics: Some(ProviderRequestDiagnostics {
             request_lowering_mode: "gemini_generate_content".to_string(),
             provider_id: Some("gemini".to_string()),
-            provider_model_ref: None,
+            provider_model_ref: model_ref.map(ToString::to_string),
             provider_transport: Some("gemini_generate_content".to_string()),
             endpoint_dialect: Some("gemini".to_string()),
             streaming: Some(false),
@@ -867,20 +1002,116 @@ mod tests {
     use super::*;
 
     #[test]
+    fn gemini_refusals_fail_closed_with_usage() {
+        for reason in [
+            "SAFETY",
+            "RECITATION",
+            "BLOCKLIST",
+            "PROHIBITED_CONTENT",
+            "SPII",
+            "IMAGE_SAFETY",
+            "IMAGE_PROHIBITED_CONTENT",
+            "IMAGE_RECITATION",
+        ] {
+            for content in [
+                Value::Null,
+                json!({}),
+                json!({"parts": []}),
+                json!({"parts": [{"text": ""}]}),
+                json!({"parts": [{"text": " \n\t"}]}),
+                json!({"parts": [{"text": "partial response"}]}),
+                json!({"parts": [{"functionCall": {"name": "ProbeTool", "args": {}}}]}),
+                json!({"parts": [{"functionCall": {"args": {}}}]}),
+                json!({"parts": "secret-invalid-parts"}),
+                json!("secret-invalid-content"),
+            ] {
+                let parsed = serde_json::from_value(json!({
+                    "candidates": [{"content": content, "finishReason": reason}],
+                    "usageMetadata": {"promptTokenCount": 11, "candidatesTokenCount": 0}
+                }))
+                .unwrap();
+                let error = gemini_response_to_provider_turn_response(parsed, None, None, None)
+                    .expect_err("rejected content must never become a successful round");
+                let transport = error
+                    .downcast_ref::<crate::provider::ProviderTransportError>()
+                    .expect("typed refusal");
+                assert_eq!(transport.code.as_deref(), Some("gemini_content_blocked"));
+                assert_eq!(
+                    transport.classification.kind,
+                    ProviderFailureKind::InvalidResponse
+                );
+                assert_eq!(
+                    transport.classification.disposition,
+                    RetryDisposition::FailFast
+                );
+                assert_eq!(transport.token_usage.as_ref().unwrap().input_tokens, 11);
+                assert_eq!(transport.token_usage.as_ref().unwrap().output_tokens, 0);
+                assert!(error.to_string().contains(reason));
+                assert!(!error.to_string().contains("partial response"));
+                assert!(!error.to_string().contains("ProbeTool"));
+            }
+        }
+    }
+
+    #[test]
+    fn gemini_refusal_keeps_trace_identity_and_sanitized_route_diagnostics() {
+        let home = tempfile::tempdir().unwrap();
+        let trace = ProviderHttpTrace::failure_only_for_tests(home.path());
+        let model_ref = "gemini@alternate/test";
+        let url = "https://user:secret-password@example.com/v1?key=secret-key#secret-fragment";
+        let request_trace = trace
+            .begin_request(
+                Some("gemini-refusal-test"),
+                "gemini",
+                Some(model_ref),
+                url,
+                "gemini_generate_content",
+                &[],
+                &json!({}),
+            )
+            .unwrap();
+        let parsed = serde_json::from_value(json!({
+            "candidates": [{"finishReason": "PROHIBITED_CONTENT"}]
+        }))
+        .unwrap();
+        let error = gemini_response_to_provider_turn_response(
+            parsed,
+            Some(model_ref),
+            Some(url),
+            Some(&request_trace),
+        )
+        .unwrap_err();
+        let diagnostics = crate::provider::provider_transport_diagnostics(&error).unwrap();
+        assert_eq!(diagnostics.stage, "response_protocol");
+        assert_eq!(diagnostics.model_ref.as_deref(), Some(model_ref));
+        assert_eq!(diagnostics.streaming, Some(false));
+        let capture = diagnostics
+            .http_trace
+            .as_ref()
+            .expect("failure trace identity");
+        assert!(!capture.capture_id.is_empty());
+        assert!(std::path::Path::new(&capture.path).is_file());
+        assert!(!format!("{error:?} {diagnostics:?}").contains("secret-"));
+    }
+
+    #[test]
     fn gemini_response_preserves_empty_blocks_with_finish_reason_and_usage() {
-        let response = gemini_response_to_provider_turn_response(GenerateContentResponse {
-            candidates: vec![GeminiCandidate {
-                content: Some(GeminiContent {
-                    role: "model".to_string(),
-                    parts: Vec::new(),
+        let response = gemini_response_to_provider_turn_response(
+            GenerateContentResponse {
+                candidates: vec![GeminiCandidate {
+                    content: Some(json!({"role": "model", "parts": []})),
+                    finish_reason: Some("MAX_TOKENS".to_string()),
+                }],
+                usage_metadata: Some(GeminiUsageMetadata {
+                    prompt_token_count: Some(11),
+                    candidates_token_count: Some(7),
                 }),
-                finish_reason: Some("MAX_TOKENS".to_string()),
-            }],
-            usage_metadata: Some(GeminiUsageMetadata {
-                prompt_token_count: Some(11),
-                candidates_token_count: Some(7),
-            }),
-        })
+                prompt_feedback: None,
+            },
+            None,
+            None,
+            None,
+        )
         .expect("empty Gemini content should still be a valid response");
 
         assert!(response.blocks.is_empty());
@@ -903,13 +1134,138 @@ mod tests {
         }))
         .expect("Gemini content without parts should still deserialize");
 
-        let response = gemini_response_to_provider_turn_response(parsed)
-            .expect("Gemini content without parts should still be valid");
+        let error = gemini_response_to_provider_turn_response(parsed, None, None, None)
+            .expect_err("decodable STOP content without parts is a retryable empty response");
+        let transport = error
+            .downcast_ref::<crate::provider::ProviderTransportError>()
+            .unwrap();
+        assert_eq!(
+            transport.classification.kind,
+            ProviderFailureKind::EmptyResponse
+        );
+        assert_eq!(
+            transport.classification.disposition,
+            RetryDisposition::Retryable
+        );
+        assert_eq!(transport.token_usage.as_ref().unwrap().input_tokens, 11);
+        assert_eq!(transport.token_usage.as_ref().unwrap().output_tokens, 7);
+    }
 
-        assert!(response.blocks.is_empty());
-        assert_eq!(response.stop_reason.as_deref(), Some("STOP"));
-        assert_eq!(response.input_tokens, 11);
-        assert_eq!(response.output_tokens, 7);
+    #[test]
+    fn gemini_prompt_feedback_blocks_without_candidates_and_redacts_unknown_reasons() {
+        for candidates in [
+            None,
+            Some(json!([])),
+            Some(json!([{"content": {"parts": [{"functionCall": {"args": {}}}]}}])),
+        ] {
+            for reason in ["SAFETY", "OTHER", "secret-unrecognized-reason"] {
+                let mut body = json!({
+                    "promptFeedback": {"blockReason": reason, "blockReasonMessage": "secret-message"},
+                    "usageMetadata": {"promptTokenCount": 13, "candidatesTokenCount": 2}
+                });
+                if let Some(candidates) = candidates.as_ref() {
+                    body["candidates"] = candidates.clone();
+                }
+                let parsed = serde_json::from_value(body).unwrap();
+                let error = gemini_response_to_provider_turn_response(parsed, None, None, None)
+                    .expect_err("prompt rejection must be typed even without candidates");
+                let transport = error
+                    .downcast_ref::<crate::provider::ProviderTransportError>()
+                    .unwrap();
+                assert_eq!(transport.code.as_deref(), Some("gemini_content_blocked"));
+                assert_eq!(transport.token_usage.as_ref().unwrap().input_tokens, 13);
+                assert_eq!(transport.token_usage.as_ref().unwrap().output_tokens, 2);
+                assert!(!format!("{transport:?}").contains("secret-"));
+                if reason.starts_with("secret-") {
+                    assert!(error.to_string().contains("UNKNOWN_BLOCK_REASON"));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn gemini_semantic_empty_responses_are_retryable_but_max_tokens_is_preserved() {
+        for reason in [
+            Value::Null,
+            json!("STOP"),
+            json!("UNRECOGNIZED"),
+            json!("MAX_TOKENS"),
+        ] {
+            for content in [
+                Value::Null,
+                json!({}),
+                json!({"parts": []}),
+                json!({"parts": [{"text": ""}]}),
+                json!({"parts": [{"text": " \n\t"}]}),
+            ] {
+                let parsed = serde_json::from_value(json!({
+                    "candidates": [{"content": content, "finishReason": reason}],
+                    "usageMetadata": {"promptTokenCount": 5, "candidatesTokenCount": 3}
+                }))
+                .unwrap();
+                let result = gemini_response_to_provider_turn_response(parsed, None, None, None);
+                if reason == "MAX_TOKENS" {
+                    let response = result.unwrap();
+                    assert_eq!(response.stop_reason.as_deref(), Some("MAX_TOKENS"));
+                    assert_eq!((response.input_tokens, response.output_tokens), (5, 3));
+                } else {
+                    let error = result.expect_err("no semantic output");
+                    let transport = error
+                        .downcast_ref::<crate::provider::ProviderTransportError>()
+                        .unwrap();
+                    assert_eq!(
+                        transport.classification.kind,
+                        ProviderFailureKind::EmptyResponse
+                    );
+                    assert_eq!(
+                        transport.classification.disposition,
+                        RetryDisposition::Retryable
+                    );
+                    assert_eq!(transport.token_usage.as_ref().unwrap().input_tokens, 5);
+                    assert_eq!(transport.token_usage.as_ref().unwrap().output_tokens, 3);
+                }
+            }
+        }
+        for body in [
+            json!({}),
+            json!({"candidates": []}),
+            json!({
+                "promptFeedback": {"blockReason": "BLOCK_REASON_UNSPECIFIED"}
+            }),
+        ] {
+            let parsed = serde_json::from_value(body).unwrap();
+            let error =
+                gemini_response_to_provider_turn_response(parsed, None, None, None).unwrap_err();
+            assert_eq!(
+                crate::provider::classify_provider_error(&error).kind,
+                ProviderFailureKind::EmptyResponse
+            );
+        }
+    }
+
+    #[test]
+    fn gemini_non_refusal_text_and_signed_tools_remain_successful() {
+        for reason in ["STOP", "MAX_TOKENS", "UNKNOWN_FUTURE_REASON"] {
+            let parsed = serde_json::from_value(json!({
+                "candidates": [{
+                    "finishReason": reason,
+                    "content": {"parts": [
+                        {"text": " unmodified text "},
+                        {"functionCall": {"name": "ProbeTool", "args": {"ok": true}}, "thoughtSignature": "signature"}
+                    ]}
+                }]
+            })).unwrap();
+            let response =
+                gemini_response_to_provider_turn_response(parsed, None, None, None).unwrap();
+            assert!(
+                matches!(&response.blocks[0], ModelBlock::Text { text } if text == " unmodified text ")
+            );
+            assert!(
+                matches!(&response.blocks[1], ModelBlock::ToolUse { provider_data: Some(data), .. }
+                if data.payload["thoughtSignature"] == "signature")
+            );
+            assert_eq!(response.stop_reason.as_deref(), Some(reason));
+        }
     }
 
     #[test]
@@ -975,10 +1331,13 @@ mod tests {
         }))
         .expect("Gemini response content should not require role");
 
-        let content = response.candidates[0]
-            .content
-            .as_ref()
-            .expect("candidate should include content");
+        let content: GeminiContent = serde_json::from_value(
+            response.candidates[0]
+                .content
+                .clone()
+                .expect("candidate should include content"),
+        )
+        .expect("Gemini response content should not require role");
         assert!(content.role.is_empty());
         assert_eq!(
             content.parts[0].thought_signature.as_deref(),
