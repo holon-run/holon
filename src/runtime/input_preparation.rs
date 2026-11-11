@@ -33,7 +33,6 @@ pub(crate) enum InputPreparationCause {
 pub(crate) struct PreparedInputDomains {
     pub original_token: PublicationToken,
     pub facts: ContextScopeFacts,
-    pub decoded_state: Option<crate::runtime_db::context_inputs::ContextStateDecode>,
     pub state: Arc<AgentState>,
     pub episodes: Arc<ResidentEpisodes>,
     pub inputs: Arc<ResidentInputEvidence>,
@@ -287,7 +286,6 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
     Ok(InputPreparation::Prepared(PreparedInputDomains {
         original_token: published.token,
         facts: prepared.facts,
-        decoded_state: prepared.decoded_state,
         state: published.state.clone(),
         episodes: Arc::new(prepared.episodes),
         inputs,

@@ -28,7 +28,6 @@ use crate::{
 
 pub(crate) struct PreparedInputRead {
     pub facts: ContextScopeFacts,
-    pub decoded_state: Option<super::context_inputs::ContextStateDecode>,
     pub episodes: ResidentEpisodes,
     pub inputs: ResidentInputEvidence,
     pub pending: Vec<MessageEnvelope>,
@@ -396,7 +395,6 @@ fn prepare_input_domains_inner_tx(
     prepare: bool,
 ) -> Result<PreparedInputRead> {
     let scope_read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
-    let decoded_state = scope_read.decoded_state();
     let facts = scope_read.facts();
     if !facts.identity.as_ref().is_some_and(|identity| {
         identity.agent_id == scope.agent_id
@@ -608,7 +606,6 @@ fn prepare_input_domains_inner_tx(
     );
     Ok(PreparedInputRead {
         facts: input.facts,
-        decoded_state,
         episodes: ResidentEpisodes::bootstrap(
             &scope.agent_id,
             scope.identity_incarnation,

@@ -476,7 +476,6 @@ pub(super) struct RuntimeMutation {
     task_stop_readonly: Vec<Arc<InitialTaskStopReadonlyMember>>,
     episodes: Option<Arc<super::resident_state::ResidentEpisodes>>,
     input_evidence: Option<Arc<super::resident_input_evidence::ResidentInputEvidence>>,
-    input_state_decode: Option<crate::runtime_db::context_inputs::ContextStateDecode>,
     work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
     tasks: Option<Arc<super::resident_task::ResidentTaskDomain>>,
     scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
@@ -505,12 +504,6 @@ impl std::ops::DerefMut for RuntimeMutation {
 }
 
 impl RuntimeMutation {
-    pub(super) fn context_state_decode(
-        &self,
-    ) -> Option<&crate::runtime_db::context_inputs::ContextStateDecode> {
-        self.input_state_decode.as_ref()
-    }
-
     pub(super) fn attach_plan_preparation(
         &mut self,
         preparation: Arc<super::resource_refresh::WorkPlanPreparation>,
@@ -832,7 +825,6 @@ impl RuntimeMutation {
         );
         self.episodes = Some(prepared.episodes);
         self.input_evidence = Some(prepared.inputs);
-        self.input_state_decode = prepared.decoded_state;
         self.current = prepared.current;
         self.scheduling = Some(prepared.scheduling);
         self.candidate.queue = prepared.queue;
@@ -3553,7 +3545,6 @@ impl RuntimeHandle {
             input_evidence: observation
                 .as_ref()
                 .and_then(|root| root.input_evidence.clone()),
-            input_state_decode: None,
             work: observation.as_ref().and_then(|root| root.work.clone()),
             tasks: observation.as_ref().and_then(|root| root.tasks.clone()),
             current: observation.as_ref().and_then(|root| root.current.clone()),

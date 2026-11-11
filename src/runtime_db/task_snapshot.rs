@@ -19,9 +19,7 @@ use std::{
 };
 mod deletion_maintenance;
 mod loader;
-pub(in crate::runtime_db) use loader::{
-    load_selected_using_material, validate_task_observation_revision_tx,
-};
+pub(in crate::runtime_db) use loader::load_selected_using_material;
 mod maintenance;
 mod original_cleanup;
 mod original_result_predicate;

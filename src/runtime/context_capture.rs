@@ -21,13 +21,8 @@ use crate::{
         resident_task::CapturedTasks,
         task_reads::{active_task_request, context_task_request},
     },
-    runtime_db::{
-        context_inputs::ContextDurableRead,
-        input_evidence_snapshot::{
-            InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
-        },
-        task_snapshot::TaskSnapshotError,
-        work_snapshot::WorkSnapshotError,
+    runtime_db::input_evidence_snapshot::{
+        InputEvidenceLoadRequest, InputEvidenceSnapshotError, InputWindowRequest,
     },
     types::TurnOwner,
 };
@@ -262,8 +257,7 @@ impl RuntimeHandle {
         } else {
             ContextCaptureMode::Preview
         };
-        // RuntimeMutation owns a reservation and private copies, never a held
-        // RuntimeAgent mutex. Remaining domain adapters stay explicit in D3.
+        // The reservation fences owner preparation and the final publication.
         let mut mutation = capture_mode
             .measure(Stage::OwnerAcquisition, self.begin_mutation())
             .await?;
@@ -538,6 +532,12 @@ impl RuntimeHandle {
             .identity
             .as_deref()
             .ok_or_else(|| anyhow!("context identity is not published"))?;
+        anyhow::ensure!(
+            identity_record.agent_id == state.id
+                && identity_record.incarnation == captured.token.identity_incarnation
+                && identity_record.status == crate::types::AgentRegistryStatus::Active,
+            "context identity is outside the active publication scope"
+        );
         let identity =
             AgentIdentityView::from_record(identity_record, &self.inner.default_agent_id);
         let resident = captured.input_evidence.as_ref().ok_or_else(|| {
@@ -572,62 +572,24 @@ impl RuntimeHandle {
         })?;
 
         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
-        let capture_durable = || {
+        let acquired = capture_mode.measure_sync(Stage::ResidentCapture, || {
             let _resource_io = resource_material.enter();
-            let mut connection = self.inner.runtime_db.connection()?;
-            let transaction =
-                connection.transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
-            let durable_inputs = ContextDurableRead::new(&transaction, &state.id);
-            // The first SELECT fixes the SQLite view. All subsequent durable
-            // context and history reads use this same borrowed transaction.
-            let scope_read =
-                durable_inputs.scope_read_using_decode(mutation.context_state_decode())?;
-            let scope = scope_read.facts();
-            let durable_identity = scope
-                .identity
-                .as_ref()
-                .ok_or_else(|| anyhow!("context identity missing"))?;
-            anyhow::ensure!(
-                durable_identity == identity_record
-                    && durable_identity.incarnation == captured.token.identity_incarnation
-                    && durable_identity.status == crate::types::AgentRegistryStatus::Active,
-                "context identity differs from the reserved publication"
-            );
-            anyhow::ensure!(
-                scope.state.as_deref() == Some(state),
-                "context State differs from the reserved publication"
-            );
-            let control_revision = scope
-                .control_revision
-                .ok_or_else(|| anyhow!("context control revision missing"))?;
-            scope_read
-                .validate_work_and_task_observations(
-                    &transaction,
-                    (&work.scope, work.revision),
-                    (&tasks.scope, tasks.revision),
-                )
-                .map_err(context_domain_observation_error)?;
             let scheduling = captured
                 .scheduling
                 .as_ref()
                 .ok_or(super::resident_scheduling::SchedulingReadError::IncompleteLive)?;
             anyhow::ensure!(
-                work.scope == planned_work.scope && work.revision == planned_work.revision,
-                "context Work revision differs from its same-root plan"
-            );
-            anyhow::ensure!(
                 scheduling.scope == planned_work.scope
                     && scheduling.revision == planned_scheduling_revision,
                 "context Scheduling revision differs from its same-root plan"
             );
-            let inputs =
-                ResidentContextInputs::new(&durable_inputs, resident, work, state, &triggers)?
-                    .with_completion_deliveries(completion_deliveries.as_deref())
-                    .with_tasks(tasks)?;
+            let inputs = ResidentContextInputs::new(resident, work, state, triggers)?
+                .with_completion_deliveries(completion_deliveries.as_deref())
+                .with_tasks(tasks)?;
             if require_execution {
                 validate_context_execution(&inputs, state, message)?;
             }
-            let durable = acquire_durable_context_with_work_queue(
+            acquire_durable_context_with_work_queue(
                 &inputs,
                 state,
                 std::borrow::Cow::Owned(execution),
@@ -640,16 +602,12 @@ impl RuntimeHandle {
                 &captured,
                 Some(projection),
                 admission,
-            )?;
-            transaction.commit()?;
-            Ok::<_, anyhow::Error>((durable, control_revision))
-        };
-        let (durable, control_revision) =
-            capture_mode.measure_sync(Stage::DurableCapture, capture_durable)?;
+            )
+        })?;
 
         let snapshot = {
             let _resource_io = resource_material.enter();
-            let snapshot = durable.observe_loaded(observation.clone(), resource_material.guard()?);
+            let snapshot = acquired.observe_loaded(observation.clone(), resource_material.guard()?);
             resource_material.finish()?;
             snapshot?
         };
@@ -682,12 +640,11 @@ impl RuntimeHandle {
             agent_id = %state.id,
             snapshot_id = snapshot.id(),
             publication_generation = captured.token.generation,
-            control_revision,
             resource_observation = snapshot.resources().generation,
             resource_generation = observation.generation(),
             resource_freshness = ?self.inner.resources.registry.freshness()?,
             resource_digest = %snapshot.resources().digest,
-            "prepared context from resident input evidence and explicit remaining domain adapters"
+            "captured context from the resident publication"
         );
         drop(mutation);
         Ok(PreparedLoadedContext {
@@ -757,20 +714,6 @@ pub(super) fn context_work_capture_request(state: &AgentState) -> WorkCaptureReq
             .map(|id| WorkKey::new(WorkFamily::Work, id)),
     );
     request
-}
-
-fn context_domain_observation_error(error: anyhow::Error) -> anyhow::Error {
-    if matches!(
-        error.downcast_ref::<WorkSnapshotError>(),
-        Some(WorkSnapshotError::RevisionMismatch { .. })
-    ) || matches!(
-        error.downcast_ref::<TaskSnapshotError>(),
-        Some(TaskSnapshotError::RevisionMismatch { .. })
-    ) {
-        ContextDependencyChanged.into()
-    } else {
-        error
-    }
 }
 
 fn validate_task_selection(planned: &CapturedTasks, captured: &CapturedTasks) -> Result<()> {
@@ -2261,6 +2204,66 @@ mod resource_read_tests {
         let host = RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused")))?;
         let runtime = host.default_runtime().await?;
         Ok((host, runtime))
+    }
+
+    #[tokio::test]
+    async fn covered_preview_uses_the_publication_without_scope_tables() -> Result<()> {
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.control(crate::types::ControlAction::Stop).await?;
+        let original = runtime
+            .preview_prompt(
+                "inspect the publication".into(),
+                AuthorityClass::OperatorInstruction,
+            )
+            .await?;
+        let owner = &runtime.inner.mutation_owner;
+        let token = owner.capture()?.unwrap().token;
+        let checkpoint = &runtime.inner.context_capture_checkpoint;
+        checkpoint.after_resources.store(true, Ordering::SeqCst);
+        let preview = tokio::spawn({
+            let runtime = runtime.clone();
+            async move {
+                runtime
+                    .preview_prompt(
+                        "inspect the publication".into(),
+                        AuthorityClass::OperatorInstruction,
+                    )
+                    .await
+            }
+        });
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            checkpoint.reached.notified(),
+        )
+        .await?;
+        let db = host.runtime_db();
+        let hide = db.transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE agent_states RENAME TO unavailable_agent_states;
+                 ALTER TABLE work_domain_current RENAME TO unavailable_work_domain_current;
+                 ALTER TABLE task_domain_current RENAME TO unavailable_task_domain_current;",
+            )?;
+            Ok(())
+        });
+        checkpoint.release.notify_one();
+        hide?;
+        let captured = tokio::time::timeout(std::time::Duration::from_secs(5), preview).await;
+        db.transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE unavailable_agent_states RENAME TO agent_states;
+                 ALTER TABLE unavailable_work_domain_current RENAME TO work_domain_current;
+                 ALTER TABLE unavailable_task_domain_current RENAME TO task_domain_current;",
+            )?;
+            Ok(())
+        })?;
+        let captured = captured???;
+        assert_eq!(captured.identity.agent_id, original.identity.agent_id);
+        assert!(captured
+            .rendered_context_attachment
+            .contains("inspect the publication"));
+        assert_eq!(owner.capture()?.unwrap().token, token);
+        host.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test]

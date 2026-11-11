@@ -332,13 +332,9 @@ pub(super) mod tests {
             PreparedInputEvidence::Transcript(transcript),
             PreparedInputEvidence::Message(message.clone()),
         ]);
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = crate::runtime_db::context_inputs::ContextDurableRead::new(&tx, "default");
         let state = AgentState::new("default");
         let adapter =
-            super::super::ResidentContextInputs::new(&durable, &selected, &work, &state, &[])
-                .unwrap();
+            super::super::ResidentContextInputs::new(&selected, &work, &state, &[]).unwrap();
         use super::super::ContextInputs;
         let result = adapter
             .latest_completion_brief_for_work_item("work")
@@ -583,14 +579,8 @@ pub(super) mod tests {
         assert!(work_item(&work, "not-prepared").unwrap().is_none());
         let selected = inputs(Vec::new());
         work.scope.identity_incarnation = 2;
-        let mut connection = rusqlite::Connection::open_in_memory().unwrap();
-        let tx = connection.transaction().unwrap();
-        let durable = crate::runtime_db::context_inputs::ContextDurableRead::new(&tx, "default");
         let state = AgentState::new("default");
-        assert!(
-            super::super::ResidentContextInputs::new(&durable, &selected, &work, &state, &[])
-                .is_err()
-        );
+        assert!(super::super::ResidentContextInputs::new(&selected, &work, &state, &[]).is_err());
     }
 
     #[cfg(holon_lib_test_shard = "d")]

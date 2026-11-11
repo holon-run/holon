@@ -1388,6 +1388,14 @@ snapshots may include newly committed tool results and admitted input. A retry
 of one snapshot with a smaller budget preserves its input set and state
 identity; it cannot consume queued input again.
 
+After owner preparation, loaded Context assembles the final snapshot under the
+held reservation from one Ready publication. The published identity must be
+Active and match the State and incarnation. The planned Work, Task and
+Scheduling selections must still match that publication. Execution capture
+checks the bound Message, Turn and open Attempt from resident Input evidence.
+Configuration and publication tokens fence the assembled snapshot. SQLite
+qualification and readback belong to named preparation, commit and recovery.
+
 Late operator input is admitted at the existing safe boundary. Arrival after
 capture does not mutate an already-submitted provider request. Provider
 fallback/reentry preserves the admitted root message, predecessor attempt,
@@ -1853,7 +1861,7 @@ The Scheduling scope adapter decodes its canonical State directly under the
 existing raw/node gates and reuses its validated identity, without repeating a
 generic scope acquisition. Revision-column and canonical decoding errors remain
 in their original order.
-Context, scheduler and recovery adapters likewise pass their original canonical
+Scheduler and recovery adapters likewise pass their original canonical
 scope read to Work/Task observation checks instead of decoding State again.
 The read is bound to the borrowing transaction and agent/incarnation; borrowed
 identity/State payloads, normalized identity status and control revision are
@@ -4547,14 +4555,6 @@ object and canonical SQL fingerprint; the final facts move into PreparedInputRea
 Standalone readers retain their original decoder path. No State copy or new
 allowance substitutes for the original decode, and scope drift fails before
 qualification sidecars are written.
-Input preparation may retain that canonical State decode and its original
-material guard through the owner reservation into final Context acquisition.
-The private body proof carries the exact payload digest, control revision and
-incarnation; it cannot be created from a typed State or serialization equality.
-The new SQL transaction must observe those same facts before sharing the body,
-then creates and validates its own transaction-bound scope read. Changed bytes,
-revision or incarnation retain the original admitted decoder and errors. This
-reuse grants no Input/Work/Task qualification, publication cut or new allowance.
 Direct canonical State parsing admits its borrowed raw JSON before SQLite
 traversal, then the actual JSON-node envelope before allocating the typed State,
 matching Scheduling's existing scope reader. It does not reserve nonexistent
