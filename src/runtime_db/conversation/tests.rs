@@ -788,6 +788,7 @@ fn legacy_schema_migration_backfills_visible_activity_sequences() -> Result<()> 
         input: serde_json::json!({ "cmd": "true" }),
         output: serde_json::Value::Null,
         summary: "legacy tool".into(),
+        call_binding: None,
         invocation_surface: None,
     })?;
     drop(db);
@@ -1722,6 +1723,7 @@ fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()>
         input: serde_json::json!({ "cmd": "true" }),
         output: serde_json::Value::Null,
         summary: "tool pending".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     db.evidence().append_tool_execution(&tool)?;
@@ -2033,6 +2035,7 @@ fn change_batch_reconciles_brief_before_terminal_and_bounds_active_activity() ->
             input: serde_json::json!({ "cmd": "true" }),
             output: serde_json::Value::Null,
             summary: id.into(),
+            call_binding: None,
             invocation_surface: None,
         })?;
     }
@@ -2165,6 +2168,7 @@ fn change_batch_enforces_shared_activity_budget_across_active_turns() -> Result<
             input: serde_json::json!({ "cmd": "true" }),
             output: serde_json::Value::Null,
             summary: tool_id.into(),
+            call_binding: None,
             invocation_surface: None,
         })?;
     }
@@ -2260,6 +2264,7 @@ fn change_batch_keeps_progress_when_active_detail_exceeds_inline_limit() -> Resu
             input: serde_json::json!({ "cmd": "true" }),
             output: serde_json::Value::Null,
             summary: tool_id.clone(),
+            call_binding: None,
             invocation_surface: None,
         })?;
     }

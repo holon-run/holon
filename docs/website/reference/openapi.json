@@ -20677,6 +20677,36 @@
             ],
             "type": "string"
           },
+          "call_binding": {
+            "properties": {
+              "assistant_round_id": {
+                "type": "string"
+              },
+              "incarnation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "model_output_budget": {
+                "format": "uint",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "tool_call_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "incarnation",
+              "assistant_round_id",
+              "tool_call_id",
+              "model_output_budget"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "completed_at": {
             "default": null,
             "format": "date-time",
@@ -20708,6 +20738,7 @@
           "output": true,
           "status": {
             "enum": [
+              "pending",
               "deferred",
               "success",
               "error",

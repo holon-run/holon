@@ -1651,6 +1651,7 @@ mod tests {
                 }
             }),
             summary: "patched".into(),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -1686,6 +1687,7 @@ mod tests {
                 }
             }),
             summary: "command promoted".into(),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -1723,6 +1725,7 @@ mod tests {
                 }
             }),
             summary: "command promoted".into(),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -1779,6 +1782,7 @@ mod tests {
                 }
             }),
             summary: "batch".into(),
+            call_binding: None,
             invocation_surface: None,
         };
 

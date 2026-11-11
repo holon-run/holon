@@ -5049,6 +5049,7 @@ mod tests {
             input,
             output,
             summary: format!("{tool_name} test record"),
+            call_binding: None,
             invocation_surface: None,
         };
 
@@ -6564,6 +6565,7 @@ mod tests {
                     "truncated": false
                 }),
                 summary: "command exited with status 0".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -6708,6 +6710,7 @@ mod tests {
                 "artifacts": [{"path": path}]
             }}),
             summary: "completed".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&record).unwrap();
@@ -8578,6 +8581,7 @@ mod tests {
                 }),
                 output: json!({"completed_count": 3}),
                 summary: "ExecCommandBatch completed 3/3 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -8887,6 +8891,7 @@ mod tests {
                 input: json!({"cmd": command}),
                 output: json!({"exit_code": 0}),
                 summary: "command exited with status 0".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -8952,6 +8957,7 @@ mod tests {
                 }),
                 output: json!({"completed_count": 2}),
                 summary: "ExecCommandBatch completed 2/2 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -9021,6 +9027,7 @@ mod tests {
                 }),
                 output: json!({"completed_count": 2}),
                 summary: "ExecCommandBatch completed 2/2 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -9096,6 +9103,7 @@ mod tests {
                     }
                 }),
                 summary: "ExecCommandBatch completed 2/2 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -9153,6 +9161,7 @@ mod tests {
                     "is_error": false
                 }),
                 summary: "ExecCommandBatch completed 2/2 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -9211,6 +9220,7 @@ mod tests {
                     }
                 }),
                 summary: "command exited with status 0".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -9281,6 +9291,7 @@ mod tests {
                     }
                 }),
                 summary: "ExecCommandBatch completed 0/1 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -9336,6 +9347,7 @@ mod tests {
                     "is_error": false
                 }),
                 summary: "validated image metadata".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();

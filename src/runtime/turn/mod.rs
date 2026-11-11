@@ -502,7 +502,10 @@ impl RuntimeHandle {
             }
             record.tool_execution_ids = tools
                 .iter()
-                .filter(|tool| turn_optional_id_matches(tool.turn_id.as_deref(), turn_id))
+                .filter(|tool| {
+                    tool.status != crate::types::ToolExecutionStatus::Pending
+                        && turn_optional_id_matches(tool.turn_id.as_deref(), turn_id)
+                })
                 .map(|tool| {
                     crate::diagnostics::resource_io::admit_cloned_value(&tool.id)?;
                     Ok(tool.id.clone())

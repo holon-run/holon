@@ -187,6 +187,7 @@ fn tool() -> ToolExecutionRecord {
         input: serde_json::json!({"cmd":"printf test"}),
         output: serde_json::json!({"result":{"task_handle":{"task_id":"native-task"}}}),
         summary: "command promoted".into(),
+        call_binding: None,
         invocation_surface: None,
     }
 }

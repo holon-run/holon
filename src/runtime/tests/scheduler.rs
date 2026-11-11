@@ -480,6 +480,7 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
                 input: serde_json::json!({ "fixture": true }),
                 output: serde_json::json!({ "fixture": true }),
                 summary: "fixture tool execution".into(),
+                call_binding: None,
                 invocation_surface: Some("fixture".into()),
             })
             .unwrap();

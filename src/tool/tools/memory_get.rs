@@ -456,6 +456,7 @@ mod tests {
                 }),
                 output: json!({"exit_code": 0}),
                 summary: "command exited with status 0".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -519,6 +520,7 @@ mod tests {
                     "artifacts": []
                 }),
                 summary: "command exited with status 0".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -579,6 +581,7 @@ mod tests {
                     "is_error": false
                 }),
                 summary: "validated image metadata".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();
@@ -651,6 +654,7 @@ mod tests {
                     "is_error": false
                 }),
                 summary: "ExecCommandBatch completed 2/2 items".into(),
+                call_binding: None,
                 invocation_surface: None,
             })
             .unwrap();

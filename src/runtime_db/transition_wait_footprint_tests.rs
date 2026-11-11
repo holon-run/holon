@@ -377,6 +377,7 @@ fn queue_transaction_merges_transition_registration_extra_and_completion_wait_fo
             input: serde_json::json!({"work_item_id":"completion"}),
             output: serde_json::json!({"status":"completed"}),
             summary: "completed".into(),
+            call_binding: None,
             invocation_surface: None,
         },
         index_changes: Vec::new(),

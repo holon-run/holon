@@ -847,6 +847,7 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
         input: serde_json::json!({ "wake": "external" }),
         output: serde_json::json!({ "waiting": true }),
         summary: "wait registered".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     runtime
@@ -932,6 +933,7 @@ async fn turn_record_uses_exact_turn_evidence_beyond_recent_window() {
                     input: serde_json::json!({ "wake": "external" }),
                     output: serde_json::json!({ "waiting": true }),
                     summary: "noise wait".into(),
+                    call_binding: None,
                     invocation_surface: None,
                 };
                 crate::runtime_db::evidence::insert_tool_evidence_tx(tx, &noise_tool)?;

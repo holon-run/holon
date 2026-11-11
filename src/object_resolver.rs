@@ -468,6 +468,7 @@ mod tests {
             input: json!({"cmd": "true"}),
             output: json!({"exit": 0}),
             summary: "ok".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         storage.append_tool_execution(&tool).unwrap();

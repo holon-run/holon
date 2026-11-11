@@ -364,6 +364,7 @@ async fn persist_turn_record_uses_turn_id_not_numeric_sequence_collisions() {
         input: serde_json::json!({}),
         output: serde_json::json!({}),
         summary: "owned".into(),
+        call_binding: None,
         invocation_surface: None,
     };
     runtime

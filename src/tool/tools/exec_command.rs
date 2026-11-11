@@ -77,6 +77,10 @@ pub(crate) async fn execute(
                 .turn_id
                 .as_deref()
                 .zip(context.tool_call_id.as_deref()),
+            context
+                .exec_command_attempt
+                .as_deref()
+                .map(|attempt| (attempt, input)),
         )
         .await?;
     serialize_success(NAME, &result)

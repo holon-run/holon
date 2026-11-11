@@ -2920,6 +2920,7 @@ mod tests {
                     input: serde_json::json!({}),
                     output: serde_json::json!({"ok": true}),
                     summary: "A successful tool call without a WorkItem update.".into(),
+                    call_binding: None,
                     invocation_surface: None,
                 },
             ),

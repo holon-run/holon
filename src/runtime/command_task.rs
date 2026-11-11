@@ -590,6 +590,7 @@ impl RuntimeHandle {
         authority_class: &AuthorityClass,
         trace_context: Option<&crate::observability::TraceContext>,
         turn_tool_call: Option<(&str, &str)>,
+        attempt: Option<(&crate::tool::spec::ExecCommandAttempt, &serde_json::Value)>,
     ) -> Result<ExecCommandResult> {
         let _admission = self.execution_admission_lease()?;
         self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND)
@@ -624,11 +625,60 @@ impl RuntimeHandle {
                 });
             }
         }
-        self.mark_current_turn_external_side_effect_possible(
-            crate::tool::names::EXEC_COMMAND,
-            turn_tool_call,
-        )
-        .await?;
+        if let Some((attempt, input)) = attempt {
+            use crate::types::{
+                ToolExecutionCallBinding, ToolExecutionRecord, ToolExecutionStatus,
+            };
+            let (turn_id, tool_call_id) =
+                turn_tool_call.context("ExecCommand attempt has no Turn or tool call")?;
+            let state = self.agent_state().await?;
+            anyhow::ensure!(
+                state.current_turn_id.as_deref() == Some(turn_id),
+                "ExecCommand attempt no longer owns the current Turn"
+            );
+            let pending = ToolExecutionRecord {
+                id: crate::ids::tool_execution_id(),
+                agent_id: state.id,
+                work_item_id: state
+                    .current_turn_work_item_id
+                    .or(state.current_work_item_id),
+                turn_index: state.turn_index,
+                turn_id: Some(turn_id.to_string()),
+                tool_name: crate::tool::names::EXEC_COMMAND.to_string(),
+                created_at: chrono::Utc::now(),
+                completed_at: None,
+                duration_ms: 0,
+                authority_class: authority_class.clone(),
+                status: ToolExecutionStatus::Pending,
+                input: input.clone(),
+                output: serde_json::Value::Null,
+                summary: "Command execution pending".into(),
+                call_binding: Some(ToolExecutionCallBinding {
+                    incarnation: self.instance_incarnation(),
+                    assistant_round_id: attempt.assistant_round_id.clone(),
+                    model_output_budget: attempt.model_output_budget,
+                    tool_call_id: tool_call_id.to_string(),
+                }),
+                invocation_surface: None,
+            };
+            attempt
+                .submitted
+                .set(pending)
+                .map_err(|_| anyhow!("ExecCommand attempt already submitted"))?;
+            self.persist_tool_execution_evidence(
+                attempt
+                    .submitted
+                    .get()
+                    .expect("submitted ExecCommand attempt"),
+            )
+            .await?;
+        } else {
+            self.mark_current_turn_external_side_effect_possible(
+                crate::tool::names::EXEC_COMMAND,
+                turn_tool_call,
+            )
+            .await?;
+        }
         let mut running = self
             .start_command_process(&resolved, trace_context, crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -2864,6 +2914,7 @@ mod tests {
                     spec,
                     ExecCommandDuplicatePolicy::ReuseRunning,
                     &AuthorityClass::OperatorInstruction,
+                    None,
                     None,
                     None,
                 )

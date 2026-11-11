@@ -1177,6 +1177,7 @@ mod tests {
                 "error": null
             }),
             summary: "prepared external wait".into(),
+            call_binding: None,
             invocation_surface: None,
         })?;
         let mut brief = BriefRecord::new(
@@ -1515,6 +1516,7 @@ mod tests {
                 "error": null
             }),
             summary: "completed work item".into(),
+            call_binding: None,
             invocation_surface: None,
         })?;
 
@@ -1561,6 +1563,7 @@ mod tests {
                 "error": null
             }),
             summary: "completed detached work item".into(),
+            call_binding: None,
             invocation_surface: None,
         })?;
 

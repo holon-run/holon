@@ -47,6 +47,13 @@ pub struct CompletionReportCandidate {
     pub source_tool_call_id: String,
 }
 
+#[derive(Debug)]
+pub(crate) struct ExecCommandAttempt {
+    pub(crate) assistant_round_id: String,
+    pub(crate) model_output_budget: usize,
+    pub(crate) submitted: std::sync::OnceLock<crate::types::ToolExecutionRecord>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionContext {
     pub completion_report_candidate: Option<CompletionReportCandidate>,
@@ -55,6 +62,7 @@ pub struct ToolExecutionContext {
     pub message_id: Option<String>,
     pub tool_call_id: Option<String>,
     pub trace_context: Option<crate::observability::TraceContext>,
+    pub(crate) exec_command_attempt: Option<Arc<ExecCommandAttempt>>,
     pub decision_tool_calls: Arc<AtomicUsize>,
 }
 

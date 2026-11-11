@@ -2645,6 +2645,7 @@ mod tests {
             input: serde_json::json!({ "cmd": "echo db evidence" }),
             output: serde_json::json!({ "exit_code": 0 }),
             summary: "command exited".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let delivery = DeliverySummaryRecord::new(
@@ -2718,6 +2719,7 @@ mod tests {
             input: serde_json::json!({ "cmd": "echo indexed later" }),
             output: serde_json::json!({ "exit_code": 0 }),
             summary: "command exited".into(),
+            call_binding: None,
             invocation_surface: None,
         };
 

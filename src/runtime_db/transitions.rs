@@ -780,6 +780,7 @@ impl RuntimeDb {
     ) -> Result<StartupInputRecoveryCommit> {
         self.transaction(|tx| {
             let mut input_facts=BTreeMap::<String,Vec<super::input_evidence_snapshot::CanonicalInputEvidence>>::new();
+            let mut input_deltas = Vec::new();
             let mut input_commands=BTreeMap::<String,Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>>::new();
             let mut prepared_legacy = BTreeMap::new();
             let mut current_members=BTreeMap::<String,BTreeSet<crate::runtime::resident_input_evidence::InputEvidenceKey>>::new();
@@ -932,8 +933,46 @@ impl RuntimeDb {
                     .and_then(|trigger| trigger.message_id.clone());
                 let superseded = replacement_sources
                     .contains(&(turn.agent_id.clone(), turn.turn_id.clone()));
+                let attempt_scope = match input_scopes {
+                    Some(scopes) => scopes.iter().find(|scope| scope.agent_id() == turn.agent_id).and_then(|authority| {
+                        match authority {
+                            StartupInputRecoveryScope::Current(scope) => Some(scope.clone()),
+                            StartupInputRecoveryScope::Retired { identity_incarnation, status: crate::types::AgentRegistryStatus::Deleting, .. } => Some(InputEvidenceScope {
+                                agent_id: turn.agent_id.clone(),
+                                identity_incarnation: *identity_incarnation,
+                            }),
+                            _ => None,
+                        }
+                    }),
+                    None => active_input_scope_tx(tx, &turn.agent_id)?,
+                };
+                let mut pending_call_id = None;
+                if let Some(scope) = &attempt_scope {
+                    if let Some(id) = super::exec_command_attempts::pending_id_tx(tx, scope, &turn.turn_id)? {
+                        use crate::runtime::resident_input_evidence::{InputEvidenceFamily as Family, InputEvidenceKey as Key};
+                        anyhow::ensure!(input_scopes.is_none() || current_members.get(&turn.agent_id)
+                            .is_some_and(|members| members.contains(&Key::new(Family::ToolExecution, &id))),
+                            "startup ExecCommand attempt lacks its original writer qualification");
+                        let mut record = super::evidence::committed_tool_tx(tx, &turn.agent_id, &id)?;
+                        pending_call_id = record.call_binding.as_ref().map(|binding| binding.tool_call_id.clone());
+                        super::exec_command_attempts::interrupt(&mut record, recovered_at);
+                        insert_tool_evidence_tx(tx, &record)?;
+                        if input_scopes.is_some() {
+                            let actual = super::evidence::committed_tool_tx(tx, &turn.agent_id, &id)?;
+                            input_facts.entry(turn.agent_id.clone()).or_default()
+                                .push(super::input_evidence_snapshot::CanonicalInputEvidence::ToolExecution(actual));
+                        }
+                    }
+                }
+                if let (Some(scope), Some(ledger)) = (
+                    startup_current_recovery_scope(input_scopes, &turn.agent_id), current_ledger,
+                ) {
+                    let deltas = super::exec_command_attempts::recover_missing_results_tx(tx, scope, &mut turn, ledger)?;
+                    input_deltas.extend(deltas.into_iter().map(|delta| (scope.clone(), delta)));
+                }
+                let unknown_external_outcome = turn.external_side_effect_possible || pending_call_id.is_some();
                 let operator_dispatch_uncertain = !superseded
-                    && !turn.external_side_effect_possible
+                    && !unknown_external_outcome
                     && startup_operator_dispatch_uncertain_tx(tx, &turn, &terminal_sources)?;
                 let (reason, reason_class) = if superseded {
                     report.superseded_turns += 1;
@@ -941,7 +980,7 @@ impl RuntimeDb {
                         "startup_recovery/superseded_by_replay",
                         "superseded_by_replay",
                     )
-                } else if turn.external_side_effect_possible || operator_dispatch_uncertain {
+                } else if unknown_external_outcome || operator_dispatch_uncertain {
                     if let Some(message_id) = trigger_message_id.as_deref() {
                         let queue = tx
                             .query_row(
@@ -1043,7 +1082,7 @@ impl RuntimeDb {
                         &event.id,
                     )?;
                 }
-                if turn.external_side_effect_possible || operator_dispatch_uncertain {
+                if unknown_external_outcome || operator_dispatch_uncertain {
                     let (event, _) = append_audit_event_tx(
                         tx,
                         Some(&turn.agent_id),
@@ -1063,7 +1102,7 @@ impl RuntimeDb {
                             data: serde_json::json!({
                                 "agent_id": &turn.agent_id,
                                 "turn_id": &turn.turn_id,
-                                "tool_call_id": &turn.external_side_effect_tool_call_id,
+                                "tool_call_id": turn.external_side_effect_tool_call_id.as_ref().or(pending_call_id.as_ref()),
                                 "recovery_policy": "never_replay_unknown_external_side_effect",
                                 "operator_action": "inspect_external_state_before_retry",
                             }),
@@ -1216,7 +1255,6 @@ impl RuntimeDb {
                 current_queue_writes.insert(record.message_id.clone(), record);
             }
             if let Some(metadata) = task_metadata { metadata.finish(tx, &input_commands)?; }
-            let mut input_deltas = Vec::new();
             if let Some(scopes)=input_scopes {
                 for (agent,facts) in input_facts {
                     // One startup may interrupt and then finalize the same
@@ -1232,6 +1270,7 @@ impl RuntimeDb {
                                 use crate::runtime::resident_input_evidence::{InputEvidenceKey as Key,InputEvidenceFamily as Family};
                                 match fact {
                                     Fact::Turn(x)=>members.contains(&Key::new(Family::Turn,&x.turn_id)),
+                                    Fact::ToolExecution(x)=>members.contains(&Key::new(Family::ToolExecution,&x.id)),
                                     Fact::Attempt(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
                                     Fact::Outcome(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
                                     Fact::WorkExecution{work_item_id,..}=>members.contains(&Key::new(Family::WorkExecution,work_item_id)),
@@ -1256,6 +1295,7 @@ impl RuntimeDb {
                                 use crate::runtime::resident_input_evidence::{InputEvidenceKey as Key,InputEvidenceFamily as Family};
                                 match fact {
                                     Fact::Turn(x)=>members.contains(&Key::new(Family::Turn,&x.turn_id)),
+                                    Fact::ToolExecution(x)=>members.contains(&Key::new(Family::ToolExecution,&x.id)),
                                     Fact::Attempt(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
                                     Fact::Outcome(x)=>members.contains(&Key::new(Family::Attempt,&x.attempt_id)),
                                     Fact::WorkExecution{work_item_id,..}=>members.contains(&Key::new(Family::WorkExecution,work_item_id)),
@@ -2109,6 +2149,12 @@ fn startup_input_recovery_targets_tx(
         let turn: TurnRecord = serde_json::from_str(&row?)?;
         anyhow::ensure!(turn.agent_id == agent, "startup Turn scope mismatch");
         add(Key::new(Family::Turn, &turn.turn_id))?;
+        if let Some(scope) = current_scope {
+            if let Some(id) = super::exec_command_attempts::pending_id_tx(tx, scope, &turn.turn_id)?
+            {
+                add(Key::new(Family::ToolExecution, id))?;
+            }
+        }
         for message in turn.input_message_ids {
             add(Key::new(Family::Message, &message))?;
             let assigned:Option<String>=tx.query_row("SELECT turn_id FROM conversation_input_assignments WHERE agent_id=?1 AND message_id=?2",params![agent,message],|row|row.get(0)).optional()?;
@@ -2184,7 +2230,7 @@ impl RuntimeTransitionRepository<'_> {
             &turn.turn_id,
         )?;
         if self.input_scope.is_some() && turn.terminal.is_some() {
-            let mut statement=tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status')='deferred' ORDER BY evidence_id")?;
+            let mut statement=tx.prepare("SELECT evidence_id FROM tool_executions WHERE agent_id=?1 AND turn_id=?2 AND json_extract(payload_json,'$.status') IN ('deferred','pending') ORDER BY evidence_id")?;
             let ids = statement
                 .query_map(rusqlite::params![turn.agent_id, turn.turn_id], |row| {
                     row.get::<_, String>(0)
@@ -2549,7 +2595,7 @@ impl RuntimeTransitionRepository<'_> {
             insert_tool_evidence_tx(tx, tool_execution)?;
             terminal_tool_execution_applied = true;
         }
-        let interrupted_tools = interrupt_deferred_tool_executions_for_terminal_turn_tx(
+        let interrupted_tools = interrupt_open_tool_executions_for_terminal_turn_tx(
             tx,
             &command.agent_id,
             &command.turn_record,
@@ -4058,11 +4104,7 @@ impl RuntimeTransitionRepository<'_> {
             terminal_tool_execution_applied = true;
         }
         let interrupted_tools = if let Some(turn_record) = command.turn_record.as_ref() {
-            interrupt_deferred_tool_executions_for_terminal_turn_tx(
-                tx,
-                &command.agent_id,
-                turn_record,
-            )?
+            interrupt_open_tool_executions_for_terminal_turn_tx(tx, &command.agent_id, turn_record)?
         } else {
             Vec::new()
         };
@@ -5798,7 +5840,7 @@ fn validate_terminal_tool_execution_mutations_tx(
     Ok(())
 }
 
-fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
+fn interrupt_open_tool_executions_for_terminal_turn_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
     turn_record: &TurnRecord,
@@ -5810,9 +5852,10 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
         "SELECT payload_json
          FROM tool_executions
          WHERE agent_id = ?1 AND turn_id = ?2
+           AND json_extract(payload_json,'$.status') IN ('deferred','pending')
          ORDER BY created_at, evidence_id",
     )?;
-    let deferred = statement
+    let open = statement
         .query_map(rusqlite::params![agent_id, turn_record.turn_id], |row| {
             row.get::<_, String>(0)
         })?
@@ -5827,10 +5870,13 @@ fn interrupt_deferred_tool_executions_for_terminal_turn_tx(
         .map(ToOwned::to_owned)
         .unwrap_or_else(|| format!("turn_terminal_{:?}", terminal.kind).to_lowercase());
     let mut interrupted = Vec::new();
-    for mut record in deferred
-        .into_iter()
-        .filter(|record| record.status == crate::types::ToolExecutionStatus::Deferred)
-    {
+    for mut record in open {
+        if record.status == crate::types::ToolExecutionStatus::Pending {
+            super::exec_command_attempts::interrupt(&mut record, terminal.completed_at);
+            insert_tool_evidence_tx(tx, &record)?;
+            interrupted.push(record);
+            continue;
+        }
         let completion_request_id = record
             .output
             .pointer("/envelope/result/completion_request_id")
@@ -6756,6 +6802,7 @@ mod tests {
                 }
             }),
             summary: "Awaiting the final operator-facing completion report.".into(),
+            call_binding: None,
             invocation_surface: None,
         }
     }
@@ -7993,6 +8040,7 @@ mod tests {
                 input: serde_json::json!({}),
                 output: serde_json::json!({}),
                 summary: "completed WorkItem".into(),
+                call_binding: None,
                 invocation_surface: None,
             },
             index_changes: Vec::new(),
@@ -8619,6 +8667,7 @@ mod tests {
             input: serde_json::json!({"work_item_id": open.id}),
             output: serde_json::json!({"status": "completed"}),
             summary: "completed WorkItem".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let mut turn = TurnRecord::new("agent-a", turn_id, 1);
@@ -9317,6 +9366,7 @@ mod tests {
             input: serde_json::json!({"work_item_id": completed_item.id}),
             output: serde_json::json!({"status": "completed"}),
             summary: "completed WorkItem".into(),
+            call_binding: None,
             invocation_surface: None,
         };
         let mut turn = TurnRecord::new("agent-a", "turn-completion-cotouch", 1);

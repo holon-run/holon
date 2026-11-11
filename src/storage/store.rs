@@ -398,7 +398,11 @@ impl RuntimeStore {
         match write {
             Write::Transcript(record) => Prepared::transcript(scope, nonce, at, record),
             Write::Tool(record) => {
-                let changes = self.index_outbox.changes_for_tool_execution(&record);
+                let changes = if record.status == crate::types::ToolExecutionStatus::Pending {
+                    Vec::new()
+                } else {
+                    self.index_outbox.changes_for_tool_execution(&record)
+                };
                 Prepared::tool(scope, nonce, at, record, changes)
             }
             Write::ToolResult {

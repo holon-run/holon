@@ -11,26 +11,33 @@ issue:
 
 ## Tool-result settlement and observer reads
 
-An ordinary tool result commits its Tool evidence, `tool_executed` Audit and,
-for a completed external command, the original Turn's side-effect barrier and
-checkpoint Audit in one typed Evidence transaction and one publication ACK.
-The command freezes the prior Turn digest and exact Audit addresses before SQL.
-The transaction validates the qualified prior and current Turn, registers every
-Input/Current delta, and saves one idempotent receipt. Failure rolls back the
-whole result; receipt replay cannot rewrite a later Turn. Prepared Wait and
-Work completion retain their existing terminal transaction boundaries.
+An ordinary tool result commits its Tool evidence, original execution Audit,
+Input/Current deltas and receipt in one typed Evidence transaction. Commands
+using a Turn side-effect barrier also settle that barrier and its checkpoint
+Audit in the same transaction. Prepared Wait and Work completion use their
+existing terminal transaction boundaries.
 
-Ordinary `ExecCommand` binds the pre-execution barrier to the original tool
-call in the current Turn. The matching result transaction clears it, including
-a failure with proof that the command never started. While the returned result
-is in memory, settlement resolves an uncertain commit from its
-original receipt and retries a confirmed uncommitted transaction once with
-the same prepared command and reservation. Receipt recovery restores the original
-Current qualification for live Event notifications. A committed result resumes the
-tool loop after publication. If recovery fails, the operator receives
-`tool_result_settlement_pending` and the dependent model round stops.
-Startup recovery reports the recorded call when only its execution barrier
-survives and blocks automatic replay.
+Before starting a new process for a model-issued `ExecCommand`, the runtime
+commits a `Pending` ToolExecutionRecord bound to the current incarnation, Turn,
+assistant round and call. Reusing a running Task skips this registration. The
+result transaction settles the same execution ID and leaves the Turn untouched.
+A proven spawn failure settles it as `Error`. The existing JSON record carries
+the optional call binding and output budget, so the database needs no DDL or
+history backfill. Older binaries cannot decode the new `pending` status.
+
+While the returned result is in memory, settlement resolves an uncertain commit
+from the original receipt and retries a confirmed uncommitted transaction once
+with the same prepared command and reservation. Receipt recovery restores the
+original Current qualification for live Events. If settlement recovery fails,
+the runtime reports `tool_result_settlement_pending` and stops the dependent
+model round.
+
+Exclusive startup recovery uses the original call binding to fill a missing
+`ToolResults` transcript from the committed output and original renderer. The
+normal tool loop still uses the existing provider result format. An unowned
+`Pending` becomes `Interrupted` with `external_outcome_unknown`, and startup
+aborts the original queued dispatch under the existing unknown-side-effect
+policy. Legacy Turn markers remain readable for commands and Turns using them.
 
 Loaded State, summary, child summary, runtime activity and roster observations
 capture a Ready immutable root without acquiring its mutation reservation or reconciling an

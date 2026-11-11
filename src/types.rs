@@ -5443,10 +5443,19 @@ pub struct QueueEntryRecord {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ToolExecutionStatus {
+    Pending,
     Deferred,
     Success,
     Error,
     Interrupted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct ToolExecutionCallBinding {
+    pub incarnation: u64,
+    pub assistant_round_id: String,
+    pub tool_call_id: String,
+    pub model_output_budget: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
@@ -5472,6 +5481,8 @@ pub struct ToolExecutionRecord {
     pub input: Value,
     pub output: Value,
     pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call_binding: Option<ToolExecutionCallBinding>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_surface: Option<String>,
 }
