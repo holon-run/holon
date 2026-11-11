@@ -130,10 +130,12 @@ impl RuntimeHost {
         let mut root_ids = Vec::new();
         let mut materials = Vec::new();
         for (identity, material) in identities {
-            let runtime = self.try_get_loaded_runtime(&identity.agent_id).await;
-            let agent = self
-                .agent_list_entry_with_material(&identity, &material, runtime)
-                .await?;
+            let agent = if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await
+            {
+                runtime.agent_tree_entry_read(&identity, &material).await?
+            } else {
+                material.read(|| self.agent_list_entry_from_storage(&identity))?
+            };
             let canonical_relations = material.read(|| {
                 self.runtime_db()
                     .agent_canonical_relations()

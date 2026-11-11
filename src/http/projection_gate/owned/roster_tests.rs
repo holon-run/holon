@@ -151,6 +151,9 @@ async fn unloaded_roster_acquisition_does_not_read_on_the_async_worker() {
 async fn loaded_roster_ready_cut_does_not_wait_for_reserved_owner() {
     let (_home, host) = control_token_test_host();
     let runtime = host.default_runtime().await.unwrap();
+    runtime.wait_for_bootstrap().await.unwrap();
+    // Freeze scheduler publications as well as refresh for this Ready-cut fixture.
+    let run_loop = runtime.pause_run_loop_for_monitor_test().await;
     runtime.await_initial_resources_for_test().await;
     let refresh = runtime.hold_resource_refresh_for_test().await.unwrap();
     drop(host.list_agent_entries().await.unwrap());
@@ -192,5 +195,6 @@ async fn loaded_roster_ready_cut_does_not_wait_for_reserved_owner() {
         gate.close_and_drain().await;
     }
     drop(refresh);
+    drop(run_loop);
     host.shutdown().await.unwrap();
 }

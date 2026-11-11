@@ -48,6 +48,15 @@ With Scheduling prepared, child observability keeps its existing published
 Task/Work/Input selection. Missing Current needs only pooled Queue/error scalar
 reads and generation validation, without decoding canonical State or Task bodies.
 
+The loaded roster derives its entry from the Ready State and identity. Stopped
+Agents and active turns have State-defined posture. For other Agents, a published
+queued-input fact takes precedence over posture derived from Work, active waits
+and the active trigger. When either the queue fact or the required Scheduling
+domain is unavailable, a query-only transaction reads whether queued input
+exists and validates the durable State and incarnation. It reconstructs missing
+Scheduling from existing qualification only when needed for Work posture.
+The observer rechecks the Ready publication after this fallback.
+
 If a metadata ACK leaves Current/Scheduling unprepared, the observer may derive
 response-local material through a pooled, query-only deferred transaction. It
 validates existing qualification and canonical State, then verifies that the

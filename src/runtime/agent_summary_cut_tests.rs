@@ -220,55 +220,115 @@ async fn pinned_summary_and_child_cut_survive_a_new_pending_mutation() -> Result
 }
 
 #[tokio::test]
-async fn fleet_state_decided_posture_still_requires_the_original_current_binding() -> Result<()> {
+async fn fleet_loaded_posture_without_current_matches_the_full_scheduler() -> Result<()> {
     use crate::diagnostics::resource_io::ResourceReadMaterial;
 
-    let harness = LifecycleHarness::new();
-    let runtime = harness.runtime();
-    runtime.await_initial_resources().await;
-    let _refresh = runtime.hold_resource_refresh_for_test().await?;
-    runtime
-        .create_work_item("roster queued input".into(), None, None, Vec::new())
-        .await?;
-    runtime
-        .enqueue(MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
+    for (queued, resident_scheduling) in [(false, true), (false, false), (true, false)] {
+        let harness = LifecycleHarness::new();
+        let runtime = harness.runtime();
+        runtime.await_initial_resources().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await?;
+        runtime
+            .create_work_item("roster work".into(), None, None, Vec::new())
+            .await?;
+        if queued {
+            runtime
+                .enqueue(MessageEnvelope::new(
+                    "default",
+                    MessageKind::OperatorPrompt,
+                    MessageOrigin::Operator {
+                        actor_id: None,
+                        actor_display_name: None,
+                    },
+                    AuthorityClass::OperatorInstruction,
+                    Priority::Normal,
+                    MessageBody::Text {
+                        text: "roster queued input".into(),
+                    },
+                ))
+                .await?;
+        }
+        let mut owner = runtime.begin_mutation().await?;
+        owner.prepare_current_scheduler_query(None).await?;
+        let root = owner.capture_published_root()?;
+        drop(owner);
+        let (scheduler, identity, metadata) = runtime.roster_scheduler_from_root(&root)?;
+        assert_eq!(metadata.has_queued_input, queued);
+        let expected = scheduler.scheduling_posture;
+        assert_eq!(
+            expected.posture,
+            if queued {
+                crate::types::AgentSchedulingPosture::HasQueuedInput
+            } else {
+                crate::types::AgentSchedulingPosture::HasRunnableWork
+            }
+        );
+        let identity_record = root
+            .current
+            .as_ref()
+            .and_then(|current| current.query.as_ref())
+            .context("expected prepared Current fixture")?
+            .identity
+            .clone();
+        let mut reservation = runtime.inner.mutation_owner.reserve().await?;
+        reservation.begin("roster-without-current".into())?;
+        reservation.committed_prepared_with_scheduling_domains(
+            root.state.clone(),
+            root.episodes.clone(),
+            None,
+            root.work.clone(),
+            None,
+            if resident_scheduling {
+                root.scheduling.clone()
+            } else {
+                None
             },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "roster queued input".into(),
-            },
-        ))
-        .await?;
-    let mut owner = runtime.begin_mutation().await?;
-    owner.prepare_current_query(None).await?;
-    let root = owner.capture_published_root()?;
-    let material = ResourceReadMaterial::current_or_new_for_identity(
-        &runtime.inner.input_evidence_budget,
-        &root.state.id,
-        root.token.identity_incarnation,
-    )?;
-    let expected = material.read(|| runtime.roster_list_fields_from_root(&root))?;
-    assert_eq!(
-        expected.2.posture,
-        crate::types::AgentSchedulingPosture::HasQueuedInput
-    );
-    let mut malformed = root.as_ref().clone();
-    malformed.current = None;
-    assert!(material
-        .read(|| runtime.roster_list_fields_from_root(&malformed))
-        .is_err());
-    let mut foreign = root.as_ref().clone();
-    foreign.token.identity_incarnation += 1;
-    assert!(material
-        .read(|| runtime.roster_list_fields_from_root(&foreign))
-        .is_err());
-    material.finish()?;
+        )?;
+        let unprepared = reservation.publish(root.state.clone())?;
+        drop(reservation);
+        assert!(unprepared.current.is_none());
+        assert_eq!(unprepared.scheduling.is_some(), resident_scheduling);
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute_batch(
+                "ALTER TABLE audit_events RENAME TO roster_forbidden_events;
+                 ALTER TABLE briefs RENAME TO roster_forbidden_briefs;",
+            )?;
+            Ok(())
+        })?;
+        let material = ResourceReadMaterial::current_or_new_for_identity(
+            &runtime.inner.input_evidence_budget,
+            &root.state.id,
+            root.token.identity_incarnation,
+        )?;
+        let entry = runtime
+            .agent_list_entry_read(&identity_record, &material, runtime.runtime_db())
+            .await?;
+        assert_eq!(entry.scheduling_posture, expected);
+        assert_eq!(entry.identity, identity);
+        assert_eq!(entry.pending, root.state.pending);
+        assert!(Arc::ptr_eq(
+            &unprepared,
+            &runtime.inner.mutation_owner.capture()?.unwrap(),
+        ));
+        material.finish()?;
+        if queued {
+            runtime.runtime_db().transaction(|tx| {
+                tx.execute_batch("ALTER TABLE queue_entries RENAME TO roster_forbidden_queue")?;
+                Ok(())
+            })?;
+            // A fallback read can fail after its original cut is superseded.
+            let error = runtime
+                .read_missing_roster_facts(&root, &material, runtime.runtime_db())
+                .await
+                .unwrap_err();
+            assert_eq!(
+                error
+                    .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+                    .map(|error| error.operation()),
+                Some(RuntimeHandle::OBSERVER_PUBLICATION_OPERATION),
+            );
+        }
+    }
     Ok(())
 }
 

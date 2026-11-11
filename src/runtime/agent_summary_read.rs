@@ -1,8 +1,14 @@
 //! Scheduling observations follow the original summary DTO until serialization.
 use super::input_evidence_budget::{BudgetViewGuard, InputEvidenceBudgetLedger};
-use super::resident_scheduling::CapturedScheduling;
+use super::resident_scheduling::{
+    CapturedScheduling, ResidentSchedulingDomain, SchedulingCaptureRequest, SchedulingReadError,
+};
+use super::resident_state::AgentSnapshot;
+use super::resident_work::{WorkCaptureRequest, WorkReadError};
 use super::scheduling_output::{project_selected_scheduling_records, SchedulingReadMaterial};
 use super::*;
+use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
+use crate::types::AgentPostureProjection;
 use std::ops::Deref;
 
 /// The JSON representation is the original `AgentSummary`.
@@ -216,7 +222,9 @@ impl RuntimeHandle {
         AgentIdentityView,
         crate::runtime_db::current_query::CurrentSchedulerMetadata,
     )> {
-        let query = self.roster_query_from_root(root)?;
+        let query = self
+            .roster_query_from_root(root)?
+            .context("Summary Current identity needs preparation")?;
         let read = self.capture_operator_scheduler_from_root(root, self.now())?;
         let identity = read.acquisition.read(|| {
             crate::diagnostics::resource_io::admit_cloned_value(&query.identity.as_ref())?;
@@ -231,17 +239,19 @@ impl RuntimeHandle {
     fn roster_query_from_root<'a>(
         &self,
         root: &'a super::resident_state::AgentSnapshot,
-    ) -> Result<&'a crate::runtime_db::current_query::CurrentQuery> {
+    ) -> Result<Option<&'a crate::runtime_db::current_query::CurrentQuery>> {
         anyhow::ensure!(
             root.state.id == self.inner.mutation_owner.agent_id()
                 && root.token.identity_incarnation == self.inner.identity_incarnation,
             "Summary root scope differs"
         );
-        let query = root
+        let Some(query) = root
             .current
             .as_ref()
             .and_then(|current| current.query.as_ref())
-            .context("Summary Current identity needs preparation")?;
+        else {
+            return Ok(None);
+        };
         anyhow::ensure!(
             query.scope.agent_id == root.state.id
                 && query.scope.identity_incarnation == root.token.identity_incarnation,
@@ -254,63 +264,216 @@ impl RuntimeHandle {
                 && query.identity.status == crate::types::AgentRegistryStatus::Active,
             "Summary identity differs"
         );
-        Ok(query)
+        Ok(Some(query))
     }
 
-    fn roster_list_fields_from_root(
+    fn roster_work_posture(
+        root: &AgentSnapshot,
+        scheduling: &ResidentSchedulingDomain,
+    ) -> Result<AgentPostureProjection> {
+        let work = root.work.as_ref().ok_or(WorkReadError::IncompleteLive)?;
+        anyhow::ensure!(
+            work.scope().agent_id == root.state.id
+                && work.scope().identity_incarnation == root.token.identity_incarnation
+                && scheduling.scope() == work.scope(),
+            "roster Work and Scheduling scope differs"
+        );
+        let work = work.capture(&WorkCaptureRequest::current())?;
+        let scheduling = scheduling.capture(&SchedulingCaptureRequest {
+            history_limit: 0,
+            ..SchedulingCaptureRequest::current()
+        })?;
+        let triggers = scheduling
+            .active_default_trigger()?
+            .map_or(&[][..], std::slice::from_ref);
+        let ranked = work.queue_work_ranks(&root.state, triggers)?;
+        let waits = work.context_active_wait_conditions()?;
+        work.scheduler_work_posture(&root.state, false, &ranked, waits.into_iter())
+    }
+
+    async fn roster_posture(
         &self,
-        root: &super::resident_state::AgentSnapshot,
-    ) -> Result<(
-        Arc<AgentState>,
-        AgentIdentityView,
-        crate::types::AgentPostureProjection,
-    )> {
-        let query = self.roster_query_from_root(root)?;
-        // These precedence rules need only this Root's State/Current, not
-        // owned copies of every WorkItem in its scheduler projection.
-        if let Some(posture) = crate::storage::derive_agent_posture_from_state(
-            &root.state,
-            query.scheduler.has_queued_input,
-        )? {
-            crate::diagnostics::resource_io::admit_cloned_value(&query.identity.as_ref())?;
-            return Ok((
-                root.state.clone(),
-                AgentIdentityView::from_record(&query.identity, &self.inner.default_agent_id),
-                posture,
-            ));
+        root: &Arc<AgentSnapshot>,
+        material: &ResourceReadMaterial,
+        db: &RuntimeDb,
+    ) -> Result<AgentPostureProjection> {
+        if let Some(posture) =
+            material.read(|| crate::storage::derive_agent_posture_from_state(&root.state, false))?
+        {
+            return Ok(posture);
         }
-        let (read, identity, _) = self.roster_scheduler_from_root(root)?;
-        Ok((read.state, identity, read.scheduling_posture))
+        let queued = self
+            .roster_query_from_root(root)?
+            .map(|query| query.scheduler.has_queued_input);
+        let (queued, scheduling) = match queued {
+            Some(queued) if queued || root.scheduling.is_some() => (queued, None),
+            _ => self.read_missing_roster_facts(root, material, db).await?,
+        };
+        material.read(|| {
+            if let Some(posture) =
+                crate::storage::derive_agent_posture_from_state(&root.state, queued)?
+            {
+                return Ok(posture);
+            }
+            let scheduling = scheduling
+                .as_ref()
+                .or(root.scheduling.as_deref())
+                .ok_or(SchedulingReadError::IncompleteLive)?;
+            Self::roster_work_posture(root, scheduling)
+        })
+    }
+
+    async fn read_missing_roster_facts(
+        &self,
+        root: &Arc<AgentSnapshot>,
+        material: &ResourceReadMaterial,
+        db: &RuntimeDb,
+    ) -> Result<(bool, Option<ResidentSchedulingDomain>)> {
+        let observed = root.clone();
+        let ledger = self.inner.input_evidence_budget.clone();
+        let material = material.clone();
+        let result = db
+            .with_read_async(move |connection| {
+                material.read(|| {
+                    let tx = connection.transaction()?;
+                    let id = &observed.state.id;
+                    let queued = crate::runtime_db::current_query::has_queued_input(&tx, id)?;
+                    let (facts, scheduling) = if !queued && observed.scheduling.is_none() {
+                        resource_io::admit_cloned_value(id)?;
+                        let scope = super::resident_input_evidence::InputEvidenceScope {
+                            agent_id: id.clone(),
+                            identity_incarnation: observed.token.identity_incarnation,
+                        };
+                        let limits = ledger.limits();
+                        let loaded = crate::runtime_db::scheduling_snapshot::load_scheduling_domain_snapshot_tx(
+                            &tx,
+                            &scope,
+                            &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+                                capture: SchedulingCaptureRequest::current(),
+                                record_limit: usize::try_from(limits.record_limit)?,
+                                byte_limit: usize::try_from(
+                                    limits.history_per_agent_bytes
+                                        .checked_add(limits.pending_per_agent_bytes)
+                                        .context("roster Scheduling byte limit overflow")?,
+                                )?,
+                            },
+                            &ledger,
+                        )?
+                        .require_current()?;
+                        (loaded.facts, Some(loaded.resident))
+                    } else {
+                        let facts = crate::runtime_db::context_inputs::ContextDurableRead::new(&tx, id)
+                            .scope_facts()?;
+                        (facts, None)
+                    };
+                    anyhow::ensure!(
+                        facts.state.as_deref() == Some(observed.state.as_ref())
+                            && facts.control_revision.is_some()
+                            && facts.identity.as_ref().is_some_and(|identity| {
+                                identity.agent_id == *id
+                                    && identity.incarnation == observed.token.identity_incarnation
+                                    && identity.status == crate::types::AgentRegistryStatus::Active
+                            }),
+                        "roster durable scope differs from its publication"
+                    );
+                    tx.commit()?;
+                    Ok((queued, scheduling))
+                })
+            })
+            .await;
+        if result
+            .as_ref()
+            .is_err_and(|error| error.is::<crate::runtime_db::RuntimeDbProtectionError>())
+        {
+            return result;
+        }
+        // Fallback facts belong to this response and this Ready cut.
+        anyhow::ensure!(
+            Arc::ptr_eq(root, &self.observer_ready_root(db)?),
+            crate::runtime_db::RuntimeDbRetryableError::new(
+                Self::OBSERVER_PUBLICATION_OPERATION,
+                db.path(),
+                "publication changed during read",
+            )
+        );
+        result
     }
 
     pub(crate) async fn agent_list_entry_read(
         &self,
         expected_identity: &crate::types::AgentIdentityRecord,
-        material: &crate::diagnostics::resource_io::ResourceReadMaterial,
+        material: &ResourceReadMaterial,
         db: &RuntimeDb,
     ) -> Result<crate::types::AgentListEntry> {
         db.check_read_scope()?;
+        self.check_roster_identity(expected_identity)?;
+        let root = self.observer_ready_root_bounded(db).await?;
+        let identity = root.identity.as_deref().unwrap_or(expected_identity);
         anyhow::ensure!(
-            expected_identity.agent_id == self.inner.mutation_owner.agent_id()
-                && expected_identity.incarnation == self.inner.identity_incarnation,
+            identity.agent_id == root.state.id
+                && identity.incarnation == root.token.identity_incarnation
+                && identity.status == crate::types::AgentRegistryStatus::Active,
+            "roster published identity differs"
+        );
+        let scheduling_posture = self.roster_posture(&root, material, db).await?;
+        db.check_read_scope()?;
+        self.agent_list_entry_from_state(&root.state, identity, scheduling_posture, material)
+    }
+
+    pub(crate) async fn agent_tree_entry_read(
+        &self,
+        expected_identity: &crate::types::AgentIdentityRecord,
+        material: &ResourceReadMaterial,
+    ) -> Result<crate::types::AgentListEntry> {
+        self.check_roster_identity(expected_identity)?;
+        let root = self
+            .capture_observer_root_async(&self.inner.runtime_db)
+            .await?;
+        let query = self
+            .roster_query_from_root(&root)?
+            .context("Summary Current identity needs preparation")?;
+        let posture = material.read(|| {
+            if let Some(posture) = crate::storage::derive_agent_posture_from_state(
+                &root.state,
+                query.scheduler.has_queued_input,
+            )? {
+                return Ok(posture);
+            }
+            Ok(self
+                .capture_operator_scheduler_from_root(&root, self.now())?
+                .scheduling_posture)
+        })?;
+        self.agent_list_entry_from_state(&root.state, &query.identity, posture, material)
+    }
+
+    fn check_roster_identity(&self, identity: &crate::types::AgentIdentityRecord) -> Result<()> {
+        anyhow::ensure!(
+            identity.agent_id == self.inner.mutation_owner.agent_id()
+                && identity.incarnation == self.inner.identity_incarnation,
             "roster identity differs from loaded owner"
         );
-        let root = self.capture_observer_root_async(db).await?;
-        let (agent, identity, scheduling_posture) =
-            material.read(|| self.roster_list_fields_from_root(&root))?;
+        Ok(())
+    }
+
+    fn agent_list_entry_from_state(
+        &self,
+        agent: &AgentState,
+        identity: &crate::types::AgentIdentityRecord,
+        scheduling_posture: AgentPostureProjection,
+        material: &ResourceReadMaterial,
+    ) -> Result<crate::types::AgentListEntry> {
         material.read(|| {
-            use crate::diagnostics::resource_io;
-            let agent = &agent;
             let model = super::try_agent_model_list_summary_for_catalog(
                 &self.inner.config_snapshot.load_full().model_catalog,
                 agent,
             )?;
             resource_io::admit_cloned_value(&(
+                identity,
                 &agent.current_run_id,
                 &agent.active_workspace_entry,
             ))?;
             Ok(crate::types::AgentListEntry {
-                identity,
+                identity: AgentIdentityView::from_record(identity, &self.inner.default_agent_id),
                 lifecycle: crate::types::AgentLifecycleHint::try_from_status(
                     &agent.id,
                     agent.status.clone(),

@@ -199,7 +199,7 @@ fn context_selection_matches_full_queue_for_all_candidate_classes() -> Result<()
                         &state,
                         has_queued_input,
                         &ranked,
-                        &waits,
+                        waits.iter(),
                     )?;
                     assert_eq!(posture, expected_posture);
                     let projection =

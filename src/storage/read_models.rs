@@ -1483,7 +1483,7 @@ impl std::fmt::Display for PostureReason<'_> {
     }
 }
 
-pub(crate) fn derive_agent_posture_from_selected_work(
+pub(crate) fn derive_agent_posture_from_selected_work<'a>(
     agent: &AgentState,
     has_queued_input: bool,
     selected: Option<(
@@ -1492,7 +1492,7 @@ pub(crate) fn derive_agent_posture_from_selected_work(
         WorkItemSchedulingState,
         bool,
     )>,
-    active_waits: &[WaitConditionRecord],
+    mut active_waits: impl Iterator<Item = &'a WaitConditionRecord>,
 ) -> Result<AgentPostureProjection> {
     let fields =
         derive_agent_posture_before_work_queue(agent, has_queued_input).unwrap_or_else(|| {
@@ -1501,7 +1501,6 @@ pub(crate) fn derive_agent_posture_from_selected_work(
                     task_id: (posture == AgentSchedulingPosture::WaitingForTask)
                         .then(|| {
                             active_waits
-                                .iter()
                                 .find(|wait| {
                                     wait.status == WaitConditionStatus::Active
                                         && wait.kind == WaitConditionKind::Task
