@@ -4064,17 +4064,21 @@ impl RuntimeHandle {
                             },
                         ),
                     effective_work_item_id: pre_tool_work_item_id.clone(),
-                    turn_id: if tool_name == crate::tool::names::EXEC_COMMAND {
+                    turn_id: if matches!(
+                        tool_name.as_str(),
+                        crate::tool::names::EXEC_COMMAND | crate::tool::names::EXEC_COMMAND_BATCH
+                    ) {
                         turn_id.clone()
                     } else {
                         execution_binding
                             .as_ref()
                             .map(|binding| binding.turn_id.clone())
                     },
-                    exec_command_attempt: (tool_name == crate::tool::names::EXEC_COMMAND
+                    external_command_attempt: (crate::tool::names::EXTERNAL_COMMAND_TOOLS
+                        .contains(&tool_name.as_str())
                         && turn_id.is_some())
                     .then(|| {
-                        std::sync::Arc::new(crate::tool::spec::ExecCommandAttempt {
+                        std::sync::Arc::new(crate::tool::spec::ExternalCommandAttempt {
                             assistant_round_id: assistant_round_id.clone(),
                             model_output_budget: tool_output_budget_estimated_tokens,
                             submitted: Default::default(),
@@ -4435,14 +4439,14 @@ impl RuntimeHandle {
                             return Err(err);
                         }
                         let pending = tool_execution_context
-                            .exec_command_attempt
+                            .external_command_attempt
                             .as_ref()
                             .and_then(|attempt| attempt.submitted.get());
                         if pending.is_some()
                             && !err.is::<crate::system::process::ProcessNotStarted>()
                         {
                             return Err(err.context(
-                                "ExecCommand result is unavailable after attempt submission",
+                                "external command result is unavailable after attempt submission",
                             ));
                         }
                         let error = ToolError::from_anyhow(&err);
@@ -4533,11 +4537,11 @@ impl RuntimeHandle {
                                 reason: None,
                             }),
                         );
-                        if tool_name == crate::tool::names::EXEC_COMMAND
+                        if err.is::<crate::system::process::ProcessNotStarted>()
                             && (pending.is_some()
-                                || (tool_execution_context.exec_command_attempt.is_none()
+                                || (tool_name == crate::tool::names::EXEC_COMMAND
+                                    && tool_execution_context.external_command_attempt.is_none()
                                     && tool_execution_context.turn_id.is_some()))
-                            && err.is::<crate::system::process::ProcessNotStarted>()
                         {
                             runtime
                                 .persist_tool_result_evidence(&failed_record, failed_event)

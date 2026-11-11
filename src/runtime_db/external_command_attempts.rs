@@ -3,7 +3,7 @@ use rusqlite::{params, OptionalExtension, Transaction};
 
 use crate::{
     runtime::resident_input_evidence::InputEvidenceScope,
-    tool::names::EXEC_COMMAND,
+    tool::names::EXTERNAL_COMMAND_TOOLS,
     types::{ToolExecutionRecord, ToolExecutionStatus},
 };
 
@@ -18,18 +18,18 @@ pub(super) fn validate_write_tx(
     let binding = record
         .call_binding
         .as_ref()
-        .context("ExecCommand attempt has no call binding")?;
+        .context("external command attempt has no call binding")?;
     let turn_id = record
         .turn_id
         .as_deref()
-        .context("ExecCommand attempt has no Turn")?;
+        .context("external command attempt has no Turn")?;
     ensure!(
-        record.tool_name == EXEC_COMMAND
+        EXTERNAL_COMMAND_TOOLS.contains(&record.tool_name.as_str())
             && record.agent_id == scope.agent_id
             && binding.incarnation == scope.identity_incarnation
             && !binding.tool_call_id.is_empty()
             && !binding.assistant_round_id.is_empty(),
-        "ExecCommand attempt differs from its identity scope"
+        "external command attempt differs from its identity scope"
     );
     let current: bool = tx.query_row(
         "SELECT EXISTS(
@@ -43,7 +43,7 @@ pub(super) fn validate_write_tx(
         params![scope.agent_id, turn_id, record.turn_index, settling],
         |row| row.get(0),
     )?;
-    ensure!(current, "ExecCommand attempt is no longer current");
+    ensure!(current, "external command attempt is no longer current");
     if settling {
         let prior = committed_tool_tx(tx, &scope.agent_id, &record.id)?;
         ensure!(
@@ -62,14 +62,14 @@ pub(super) fn validate_write_tx(
                 && prior.authority_class == record.authority_class
                 && prior.input == record.input
                 && prior.invocation_surface == record.invocation_surface,
-            "ExecCommand result differs from the pending attempt"
+            "external command result differs from the pending attempt"
         );
     } else {
         ensure!(
             record.status == ToolExecutionStatus::Pending
                 && record.completed_at.is_none()
                 && record.output.is_null(),
-            "ExecCommand attempt must start without a result"
+            "external command attempt must start without a result"
         );
         let conflict: bool = tx.query_row(
             "SELECT EXISTS(SELECT 1 FROM tool_executions WHERE evidence_id=?1)
@@ -81,7 +81,7 @@ pub(super) fn validate_write_tx(
         )?;
         ensure!(
             !conflict,
-            "ExecCommand attempt already exists or another command is pending"
+            "external command attempt already exists or another command is pending"
         );
         assistant_round_tx(tx, scope, record)?;
     }
@@ -99,7 +99,7 @@ fn assistant_round_tx(
     let binding = record
         .call_binding
         .as_ref()
-        .context("ExecCommand attempt has no call binding")?;
+        .context("external command attempt has no call binding")?;
     let round = tx
         .query_row(
             "SELECT json_extract(t.payload_json,'$.round') FROM transcript_entries t
@@ -113,12 +113,12 @@ fn assistant_round_tx(
                 scope.agent_id,
                 record.turn_id,
                 binding.tool_call_id,
-                EXEC_COMMAND
+                record.tool_name
             ],
             |row| row.get(0),
         )
         .optional()?
-        .context("ExecCommand attempt has no matching assistant tool call")?;
+        .context("external command attempt has no matching assistant tool call")?;
     super::input_evidence_snapshot::validate_existing_input_evidence_tx(
         tx,
         scope,
@@ -135,14 +135,16 @@ pub(super) fn pending_id_tx(
     Ok(tx
         .query_row(
             "SELECT evidence_id FROM tool_executions
-         WHERE agent_id=?1 AND turn_id=?2 AND kind=?3
+         WHERE agent_id=?1 AND turn_id=?2 AND kind IN (?3,?4,?5)
            AND json_extract(payload_json,'$.status')='pending'
-           AND json_extract(payload_json,'$.call_binding.incarnation')=?4
+           AND json_extract(payload_json,'$.call_binding.incarnation')=?6
          ORDER BY created_at, evidence_id LIMIT 1",
             params![
                 scope.agent_id,
                 turn_id,
-                EXEC_COMMAND,
+                EXTERNAL_COMMAND_TOOLS[0],
+                EXTERNAL_COMMAND_TOOLS[1],
+                EXTERNAL_COMMAND_TOOLS[2],
                 scope.identity_incarnation
             ],
             |row| row.get(0),
@@ -183,8 +185,8 @@ pub(super) fn recover_missing_results_tx(
     let turn_id = turn.turn_id.as_str();
     let mut statement = tx.prepare(
         "SELECT e.evidence_id FROM tool_executions e
-         WHERE e.agent_id=?1 AND e.turn_id=?2 AND e.kind=?3
-           AND json_extract(e.payload_json,'$.call_binding.incarnation')=?4
+         WHERE e.agent_id=?1 AND e.turn_id=?2 AND e.kind IN (?3,?4,?5)
+           AND json_extract(e.payload_json,'$.call_binding.incarnation')=?6
            AND json_extract(e.payload_json,'$.status') IN ('success','error')
            AND NOT EXISTS (
              SELECT 1 FROM transcript_entries t, json_each(t.payload_json,'$.data.refs') r
@@ -199,7 +201,9 @@ pub(super) fn recover_missing_results_tx(
             params![
                 scope.agent_id,
                 turn_id,
-                EXEC_COMMAND,
+                EXTERNAL_COMMAND_TOOLS[0],
+                EXTERNAL_COMMAND_TOOLS[1],
+                EXTERNAL_COMMAND_TOOLS[2],
                 scope.identity_incarnation
             ],
             |row| row.get::<_, String>(0),
@@ -214,7 +218,7 @@ pub(super) fn recover_missing_results_tx(
             let round = assistant_round_tx(tx, scope, &record)?;
             let binding = record
                 .call_binding
-                .context("ExecCommand result has no call binding")?;
+                .context("external command result has no call binding")?;
             crate::diagnostics::resource_io::admit_cloned_value(&record.output)?;
             let result: crate::tool::ToolResult = serde_json::from_value(record.output)?;
             let provider_visible_text = if result.is_error() {
@@ -248,7 +252,7 @@ pub(super) fn recover_missing_results_tx(
             entry.id = format!("transcript:recovered-tool-result:{id}");
             entry.created_at = record
                 .completed_at
-                .context("settled ExecCommand has no completion time")?;
+                .context("settled external command has no completion time")?;
             Ok(entry)
         })?;
         validate_existing_input_evidence_tx(tx, scope, &Key::new(Family::Transcript, &entry.id))?;
@@ -263,7 +267,7 @@ pub(super) fn recover_missing_results_tx(
         let (entry, inserted) = super::evidence::append_transcript_entry_tx(tx, &entry)?;
         ensure!(
             inserted,
-            "recovered ExecCommand transcript already exists without its result"
+            "recovered external command transcript already exists without its result"
         );
         let mut delta = register_committed_input_evidence_tx(
             tx,

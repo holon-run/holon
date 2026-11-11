@@ -18,12 +18,8 @@ impl RuntimeMutation {
         if !matches!(
             record.status,
             ToolExecutionStatus::Success | ToolExecutionStatus::Error
-        ) || !matches!(
-            record.tool_name.as_str(),
-            crate::tool::names::EXEC_COMMAND
-                | crate::tool::names::EXEC_COMMAND_BATCH
-                | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
-        ) {
+        ) || record.tool_name != crate::tool::names::EXEC_COMMAND
+        {
             return Ok(None);
         }
         let Some(turn_id) = self.state.current_turn_id.as_deref() else {

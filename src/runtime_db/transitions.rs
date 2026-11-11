@@ -948,14 +948,14 @@ impl RuntimeDb {
                 };
                 let mut pending_call_id = None;
                 if let Some(scope) = &attempt_scope {
-                    if let Some(id) = super::exec_command_attempts::pending_id_tx(tx, scope, &turn.turn_id)? {
+                    if let Some(id) = super::external_command_attempts::pending_id_tx(tx, scope, &turn.turn_id)? {
                         use crate::runtime::resident_input_evidence::{InputEvidenceFamily as Family, InputEvidenceKey as Key};
                         anyhow::ensure!(input_scopes.is_none() || current_members.get(&turn.agent_id)
                             .is_some_and(|members| members.contains(&Key::new(Family::ToolExecution, &id))),
                             "startup ExecCommand attempt lacks its original writer qualification");
                         let mut record = super::evidence::committed_tool_tx(tx, &turn.agent_id, &id)?;
                         pending_call_id = record.call_binding.as_ref().map(|binding| binding.tool_call_id.clone());
-                        super::exec_command_attempts::interrupt(&mut record, recovered_at);
+                        super::external_command_attempts::interrupt(&mut record, recovered_at);
                         insert_tool_evidence_tx(tx, &record)?;
                         if input_scopes.is_some() {
                             let actual = super::evidence::committed_tool_tx(tx, &turn.agent_id, &id)?;
@@ -967,7 +967,7 @@ impl RuntimeDb {
                 if let (Some(scope), Some(ledger)) = (
                     startup_current_recovery_scope(input_scopes, &turn.agent_id), current_ledger,
                 ) {
-                    let deltas = super::exec_command_attempts::recover_missing_results_tx(tx, scope, &mut turn, ledger)?;
+                    let deltas = super::external_command_attempts::recover_missing_results_tx(tx, scope, &mut turn, ledger)?;
                     input_deltas.extend(deltas.into_iter().map(|delta| (scope.clone(), delta)));
                 }
                 let unknown_external_outcome = turn.external_side_effect_possible || pending_call_id.is_some();
@@ -2150,7 +2150,8 @@ fn startup_input_recovery_targets_tx(
         anyhow::ensure!(turn.agent_id == agent, "startup Turn scope mismatch");
         add(Key::new(Family::Turn, &turn.turn_id))?;
         if let Some(scope) = current_scope {
-            if let Some(id) = super::exec_command_attempts::pending_id_tx(tx, scope, &turn.turn_id)?
+            if let Some(id) =
+                super::external_command_attempts::pending_id_tx(tx, scope, &turn.turn_id)?
             {
                 add(Key::new(Family::ToolExecution, id))?;
             }
@@ -5872,7 +5873,7 @@ fn interrupt_open_tool_executions_for_terminal_turn_tx(
     let mut interrupted = Vec::new();
     for mut record in open {
         if record.status == crate::types::ToolExecutionStatus::Pending {
-            super::exec_command_attempts::interrupt(&mut record, terminal.completed_at);
+            super::external_command_attempts::interrupt(&mut record, terminal.completed_at);
             insert_tool_evidence_tx(tx, &record)?;
             interrupted.push(record);
             continue;

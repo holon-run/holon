@@ -421,12 +421,14 @@ impl PreparedInputEvidence {
     ) -> Result<Self> {
         let original_execution_audit = event.kind == "tool_executed"
             || (event.kind == "tool_execution_failed"
-                && record.tool_name == crate::tool::names::EXEC_COMMAND
                 && record.status == crate::types::ToolExecutionStatus::Error
-                && (record.call_binding.is_some()
-                    || prior
-                        .as_ref()
-                        .is_some_and(|turn| turn.external_side_effect_tool_call_id.is_some())));
+                && ((record.call_binding.is_some()
+                    && crate::tool::names::EXTERNAL_COMMAND_TOOLS
+                        .contains(&record.tool_name.as_str()))
+                    || (record.tool_name == crate::tool::names::EXEC_COMMAND
+                        && prior.as_ref().is_some_and(|turn| {
+                            turn.external_side_effect_tool_call_id.is_some()
+                        }))));
         ensure!(
             original_execution_audit
                 && event
@@ -449,7 +451,7 @@ impl PreparedInputEvidence {
                         .get("tool_call_id")
                         .and_then(serde_json::Value::as_str)
                         == Some(binding.tool_call_id.as_str()),
-                "ExecCommand result audit differs from its attempt binding"
+                "external command result audit differs from its attempt binding"
             );
         }
         let barrier = prior
@@ -536,7 +538,7 @@ impl PreparedInputEvidence {
             },
         )
     }
-    pub(crate) fn is_exec_command_registration(&self) -> bool {
+    pub(crate) fn is_external_command_registration(&self) -> bool {
         matches!(
             self.command.as_ref(),
             EvidenceCommand::Tool { record, .. }
@@ -713,7 +715,7 @@ impl EvidenceRepository<'_> {
                     )?;
                 &fallback_ledger
             };
-            let begins_exec_command = prepared.is_exec_command_registration();
+            let begins_external_command = prepared.is_external_command_registration();
             let mut native_input =
                 super::input_evidence_snapshot::native_birth::NativeInputWriteProof::prepare_tx(
                     tx,
@@ -732,7 +734,7 @@ impl EvidenceRepository<'_> {
             if let Some(native) = &mut native_input {
                 native.bind_query_source(input_query_source, ledger)?;
             }
-            let original_current = if !begins_exec_command {
+            let original_current = if !begins_external_command {
                 native_input.as_mut()
             } else {
                 None
@@ -806,7 +808,7 @@ impl EvidenceRepository<'_> {
                     })?;
             }
             validate_existing_input_evidence_tx(tx, scope, &InputEvidenceKey::new(family, id))?;
-            let before = if tool_result || begins_exec_command {
+            let before = if tool_result || begins_external_command {
                 None
             } else {
                 Some((
@@ -887,7 +889,7 @@ impl EvidenceRepository<'_> {
                     EvidenceCommand::Tool { record, index_changes }
                     | EvidenceCommand::ToolResult { record, index_changes, .. } => {
                         if record.call_binding.is_some() || record.status == crate::types::ToolExecutionStatus::Pending {
-                            super::exec_command_attempts::validate_write_tx(tx, scope, record,
+                            super::external_command_attempts::validate_write_tx(tx, scope, record,
                                 tool_result)?;
                         }
                         insert_tool_evidence_tx(tx, record)?;
@@ -1015,7 +1017,7 @@ impl EvidenceRepository<'_> {
                     || !audit_events.is_empty()
             } else {
                 // Registration inserts a fresh attempt. Settlement acknowledges its execution Event.
-                begins_exec_command || !audit_events.is_empty()
+                begins_external_command || !audit_events.is_empty()
             };
             let mut receipt_events = super::transitions::AuditEventAck::clone_batch(&audit_events)?;
             let outcome = InputMutationOutcome {
@@ -1041,7 +1043,7 @@ impl EvidenceRepository<'_> {
                         let primary = reserved_scope == scope;
                         InputMutationScopeOutcome {
                             install_keys: super::input_recovery_install::InputMutationInstallKeys {
-                                input_roots: if primary && (tool_result || begins_exec_command) {
+                                input_roots: if primary && (tool_result || begins_external_command) {
                                     facts.iter().map(Fact::key).collect()
                                 } else { Default::default() },
                                 work_items: if primary {
@@ -1058,8 +1060,8 @@ impl EvidenceRepository<'_> {
                                 Vec::new()
                             },
                             // Matches the original standalone runtime installation.
-                            notify_memory_index: primary && !begins_exec_command,
-                            notify_scheduler: primary && !begins_exec_command,
+                            notify_memory_index: primary && !begins_external_command,
+                            notify_scheduler: primary && !begins_external_command,
                         }
                     })
                     .collect(),

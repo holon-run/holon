@@ -590,7 +590,10 @@ impl RuntimeHandle {
         authority_class: &AuthorityClass,
         trace_context: Option<&crate::observability::TraceContext>,
         turn_tool_call: Option<(&str, &str)>,
-        attempt: Option<(&crate::tool::spec::ExecCommandAttempt, &serde_json::Value)>,
+        attempt: Option<(
+            &crate::tool::spec::ExternalCommandAttempt,
+            &serde_json::Value,
+        )>,
     ) -> Result<ExecCommandResult> {
         let _admission = self.execution_admission_lease()?;
         self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND)
@@ -625,60 +628,13 @@ impl RuntimeHandle {
                 });
             }
         }
-        if let Some((attempt, input)) = attempt {
-            use crate::types::{
-                ToolExecutionCallBinding, ToolExecutionRecord, ToolExecutionStatus,
-            };
-            let (turn_id, tool_call_id) =
-                turn_tool_call.context("ExecCommand attempt has no Turn or tool call")?;
-            let state = self.agent_state().await?;
-            anyhow::ensure!(
-                state.current_turn_id.as_deref() == Some(turn_id),
-                "ExecCommand attempt no longer owns the current Turn"
-            );
-            let pending = ToolExecutionRecord {
-                id: crate::ids::tool_execution_id(),
-                agent_id: state.id,
-                work_item_id: state
-                    .current_turn_work_item_id
-                    .or(state.current_work_item_id),
-                turn_index: state.turn_index,
-                turn_id: Some(turn_id.to_string()),
-                tool_name: crate::tool::names::EXEC_COMMAND.to_string(),
-                created_at: chrono::Utc::now(),
-                completed_at: None,
-                duration_ms: 0,
-                authority_class: authority_class.clone(),
-                status: ToolExecutionStatus::Pending,
-                input: input.clone(),
-                output: serde_json::Value::Null,
-                summary: "Command execution pending".into(),
-                call_binding: Some(ToolExecutionCallBinding {
-                    incarnation: self.instance_incarnation(),
-                    assistant_round_id: attempt.assistant_round_id.clone(),
-                    model_output_budget: attempt.model_output_budget,
-                    tool_call_id: tool_call_id.to_string(),
-                }),
-                invocation_surface: None,
-            };
-            attempt
-                .submitted
-                .set(pending)
-                .map_err(|_| anyhow!("ExecCommand attempt already submitted"))?;
-            self.persist_tool_execution_evidence(
-                attempt
-                    .submitted
-                    .get()
-                    .expect("submitted ExecCommand attempt"),
-            )
-            .await?;
-        } else {
-            self.mark_current_turn_external_side_effect_possible(
-                crate::tool::names::EXEC_COMMAND,
-                turn_tool_call,
-            )
-            .await?;
-        }
+        self.register_external_command_attempt(
+            crate::tool::names::EXEC_COMMAND,
+            authority_class,
+            turn_tool_call,
+            attempt,
+        )
+        .await?;
         let mut running = self
             .start_command_process(&resolved, trace_context, crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -817,23 +773,116 @@ impl RuntimeHandle {
         })
     }
 
+    async fn register_external_command_attempt(
+        &self,
+        tool_name: &str,
+        authority_class: &AuthorityClass,
+        turn_tool_call: Option<(&str, &str)>,
+        attempt: Option<(
+            &crate::tool::spec::ExternalCommandAttempt,
+            &serde_json::Value,
+        )>,
+    ) -> Result<()> {
+        let Some((attempt, input)) = attempt else {
+            if tool_name == crate::tool::names::EXEC_COMMAND {
+                return self
+                    .mark_current_turn_external_side_effect_possible(tool_name, turn_tool_call)
+                    .await;
+            }
+            anyhow::ensure!(
+                self.capture_committed_state()
+                    .await?
+                    .current_turn_id
+                    .is_none(),
+                "{tool_name} in an active Turn requires a bound tool call"
+            );
+            return Ok(());
+        };
+        if attempt.submitted.get().is_some() {
+            // The sequential batch stops on registration failure. Later items
+            // reuse the registration completed before the first spawn.
+            anyhow::ensure!(
+                tool_name == crate::tool::names::EXEC_COMMAND_BATCH,
+                "external command attempt already submitted"
+            );
+            return Ok(());
+        }
+        use crate::types::{ToolExecutionCallBinding, ToolExecutionRecord, ToolExecutionStatus};
+        let (turn_id, tool_call_id) =
+            turn_tool_call.context("External command attempt has no Turn or tool call")?;
+        let state = self.agent_state().await?;
+        anyhow::ensure!(
+            state.current_turn_id.as_deref() == Some(turn_id),
+            "External command attempt no longer owns the current Turn"
+        );
+        let pending = ToolExecutionRecord {
+            id: crate::ids::tool_execution_id(),
+            agent_id: state.id,
+            work_item_id: state
+                .current_turn_work_item_id
+                .or(state.current_work_item_id),
+            turn_index: state.turn_index,
+            turn_id: Some(turn_id.to_string()),
+            tool_name: tool_name.to_owned(),
+            created_at: chrono::Utc::now(),
+            completed_at: None,
+            duration_ms: 0,
+            authority_class: authority_class.clone(),
+            status: ToolExecutionStatus::Pending,
+            input: input.clone(),
+            output: serde_json::Value::Null,
+            summary: "Command execution pending".into(),
+            call_binding: Some(ToolExecutionCallBinding {
+                incarnation: self.instance_incarnation(),
+                assistant_round_id: attempt.assistant_round_id.clone(),
+                model_output_budget: attempt.model_output_budget,
+                tool_call_id: tool_call_id.to_string(),
+            }),
+            invocation_surface: None,
+        };
+        attempt
+            .submitted
+            .set(pending)
+            .map_err(|_| anyhow!("External command attempt already submitted"))?;
+        self.persist_tool_execution_evidence(
+            attempt
+                .submitted
+                .get()
+                .expect("submitted External command attempt"),
+        )
+        .await
+    }
+
     pub(crate) async fn execute_exec_command_once(
         &self,
         mut spec: CommandTaskSpec,
-        _authority_class: &AuthorityClass,
-        trace_context: Option<&crate::observability::TraceContext>,
+        authority_class: &AuthorityClass,
+        context: &crate::tool::spec::ToolExecutionContext,
         tool_name: &str,
+        input: &serde_json::Value,
     ) -> Result<ExecCommandResult> {
         let _admission = self.execution_admission_lease()?;
         self.ensure_process_execution_exposed(tool_name).await?;
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
-        self.mark_current_turn_external_side_effect_possible(tool_name, None)
-            .await?;
+        let attempt = context.external_command_attempt.as_deref();
+        self.register_external_command_attempt(
+            tool_name,
+            authority_class,
+            attempt.and_then(|_| {
+                context
+                    .turn_id
+                    .as_deref()
+                    .zip(context.tool_call_id.as_deref())
+            }),
+            attempt.map(|attempt| (attempt, input)),
+        )
+        .await
+        .context(crate::tool::spec::ExternalCommandRegistrationFailed)?;
         let mut captured = CapturedOutput::new(resolved.output_policy);
         let mut running = self
-            .start_command_process(&resolved, trace_context, tool_name)
+            .start_command_process(&resolved, context.trace_context.as_ref(), tool_name)
             .await?;
         let sleep = tokio::time::sleep(Duration::from_millis(resolved.spec.yield_time_ms));
         let mut status_tick = tokio::time::interval(PROCESS_STATUS_POLL_INTERVAL);

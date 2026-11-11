@@ -65,6 +65,11 @@ pub(crate) async fn execute(
         "destructive lifecycle operation requires an owner WorkItem"
     );
 
+    ensure!(
+        context.external_command_attempt.is_some(),
+        "destructive lifecycle operation requires a bound tool call"
+    );
+
     let record = DestructiveOperationRecord {
         operation_id: args.operation_id.clone(),
         owner_turn_id: turn_id.to_string(),
@@ -129,8 +134,9 @@ pub(crate) async fn execute(
                 terminal_reentry: false,
             },
             authority_class,
-            context.trace_context.as_ref(),
+            context,
             NAME,
+            input,
         )
         .await?;
     let launched = matches!(

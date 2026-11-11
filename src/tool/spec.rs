@@ -48,11 +48,15 @@ pub struct CompletionReportCandidate {
 }
 
 #[derive(Debug)]
-pub(crate) struct ExecCommandAttempt {
+pub(crate) struct ExternalCommandAttempt {
     pub(crate) assistant_round_id: String,
     pub(crate) model_output_budget: usize,
     pub(crate) submitted: std::sync::OnceLock<crate::types::ToolExecutionRecord>,
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("external command attempt registration failed")]
+pub(crate) struct ExternalCommandRegistrationFailed;
 
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionContext {
@@ -62,7 +66,7 @@ pub struct ToolExecutionContext {
     pub message_id: Option<String>,
     pub tool_call_id: Option<String>,
     pub trace_context: Option<crate::observability::TraceContext>,
-    pub(crate) exec_command_attempt: Option<Arc<ExecCommandAttempt>>,
+    pub(crate) external_command_attempt: Option<Arc<ExternalCommandAttempt>>,
     pub decision_tool_calls: Arc<AtomicUsize>,
 }
 
