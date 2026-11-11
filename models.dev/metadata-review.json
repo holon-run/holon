@@ -45385,10 +45385,10 @@
       "route_ref": "volcengine@default/deepseek-v4-1-flash-260910",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
+        "default_max_output_tokens": 131072,
         "max_output_tokens_upper_limit": null,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -45418,7 +45418,7 @@
             "supports_reasoning": true
           },
           "context_window_tokens": null,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": null,
@@ -45445,7 +45445,7 @@
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
             "max_output_tokens_upper_limit": "derived",
@@ -45463,9 +45463,9 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-27",
-        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
-        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "reviewed_at": "2026-11-12",
+        "reason": "The native Responses contract explicitly documents default output 131072 for this exact ID. This is not an output hard limit. Exact context and output upper limits remain unconfirmed; no subscription or Messages route inherits this default.",
+        "recheck": "Recheck exact native Responses context/output hard limits and lifecycle; do not infer an upper limit from the documented default.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -45476,10 +45476,10 @@
       "route_ref": "volcengine@default/deepseek-v4-1-flash-261017",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
+        "default_max_output_tokens": 131072,
         "max_output_tokens_upper_limit": null,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -45509,7 +45509,7 @@
             "supports_reasoning": true
           },
           "context_window_tokens": null,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": null,
@@ -45536,7 +45536,7 @@
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
             "max_output_tokens_upper_limit": "derived",
@@ -45554,9 +45554,9 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-27",
-        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
-        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "reviewed_at": "2026-11-12",
+        "reason": "The native Responses contract explicitly documents default output 131072 for this exact ID. This is not an output hard limit. Exact context and output upper limits remain unconfirmed; no subscription or Messages route inherits this default.",
+        "recheck": "Recheck exact native Responses context/output hard limits and lifecycle; do not infer an upper limit from the documented default.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
@@ -45567,10 +45567,10 @@
       "route_ref": "volcengine@default/deepseek-v4-1-flash-economy-261017",
       "facts": {
         "context_window_tokens": null,
-        "default_max_output_tokens": null,
+        "default_max_output_tokens": 131072,
         "max_output_tokens_upper_limit": null,
         "prompt_budget_estimated_tokens": 128000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -45600,7 +45600,7 @@
             "supports_reasoning": true
           },
           "context_window_tokens": null,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
           "max_output_tokens_upper_limit": null,
@@ -45627,7 +45627,7 @@
             "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
             "max_output_tokens_upper_limit": "derived",
@@ -45645,9 +45645,9 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-27",
-        "reason": "Native Responses qualification, reasoning/image support and distinct effort levels were independently confirmed. Abbreviated token limits do not certify integer capacities; K3.1 output specifications conflict. Responses cache mechanisms do not establish Anthropic cache_control.",
-        "recheck": "Recheck exact native model/schema integers and resolve K3.1 output conflicts.",
+        "reviewed_at": "2026-11-12",
+        "reason": "The native Responses contract explicitly documents default output 131072 for this exact ID. This is not an output hard limit. Exact context and output upper limits remain unconfirmed; no subscription or Messages route inherits this default.",
+        "recheck": "Recheck exact native Responses context/output hard limits and lifecycle; do not infer an upper limit from the documented default.",
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"

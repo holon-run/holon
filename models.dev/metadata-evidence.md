@@ -5,6 +5,54 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-12
+
+Pinned models.dev payload:
+`5a4aee967f0a0586ca3bd638129ff4e39bb71518f48e0ad8385fe38212426aac`,
+sampled November 11 at 21:03:40 UTC. The snapshot bytes are fixed for refresh,
+validation and comparison; changing upstream metadata is not permission to
+extend subscription or Codex access.
+
+The official [Create model response contract](https://ark.volcengine.com/region:cn-beijing/docs/create-model-responses-api.md),
+sampled November 11 at 21:06:24 UTC, explicitly gives `max_output_tokens`
+default **131072 (128K)** for `deepseek-v4-1-flash-261017`,
+`deepseek-v4-1-flash-260910`, and `deepseek-v4-1-flash-economy-261017`.
+The archived response SHA256 is
+`c6ed8ef3fd592be440bda379a7cd8812c95e93356916c26daffadb4a51019fcc`.
+The explicit integer establishes a default only. Their exact context and
+output hard upper limits remain unknown, and no subscription route inherits it.
+The output budget includes both reasoning and answer tokens. K3.1's independent
+output conflict is not resolved by this evidence.
+
+Alibaba's [personal Token Plan](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview)
+and [team Token Plan](https://help.aliyun.com/zh/model-studio/token-plan-team-overview)
+list `qwen4-max-preview` and callable alias `qwen4.0-max-preview`. The
+[Messages API contract](https://help.aliyun.com/zh/model-studio/anthropic-api-messages)
+explicitly limits this new model to Token Plan and documents default thinking,
+effort low/medium/xhigh (high/max map to xhigh), and strict structured output.
+The preview window ends November 25, 2026 at 24:00 UTC+8, equivalent to
+November 26 at 00:00 UTC+8.
+
+The subsequent [Qwen4 model card](https://help.aliyun.com/zh/model-studio/qwen4-max-preview),
+sampled November 11 at 21:32:29 UTC, explicitly confirms Function Calling,
+text/image/video input and output hard limit **393216**, including reasoning.
+Its archived SHA256 is
+`49f27b8d94a4f15d1a8eb8006ed7a81d947f21cdb5846d917d0abc956de611f4`.
+The separate [Chat API contract](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-chat-completions),
+sampled at 21:35:21 UTC, says the non-GLM default equals the model's maximum
+output, supporting a Chat default of 393,216. Its archived SHA256 is
+`f327747bd215da4c9b98a0071bf6c01e9c9adc4a60044e33b46f42ca1645f71a`.
+These sources supersede the earlier tool/output evidence gap, not the deferral:
+context remains only `1M Token`, and Messages/Responses defaults, runtime
+request compatibility, cache details and real account eligibility remain open.
+Do not invent an exact context integer or transfer the Chat default across
+protocols. No runtime route or request adaptation is admitted here.
+
+The [endpoint review](endpoint-review.md#2026-11-12-incremental-review)
+records accepted and deferred changes separately. The 635-route pre-correction
+complete-object comparison, including 474 objects across 30 special endpoints,
+does not close historical official-field or dynamic-account evidence gaps.
+
 ## Incremental review: 2026-11-11
 
 Pinned models.dev payload:
