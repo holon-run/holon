@@ -365,6 +365,67 @@ class UIFixtureTaskResultContracts(unittest.TestCase):
             self.assertFalse((root / "release-task-results").exists())
 
 
+class UIFixtureStateContracts(unittest.TestCase):
+    def setUp(self):
+        self.helpers = fixture_helpers()
+        self.wait = self.helpers["wait_for_agent_state"]
+        self.error = self.helpers["FixtureControlError"]
+        self.now = 0
+        clock = patch.object(self.helpers["time"], "monotonic", side_effect=lambda: self.now)
+        sleeper = patch.object(self.helpers["time"], "sleep", side_effect=self.advance)
+        clock.start()
+        sleeper.start()
+        self.addCleanup(clock.stop)
+        self.addCleanup(sleeper.stop)
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def pending(self, status=503, code="agent_reconciliation_pending", retryable=True):
+        return self.error("/agents/fixture/state", status, {"code": code, "retryable": retryable})
+
+    def test_ready_state_needs_no_retry(self):
+        state = {"workspace": {"workspaces": []}}
+        local = Mock(return_value=state)
+        self.assertIs(self.wait(local, "fixture"), state)
+        local.assert_called_once_with("GET", "/agents/fixture/state", timeout=10)
+        self.assertEqual(self.now, 0)
+
+    def test_explicit_reconciliation_waits_then_returns_state(self):
+        state = {"workspace": {"workspaces": []}}
+        local = Mock(side_effect=[self.pending(), self.pending(), state])
+        self.assertIs(self.wait(local, "fixture", timeout=1), state)
+        self.assertEqual(local.call_count, 3)
+        self.assertAlmostEqual(self.now, .2)
+        for request in local.call_args_list:
+            self.assertEqual(request.args, ("GET", "/agents/fixture/state"))
+            self.assertLessEqual(request.kwargs["timeout"], 1)
+
+    def test_other_errors_fail_without_retry(self):
+        for error in (self.pending(status=409), self.pending(code="other"),
+                      self.pending(retryable=False), RuntimeError("unrelated")):
+            with self.subTest(error=error):
+                local = Mock(side_effect=error)
+                with self.assertRaises(RuntimeError) as failure:
+                    self.wait(local, "fixture")
+                self.assertIs(failure.exception, error)
+                local.assert_called_once()
+                self.assertEqual(self.now, 0)
+
+    def test_reconciliation_wait_is_bounded(self):
+        local = Mock(side_effect=self.pending())
+        with self.assertRaisesRegex(RuntimeError, "reconciliation timed out"):
+            self.wait(local, "fixture", timeout=.25)
+        self.assertAlmostEqual(self.now, .25)
+        self.assertEqual(local.call_count, 3)
+        self.assertAlmostEqual(local.call_args.kwargs["timeout"], .05)
+
+    def test_fixture_uses_bounded_state_read(self):
+        source = (ROOT / "scripts/ios_ui_fixture.py").read_text()
+        self.assertIn('state = wait_for_agent_state(local, agent)', source)
+        self.assertIn('raise FixtureControlError(path, response.status, data)', source)
+
+
 class UIFixtureBootstrapContracts(unittest.TestCase):
     def setUp(self):
         self.helpers = fixture_helpers()
