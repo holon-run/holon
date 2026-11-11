@@ -116,7 +116,7 @@ pub(crate) struct RuntimeDbWriteQueue {
     pub(crate) state: Mutex<RuntimeDbWriteQueueState>,
     pub(crate) available: Condvar,
     pub(super) delivery_summary_generation: AtomicU64,
-    audit_event_frontiers: Mutex<BTreeMap<String, Weak<AtomicU64>>>,
+    audit_event_frontiers: Mutex<BTreeMap<Arc<str>, Weak<AtomicU64>>>,
     workspace_context: Mutex<Option<SharedWorkspaceContext>>,
 }
 
@@ -582,7 +582,7 @@ impl RuntimeDbWriterState {
         mutex_wait: std::time::Duration,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
-        let audit = AuditWriteAttempt::begin();
+        let audit = AuditWriteAttempt::begin(&self.queue);
         let result = self.finish_transaction_attempt(
             connection,
             run_transaction_on_connection(
@@ -597,20 +597,22 @@ impl RuntimeDbWriterState {
             {
                 // Recheck under the original write turn when COMMIT returned
                 // an uncertain result. On a failed read, fence the older cut.
-                for (agent, sequence) in &mut writes {
+                for write in &mut writes {
                     if let Ok(latest) = connection.query_row(
                         "SELECT event_seq FROM audit_events WHERE agent_id=?1 ORDER BY event_seq DESC LIMIT 1",
-                        [agent.as_str()],
+                        [write.agent_id.as_ref()],
                         |row| row.get(0),
                     ).optional() {
-                        *sequence = latest.unwrap_or(0);
+                        write.sequence = latest.unwrap_or(0);
                     }
                 }
             } else {
                 writes.clear();
             }
         }
-        self.queue.publish_audit_frontiers(writes);
+        for write in writes {
+            write.frontier.fetch_max(write.sequence, Ordering::Release);
+        }
         result
     }
 
@@ -649,25 +651,45 @@ fn before_begin_failure(error: anyhow::Error) -> anyhow::Error {
 
 thread_local! {
     // Original transactions run synchronously under the shared write turn.
-    static AUDIT_WRITES: RefCell<Option<BTreeMap<String, u64>>> = const { RefCell::new(None) };
+    static AUDIT_WRITES: RefCell<Option<AuditWrites>> = const { RefCell::new(None) };
+}
+
+struct AuditWrites {
+    queue: Arc<RuntimeDbWriteQueue>,
+    pending: Vec<ObservedAuditWrite>,
+}
+
+struct ObservedAuditWrite {
+    agent_id: Arc<str>,
+    frontier: Arc<AtomicU64>,
+    sequence: u64,
 }
 
 struct AuditWriteAttempt {
-    previous: Option<BTreeMap<String, u64>>,
+    previous: Option<AuditWrites>,
     active: bool,
 }
 
 impl AuditWriteAttempt {
-    fn begin() -> Self {
+    fn begin(queue: &Arc<RuntimeDbWriteQueue>) -> Self {
         Self {
-            previous: AUDIT_WRITES.with(|writes| writes.replace(Some(BTreeMap::new()))),
+            previous: AUDIT_WRITES.with(|writes| {
+                writes.replace(Some(AuditWrites {
+                    queue: queue.clone(),
+                    pending: Vec::new(),
+                }))
+            }),
             active: true,
         }
     }
 
-    fn finish(mut self) -> BTreeMap<String, u64> {
+    fn finish(mut self) -> Vec<ObservedAuditWrite> {
         self.active = false;
-        AUDIT_WRITES.with(|writes| writes.replace(self.previous.take()).unwrap_or_default())
+        AUDIT_WRITES.with(|writes| {
+            writes
+                .replace(self.previous.take())
+                .map_or_else(Vec::new, |writes| writes.pending)
+        })
     }
 }
 
@@ -679,48 +701,56 @@ impl Drop for AuditWriteAttempt {
     }
 }
 
-pub(super) fn record_audit_insert(agent_id: &str, sequence: u64) -> Result<()> {
+pub(super) fn record_audit_insert(agent_id: &str, sequence: u64) {
     AUDIT_WRITES.with(|writes| {
-        if let Some(writes) = writes.borrow_mut().as_mut() {
-            if let Some(latest) = writes.get_mut(agent_id) {
-                *latest = (*latest).max(sequence);
-            } else {
-                crate::diagnostics::resource_io::admit_cloned_value(&agent_id)?;
-                writes.insert(agent_id.to_owned(), sequence);
+        let mut slot = writes.borrow_mut();
+        let Some(writes) = slot.as_mut() else { return };
+        if let Some(write) = writes
+            .pending
+            .iter_mut()
+            .find(|write| write.agent_id.as_ref() == agent_id)
+        {
+            write.sequence = write.sequence.max(sequence);
+            return;
+        }
+        // The writer retains registered handles and the sequence. Event body
+        // admission and last-holder material stay with the original writer.
+        let frontiers = writes
+            .queue
+            .audit_event_frontiers
+            .lock()
+            .expect("Audit frontiers poisoned");
+        if let Some((agent_id, frontier)) = frontiers.get_key_value(agent_id) {
+            if let Some(frontier) = frontier.upgrade() {
+                writes.pending.push(ObservedAuditWrite {
+                    agent_id: agent_id.clone(),
+                    frontier,
+                    sequence,
+                });
             }
         }
-        Ok(())
-    })
+    });
 }
 
 impl RuntimeDbWriteQueue {
-    pub(super) fn register_audit_frontier(&self, agent_id: &str) -> Arc<AtomicU64> {
+    pub(super) fn register_audit_frontier(
+        self: &Arc<Self>,
+        agent_id: &str,
+    ) -> Result<Arc<AtomicU64>> {
+        // Registration precedes the bootstrap read. Any write already underway
+        // completes before a new observer begins tracking its scope.
+        let _turn = self.wait_turn()?;
         let mut frontiers = self
             .audit_event_frontiers
             .lock()
-            .expect("Audit frontiers poisoned");
+            .map_err(|_| anyhow!("Audit frontiers poisoned"))?;
         if let Some(frontier) = frontiers.get(agent_id).and_then(Weak::upgrade) {
-            return frontier;
+            return Ok(frontier);
         }
         frontiers.retain(|_, frontier| frontier.strong_count() > 0);
         let frontier = Arc::new(AtomicU64::new(0));
-        frontiers.insert(agent_id.to_owned(), Arc::downgrade(&frontier));
-        frontier
-    }
-
-    fn publish_audit_frontiers(&self, writes: BTreeMap<String, u64>) {
-        if writes.is_empty() {
-            return;
-        }
-        let frontiers = self
-            .audit_event_frontiers
-            .lock()
-            .expect("Audit frontiers poisoned");
-        for (agent_id, sequence) in writes {
-            if let Some(frontier) = frontiers.get(&agent_id).and_then(Weak::upgrade) {
-                frontier.fetch_max(sequence, Ordering::Release);
-            }
-        }
+        frontiers.insert(Arc::from(agent_id), Arc::downgrade(&frontier));
+        Ok(frontier)
     }
 
     fn workspace_context(

@@ -850,7 +850,7 @@ impl RuntimeHandle {
         let mut provider = provider;
         // Private construction owns its namespace before normalization writes.
         // The helper records the exact posture ACK before derived preparation.
-        let scheduler_audit_frontier = runtime_db.register_audit_frontier(&agent_id);
+        let scheduler_audit_frontier = runtime_db.register_audit_frontier(&agent_id)?;
         let recovered_at = clock.now();
         let PreparedRuntimeStorage {
             storage,

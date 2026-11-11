@@ -1430,7 +1430,7 @@ pub(crate) fn append_audit_event_tx(
     )?;
     insert_audit_event_with_sequence_tx(tx, agent_id, &event)?;
     if let Some(agent_id) = agent_id {
-        super::write_queue::record_audit_insert(agent_id, event.event_seq)?;
+        super::write_queue::record_audit_insert(agent_id, event.event_seq);
     }
     Ok((event, true))
 }
