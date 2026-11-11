@@ -63,6 +63,8 @@ struct Counters {
     connections_opened: AtomicU64,
     connections_dropped: AtomicU64,
     checkout_timeouts: AtomicU64,
+    #[cfg(test)]
+    checkout_attempts: AtomicU64,
 }
 
 #[cfg(test)]
@@ -74,6 +76,7 @@ pub(crate) struct ReaderPoolStats {
     pub(crate) connections_opened: u64,
     pub(crate) connections_dropped: u64,
     pub(crate) checkout_timeouts: u64,
+    pub(crate) checkout_attempts: u64,
     pub(crate) current_connections: u32,
     pub(crate) idle_connections: u32,
     pub(crate) available_admission: usize,
@@ -262,6 +265,12 @@ impl RuntimeDbReaderPool {
         origin: read_block::ReadOrigin,
         stage: &'static str,
     ) -> Result<PooledConnection<ReaderManager>> {
+        #[cfg(test)]
+        self.shared
+            .control
+            .stats
+            .checkout_attempts
+            .fetch_add(1, Ordering::Relaxed);
         loop {
             self.shared.control.ensure_protected()?;
             self.check_scope(scope)?;
@@ -587,6 +596,7 @@ impl RuntimeDbReaderPool {
             connections_opened: stats.connections_opened.load(Ordering::Relaxed),
             connections_dropped: stats.connections_dropped.load(Ordering::Relaxed),
             checkout_timeouts: stats.checkout_timeouts.load(Ordering::Relaxed),
+            checkout_attempts: stats.checkout_attempts.load(Ordering::Relaxed),
             current_connections: state.as_ref().map_or(0, |state| state.connections),
             idle_connections: state.map_or(0, |state| state.idle_connections),
             available_admission: self.shared.admission.available_permits(),

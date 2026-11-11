@@ -617,8 +617,8 @@ pub async fn list_agent_entries(
                 context
                     .blocking(move |scope| {
                         let db = host.runtime_db().with_read_scope(scope.clone());
-                        // Keep nested storage reads on this registered worker;
-                        // owner waits use the same build's cancellation/deadline.
+                        // Keep list assembly and serialization under the same
+                        // cancellation, protection and material checks.
                         crate::runtime_db::read_block::with_scope(scope, || {
                             let projection_started = std::time::Instant::now();
                             let agents =

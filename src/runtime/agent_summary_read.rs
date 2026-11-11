@@ -1,10 +1,6 @@
 //! Scheduling observations follow the original summary DTO until serialization.
 use super::input_evidence_budget::{BudgetViewGuard, InputEvidenceBudgetLedger};
-use super::resident_scheduling::{
-    CapturedScheduling, ResidentSchedulingDomain, SchedulingCaptureRequest, SchedulingReadError,
-};
-use super::resident_state::AgentSnapshot;
-use super::resident_work::{WorkCaptureRequest, WorkReadError};
+use super::resident_scheduling::CapturedScheduling;
 use super::scheduling_output::{project_selected_scheduling_records, SchedulingReadMaterial};
 use super::*;
 use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
@@ -267,197 +263,17 @@ impl RuntimeHandle {
         Ok(Some(query))
     }
 
-    fn roster_work_posture(
-        root: &AgentSnapshot,
-        scheduling: &ResidentSchedulingDomain,
-    ) -> Result<AgentPostureProjection> {
-        let work = root.work.as_ref().ok_or(WorkReadError::IncompleteLive)?;
-        anyhow::ensure!(
-            work.scope().agent_id == root.state.id
-                && work.scope().identity_incarnation == root.token.identity_incarnation
-                && scheduling.scope() == work.scope(),
-            "roster Work and Scheduling scope differs"
-        );
-        let work = work.capture(&WorkCaptureRequest::current())?;
-        let scheduling = scheduling.capture(&SchedulingCaptureRequest {
-            history_limit: 0,
-            ..SchedulingCaptureRequest::current()
-        })?;
-        let triggers = scheduling
-            .active_default_trigger()?
-            .map_or(&[][..], std::slice::from_ref);
-        let ranked = work.queue_work_ranks(&root.state, triggers)?;
-        let waits = work.context_active_wait_conditions()?;
-        work.scheduler_work_posture(&root.state, false, &ranked, waits.into_iter())
-    }
-
-    fn missing_roster_domains(root: &AgentSnapshot) -> (bool, bool) {
-        let work = root.work.as_ref().is_none_or(|domain| {
-            let coverage = domain.coverage();
-            !coverage.live_complete
-                || coverage.nonopen.limit < super::resident_work::WORK_NONOPEN_WINDOW
-        });
-        let scheduling = root.scheduling.as_ref().is_none_or(|domain| {
-            let coverage = domain.coverage();
-            !coverage.active_timers_complete
-                || !coverage.pending_wakes_complete
-                || !coverage.active_triggers_complete
-        });
-        (work, scheduling)
-    }
-
-    async fn roster_posture(
+    pub(crate) fn agent_list_entry_from_projection(
         &self,
-        root: &Arc<AgentSnapshot>,
-        material: &ResourceReadMaterial,
-        db: &RuntimeDb,
-    ) -> Result<AgentPostureProjection> {
-        if let Some(posture) =
-            material.read(|| crate::storage::derive_agent_posture_from_state(&root.state, false))?
-        {
-            return Ok(posture);
-        }
-        let root = match root.queue_posture {
-            Some(queue)
-                if queue.has_queued || Self::missing_roster_domains(root) == (false, false) =>
-            {
-                root.clone()
-            }
-            _ => self.read_missing_roster_facts(root, material, db).await?,
-        };
-        material.read(|| {
-            let queue = root
-                .queue_posture
-                .context("roster Queue posture needs preparation")?;
-            if let Some(posture) =
-                crate::storage::derive_agent_posture_from_state(&root.state, queue.has_queued)?
-            {
-                return Ok(posture);
-            }
-            let scheduling = root
-                .scheduling
-                .as_deref()
-                .ok_or(SchedulingReadError::IncompleteLive)?;
-            Self::roster_work_posture(&root, scheduling)
-        })
-    }
-
-    async fn read_missing_roster_facts(
-        &self,
-        root: &Arc<AgentSnapshot>,
-        material: &ResourceReadMaterial,
-        db: &RuntimeDb,
-    ) -> Result<Arc<AgentSnapshot>> {
-        let reservation = db
-            .wait_for_memory_lock(self.inner.mutation_owner.reserve())
-            .await??;
-        anyhow::ensure!(
-            Arc::ptr_eq(root, &self.observer_ready_root(db)?),
-            crate::runtime_db::RuntimeDbRetryableError::new(
-                Self::OBSERVER_PUBLICATION_OPERATION,
-                db.path(),
-                "publication changed during read",
-            )
-        );
-        let observed = root.clone();
-        let ledger = self.inner.input_evidence_budget.clone();
-        let material = material.clone();
-        let (needs_work, needs_scheduling) = Self::missing_roster_domains(root);
-        let (queue, work, scheduling) = db
-            .with_read_async(move |connection| {
-                material.read(|| {
-                    let tx = connection.transaction()?;
-                    let id = &observed.state.id;
-                    let facts = crate::runtime_db::context_inputs::ContextDurableRead::new(&tx, id)
-                        .scope_facts()?;
-                    anyhow::ensure!(
-                        facts.state.as_deref() == Some(observed.state.as_ref())
-                            && facts.control_revision.is_some()
-                            && observed.identity.as_ref().is_none_or(|identity| {
-                                facts.identity.as_ref() == Some(identity.as_ref())
-                            })
-                            && facts.identity.as_ref().is_some_and(|identity| {
-                                identity.agent_id == *id
-                                    && identity.incarnation == observed.token.identity_incarnation
-                                    && identity.status == crate::types::AgentRegistryStatus::Active
-                            }),
-                        "roster durable scope differs from its publication"
-                    );
-                    let queue = match observed.queue_posture {
-                        Some(queue) => queue,
-                        None => crate::runtime_db::current_query::queue_posture_tx(&tx, id)?,
-                    };
-                    resource_io::admit_cloned_value(id)?;
-                    let scope = super::resident_input_evidence::InputEvidenceScope {
-                        agent_id: id.clone(),
-                        identity_incarnation: observed.token.identity_incarnation,
-                    };
-                    let limits = ledger.limits();
-                    let records = usize::try_from(limits.record_limit)?;
-                    let bytes = usize::try_from(
-                        limits.history_per_agent_bytes.checked_add(limits.pending_per_agent_bytes)
-                            .context("roster preparation byte limit overflow")?,
-                    )?;
-                    let validate_view = |loaded: &crate::runtime_db::context_inputs::ContextScopeFacts| {
-                        anyhow::ensure!(
-                            loaded.identity == facts.identity
-                                && loaded.state == facts.state
-                                && loaded.control_revision == facts.control_revision,
-                            "roster domains differ from the reserved State"
-                        );
-                        Ok::<_, anyhow::Error>(())
-                    };
-                    let work = (!queue.has_queued && needs_work).then(|| {
-                        let loaded = crate::runtime_db::work_snapshot::load_work_domain_snapshot_tx(
-                            &tx, &scope, &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
-                                capture: WorkCaptureRequest::current(),
-                                record_limit: records,
-                                byte_limit: bytes,
-                            },
-                        )?.require_current()?;
-                        validate_view(&loaded.facts)?;
-                        Ok::<_, anyhow::Error>(Arc::new(loaded.resident.with_budget(ledger.clone())?))
-                    }).transpose()?;
-                    let scheduling = (!queue.has_queued && needs_scheduling).then(|| {
-                        let loaded = crate::runtime_db::scheduling_snapshot::load_scheduling_domain_snapshot_tx(
-                            &tx, &scope, &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
-                                capture: SchedulingCaptureRequest::current(),
-                                record_limit: records,
-                                byte_limit: bytes,
-                            },
-                            &ledger,
-                        )?.require_current()?;
-                        validate_view(&loaded.facts)?;
-                        Ok::<_, anyhow::Error>(Arc::new(loaded.resident))
-                    }).transpose()?;
-                    tx.commit()?;
-                    Ok((queue, work, scheduling))
-                })
-            })
-            .await?;
-        db.check_read_scope()?;
-        Ok(reservation.publish_prepared_roster(root, queue, work, scheduling)?)
-    }
-
-    pub(crate) async fn agent_list_entry_read(
-        &self,
-        expected_identity: &crate::types::AgentIdentityRecord,
-        material: &ResourceReadMaterial,
-        db: &RuntimeDb,
+        identity: &crate::types::AgentIdentityRecord,
+        projection: &super::agent_list_projection::AgentListProjection,
     ) -> Result<crate::types::AgentListEntry> {
-        db.check_read_scope()?;
-        self.check_roster_identity(expected_identity)?;
-        let root = self.observer_ready_root_bounded(db).await?;
-        let identity = root.identity.as_deref().unwrap_or(expected_identity);
-        anyhow::ensure!(
-            identity.agent_id == root.state.id
-                && identity.incarnation == root.token.identity_incarnation
-                && identity.status == crate::types::AgentRegistryStatus::Active,
-            "roster published identity differs"
-        );
-        let scheduling_posture = self.roster_posture(&root, material, db).await?;
-        db.check_read_scope()?;
-        self.agent_list_entry_from_state(&root.state, identity, scheduling_posture, material)
+        projection.to_entry(
+            identity,
+            true,
+            &self.inner.config_snapshot.load().model_catalog,
+            &self.inner.default_agent_id,
+        )
     }
 
     pub(crate) async fn agent_tree_entry_read(

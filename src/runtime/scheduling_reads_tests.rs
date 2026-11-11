@@ -392,45 +392,6 @@ async fn compact_state_prepares_scheduling_after_active_metadata_ack() -> Result
 }
 
 #[tokio::test]
-async fn readonly_scoped_roster_prepares_scheduling_after_active_metadata_ack() -> Result<()> {
-    let home = tempdir()?;
-    let runtime = runtime(home.path())?;
-    runtime.await_initial_resources().await;
-    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
-    publish_active_metadata_ack(&runtime).await?;
-    let identity = runtime
-        .inner
-        .runtime_db
-        .agent_identities()
-        .latest("scheduling-reader")?
-        .unwrap();
-    let scope = crate::runtime_db::RuntimeDbReadScope::new(
-        std::time::Instant::now() + std::time::Duration::from_secs(5),
-    );
-    let db = runtime.inner.runtime_db.with_read_scope(scope);
-    let material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
-        &runtime.inner.input_evidence_budget,
-        &crate::runtime::resident_input_evidence::InputEvidenceScope {
-            agent_id: "scheduling-reader".into(),
-            identity_incarnation: identity.incarnation,
-        },
-    )?;
-    // The pool enforces query_only: this reconstruction cannot write sidecars.
-    let entry = runtime
-        .agent_list_entry_read(&identity, &material, &db)
-        .await?;
-    assert_eq!(entry.identity.agent_id, "scheduling-reader");
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
-    let selected = root
-        .scheduling
-        .as_ref()
-        .unwrap()
-        .capture(&SchedulingCaptureRequest::current())?;
-    assert_eq!(selected.timer(&timer.id)?, Some(&timer));
-    Ok(())
-}
-
-#[tokio::test]
 async fn summary_query_after_active_metadata_ack_rejects_unqualified_canonical_drift() -> Result<()>
 {
     let home = tempdir()?;

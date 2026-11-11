@@ -4,6 +4,7 @@
 mod context_queue;
 mod scheduler_queue;
 mod state_queue;
+pub(crate) use scheduler_queue::derive_ranked_work_posture;
 pub(crate) use state_queue::{StateWorkQueue, StateWorkRecord};
 
 use std::{
