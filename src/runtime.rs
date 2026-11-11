@@ -821,6 +821,7 @@ struct RuntimeInner {
     notify: Notify,
     operator_interjection_notify: Notify,
     operator_interjection_revision: Arc<AtomicU64>,
+    scheduler_audit_frontier: Arc<AtomicU64>,
     provider_cooldown_wait: StdMutex<Option<crate::types::ProviderCooldownWait>>,
     storage: AppStorage,
     runtime_db: RuntimeDb,

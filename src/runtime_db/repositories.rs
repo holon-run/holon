@@ -9634,27 +9634,43 @@ pub(crate) fn reserve_source_vec_slot<T>(records: &mut Vec<T>) -> Result<()> {
     Ok(())
 }
 
+pub(super) const SCHEDULER_EVENT_WINDOW: usize = 64;
+
 // Both loaded and cold schedulers need metadata, not the Event body capability.
 // Limit before filtering: an older error outside the original window is irrelevant.
 pub(crate) fn scheduler_latest_runtime_error_on(
     connection: &rusqlite::Connection,
     agent_id: &str,
 ) -> Result<Option<DateTime<Utc>>> {
+    Ok(scheduler_event_facts_on(connection, agent_id)?.latest_runtime_error)
+}
+
+pub(super) fn scheduler_event_facts_on(
+    connection: &rusqlite::Connection,
+    agent_id: &str,
+) -> Result<super::current_query::SchedulerEventFacts> {
     let mut query = connection.prepare(
-        "SELECT kind,created_at FROM audit_events WHERE agent_id=?1
-         ORDER BY event_seq DESC,created_at DESC LIMIT 64",
+        "SELECT event_seq,kind,created_at FROM audit_events WHERE agent_id=?1
+         ORDER BY event_seq DESC,created_at DESC LIMIT ?2",
     )?;
-    let mut rows = query.query([agent_id])?;
+    let mut rows = query.query(params![agent_id, SCHEDULER_EVENT_WINDOW])?;
+    let mut event_cursor = 0;
     let mut latest = None;
     while let Some(row) = rows.next()? {
-        let kind = borrowed_sql_text(row, 0)?;
-        let timestamp = borrowed_sql_text(row, 1)?;
+        if event_cursor == 0 {
+            event_cursor = row.get(0)?;
+        }
+        let kind = borrowed_sql_text(row, 1)?;
+        let timestamp = borrowed_sql_text(row, 2)?;
         let at = parse_timestamp(timestamp)?;
         if kind == "runtime_error" {
             latest = Some(latest.map_or(at, |previous: DateTime<Utc>| previous.max(at)));
         }
     }
-    Ok(latest)
+    Ok(super::current_query::SchedulerEventFacts {
+        event_cursor,
+        latest_runtime_error: latest,
+    })
 }
 
 pub(crate) fn audit_event_records(

@@ -32,6 +32,7 @@ pub(crate) struct PreparedInputRead {
     pub inputs: ResidentInputEvidence,
     pub pending: Vec<MessageEnvelope>,
     pub queue_posture: crate::queue::QueuePostureFacts,
+    pub scheduler_events: Option<super::current_query::SchedulerEventFacts>,
     pub work: Option<std::sync::Arc<crate::runtime::resident_work::ResidentWorkDomain>>,
     pub tasks: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
     pub scheduling: std::sync::Arc<crate::runtime::resident_scheduling::ResidentSchedulingDomain>,
@@ -618,6 +619,9 @@ fn prepare_input_domains_inner_tx(
         inputs: input.resident,
         pending,
         queue_posture,
+        scheduler_events: original_recovery
+            .then(|| super::current_query::SchedulerEventFacts::read(tx, &scope.agent_id))
+            .transpose()?,
         work,
         tasks: tasks.map(|tasks| tasks.resident),
         scheduling,

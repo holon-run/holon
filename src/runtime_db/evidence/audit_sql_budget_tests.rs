@@ -431,6 +431,9 @@ fn audit_body_clone_gates_reject_each_copy_and_roll_back() -> Result<()> {
 fn audit_append_body_uses_original_remaining_phase_and_last_holder() -> Result<()> {
     for agent_id in [Some("audit-agent"), None] {
         let (_home, db) = fixture()?;
+        let frontier = agent_id
+            .map(|id| db.register_audit_frontier(id))
+            .transpose()?;
         let incoming = event();
         let mut expected = incoming.clone();
         expected.event_log_epoch = db.event_log_epoch()?;
@@ -464,6 +467,12 @@ fn audit_append_body_uses_original_remaining_phase_and_last_holder() -> Result<(
             stored
         };
         assert_eq!(phase.finish()?, exact);
+        if let Some(frontier) = frontier {
+            assert_eq!(
+                frontier.load(std::sync::atomic::Ordering::Acquire),
+                stored.event_seq
+            );
+        }
         let holder = Arc::new((stored, phase.guard()?, transaction.guard()?));
         let last = holder.clone();
         drop((phase, transaction, incoming, expected));

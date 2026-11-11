@@ -4339,10 +4339,20 @@ Scheduler error posture consumes only `kind` and `created_at` from the original
 64-row, sequence-ordered event window. This bounded metadata source borrows SQL
 columns and computes the maximum error timestamp without materializing Event
 JSON or allocating a history vector. Loaded planning and cold State closure
-share this same repository query; a cold failure/retry history must not consume
-Event body material merely to derive error posture. It neither resets the caller's resource
-allowance nor grants Event body qualification. Complete Current query publication
-and canonical-read removal remain separate cutover obligations.
+share this repository query.
+
+Prompt preview derives its prior closure from one Ready snapshot. It uses the
+published Queue flags, the bounded error fact, recent success Briefs and the
+existing Work, Task and Scheduling projection. Bootstrap, recovery and original
+Event acknowledgments publish the error timestamp together with the sequence at
+the head of its window. Ordinary Events can evict errors and advance that head.
+The database writer advances the loaded Agent's in-memory Audit sequence after
+committing an Event, including diagnostics written outside a runtime ACK.
+The online Audit retention floor preserves the scheduler window.
+Covered preview closure reads the published facts without taking the owner
+reservation or opening SQLite. Missing coverage enters preparation under the
+original owner and republishes the required facts. The subsequent Context
+capture retains its existing preparation and execution fences.
 
 The operator State endpoint now uses one held parent owner cut for
 State/Work/Task/Scheduling and Current metadata. Explicit Current preparation

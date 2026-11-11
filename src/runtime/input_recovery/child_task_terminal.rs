@@ -361,6 +361,7 @@ pub(super) fn prepare_known_tx(
             Some(tasks.clone()),
             current.scheduling.clone(),
             current.queue_posture,
+            current.scheduler_events,
             current.pending,
             budget,
             witness.input_runtime(&member.agent_id).map(Arc::as_ref),

@@ -1,7 +1,10 @@
 //! Explicit scheduler acquisition; pure decisions use resident Work/input facts.
 use super::*;
 use crate::runtime::resident_scheduling::CapturedScheduling;
-use crate::runtime_db::repositories::scheduler_latest_runtime_error_on;
+use crate::runtime_db::{
+    current_query::{queue_posture_tx, SchedulerEventFacts},
+    repositories::scheduler_latest_runtime_error_on,
+};
 use crate::types::{AgentRegistryStatus, WaitConditionKind};
 use crate::{
     runtime::{
@@ -9,6 +12,7 @@ use crate::{
             serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
             OwnedBytesEstimate,
         },
+        mutation_owner::MutationOwnerError,
         resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key, InputWindowSelector,
             PreparedInputEvidence,
@@ -120,6 +124,7 @@ enum SchedulerAdapterRoot<'a> {
     HeldPublication,
     ObservedPublication(&'a RuntimeDb),
     PublishedCurrent,
+    PreviewPublication,
 }
 
 impl RuntimeMutation {
@@ -558,7 +563,11 @@ impl RuntimeHandle {
             let inputs = root
                 .input_evidence
                 .as_ref()
-                .context("State scheduler Input domain is unpublished")?;
+                .ok_or_else(|| {
+                    crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError::NeedsPreparation(
+                        "State scheduler Input domain is unpublished".into(),
+                    )
+                })?;
             let input_request = self.scheduler_input_request(inputs)?;
             self.capture_scheduler_read_from_root(
                 root,
@@ -702,8 +711,21 @@ impl RuntimeHandle {
                     .is_some();
         let (has_interrupted_replay, has_queued_input, latest_error) = if matches!(
             adapter_root,
-            SchedulerAdapterRoot::PublishedCurrent
-        ) || cached_observation
+            SchedulerAdapterRoot::PreviewPublication
+        ) {
+            let queue = root
+                .queue_posture
+                .context("preview Queue facts are unpublished")?;
+            let events = root
+                .scheduler_events
+                .context("preview Event facts are unpublished")?;
+            (
+                queue.has_interrupted,
+                queue.has_queued,
+                events.latest_runtime_error,
+            )
+        } else if matches!(adapter_root, SchedulerAdapterRoot::PublishedCurrent)
+            || cached_observation
         {
             let query = root
                 .current
@@ -784,6 +806,190 @@ impl RuntimeHandle {
             &self.inner.input_evidence_budget,
             material,
         )
+    }
+}
+
+impl RuntimeHandle {
+    pub(in crate::runtime) async fn preview_closure_decision(
+        &self,
+    ) -> Result<crate::types::ClosureDecision> {
+        let db = &self.inner.runtime_db;
+        db.check_read_scope()?;
+        let root = match self.inner.mutation_owner.capture() {
+            Ok(root) => root,
+            Err(MutationOwnerError::NeedsReconcile(_)) => None,
+            Err(error) => return Err(error.into()),
+        };
+        if let Some(root) = root {
+            if self.preview_scheduler_has_facts(&root)? {
+                match self.preview_closure_from_root(&root) {
+                    Err(error) if preview_scheduler_needs_domains(&error) => {}
+                    result => return result,
+                }
+            }
+        }
+
+        let mut mutation = self.begin_context_capture().await?;
+        let mut root = mutation.capture_published_root()?;
+        if !self.preview_scheduler_has_facts(&root)? {
+            root = mutation.prepare_preview_scheduler_facts(&root).await?;
+        }
+        match self.preview_closure_from_root(&root) {
+            Err(error) if preview_scheduler_needs_domains(&error) => {}
+            result => return result,
+        }
+        drop(root);
+        mutation.prepare_preview_scheduler_domains().await?;
+        self.preview_closure_from_root(mutation.capture_published_root()?.as_ref())
+    }
+
+    fn preview_scheduler_has_facts(
+        &self,
+        root: &super::super::resident_state::AgentSnapshot,
+    ) -> Result<bool> {
+        if let Some(identity) = &root.identity {
+            anyhow::ensure!(
+                identity.agent_id == root.state.id
+                    && identity.incarnation == root.token.identity_incarnation
+                    && identity.status == AgentRegistryStatus::Active,
+                "preview scheduler identity is outside the active publication scope"
+            );
+            Ok(root.queue_posture.is_some()
+                && root.scheduler_events.is_some_and(|events| {
+                    events.event_cursor
+                        >= self.inner.scheduler_audit_frontier.load(Ordering::Acquire)
+                }))
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn preview_closure_from_root(
+        &self,
+        root: &super::super::resident_state::AgentSnapshot,
+    ) -> Result<crate::types::ClosureDecision> {
+        let read = self.capture_observer_scheduler_from_root(
+            root,
+            self.now(),
+            SchedulerAdapterRoot::PreviewPublication,
+        )?;
+        Self::closure_decision_from_projection(
+            &read.state,
+            &read.projection,
+            None,
+            &read.acquisition,
+        )
+    }
+}
+
+fn preview_scheduler_needs_domains(error: &anyhow::Error) -> bool {
+    use super::super::{
+        resident_input_evidence::InputEvidenceReadError, resident_scheduling::SchedulingReadError,
+        resident_task::TaskReadError, resident_work::WorkReadError,
+    };
+    use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+    matches!(
+        error.downcast_ref::<WorkReadError>(),
+        Some(WorkReadError::IncompleteLive | WorkReadError::WindowExpansion { .. })
+    ) || matches!(
+        error.downcast_ref::<TaskReadError>(),
+        Some(TaskReadError::IncompleteActive | TaskReadError::IncompleteResults)
+    ) || matches!(
+        error.downcast_ref::<SchedulingReadError>(),
+        Some(SchedulingReadError::IncompleteLive | SchedulingReadError::NeedsHistory)
+    ) || error.is::<InputEvidenceReadError>()
+        || matches!(
+            error.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::NeedsPreparation(_))
+        )
+}
+
+impl RuntimeMutation {
+    async fn prepare_preview_scheduler_facts(
+        &mut self,
+        root: &Arc<super::super::resident_state::AgentSnapshot>,
+    ) -> Result<Arc<super::super::resident_state::AgentSnapshot>> {
+        let observed = root.clone();
+        let material =
+            crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new_for_identity(
+                &self.runtime.inner.input_evidence_budget,
+                &root.state.id,
+                root.token.identity_incarnation,
+            )?;
+        let db = &self.runtime.inner.runtime_db;
+        let (identity, queue, events) = db
+            .with_read_async(move |connection| {
+                material.read(|| {
+                    let tx = connection.transaction()?;
+                    let id = &observed.state.id;
+                    let facts = ContextDurableRead::new(&tx, id).scope_facts()?;
+                    anyhow::ensure!(
+                        facts.state.as_deref() == Some(observed.state.as_ref())
+                            && facts.control_revision.is_some(),
+                        "preview scheduler durable State differs from its publication"
+                    );
+                    let identity = facts
+                        .identity
+                        .context("preview scheduler identity is missing")?;
+                    anyhow::ensure!(
+                        identity.agent_id == *id
+                            && identity.incarnation == observed.token.identity_incarnation
+                            && identity.status == AgentRegistryStatus::Active
+                            && observed
+                                .identity
+                                .as_deref()
+                                .is_none_or(|published| published == &identity),
+                        "preview scheduler durable identity differs from its publication"
+                    );
+                    let queue = match observed.queue_posture {
+                        Some(queue) => queue,
+                        None => queue_posture_tx(&tx, id)?,
+                    };
+                    let events = SchedulerEventFacts::read(&tx, id)?;
+                    tx.commit()?;
+                    Ok((
+                        observed
+                            .identity
+                            .clone()
+                            .unwrap_or_else(|| Arc::new(identity)),
+                        queue,
+                        events,
+                    ))
+                })
+            })
+            .await?;
+        db.check_read_scope()?;
+        let next = self.reservations[self.primary_index]
+            .publish_prepared_scheduler_facts(root, identity, queue, events)?;
+        self.queue_posture = Some(queue);
+        self.scheduler_events = Some(events);
+        Ok(next)
+    }
+
+    async fn prepare_preview_scheduler_domains(&mut self) -> Result<()> {
+        use super::super::{
+            resident_scheduling::SchedulingCaptureRequest, resident_task::TaskCaptureRequest,
+        };
+        self.prepare_owner_work_request(&WorkCaptureRequest::current())
+            .await?;
+        self.prepare_owner_task_request(&TaskCaptureRequest::current())
+            .await?;
+        if let Some(inputs) = &self.input_evidence {
+            let request = self.runtime.scheduler_input_request(inputs)?;
+            let limit = self
+                .runtime
+                .inner
+                .config_snapshot
+                .load()
+                .base_context_config
+                .recent_episode_candidates;
+            self.prepare_owner_input_request(&request, limit).await?;
+        } else {
+            self.prepare_owner_inputs(Default::default(), Default::default())
+                .await?;
+        }
+        self.prepare_owner_scheduling_request(&SchedulingCaptureRequest::current())
+            .await
     }
 }
 

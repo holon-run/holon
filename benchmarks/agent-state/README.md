@@ -139,7 +139,8 @@ SQL/file counts. Actual timing hooks measure context preparation to initial
 request construction, excluding network. `CommitPublication` starts at
 `begin_mutation` entry, before reservation acquisition, and includes owner queue
 wait, candidate preparation, SQL and publication; it is not SQL-ACK-to-publication
-latency.
+latency. `AuditCommitPublication` uses the same boundary for commits with
+Audit Event effects.
 
 The preview report and each scripted group also report `context_capture_stages`.
 These are per-call samples from the loaded context capture path, grouped by
@@ -147,6 +148,7 @@ capture mode (preview, admission planning, or execution) and stage:
 
 | Stage | Measured boundary |
 | --- | --- |
+| `preview_scheduler_preflight` | Preview closure calculation before Context capture |
 | `owner_acquisition` | Context owner reservation, reconciliation and identity validation from a matching Ready publication or durable fallback |
 | `task_preparation` | Each of the two Task preparation requests |
 | `work_preparation` | Work preparation request |

@@ -358,6 +358,7 @@ pub(crate) enum ControlCommit {
 pub(crate) struct ControlRecoveryFacts {
     pub current_queue_messages: Vec<MessageEnvelope>,
     pub queue_posture: crate::queue::QueuePostureFacts,
+    pub scheduler_events: super::current_query::SchedulerEventFacts,
     pub waits: Vec<WaitConditionRecord>,
     pub timer_wakes: Vec<ControlTimerWake>,
     pub workspace_occupancy: Option<WorkspaceOccupancyRecord>,
@@ -2099,6 +2100,7 @@ fn load_recovery_facts_in(
     Ok(ControlRecoveryFacts {
         current_queue_messages,
         queue_posture: super::current_query::queue_posture_tx(tx, &snapshot.state.id)?,
+        scheduler_events: super::current_query::SchedulerEventFacts::read(tx, &snapshot.state.id)?,
         waits,
         timer_wakes: load_timer_wakes_by_message_ids_in(tx, &snapshot.state.id, &wake_ids)?,
         workspace_occupancy,

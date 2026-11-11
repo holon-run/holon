@@ -593,7 +593,12 @@ impl RuntimeHandle {
             MessageDeliverySurface::CliPrompt,
             AdmissionContext::LocalProcess,
         );
-        let prior_closure = self.current_closure_decision().await?;
+        let prior_closure = crate::diagnostics::io_probe::ContextCaptureMode::Preview
+            .measure(
+                crate::diagnostics::io_probe::ContextCaptureStage::PreviewSchedulerPreflight,
+                self.preview_closure_decision(),
+            )
+            .await?;
         let continuation = ContinuationTrigger::from_message(&message, None)
             .map(|trigger| resolve_continuation(&prior_closure, &trigger));
         if self.agent_state().await?.status != AgentStatus::Stopped {
