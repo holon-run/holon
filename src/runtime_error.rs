@@ -150,6 +150,8 @@ impl std::fmt::Display for RuntimeError {
 
 impl std::error::Error for RuntimeError {}
 
+pub(crate) const TOOL_RESULT_SETTLEMENT_PENDING: &str = "tool_result_settlement_pending";
+
 pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
     if let Some(rejection) = error.downcast_ref::<IdleInputRecoveryRejection>() {
         // Do not copy outer error contexts that may contain rejected evidence.
@@ -208,6 +210,15 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         };
     }
     let source_chain = collect_runtime_error_source_chain(error);
+
+    if let Some(report) = error
+        .downcast_ref::<RuntimeError>()
+        .filter(|report| report.descriptor().code == TOOL_RESULT_SETTLEMENT_PENDING)
+    {
+        let mut descriptor = report.descriptor().clone();
+        descriptor.source_chain = source_chain;
+        return descriptor;
+    }
 
     // Transaction certainty wins over retryable domain errors retained underneath it.
     if let Some(failure) = error

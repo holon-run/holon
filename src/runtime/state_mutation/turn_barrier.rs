@@ -71,18 +71,31 @@ impl RuntimeMutation {
         &'a mut self,
         tool_name: &'a str,
         possible: bool,
+        turn_tool_call: Option<(&'a str, &'a str)>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.set_current_turn_external_side_effect_possible_inner(tool_name, possible))
+        Box::pin(self.set_current_turn_external_side_effect_possible_inner(
+            tool_name,
+            possible,
+            turn_tool_call,
+        ))
     }
 
     async fn set_current_turn_external_side_effect_possible_inner(
         &mut self,
         tool_name: &str,
         possible: bool,
+        turn_tool_call: Option<(&str, &str)>,
     ) -> Result<()> {
+        if let Some((expected_turn, _)) = turn_tool_call {
+            anyhow::ensure!(
+                self.state.current_turn_id.as_deref() == Some(expected_turn),
+                "external tool call no longer owns the current Turn"
+            );
+        }
         let Some(turn_id) = self.state.current_turn_id.clone() else {
             return Ok(());
         };
+        let tool_call_id = turn_tool_call.map(|(_, tool_call_id)| tool_call_id);
         let (_, record_limit, byte_limit) = self.context_input_evidence_policy()?;
         let request = InputEvidenceLoadRequest {
             query: None,
@@ -100,11 +113,22 @@ impl RuntimeMutation {
             .context("Turn barrier has no prepared Input")?
             .capture_for_request(&request)?;
         let Some(prior) = inputs.lookup(&Key::new(Family::Turn, &turn_id))? else {
+            anyhow::ensure!(
+                tool_call_id.is_none(),
+                "external tool call has no qualified Turn"
+            );
             return Ok(());
         };
         let Fact::Turn(prior) = &prior.record else {
             anyhow::bail!("Turn barrier prior has another family");
         };
+        if possible && (tool_call_id.is_some() || prior.external_side_effect_tool_call_id.is_some())
+        {
+            anyhow::ensure!(
+                prior.terminal.is_none() && !prior.external_side_effect_possible,
+                "Turn already has an unresolved external tool call"
+            );
+        }
         if prior.terminal.is_some() || prior.external_side_effect_possible == possible {
             return Ok(());
         }
@@ -115,6 +139,7 @@ impl RuntimeMutation {
             Utc::now(),
             prior,
             possible,
+            tool_call_id,
             &self.runtime.inner.input_evidence_budget,
         )?;
         self.commit_prepared_evidence(prepared, None).await?;

@@ -1,10 +1,24 @@
 //! Standalone evidence owns the same original-attempt recovery protocol as Queue.
 use super::*;
 use crate::runtime_db::{
-    input_mutation_receipts::{InputMutationResult, OriginalInputMutationAttempt},
+    input_mutation_receipts::{
+        with_fresh_input_mutation_resolution, InputMutationResolution, InputMutationResult,
+        OriginalInputMutationAttempt,
+    },
     prepared_input_evidence::{InputEvidenceWrite, PreparedEvidenceValue, PreparedInputEvidence},
     transitions::{InputMutationExecution, PostCommitEffects},
 };
+use crate::runtime_error::{RuntimeError, RuntimeErrorDomain, TOOL_RESULT_SETTLEMENT_PENDING};
+
+#[derive(Debug, thiserror::Error)]
+#[error("the original tool result transaction has no committed receipt")]
+struct ToolResultReceiptAbsent;
+
+fn tool_result_not_committed(error: &anyhow::Error) -> bool {
+    error.is::<ToolResultReceiptAbsent>()
+        || crate::runtime_db::original_input_attempt_certainty(error)
+            == Some(PersistenceCertainty::DefinitelyNotCommitted)
+}
 
 impl RuntimeMutation {
     #[inline(never)]
@@ -50,6 +64,22 @@ impl RuntimeMutation {
                     },
                 )?,
         };
+        let result = self.commit_prepared_evidence_once(&prepared, fault).await;
+        if prepared.is_fenced_tool_result() && result.as_ref().is_err_and(tool_result_not_committed)
+        {
+            // Keep the original result, owner and command identity through one
+            // retry. The writer has released its transaction during the delay.
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            return self.commit_prepared_evidence_once(&prepared, fault).await;
+        }
+        result
+    }
+
+    async fn commit_prepared_evidence_once(
+        &mut self,
+        prepared: &PreparedInputEvidence,
+        fault: Option<TransitionFaultPoint>,
+    ) -> Result<InputMutationResult> {
         let mut saved = vec![Arc::new(self.facts(Default::default()))];
         for (index, reservation) in self.reservations.iter().enumerate() {
             if index == self.primary_index {
@@ -92,7 +122,7 @@ impl RuntimeMutation {
         let committed = self
             .commit_transition_inner(operation, Some(witness), || {
                 match storage.commit_prepared_input_evidence_with_task_budget(
-                    &prepared,
+                    prepared,
                     &work_request,
                     &task_request,
                     &ledger,
@@ -110,6 +140,15 @@ impl RuntimeMutation {
                         value: ack,
                         receipt,
                     } => {
+                        #[cfg(test)]
+                        if fault == Some(TransitionFaultPoint::ToolResultCommitAckLost) {
+                            return Err(crate::runtime_db::persistence::mark_persistence_failure(
+                                anyhow!("injected tool result commit ACK loss"),
+                                PersistenceCertainty::Indeterminate,
+                                crate::runtime_db::persistence::PersistenceFailurePhase::Commit,
+                                None,
+                            ));
+                        }
                         original_result = Some(receipt.outcome.result);
                         let mut effects = PostCommitEffects {
                             current_read_writes: ack.current_read_writes,
@@ -177,9 +216,57 @@ impl RuntimeMutation {
             }
             Err(error) => {
                 if let Some(result) = original_result {
-                    if self.reconcile_known_commit().await? {
+                    let published = self.reconcile_known_commit().await.map_err(|error| {
+                        if prepared.is_fenced_tool_result() {
+                            crate::runtime_db::persistence::mark_original_input_recovery_failure(
+                                error,
+                            )
+                        } else {
+                            error
+                        }
+                    })?;
+                    if published {
                         return Ok(result);
                     }
+                    if prepared.is_fenced_tool_result() {
+                        return Err(
+                            crate::runtime_db::persistence::mark_original_input_recovery_failure(
+                                error,
+                            ),
+                        );
+                    }
+                } else if prepared.is_fenced_tool_result()
+                    && persistence_certainty(&error) == Some(PersistenceCertainty::Indeterminate)
+                {
+                    let attempt = replay_observation
+                        .input_attempt()
+                        .context("tool settlement lost its original attempt")?;
+                    let result = with_fresh_input_mutation_resolution(
+                        &self.runtime.inner.runtime_db,
+                        attempt,
+                        |_, resolution| {
+                            Ok(match resolution {
+                                InputMutationResolution::Present(receipt) => {
+                                    Some(receipt.outcome.result)
+                                }
+                                InputMutationResolution::Absent => None,
+                            })
+                        },
+                    )?;
+                    let published = self
+                        .runtime
+                        .reconcile_reserved_mutations(&mut self.reservations)
+                        .await
+                        .map_err(
+                            crate::runtime_db::persistence::mark_original_input_recovery_failure,
+                        )?;
+                    return match result {
+                        Some(result) if published => Ok(result),
+                        Some(_) => {
+                            Err(error.context("committed tool result publication is pending"))
+                        }
+                        None => Err(error.context(ToolResultReceiptAbsent)),
+                    };
                 }
                 Err(error)
             }
@@ -193,6 +280,47 @@ impl RuntimeMutation {
 
 impl RuntimeHandle {
     pub(crate) async fn persist_prepared_evidence(&self, write: InputEvidenceWrite) -> Result<()> {
+        let external_tool = match &write {
+            InputEvidenceWrite::ToolResult { record, .. }
+                if matches!(
+                    record.tool_name.as_str(),
+                    crate::tool::names::EXEC_COMMAND
+                        | crate::tool::names::EXEC_COMMAND_BATCH
+                        | crate::tool::names::SCHEDULE_DESTRUCTIVE_OPERATION
+                ) =>
+            {
+                record
+                    .turn_id
+                    .as_ref()
+                    .map(|turn_id| (record.id.clone(), turn_id.clone()))
+            }
+            _ => None,
+        };
+        let result = self.persist_prepared_evidence_owned(write).await;
+        result.map_err(|error| {
+            let Some((execution_id, turn_id)) = external_tool else {
+                return error;
+            };
+            let (status, message) = if tool_result_not_committed(&error) {
+                ("not_persisted", "Tool returned, but its result was not persisted")
+            } else {
+                ("outcome_unknown", "Tool returned, but its result settlement is unconfirmed")
+            };
+            error.context(
+                RuntimeError::new(
+                    RuntimeErrorDomain::Storage,
+                    TOOL_RESULT_SETTLEMENT_PENDING,
+                    message,
+                )
+                .with_safe_context("status", status)
+                .with_safe_context("tool_execution_id", execution_id)
+                .with_safe_context("turn_id", turn_id)
+                .with_recovery_hint("Inspect the original tool execution and external state before submitting it again")
+            )
+        })
+    }
+
+    async fn persist_prepared_evidence_owned(&self, write: InputEvidenceWrite) -> Result<()> {
         if matches!(write, InputEvidenceWrite::ToolResult { .. }) {
             self.inner.storage.event_log().ensure_writable()?;
         }

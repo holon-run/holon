@@ -589,6 +589,7 @@ impl RuntimeHandle {
         duplicate_policy: ExecCommandDuplicatePolicy,
         authority_class: &AuthorityClass,
         trace_context: Option<&crate::observability::TraceContext>,
+        turn_tool_call: Option<(&str, &str)>,
     ) -> Result<ExecCommandResult> {
         let _admission = self.execution_admission_lease()?;
         self.ensure_process_execution_exposed(crate::tool::names::EXEC_COMMAND)
@@ -623,8 +624,11 @@ impl RuntimeHandle {
                 });
             }
         }
-        self.mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND)
-            .await?;
+        self.mark_current_turn_external_side_effect_possible(
+            crate::tool::names::EXEC_COMMAND,
+            turn_tool_call,
+        )
+        .await?;
         let mut running = self
             .start_command_process(&resolved, trace_context, crate::tool::names::EXEC_COMMAND)
             .await?;
@@ -775,7 +779,7 @@ impl RuntimeHandle {
         self.apply_command_output_policy(&mut spec);
         let diagnostics = self.command_cost_diagnostics_for(&spec);
         let resolved = self.resolve_command_task(&spec).await?;
-        self.mark_current_turn_external_side_effect_possible(tool_name)
+        self.mark_current_turn_external_side_effect_possible(tool_name, None)
             .await?;
         let mut captured = CapturedOutput::new(resolved.output_policy);
         let mut running = self
@@ -2846,6 +2850,7 @@ mod tests {
                     spec,
                     ExecCommandDuplicatePolicy::ReuseRunning,
                     &AuthorityClass::OperatorInstruction,
+                    None,
                     None,
                 )
                 .await

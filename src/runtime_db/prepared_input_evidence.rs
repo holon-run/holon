@@ -179,6 +179,7 @@ fn idle_batch_invariants(record: &TurnRecord) -> impl PartialEq + '_ {
         replay,
         destructive_operation_id,
         external_side_effect_possible,
+        external_side_effect_tool_call_id,
         operator_dispatch_fenced,
         created_at,
     } = record;
@@ -204,6 +205,7 @@ fn idle_batch_invariants(record: &TurnRecord) -> impl PartialEq + '_ {
             replay,
             destructive_operation_id,
             external_side_effect_possible,
+            external_side_effect_tool_call_id,
             operator_dispatch_fenced,
             created_at,
         ),
@@ -304,6 +306,7 @@ impl PreparedInputEvidence {
         at: DateTime<Utc>,
         prior: &TurnRecord,
         possible: bool,
+        tool_call_id: Option<&str>,
         ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
     ) -> Result<Self> {
         ensure!(
@@ -323,6 +326,7 @@ impl PreparedInputEvidence {
             admit_cloned_value(prior)?;
             let mut record = prior.clone();
             record.external_side_effect_possible = possible;
+            record.external_side_effect_tool_call_id = tool_call_id.map(str::to_owned);
             let command = EvidenceCommand::TurnBarrier {
                 record,
                 prior_digest,
@@ -438,6 +442,16 @@ impl PreparedInputEvidence {
                         && record.turn_index == prior.turn_index
                         && prior.terminal.is_none()
                         && prior.external_side_effect_possible
+                        && prior
+                            .external_side_effect_tool_call_id
+                            .as_deref()
+                            .is_none_or(|call_id| {
+                                event
+                                    .data
+                                    .get("tool_call_id")
+                                    .and_then(serde_json::Value::as_str)
+                                    == Some(call_id)
+                            })
                         && matches!(
                             record.status,
                             crate::types::ToolExecutionStatus::Success
@@ -453,6 +467,7 @@ impl PreparedInputEvidence {
                 );
                 let prior_digest = admitted_canonical_digest(&prior)?;
                 prior.external_side_effect_possible = false;
+                prior.external_side_effect_tool_call_id = None;
                 let event = AuditEvent::legacy(
                     "external_command_checkpoint_durable",
                     serde_json::json!({
@@ -502,6 +517,16 @@ impl PreparedInputEvidence {
             },
         )
     }
+    pub(crate) fn is_fenced_tool_result(&self) -> bool {
+        matches!(
+            self.command.as_ref(),
+            EvidenceCommand::ToolResult {
+                barrier: Some(_),
+                ..
+            }
+        )
+    }
+
     pub(crate) fn descriptor(&self) -> &PreparedInputMutation {
         &self.descriptor
     }
