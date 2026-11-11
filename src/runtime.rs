@@ -49,6 +49,7 @@ mod control_cancellation;
 mod control_task_generation_tests;
 pub(crate) mod task_generation;
 pub(crate) use control_cancellation::RetiredProducerExit;
+pub(crate) mod agent_list_projection;
 mod agent_summary_read;
 mod control_entry;
 pub(crate) mod control_reconcile;
@@ -609,46 +610,72 @@ pub(crate) fn agent_model_list_summary_for_catalog(
     model_catalog: &RuntimeModelCatalog,
     state: &AgentState,
 ) -> AgentListModelSummary {
-    AgentModelSummarySelection::new(model_catalog.into(), state).into_summary()
+    AgentModelSummarySelection::new(model_catalog.into(), state.into()).into_summary()
 }
 
 pub(crate) fn try_agent_model_list_summary_for_catalog<'a>(
     model_catalog: impl Into<crate::config::ModelListCatalog<'a>>,
     state: &AgentState,
 ) -> Result<AgentListModelSummary> {
-    let model_catalog = model_catalog.into();
-    let selection = AgentModelSummarySelection::new(model_catalog, state);
+    try_agent_model_list_summary_for_fields(model_catalog.into(), state.into())
+}
+
+fn try_agent_model_list_summary_for_fields(
+    catalog: crate::config::ModelListCatalog<'_>,
+    fields: AgentModelSummaryFields<'_>,
+) -> Result<AgentListModelSummary> {
+    let selection = AgentModelSummarySelection::new(catalog, fields);
     selection.admit_owned_fields()?;
     let effective_service_tier = match selection.service_tier_lookup_route() {
-        Some(route) => model_catalog.try_route_service_tier(route)?,
-        None => state.model_override_service_tier,
+        Some(route) => catalog.try_route_service_tier(route)?,
+        None => fields.model_override_service_tier,
     };
     Ok(selection.into_summary_with_tier(effective_service_tier))
 }
 
+#[derive(Clone, Copy, serde::Serialize)]
+struct AgentModelSummaryFields<'a> {
+    model_override: Option<&'a ModelRouteRef>,
+    model_override_reasoning_effort: Option<&'a str>,
+    model_override_service_tier: Option<crate::config::ServiceTier>,
+    last_requested_model: Option<&'a ModelRouteRef>,
+    last_active_model: Option<&'a ModelRouteRef>,
+}
+
+impl<'a> From<&'a AgentState> for AgentModelSummaryFields<'a> {
+    fn from(state: &'a AgentState) -> Self {
+        Self {
+            model_override: state.model_override.as_ref(),
+            model_override_reasoning_effort: state.model_override_reasoning_effort.as_deref(),
+            model_override_service_tier: state.model_override_service_tier,
+            last_requested_model: state.last_requested_model.as_ref(),
+            last_active_model: state.last_active_model.as_ref(),
+        }
+    }
+}
+
 struct AgentModelSummarySelection<'a> {
     catalog: crate::config::ModelListCatalog<'a>,
-    state: &'a AgentState,
+    fields: AgentModelSummaryFields<'a>,
     effective_model: &'a ModelRouteRef,
     active_model: &'a ModelRouteRef,
     turn_fallback: Option<&'a ModelRouteRef>,
 }
 
 impl<'a> AgentModelSummarySelection<'a> {
-    fn new(catalog: crate::config::ModelListCatalog<'a>, state: &'a AgentState) -> Self {
-        let effective_model = state
-            .model_override
-            .as_ref()
-            .unwrap_or(catalog.default_model);
-        let active_model = state
+    fn new(
+        catalog: crate::config::ModelListCatalog<'a>,
+        fields: AgentModelSummaryFields<'a>,
+    ) -> Self {
+        let effective_model = fields.model_override.unwrap_or(catalog.default_model);
+        let active_model = fields
             .last_requested_model
-            .as_ref()
             .filter(|requested| *requested == effective_model)
-            .and(state.last_active_model.as_ref())
+            .and(fields.last_active_model)
             .unwrap_or(effective_model);
         Self {
             catalog,
-            state,
+            fields,
             effective_model,
             active_model,
             turn_fallback: None,
@@ -660,7 +687,7 @@ impl<'a> AgentModelSummarySelection<'a> {
         state: &'a AgentState,
         fallback: Option<&'a ModelRouteRef>,
     ) -> Self {
-        let mut selection = Self::new(catalog, state);
+        let mut selection = Self::new(catalog, state.into());
         if let Some(fallback) = fallback {
             selection.active_model = fallback;
         }
@@ -681,13 +708,10 @@ impl<'a> AgentModelSummarySelection<'a> {
         .into_iter()
         .chain(
             self.catalog
-                .provider_chain_for_turn_refs(
-                    self.state.model_override.as_ref(),
-                    self.turn_fallback,
-                )
+                .provider_chain_for_turn_refs(self.fields.model_override, self.turn_fallback)
                 .skip(1),
         )
-        .chain(self.state.model_override.as_ref())
+        .chain(self.fields.model_override)
         {
             let bytes = route
                 .provider
@@ -698,7 +722,7 @@ impl<'a> AgentModelSummarySelection<'a> {
                 .saturating_add(std::mem::size_of::<ModelRouteRef>());
             charge_owned_metadata(bytes as u64, 3)?;
         }
-        if let Some(reasoning) = &self.state.model_override_reasoning_effort {
+        if let Some(reasoning) = &self.fields.model_override_reasoning_effort {
             charge_owned_metadata(
                 reasoning
                     .len()
@@ -712,7 +736,7 @@ impl<'a> AgentModelSummarySelection<'a> {
     fn into_summary(self) -> AgentListModelSummary {
         let tier = match self.service_tier_lookup_route() {
             Some(route) => self.catalog.route_service_tier(route),
-            None => self.state.model_override_service_tier,
+            None => self.fields.model_override_service_tier,
         };
         self.into_summary_with_tier(tier)
     }
@@ -720,7 +744,7 @@ impl<'a> AgentModelSummarySelection<'a> {
     fn service_tier_lookup_route(&self) -> Option<&ModelRouteRef> {
         if self.active_model != self.effective_model {
             Some(self.active_model)
-        } else if self.state.model_override_service_tier.is_some() {
+        } else if self.fields.model_override_service_tier.is_some() {
             None
         } else {
             Some(self.effective_model)
@@ -733,25 +757,25 @@ impl<'a> AgentModelSummarySelection<'a> {
     ) -> AgentListModelSummary {
         let Self {
             catalog: model_catalog,
-            state,
+            fields,
             effective_model,
             active_model,
             turn_fallback,
         } = self;
         let fallback_active = active_model != effective_model;
         let fallback_count = model_catalog
-            .provider_chain_for_turn_refs(state.model_override.as_ref(), turn_fallback)
+            .provider_chain_for_turn_refs(fields.model_override, turn_fallback)
             .skip(1)
             .count();
         let mut fallback_models = Vec::with_capacity(fallback_count);
         fallback_models.extend(
             model_catalog
-                .provider_chain_for_turn_refs(state.model_override.as_ref(), turn_fallback)
+                .provider_chain_for_turn_refs(fields.model_override, turn_fallback)
                 .skip(1)
                 .cloned(),
         );
         AgentListModelSummary {
-            source: if state.model_override.is_some() {
+            source: if fields.model_override.is_some() {
                 AgentModelSource::AgentOverride
             } else {
                 AgentModelSource::RuntimeDefault
@@ -762,9 +786,9 @@ impl<'a> AgentModelSummarySelection<'a> {
             active_model: Some(active_model.clone()),
             fallback_active,
             effective_fallback_models: fallback_models,
-            override_model: state.model_override.clone(),
-            override_reasoning_effort: state.model_override_reasoning_effort.clone(),
-            override_service_tier: state.model_override_service_tier,
+            override_model: fields.model_override.cloned(),
+            override_reasoning_effort: fields.model_override_reasoning_effort.map(str::to_owned),
+            override_service_tier: fields.model_override_service_tier,
             effective_service_tier,
         }
     }

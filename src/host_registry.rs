@@ -158,6 +158,15 @@ impl RuntimeRegistry {
             .cloned())
     }
 
+    pub(crate) fn matches_agent_identity(&self, identity: &AgentIdentityRecord) -> bool {
+        self.inner
+            .agent_identities
+            .read()
+            .expect("agent identities cache poisoned")
+            .get(&identity.agent_id)
+            == Some(identity)
+    }
+
     pub(crate) fn agent_identity_records(&self) -> Result<Vec<AgentIdentityRecord>> {
         let mut records = self
             .inner

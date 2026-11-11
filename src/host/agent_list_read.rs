@@ -1,6 +1,9 @@
 //! Public roster products retain each original Agent acquisition through the wire.
 use super::*;
-use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
+use crate::{
+    diagnostics::resource_io::{self, ResourceReadMaterial},
+    runtime::agent_list_projection::is_listed,
+};
 use std::ops::Deref;
 
 #[derive(Debug)]
@@ -160,8 +163,7 @@ impl RuntimeHost {
         let identities = self.inner.registry.agent_identity_reads(
             &self.inner.input_evidence_budget,
             |record| {
-                record.status == AgentRegistryStatus::Active
-                    && record.visibility == AgentVisibility::Public
+                is_listed(record)
                     && parent_agent_id.is_none_or(|parent| {
                         record
                             .lineage_parent_agent_id
@@ -174,21 +176,43 @@ impl RuntimeHost {
         let mut entries = Vec::new();
         for (identity, material) in identities {
             db.check_read_scope()?;
-            let runtime = {
+            let (projection, runtime) = {
                 let registry = db.wait_for_memory_lock(self.inner.runtimes.read()).await?;
-                registry
+                let runtime = registry
                     .agents
                     .get(&identity.agent_id)
                     .filter(|entry| !entry.task.is_finished())
-                    .map(|entry| entry.runtime.clone())
+                    .map(|entry| &entry.runtime);
+                anyhow::ensure!(
+                    self.inner.registry.matches_agent_identity(&identity)
+                        && runtime.is_none_or(
+                            |runtime| runtime.instance_incarnation() == identity.incarnation
+                        ),
+                    crate::runtime_db::RuntimeDbRetryableError::new(
+                        "observer publication",
+                        db.path(),
+                        "Agent list identity changed",
+                    ),
+                );
+                let projection = self.inner.mutation_owners.agent_list_projection(
+                    &identity,
+                    runtime.map(|runtime| runtime.instance_owner_epoch()),
+                    db,
+                )?;
+                (projection, runtime.cloned())
             };
-            let entry = if let Some(runtime) = runtime {
-                runtime
-                    .agent_list_entry_read(&identity, &material, db)
-                    .await?
-            } else {
-                material.read(|| self.agent_list_entry_from_storage(&identity))?
-            };
+            let entry = material.read(|| {
+                if let Some(runtime) = runtime {
+                    runtime.agent_list_entry_from_projection(&identity, &projection)
+                } else {
+                    projection.to_entry(
+                        &identity,
+                        false,
+                        self.inner.registry.model_catalog().as_ref(),
+                        &self.config().default_agent_id,
+                    )
+                }
+            })?;
             db.check_read_scope()?;
             material.read(|| {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut entries)?;

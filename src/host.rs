@@ -1283,6 +1283,15 @@ impl RuntimeHost {
         )?;
         let registry = RuntimeRegistry::new(config, runtime_db.clone())?;
         registry.restore_default_agent_selection()?;
+        let mutation_owners = MutationOwnerRegistry::with_agent_list(
+            crate::runtime::agent_list_projection::AgentListProjectionSource::new(
+                runtime_db.clone(),
+                registry.clone(),
+                crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                    input_evidence_budget.limits(),
+                )?,
+            ),
+        );
         let (runtime_recovery_tx, runtime_recovery_rx) = mpsc::unbounded_channel();
         let host = Self {
             inner: Arc::new(HostInner {
@@ -1327,7 +1336,7 @@ impl RuntimeHost {
                     recovering: HashMap::new(),
                 }),
                 shutdown_operation: Mutex::new(None),
-                mutation_owners: MutationOwnerRegistry::default(),
+                mutation_owners,
                 input_evidence_budget,
                 external_mutation_tasks: Mutex::new(Vec::new()),
                 #[cfg(test)]
@@ -1356,6 +1365,7 @@ impl RuntimeHost {
             }),
         };
         host.ensure_legacy_public_agent_bootstraps()?;
+        host.refresh_agent_list()?;
         Ok(host)
     }
 
@@ -3208,6 +3218,10 @@ impl RuntimeHost {
         };
         self.stop_task_stop_supervisor_discovery();
         self.shutdown_runtime_recovery_coordinator().await;
+        self.inner
+            .mutation_owners
+            .shutdown_agent_list_repairs()
+            .await;
         self.shutdown_daemon_runtime_db_retention().await;
         if let Err(error) = self.shutdown_daemon_session_activity().await {
             // Let listeners drain before serve retries the final activity save.
@@ -3802,6 +3816,7 @@ impl RuntimeHost {
         );
         Ok(recovery_report)
         }).await?;
+        observation.observe_sync("agent_list_publication", || self.refresh_agent_list())?;
         let recovered_queue_agent_ids = recovery_report.recovered_queue_agent_ids.clone();
         let (recovery_agent_ids, queue_recovery_candidate_ids, active_task_owner_ids, active_timer_owner_ids) =
             observation.observe_sync("candidate_discovery", || {
@@ -6031,7 +6046,7 @@ impl RuntimeHost {
                 }
                 named_agent_create_failed_error(agent_id, AgentCreateStage::Reserved, error)
             })?;
-        self.inner.registry.cache_agent_identity(&record)?;
+        self.cache_agent_identity(&record)?;
         Ok(NamedAgentPreparation::Ready(record, true))
     }
 
@@ -7224,11 +7239,43 @@ impl RuntimeHost {
 
     #[cfg(test)]
     pub(crate) fn append_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
-        self.inner.registry.append_agent_identity(record)
+        self.inner.registry.append_agent_identity(record)?;
+        self.prepare_agent_list_identity(record);
+        Ok(())
     }
 
     pub(crate) fn cache_agent_identity(&self, record: &AgentIdentityRecord) -> Result<()> {
-        self.inner.registry.cache_agent_identity(record)
+        let previous = self
+            .inner
+            .registry
+            .agent_identity_record(&record.agent_id)?;
+        self.inner.registry.cache_agent_identity(record)?;
+        if let Some(previous) =
+            previous.filter(|previous| previous.incarnation != record.incarnation)
+        {
+            self.inner
+                .mutation_owners
+                .forget_agent_list(&previous.agent_id, previous.incarnation);
+        }
+        self.prepare_agent_list_identity(record);
+        Ok(())
+    }
+
+    fn prepare_agent_list_identity(&self, identity: &AgentIdentityRecord) {
+        let owners = &self.inner.mutation_owners;
+        if !crate::runtime::agent_list_projection::is_listed(identity) {
+            owners.forget_agent_list(&identity.agent_id, identity.incarnation);
+            return;
+        }
+        if let Err(error) = owners.seed_agent_list(std::slice::from_ref(identity), false) {
+            warn!(agent_id = %identity.agent_id, %error, "could not seed Agent list publication");
+        }
+    }
+
+    fn refresh_agent_list(&self) -> Result<()> {
+        self.inner
+            .mutation_owners
+            .seed_agent_list(&self.agent_identity_records()?, true)
     }
 
     fn workspace_occupancy_by_id(
@@ -8263,7 +8310,9 @@ impl RuntimeHost {
     }
 
     pub(crate) fn ensure_default_agent_identity(&self) -> Result<AgentIdentityRecord> {
-        self.inner.registry.ensure_default_agent_identity()
+        let identity = self.inner.registry.ensure_default_agent_identity()?;
+        self.prepare_agent_list_identity(&identity);
+        Ok(identity)
     }
 
     fn ensure_legacy_public_agent_bootstraps(&self) -> Result<()> {
@@ -11531,6 +11580,9 @@ impl RuntimeHostBridge {
             host.inner
                 .registry
                 .forget_agent_identity(agent_id, incarnation);
+            host.inner
+                .mutation_owners
+                .forget_agent_list(agent_id, incarnation);
         }
         let close_admission = facts.state.is_none()
             || facts.identity.as_ref().is_none_or(|identity| {
@@ -14377,7 +14429,7 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
-    async fn unloaded_list_agent_entries_reads_agent_state_from_db_without_agent_json() {
+    async fn unloaded_list_agent_entries_uses_startup_projection_without_agent_json() {
         let home = tempdir().unwrap();
         write_test_model_config(home.path());
         let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
@@ -14401,6 +14453,19 @@ mod tests {
             .upsert_for_fixture(&state)
             .unwrap();
 
+        let now = Utc::now();
+        runtime_db
+            .queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "unloaded-interrupted".into(),
+                agent_id: identity.agent_id.clone(),
+                priority: Priority::Normal,
+                status: QueueEntryStatus::Interrupted,
+                created_at: now,
+                updated_at: now,
+            })
+            .unwrap();
+
         let host =
             RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("ok"))).unwrap();
         assert!(!host
@@ -14408,6 +14473,10 @@ mod tests {
             .join(".holon/state/agent.json")
             .exists());
 
+        let reads = host
+            .runtime_db()
+            .reader_pool_stats_for_tests()
+            .checkout_attempts;
         let entry = host
             .list_agent_entries()
             .await
@@ -14416,6 +14485,16 @@ mod tests {
             .find(|entry| entry.identity.agent_id == "release-bot")
             .expect("release-bot should be listed from DB-only state");
         assert_eq!(entry.status, AgentStatus::Asleep);
+        assert_eq!(
+            entry.scheduling_posture.posture,
+            crate::types::AgentSchedulingPosture::HasQueuedInput
+        );
+        assert_eq!(
+            host.runtime_db()
+                .reader_pool_stats_for_tests()
+                .checkout_attempts,
+            reads
+        );
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -14510,6 +14589,7 @@ mod tests {
             .agent_states()
             .upsert_for_fixture(&AgentState::new("scoped-snapshot-agent"))
             .unwrap();
+        host.refresh_agent_list().unwrap();
         let scope = crate::runtime_db::RuntimeDbReadScope::new(
             std::time::Instant::now() + Duration::from_secs(30),
         );
@@ -14707,6 +14787,7 @@ mod tests {
             })
             .unwrap();
 
+        host.refresh_agent_list().unwrap();
         let entries = host.list_agent_entries().await.unwrap();
         let by_id = entries
             .into_iter()
@@ -14793,6 +14874,7 @@ mod tests {
             .unwrap();
 
         drop(identities);
+        host.refresh_agent_list().unwrap();
         let entries = host.list_agent_entries().await.unwrap();
         let mut reference = Vec::new();
         for identity in host.agent_identity_records().unwrap() {
@@ -14833,6 +14915,12 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.identity.agent_id == "resident-agent"));
+        host.unload_runtime("resident-agent").await;
+        let entries = host.list_agent_entries().await.unwrap();
+        assert!(entries
+            .iter()
+            .any(|entry| entry.identity.agent_id == "resident-agent"));
+        assert!(!host.has_runtime_entry_for_fixture("resident-agent").await);
     }
 
     #[cfg(holon_lib_test_shard = "d")]

@@ -336,3 +336,110 @@ async fn fleet_wire_exact_cumulative_allowance_and_one_short_latch() -> Result<(
     host.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn cold_roster_updates_at_the_external_rename_ack() -> Result<()> {
+    let (_home, host) = host()?;
+    let identity = register(&host, "cold-renamed", "rename-parent")?;
+    let mut state = AgentState::new(&identity.agent_id);
+    state.status = AgentStatus::Asleep;
+    host.runtime_db()
+        .agent_states()
+        .initialize_cold_for_fixture(&state, identity.incarnation)?;
+    host.refresh_agent_list()?;
+    host.rename_public_agent(&identity.agent_id, "Renamed cold Agent", "operator")
+        .await?;
+
+    let reads = host
+        .runtime_db()
+        .reader_pool_stats_for_tests()
+        .checkout_attempts;
+    let entries = host
+        .list_agent_entries_for_parent(Some("rename-parent"))
+        .await?;
+    assert_eq!(
+        host.runtime_db()
+            .reader_pool_stats_for_tests()
+            .checkout_attempts,
+        reads
+    );
+    assert_eq!(entries.len(), 1);
+    assert_eq!(
+        entries[0].identity.name.as_deref(),
+        Some("Renamed cold Agent")
+    );
+    assert_eq!(entries[0].status, AgentStatus::Asleep);
+    assert!(host.inner.runtimes.read().await.agents.is_empty());
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn cold_roster_repairs_a_failed_publication_without_a_new_mutation() -> Result<()> {
+    let (_home, host) = host()?;
+    let identity = register(&host, "cold-repair", "repair-parent")?;
+    let mut state = AgentState::new(&identity.agent_id);
+    state.status = AgentStatus::Asleep;
+    let db = host.runtime_db();
+    db.agent_states()
+        .initialize_cold_for_fixture(&state, identity.incarnation)?;
+    host.refresh_agent_list()?;
+
+    // The rename transaction needs State and Audit. Only list preparation
+    // needs the open Work inventory of this idle Agent.
+    db.transaction(|tx| {
+        tx.execute_batch("ALTER TABLE work_items RENAME TO unavailable_list_work")?;
+        Ok(())
+    })?;
+    host.rename_public_agent(&identity.agent_id, "First name", "operator")
+        .await?;
+    host.rename_public_agent(&identity.agent_id, "Latest name", "operator")
+        .await?;
+    let latest = host
+        .agent_identity_record(&identity.agent_id)?
+        .context("renamed identity")?;
+    assert_eq!(latest.revision, identity.revision + 2);
+    assert!(host
+        .inner
+        .mutation_owners
+        .agent_list_projection(&latest, None, db)
+        .unwrap_err()
+        .is::<crate::runtime_db::RuntimeDbRetryableError>());
+
+    db.transaction(|tx| {
+        tx.execute_batch("ALTER TABLE unavailable_list_work RENAME TO work_items")?;
+        Ok(())
+    })?;
+    let writer = db
+        .reader_pool_writer_weak_for_tests()
+        .upgrade()
+        .context("writer")?;
+    let writes = writer.write_channel_admissions_for_tests()?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        // Inspect the publication before calling the list API.
+        loop {
+            if host
+                .inner
+                .mutation_owners
+                .agent_list_projection(&latest, None, db)
+                .is_ok()
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await?;
+    let reads = db.reader_pool_stats_for_tests().checkout_attempts;
+    let entries = host
+        .list_agent_entries_for_parent(Some("repair-parent"))
+        .await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity.name.as_deref(), Some("Latest name"));
+    assert_eq!(entries[0].status, AgentStatus::Asleep);
+    assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
+    assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+    assert!(host.inner.runtimes.read().await.agents.is_empty());
+    host.shutdown().await?;
+    Ok(())
+}

@@ -51,58 +51,7 @@ impl CapturedWork {
         ranked: &[QueueWorkRank<'_>],
         active_waits: impl Iterator<Item = &'a WaitConditionRecord>,
     ) -> Result<AgentPostureProjection> {
-        let first_class = |class| ranked.iter().find(|rank| rank.candidate_class == class);
-        let current_state = |scheduling_state| {
-            ranked
-                .iter()
-                .find(|rank| is_current(state, rank) && rank.scheduling_state == scheduling_state)
-        };
-        let current_window = |class| {
-            ranked
-                .iter()
-                .filter(|rank| {
-                    rank.candidate_class == class
-                        && (class != WorkItemCandidateClass::Blocked
-                            || rank.scheduling_state != WorkItemSchedulingState::WaitingTask)
-                })
-                .take(3)
-                .find(|rank| is_current(state, rank))
-        };
-        // Preserve the exact display-window posture policy while borrowing all
-        // canonical rows. In particular, Task waits are not a blocked window.
-        let selected = first_class(WorkItemCandidateClass::CurrentRunnable)
-            .or_else(|| first_class(WorkItemCandidateClass::QueuedRunnable))
-            .map(|rank| (AgentSchedulingPosture::HasRunnableWork, rank))
-            .or_else(|| {
-                current_state(WorkItemSchedulingState::WaitingTask)
-                    .map(|rank| (AgentSchedulingPosture::WaitingForTask, rank))
-            })
-            .or_else(|| {
-                current_state(WorkItemSchedulingState::WaitingExternal)
-                    .map(|rank| (AgentSchedulingPosture::WaitingForExternal, rank))
-            })
-            .or_else(|| {
-                current_window(WorkItemCandidateClass::WaitingForOperator)
-                    .map(|rank| (AgentSchedulingPosture::WaitingForOperator, rank))
-            })
-            .or_else(|| {
-                current_window(WorkItemCandidateClass::Blocked)
-                    .or_else(|| current_window(WorkItemCandidateClass::TriggeredBlocked))
-                    .map(|rank| (AgentSchedulingPosture::Blocked, rank))
-            });
-        crate::storage::derive_agent_posture_from_selected_work(
-            state,
-            has_queued_input,
-            selected.map(|(posture, rank)| {
-                (
-                    posture,
-                    rank.work_item,
-                    rank.scheduling_state,
-                    is_current(state, rank),
-                )
-            }),
-            active_waits,
-        )
+        derive_ranked_work_posture(state, has_queued_input, ranked, active_waits)
     }
 
     /// Exact claim evidence is independent of the scheduler's candidate window.
@@ -140,4 +89,64 @@ impl CapturedWork {
 fn is_current(state: &AgentState, rank: &QueueWorkRank<'_>) -> bool {
     rank.work_item.state == WorkItemState::Open
         && state.current_work_item_id.as_deref() == Some(rank.work_item.id.as_str())
+}
+
+pub(crate) fn derive_ranked_work_posture<'a>(
+    state: &AgentState,
+    has_queued_input: bool,
+    ranked: &[QueueWorkRank<'_>],
+    active_waits: impl Iterator<Item = &'a WaitConditionRecord>,
+) -> Result<AgentPostureProjection> {
+    let first_class = |class| ranked.iter().find(|rank| rank.candidate_class == class);
+    let current_state = |scheduling_state| {
+        ranked
+            .iter()
+            .find(|rank| is_current(state, rank) && rank.scheduling_state == scheduling_state)
+    };
+    let current_window = |class| {
+        ranked
+            .iter()
+            .filter(|rank| {
+                rank.candidate_class == class
+                    && (class != WorkItemCandidateClass::Blocked
+                        || rank.scheduling_state != WorkItemSchedulingState::WaitingTask)
+            })
+            .take(3)
+            .find(|rank| is_current(state, rank))
+    };
+    // Preserve the exact display-window posture policy while borrowing all
+    // canonical rows. In particular, Task waits are not a blocked window.
+    let selected = first_class(WorkItemCandidateClass::CurrentRunnable)
+        .or_else(|| first_class(WorkItemCandidateClass::QueuedRunnable))
+        .map(|rank| (AgentSchedulingPosture::HasRunnableWork, rank))
+        .or_else(|| {
+            current_state(WorkItemSchedulingState::WaitingTask)
+                .map(|rank| (AgentSchedulingPosture::WaitingForTask, rank))
+        })
+        .or_else(|| {
+            current_state(WorkItemSchedulingState::WaitingExternal)
+                .map(|rank| (AgentSchedulingPosture::WaitingForExternal, rank))
+        })
+        .or_else(|| {
+            current_window(WorkItemCandidateClass::WaitingForOperator)
+                .map(|rank| (AgentSchedulingPosture::WaitingForOperator, rank))
+        })
+        .or_else(|| {
+            current_window(WorkItemCandidateClass::Blocked)
+                .or_else(|| current_window(WorkItemCandidateClass::TriggeredBlocked))
+                .map(|rank| (AgentSchedulingPosture::Blocked, rank))
+        });
+    crate::storage::derive_agent_posture_from_selected_work(
+        state,
+        has_queued_input,
+        selected.map(|(posture, rank)| {
+            (
+                posture,
+                rank.work_item,
+                rank.scheduling_state,
+                is_current(state, rank),
+            )
+        }),
+        active_waits,
+    )
 }

@@ -6,10 +6,16 @@ use std::{
     sync::{Arc, Mutex, Weak},
 };
 
+mod agent_list_repairs;
+
+use agent_list_repairs::AgentListPublisher;
 use arc_swap::ArcSwapOption;
 use tokio::sync::{Mutex as AsyncMutex, OwnedMutexGuard};
 
 use super::{
+    agent_list_projection::{
+        is_listed, AgentListProjection, AgentListProjectionSource, PUBLICATION_OPERATION,
+    },
     mutation_witness::{MutationWitness, MutationWitnessKind},
     resident_input_evidence::{InputEvidenceScope, ResidentInputEvidence},
     resident_state::ResidentEpisodes,
@@ -217,9 +223,18 @@ impl MutationOwnerError {
 }
 
 #[derive(Debug, Default)]
+enum PreparedAgentList {
+    #[default]
+    Unlisted,
+    Ready(Arc<AgentListProjection>),
+    Repair(u64),
+}
+
+#[derive(Debug, Default)]
 struct Publication {
     epoch: u64,
     generation: u64,
+    roster: PreparedAgentList,
     recovery: Option<RecoveryRecord>,
     lifetime: Weak<OwnerLifetime>,
 }
@@ -258,10 +273,154 @@ impl Drop for OwnerLifetime {
 
 #[derive(Debug, Default)]
 pub(crate) struct MutationOwnerRegistry {
+    list_publisher: Option<Arc<AgentListPublisher>>,
     slots: Mutex<BTreeMap<(String, u64), Arc<MutationOwnerSlot>>>,
 }
 
 impl MutationOwnerRegistry {
+    pub(crate) fn with_agent_list(source: AgentListProjectionSource) -> Self {
+        Self {
+            list_publisher: Some(Arc::new(AgentListPublisher::new(source))),
+            ..Self::default()
+        }
+    }
+
+    fn slot(&self, agent_id: &str, incarnation: u64) -> Arc<MutationOwnerSlot> {
+        self.slots
+            .lock()
+            .expect("mutation registry poisoned")
+            .entry((agent_id.to_owned(), incarnation))
+            .or_default()
+            .clone()
+    }
+
+    pub(crate) fn seed_agent_list(
+        &self,
+        identities: &[AgentIdentityRecord],
+        refresh: bool,
+    ) -> anyhow::Result<()> {
+        let Some(publisher) = self.list_publisher.as_ref() else {
+            return Ok(());
+        };
+        publisher.start_pending();
+        let source = &publisher.source;
+        let mut pending = Vec::new();
+        for identity in identities.iter().filter(|identity| is_listed(identity)) {
+            let slot = self.slot(&identity.agent_id, identity.incarnation);
+            let publication = slot.publication.lock().expect("publication poisoned");
+            if publication.recovery.is_none()
+                && (refresh
+                    || !matches!(&publication.roster, PreparedAgentList::Ready(entry)
+                        if entry.identity_revision == identity.revision))
+            {
+                pending.push((
+                    identity,
+                    slot.clone(),
+                    publication.epoch,
+                    publication.generation,
+                ));
+            }
+        }
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let result = source.db.with_read(|connection| {
+            let tx = connection.transaction()?;
+            let entries = pending
+                .iter()
+                .map(|(identity, ..)| source.read(&tx, identity, None))
+                .collect::<Vec<_>>();
+            tx.commit()?;
+            Ok(entries)
+        });
+        let (entries, read_error) = match result {
+            Ok(entries) => (entries, None),
+            Err(error) => (Vec::new(), Some(error)),
+        };
+        let mut entries = entries.into_iter();
+        for (identity, slot, epoch, generation) in pending {
+            let entry = match entries.next() {
+                Some(Ok(entry)) => Some(Arc::new(entry)),
+                Some(Err(error)) => {
+                    tracing::warn!(agent_id = %identity.agent_id, %error, "could not prepare Agent list publication");
+                    None
+                }
+                None => None,
+            };
+            let mut publication = slot.publication.lock().expect("publication poisoned");
+            if publication.epoch == epoch
+                && publication.generation == generation
+                && publication.recovery.is_none()
+                && source.matches_identity(identity)
+            {
+                publication.roster = match entry {
+                    Some(entry) => PreparedAgentList::Ready(entry),
+                    None => {
+                        publisher.schedule(&identity.agent_id, identity.incarnation, &slot);
+                        PreparedAgentList::Repair(identity.revision)
+                    }
+                };
+            }
+        }
+        read_error.map_or(Ok(()), Err)
+    }
+
+    pub(crate) async fn shutdown_agent_list_repairs(&self) {
+        if let Some(publisher) = &self.list_publisher {
+            publisher.shutdown().await;
+        }
+    }
+
+    pub(crate) fn forget_agent_list(&self, agent_id: &str, incarnation: u64) {
+        let slot = self
+            .slots
+            .lock()
+            .expect("mutation registry poisoned")
+            .get(&(agent_id.to_owned(), incarnation))
+            .cloned();
+        if let Some(slot) = slot {
+            slot.publication
+                .lock()
+                .expect("publication poisoned")
+                .roster = PreparedAgentList::Unlisted;
+        }
+    }
+
+    pub(crate) fn agent_list_projection(
+        &self,
+        identity: &AgentIdentityRecord,
+        loaded_epoch: Option<u64>,
+        db: &crate::runtime_db::RuntimeDb,
+    ) -> anyhow::Result<Arc<AgentListProjection>> {
+        let unavailable = || {
+            crate::runtime_db::RuntimeDbRetryableError::new(
+                PUBLICATION_OPERATION,
+                db.path(),
+                "Agent list publication is temporarily unavailable",
+            )
+        };
+        let slot = self
+            .slots
+            .lock()
+            .expect("mutation registry poisoned")
+            .get(&(identity.agent_id.clone(), identity.incarnation))
+            .cloned()
+            .ok_or_else(unavailable)?;
+        let publication = slot.publication.lock().expect("publication poisoned");
+        match &publication.roster {
+            PreparedAgentList::Ready(entry)
+                if publication.recovery.is_none()
+                    && entry.identity_revision == identity.revision
+                    && loaded_epoch.is_none_or(|epoch| {
+                        epoch == publication.epoch && slot.root.load().is_some()
+                    }) =>
+            {
+                Ok(entry.clone())
+            }
+            _ => Err(unavailable().into()),
+        }
+    }
+
     pub(crate) fn claim(&self, agent_id: &str, incarnation: u64) -> anyhow::Result<MutationOwner> {
         self.claim_reserved(agent_id, incarnation)
             .map(|(owner, _reservation)| owner)
@@ -272,13 +431,7 @@ impl MutationOwnerRegistry {
         agent_id: &str,
         incarnation: u64,
     ) -> anyhow::Result<(MutationOwner, MutationReservation)> {
-        let slot = self
-            .slots
-            .lock()
-            .expect("mutation registry poisoned")
-            .entry((agent_id.to_owned(), incarnation))
-            .or_default()
-            .clone();
+        let slot = self.slot(agent_id, incarnation);
         // Runtime construction currently happens under the host registry lock.
         // Never wait there for a producer that may need the host to finish.
         let guard = slot
@@ -312,6 +465,7 @@ impl MutationOwnerRegistry {
             incarnation,
             epoch,
             _lifetime: lifetime,
+            list_publisher: self.list_publisher.clone(),
             slot,
         };
         let reservation = MutationReservation {
@@ -327,13 +481,7 @@ impl MutationOwnerRegistry {
         agent_id: &str,
         incarnation: u64,
     ) -> anyhow::Result<MutationOwner> {
-        let slot = self
-            .slots
-            .lock()
-            .expect("mutation registry poisoned")
-            .entry((agent_id.to_owned(), incarnation))
-            .or_default()
-            .clone();
+        let slot = self.slot(agent_id, incarnation);
         let (epoch, lifetime) = {
             let mut publication = slot.publication.lock().expect("publication poisoned");
             if publication.epoch == 0 {
@@ -353,6 +501,7 @@ impl MutationOwnerRegistry {
             incarnation,
             epoch,
             slot,
+            list_publisher: self.list_publisher.clone(),
             _lifetime: lifetime,
         })
     }
@@ -364,6 +513,7 @@ pub(crate) struct MutationOwner {
     incarnation: u64,
     epoch: u64,
     slot: Arc<MutationOwnerSlot>,
+    list_publisher: Option<Arc<AgentListPublisher>>,
     // Runtime clones and reservations keep this epoch's observation resident.
     _lifetime: Arc<OwnerLifetime>,
 }
@@ -445,6 +595,7 @@ impl MutationOwner {
                     incarnation: member.key.identity_incarnation,
                     epoch,
                     slot,
+                    list_publisher: self.list_publisher.clone(),
                     _lifetime: lifetime,
                 })
             })
@@ -1446,6 +1597,15 @@ impl MutationReservation {
             return Err(MutationOwnerError::TicketMismatch);
         }
         Self::validate_order(reservations)?;
+        let roster = reservations
+            .iter()
+            .zip(&known)
+            .map(|(reservation, known)| {
+                known
+                    .as_ref()
+                    .map(|known| reservation.prepare_agent_list(known))
+            })
+            .collect::<Vec<_>>();
         let mut publications = reservations
             .iter()
             .map(|r| {
@@ -1479,8 +1639,15 @@ impl MutationReservation {
             .iter()
             .zip(&mut publications)
             .zip(known)
-            .map(|((reservation, publication), known)| {
-                known.and_then(|known| reservation.install_known(publication, known))
+            .zip(roster)
+            .map(|(((reservation, publication), known), roster)| {
+                known.and_then(|known| {
+                    reservation.install_known(
+                        publication,
+                        known,
+                        roster.expect("known roster preparation"),
+                    )
+                })
             })
             .collect();
         drop(publications);
@@ -1744,51 +1911,6 @@ impl MutationReservation {
         Ok(())
     }
 
-    pub(super) fn publish_prepared_roster(
-        &self,
-        original: &Arc<PostureObservation>,
-        queue_posture: crate::queue::QueuePostureFacts,
-        work: Option<Arc<super::resident_work::ResidentWorkDomain>>,
-        scheduling: Option<Arc<super::resident_scheduling::ResidentSchedulingDomain>>,
-    ) -> Result<Arc<PostureObservation>, MutationOwnerError> {
-        let mut publication = self
-            .owner
-            .slot
-            .publication
-            .lock()
-            .expect("publication poisoned");
-        self.owner.validate_publication(&publication)?;
-        if let Some(recovery) = &publication.recovery {
-            return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
-        }
-        if !self
-            .owner
-            .slot
-            .root
-            .load_full()
-            .as_ref()
-            .is_some_and(|current| Arc::ptr_eq(original, current))
-        {
-            return Err(MutationOwnerError::TicketMismatch);
-        }
-        publication.generation = publication
-            .generation
-            .checked_add(1)
-            .expect("publication generation exhausted");
-        let next = Arc::new(PostureObservation {
-            token: PublicationToken {
-                generation: publication.generation,
-                ..original.token
-            },
-            queue_posture: Some(queue_posture),
-            work: work.or_else(|| original.work.clone()),
-            scheduling: scheduling.or_else(|| original.scheduling.clone()),
-            ..original.as_ref().clone()
-        });
-        self.owner.slot.root.store(Some(next.clone()));
-        Ok(next)
-    }
-
     pub(crate) fn publish(
         &mut self,
         state: Arc<AgentState>,
@@ -1858,10 +1980,69 @@ impl MutationReservation {
         Ok(())
     }
 
+    fn prepare_agent_list(&self, known: &KnownCommit) -> PreparedAgentList {
+        let Some(publisher) = self.owner.list_publisher.as_ref() else {
+            return PreparedAgentList::Unlisted;
+        };
+        let source = &publisher.source;
+        let identity = match known {
+            KnownCommit::Metadata(facts) => facts.identity.as_deref().cloned(),
+            KnownCommit::State { .. } => match source.identity(self.agent_id()) {
+                Ok(identity) => identity,
+                Err(error) => {
+                    tracing::warn!(agent_id = %self.agent_id(), %error, "could not select Agent list identity");
+                    return PreparedAgentList::Unlisted;
+                }
+            },
+        };
+        let Some(identity) = identity.filter(|identity| {
+            identity.incarnation == self.identity_incarnation() && is_listed(identity)
+        }) else {
+            return PreparedAgentList::Unlisted;
+        };
+        let prepared = (|| -> anyhow::Result<_> {
+            if let KnownCommit::State {
+                state,
+                runtime,
+                work,
+                scheduling,
+                ..
+            } = known
+            {
+                let queue = match runtime {
+                    Some(facts) => facts.queue_posture,
+                    None => self
+                        .recovery()?
+                        .and_then(|record| record.prepared_queue_posture),
+                };
+                if let Some(entry) = source.from_state(
+                    &identity,
+                    state,
+                    queue,
+                    work.as_deref(),
+                    scheduling.as_deref(),
+                )? {
+                    return Ok(entry);
+                }
+            }
+            source.db.read_for_preparation(|tx| {
+                source.read(tx, &identity, known.state().map(AsRef::as_ref))
+            })
+        })();
+        match prepared {
+            Ok(entry) => PreparedAgentList::Ready(Arc::new(entry)),
+            Err(error) => {
+                tracing::warn!(agent_id = %self.agent_id(), %error, "could not prepare Agent list publication");
+                PreparedAgentList::Repair(identity.revision)
+            }
+        }
+    }
+
     fn install_known(
         &self,
         publication: &mut Publication,
         known: KnownCommit,
+        roster: PreparedAgentList,
     ) -> Option<Arc<PostureObservation>> {
         publication.generation = publication
             .generation
@@ -1949,7 +2130,17 @@ impl MutationReservation {
             })
         });
         self.owner.slot.root.store(observation.clone());
+        publication.roster = roster;
         publication.recovery = None;
+        if matches!(publication.roster, PreparedAgentList::Repair(_)) {
+            if let Some(publisher) = &self.owner.list_publisher {
+                publisher.schedule(
+                    self.agent_id(),
+                    self.identity_incarnation(),
+                    &self.owner.slot,
+                );
+            }
+        }
         observation
     }
 }
