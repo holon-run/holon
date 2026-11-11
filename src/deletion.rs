@@ -2106,6 +2106,7 @@ mod tests {
     async fn deletion_fence_reconciles_the_original_admission_ack() -> Result<()> {
         let (_home, host) = metadata_test_host();
         let identity = metadata_identity(&host, "pending-deletion-fence");
+        host.cache_agent_identity(&identity)?;
         let mut reservations = host
             .reserve_mutation_scopes(&[(identity.agent_id.clone(), identity.incarnation)])
             .await?;
