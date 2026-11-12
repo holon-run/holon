@@ -659,6 +659,19 @@ async fn tool_result_has_one_receipt_and_publishes_both_audits_with_the_barrier(
 
 #[tokio::test]
 async fn exec_command_settlement_retries_its_original_result_after_audit_rollback() -> Result<()> {
+    assert_external_command_settlement_reuses_original_result(crate::tool::names::EXEC_COMMAND)
+        .await
+}
+
+#[tokio::test]
+async fn exec_command_batch_registers_once_and_reuses_its_grouped_result() -> Result<()> {
+    assert_external_command_settlement_reuses_original_result(
+        crate::tool::names::EXEC_COMMAND_BATCH,
+    )
+    .await
+}
+
+async fn assert_external_command_settlement_reuses_original_result(tool_name: &str) -> Result<()> {
     use crate::runtime_db::prepared_input_evidence::InputEvidenceWrite;
     use crate::tool::{spec::ToolExecutionContext, ToolCall};
 
@@ -671,13 +684,19 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         .begin_interactive_turn_with_provenance(None, None, None, None)
         .await?;
     let effect = runtime.workspace_root().join("settlement-effect");
+    let command = serde_json::json!({
+        "cmd": "printf x >> settlement-effect; printf original-result",
+        "login": false,
+    });
+    let batch = tool_name == crate::tool::names::EXEC_COMMAND_BATCH;
     let call = ToolCall {
         id: "original-command-call".into(),
-        name: crate::tool::names::EXEC_COMMAND.into(),
-        input: serde_json::json!({
-            "cmd": "printf x >> settlement-effect; printf original-result",
-            "login": false,
-        }),
+        name: tool_name.into(),
+        input: if batch {
+            serde_json::json!({"items": [command, {"cmd":"printf y >> settlement-effect","login":false}]})
+        } else {
+            command
+        },
     };
     let assistant_round = crate::types::TranscriptEntry::new(
         "default",
@@ -695,7 +714,7 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
     let context = ToolExecutionContext {
         turn_id: Some(turn_id.clone()),
         tool_call_id: Some(call.id.clone()),
-        exec_command_attempt: Some(Arc::new(crate::tool::spec::ExecCommandAttempt {
+        external_command_attempt: Some(Arc::new(crate::tool::spec::ExternalCommandAttempt {
             assistant_round_id: assistant_round.id,
             model_output_budget: 4096,
             submitted: Default::default(),
@@ -732,9 +751,9 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         tx.execute_batch("DROP TRIGGER reject_exec_command_begin")?;
         Ok(())
     })?;
-    let attempt = context.exec_command_attempt.as_ref().unwrap();
+    let attempt = context.external_command_attempt.as_ref().unwrap();
     let context = ToolExecutionContext {
-        exec_command_attempt: Some(Arc::new(crate::tool::spec::ExecCommandAttempt {
+        external_command_attempt: Some(Arc::new(crate::tool::spec::ExternalCommandAttempt {
             assistant_round_id: attempt.assistant_round_id.clone(),
             model_output_budget: attempt.model_output_budget,
             submitted: Default::default(),
@@ -753,7 +772,10 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         )
         .await?;
     assert!(!result.is_error());
-    assert_eq!(std::fs::read(&effect)?, b"x");
+    assert_eq!(
+        std::fs::read(&effect)?,
+        if batch { &b"xy"[..] } else { &b"x"[..] }
+    );
 
     let prior = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
     assert!(!prior.external_side_effect_possible);
@@ -766,6 +788,15 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
     assert_eq!(pending.status, crate::types::ToolExecutionStatus::Pending);
     assert_eq!(pending.call_binding, record.call_binding);
     assert!(pending.output.is_null());
+    db.read_for_preparation(|tx| {
+        let count: u64 = tx.query_row(
+            "SELECT COUNT(*) FROM tool_executions WHERE agent_id=?1 AND turn_id=?2",
+            rusqlite::params!["default", turn_id],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        Ok(())
+    })?;
     let original_output = record.output.clone();
     assert!(original_output.to_string().contains("original-result"));
     let event = AuditEvent::legacy(
@@ -877,7 +908,10 @@ async fn exec_command_settlement_retries_its_original_result_after_audit_rollbac
         );
         Ok(())
     })?;
-    assert_eq!(std::fs::read(&effect)?, b"x");
+    assert_eq!(
+        std::fs::read(&effect)?,
+        if batch { &b"xy"[..] } else { &b"x"[..] }
+    );
     Ok(())
 }
 
@@ -946,5 +980,109 @@ async fn exec_command_spawn_failure_allows_correction_in_the_same_turn() -> Resu
         assert_eq!(failed.data["error_kind"], "command_spawn_failed");
         assert_eq!(failed.data["turn_id"], completed.data["turn_id"]);
     }
+    Ok(())
+}
+
+#[tokio::test]
+async fn destructive_operation_checks_pending_registration_before_launch_and_keeps_its_fence(
+) -> Result<()> {
+    use crate::tool::{
+        names::SCHEDULE_DESTRUCTIVE_OPERATION,
+        spec::{ExternalCommandAttempt, ExternalCommandRegistrationFailed, ToolExecutionContext},
+        ToolCall,
+    };
+    use crate::types::{TranscriptEntry, TranscriptEntryKind};
+    use serde_json::json;
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let (_, _session) = runtime.begin_task_birth_session().await?;
+    let (turn_id, _) = runtime
+        .begin_interactive_turn_with_provenance(None, None, None, None)
+        .await?;
+    let call = ToolCall {
+        id: "schedule-command".into(),
+        name: SCHEDULE_DESTRUCTIVE_OPERATION.into(),
+        input: json!({
+            "operation_id":"schedule-fixture", "command":"printf fixture", "verification_target":"fixture",
+        }),
+    };
+    let round = TranscriptEntry::new(
+        "default",
+        TranscriptEntryKind::AssistantRound,
+        Some(1),
+        None,
+        json!({
+            "turn_id":turn_id,
+            "blocks":[{"type":"tool_use","id":call.id,"name":call.name,"input":call.input}],
+        }),
+    );
+    runtime.persist_transcript_evidence(&round).await?;
+    let context = || ToolExecutionContext {
+        effective_work_item_id: Some("fixture-work".into()),
+        turn_id: Some(turn_id.clone()),
+        tool_call_id: Some(call.id.clone()),
+        external_command_attempt: Some(Arc::new(ExternalCommandAttempt {
+            assistant_round_id: round.id.clone(),
+            model_output_budget: 4096,
+            submitted: Default::default(),
+        })),
+        ..Default::default()
+    };
+    let db = runtime.runtime_db();
+    db.transaction(|tx| {
+        tx.execute_batch(
+            "CREATE TRIGGER reject_destructive_attempt BEFORE INSERT ON tool_executions
+             WHEN NEW.kind='ScheduleDestructiveOperation'
+             BEGIN SELECT RAISE(ABORT, 'fixture rejects launcher registration'); END;",
+        )?;
+        Ok(())
+    })?;
+    let error = runtime
+        .inner
+        .tools
+        .execute_with_context(
+            runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+            &context(),
+        )
+        .await
+        .unwrap_err();
+    assert!(error.is::<ExternalCommandRegistrationFailed>(), "{error:#}");
+    assert!(
+        format!("{error:#}").contains("fixture rejects launcher registration"),
+        "{error:#}"
+    );
+    let operation = db
+        .destructive_operations()
+        .by_id("schedule-fixture")?
+        .unwrap();
+    assert_eq!(
+        operation.phase,
+        crate::runtime_db::DestructiveOperationPhase::Scheduled
+    );
+    let (result, record) = runtime
+        .inner
+        .tools
+        .execute_with_context(
+            runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &call,
+            &context(),
+        )
+        .await?;
+    assert_eq!(result.envelope.result.unwrap()["already_scheduled"], true);
+    assert!(record.call_binding.is_none());
+    let turn = db.turn_records().by_id(Some("default"), &turn_id)?.unwrap();
+    assert!(!turn.external_side_effect_possible);
+    assert_eq!(
+        turn.destructive_operation_id.as_deref(),
+        Some("schedule-fixture")
+    );
     Ok(())
 }

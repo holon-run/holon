@@ -200,7 +200,7 @@ impl ToolRegistry {
             .await;
         let mut result = result?;
         let pending = context
-            .exec_command_attempt
+            .external_command_attempt
             .as_ref()
             .and_then(|attempt| attempt.submitted.get());
         let execution_id =

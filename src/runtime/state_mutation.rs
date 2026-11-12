@@ -2821,6 +2821,40 @@ impl RuntimeHandle {
         })
     }
 
+    pub(crate) async fn plan_destructive_operation(
+        &self,
+        record: crate::runtime_db::DestructiveOperationRecord,
+    ) -> Result<crate::runtime_db::destructive_operations::PlannedDestructiveOperation> {
+        let admission = self.execution_admission_lease()?;
+        let runtime = self.clone();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let result = async {
+                let mut mutation = runtime.begin_mutation().await?;
+                let query_source = mutation.owner_input_query_source()?;
+                let ledger = &runtime.inner.input_evidence_budget;
+                let repo = runtime.inner.runtime_db.destructive_operations();
+                mutation
+                    .commit_input_evidence(record.operation_id.clone(), |scope| {
+                        repo.plan_and_schedule_in_scope(
+                            scope,
+                            &record,
+                            ledger,
+                            query_source.as_ref(),
+                        )
+                    })
+                    .await
+            }
+            .await;
+            let _ = send.send(result);
+        })?;
+        receive
+            .await
+            .context("destructive operation planner ended before returning its result")?
+    }
+
+    #[cfg(test)]
     pub(crate) async fn commit_input_evidence<T: Send + 'static>(
         &self,
         operation_id: String,

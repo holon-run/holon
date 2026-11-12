@@ -403,11 +403,20 @@ fn tool_result_without_command_barrier_still_has_one_original_audit() -> Result<
 }
 
 #[test]
-fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt() -> Result<()> {
+fn external_command_startup_recovers_committed_result_and_interrupts_pending_attempt() -> Result<()>
+{
+    for tool_name in crate::tool::names::EXTERNAL_COMMAND_TOOLS {
+        assert_external_command_startup_recovery(tool_name)?;
+    }
+    Ok(())
+}
+
+fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
     use crate::diagnostics::io_probe::IoProbe;
     use crate::runtime::resident_input_evidence::InputEvidenceKey as Key;
     use crate::runtime_db::input_evidence_snapshot::legacy_recovery::ExclusiveStartupInputRecovery;
-    use crate::tool::names::EXEC_COMMAND;
+    use crate::runtime_db::{DestructiveOperationPhase, DestructiveOperationRecord};
+    use crate::tool::names::{EXEC_COMMAND, EXEC_COMMAND_BATCH, SCHEDULE_DESTRUCTIVE_OPERATION};
     use crate::types::ToolExecutionCallBinding;
     use serde_json::json;
 
@@ -454,8 +463,8 @@ fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt
     assistant_round.data = json!({
         "turn_id": turn.turn_id,
         "blocks": [
-            {"type":"tool_use", "id":"settled", "name":EXEC_COMMAND},
-            {"type":"tool_use", "id":"pending", "name":EXEC_COMMAND},
+            {"type":"tool_use", "id":"settled", "name":tool_name},
+            {"type":"tool_use", "id":"pending", "name":tool_name},
         ],
     });
     let db = &f.db;
@@ -469,6 +478,7 @@ fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt
     let begin = |call: &str| -> Result<ToolExecutionRecord> {
         let mut record = f.tool();
         record.id = format!("tool:{call}");
+        record.tool_name = tool_name.into();
         record.turn_id = Some(turn.turn_id.clone());
         record.turn_index = turn.turn_index;
         record.status = ToolExecutionStatus::Pending;
@@ -526,14 +536,24 @@ fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt
 
     let started = std::time::Instant::now();
     let mut settled = begin("settled")?;
-    let result = crate::tool::ToolResult::success(
-        EXEC_COMMAND,
-        json!({
-            "disposition":"completed", "exit_status":0, "stdout_preview":"original stdout",
-            "truncated":false, "output_ref":format!("tool_execution:{}:output", settled.id),
+    let command_output = json!({
+        "disposition":"completed", "exit_status":0, "stdout_preview":"original stdout",
+        "truncated":false, "output_ref":format!("tool_execution:{}:output", settled.id),
+    });
+    let output = match tool_name {
+        EXEC_COMMAND => command_output,
+        EXEC_COMMAND_BATCH => json!({
+            "item_count":1, "completed_count":1, "failed_count":0, "rejected_count":0,
+            "skipped_count":0, "stop_on_error":true,
+            "items":[{"index":1,"cmd":"printf ok","status":"completed","result":command_output}],
         }),
-        None,
-    );
+        SCHEDULE_DESTRUCTIVE_OPERATION => json!({
+            "operation_id":"settled-operation", "phase":"scheduled",
+            "already_scheduled":false, "external_dispatch":command_output,
+        }),
+        _ => unreachable!(),
+    };
+    let result = crate::tool::ToolResult::success(tool_name, output, None);
     settled.output = serde_json::to_value(&result)?;
     settled.status = ToolExecutionStatus::Success;
     settled.completed_at = Some(f.at);
@@ -561,10 +581,33 @@ fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt
         sql.sql_read_statements + sql.sql_write_statements + sql.sql_control_statements
     };
     eprintln!(
-        "ExecCommand writer fixture old={} SQL ({legacy_elapsed:?}), new={} SQL ({new_elapsed:?})",
+        "{tool_name} writer fixture old={} SQL ({legacy_elapsed:?}), new={} SQL ({new_elapsed:?})",
         statements(&legacy_sql),
         statements(&new_sql)
     );
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let operation = if tool_name == SCHEDULE_DESTRUCTIVE_OPERATION {
+        let operation = DestructiveOperationRecord {
+            operation_id: "pending-operation".into(),
+            owner_turn_id: turn.turn_id.clone(),
+            owner_work_item_id: Some("work-fixture".into()),
+            command_digest: "fixture-digest".into(),
+            phase: DestructiveOperationPhase::Planned,
+            verification_target: "fixture-target".into(),
+            recovery_policy: "verify_only".into(),
+            created_at: f.at,
+            updated_at: f.at,
+        };
+        assert!(
+            db.destructive_operations()
+                .plan_and_schedule_in_scope(&f.scope, &operation, &ledger, None)?
+                .record
+                .should_dispatch
+        );
+        Some(operation)
+    } else {
+        None
+    };
     let pending = begin("pending")?;
 
     let path = f._dir.path().join("runtime-maintenance.lock");
@@ -574,7 +617,6 @@ fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt
     let capability =
         ExclusiveStartupInputRecovery::for_pre_activation_host(db, &lease, &path, &guard)?;
     let scopes = db.startup_input_recovery_scopes(std::slice::from_ref(&f.scope.agent_id))?;
-    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     let recovered = db.recover_interrupted_runtime_state_at_startup_with_tasks_in_scopes(
         &scopes,
         &capability,
@@ -582,6 +624,18 @@ fn exec_command_startup_recovers_committed_result_and_interrupts_pending_attempt
         None,
     )?;
     assert_eq!(recovered.report.interrupted_turns, 1);
+    if let Some(operation) = operation {
+        let pending_verification = db.destructive_operations().pending_verification()?;
+        assert_eq!(pending_verification[0].operation_id, operation.operation_id);
+        let retry = db
+            .destructive_operations()
+            .plan_and_schedule_in_scope(&f.scope, &operation, &ledger, None)?;
+        assert!(!retry.record.should_dispatch);
+        assert_eq!(
+            retry.record.record.phase,
+            DestructiveOperationPhase::DaemonInterrupted
+        );
+    }
     assert_eq!(
         db.queue_entries().latest_all()?[0].status,
         crate::types::QueueEntryStatus::Aborted,

@@ -174,3 +174,9 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     WEB_SEARCH,
     X_SEARCH,
 ];
+
+pub(crate) const EXTERNAL_COMMAND_TOOLS: [&str; 3] = [
+    EXEC_COMMAND,
+    EXEC_COMMAND_BATCH,
+    SCHEDULE_DESTRUCTIVE_OPERATION,
+];

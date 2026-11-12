@@ -5,7 +5,14 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
-use crate::runtime_db::RuntimeDb;
+use crate::runtime::{
+    input_evidence_budget::InputEvidenceBudgetLedger,
+    resident_input_evidence::{InputEvidenceFamily, InputEvidenceScope, OriginalInputQuerySource},
+};
+use crate::runtime_db::{
+    input_evidence_snapshot::native_birth::{original_material_limits, NativeInputWriteProof},
+    RuntimeDb,
+};
 use crate::types::TurnRecord;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,8 +129,10 @@ impl DestructiveOperationRepository<'_> {
 
     pub(crate) fn plan_and_schedule_in_scope(
         &self,
-        scope: &crate::runtime::resident_input_evidence::InputEvidenceScope,
+        scope: &InputEvidenceScope,
         record: &DestructiveOperationRecord,
+        ledger: &InputEvidenceBudgetLedger,
+        query_source: Option<&OriginalInputQuerySource>,
     ) -> Result<
         crate::runtime_db::input_evidence_writes::InputEvidenceCommit<PlannedDestructiveOperation>,
     > {
@@ -142,12 +151,31 @@ impl DestructiveOperationRepository<'_> {
                 owner_agent == scope.agent_id,
                 "destructive operation Turn differs from reserved scope"
             );
+            let mut native_input = NativeInputWriteProof::prepare_tx(
+                tx,
+                scope,
+                ledger,
+                original_material_limits(ledger)?,
+                None,
+                |visit| visit(InputEvidenceFamily::Turn, &record.owner_turn_id),
+            )?;
+            if let Some(native) = &mut native_input {
+                native.bind_query_source(query_source, ledger)?;
+            }
             let (planned, turn) = plan_and_schedule_tx(tx, record)?;
-            let facts = turn
-                .into_iter()
-                .map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn)
-                .collect::<Vec<_>>();
-            super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, planned, &facts)
+            let facts = turn.map(super::input_evidence_snapshot::CanonicalInputEvidence::Turn);
+            let mut acknowledged = super::input_evidence_writes::acknowledge_input_evidence_tx(
+                tx,
+                scope,
+                planned,
+                facts.as_slice(),
+            )?;
+            // Publish the updated Turn against the original Input query so
+            // launcher registration can use the same live query roles.
+            if let Some(native) = native_input.filter(|_| facts.is_some()) {
+                native.finish_delta_tx(tx, &mut acknowledged.input_delta, ledger, None)?;
+            }
+            Ok(acknowledged)
         })
     }
 

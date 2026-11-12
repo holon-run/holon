@@ -104,7 +104,8 @@ pub(crate) async fn execute(
             continue;
         }
 
-        let item_result = execute_batch_item(runtime, authority_class, index, item, context).await;
+        let item_result =
+            execute_batch_item(runtime, authority_class, index, item, input, context).await?;
         if stop_on_error
             && matches!(
                 item_result.status,
@@ -266,8 +267,9 @@ async fn execute_batch_item(
     authority_class: &AuthorityClass,
     index: usize,
     item: ExecCommandBatchItemArgs,
+    input: &Value,
     context: &ToolExecutionContext,
-) -> ExecCommandBatchItemResult {
+) -> Result<ExecCommandBatchItemResult> {
     let started = Instant::now();
     let cmd = item.cmd.clone();
     let spec = CommandTaskSpec {
@@ -282,48 +284,48 @@ async fn execute_batch_item(
         terminal_reentry: false,
     };
 
-    match runtime
-        .managed_tasks()
-        .execute_exec_command_once(
-            spec,
-            authority_class,
-            context.trace_context.as_ref(),
-            crate::tool::names::EXEC_COMMAND_BATCH,
-        )
-        .await
-    {
-        Ok(result) => {
-            let status = match result.outcome {
-                ExecCommandOutcome::Completed { exit_status, .. } if exit_status == Some(0) => {
-                    ExecCommandBatchItemStatus::Completed
+    Ok(
+        match runtime
+            .managed_tasks()
+            .execute_exec_command_once(spec, authority_class, context, NAME, input)
+            .await
+        {
+            Ok(result) => {
+                let status = match result.outcome {
+                    ExecCommandOutcome::Completed { exit_status, .. } if exit_status == Some(0) => {
+                        ExecCommandBatchItemStatus::Completed
+                    }
+                    ExecCommandOutcome::Completed { .. } => ExecCommandBatchItemStatus::Failed,
+                    ExecCommandOutcome::PromotedToTask { .. } => ExecCommandBatchItemStatus::Failed,
+                    ExecCommandOutcome::AlreadyRunning { .. } => ExecCommandBatchItemStatus::Failed,
+                };
+                ExecCommandBatchItemResult {
+                    index,
+                    cmd,
+                    status,
+                    result: Some(result),
+                    error_kind: None,
+                    error_message: None,
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
                 }
-                ExecCommandOutcome::Completed { .. } => ExecCommandBatchItemStatus::Failed,
-                ExecCommandOutcome::PromotedToTask { .. } => ExecCommandBatchItemStatus::Failed,
-                ExecCommandOutcome::AlreadyRunning { .. } => ExecCommandBatchItemStatus::Failed,
-            };
-            ExecCommandBatchItemResult {
-                index,
-                cmd,
-                status,
-                result: Some(result),
-                error_kind: None,
-                error_message: None,
-                duration_ms: Some(started.elapsed().as_millis() as u64),
             }
-        }
-        Err(error) => {
-            let tool_error = ToolError::from_anyhow(&error);
-            ExecCommandBatchItemResult {
-                index,
-                cmd,
-                status: ExecCommandBatchItemStatus::Failed,
-                result: None,
-                error_kind: Some(tool_error.kind),
-                error_message: Some(tool_error.message),
-                duration_ms: Some(started.elapsed().as_millis() as u64),
+            Err(error) if error.is::<crate::tool::spec::ExternalCommandRegistrationFailed>() => {
+                return Err(error);
             }
-        }
-    }
+            Err(error) => {
+                let tool_error = ToolError::from_anyhow(&error);
+                ExecCommandBatchItemResult {
+                    index,
+                    cmd,
+                    status: ExecCommandBatchItemStatus::Failed,
+                    result: None,
+                    error_kind: Some(tool_error.kind),
+                    error_message: Some(tool_error.message),
+                    duration_ms: Some(started.elapsed().as_millis() as u64),
+                }
+            }
+        },
+    )
 }
 
 pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {

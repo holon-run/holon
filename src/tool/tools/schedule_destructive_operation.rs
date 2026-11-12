@@ -65,6 +65,11 @@ pub(crate) async fn execute(
         "destructive lifecycle operation requires an owner WorkItem"
     );
 
+    ensure!(
+        context.external_command_attempt.is_some(),
+        "destructive lifecycle operation requires a bound tool call"
+    );
+
     let record = DestructiveOperationRecord {
         operation_id: args.operation_id.clone(),
         owner_turn_id: turn_id.to_string(),
@@ -76,13 +81,7 @@ pub(crate) async fn execute(
         created_at: chrono::Utc::now(),
         updated_at: chrono::Utc::now(),
     };
-    let db = runtime.runtime_db().clone();
-    let planned = runtime
-        .commit_input_evidence(record.operation_id.clone(), move |scope| {
-            db.destructive_operations()
-                .plan_and_schedule_in_scope(scope, &record)
-        })
-        .await?;
+    let planned = runtime.plan_destructive_operation(record).await?;
     let should_dispatch = planned.should_dispatch;
     let operation = planned.record;
     if !should_dispatch {
@@ -129,8 +128,9 @@ pub(crate) async fn execute(
                 terminal_reentry: false,
             },
             authority_class,
-            context.trace_context.as_ref(),
+            context,
             NAME,
+            input,
         )
         .await?;
     let launched = matches!(

@@ -164,8 +164,8 @@ impl RuntimeMutation {
                             task_delta: ack.task_delta,
                             task_delta_requires_prepared_domain: true,
                             task_material_budget_views: ack.task_material_budget_views,
-                            notify_memory_index: !prepared.is_exec_command_registration(),
-                            notify_scheduler: !prepared.is_exec_command_registration(),
+                            notify_memory_index: !prepared.is_external_command_registration(),
+                            notify_scheduler: !prepared.is_external_command_registration(),
                             fault,
                             ..Default::default()
                         };
