@@ -60,6 +60,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Create a reviewer agent from the code-reviewer template, then ask it in conversation to attach your repository, record merge permissions, subscribe to GitHub events, and follow commits and CI through merge.
   <!-- mdorigin:index kind=article -->
 
+- [Build a local Docs Steward that keeps docs in sync with code](./build-docs-steward.md)
+  Create a documentation hygiene agent from the docs-steward template, ask it in conversation to attach your repository, audit drift between code and docs, and submit cited, docs-only PRs in an isolated worktree.
+  <!-- mdorigin:index kind=article -->
+
 - [Organize agent skills across dedicated roles](./organize-agent-skills-and-roles.md)
   Avoid tool clutter and instruction conflicts by giving each long-lived agent its own focused skills, boundaries, and workspace permissions.
   <!-- mdorigin:index kind=article -->
@@ -152,8 +156,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Point a vision model at a local image and read back what it sees.
   <!-- mdorigin:index kind=article -->
 
-- [Host local apps](./host-local-apps.md)
-  Build a small agent-owned app, submit a request, and verify its queue events in the browser.
+- [Build and host local interactive apps](./host-local-apps.md)
+  Ask your agent in conversation to create a web dashboard under its apps directory, submit structured requests with window.Holon.request(), and inspect live queue events without running CLI commands.
   <!-- mdorigin:index kind=article -->
 
 - [Observe agent work](./observe-agent-work.md)

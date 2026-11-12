@@ -62,6 +62,10 @@ order: 30
   从 code-reviewer 模板创建审阅 Agent，直接通过对话让它挂载代码库、记录合并权限并订阅 GitHub 事件，持续跟进新提交与 CI 直至合并。
   <!-- mdorigin:index kind=article -->
 
+- [搭建持续同步代码与文档的本地 Docs Steward](./build-docs-steward.md)
+  从 docs-steward 模板创建文档维护 Agent，通过对话让它挂载代码仓库、审计代码与文档的不一致漂移，并在独立 Git worktree 中提交带有证据引用的纯文档 PR。
+  <!-- mdorigin:index kind=article -->
+
 - [为不同角色规划与隔离 Agent Skills](./organize-agent-skills-and-roles.md)
   避免工具泛滥与指令互斥：通过自然语言为不同长期 Agent 分配专属技能、工作边界与权限，保持上下文干净。
   <!-- mdorigin:index kind=article -->
@@ -150,8 +154,8 @@ order: 30
   让视觉模型观察本地图片并解读画面内容。
   <!-- mdorigin:index kind=article -->
 
-- [托管本地应用](./host-local-apps.md)
-  构建一个由 Agent 拥有的轻量本地应用，提交请求并在浏览器中验证队列事件。
+- [为 Agent 搭建与托管本地交互应用](./host-local-apps.md)
+  在对话中直接让 Agent 在其 apps 目录下创建可视化任务看板，使用 window.Holon.request() 提交结构化请求并实时接收队列事件，无需手动查找目录或执行 CLI 命令。
   <!-- mdorigin:index kind=article -->
 
 - [观察 Agent 工作](./observe-agent-work.md)

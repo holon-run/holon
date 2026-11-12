@@ -20,6 +20,8 @@ For example, a documentation agent could host a review queue with a button to
 request a fresh link check. The app presents the queue and sends the request.
 The agent performs the authorized work and reports the result.
 
+- To ask an agent in conversation to build and host an interactive dashboard step-by-step, see [Build and host local interactive apps](../guides/host-local-apps.md).
+
 ## How apps fit with other surfaces
 
 The Web GUI is a general client for managing Holon. A Local App is an

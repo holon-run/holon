@@ -1,101 +1,128 @@
 ---
-title: 托管本地应用
-summary: 构建一个由 Agent 拥有的轻量本地应用，提交请求并在浏览器中验证队列事件。
+title: 为 Agent 搭建与托管本地交互应用
+summary: 在对话中直接让 Agent 在其 apps 目录下创建可视化任务看板，使用 window.Holon.request() 提交结构化请求并实时接收队列事件，无需手动查找目录或执行 CLI 命令。
 order: 240
 ---
 
-# 托管本地应用
+# 为 Agent 搭建与托管本地交互应用
 
-构建一个可展示所属 Agent 信息、提交 `ping` 请求并实时呈现事件流的交互卡片。此流程用于验证 App SDK 的连通性，同时不会向该应用开放执行任意任务的特权。底层心智模型请参阅[本地应用（Local Apps）](../concepts/local-apps.md)。
+Local App（本地应用）是由 Agent 自身托管的轻量级 Web 交互界面，静态文件存放在该 Agent 的 `apps/` 目录下。在处理任务审核队列、多条目巡检台账或结构化筛选时，纯文本聊天流往往翻找低效；而通过 Local App，你可以让 Agent 拥有专属于该工作流的可视化操作看板。
+
+本指南演示如何在日常对话中直接指示 Agent 创建一个任务待审看板（Task Board），通过运行时内置的 App SDK（`holon.js`）打通双向交互、提交结构化操作请求，并在浏览器中实时监听队列与执行事件流。底层概念与安全边界请参阅[本地应用（Local Apps）概念](../concepts/local-apps.md)。
 
 ## 开始之前
 
-- 使用已有 Agent 并确认其 Agent Home 路径。可以让该 Agent 在其主目录下创建应用，或使用已确认的主机路径；自定义数据目录可能会改变实际存储位置。请避免覆盖同名的 `ping-card` 应用。
-- 执行 `holon daemon status` 检查运行时状态。若未启动，请执行 `holon daemon start`。
-- 使用运行时的浏览器同源地址；远程访问时需具备有效会话。请参阅[连接到远程运行时](connect-remote-runtime.md)。
-- 仅托管你信任的代码。本地应用与运行时共享同源域和会话，并不对主机凭据构成隔离屏障。
+- 本地已启动 Holon 并可访问 [Web GUI](./use-web-gui.md)（默认 `http://localhost:8080`），且已[配置可用模型](./configure-models.md)。
+- 已有至少一个 Agent（如默认的 `main` 或从模板创建的专用 Agent）。
+- 无需手动在宿主机磁盘翻找物理路径或执行底层 CLI 命令：直接在 Web GUI 对话中让 Agent 在其自身 `apps/` 目录下创建文件，即可自动存入正确的 Agent Home 空间中。
 
-## 1. 创建目录与可选清单文件
+## 操作步骤
 
-在已确认的 Agent Home 中创建 `apps/ping-card/`。无需清单也能托管根目录下的 `index.html`；Holon 会补上默认值，但不写入清单，也不修改应用文件。默认值见[清单规范契约](../reference/local-apps.md#manifest-contract)。
+### 1. 在对话中指示 Agent 生成本地看板应用
 
-若要使用本例的展示名称和描述，可选择保存 `apps/ping-card/manifest.json`：
+在 Web GUI 聊天窗口中，向你的 Agent 发送提示词，要求其在自身的 `apps/` 目录下生成一个任务待审看板：
+
+> "请在你的 `apps/task-board/` 目录下创建一个名为 `task-board` 的 Local App。包含 `manifest.json` 与 `index.html`。页面中引入 `holon.js`，通过 `window.Holon.context()` 展示你的 Agent ID，提供一个用于审批编号 #101 任务的按钮调用 `window.Holon.request()`，并使用 `window.Holon.events()` 实时滚动打印事件流日志。"
+
+Agent 会在自身的存储区生成相应文件。
+
+可选的清单文件 `manifest.json` 提供应用的元数据与展示信息：
 
 ```json
 {
-  "id": "ping-card",
-  "name": "Ping Card",
+  "id": "task-board",
+  "name": "任务审核看板",
   "version": "0.1.0",
   "entry": "index.html",
-  "description": "Ping the agent from a static card"
+  "description": "由 Agent 自身托管的交互式审核小工具"
 }
 ```
 
-## 2. 编写页面代码
-
-创建 `apps/ping-card/index.html`：
+生成的 `index.html` 页面引入由运行时自动注入的 `holon.js` 客户端 SDK：
 
 ```html
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>Agent Ping Card</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent 任务看板</title>
   <style>
-    body { font-family: sans-serif; padding: 2rem; max-width: 480px; margin: auto; }
-    button { padding: 0.5rem 1rem; cursor: pointer; }
-    pre { background: #f4f4f4; padding: 1rem; border-radius: 4px; overflow-x: auto; }
+    body { font-family: system-ui, -apple-system, sans-serif; padding: 2rem; max-width: 600px; margin: auto; line-height: 1.5; }
+    .card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 1.5rem; margin-bottom: 1rem; background: #fff; }
+    .badge { display: inline-block; padding: 0.2rem 0.6rem; border-radius: 4px; font-size: 0.85rem; font-weight: 600; background: #edf2f7; color: #4a5568; }
+    button { background: #2563eb; color: #fff; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; font-weight: 500; }
+    button:disabled { background: #94a3b8; cursor: not-allowed; }
+    pre { background: #0f172a; color: #e2e8f0; padding: 1rem; border-radius: 6px; overflow-x: auto; font-size: 0.85rem; }
   </style>
 </head>
 <body>
-  <h2>Agent Ping Card</h2>
-  <p id="status">正在加载上下文...</p>
-  <button id="ping-btn" disabled>Ping Agent</button>
-  <pre id="output"></pre>
-  <pre id="events"></pre>
+  <div class="card">
+    <h2>Agent 任务看板</h2>
+    <p id="context-info">正在连接 Agent 运行时...</p>
+    <div style="margin: 1rem 0;">
+      <span class="badge" id="agent-badge">Agent: 加载中...</span>
+    </div>
+    <button id="action-btn" disabled>审批通过待审项 #101</button>
+  </div>
+
+  <div class="card">
+    <h3>最新请求入队回执</h3>
+    <pre id="receipt-output">尚未提交请求。</pre>
+  </div>
+
+  <div class="card">
+    <h3>实时 Agent 事件流</h3>
+    <pre id="events-log">正在等待运行时事件...</pre>
+  </div>
 
   <script src="holon.js"></script>
   <script>
-    const statusEl = document.getElementById("status");
-    const pingBtn = document.getElementById("ping-btn");
-    const outputEl = document.getElementById("output");
+    const contextEl = document.getElementById("context-info");
+    const agentBadge = document.getElementById("agent-badge");
+    const actionBtn = document.getElementById("action-btn");
+    const receiptOutput = document.getElementById("receipt-output");
+    const eventsLog = document.getElementById("events-log");
 
     async function init() {
       try {
         const ctx = await window.Holon.context();
-        statusEl.textContent = `已连接至 Agent: ${ctx.agent_id}`;
-        pingBtn.disabled = false;
+        contextEl.textContent = `已连接到当前会话 (${ctx.surface || "web-gui"})。`;
+        agentBadge.textContent = `所属 Agent: ${ctx.agent_id}`;
+        actionBtn.disabled = false;
         observeEvents();
       } catch (err) {
-        statusEl.textContent = `加载上下文失败: ${err.message}`;
+        contextEl.textContent = `加载上下文失败: ${err.message}`;
       }
     }
 
-    pingBtn.addEventListener("click", async () => {
-      pingBtn.disabled = true;
-      outputEl.textContent = "正在发送请求...";
+    actionBtn.addEventListener("click", async () => {
+      actionBtn.disabled = true;
+      receiptOutput.textContent = "正在提交结构化请求至 Agent 队列...";
       try {
-        const res = await window.Holon.request("ping", { timestamp: Date.now() });
-        outputEl.textContent = "入队回执（非最终执行结果）:
-" +
+        const res = await window.Holon.request("review_item", {
+          item_id: "item-101",
+          decision: "approve",
+          timestamp: Date.now()
+        });
+        receiptOutput.textContent = "入队回执（请求已受理进入队列）:\n" +
           JSON.stringify(res, null, 2);
       } catch (err) {
-        outputEl.textContent = `错误: ${err.message}`;
+        receiptOutput.textContent = `错误: ${err.message}`;
       } finally {
-        pingBtn.disabled = false;
+        actionBtn.disabled = false;
       }
     });
 
     async function observeEvents() {
-      const eventsEl = document.getElementById("events");
       try {
         for await (const item of window.Holon.events()) {
           const event = item.event;
-          eventsEl.textContent += `${event.type}: ${event.message_id}
-`;
+          const time = new Date().toLocaleTimeString();
+          eventsLog.textContent = `[${time}] ${event.type}: ${event.message_id || ""}\n` + eventsLog.textContent;
         }
       } catch (err) {
-        eventsEl.textContent += `事件流中断: ${err.message}`;
+        eventsLog.textContent = `事件流已断开: ${err.message}\n` + eventsLog.textContent;
       }
     }
 
@@ -105,36 +132,45 @@ order: 240
 </html>
 ```
 
-## 3. 打开并测试应用
+### 2. 在浏览器中打开并体验双向交互
 
-在浏览器的运行时同源地址下打开 `/apps/<agent-id>/ping-card/`，将 `<agent-id>` 替换为实际的 Agent ID。例如，在本地默认端口运行且 Agent ID 为 `main` 时，访问路径为 `http://127.0.0.1:7878/apps/main/ping-card/`。切勿直接通过 `file:` 本地文件协议打开 HTML。
+在浏览器中直接打开对应的逻辑路由 `/apps/<agent-id>/task-board/`。例如，若你的 Web GUI 运行在 `http://localhost:8080`，所属 Agent 为 `main`：
 
-1. 检查页面中显示的所属 Agent 名称是否正确，该信息来自 `context()`。
-2. 等待事件流连接建立，点击一次 **Ping Agent**。
-3. 检查返回的入队回执中是否包含 `status: "accepted"` 以及对应的 `message_id`。
-4. 在下方事件流中匹配该 ID 的 `message_enqueued` 事件。若 Agent 处于可运行状态，还会进一步触发 `message_processing_started`。
+`http://localhost:8080/apps/main/task-board/`
 
-事件流反映的是消息入队与处理事件，并非最终的业务完成结果。`ping` 请求属于结构化的消息输入，并非内置的可执行命令。请参阅[观察 Agent 工作](observe-agent-work.md)确认 Agent 实际执行的动作。应用请求的任何业务动作都必须单独获得操作者的指令授权。
+*(切勿直接通过本地文件协议 `file://` 双击打开 HTML；App SDK 必须在运行时同源 HTTP 服务下工作)*。
 
-## 故障排查
+1. **确认 Agent 上下文**：页面加载后，通过 `context()` 自动获取并显示该 App 归属的 Agent ID。
+2. **点击操作按钮**：点击 **审批通过待审项 #101**。
+3. **核验证明入队**：下方立刻打印入队回执，包含 `{ "status": "accepted", "message_id": "..." }`。
+4. **核验实时事件**：在下方事件流中，实时捕获到 `message_enqueued` 以及后续由调度器派发的 `message_processing_started` 等事件。
 
-- **应用未找到或被拒绝访问：** 无清单时须提供可读的根目录 `index.html`，运行时不会猜测其他入口。存在清单时，检查必填字段、`id`（本例为 `ping-card`）及入口路径。无效、超限、不可读、目录冒充、悬空链接或越界链接清单均报错，不回退到默认值。路径不得包含隐藏组件或逃出应用根目录。
-- **鉴权失败：** 在登录或配对后，从运行时同源地址直接打开应用。严禁在 HTML 或 JavaScript 中硬编码 Bearer Token。
-- **SDK 不可用：** 检查 `holon.js` 请求的响应。源码构建必须包含 App SDK 静态资源；单独的 HTML 页面无法自包含这些实现。
-- **未收到任何事件：** 在浏览器控制台的 Network 面板中检查 `/events` 请求。刷新页面并在连接建立后重新提交请求。切勿将网络断开期间遗漏的事件误判为服务故障。
-- **外部脚本或跨域请求被拦截：** 检查浏览器 CORS、应用自身的 CSP 及操作者配置的 App CSP。Holon 默认不附加平台 App CSP。不要在运行时的共享会话中引入不受信任的代码。
-- **`413` / `app_asset_too_large`：** 完整文件超过 daemon 的 `local_apps.max_asset_bytes`（默认 64 MiB），即使只请求一个 Range 也会被拒绝。
-- **`503` / `app_asset_busy`：** 16 个共享资源流均被占用。遵循 `Retry-After: 1` 后重试；SDK/API 请求不占这些 permit。
+### 3. 显式信任分类与安全边界
+
+Local App 运行在严格的运行时信任边界之内：
+- **入队回执不等于执行完毕**：`window.Holon.request()` 仅代表将请求放入 Agent 的工作收件箱；它返回的是已受理回执，而非最终执行完毕的结果。Agent 将根据自身的调度与业务规则处理该事项。
+- **非操作者直接指令（Untrusted App Ingress）**：App 提交的请求在运行时被明确标记为 `origin: app_ingress` 与不受信来源。界面的按钮点击无法冒充人类操作者，不能越过 `AGENTS.md` 所规定的权限边界让 Agent 执行未获授权的破坏性操作。
+- **同源会话保护**：Local App 与 Web GUI 共享运行时同源域名与已登录认证会话。切勿让 Agent 托管不可信的第三方前端代码。如需更严格的网络隔离，可通过配置文件定制 App Content Security Policy (CSP)。
+
+## 何时制作 Local App，何时使用 Markdown 报告
+
+- **选择 Markdown 报告**：当 Agent 的交付产物以阅读、归档或单次反馈为主时（例如每日站会总结、文档漂移审计清单、代码 Review 结论）。
+- **选择 Local App**：当工作流需要频繁的人机交互、多条目筛选排序、可视化状态流转或重复的审核确认时（例如待审工单看板、发票报销分类小工具）。
 
 ## 托管已有静态构建
 
-对于静态站点或未预压缩、单线程的 Unity Web 构建，将准备发布的产物复制到已确认 Agent Home 的 `apps/<app-id>/`，保留相对目录结构和根目录 `index.html`，登录后访问 `/apps/<agent-id>/<app-id>/`。单纯托管静态文件不需要单独的 HTTP 服务、清单或 SDK 集成。如果构建使用其他 HTML 入口名，请提供完整的显式清单并设置 `entry`；Holon 不会猜测或重命名文件。
+你也可以直接让 Agent 托管现成的静态文档、Web 资产或单线程 Unity Web 构建：
+- 将构建产物放置在该 Agent 的 `apps/<app-id>/` 目录下。
+- 确保根目录下包含入口 `index.html`。
+- 静态资产（包括 `.wasm`、`.data`、图片、样式表等）均可直接对外提供，无服务端执行代码。
+- 默认支持最大 64 MiB（即 `local_apps.max_asset_bytes` 配置项）的单个文件。
 
-普通文件不受扩展名白名单限制，包括 WASM（`application/wasm`）、data 和未知类型（`application/octet-stream`）。隐藏文件及路径/软链接逃逸被拒绝；不提供目录列表或服务端执行。不要把源码目录、密钥或私有文件复制到应用目录。
+## 故障排查
 
-daemon 级大小上限、可选 CSP、CLI 示例与生效时机详见 [Daemon 配置](../reference/local-apps.md#daemon-configuration)。daemon 运行时，`holon config set` 和 `holon config unset` 通过现有配置 API 持久化修改并调度 reload。成功 reload 后，后续 App 请求使用新设置；在途流保留已取得的策略。直接编辑文件不会自动触发配置 reload；离线设置在 daemon 启动或重启后生效。这些设置不改变 Web GUI 或 Explorer 的沙箱策略。
-
-在浏览器 Network 面板检查入口、脚本、WASM 和 data 响应，然后实际操作应用，不要把下载成功当成游戏运行成功。`.gz`、`.br`、`.unityweb` 按普通文件提供，不承诺预压缩构建可运行或原始 MIME/编码协商正确。多线程 Unity 与 COOP/COEP 不在首期范围。真实游戏与真实 Mac/Safari 验收仍未完成，自动化 HTTP 检查不能证明这些结果。已有服务需要升级二进制并使配置生效；本文档不会重启它们。
+- **应用未找到或 404**：检查目录名称是否与 URL 路由（`/apps/<agent-id>/<app-id>/`）完全一致。若存在 `manifest.json`，确认其 `id` 字段与目录名一致且入口文件存在。
+- **鉴权失败（401）**：确保在已登录 Web GUI 的同一个浏览器中打开该应用，严禁在 HTML 页面中硬编码密钥。
+- **SDK `holon.js` 404**：`holon.js` 由 Holon 运行时在 `/apps/{agent}/{app}/holon.js` 路由自动注入，确保你是通过 Holon 的 Web 服务访问，而非通过外部静态 Web 服务器访问。
+- **`503 app_asset_busy`**：共享资源读取流短暂占满，浏览器会在接收到 `Retry-After: 1` 响应后自动重试。
 
 ## 契约细节
 
@@ -163,4 +199,7 @@ daemon 级大小上限、可选 CSP、CLI 示例与生效时机详见 [Daemon �
 ## 另见
 
 - [使用 Web GUI](use-web-gui.md) — 管理 Agent 与查阅文件
+- [本地应用概念](../concepts/local-apps.md) — 深入理解 Local App 架构与生命周期模型
+- [本地应用参考规范](../reference/local-apps.md) — 查阅清单文件格式与 daemon 配置参数
+- [观察 Agent 工作](observe-agent-work.md) — 查看 Agent 如何处理来自应用的排队任务
 - [HTTP 控制平面参考](../reference/http-control-plane.md) — 路由规范与鉴权说明
