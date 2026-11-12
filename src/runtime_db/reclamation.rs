@@ -91,7 +91,6 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
             | crate::types::AgentStatus::Asleep
             | crate::types::AgentStatus::Stopped
     ) || state.current_run_id.is_some()
-        || state.pending > 0
         || state.sleeping_until.is_some()
         || state.pending_wake_hint.is_some()
     {
@@ -414,14 +413,6 @@ mod tests {
             Some("runtime_execution_or_wake")
         );
 
-        let mut pending = settled("pending", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        pending.pending = 1;
-        db.agent_states().upsert_for_fixture(&pending).unwrap();
-        assert_eq!(
-            blockers(&db, "pending").0.as_deref(),
-            Some("runtime_execution_or_wake")
-        );
-
         let mut sleeping = settled("sleeping", AgentStatus::Stopped, TurnTerminalKind::Aborted);
         sleeping.sleeping_until = Some(Utc::now());
         db.agent_states().upsert_for_fixture(&sleeping).unwrap();
@@ -495,28 +486,30 @@ mod tests {
             TaskStatus::Running
         );
 
-        let queued_agent = settled("queued", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        db.agent_states().upsert_for_fixture(&queued_agent).unwrap();
-        let queued = QueueEntryRecord {
-            message_id: "queued-1".into(),
-            agent_id: "queued".into(),
-            priority: crate::types::Priority::Normal,
-            status: QueueEntryStatus::Queued,
-            created_at: now,
-            updated_at: now,
-        };
-        db.queue_entries().upsert(&queued).unwrap();
-        assert_eq!(
-            blockers(&db, "queued").0.as_deref(),
-            Some("queued_or_claimed_input")
-        );
-        assert_eq!(
-            db.queue_entries()
-                .latest(&queued.message_id)
-                .unwrap()
-                .unwrap()
-                .status,
-            QueueEntryStatus::Queued
-        );
+        for (agent_id, status) in [
+            ("queued", QueueEntryStatus::Queued),
+            ("claimed", QueueEntryStatus::Dequeued),
+            ("interrupted", QueueEntryStatus::Interrupted),
+        ] {
+            let agent = settled(agent_id, AgentStatus::Asleep, TurnTerminalKind::Aborted);
+            db.agent_states().upsert_for_fixture(&agent).unwrap();
+            let entry = QueueEntryRecord {
+                message_id: format!("{agent_id}-1"),
+                agent_id: agent_id.into(),
+                priority: crate::types::Priority::Normal,
+                status,
+                created_at: now,
+                updated_at: now,
+            };
+            db.queue_entries().upsert(&entry).unwrap();
+            let (execution, idle, cleanup) = blockers(&db, agent_id);
+            for blocker in [execution, idle, cleanup] {
+                assert_eq!(blocker.as_deref(), Some("queued_or_claimed_input"));
+            }
+            assert_eq!(
+                db.queue_entries().latest(&entry.message_id).unwrap(),
+                Some(entry)
+            );
+        }
     }
 }

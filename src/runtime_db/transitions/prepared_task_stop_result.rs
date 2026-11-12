@@ -499,13 +499,9 @@ pub(super) fn commit_result_tx(
         )?);
         let old = agent_state_tx(tx, &scope.agent_id)?
             .context("Stop Result actual owner State missing")?;
-        let count:usize=tx.query_row("SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')",[&scope.agent_id],|r|r.get(0))?;
-        anyhow::ensure!(
-            old.pending == count,
-            "Stop Result original pending accounting differs"
-        );
         let mut next = old.clone();
-        next.pending = count
+        next.pending = old
+            .pending
             .checked_add(usize::from(previous.is_none()))
             .context("Stop Result pending overflow")?;
         let state = AgentStateMutation {

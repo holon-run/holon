@@ -549,7 +549,7 @@ pub(super) fn inject_original_terminal_conflict_tx(
     // Real OCC validation after business and receipt writes, all of which must
     // disappear in this attempt's enclosing rollback.
     tx.execute(
-        "UPDATE agent_states SET payload_json=json_set(payload_json,'$.pending',json_extract(payload_json,'$.pending')+1) WHERE agent_id=?1",
+        "UPDATE agent_states SET payload_json=json_set(payload_json,'$.last_wake_reason','test State conflict') WHERE agent_id=?1",
         [&original.intent.original.scope.agent_id],
     )?;
     let changed = AgentStateMutation {

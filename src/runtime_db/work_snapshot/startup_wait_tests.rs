@@ -131,6 +131,36 @@ async fn cleanup(
     db.agent_states()
         .reconcile_stale_waits_at_startup_in_scopes(scopes, &capability, &request(), fault)
 }
+
+#[tokio::test]
+async fn startup_qualified_wait_cleanup_preserves_pending_input_for_live_agent() -> Result<()> {
+    use crate::types::{Priority, QueueEntryRecord, QueueEntryStatus};
+
+    let (dir, db) = fresh()?;
+    let wait = active_wait("qualified-stale-wait")?;
+    db.transaction(|tx| write_qualified_wait(tx, &wait, &request()).map(|_| ()))?;
+    let entry = QueueEntryRecord {
+        message_id: "pending-at-startup".into(),
+        agent_id: wait.agent_id.clone(),
+        priority: Priority::Normal,
+        status: QueueEntryStatus::Interrupted,
+        created_at: time(),
+        updated_at: time(),
+    };
+    db.queue_entries().upsert(&entry)?;
+
+    let scopes = db.startup_input_recovery_scopes(std::slice::from_ref(&wait.agent_id))?;
+    let (count, states) = cleanup(&db, dir.path(), &scopes, None).await?;
+    assert_eq!(count, 1);
+    assert_eq!(states[&wait.agent_id].pending, 1);
+    assert_eq!(db.queue_entries().latest(&entry.message_id)?, Some(entry));
+    assert_eq!(
+        db.wait_conditions().latest_for_agent(&wait.agent_id)?[0].status,
+        WaitConditionStatus::Cancelled
+    );
+    Ok(())
+}
+
 fn unbound() -> Result<(tempfile::TempDir, RuntimeDb, String)> {
     unbound_with_import_status(true)
 }

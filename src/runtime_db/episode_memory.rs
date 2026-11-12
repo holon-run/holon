@@ -404,12 +404,8 @@ fn write_validated_episode_memory_tx(
 
     if persist_state {
         upsert_agent_state_at_tx(tx, candidate, command.committed_at)?;
-        let stored_payload: String = tx.query_row(
-            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-            [&command.key.agent_id],
-            |row| row.get(0),
-        )?;
-        let stored: AgentState = serde_json::from_str(&stored_payload)?;
+        let stored =
+            state_tx(tx, &command.key.agent_id)?.context("episode memory State disappeared")?;
         ensure!(
             stored == *candidate,
             "episode memory candidate was not persisted exactly"
@@ -633,14 +629,7 @@ fn validate_identity_tx(tx: &Transaction<'_>, key: &EpisodeMemoryKey) -> Result<
 }
 
 fn state_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<AgentState>> {
-    tx.query_row(
-        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-        [agent_id],
-        |row| row.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|payload| serde_json::from_str(&payload).map_err(Into::into))
-    .transpose()
+    super::repositories::projected_agent_state_on(tx, agent_id)
 }
 
 fn validate_expected_state_tx(
@@ -1080,7 +1069,6 @@ mod tests {
         state.current_run_id = None;
         state.current_turn_id = None;
         state.current_work_item_id = Some(work.id);
-        state.pending = 3;
         state.total_input_tokens = 11;
         state.total_output_tokens = 13;
         state.last_wake_reason = Some("actual compound settlement".into());

@@ -126,26 +126,33 @@ async fn snapshot_storage_view_keeps_original_holder_through_wire_success_and_fa
 async fn snapshot_storage_view_propagates_sql_errors_without_partial_entry_or_phase_reset(
 ) -> Result<()> {
     let (_home, host) = fixture().await?;
-    host.runtime_db()
-        .connection()?
-        .execute("DROP TABLE queue_entries", [])?;
+    let connection = host.runtime_db().connection()?;
     for roster in [false, true] {
+        connection.execute(
+            "ALTER TABLE queue_entries RENAME TO unavailable_queue_entries",
+            [],
+        )?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
         let holder = phase.guard()?;
         {
             let _entry = phase.enter();
-            let error = entry(&host, roster).unwrap_err();
-            let sql = error.downcast_ref::<rusqlite::Error>().unwrap();
-            assert_eq!(sql.to_string(), "no such table: queue_entries");
+            for status in [AgentStatus::AwakeIdle, AgentStatus::Stopped] {
+                store_state(&host, status)?;
+                let error = entry(&host, roster).unwrap_err();
+                let sql = error.downcast_ref::<rusqlite::Error>().unwrap();
+                assert_eq!(sql.to_string(), "no such table: queue_entries");
+                assert!(Arc::ptr_eq(
+                    &ResourceReadMaterial::active_guard()?.unwrap(),
+                    &holder
+                ));
+            }
             let used = phase.finish()?;
             assert!(used.0 > 0);
-            assert!(Arc::ptr_eq(
-                &ResourceReadMaterial::active_guard()?.unwrap(),
-                &holder
-            ));
-            // Early posture selection still precedes the unavailable queue.
-            store_state(&host, AgentStatus::Stopped)?;
+            connection.execute(
+                "ALTER TABLE unavailable_queue_entries RENAME TO queue_entries",
+                [],
+            )?;
             let (agent, retained) = entry(&host, roster)?;
             assert_eq!(
                 agent.scheduling_posture.posture,
@@ -155,7 +162,6 @@ async fn snapshot_storage_view_propagates_sql_errors_without_partial_entry_or_ph
             assert!(phase.finish()?.0 > used.0);
             drop((agent, retained));
         }
-        store_state(&host, AgentStatus::AwakeIdle)?;
         drop(phase);
         assert!(ledger.report()?.observed_bytes > 0);
         drop(holder);

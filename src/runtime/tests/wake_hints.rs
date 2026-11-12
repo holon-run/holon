@@ -954,10 +954,8 @@ async fn wake_hint_when_awake_idle_with_nonempty_queue_is_coalesced() {
         context_config(),
     )
     .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::AwakeIdle;
-        guard.queue.push(MessageEnvelope::new(
+    runtime
+        .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
@@ -969,8 +967,12 @@ async fn wake_hint_when_awake_idle_with_nonempty_queue_is_coalesced() {
             MessageBody::Text {
                 text: "queued while idle".into(),
             },
-        ));
-        guard.state.pending = guard.queue.len();
+        ))
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::AwakeIdle;
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
 
@@ -999,10 +1001,8 @@ async fn wake_hint_when_asleep_with_nonempty_queue_is_coalesced() {
         context_config(),
     )
     .unwrap();
-    {
-        let mut guard = runtime.inner.agent.lock().await;
-        guard.state.status = AgentStatus::Asleep;
-        guard.queue.push(MessageEnvelope::new(
+    runtime
+        .enqueue(MessageEnvelope::new(
             "default",
             MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
@@ -1014,8 +1014,12 @@ async fn wake_hint_when_asleep_with_nonempty_queue_is_coalesced() {
             MessageBody::Text {
                 text: "queued while asleep".into(),
             },
-        ));
-        guard.state.pending = guard.queue.len();
+        ))
+        .await
+        .unwrap();
+    {
+        let mut guard = runtime.inner.agent.lock().await;
+        guard.state.status = AgentStatus::Asleep;
         guard.persist_state(&runtime.inner.storage).unwrap();
     }
 

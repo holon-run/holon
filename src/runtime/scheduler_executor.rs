@@ -1095,6 +1095,24 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .runtime_db
             .queue_entries()
             .latest_for_preparation(&candidate.message.id)?;
+        if queue_entry.as_ref().is_none_or(|entry| {
+            !matches!(
+                entry.status,
+                QueueEntryStatus::Queued | QueueEntryStatus::Interrupted
+            )
+        }) {
+            let mut guard = self.runtime.begin_mutation().await?;
+            if guard.committed_state() != &candidate.prior_state {
+                return Ok(PrepareMessageOutcome::Replan);
+            }
+            if guard
+                .reconcile_unclaimable_queue_source(&candidate.message.id)
+                .await?
+            {
+                return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
+            }
+            return Ok(PrepareMessageOutcome::Replan);
+        }
         let mut persisted_message = candidate.message.clone();
         #[cfg(feature = "recovery-acceptance")]
         if super::recovery_acceptance::hold_task_result(self.runtime, &candidate.message)? {
@@ -1974,13 +1992,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     }
                 };
                 if !commit.applied {
-                    let _ = guard.queue.pop_selected(
-                        &candidate.message.id,
-                        candidate.wait_obligation || !candidate.provider_parked.is_empty(),
-                    );
-                    guard.state.pending = guard.queue.len();
-                    guard.persist_state(&self.runtime.inner.storage).await?;
-                    return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
+                    return if guard
+                        .reconcile_unclaimable_queue_source(&candidate.message.id)
+                        .await?
+                    {
+                        Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle))
+                    } else {
+                        Ok(PrepareMessageOutcome::Replan)
+                    };
                 }
                 let mut claimed_message = persisted_message.clone();
                 if let Some(replay) = task_result_replay.take() {

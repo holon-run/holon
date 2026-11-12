@@ -509,7 +509,7 @@ pub(crate) fn upsert_agent_state_at_tx(
         "INSERT INTO agent_states (
             agent_id, status, turn_index, current_run_id, current_work_item_id,
             active_workspace_id, updated_at, payload_json, control_revision
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 1)
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, json_remove(?8, '$.pending'), 1)
          ON CONFLICT(agent_id) DO UPDATE SET
             status = excluded.status,
             turn_index = excluded.turn_index,

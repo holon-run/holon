@@ -6003,8 +6003,13 @@ fn apply_agent_state_mutation_tx(
     let Some(mutation) = mutation else {
         return Ok(false);
     };
-    if agent_state_tx(tx, &mutation.record.id)?.as_ref() == Some(mutation.record.as_ref()) {
-        return Ok(false);
+    let durable = super::context_inputs::ContextDurableRead::new(tx, &mutation.record.id);
+    if let Some(mut stored) = durable.owned_control_state()? {
+        // Queue membership is committed by the Queue command.
+        stored.pending = mutation.record.pending;
+        if stored == *mutation.record {
+            return Ok(false);
+        }
     }
     upsert_agent_state_tx(tx, mutation.record.as_ref())?;
     Ok(true)
@@ -9369,7 +9374,12 @@ mod tests {
         let mut processed = queued.clone();
         processed.status = QueueEntryStatus::Processed;
         processed.updated_at = now + chrono::Duration::seconds(2);
+        let initial_state = db
+            .agent_states()
+            .latest("agent-a")?
+            .context("missing State")?;
         let mut committed_state = initial_state.clone();
+        committed_state.pending = 0;
         committed_state.current_work_item_id = None;
         committed_state.current_turn_work_item_id = None;
         committed_state.current_turn_id = Some("turn-completion-cotouch".into());

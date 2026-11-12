@@ -136,6 +136,7 @@ pub(crate) fn prepare_pending_queue_read_tx<'tx, 'conn>(
         scope,
         count: usize::try_from(count)?,
         posture: QueuePostureFacts {
+            pending: usize::try_from(count)?,
             has_queued,
             has_interrupted,
         },

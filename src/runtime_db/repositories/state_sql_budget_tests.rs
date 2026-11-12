@@ -58,6 +58,12 @@ fn typed_wire_cost(value: &impl serde::Serialize) -> Result<(u64, usize)> {
         cells(&serde_json::to_value(value)?) * 8,
     ))
 }
+fn stored_state(value: &AgentState) -> Result<serde_json::Value> {
+    let mut payload = serde_json::to_value(value)?;
+    assert!(payload.as_object_mut().unwrap().remove("pending").is_some());
+    Ok(payload)
+}
+
 fn state_read_cost(value: &AgentState) -> Result<(u64, usize)> {
     fn nodes(value: &serde_json::Value) -> usize {
         1 + match value {
@@ -66,8 +72,9 @@ fn state_read_cost(value: &AgentState) -> Result<(u64, usize)> {
             _ => 0,
         }
     }
-    let payload = serde_json::to_string(value)?;
-    let nodes = nodes(&serde_json::from_str(&payload)?);
+    let value = stored_state(value)?;
+    let payload = serde_json::to_string(&value)?;
+    let nodes = nodes(&value);
     Ok((
         (payload.len() as u64 + 256 + (nodes * std::mem::size_of::<serde_json::Value>()) as u64)
             * 8,
@@ -186,7 +193,7 @@ fn task_source_column_error_precedes_vec_admission_without_extra_charge() -> Res
 #[test]
 fn latest_state_source_borrows_before_exact_admission_and_latches_rejection() -> Result<()> {
     let (_home, db) = fixture()?;
-    let exact = add(header(), wire_cost(&record())?);
+    let exact = add(header(), wire_cost(&stored_state(&record())?)?);
     for (bytes, records, admitted) in [
         (exact.0, exact.1, true),
         (exact.0 - 1, exact.1, false),

@@ -9160,13 +9160,19 @@ async fn terminal_task_result_commit_rejects_fenced_off_task_write() {
     result.task_id = Some("task-fenced".into());
     result.work_item_id = Some(work_item.id.clone());
     result.turn_id = Some("turn-fenced-result".into());
+    let durable_task = runtime
+        .runtime_db()
+        .tasks()
+        .latest("task-fenced")
+        .unwrap()
+        .unwrap();
     let terminal_task = TaskRecord {
         id: "task-fenced".into(),
         agent_id: "default".into(),
         kind: TaskKind::CommandTask,
         status: TaskStatus::Completed,
         created_at: Utc::now(),
-        updated_at: Utc::now() - chrono::Duration::milliseconds(50),
+        updated_at: durable_task.updated_at - chrono::Duration::milliseconds(1),
         parent_message_id: Some(result.id.clone()),
         work_item_id: Some(work_item.id.clone()),
         summary: Some("fenced terminal completion".into()),
@@ -17928,22 +17934,13 @@ async fn control_stop_clears_autonomous_sleep_and_wake_posture() {
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn control_stop_cancels_waits_and_discards_pending_input() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let runtime = RuntimeHandle::new(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(CountingProvider {
-            calls: Mutex::new(0),
-            reply: "unused",
-        }),
-        "default".into(),
-        context_config(),
-    )
-    .unwrap();
-    let now = Utc::now();
+    use crate::runtime_db::transitions::{
+        PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+    };
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let now = runtime.now();
 
     for (id, status, triggered_at) in [
         ("wait-stop-active", WaitConditionStatus::Active, None),
@@ -17980,25 +17977,59 @@ async fn control_stop_cancels_waits_and_discards_pending_input() {
             .unwrap();
     }
 
-    for (message_id, status) in [
-        ("message-stop-queued", QueueEntryStatus::Queued),
-        ("message-stop-interrupted", QueueEntryStatus::Interrupted),
-    ] {
-        runtime
-            .inner
-            .runtime_db
-            .queue_entries()
-            .upsert(&QueueEntryRecord {
-                message_id: message_id.into(),
-                agent_id: "default".into(),
-                priority: Priority::Normal,
-                status,
-                created_at: now,
-                updated_at: now,
-            })
-            .unwrap();
+    for message_id in ["message-stop-queued", "message-stop-interrupted"] {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "stop-test".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: message_id.into(),
+            },
+        );
+        message.id = message_id.into();
+        let accepted = runtime.enqueue(message).await.unwrap();
+        if message_id == "message-stop-interrupted" {
+            let expected = runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&accepted.id)
+                .unwrap()
+                .unwrap();
+            let mut interrupted = expected.clone();
+            interrupted.status = QueueEntryStatus::Interrupted;
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            let commit = mutation
+                .commit_prepared_queue(
+                    crate::ids::audit_event_id(),
+                    PreparedQueueTransition::new(QueueTransitionCommand {
+                        agent_id: accepted.agent_id,
+                        operation: QueueOperation::Settle,
+                        mutation: QueueMutation::CompareAndSet {
+                            expected,
+                            record: interrupted,
+                        },
+                        scheduler_claim_work_item: None,
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events: Vec::new(),
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(commit.applied);
+        }
     }
 
+    assert_eq!(runtime.agent_state().await.unwrap().pending, 2);
     runtime.control(ControlAction::Stop).await.unwrap();
 
     let waits = runtime
@@ -18250,11 +18281,33 @@ async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue
     .unwrap();
     runtime.control(ControlAction::Stop).await.unwrap();
 
-    let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
-    concurrent_state.pending = 1;
+    let concurrent_message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "already-pending".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "concurrent committed input".into(),
+        },
+    );
     runtime
         .storage()
-        .write_agent_for_fixture(&concurrent_state)
+        .append_message(&concurrent_message)
+        .unwrap();
+    runtime
+        .runtime_db()
+        .queue_entries()
+        .upsert(&QueueEntryRecord {
+            message_id: concurrent_message.id,
+            agent_id: "default".into(),
+            priority: Priority::Next,
+            status: QueueEntryStatus::Queued,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
         .unwrap();
 
     let message = MessageEnvelope::new(
@@ -24095,15 +24148,7 @@ async fn late_notification_does_not_rebase_or_persist_agent_state() {
             .as_deref(),
         None
     );
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .agent_states()
-            .latest("default")
-            .unwrap(),
-        Some(runtime.agent_state().await.unwrap())
-    );
+    assert_eq!(durable_before.unwrap().pending, 1);
 }
 
 struct ConversationProgressProvider {

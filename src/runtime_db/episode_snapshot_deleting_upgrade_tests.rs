@@ -689,6 +689,7 @@ fn fixed_sqlite_deleting_upgrade_does_not_wait_for_file_import() -> Result<()> {
 fn deleting_upgrade_startup_qualifies_original_attempt_interruption_and_source() -> Result<()> {
     let fixture = Fixture::legacy_with_open_attempt()?;
     assert_eq!(fixture.state()?.pending, 0);
+    let durable_before = fixture.recovery_rows()?.remove("agent_states");
     let attempt_status: String = fixture.db.connection()?.query_row(
         "SELECT lifecycle_state FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2",
         params![AGENT, ATTEMPT], |row| row.get(0))?;
@@ -723,10 +724,13 @@ fn deleting_upgrade_startup_qualifies_original_attempt_interruption_and_source()
         |row| row.get(0),
     )?;
     assert_eq!(status, "interrupted");
-    // Global startup intentionally does not normalize State or activate Deleting.
-    assert_eq!(fixture.state()?.pending, 0);
-    let preparation_error = fixture.prepare_cleanup(7).unwrap_err();
-    assert!(format!("{preparation_error:#}").contains("canonical pending queue differs from State"));
+    // Startup updates Queue membership while leaving the Deleting State row intact.
+    assert_eq!(
+        fixture.recovery_rows()?.remove("agent_states"),
+        durable_before
+    );
+    assert_eq!(fixture.state()?.pending, 1);
+    fixture.prepare_cleanup(7)?;
     fixture.assert_recovered_attempt_qualified()?;
     fixture.assert_normal_rejected(7)?;
     assert_eq!(

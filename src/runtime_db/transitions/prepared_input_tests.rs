@@ -302,7 +302,7 @@ fn posture_noop_has_committed_receipt_and_replays_before_later_occ() -> Result<(
         _ => panic!("first no-op must commit its original receipt"),
     };
     let mut later = original;
-    later.pending = 9;
+    later.total_input_tokens = 9;
     f.db.agent_states().upsert_for_fixture(&later)?;
     match f
         .db
@@ -407,7 +407,7 @@ fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() ->
         _ => panic!("original queue commit missing"),
     };
     let mut later = f.state()?;
-    later.pending = 4;
+    later.total_input_tokens = 4;
     f.db.agent_states().upsert_for_fixture(&later)?;
     match f
         .db
@@ -779,7 +779,7 @@ fn terminal_original_result_replays_after_later_canonical_posture() -> Result<()
         InputMutationExecution::Committed { .. }
     ));
     let mut later = f.state()?;
-    later.pending = 8;
+    later.total_input_tokens = 8;
     f.db.agent_states().upsert_for_fixture(&later)?;
     assert!(matches!(
         f.db.transitions_in_scope(&f.scope)

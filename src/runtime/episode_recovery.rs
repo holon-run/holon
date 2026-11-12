@@ -405,7 +405,7 @@ mod tests {
         fn command(&self, finalize: bool, business_change: bool) -> EpisodeMemoryTransitionCommand {
             let mut candidate = self.state.clone();
             if business_change {
-                candidate.pending = 42;
+                candidate.total_input_tokens = 42;
             }
             if finalize {
                 candidate.working_memory.archived_episode_count = 1;
@@ -538,9 +538,9 @@ mod tests {
         );
         witness.finish_original_attempt();
         // A later acknowledged canonical write must not be replaced by the old
-        // receipt's pending=42 candidate during recovery.
+        // receipt's original candidate during recovery.
         let mut current = command.candidate().clone();
-        current.pending = 99;
+        current.total_input_tokens = 99;
         fixture
             .db
             .agent_states()
@@ -578,14 +578,23 @@ mod tests {
         else {
             panic!("receipt must promote an exact current prepared root");
         };
-        assert_eq!(state.pending, 99);
+        assert_eq!(state.total_input_tokens, 99);
         let selected = episodes.selected(12).unwrap();
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].id, "episode-a");
         assert!(runtime.is_none());
         assert_eq!(fixture.receipt_count(), 1);
         reconcile(&mut reservation);
-        assert_eq!(fixture.owner.capture().unwrap().unwrap().state.pending, 99);
+        assert_eq!(
+            fixture
+                .owner
+                .capture()
+                .unwrap()
+                .unwrap()
+                .state
+                .total_input_tokens,
+            99
+        );
         assert!(matches!(
             fixture.db.commit_episode_memory(&command).unwrap(),
             EpisodeMemoryCommit::Replayed { .. }
@@ -703,7 +712,7 @@ mod tests {
         let successor = identity(2);
         fixture.db.agent_identities().upsert(&successor).unwrap();
         let mut successor_state = AgentState::new("agent-a");
-        successor_state.pending = 777;
+        successor_state.total_input_tokens = 777;
         fixture
             .db
             .transaction(|tx| {

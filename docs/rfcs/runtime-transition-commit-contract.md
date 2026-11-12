@@ -93,6 +93,13 @@ atomically when a command changes them:
 - `runtime_sequences` used by committed ledgers;
 - `runtime_index_outbox`.
 
+`AgentState.pending` is the number of `queued` and `interrupted` Queue entries.
+The runtime publishes it with the Queue facts acknowledged by the transaction.
+Bootstrap and unloaded reads reconstruct it from Queue membership in their
+read transaction. State payloads written by older versions may carry a
+`pending` value, which is superseded by the Queue projection on read. A
+Queue-only change leaves the Agent control row and its revision untouched.
+
 ### Durable derived intent
 
 `runtime_index_outbox` is a durable instruction to refresh the rebuildable

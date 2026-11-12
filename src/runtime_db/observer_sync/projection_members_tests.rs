@@ -12,6 +12,7 @@ use std::sync::Arc;
 const SOURCES: &[&str] = &[
     "agent_identities",
     "agent_states",
+    "queue_entries",
     "audit_events",
     "audit_event_retention_watermarks",
     "runtime_sequences",
@@ -258,6 +259,7 @@ fn empty_members_validate_original_roster_columns_and_retry_after_rollback() -> 
             ][..],
         ),
         ("agent_states", &["agent_id", "payload_json"][..]),
+        ("queue_entries", &["agent_id", "status"][..]),
     ] {
         for column in columns {
             let transaction = connection.transaction()?;

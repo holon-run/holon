@@ -287,7 +287,8 @@ pub(crate) fn read_original_state_tx(
         [&scope.agent_id],
         |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
     )?;
-    let state = super::repositories::decode_agent_state_payload(&payload)?;
+    let pending = super::current_query::pending_queue_count(tx, &scope.agent_id)?;
+    let state = super::repositories::decode_agent_state_projection(&payload, pending)?;
     ensure!(
         agent == scope.agent_id && state.id == agent && state.current_run_id == run,
         "Command State normalized projection differs"

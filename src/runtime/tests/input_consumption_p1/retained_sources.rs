@@ -276,6 +276,7 @@ async fn p1_repair_retained_source_rejects_commit_queue_atomically_after_drift_c
         .unwrap();
     let mut changed = before.clone();
     changed.last_wake_reason = Some("direct-consumption-probe".into());
+    changed.pending -= 1;
     let event = AuditEvent::legacy(
         "retained_source_consumption_probe",
         serde_json::json!({ "agent_id": old.agent_id }),

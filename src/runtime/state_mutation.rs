@@ -1986,6 +1986,7 @@ impl RuntimeMutation {
             self.control_cancellation = None;
         }
         let mut projection_error = None;
+        let mut acknowledged_queue = None;
         let changes_queue = committed.effects.changes_queue();
         let changes_events = !committed.effects.audit_events.is_empty();
         let has_current_effects = changes_queue || changes_events;
@@ -2025,6 +2026,7 @@ impl RuntimeMutation {
             } else {
                 if let Some(queue_posture) = current.queue_posture {
                     self.queue_posture = Some(queue_posture);
+                    acknowledged_queue = Some(queue_posture);
                 }
                 if let Some(scheduler_events) = current.scheduler_events {
                     self.scheduler_events = Some(scheduler_events);
@@ -2056,6 +2058,9 @@ impl RuntimeMutation {
                 &self.candidate.state == self.committed_state(),
                 "typed commit omitted a changed agent state"
             );
+        }
+        if let Some(queue) = acknowledged_queue {
+            self.candidate.state.pending = queue.pending;
         }
         for message_id in &committed.effects.removed_queue_message_ids {
             self.candidate
@@ -2401,6 +2406,70 @@ impl RuntimeMutation {
         self.publish_installed_state().await
     }
 
+    pub(super) async fn reconcile_unclaimable_queue_source(
+        &mut self,
+        message_id: &str,
+    ) -> Result<bool> {
+        let scope = self.input_evidence_scope();
+        let Some((state, queue)) = self.runtime.inner.runtime_db.read_for_preparation(|tx| {
+            let still_pending: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND message_id=?2
+                 AND status IN ('queued','interrupted'))",
+                rusqlite::params![scope.agent_id, message_id],
+                |row| row.get(0),
+            )?;
+            if still_pending {
+                return Ok(None);
+            }
+            let facts =
+                crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id)
+                    .scope_facts()?;
+            anyhow::ensure!(
+                facts.identity.is_some_and(|identity| {
+                    identity.incarnation == scope.identity_incarnation
+                        && identity.status == crate::types::AgentRegistryStatus::Active
+                }),
+                "Queue repair identity changed"
+            );
+            let state = facts.state.context("Queue repair requires durable State")?;
+            let queue = crate::runtime_db::current_query::queue_posture_tx(tx, &scope.agent_id)?;
+            Ok(Some((state, queue)))
+        })?
+        else {
+            return Ok(false);
+        };
+        let mut state = crate::runtime_db::context_inputs::own_state(state)?;
+        state.pending = self.committed_state().pending;
+        anyhow::ensure!(
+            &state == self.committed_state(),
+            "Queue repair control State changed"
+        );
+        state.pending = queue.pending;
+        if self
+            .candidate
+            .queue
+            .peek_next_matching(|message| message.id == message_id)
+            .is_none()
+        {
+            return Ok(true);
+        }
+        anyhow::ensure!(
+            self.candidate.queue.len().checked_sub(1) == Some(queue.pending),
+            "Queue repair found another pending membership change"
+        );
+        self.candidate
+            .queue
+            .pop_next_matching(|message| message.id == message_id);
+        self.queue_posture = Some(queue);
+        self.current = None;
+        self.runtime
+            .inner
+            .input_evidence_budget
+            .release_accepted(&scope, &[message_id.to_owned()])?;
+        self.install_durable_readback(state).await?;
+        Ok(true)
+    }
+
     pub(super) async fn install_durable_readback(&mut self, state: AgentState) -> Result<()> {
         self.candidate.state = state;
         self.publish_installed_state().await
@@ -2610,7 +2679,10 @@ impl RuntimeMutation {
             self.candidate.queue.push(message.clone());
         }
         let queued_messages = self.candidate.queue.len();
-        self.candidate.state.pending = queued_messages;
+        anyhow::ensure!(
+            self.candidate.state.pending == queued_messages,
+            "bootstrap replay queue differs from the committed Queue count"
+        );
         scheduler_executor::apply_bootstrap_recovered_projection(
             &mut self.candidate.state,
             scheduler_executor::BootstrapRecoveryFacts { queued_messages },

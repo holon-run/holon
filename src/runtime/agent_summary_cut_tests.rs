@@ -334,14 +334,23 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
     let owner = &runtime.inner.mutation_owner;
     let db = runtime.runtime_db();
     let id = owner.agent_id();
-    let check = |has_queued, has_interrupted| -> Result<_> {
+    let check = |pending, has_queued, has_interrupted| -> Result<_> {
         let root = owner.capture()?.context("missing root")?;
         assert_eq!(
             root.queue_posture,
             Some(QueuePostureFacts {
+                pending,
                 has_queued,
                 has_interrupted,
             })
+        );
+        assert_eq!(root.state.pending, pending);
+        assert_eq!(
+            db.agent_states()
+                .latest(id)?
+                .context("missing State")?
+                .pending,
+            pending
         );
         assert!(root
             .current
@@ -369,9 +378,10 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
             },
         )
     };
-    check(false, false)?;
+    check(0, false, false)?;
     let message = runtime.enqueue(prompt()).await?;
-    check(true, false)?;
+    let message_id = message.id.clone();
+    check(1, true, false)?;
     let expected = db
         .queue_entries()
         .latest(&message.id)?
@@ -407,7 +417,7 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
     drop(mutation);
     assert!(owner.capture().is_err());
     runtime.reconcile_posture_observation().await?;
-    let interrupted_cut = check(false, true)?;
+    let interrupted_cut = check(1, false, true)?;
     let entries = host.list_agent_entries().await?;
     let entry = &entries[0];
     assert_ne!(
@@ -415,10 +425,10 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
         AgentSchedulingPosture::HasQueuedInput
     );
     assert_eq!(entry.pending, 1);
-    assert_eq!(check(false, true)?, interrupted_cut);
+    assert_eq!(check(1, false, true)?, interrupted_cut);
 
     runtime.enqueue(prompt()).await?;
-    let mixed_cut = check(true, true)?;
+    let mixed_cut = check(2, true, true)?;
     let entries = host.list_agent_entries().await?;
     let entry = &entries[0];
     assert_eq!(
@@ -426,10 +436,116 @@ async fn fleet_queue_posture_tracks_original_writes_and_recovery() -> Result<()>
         AgentSchedulingPosture::HasQueuedInput
     );
     assert_eq!(entry.pending, 2);
-    assert_eq!(check(true, true)?, mixed_cut);
+    assert_eq!(check(2, true, true)?, mixed_cut);
+
+    let (revision, legacy_pending): (u64, Option<usize>) = db.connection()?.query_row(
+        "SELECT control_revision, json_extract(payload_json,'$.pending') FROM agent_states WHERE agent_id=?1",
+        [id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(legacy_pending, None);
+    let expected = db
+        .queue_entries()
+        .latest(&message_id)?
+        .context("missing interrupted source")?;
+    let mut dropped = expected.clone();
+    dropped.status = QueueEntryStatus::Dropped;
+    dropped.updated_at = runtime.now();
+    let mut mutation = runtime.begin_mutation().await?;
+    let state = mutation.committed_state().clone();
+    let mut candidate = state.clone();
+    candidate.pending -= 1;
+    let commit = mutation
+        .commit_prepared_queue(
+            "roster-queue-drop".into(),
+            PreparedQueueTransition::new(QueueTransitionCommand {
+                agent_id: id.to_owned(),
+                operation: QueueOperation::RepairDrop,
+                mutation: QueueMutation::CompareAndSet {
+                    expected,
+                    record: dropped,
+                },
+                scheduler_claim_work_item: None,
+                agent_state: Some(crate::runtime_db::transitions::AgentStateMutation {
+                    expected: Some(Box::new(state)),
+                    record: Box::new(candidate),
+                }),
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: false,
+                fault: None,
+                brief_evidence: Vec::new(),
+            }),
+        )
+        .await?;
+    assert!(commit.applied);
+    drop(mutation);
+    assert_ne!(check(1, true, false)?, mixed_cut);
+    let after: u64 = db.connection()?.query_row(
+        "SELECT control_revision FROM agent_states WHERE agent_id=?1",
+        [id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(
+        after, revision,
+        "a pending-only change rewrote durable State"
+    );
+
+    // A pre-upgrade row can carry a stale count. Cold and loaded reads agree.
+    db.connection()?.execute(
+        "UPDATE agent_states SET payload_json=json_set(payload_json,'$.pending',999) WHERE agent_id=?1",
+        [id],
+    )?;
+    check(1, true, false)?;
     drop(refresh);
     drop(run_loop);
     host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn restart_projects_pending_from_queue_with_a_legacy_state_row() -> Result<()> {
+    let mut harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let id = runtime.instance_agent_id();
+    runtime
+        .enqueue(MessageEnvelope::new(
+            id,
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "queued across restart".into(),
+            },
+        ))
+        .await?;
+    assert_eq!(runtime.agent_state().await?.pending, 1);
+    runtime.runtime_db().connection()?.execute(
+        "UPDATE agent_states SET payload_json=json_set(payload_json,'$.pending',999) WHERE agent_id=?1",
+        [id],
+    )?;
+    harness.restart();
+    let runtime = harness.runtime();
+    let root = runtime
+        .inner
+        .mutation_owner
+        .capture()?
+        .context("restart did not publish State")?;
+    assert_eq!(root.state.pending, 1);
+    assert_eq!(
+        root.queue_posture,
+        Some(crate::queue::QueuePostureFacts {
+            pending: 1,
+            has_queued: true,
+            has_interrupted: false,
+        })
+    );
     Ok(())
 }
 

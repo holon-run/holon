@@ -511,6 +511,62 @@ fn execution_snapshot_includes_attached_workspaces() {
     assert_eq!(snapshot.attached_workspaces[1].1, workspace.path());
 }
 
+async fn enqueue_foreground_fixture(runtime: &RuntimeHandle) -> MessageEnvelope {
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "foreground input".into(),
+            },
+        ))
+        .await
+        .unwrap()
+}
+
+async fn settle_foreground_fixture(runtime: &RuntimeHandle, message: &MessageEnvelope) {
+    use crate::runtime_db::transitions::{
+        PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+    };
+    let mut entry = runtime
+        .runtime_db()
+        .queue_entries()
+        .latest(&message.id)
+        .unwrap()
+        .unwrap();
+    entry.status = QueueEntryStatus::Processed;
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let commit = mutation
+        .commit_prepared_queue(
+            crate::ids::audit_event_id(),
+            PreparedQueueTransition::new(QueueTransitionCommand {
+                agent_id: message.agent_id.clone(),
+                operation: QueueOperation::Settle,
+                mutation: QueueMutation::Upsert(entry),
+                scheduler_claim_work_item: None,
+                agent_state: None,
+                message_evidence: Vec::new(),
+                transcript_entries: Vec::new(),
+                turn_record: None,
+                audit_events: Vec::new(),
+                notify_scheduler: true,
+                fault: None,
+                brief_evidence: Vec::new(),
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(commit.applied);
+    drop(mutation);
+    runtime.apply_transition_commit(commit).await;
+}
+
 #[tokio::test]
 async fn current_closure_returns_none_while_foreground_work_remains() {
     let dir = tempdir().unwrap();
@@ -526,19 +582,11 @@ async fn current_closure_returns_none_while_foreground_work_remains() {
     )
     .unwrap();
 
-    {
-        let mut guard = runtime.begin_mutation().await.unwrap();
-        guard.state.pending = 1;
-        guard.persist_state(&runtime.inner.storage).await.unwrap();
-    }
+    let message = enqueue_foreground_fixture(&runtime).await;
 
     assert!(runtime.current_closure().await.unwrap().is_none());
 
-    {
-        let mut guard = runtime.begin_mutation().await.unwrap();
-        guard.state.pending = 0;
-        guard.persist_state(&runtime.inner.storage).await.unwrap();
-    }
+    settle_foreground_fixture(&runtime, &message).await;
 
     let closure = runtime.current_closure().await.unwrap().unwrap();
     assert_eq!(closure.outcome, ClosureOutcome::Completed);
@@ -604,11 +652,7 @@ async fn wait_for_closure_blocks_until_foreground_work_clears() {
     )
     .unwrap();
 
-    {
-        let mut guard = runtime.begin_mutation().await.unwrap();
-        guard.state.pending = 1;
-        guard.persist_state(&runtime.inner.storage).await.unwrap();
-    }
+    let message = enqueue_foreground_fixture(&runtime).await;
 
     let wait_runtime = runtime.clone();
     let waiter = tokio::spawn(async move { wait_runtime.wait_for_closure().await });
@@ -616,11 +660,7 @@ async fn wait_for_closure_blocks_until_foreground_work_clears() {
     tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     assert!(!waiter.is_finished());
 
-    {
-        let mut guard = runtime.begin_mutation().await.unwrap();
-        guard.state.pending = 0;
-        guard.persist_state(&runtime.inner.storage).await.unwrap();
-    }
+    settle_foreground_fixture(&runtime, &message).await;
 
     let closure = tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
         .await

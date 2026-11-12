@@ -53,15 +53,7 @@ impl TurnRecordRepository<'_> {
         );
         self.db.transaction(|tx| {
             validate_start_admission_tx(tx, state, record, incarnation)?;
-            let actual = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                    [&state.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| serde_json::from_str::<AgentState>(&payload))
-                .transpose()?;
+            let actual = super::repositories::projected_agent_state_on(tx, &state.id)?;
             let existing = tx
                 .query_row(
                     "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
@@ -468,7 +460,7 @@ mod tests {
         let expected = AgentState::new("a");
         db.agent_states().upsert_for_fixture(&expected)?;
         let mut actual = expected.clone();
-        actual.pending = 1;
+        actual.last_wake_reason = Some("concurrent wake".into());
         db.agent_states().upsert_for_fixture(&actual)?;
         let (state, record) = candidate("a", "one");
         assert!(db

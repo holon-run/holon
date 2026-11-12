@@ -745,7 +745,7 @@ fn original_work_proof_reuses_canonical_state_and_rejects_changed_final_state() 
         assert_eq!(tx.query_row("SELECT total_changes()", [], |row| row.get::<_, i64>(0))?, before);
         register_work_writes_tx(tx, &proof, &keys, &BTreeSet::new(),
             original, &request)?;
-        tx.execute("UPDATE agent_states SET payload_json=json_set(payload_json,'$.pending',17) WHERE agent_id=?1",
+        tx.execute("UPDATE agent_states SET payload_json=json_set(payload_json,'$.total_input_tokens',17) WHERE agent_id=?1",
             [&scope.agent_id])?;
         let error = register_work_writes_tx(tx, &proof, &keys, &BTreeSet::new(), original, &request)
             .err().context("changed State reused its original decode")?;

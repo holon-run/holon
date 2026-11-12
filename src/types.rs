@@ -2948,6 +2948,8 @@ pub struct AgentState {
     pub status: AgentStatus,
     pub sleeping_until: Option<DateTime<Utc>>,
     pub current_run_id: Option<String>,
+    /// Current Queue projection. Older State payloads may include this field.
+    #[serde(default)]
     pub pending: usize,
     pub last_wake_reason: Option<String>,
     pub last_brief_at: Option<DateTime<Utc>>,

@@ -232,9 +232,13 @@ fn original_parent_cleanup_gate_and_bulk_ack_are_atomic_and_once() -> Result<()>
     assert!(repeat.invalidation.is_none());
     drop(repeat);
     assert_eq!(fingerprint(&db)?, before);
-    // Corrupt restored accepted work must retain the original blocker, rather
-    // than exploiting Scheduling qualification as new cancellation authority.
-    db.connection()?.execute("UPDATE agent_states SET payload_json=json_set(payload_json,'$.pending',1) WHERE agent_id=?1",[&scope().agent_id])?;
+    // Restored accepted Queue membership blocks cleanup even if the original
+    // State row and Scheduling qualification remain unchanged.
+    assert_eq!(db.connection()?.execute(
+        "UPDATE queue_entries SET status='queued', payload_json=json_set(payload_json,'$.status','queued')
+         WHERE agent_id=?1 AND message_id='old-pending-wake'",
+        [&scope().agent_id],
+    )?, 1);
     let before = fingerprint(&db)?;
     assert!(format!(
         "{:#}",

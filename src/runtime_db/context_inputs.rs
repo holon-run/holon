@@ -87,6 +87,14 @@ impl ContextScopeRead<'_> {
         scope: &InputEvidenceScope,
     ) -> Result<ContextScopeFacts> {
         self.validate(tx, scope)?;
+        // Scope validation proves the persisted identity and control State.
+        // A caller taking the projected State also needs its Queue count.
+        if let Some(state) = self.facts.state.as_ref() {
+            ensure!(
+                super::current_query::pending_queue_count(tx, &scope.agent_id)? == state.pending,
+                "context pending Queue changed after its validated read"
+            );
+        }
         Ok(self.facts)
     }
 
@@ -238,6 +246,12 @@ impl<'a> ContextDurableRead<'a> {
         state.map(own_state).transpose()
     }
 
+    /// Only for comparing the persisted control fields before a State write.
+    pub(crate) fn owned_control_state(&self) -> Result<Option<AgentState>> {
+        let (state, _, _) = self.state_facts_using_decode(None, None, false)?;
+        state.map(own_state).transpose()
+    }
+
     pub(crate) fn scope_read(&self) -> Result<ContextScopeRead<'a>> {
         self.scope_read_using_decode(None)
     }
@@ -248,7 +262,7 @@ impl<'a> ContextDurableRead<'a> {
     ) -> Result<ContextScopeRead<'a>> {
         let identity = self.identity_fact()?;
         let (state, control_revision, decoded_state) =
-            self.state_facts_using_decode(identity.as_ref(), proof)?;
+            self.state_facts_using_decode(identity.as_ref(), proof, true)?;
         let facts = ContextScopeFacts {
             identity,
             state,
@@ -276,7 +290,7 @@ impl<'a> ContextDurableRead<'a> {
     }
 
     fn state_facts(&self) -> Result<(Option<Arc<AgentState>>, Option<u64>)> {
-        let (state, revision, _) = self.state_facts_using_decode(None, None)?;
+        let (state, revision, _) = self.state_facts_using_decode(None, None, true)?;
         Ok((state, revision))
     }
 
@@ -284,6 +298,7 @@ impl<'a> ContextDurableRead<'a> {
         &self,
         identity: Option<&AgentIdentityRecord>,
         proof: Option<&ContextStateDecode>,
+        project_queue: bool,
     ) -> Result<(
         Option<Arc<AgentState>>,
         Option<u64>,
@@ -299,6 +314,11 @@ impl<'a> ContextDurableRead<'a> {
         let payload = repositories::borrowed_payload(row)?;
         let revision: i64 = row.get(1)?;
         let digest = state_payload_digest(payload);
+        let pending = if project_queue {
+            super::current_query::pending_queue_count(self.connection, self.agent_id)?
+        } else {
+            0
+        };
         let reusable = proof.filter(|proof| {
             identity.is_some_and(|identity| {
                 identity.agent_id == proof.scope.agent_id
@@ -308,7 +328,14 @@ impl<'a> ContextDurableRead<'a> {
                 && proof.digest == digest
         });
         let state = match reusable {
-            Some(proof) => Arc::clone(&proof.state),
+            Some(proof) if proof.state.pending == pending => Arc::clone(&proof.state),
+            Some(proof) => {
+                crate::diagnostics::resource_io::admit_cloned_value(proof.state.as_ref())?;
+                Arc::new(AgentState {
+                    pending,
+                    ..proof.state.as_ref().clone()
+                })
+            }
             None => {
                 // A typed State or serialization match cannot mint this proof.
                 // This decoder owns one State, not a completion/resolver tree.
@@ -339,7 +366,9 @@ impl<'a> ContextDurableRead<'a> {
                         .context("Context State node bytes overflow")?,
                     nodes,
                 )?;
-                Arc::new(decode_agent_state_payload(payload)?)
+                Arc::new(repositories::decode_agent_state_projection(
+                    payload, pending,
+                )?)
             }
         };
         self.check_scope(&state.id)?;

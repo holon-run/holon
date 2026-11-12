@@ -1077,7 +1077,8 @@ async fn p1_shared_reply_processed_source_alone_does_not_authorize_recovery() {
         .unwrap());
     assert!(record.activation_id.is_none());
     harness.advance(std::time::Duration::from_secs(31)).await;
-    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    let error = runtime.emit_due_task_result_recovery().await.unwrap_err();
+    assert!(format!("{error:#}").contains("recovery adapter State changed"));
     let record = runtime
         .runtime_db()
         .task_result_settlements()
@@ -2502,7 +2503,8 @@ async fn p2_shared_reply_interjected_status_alone_does_not_authorize_recovery() 
         .reply_source_is_consumed_for_owner(&record)
         .unwrap());
     advance_lifecycle_time(&clock, std::time::Duration::from_secs(31)).await;
-    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    let error = runtime.emit_due_task_result_recovery().await.unwrap_err();
+    assert!(format!("{error:#}").contains("recovery adapter State changed"));
     let record = repository.latest_for_message(&source).unwrap().unwrap();
     assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
     assert!(record.activation_id.is_none());

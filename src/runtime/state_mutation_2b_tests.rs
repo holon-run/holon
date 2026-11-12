@@ -143,7 +143,7 @@ async fn rejected_compound_candidate_does_not_install_transient_queue_changes() 
     );
     let mut candidate = runtime.begin_mutation().await.unwrap();
     candidate.queue.push(message);
-    candidate.state.pending = 1;
+    candidate.state.last_wake_reason = Some("candidate wake".into());
     let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
         agent_id: "default".into(),
         expected_incarnation: None,
