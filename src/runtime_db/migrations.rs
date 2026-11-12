@@ -4402,6 +4402,24 @@ CREATE INDEX IF NOT EXISTS idx_episode_memory_results_episode_scope
         name: "index_recent_transcript_window",
         sql: "",
     },
+    Migration {
+        version: 107,
+        name: "index_turn_transcript_qualification",
+        sql: r#"
+CREATE INDEX IF NOT EXISTS idx_input_evidence_current_transcript_turn
+  ON input_evidence_current(
+    agent_id, identity_incarnation, json_extract(fingerprint_json,'$.related_turn_id'), record_id
+  ) WHERE family='transcript';
+CREATE INDEX IF NOT EXISTS idx_input_evidence_eligibility_transcript_turn
+  ON input_evidence_eligibility(
+    seed_id, json_extract(fingerprint_json,'$.related_turn_id'), record_id
+  ) WHERE family='transcript';
+CREATE INDEX IF NOT EXISTS idx_input_evidence_recovery_transcript_turn
+  ON input_evidence_seed_recovery_current(
+    seed_id, json_extract(fingerprint_json,'$.related_turn_id'), record_id
+  ) WHERE family='transcript';
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
