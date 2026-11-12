@@ -5374,10 +5374,16 @@ Metadata invalidation, pure captures and rejection of changed/unqualified bodies
 remain mandatory. A committed Work write is not retried to repair its result
 projection.
 
-The blocking State projection and nested child summary acquisition retain the
-same read scope through preparation and final capture under one owner. Release
-the parent reservation before collecting child observations. No intervening
-metadata publication may separate a prepared cut from its capture.
+The blocking State projection retains the same read scope through preparation
+and final capture under one owner. No intervening metadata publication may
+separate a prepared cut from its capture.
+
+`/agents/{id}/state` observes only the selected agent: it never enumerates child
+identities, acquires child owners or builds child summaries. Its shared slim
+Agent DTO leaves `active_children` empty and omits the field on the wire. Explicit
+Agent summary queries, including `GetAgent`, retain direct-child visibility.
+The TUI uses the parent's scheduling posture and own activity facts, not child
+summaries, and does not show a Children inventory in its State summary.
 
 
 ### Episode receipt recovery completes loaded publication

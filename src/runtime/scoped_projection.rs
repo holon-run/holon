@@ -1,7 +1,6 @@
 //! Synchronous reads owned by the caller's registered blocking worker.
 
 use super::*;
-use crate::diagnostics::attribution;
 use crate::runtime_db::RuntimeDb;
 use tokio::runtime::Handle;
 
@@ -257,7 +256,8 @@ impl RuntimeHandle {
         let projection = self.with_scoped_ready_root(db, handle, |root| {
             self.operator_state_from_root(root, task_limit, timer_limit)
         })?;
-        self.finish_scoped_state_projection(projection, db, handle)
+        db.check_read_scope()?;
+        Ok(projection)
     }
 
     pub(crate) fn acquire_operator_state_read_projection_scoped(
@@ -275,27 +275,6 @@ impl RuntimeHandle {
         let projection = self.with_scoped_scheduler_query(db, handle, |root| {
             self.operator_state_from_root(root, task_limit, timer_limit)
         })?;
-        self.finish_scoped_state_projection(projection, db, handle)
-    }
-
-    fn finish_scoped_state_projection(
-        &self,
-        mut projection: crate::host::AgentStateReadProjection,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<crate::host::AgentStateReadProjection> {
-        // Release the parent reservation before taking any child owner.
-        let children_timer = attribution::CHILDREN.start();
-        projection.agent.active_children = match &self.inner.host_bridge {
-            Some(bridge) => {
-                bridge.child_summaries_scoped(&projection.agent.agent.id, db, handle)?
-            }
-            None => Vec::new(),
-        };
-        drop(children_timer);
-        projection
-            .material
-            .retain_children(&projection.agent.active_children)?;
         db.check_read_scope()?;
         Ok(projection)
     }
@@ -309,6 +288,7 @@ impl RuntimeHandle {
         self.with_scoped_ready_root(db, handle, |root| self.child_summary_from_root(root, db))
     }
 
+    #[cfg(test)]
     pub(crate) fn acquire_child_agent_summary_observation_scoped(
         &self,
         db: &RuntimeDb,
@@ -429,26 +409,6 @@ mod tests {
         })
     }
 
-    async fn parent_projection(
-        host: &crate::host::RuntimeHost,
-        agent_id: &str,
-    ) -> Result<AgentStateReadProjection> {
-        if let Some(runtime) = host.try_get_loaded_runtime(agent_id).await {
-            drop(runtime.operator_state_read_projection(10, 10).await?);
-        }
-        let db = host.runtime_db().with_read_scope(RuntimeDbReadScope::new(
-            Instant::now() + Duration::from_secs(30),
-        ));
-        let host = host.clone();
-        let agent_id = agent_id.to_owned();
-        let handle = Handle::current();
-        tokio::task::spawn_blocking(move || {
-            host.operator_agent_state_projection_scoped(&agent_id, 10, 10, &db, &handle)
-        })
-        .await?
-        .map_err(Into::into)
-    }
-
     async fn clear_current_for_scoped_host_read(runtime: &RuntimeHandle) {
         let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
         let mut reservation = runtime.inner.mutation_owner.reserve().await.unwrap();
@@ -545,7 +505,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_parent_child_summary_does_not_decode_out_of_scope_task_payloads() {
+    async fn explicit_child_summary_does_not_decode_out_of_scope_task_payloads() {
         let (_home, host, parent) = host_backed_test_runtime().await;
         let parent_id = parent.agent_id().await.unwrap();
         let identity = child_identity("payload-isolation-child", &parent_id);
@@ -576,7 +536,7 @@ mod tests {
                 )
                 .unwrap();
         }
-        let projection = parent_projection(&host, &parent_id).await;
+        let projection = host.child_agent_summaries(&parent_id).await;
         assert!(
             projection.is_ok(),
             "child summary decoded unrelated or terminal history: {:?}",
@@ -586,7 +546,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_cold_child_summary_preserves_active_owner_and_nonblocking_task_semantics() {
+    async fn explicit_cold_child_summary_preserves_active_owner_and_nonblocking_task_semantics() {
         let (_home, host, parent) = host_backed_test_runtime().await;
         let parent_id = parent.agent_id().await.unwrap();
         let mut children = Vec::new();
@@ -674,9 +634,9 @@ mod tests {
                     &child_task(&format!("{id}-status-{status}"), id, status, false),
                 );
             }
-            let projection = parent_projection(&host, &parent_id).await.unwrap();
-            assert_eq!(projection.agent.active_children.len(), 2);
-            for child in &projection.agent.active_children {
+            let summaries = host.child_agent_summaries(&parent_id).await.unwrap();
+            assert_eq!(summaries.len(), 2);
+            for child in &summaries {
                 assert_eq!(child.observability.blocked_reason, None, "{status}");
                 assert_eq!(
                     child.observability.phase,
@@ -729,8 +689,8 @@ mod tests {
                 task.status = child_task("status", id, status, false).status;
                 write_cold_task_fixture(&host, &task);
             }
-            let projection = parent_projection(&host, &parent_id).await.unwrap();
-            for child in projection.agent.active_children {
+            let summaries = host.child_agent_summaries(&parent_id).await.unwrap();
+            for child in summaries {
                 assert_eq!(child.active_task_count, usize::from(status == "queued"));
                 assert_eq!(
                     child.observability.phase,
@@ -840,13 +800,7 @@ mod tests {
             .external_triggers
             .iter()
             .all(|record| record.external_trigger_id != trigger.external_trigger_id));
-        assert_eq!(
-            scoped.agent.active_children[0]
-                .observability
-                .current_work_item_id
-                .as_deref(),
-            None,
-        );
+        assert!(scoped.agent.active_children.is_empty());
         let ordinary = host
             .operator_agent_state_projection(&agent_id, 10, 10)
             .await
@@ -857,7 +811,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn scoped_host_first_loaded_state_derives_parent_and_child_current_without_publication() {
+    async fn scoped_host_first_loaded_state_does_not_observe_or_publish_children() {
         let (_home, host, runtime) = host_backed_test_runtime().await;
         // Hold execution and refresh while comparing the observer's original cut.
         runtime.wait_for_bootstrap().await.unwrap();
@@ -909,11 +863,7 @@ mod tests {
                 crate::host::AgentStateProjectionSource::Loaded
             );
             assert_eq!(projection.agent.agent.id, agent_id);
-            assert!(projection
-                .agent
-                .active_children
-                .iter()
-                .any(|summary| summary.identity.agent_id == identity.agent_id));
+            assert!(projection.agent.active_children.is_empty());
             let after = runtime.inner.mutation_owner.capture().unwrap().unwrap();
             let child_after = child.inner.mutation_owner.capture().unwrap().unwrap();
             for (reader, original, current, event_cursor) in [

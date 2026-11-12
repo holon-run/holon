@@ -2,7 +2,6 @@
 use super::input_evidence_budget::BudgetViewGuard;
 use super::*;
 use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
-use crate::types::ChildAgentSummary;
 use tokio_util::bytes::Bytes;
 
 pub(crate) struct StateProjectionMaterial {
@@ -10,7 +9,6 @@ pub(crate) struct StateProjectionMaterial {
     pub(crate) _work: Option<Arc<BudgetViewGuard>>,
     pub(crate) _tasks: Option<Arc<BudgetViewGuard>>,
     pub(crate) _scheduling: Option<SchedulingReadMaterial>,
-    pub(crate) _children: Vec<Arc<BudgetViewGuard>>,
 }
 
 struct StateWire {
@@ -30,24 +28,6 @@ impl AsRef<[u8]> for StateWire {
 }
 
 impl StateProjectionMaterial {
-    pub(crate) fn retain_children(&mut self, children: &[ChildAgentSummary]) -> Result<()> {
-        self.acquisition.read(|| {
-            for child in children {
-                for guard in [
-                    child.observability._read_material.as_ref(),
-                    child.observability._source_material.as_ref(),
-                ]
-                .into_iter()
-                .flatten()
-                {
-                    crate::runtime_db::repositories::reserve_source_vec_slot(&mut self._children)?;
-                    self._children.push(guard.clone());
-                }
-            }
-            Ok(())
-        })
-    }
-
     pub(crate) fn into_json_bytes(self, value: &impl serde::Serialize) -> Result<Bytes> {
         let bytes = self.acquisition.read(|| {
             let size = usize::try_from(super::input_evidence_budget::serialized_bytes(value)?)?;
@@ -84,7 +64,7 @@ impl RuntimeHandle {
             timer_limit <= super::resident_scheduling::SCHEDULING_HISTORY_WINDOW,
             super::resident_scheduling::SchedulingReadError::NeedsHistory
         );
-        let mut projection = {
+        let projection = {
             let mut reservations = super::mutation_owner::MutationOwner::reserve_all(vec![self
                 .inner
                 .mutation_owner
@@ -116,15 +96,6 @@ impl RuntimeHandle {
                 self.operator_state_from_root(&root, task_limit, timer_limit)?
             }
         };
-        // The parent cut and its reservation are released before observing children.
-        projection.agent.active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.child_summaries(&projection.agent.agent.id).await?
-        } else {
-            Vec::new()
-        };
-        projection
-            .material
-            .retain_children(&projection.agent.active_children)?;
         Ok(projection)
     }
 
@@ -206,7 +177,6 @@ impl RuntimeHandle {
                 _work: Some(work_budget),
                 _tasks: Some(read._task_owned_budget),
                 _scheduling: Some(scheduling_material),
-                _children: Vec::new(),
             };
             Ok(crate::host::AgentStateReadProjection {
                 source: crate::host::AgentStateProjectionSource::Loaded,

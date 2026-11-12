@@ -103,14 +103,10 @@ impl RuntimeHost {
             })
             .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
-        // Parent facts are frozen. Release before another agent's summary await.
         if let Some(observation) = observation {
             observation.check().map_err(PublicAgentError::Runtime)?;
         }
         drop(reservations);
-        let active_children = self
-            .child_agent_summaries_scoped(agent_id, db, handle)
-            .map_err(PublicAgentError::Runtime)?;
         let agent = LightweightAgentStateProjection {
             identity: AgentIdentityView::from_owned_record(
                 identity,
@@ -126,22 +122,18 @@ impl RuntimeHost {
             agent: agent_state,
             scheduling_posture,
             closure,
-            active_children,
+            active_children: Vec::new(),
             work_queue,
             _work_budget: None,
             _scheduling_material: None,
         };
         crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
-        let mut material = crate::runtime::StateProjectionMaterial {
+        let material = crate::runtime::StateProjectionMaterial {
             acquisition,
             _work: None,
             _tasks: None,
             _scheduling: Some(scheduling_material),
-            _children: Vec::new(),
         };
-        material
-            .retain_children(&agent.active_children)
-            .map_err(PublicAgentError::Runtime)?;
         db.check_read_scope().map_err(PublicAgentError::Runtime)?;
         Ok(AgentStateReadProjection {
             waits,
@@ -152,83 +144,6 @@ impl RuntimeHost {
             external_triggers,
             material,
         })
-    }
-
-    fn child_agent_summaries_scoped(
-        &self,
-        parent_agent_id: &str,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<Vec<ChildAgentSummary>> {
-        db.check_read_scope()?;
-        let mut children = Vec::new();
-        for (identity, material) in self
-            .inner
-            .registry
-            .child_identity_reads(parent_agent_id, &self.inner.input_evidence_budget)?
-        {
-            db.check_read_cancellation()?;
-            if let Some(runtime) =
-                handle.block_on(self.try_get_loaded_runtime_scoped(&identity.agent_id, db))?
-            {
-                let mut read =
-                    runtime.acquire_child_agent_summary_observation_scoped(db, handle)?;
-                read.observability._source_material = Some(material.guard()?);
-                read.acquisition.read(|| {
-                    crate::diagnostics::resource_io::admit_cloned_value(
-                        &read.state.current_run_id,
-                    )?;
-                    crate::runtime_db::repositories::reserve_source_vec_slot(&mut children)?;
-                    children.push(ChildAgentSummary {
-                        identity: AgentIdentityView::from_owned_record(
-                            identity,
-                            &self.config().default_agent_id,
-                        ),
-                        status: read.state.status.clone(),
-                        current_run_id: read.state.current_run_id.clone(),
-                        pending: read.state.pending,
-                        active_task_count: read.active_task_count,
-                        observability: read.observability,
-                    });
-                    Ok(())
-                })?;
-                continue;
-            }
-            let cold = handle.block_on(self.acquire_cold_summary_in(&identity, db))?;
-            let active_task_count = cold.projection().active_tasks.len();
-            let mut observability = cold.observability()?;
-            observability._source_material = Some(material.guard()?);
-            cold.acquisition.read(|| {
-                crate::runtime_db::repositories::reserve_source_vec_slot(&mut children)?;
-                children.push(ChildAgentSummary {
-                    identity: AgentIdentityView::from_owned_record(
-                        cold.identity,
-                        &self.config().default_agent_id,
-                    ),
-                    status: cold.state.status,
-                    current_run_id: cold.state.current_run_id,
-                    pending: cold.state.pending,
-                    active_task_count,
-                    observability,
-                });
-                Ok(())
-            })?;
-        }
-        children.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
-        db.check_read_scope()?;
-        Ok(children)
-    }
-}
-
-impl RuntimeHostBridge {
-    pub(crate) fn child_summaries_scoped(
-        &self,
-        parent_agent_id: &str,
-        db: &RuntimeDb,
-        handle: &Handle,
-    ) -> Result<Vec<ChildAgentSummary>> {
-        self.host()?
-            .child_agent_summaries_scoped(parent_agent_id, db, handle)
     }
 }
 

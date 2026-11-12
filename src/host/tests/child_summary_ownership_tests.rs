@@ -101,8 +101,7 @@ async fn child_inventory_admits_only_selected_identities_and_latches_exact_limit
 }
 
 #[tokio::test]
-async fn state_wire_keeps_child_inventory_and_body_material_through_cache_and_slice() -> Result<()>
-{
+async fn state_wire_omits_children_for_loaded_and_cold_parents_and_children() -> Result<()> {
     for parent_loaded in [false, true] {
         for child_loaded in [false, true] {
             let (_home, host) = test_host();
@@ -127,36 +126,35 @@ async fn state_wire_keeps_child_inventory_and_body_material_through_cache_and_sl
                 .operator_agent_state_projection(&parent, 10, 10)
                 .await
                 .map_err(|error| anyhow!("{error}"))?;
-            assert_eq!(agent.active_children.len(), 1);
-            let weak = agent
-                .active_children
-                .iter()
-                .flat_map(|child| {
-                    [
-                        child.observability._read_material.as_ref(),
-                        child.observability._source_material.as_ref(),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .map(Arc::downgrade)
-                })
-                .collect::<Vec<_>>();
-            assert!(!weak.is_empty());
-            if child_loaded {
-                assert_eq!(weak.len(), 2, "loaded child retains its inventory too");
-            }
-            let expected = serde_json::to_vec(&agent.active_children)?;
-            let bytes = material.into_json_bytes(&agent.active_children)?;
+            assert!(agent.active_children.is_empty());
+            let dto = crate::http_dto::SlimAgentDto::from(&agent);
+            let expected = serde_json::to_vec(&dto)?;
+            assert!(serde_json::to_value(&dto)?.get("active_children").is_none());
+            let bytes = material.into_json_bytes(&dto)?;
             let cached = bytes.clone();
             let slice = bytes.slice(..);
             drop(agent);
             drop(bytes);
             assert_eq!(slice.as_ref(), expected);
-            assert!(weak.iter().all(|guard| guard.upgrade().is_some()));
             drop(cached);
-            assert!(weak.iter().all(|guard| guard.upgrade().is_some()));
             drop(slice);
-            assert!(weak.iter().all(|guard| guard.upgrade().is_none()));
+            let summary = host
+                .local_agent_summary(&parent)
+                .await
+                .map_err(|error| anyhow!("{error}"))?;
+            assert_eq!(summary.active_children.len(), 1);
+            assert_eq!(
+                summary.active_children[0].identity.agent_id,
+                identity.agent_id
+            );
+            assert_eq!(
+                host.try_get_loaded_runtime(&identity.agent_id)
+                    .await
+                    .is_some(),
+                child_loaded,
+                "neither State nor explicit summary should activate a cold child"
+            );
+            drop(summary);
             host.shutdown().await?;
         }
     }
