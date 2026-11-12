@@ -74,16 +74,14 @@ const RETENTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
 /// obligation: a settled idle agent remains deletable and idle even if the last
 /// turn failed and no later turn succeeded.
 fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
-    let state: Option<(String, bool)> = tx
+    let state: Option<String> = tx
         .query_row(
-            "SELECT payload_json, EXISTS(SELECT 1 FROM queue_entries
-              WHERE agent_id=?1 AND status IN ('queued','interrupted'))
-             FROM agent_states WHERE agent_id = ?1",
+            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
             [agent_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| row.get(0),
         )
         .optional()?;
-    let Some((state, pending)) = state else {
+    let Some(state) = state else {
         return Ok(Some("unknown_runtime_state".into()));
     };
     let state: crate::types::AgentState = serde_json::from_str(&state)?;
@@ -93,7 +91,6 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
             | crate::types::AgentStatus::Asleep
             | crate::types::AgentStatus::Stopped
     ) || state.current_run_id.is_some()
-        || pending
         || state.sleeping_until.is_some()
         || state.pending_wake_hint.is_some()
     {
@@ -416,23 +413,6 @@ mod tests {
             Some("runtime_execution_or_wake")
         );
 
-        let pending = settled("pending", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        db.agent_states().upsert_for_fixture(&pending).unwrap();
-        db.queue_entries()
-            .upsert(&QueueEntryRecord {
-                message_id: "pending-input".into(),
-                agent_id: pending.id,
-                priority: crate::types::Priority::Normal,
-                status: QueueEntryStatus::Interrupted,
-                created_at: Utc::now(),
-                updated_at: Utc::now(),
-            })
-            .unwrap();
-        assert_eq!(
-            blockers(&db, "pending").0.as_deref(),
-            Some("runtime_execution_or_wake")
-        );
-
         let mut sleeping = settled("sleeping", AgentStatus::Stopped, TurnTerminalKind::Aborted);
         sleeping.sleeping_until = Some(Utc::now());
         db.agent_states().upsert_for_fixture(&sleeping).unwrap();
@@ -506,30 +486,30 @@ mod tests {
             TaskStatus::Running
         );
 
-        let claimed_agent = settled("claimed", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        db.agent_states()
-            .upsert_for_fixture(&claimed_agent)
-            .unwrap();
-        let claimed = QueueEntryRecord {
-            message_id: "claimed-1".into(),
-            agent_id: "claimed".into(),
-            priority: crate::types::Priority::Normal,
-            status: QueueEntryStatus::Dequeued,
-            created_at: now,
-            updated_at: now,
-        };
-        db.queue_entries().upsert(&claimed).unwrap();
-        assert_eq!(
-            blockers(&db, "claimed").0.as_deref(),
-            Some("queued_or_claimed_input")
-        );
-        assert_eq!(
-            db.queue_entries()
-                .latest(&claimed.message_id)
-                .unwrap()
-                .unwrap()
-                .status,
-            QueueEntryStatus::Dequeued
-        );
+        for (agent_id, status) in [
+            ("queued", QueueEntryStatus::Queued),
+            ("claimed", QueueEntryStatus::Dequeued),
+            ("interrupted", QueueEntryStatus::Interrupted),
+        ] {
+            let agent = settled(agent_id, AgentStatus::Asleep, TurnTerminalKind::Aborted);
+            db.agent_states().upsert_for_fixture(&agent).unwrap();
+            let entry = QueueEntryRecord {
+                message_id: format!("{agent_id}-1"),
+                agent_id: agent_id.into(),
+                priority: crate::types::Priority::Normal,
+                status,
+                created_at: now,
+                updated_at: now,
+            };
+            db.queue_entries().upsert(&entry).unwrap();
+            let (execution, idle, cleanup) = blockers(&db, agent_id);
+            for blocker in [execution, idle, cleanup] {
+                assert_eq!(blocker.as_deref(), Some("queued_or_claimed_input"));
+            }
+            assert_eq!(
+                db.queue_entries().latest(&entry.message_id).unwrap(),
+                Some(entry)
+            );
+        }
     }
 }

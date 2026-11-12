@@ -30204,11 +30204,13 @@ mod tests {
                     let mut reservations = worker_host
                         .reserve_agent_mutations(&[agent_id.clone()])
                         .await?;
-                    let before = worker_host.runtime_db().agent_states().latest(&agent_id)?.unwrap();
-                    let mut candidate = before.clone();
+                    let before_payload: String = worker_host.runtime_db().connection()?.query_row(
+                        "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+                        [&agent_id],
+                        |row| row.get(0),
+                    )?;
+                    let mut candidate: AgentState = serde_json::from_str(&before_payload)?;
                     candidate.total_input_tokens += 1;
-                    let before_payload = serde_json::to_string(&before)?;
-                    let candidate_payload = serde_json::to_string(&candidate)?;
                     let result = worker_host
                         .commit_external_agent_states(
                             &mut reservations,
@@ -30219,8 +30221,10 @@ mod tests {
                                 // an accepted Host writer may finish after retirement.
                                 worker_host.runtime_db().transaction(|tx| {
                                     let changed = tx.execute(
-                                        "UPDATE agent_states SET payload_json = ?1 WHERE agent_id = ?2 AND payload_json = ?3",
-                                        rusqlite::params![candidate_payload, agent_id, before_payload],
+                                        "UPDATE agent_states
+                                         SET payload_json = json_set(payload_json, '$.total_input_tokens', ?1)
+                                         WHERE agent_id = ?2 AND payload_json = ?3",
+                                        rusqlite::params![candidate.total_input_tokens, agent_id, before_payload],
                                     )?;
                                     anyhow::ensure!(changed == 1, "fixture State CAS must commit");
                                     Ok(())
