@@ -353,6 +353,65 @@ fn committed_transcripts_extend_turn_coverage_without_refreshing_existing_turns(
 }
 
 #[test]
+fn first_work_turn_registration_includes_previously_qualified_transcripts() -> Result<()> {
+    let (_home, db) = fresh()?;
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: "preallocated-work".into(),
+    };
+    let mut turn = TurnRecord::new("agent-a", "preallocated-turn", 1);
+    turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
+    turn.owner = Some(owner);
+    let turn_key = Key::new(Family::Turn, &turn.turn_id);
+    let transcript = TranscriptEntry::new(
+        "agent-a",
+        TranscriptEntryKind::AssistantRound,
+        Some(1),
+        None,
+        serde_json::json!({"turn_id": turn.turn_id}),
+    );
+    let transcript_key = Key::new(Family::Transcript, &transcript.id);
+    db.transaction(|tx| {
+        let (actual, _) = append_transcript_entry_tx(tx, &transcript)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Transcript(actual)],
+        )?;
+        Ok(())
+    })?;
+
+    let policy = request(InputWindowSelector::RecentTranscript, 1);
+    let prepared =
+        current(db.transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope(), &policy))?);
+    assert!(prepared.resident.capture()?.turn_transcript_keys.is_empty());
+
+    let start = db.transaction(|tx| {
+        assert!(payload_on(tx, "agent-a", &turn_key)?.is_none());
+        validate_existing_input_evidence_tx(tx, &scope(), &transcript_key)?;
+        upsert_turn_record_tx(tx, &turn)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(turn.clone())],
+        )
+    })?;
+
+    assert_eq!(
+        start.turn_transcript_keys.get(&turn.turn_id),
+        Some(&BTreeSet::from([transcript_key.clone()])),
+    );
+    let resident = prepared
+        .resident
+        .with_committed(&start, BTreeSet::from([turn_key]))?
+        .context("the new Turn can reuse the previously loaded Transcript")?;
+    let captured = resident.capture()?;
+    let entries = captured.transcripts_for_turns(std::slice::from_ref(&turn.turn_id))?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].locator.key, transcript_key);
+    Ok(())
+}
+
+#[test]
 fn only_owner_history_hydrates_turn_transcripts_in_an_ordinary_snapshot() -> Result<()> {
     use crate::runtime::resident_input_evidence::InputEvidenceReadError;
     use crate::types::TurnOwner;
