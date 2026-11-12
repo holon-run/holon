@@ -52,7 +52,7 @@ impl RuntimeHost {
             reservations,
             observation,
         } = handle
-            .block_on(self.acquire_cold_scheduling_query_in(&identity, timer_limit, db))
+            .block_on(self.acquire_cold_scheduling_query_in(&identity, timer_limit, db, true))
             .map_err(PublicAgentError::Runtime)?;
         let agent_started = std::time::Instant::now();
         let agent_state = state.unwrap_or_else(|| stopped_unloaded_agent(agent_id));
@@ -127,6 +127,10 @@ impl RuntimeHost {
             _work_budget: None,
             _scheduling_material: None,
         };
+        let active_work_item_count = agent.work_queue.items.len();
+        let active_timer_count = scheduling_material
+            .active_timer_count()
+            .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
         let material = crate::runtime::StateProjectionMaterial {
             acquisition,
@@ -141,6 +145,8 @@ impl RuntimeHost {
             agent,
             tasks,
             timers,
+            active_work_item_count,
+            active_timer_count,
             external_triggers,
             material,
         })

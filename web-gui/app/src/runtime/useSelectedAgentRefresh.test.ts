@@ -125,11 +125,11 @@ describe("selected Agent refresh wiring", () => {
     await render();
     const options = mocks.factory.mock.calls[0][0];
     await options.resources.state.refresh();
-    await options.resources.workItems.refresh();
+    expect(Object.keys(options.resources)).toEqual(["state"]);
     const binding = mocks.state.refreshAgentState.mock.calls[0] as unknown as [string, { incarnation: number; signal: AbortSignal }];
     expect(binding[0]).toBe("a");
     expect(binding[1].incarnation).toBe(1);
-    expect(mocks.state.refreshAgentWorkItems).toHaveBeenCalledWith("a", binding[1]);
+    expect(mocks.state.refreshAgentWorkItems).not.toHaveBeenCalled();
     await render({ id: "b", incarnation: 2 });
     expect(binding[1].signal.aborted).toBe(true);
     expect(mocks.scheduler.dispose).toHaveBeenCalledTimes(1);

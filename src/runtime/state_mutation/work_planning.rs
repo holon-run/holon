@@ -68,6 +68,36 @@ pub(crate) struct ColdSchedulerFacts {
 }
 
 impl PreparedSchedulerRead {
+    pub(in crate::runtime) fn active_state_work_queue(
+        &self,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<(
+        super::super::resident_work::StateWorkQueue,
+        Arc<BudgetViewGuard>,
+        usize,
+    )> {
+        self.acquisition.read(|| {
+            let mut ranked = self
+                .work
+                .active_state_work_ranks(&self.state, &self.triggers.records)?;
+            let total = ranked.len();
+            if let Some(index) = ranked.iter().position(|rank| {
+                self.state.current_work_item_id.as_deref() == Some(rank.work_item.id.as_str())
+            }) {
+                ranked[..=index].rotate_right(1);
+            }
+            ranked.truncate(super::super::resident_work::STATE_ACTIVE_WORK_ITEM_LIMIT);
+            let queue = self.work.state_work_queue_from_ranks(
+                &self.state,
+                &self.triggers.records,
+                &self.acquisition,
+                &ranked,
+            )?;
+            let (queue, budget) = retain_state_work_queue(queue, &self.work, ledger)?;
+            Ok((queue, budget, total))
+        })
+    }
+
     /// State surfaces retain the full queue, not the scheduler candidate window.
     pub(in crate::runtime) fn full_state_work_queue(
         &mut self,
@@ -124,6 +154,7 @@ enum SchedulerAdapterRoot<'a> {
     HeldPublication,
     ObservedPublication(&'a RuntimeDb),
     PublishedCurrent,
+    PublishedState,
     PreviewPublication,
 }
 
@@ -518,6 +549,14 @@ impl RuntimeMutation {
 }
 
 impl RuntimeHandle {
+    pub(in crate::runtime) fn capture_state_scheduler_from_root(
+        &self,
+        root: &super::super::resident_state::AgentSnapshot,
+        now: chrono::DateTime<Utc>,
+    ) -> Result<PreparedSchedulerRead> {
+        self.capture_observer_scheduler_from_root(root, now, SchedulerAdapterRoot::PublishedState)
+    }
+
     pub(in crate::runtime) fn capture_operator_scheduler_from_root(
         &self,
         root: &super::super::resident_state::AgentSnapshot,
@@ -719,8 +758,10 @@ impl RuntimeHandle {
                 queue.has_queued,
                 events.latest_runtime_error,
             )
-        } else if matches!(adapter_root, SchedulerAdapterRoot::PublishedCurrent)
-            || cached_observation
+        } else if matches!(
+            adapter_root,
+            SchedulerAdapterRoot::PublishedCurrent | SchedulerAdapterRoot::PublishedState
+        ) || cached_observation
         {
             let query = root
                 .current

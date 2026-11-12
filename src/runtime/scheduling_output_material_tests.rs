@@ -117,6 +117,39 @@ fn fixture(count: usize) -> Result<CapturedScheduling> {
     Ok(selected)
 }
 
+#[test]
+fn active_state_timer_filter_precedes_limit_for_loaded_and_cold_outputs() -> Result<()> {
+    for cold in [false, true] {
+        let mut selected = fixture(9)?;
+        for row in &mut selected.records {
+            let record = Arc::get_mut(row).expect("fixture has one owner");
+            if let CanonicalSchedulingFact::Timer(timer) = &mut record.fact {
+                if timer.id != "a" {
+                    timer.status = TimerStatus::Completed;
+                    selected.coverage.active_timers.remove(&record.locator.key);
+                    let history = selected
+                        .coverage
+                        .history
+                        .get_mut(&SchedulingFamily::Timer)
+                        .unwrap();
+                    history.keys.push(record.locator.key.clone());
+                    history.loaded_keys.push(record.locator.key.clone());
+                }
+            }
+        }
+        let ledger = ledger()?;
+        let (timers, triggers, material) =
+            project_state_scheduling_records(selected, 1, &ledger, Vec::new(), cold)?;
+        assert_eq!(material.active_timer_count()?, 1);
+        assert_eq!(timers.len(), 1);
+        assert_eq!(timers[0].id, "a");
+        assert_eq!(triggers.len(), 9, "State trigger selection is unchanged");
+        drop((timers, triggers, material));
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
 fn ledger() -> Result<InputEvidenceBudgetLedger> {
     Ok(InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?)
 }
@@ -246,6 +279,7 @@ fn typed_output_slots_keep_exact_capacity_order_cost_and_last_original_holders()
             (37, 3),
             vec![read.clone()],
             cold,
+            false,
         )?;
         assert_eq!(timers, expected.0);
         assert_eq!(triggers, expected.1);
@@ -299,6 +333,7 @@ fn typed_output_capacity_preserves_empty_zero_limit_and_selected_members() -> Re
                 (0, 0),
                 Vec::new(),
                 cold,
+                false,
             )?;
             assert_eq!(
                 (timers.capacity(), triggers.capacity()),
@@ -322,6 +357,7 @@ fn typed_output_capacity_preserves_empty_zero_limit_and_selected_members() -> Re
             (0, 0),
             Vec::new(),
             cold,
+            false,
         )
         .err()
         .context("history policy must refuse")?;
@@ -379,7 +415,7 @@ fn timer_top_k_borrows_beyond_full_window_with_no_material_allowance() -> Result
             let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), header, 64)?;
             {
                 let _entry = phase.enter();
-                let timers = select_timer_output(&selected, limit, cold);
+                let timers = select_timer_output(&selected, limit, cold, false);
                 assert_eq!(timers.iter().flatten().count(), expected.len());
                 for (index, expected) in timers.iter().flatten().zip(&expected) {
                     let actual = timer_at(&selected, *index);
@@ -415,6 +451,7 @@ fn concurrent_output_vectors_keep_independent_original_pins_until_each_last_hold
         (0, 0),
         Vec::new(),
         true,
+        false,
     )?;
     let second = project_scheduling_records(
         fixture(9)?,
@@ -424,6 +461,7 @@ fn concurrent_output_vectors_keep_independent_original_pins_until_each_last_hold
         65536,
         (0, 0),
         Vec::new(),
+        false,
         false,
     )?;
     assert_eq!(

@@ -63,10 +63,6 @@ export function useSelectedAgentRefresh(
             return current?.currentRunId || (current?.activeTaskCount ?? 0) > 0 ? 5000 : 30000;
           },
         },
-        workItems: {
-          refresh: () => useRuntimeStore.getState().refreshAgentWorkItems(agentId, options),
-          intervalMs: () => 30000,
-        },
       },
       onError: (_resource, error) => {
         if (agentAccessRejection(error) || (error as { status?: number })?.status === 410) {

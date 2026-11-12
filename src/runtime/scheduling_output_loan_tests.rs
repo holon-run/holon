@@ -27,6 +27,7 @@ fn loaded_loans_admit_handle_storage_in_the_original_phase() -> Result<()> {
                 (0, 0),
                 Vec::new(),
                 false,
+                false,
             )
         });
         if shortage.is_none() {
@@ -67,6 +68,7 @@ fn detached_loans_share_bodies_and_late_material_until_last_holder() -> Result<(
             (0, 0),
             Vec::new(),
             cold,
+            false,
         )?;
         let timer = timers[0].clone();
         let trigger = triggers[0].clone();

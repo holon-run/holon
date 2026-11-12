@@ -466,9 +466,11 @@ impl RuntimeReadModels {
 }
 
 impl RuntimeReadModelView<'_> {
-    pub(crate) fn work_queue_snapshot(
+    pub(crate) fn work_queue_snapshot_filtered(
         &self,
         expected_incarnation: Option<u64>,
+        status: crate::types::RecordListStatus,
+        limit: usize,
     ) -> Result<
         Option<(
             crate::runtime_db::conversation::ConversationIdentity,
@@ -479,9 +481,12 @@ impl RuntimeReadModelView<'_> {
         let Some(agent_id) = self.agent_id.as_deref() else {
             return Ok(None);
         };
-        let Some((identity, row)) = self
-            .runtime_db
-            .agent_work_queue_snapshot(agent_id, expected_incarnation)?
+        let Some((identity, row)) = self.runtime_db.agent_work_queue_snapshot_filtered(
+            agent_id,
+            expected_incarnation,
+            status,
+            limit,
+        )?
         else {
             return Ok(None);
         };
@@ -535,10 +540,11 @@ impl RuntimeReadModelView<'_> {
             .agent_tasks_snapshot(agent_id, expected_incarnation, terminal, limit)
     }
 
-    pub(crate) fn agent_timers_snapshot(
+    pub(crate) fn agent_timers_snapshot_filtered(
         &self,
         expected_incarnation: Option<u64>,
         limit: usize,
+        status: crate::types::RecordListStatus,
     ) -> Result<
         Option<(
             crate::runtime_db::conversation::ConversationIdentity,
@@ -548,12 +554,33 @@ impl RuntimeReadModelView<'_> {
         let Some(agent_id) = self.agent_id.as_deref() else {
             return Ok(None);
         };
+        self.runtime_db.agent_timers_snapshot_filtered(
+            agent_id,
+            expected_incarnation,
+            limit,
+            status,
+        )
+    }
+
+    pub(crate) fn agent_work_item_snapshot(
+        &self,
+        work_item_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<
+        Option<(
+            crate::runtime_db::conversation::ConversationIdentity,
+            Option<crate::types::WorkItemRecord>,
+        )>,
+    > {
+        let Some(agent_id) = self.agent_id.as_deref() else {
+            return Ok(None);
+        };
         self.runtime_db
-            .agent_timers_snapshot(agent_id, expected_incarnation, limit)
+            .agent_work_item_snapshot(agent_id, work_item_id, expected_incarnation)
     }
 
     /// One committed view of this agent's identity fence plus the latest
-    /// task record, mirroring [`work_queue_snapshot`] admission.
+    /// task record, mirroring [`work_queue_snapshot_filtered`] admission.
     pub(crate) fn agent_task_snapshot(
         &self,
         task_id: &str,
@@ -572,7 +599,7 @@ impl RuntimeReadModelView<'_> {
     }
 
     /// One committed view of this agent's identity fence plus one tool
-    /// execution record, mirroring [`work_queue_snapshot`] admission.
+    /// execution record, mirroring [`work_queue_snapshot_filtered`] admission.
     pub(crate) fn agent_tool_execution_snapshot(
         &self,
         tool_execution_id: &str,
@@ -625,7 +652,7 @@ impl RuntimeReadModelView<'_> {
         )
     }
 
-    pub(crate) fn state_work_queue_with_observed_scheduling<'a, I>(
+    pub(crate) fn active_state_work_queue_with_observed_scheduling<'a, I>(
         &self,
         state: &AgentState,
         triggers: I,
@@ -636,10 +663,7 @@ impl RuntimeReadModelView<'_> {
         I::IntoIter: Clone,
     {
         self.state_work_queue_with_observed_scheduling_and_history(
-            state,
-            triggers,
-            material,
-            WORK_QUEUE_NON_OPEN_WINDOW,
+            state, triggers, material, 0, true,
         )
     }
 
@@ -649,6 +673,7 @@ impl RuntimeReadModelView<'_> {
         triggers: I,
         material: &crate::diagnostics::resource_io::ResourceReadMaterial,
         non_open_limit: usize,
+        active_only: bool,
     ) -> Result<crate::runtime::resident_work::StateWorkQueue>
     where
         I: IntoIterator<Item = &'a crate::types::ExternalTriggerRecord>,
@@ -664,7 +689,14 @@ impl RuntimeReadModelView<'_> {
             let _timer = attribution::WORK_QUEUE.start();
             let mut latest = queue_latest::StateQueueWorkBuilder::default();
             let mut timer = attribution::WORK_ITEMS.start();
-            for record in self.runtime_db.work_items().open_for_agent(&state.id)? {
+            let live = if active_only {
+                self.runtime_db
+                    .work_items()
+                    .nonterminal_for_agent(&state.id)?
+            } else {
+                self.runtime_db.work_items().open_for_agent(&state.id)?
+            };
+            for record in live {
                 latest.push(record)?;
             }
             for record in self
@@ -825,7 +857,7 @@ impl RuntimeReadModelView<'_> {
                 .external_triggers()
                 .active_for_agent(&agent.id)?;
             let queue = self.state_work_queue_with_observed_scheduling_and_history(
-                agent, &triggers, &material, 0,
+                agent, &triggers, &material, 0, false,
             )?;
             return self.agent_posture_from_work_queue(&queue, admit_material);
         }

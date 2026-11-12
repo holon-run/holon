@@ -282,6 +282,13 @@ pub struct LimitQuery {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct ActiveHistoryQuery {
+    pub(crate) limit: Option<usize>,
+    #[serde(default)]
+    pub(crate) status: crate::types::RecordListStatus,
+}
+
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TaskOutputQuery {
     pub(crate) block: Option<bool>,

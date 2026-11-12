@@ -14,12 +14,12 @@ describe("AgentOverviewPanel (skill detail lookup removed)", () => {
     expect(true).toBe(true);
   });
 
-  it("keeps a completed-only work item section titled and pinned in the work item position", () => {
+  it("keeps a discoverable bounded history entry when state contains no completed work", () => {
     const agent: AgentSummary = {
       id: "web", badge: "W", profile: "", lifecycle: "idle", focusSummary: "", workspace: "",
       attention: "", model: "", footer: "", subtitle: "", lastBrief: "", lastTurnTime: "",
       pending: 0, activeTaskCount: 0, waitingCount: 0, posture: "idle", postureReason: "",
-      workItems: [{ id: "done", objective: "Finished work", state: "completed" }],
+      workItems: [], activeWorkItemCount: 0,
     };
     const noop = () => {};
     const html = renderToStaticMarkup(createElement(AgentOverviewPanel, {
@@ -35,6 +35,6 @@ describe("AgentOverviewPanel (skill detail lookup removed)", () => {
     expect(html).toContain("current-work");
     expect(html).not.toContain("past-work");
     expect(html).toContain("Work items (0)");
-    expect(html).toContain("1 completed");
+    expect(html).toContain("Completed work items (up to 50)");
   });
 });

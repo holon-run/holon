@@ -8,7 +8,7 @@ interface DiagnosticsSnapshot {
   agentIds: string[];
 }
 
-test("manual agent refresh reads shared state and work items without raw events or hydration", async ({ page, context }, info) => {
+test("manual agent refresh reads active state without hidden history, raw events or hydration", async ({ page, context }, info) => {
   await context.addCookies([{
     name: "holon_e2e_session", value: sessionFor(info, "detail-conversation"), domain: "127.0.0.1", path: "/",
   }]);
@@ -25,14 +25,10 @@ test("manual agent refresh reads shared state and work items without raw events 
   const stateResponse = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/agents/bootstrap-agent/state",
   );
-  const workItemsResponse = page.waitForResponse((response) =>
-    new URL(response.url()).pathname === "/api/agents/bootstrap-agent/work-items",
-  );
   await refresh.click();
   expect((await stateResponse).ok()).toBe(true);
-  expect((await workItemsResponse).ok()).toBe(true);
   await expect(refresh).toBeEnabled();
-  expect(requests).toContain("/api/agents/bootstrap-agent/work-items?limit=50");
+  expect(requests.filter((path) => path.startsWith("/api/agents/bootstrap-agent/work-items?"))).toEqual([]);
   expect(requests).not.toContain("/api/agents/bootstrap-agent/conversation?limit=50");
   // Neither the detail refresh nor diagnostics may resurrect raw-event recovery.
   expect(requests.filter((path) =>

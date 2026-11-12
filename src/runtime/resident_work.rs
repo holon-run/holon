@@ -5,7 +5,7 @@ mod context_queue;
 mod scheduler_queue;
 mod state_queue;
 pub(crate) use scheduler_queue::derive_ranked_work_posture;
-pub(crate) use state_queue::{StateWorkQueue, StateWorkRecord};
+pub(crate) use state_queue::{StateWorkQueue, StateWorkRecord, STATE_ACTIVE_WORK_ITEM_LIMIT};
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -1599,6 +1599,35 @@ mod tests {
         assert!(captured.live_work_ids.contains("completing"));
         assert_eq!(captured.nonopen.keys.len(), 2);
         assert_eq!(captured.records.len(), 131);
+    }
+
+    #[test]
+    fn active_state_work_keeps_completing_outside_the_history_window() -> Result<()> {
+        let mut records = (0..60)
+            .map(|index| {
+                qualified(
+                    &format!("completed-{index:03}"),
+                    WorkItemState::Completed,
+                    1,
+                )
+            })
+            .collect::<Vec<_>>();
+        records.push(qualified("zz-completing", WorkItemState::Completing, 1));
+        records.push(qualified("open", WorkItemState::Open, 1));
+        let captured = domain(records.clone(), coverage(&records, 1))
+            .capture(&WorkCaptureRequest::current())?;
+        assert!(!captured
+            .nonopen
+            .keys
+            .iter()
+            .any(|key| key.id == "zz-completing"));
+        let state = AgentState::new(&scope().agent_id);
+        let ranks = captured.active_state_work_ranks(&state, &[])?;
+        assert_eq!(ranks.len(), 2);
+        assert!(ranks
+            .iter()
+            .any(|rank| rank.work_item.id == "zz-completing"));
+        Ok(())
     }
 
     #[test]

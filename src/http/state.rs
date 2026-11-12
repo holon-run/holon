@@ -492,6 +492,8 @@ fn build_agent_state_projection(
                 waits,
                 timers,
                 work_items,
+                active_work_item_count: state_projection.active_work_item_count,
+                active_timer_count: state_projection.active_timer_count,
                 external_triggers,
                 workspace,
             })
@@ -583,7 +585,10 @@ type StateWorkItemDto<'a> =
 fn slim_state_work_items<W: std::borrow::Borrow<WorkItemRecord>>(
     items: &[crate::work_item_scheduling::WorkItemSchedulingProjection<W>],
 ) -> Result<Vec<StateWorkItemDto<'_>>> {
-    let count = items.len().min(STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
+    let active = items
+        .iter()
+        .filter(|item| item.record().state != WorkItemState::Completed);
+    let count = active.clone().count().min(STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
     crate::diagnostics::resource_io::charge_owned_metadata(
         u64::try_from(count)?
             .checked_mul(std::mem::size_of::<StateWorkItemDto<'_>>() as u64)
@@ -592,7 +597,12 @@ fn slim_state_work_items<W: std::borrow::Borrow<WorkItemRecord>>(
     )?;
     let mut result = Vec::new();
     result.try_reserve_exact(count)?;
-    for item in items.iter().take(count) {
+    for item in active
+        .clone()
+        .filter(|item| item.is_current)
+        .chain(active.filter(|item| !item.is_current))
+        .take(count)
+    {
         result.push(slim_state_work_item_dto(item)?);
     }
     Ok(result)

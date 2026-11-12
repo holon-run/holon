@@ -154,6 +154,7 @@ fn timestamp_projection_keeps_original_orders_limits_cost_and_last_holders() -> 
                     (37, 3),
                     vec![read.clone()],
                     cold,
+                    false,
                 )?;
                 assert_eq!(timers, expected.0);
                 assert_eq!(triggers, expected.1);

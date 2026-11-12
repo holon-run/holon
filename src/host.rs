@@ -379,6 +379,8 @@ pub(crate) struct AgentStateReadProjection {
     pub(crate) agent: LightweightAgentStateProjection,
     pub(crate) tasks: Vec<TaskRecord>,
     pub(crate) timers: Vec<crate::runtime::TimerRecordLoan>,
+    pub(crate) active_work_item_count: usize,
+    pub(crate) active_timer_count: usize,
     pub(crate) external_triggers: Vec<crate::runtime::ExternalTriggerRecordLoan>,
     pub(crate) material: crate::runtime::StateProjectionMaterial,
 }
@@ -5313,7 +5315,7 @@ impl RuntimeHost {
             reservations,
             observation,
         } = self
-            .acquire_cold_scheduling_query(&identity, timer_limit)
+            .acquire_cold_scheduling_query_in(&identity, timer_limit, self.runtime_db(), true)
             .await
             .map_err(PublicAgentError::Runtime)?;
         let agent_started = std::time::Instant::now();
@@ -5389,6 +5391,10 @@ impl RuntimeHost {
             _work_budget: None,
             _scheduling_material: None,
         };
+        let active_work_item_count = agent.work_queue.items.len();
+        let active_timer_count = scheduling_material
+            .active_timer_count()
+            .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
         let material = crate::runtime::StateProjectionMaterial {
             acquisition,
@@ -5402,6 +5408,8 @@ impl RuntimeHost {
             agent,
             tasks,
             timers,
+            active_work_item_count,
+            active_timer_count,
             external_triggers,
             material,
         })

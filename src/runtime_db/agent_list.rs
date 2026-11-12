@@ -33,7 +33,7 @@ use super::conversation::{active_agent_identity, ConversationIdentity, Conversat
 use super::repositories::{
     decode_external_trigger_payload, decode_task_payload, decode_wait_condition_row,
     decode_work_item_continuation_payload, decode_work_item_payload, enum_string,
-    query_tasks_for_agent, recent_timers_for_agent, wait_condition_decode_error,
+    query_tasks_for_agent, wait_condition_decode_error,
 };
 use super::RuntimeDb;
 
@@ -107,20 +107,56 @@ impl RuntimeDb {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn agent_timers_snapshot(
         &self,
         agent_id: &str,
         expected_incarnation: Option<u64>,
         limit: usize,
     ) -> Result<Option<(ConversationIdentity, Vec<TimerRecord>)>> {
+        self.agent_timers_snapshot_filtered(
+            agent_id,
+            expected_incarnation,
+            limit,
+            crate::types::RecordListStatus::All,
+        )
+    }
+
+    pub(crate) fn agent_timers_snapshot_filtered(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+        limit: usize,
+        status: crate::types::RecordListStatus,
+    ) -> Result<Option<(ConversationIdentity, Vec<TimerRecord>)>> {
         self.with_read(|connection| {
             read_agent_record_snapshot(connection, agent_id, expected_incarnation, |view| {
-                recent_timers_for_agent(view, agent_id, limit)
+                super::repositories::filtered_timers_for_agent(view, agent_id, limit, status)
             })
         })
     }
 
+    pub(crate) fn agent_work_queue_snapshot_filtered(
+        &self,
+        agent_id: &str,
+        expected_incarnation: Option<u64>,
+        status: crate::types::RecordListStatus,
+        limit: usize,
+    ) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
+        self.with_read(|connection| {
+            read_work_queue_snapshot_filtered(
+                connection,
+                agent_id,
+                expected_incarnation,
+                || {},
+                status,
+                limit,
+            )
+        })
+    }
+
     /// Captures the work queue's identity and all facts in one committed view.
+    #[cfg(test)]
     pub(crate) fn agent_work_queue_snapshot(
         &self,
         agent_id: &str,
@@ -128,6 +164,28 @@ impl RuntimeDb {
     ) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
         self.with_read(|connection| {
             read_work_queue_snapshot(connection, agent_id, expected_incarnation, || {})
+        })
+    }
+
+    /// One committed view of the agent identity fence plus one work item.
+    pub(crate) fn agent_work_item_snapshot(
+        &self,
+        agent_id: &str,
+        work_item_id: &str,
+        expected_incarnation: Option<u64>,
+    ) -> Result<Option<(ConversationIdentity, Option<WorkItemRecord>)>> {
+        self.with_read(|connection| {
+            read_agent_record_snapshot(connection, agent_id, expected_incarnation, |view| {
+                view.query_row(
+                    "SELECT payload_json FROM work_items
+                     WHERE agent_id = ?1 AND work_item_id = ?2",
+                    params![agent_id, work_item_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()?
+                .map(|payload| decode_work_item_payload(&payload))
+                .transpose()
+            })
         })
     }
 
@@ -239,11 +297,30 @@ fn read_agent_record_snapshot<T>(
     Ok(Some((identity, records)))
 }
 
+#[cfg(test)]
 fn read_work_queue_snapshot(
     connection: &mut Connection,
     agent_id: &str,
     expected_incarnation: Option<u64>,
     after_identity: impl FnOnce(),
+) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
+    read_work_queue_snapshot_filtered(
+        connection,
+        agent_id,
+        expected_incarnation,
+        after_identity,
+        crate::types::RecordListStatus::All,
+        crate::storage::read_models::WORK_QUEUE_NON_OPEN_WINDOW,
+    )
+}
+
+fn read_work_queue_snapshot_filtered(
+    connection: &mut Connection,
+    agent_id: &str,
+    expected_incarnation: Option<u64>,
+    after_identity: impl FnOnce(),
+    status: crate::types::RecordListStatus,
+    limit: usize,
 ) -> Result<Option<(ConversationIdentity, AgentListPostureRow)>> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
     let Some(identity) = fenced_agent_identity(&transaction, agent_id, expected_incarnation)?
@@ -251,7 +328,12 @@ fn read_work_queue_snapshot(
         return Ok(None);
     };
     after_identity();
-    let rows = collect_agent_list_posture_rows(&transaction, &[agent_id.to_owned()])?;
+    let rows = collect_agent_list_posture_rows_filtered(
+        &transaction,
+        &[agent_id.to_owned()],
+        status,
+        limit,
+    )?;
     transaction.commit()?;
     Ok(rows.rows.into_iter().next().map(|row| (identity, row)))
 }
@@ -287,7 +369,21 @@ fn collect_agent_list_posture_rows(
     connection: &Connection,
     agent_ids: &[String],
 ) -> Result<AgentListPostureRows> {
-    let non_open_window = crate::storage::read_models::WORK_QUEUE_NON_OPEN_WINDOW;
+    collect_agent_list_posture_rows_filtered(
+        connection,
+        agent_ids,
+        crate::types::RecordListStatus::All,
+        crate::storage::read_models::WORK_QUEUE_NON_OPEN_WINDOW,
+    )
+}
+
+fn collect_agent_list_posture_rows_filtered(
+    connection: &Connection,
+    agent_ids: &[String],
+    status: crate::types::RecordListStatus,
+    non_open_window: usize,
+) -> Result<AgentListPostureRows> {
+    use crate::types::RecordListStatus;
     let queued_status = enum_string(&QueueEntryStatus::Queued)?;
     let interrupted_status = enum_string(&QueueEntryStatus::Interrupted)?;
 
@@ -335,12 +431,17 @@ fn collect_agent_list_posture_rows(
             }
         }
 
-        {
+        if status != RecordListStatus::Terminal {
             // No ORDER BY, mirroring WorkItemRepository::open_for_agent;
             // the queue read model keys items by id.
+            let predicate = if status == RecordListStatus::Active {
+                "state != 'completed'"
+            } else {
+                "state = 'open'"
+            };
             let sql = format!(
                 "SELECT agent_id, payload_json FROM work_items
-                 WHERE agent_id IN ({placeholders}) AND state = 'open'"
+                 WHERE agent_id IN ({placeholders}) AND {predicate}"
             );
             let mut statement = connection.prepare(&sql)?;
             let rows = statement.query_map(ids.as_slice(), |row| {
@@ -359,9 +460,14 @@ fn collect_agent_list_posture_rows(
             }
         }
 
-        {
+        if status != RecordListStatus::Active {
             // Per-agent terminal window equal to
             // WorkItemRepository::latest_non_open_for_agent.
+            let predicate = if status == RecordListStatus::Terminal {
+                "state = 'completed'"
+            } else {
+                "state != 'open'"
+            };
             let sql = format!(
                 "SELECT agent_id, payload_json FROM (
                    SELECT agent_id, payload_json,
@@ -370,10 +476,10 @@ fn collect_agent_list_posture_rows(
                             ORDER BY updated_at DESC, created_at DESC, work_item_id ASC
                           ) AS rn
                    FROM work_items
-                   WHERE agent_id IN ({placeholders}) AND state != 'open'
+                   WHERE agent_id IN ({placeholders}) AND {predicate}
                  ) WHERE rn <= ?"
             );
-            let window = non_open_window as i64;
+            let window = i64::try_from(non_open_window).unwrap_or(i64::MAX);
             let mut statement = connection.prepare(&sql)?;
             let mut params: Vec<&dyn rusqlite::ToSql> = ids.clone();
             params.push(&window);

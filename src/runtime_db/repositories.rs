@@ -321,6 +321,15 @@ impl WorkItemRepository<'_> {
             .with_read(|connection| context_open_work_items_on(&connection, agent_id))
     }
 
+    pub(crate) fn nonterminal_for_agent(&self, agent_id: &str) -> Result<Vec<WorkItemRecord>> {
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND state != 'completed'",
+            )?;
+            work_queue_records(&mut statement, [agent_id])
+        })
+    }
+
     /// Most recent non-open work items for one agent, bounded by `limit`.
     /// Projections only surface a small window of terminal history.
     pub fn latest_non_open_for_agent(
@@ -4807,14 +4816,35 @@ pub(super) fn recent_timers_for_agent(
     agent_id: &str,
     limit: usize,
 ) -> Result<Vec<TimerRecord>> {
+    filtered_timers_for_agent(
+        connection,
+        agent_id,
+        limit,
+        crate::types::RecordListStatus::All,
+    )
+}
+
+pub(super) fn filtered_timers_for_agent(
+    connection: &Connection,
+    agent_id: &str,
+    limit: usize,
+    status: crate::types::RecordListStatus,
+) -> Result<Vec<TimerRecord>> {
     if limit == 0 {
         return Ok(Vec::new());
     }
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let predicate = match status {
+        crate::types::RecordListStatus::All => "1",
+        crate::types::RecordListStatus::Active => "status IN ('active', 'scheduled')",
+        crate::types::RecordListStatus::Terminal => "status IN ('completed', 'cancelled')",
+    };
     let mut records = timer_list_on(
         connection,
-        "SELECT payload_json FROM timers WHERE agent_id = ?1
-         ORDER BY updated_at DESC, created_at DESC, timer_id ASC LIMIT ?2",
+        &format!(
+            "SELECT payload_json FROM timers WHERE agent_id = ?1 AND {predicate}
+         ORDER BY updated_at DESC, created_at DESC, timer_id ASC LIMIT ?2"
+        ),
         params![agent_id, limit],
     )?;
     records.reverse();

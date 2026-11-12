@@ -59,6 +59,8 @@ function agentStateFixture(agentId: string): components["schemas"]["AgentStateSn
     waits: [],
     timers: [],
     work_items: [],
+    active_timer_count: 0,
+    active_work_item_count: 0,
     external_triggers: [],
     workspace: {
       workspaces: [],
@@ -646,6 +648,18 @@ describe("createRuntimeClient", () => {
     state.agent.agent.current_work_item_id = null;
     await expect(client.getAgentState("agent-one")).resolves.toMatchObject({
       currentWorkItemId: null, currentWork: undefined,
+    });
+  });
+
+  it("projects active snapshot totals without interpreting bounded arrays as counts", async () => {
+    const state = { ...agentStateFixture("agent-one"), active_work_item_count: 90, active_timer_count: 80, timers: [] };
+    state.agent.active_task_count = 70;
+    const client = createRuntimeClient({
+      mode: "remote", baseUrl: "http://example.test:7878",
+      fetchImpl: (async () => Response.json(state)) as typeof fetch,
+    });
+    await expect(client.getAgentState("agent-one")).resolves.toMatchObject({
+      activeTaskCount: 70, activeWorkItemCount: 90, activeTimerCount: 80, timers: [],
     });
   });
 
@@ -1743,16 +1757,25 @@ describe("createRuntimeClient", () => {
     expect(seen).toEqual(["http://example.test:7878/api/agents/agent%2Fone/work-items/work%2Fdetail"]);
   });
 
+  it("requests a bounded terminal work window with the identity fence", async () => {
+    const fetchImpl = vi.fn().mockImplementation(async () => Response.json([]));
+    const client = createRuntimeClient({ mode: "local", fetchImpl });
+    await expect(client.getAgentWorkItems("agent/one", { status: "terminal", limit: 50, incarnation: 3 })).resolves.toEqual([]);
+    expect(fetchImpl.mock.calls[0][0]).toBe("/api/agents/agent%2Fone/work-items?limit=50&status=terminal");
+    expect(new Headers(fetchImpl.mock.calls[0][1].headers).get("x-holon-expected-incarnation")).toBe("3");
+    expect(fetchImpl.mock.calls[0][1].cache).toBe("no-store");
+  });
+
   type DetailFenceOptions = { incarnation?: number; signal?: AbortSignal };
   type RuntimeClientForTests = ReturnType<typeof createRuntimeClient>;
 
-  it("keeps unfenced timer defaults and recent-task list calls compatible without options", async () => {
+  it("requests active timers and terminal recent tasks without loading unfiltered history", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => Response.json([]));
     const client = createRuntimeClient({ mode: "local", fetchImpl });
     await expect(client.getAgentTimers("agent/one")).resolves.toEqual([]);
     await expect(client.getAgentRecentTasks("agent/one")).resolves.toEqual([]);
     expect(fetchImpl.mock.calls.map(([url]) => url)).toEqual([
-      "/api/agents/agent%2Fone/timers?limit=50",
+      "/api/agents/agent%2Fone/timers?status=active&limit=50",
       "/api/agents/agent%2Fone/tasks?status=terminal&limit=20",
     ]);
     for (const [, init] of fetchImpl.mock.calls) {
@@ -1764,7 +1787,7 @@ describe("createRuntimeClient", () => {
   const identityFencedDetailReads = [
     {
       label: "timers",
-      path: "/agents/agent%2Fone/timers?limit=7",
+      path: "/agents/agent%2Fone/timers?status=active&limit=7",
       body: [],
       call: (client: RuntimeClientForTests, options: DetailFenceOptions) =>
         client.getAgentTimers("agent/one", { limit: 7, ...options }),
@@ -1900,7 +1923,7 @@ describe("createRuntimeClient", () => {
     expect(capturedInit?.cache).toBeUndefined();
   });
 
-  it("loads agent detail through state, conversation and work items only", async () => {
+  it("loads agent detail through state and conversation without a hidden work list request", async () => {
     const seen: string[] = [];
     const conversation = {
       event_log_epoch: "epoch-a", event_head_seq: 23, oldest_retained_seq: 1,
@@ -1914,7 +1937,6 @@ describe("createRuntimeClient", () => {
         seen.push(url);
         if (url.endsWith("/state")) return Response.json(agentStateFixture("agent-one"));
         if (url.endsWith("/conversation?limit=50")) return Response.json(conversation);
-        if (url.endsWith("/work-items?limit=50")) return Response.json([]);
         throw new Error(`Unexpected request: ${url}`);
       }) as typeof fetch,
     });
@@ -1927,7 +1949,6 @@ describe("createRuntimeClient", () => {
     expect(seen.sort()).toEqual([
       "http://example.test:7878/api/agents/agent-one/conversation?limit=50",
       "http://example.test:7878/api/agents/agent-one/state",
-      "http://example.test:7878/api/agents/agent-one/work-items?limit=50",
     ]);
   });
 

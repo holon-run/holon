@@ -33,6 +33,199 @@ async fn request(
 }
 
 #[tokio::test]
+async fn active_state_inventory_and_explicit_history_use_separate_identity_fenced_reads() {
+    use crate::runtime::resident_scheduling::{SchedulingFamily, SchedulingKey};
+    use crate::runtime_db::scheduling_snapshot::{
+        prepare_scheduling_write_tx, register_scheduling_writes_tx,
+    };
+    use crate::types::TimerStatus;
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host =
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap();
+    host.create_named_agent("inventory", None).await.unwrap();
+    host.unload_runtime("inventory").await;
+    let mut current = None;
+    let mut terminal_id = None;
+    for (index, status) in [
+        WorkItemState::Completed,
+        WorkItemState::Completing,
+        WorkItemState::Open,
+        WorkItemState::Open,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let item = WorkItemRecord::new("inventory", format!("item-{index}"), status.clone());
+        if status == WorkItemState::Completed {
+            terminal_id = Some(item.id.clone());
+        }
+        if index == 3 {
+            current = Some(item.id.clone());
+        }
+        host.runtime_db().work_items().insert_new(&item).unwrap();
+    }
+    let mut agent = AgentState::new("inventory");
+    agent.current_work_item_id = current.clone();
+    host.runtime_db()
+        .agent_states()
+        .upsert_for_fixture(&agent)
+        .unwrap();
+    let mut timers = Vec::new();
+    for (index, status) in [
+        TimerStatus::Active,
+        TimerStatus::Completed,
+        TimerStatus::Cancelled,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let timer: TimerRecord = serde_json::from_value(serde_json::json!({
+            "id": format!("timer-{index}"), "agent_id": "inventory",
+            "created_at": chrono::Utc::now(), "status": status,
+            "duration_ms": 1000, "repeat": false
+        }))
+        .unwrap();
+        timers.push(timer);
+    }
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: "inventory".into(),
+        identity_incarnation: 1,
+    };
+    let ledger = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+        crate::config::StateMemoryLimits::default(),
+    )
+    .unwrap();
+    let scheduling_request = crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest {
+        capture: crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
+        byte_limit: 64 * 1024 * 1024,
+        record_limit: 65536,
+    };
+    let keys = timers
+        .iter()
+        .map(|timer| SchedulingKey::new(SchedulingFamily::Timer, &timer.id))
+        .collect();
+    host.runtime_db()
+        .transaction(|tx| {
+            let proof =
+                prepare_scheduling_write_tx(tx, &scope, &keys, &scheduling_request, &ledger)?;
+            for timer in &timers {
+                crate::runtime_db::repositories::upsert_timer_tx(tx, timer)?;
+            }
+            register_scheduling_writes_tx(tx, &proof, &keys, &agent, &scheduling_request)
+        })
+        .unwrap();
+    let state = AppState::for_unix(host.clone());
+    let (status, _, body) = request(&state, "/api/agents/inventory/state", None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["active_work_item_count"], 3);
+    assert_eq!(body["active_timer_count"], 1);
+    assert_eq!(body["work_items"].as_array().unwrap().len(), 3);
+    assert_eq!(body["work_items"][0]["id"].as_str(), current.as_deref());
+    assert!(body["work_items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|item| item["state"] != "completed"));
+    assert_eq!(body["timers"].as_array().unwrap().len(), 1);
+    assert_eq!(body["timers"][0]["id"], "timer-0");
+    for (path, count) in [
+        ("work-items?status=active", 3),
+        ("work-items?status=terminal&limit=1", 1),
+        ("timers?status=active&limit=1", 1),
+        ("timers?status=terminal", 2),
+    ] {
+        let path = format!("/api/agents/inventory/{path}");
+        let (status, headers, body) = request(&state, &path, Some("1")).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {body}");
+        assert_eq!(headers["x-holon-agent-incarnation"], "1");
+        assert_eq!(body.as_array().unwrap().len(), count);
+        if path.contains("work-items?status=terminal") {
+            assert_eq!(body[0]["id"].as_str(), terminal_id.as_deref());
+        }
+        let (status, _, _) = request(&state, &path, Some("2")).await;
+        assert_eq!(status, StatusCode::CONFLICT);
+    }
+    let response = crate::http::router(state)
+        .oneshot(
+            Request::builder()
+                .uri("/api/agents/inventory/work-items?status=bogus")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert!(host.try_get_loaded_runtime("inventory").await.is_none());
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn terminal_work_item_history_detail_is_not_limited_by_the_queue_window() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host =
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap();
+    host.create_named_agent("history", None).await.unwrap();
+    host.unload_runtime("history").await;
+    let mut completed = WorkItemRecord::new("history", "old history", WorkItemState::Completed);
+    completed.created_at -= chrono::Duration::days(1);
+    completed.updated_at = completed.created_at;
+    host.runtime_db()
+        .work_items()
+        .insert_new(&completed)
+        .unwrap();
+    for index in 0..128 {
+        let item = WorkItemRecord::new(
+            "history",
+            format!("newer completing {index}"),
+            WorkItemState::Completing,
+        );
+        host.runtime_db().work_items().insert_new(&item).unwrap();
+    }
+    let foreign = WorkItemRecord::new("other", "foreign history", WorkItemState::Completed);
+    host.runtime_db().work_items().insert_new(&foreign).unwrap();
+    let state = AppState::for_unix(host.clone());
+    let (status, _, body) = request(
+        &state,
+        "/api/agents/history/work-items?status=terminal&limit=1",
+        Some("1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body[0]["id"], completed.id);
+    let path = format!("/api/agents/history/work-items/{}", completed.id);
+    let (status, headers, body) = request(&state, &path, Some("1")).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(headers["x-holon-agent-incarnation"], "1");
+    assert_eq!(body["id"], completed.id);
+    assert_eq!(body["state"], "completed");
+    let (status, _, _) = request(&state, &path, Some("2")).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    for id in [foreign.id.as_str(), "missing"] {
+        let (status, _, _) = request(
+            &state,
+            &format!("/api/agents/history/work-items/{id}"),
+            Some("1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+    assert!(host.try_get_loaded_runtime("history").await.is_none());
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn task_and_timer_list_http_incarnation_binding_preserves_legacy_and_recreation_isolation() {
     let home = tempfile::tempdir().unwrap();
     std::fs::write(

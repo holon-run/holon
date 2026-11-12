@@ -19,7 +19,7 @@ export function resolveWorkItemDetail(
   return {
     ...summary,
     ...(full && detailIsNewer ? full : {}),
-    // Focus/membership belongs to the list, including authoritative absence.
+    // Focus/membership belongs to the active snapshot, including absence.
     current: listed ? listed.current : listReadId === undefined ? summary.current : false,
     ...(full ? {
       planArtifact: detailIsNewer ? full.planArtifact : listed?.planArtifact ?? full.planArtifact,

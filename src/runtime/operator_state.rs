@@ -110,7 +110,7 @@ impl RuntimeHandle {
                 && root.token.identity_incarnation == self.inner.identity_incarnation,
             "State root scope differs"
         );
-        let mut read = self.capture_operator_scheduler_from_root(root, self.now())?;
+        let mut read = self.capture_state_scheduler_from_root(root, self.now())?;
         let acquisition = read.acquisition.clone();
         acquisition.read(|| {
             let query = root
@@ -128,8 +128,8 @@ impl RuntimeHandle {
             resource_io::admit_cloned_value(&(identity, read.state.as_ref()))?;
             let identity = AgentIdentityView::from_record(identity, &self.inner.default_agent_id);
             let state = read.state.as_ref().clone();
-            let (work_queue, work_budget) =
-                read.full_state_work_queue(&self.inner.input_evidence_budget)?;
+            let (work_queue, work_budget, active_work_item_count) =
+                read.active_state_work_queue(&self.inner.input_evidence_budget)?;
             let closure = Self::closure_decision_from_projection(
                 &state,
                 &read.projection,
@@ -143,7 +143,7 @@ impl RuntimeHandle {
             let waits = &waits[..waits.len().min(50)];
             resource_io::admit_cloned_value(&waits)?;
             let waits = waits.iter().map(|wait| (*wait).clone()).collect();
-            let scheduling = self.scheduling_records_from_capture(
+            let scheduling = self.state_scheduling_records_from_capture(
                 super::scheduling_reads::SchedulingReadSnapshot {
                     token: root.token,
                     state: root.state.clone(),
@@ -159,6 +159,7 @@ impl RuntimeHandle {
             let lifecycle =
                 crate::types::AgentLifecycleHint::from_status(&state.id, state.status.clone());
             let (timers, external_triggers, scheduling_material) = scheduling.into_parts();
+            let active_timer_count = scheduling_material.active_timer_count()?;
             let agent = LightweightAgentStateProjection {
                 identity,
                 agent: state,
@@ -184,6 +185,8 @@ impl RuntimeHandle {
                 tasks,
                 waits,
                 timers,
+                active_work_item_count,
+                active_timer_count,
                 external_triggers,
                 material,
             })

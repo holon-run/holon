@@ -23,8 +23,8 @@ import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
+import { AgentWorkItemsPanel } from "./AgentWorkItemsPanel";
 import { useRuntimeStore } from "../../runtime/runtime-store";
-import { useVisibleAgentResourceRefresh } from "../../runtime/useVisibleAgentResourceRefresh";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { components } from "../../runtime/generated/openapi";
 import { useTranslation } from "react-i18next";
@@ -235,7 +235,8 @@ export function AgentOverviewPanel({
   const { t } = useTranslation();
   const queryAgentRecentTasks = useRuntimeStore((state) => state.queryAgentRecentTasks);
   const stateIsCurrent = useRuntimeStore((state) => !state.bootstrap.connection.error && state.discovery.freshness === "fresh");
-  const queryAgentTimers = useRuntimeStore((state) => state.queryAgentTimers);
+  const queryAgentCompletedWorkItems = useRuntimeStore((state) => state.queryAgentCompletedWorkItems);
+  const refreshAgentState = useRuntimeStore((state) => state.refreshAgentState);
   const cancelAgentTimer = useRuntimeStore((state) => state.cancelAgentTimer);
   const workspace = agent.workspaceSummary;
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -246,25 +247,18 @@ export function AgentOverviewPanel({
   const [renameText, setRenameText] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>(undefined);
   const [renameSaving, setRenameSaving] = useState(false);
-  const [timersOpen, setTimersOpen] = useState(true);
-  const timerResource = useVisibleAgentResourceRefresh(agent.id, "timers", timersOpen, queryAgentTimers);
-  const timers = timerResource.state?.data ?? [];
-  const timersLoading = timerResource.state?.loading;
+  const timers = agent.timers ?? [];
+  const activeTimerCount = agent.activeTimerCount ?? timers.length;
   const [timerError, setTimerError] = useState<string | undefined>();
   const [cancellingTimerId, setCancellingTimerId] = useState<string | undefined>();
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
-  const visibleTimers = useMemo(
-    () => timers.filter((timer) => timer.status !== "completed" && timer.status !== "cancelled"),
-    [timers],
-  );
   async function handleCancelTimer(timerId: string) {
     setCancellingTimerId(timerId);
     setTimerError(undefined);
     try {
-      const updated = await cancelAgentTimer(agent.id, timerId);
-      timerResource.updateData((current) => current.map((timer) => timer.id === updated.id ? updated : timer));
-      timerResource.refresh();
+      await cancelAgentTimer(agent.id, timerId);
+      await refreshAgentState(agent.id, { incarnation: agent.incarnation, throwOnError: true });
     } catch (error) {
       setTimerError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -276,16 +270,11 @@ export function AgentOverviewPanel({
   const normalizedLifecycle = (agent.lifecycle ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
   const normalizedPosture = (agent.posture ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
   const isStopped = normalizedLifecycle === "stopped" || normalizedLifecycle === "archived" || normalizedPosture === "stopped" || normalizedPosture === "archived";
-  const openWorkItems = workItems.filter((item) => !item.current && item.state !== "completed");
-  const completedWorkItems = workItems.filter((item) => item.state === "completed");
   const currentWorkLabel = currentWorkItems[0]?.objective ?? agent.currentWork?.objective ?? t("rightPanel.noCurrentWork");
   const workspaceName = workspace?.name ?? agent.workspace;
   const workspaceRoot = workspace?.cwd ?? workspace?.executionRoot ?? workspace?.worktree?.path ?? workspace?.anchor;
   const modeLabel = workspace?.worktree ? t("rightPanel.managedWorktree") : workspace?.projectionKind;
   const showCwd = Boolean(workspace?.cwd && workspace.cwd !== workspace.executionRoot);
-  const selectWorkItem = (workItem: WorkItemSummary) => {
-    onOpenWorkItemDetail(workItem);
-  };
   async function handleControl(action: AgentControlAction) {
     if (!onControlAgent) return;
     setPendingAction(action);
@@ -652,18 +641,16 @@ export function AgentOverviewPanel({
       })()}
 
       <CollapsibleInspectorCard
-        title={visibleTimers.length ? t("rightPanel.timersWithActiveCount", { count: visibleTimers.length }) : t("rightPanel.timers")}
+        title={activeTimerCount ? t("rightPanel.timersWithActiveCount", { count: activeTimerCount }) : t("rightPanel.timers")}
         className="agent-timers-card"
-        onOpenChange={setTimersOpen}
-        badge={visibleTimers.length ? <span className="inspector-card-count">{visibleTimers.length}</span> : undefined}
+        badge={activeTimerCount ? <span className="inspector-card-count">{activeTimerCount}</span> : undefined}
       >
-        <ObjectDetailRefreshFeedback state={timerResource.state} />
-        {timersLoading ? <p className="muted">{t("rightPanel.loadingTimers")}</p> : null}
+        {activeTimerCount > timers.length ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: timers.length, count: activeTimerCount })}</p> : null}
         {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
-        {!timersLoading && !visibleTimers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
-        {visibleTimers.length ? (
+        {!timers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
+        {timers.length ? (
           <div className="agent-timer-list">
-            {visibleTimers.map((timer) => (
+            {timers.map((timer) => (
               <TimerRow
                 key={timer.id}
                 timer={timer}
@@ -710,6 +697,7 @@ export function AgentOverviewPanel({
 
       <AgentTasksPanel
         agentId={agent.id}
+        incarnation={agent.incarnation}
         tasks={agent.tasks ?? []}
         activeTaskCount={agent.activeTaskCount}
         onOpenTask={onOpenTask}
@@ -717,35 +705,14 @@ export function AgentOverviewPanel({
         loadRecentTasks={queryAgentRecentTasks}
       />
 
-      {workItems.length ? (
-        <CollapsibleInspectorCard
-          title={t("rightPanel.workItemsWithCount", { count: currentWorkItems.length + openWorkItems.length })}
-          className="current-work"
-        >
-          {currentWorkItems.map((workItem) => (
-            <WorkItemCard key={workItem.id} workItem={workItem} featured onSelect={selectWorkItem} />
-          ))}
-          {openWorkItems.length ? (
-            <div className="inspector-nested-stack">
-              {openWorkItems.map((workItem) => (
-                <WorkItemCard key={workItem.id} workItem={workItem} onSelect={selectWorkItem} />
-              ))}
-            </div>
-          ) : null}
-          {completedWorkItems.length ? (
-            <details className="inspector-details-list">
-              <summary>{t("rightPanel.completedCount", { count: completedWorkItems.length })}</summary>
-              <div className="inspector-nested-stack">
-                {completedWorkItems.map((workItem) => (
-                  <WorkItemCard key={workItem.id} workItem={workItem} onSelect={selectWorkItem} />
-                ))}
-              </div>
-            </details>
-          ) : null}
-        </CollapsibleInspectorCard>
-      ) : (
-        null
-      )}
+      <AgentWorkItemsPanel
+        agentId={agent.id}
+        incarnation={agent.incarnation}
+        workItems={workItems}
+        activeWorkItemCount={agent.activeWorkItemCount}
+        loadCompletedWorkItems={queryAgentCompletedWorkItems}
+        onSelect={onOpenWorkItemDetail}
+      />
     </div>
   );
 }
@@ -865,32 +832,6 @@ function CollapsibleInspectorCard({
       </summary>
       <div className="collapsible-inspector-body">{children}</div>
     </details>
-  );
-}
-
-function WorkItemCard({
-  workItem,
-  featured = false,
-  onSelect,
-}: {
-  workItem: WorkItemSummary;
-  featured?: boolean;
-  onSelect: (workItem: WorkItemSummary) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <button
-      type="button"
-      className={`inspector-list-item work-item-button${featured ? " featured" : ""}`}
-      onClick={() => onSelect(workItem)}
-    >
-      <div className="inspector-list-head">
-        <strong>{workItem.objective}</strong>
-        <StatusBadge className="state-chip" kind="work" value={workItem.readiness ?? workItem.state} />
-      </div>
-      <small>{compactMeta([workItem.current ? t("status.current") : undefined, workItem.planStatus])}</small>
-      <code>{workItem.id}</code>
-    </button>
   );
 }
 

@@ -4,10 +4,82 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::*;
+use crate::runtime_db::repositories::recent_timers_for_agent;
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
     WorkItemRecord, WorkItemState,
 };
+
+#[test]
+fn explicit_history_filters_before_limits_and_active_work_keeps_all_completing() -> Result<()> {
+    use crate::types::RecordListStatus;
+    let home = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        home.path().join("runtime.sqlite"),
+        home.path().join("runtime.lock"),
+    )?;
+    db.agent_identities().upsert(&AgentIdentityRecord::new(
+        "filtered-agent",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    ))?;
+    let at: chrono::DateTime<chrono::Utc> = "2026-10-01T00:00:00Z".parse()?;
+    let mut completed =
+        WorkItemRecord::new("filtered-agent", "old history", WorkItemState::Completed);
+    completed.created_at = at;
+    completed.updated_at = at;
+    db.work_items().insert_new(&completed)?;
+    for _ in 0..55 {
+        db.work_items().insert_new(&WorkItemRecord::new(
+            "filtered-agent",
+            "completing",
+            WorkItemState::Completing,
+        ))?;
+    }
+    let (_, terminal) = db
+        .agent_work_queue_snapshot_filtered(
+            "filtered-agent",
+            Some(1),
+            RecordListStatus::Terminal,
+            1,
+        )?
+        .expect("identity");
+    let terminal = terminal.facts.map_err(anyhow::Error::msg)?;
+    assert!(terminal.open_work_items.is_empty());
+    assert_eq!(terminal.non_open_work_items, vec![completed]);
+    let (_, active) = db
+        .agent_work_queue_snapshot_filtered("filtered-agent", Some(1), RecordListStatus::Active, 1)?
+        .expect("identity");
+    let active = active.facts.map_err(anyhow::Error::msg)?;
+    assert_eq!(active.open_work_items.len(), 55);
+    assert!(active.non_open_work_items.is_empty());
+    let timer: TimerRecord = serde_json::from_value(serde_json::json!({
+        "id": "old-active", "agent_id": "filtered-agent", "created_at": at,
+        "duration_ms": 1000, "repeat": false
+    }))?;
+    db.timers().upsert(&timer)?;
+    for index in 0..55 {
+        let mut history = timer.clone();
+        history.id = format!("history-{index}");
+        history.status = crate::types::TimerStatus::Cancelled;
+        history.created_at = chrono::Utc::now();
+        db.timers().upsert(&history)?;
+    }
+    let (_, active) = db
+        .agent_timers_snapshot_filtered("filtered-agent", Some(1), 1, RecordListStatus::Active)?
+        .expect("identity");
+    assert_eq!(active, vec![timer]);
+    let (_, terminal) = db
+        .agent_timers_snapshot_filtered("filtered-agent", Some(1), 1, RecordListStatus::Terminal)?
+        .expect("identity");
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].status, crate::types::TimerStatus::Cancelled);
+    Ok(())
+}
 
 #[test]
 fn task_and_timer_incarnation_and_data_share_snapshot_during_replacement_and_deletion() -> Result<()>

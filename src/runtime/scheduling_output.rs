@@ -304,6 +304,7 @@ pub(crate) fn project_selected_scheduling_records(
         prior,
         read_guards,
         false,
+        false,
     )
 }
 
@@ -328,6 +329,31 @@ pub(crate) fn project_cold_scheduling_records(
         record_limit,
         prior,
         read_guards,
+        true,
+        false,
+    )
+}
+
+pub(crate) fn project_state_scheduling_records(
+    selected: CapturedScheduling,
+    timer_limit: usize,
+    ledger: &super::input_evidence_budget::InputEvidenceBudgetLedger,
+    read_guards: Vec<Arc<BudgetViewGuard>>,
+    cold: bool,
+) -> Result<(
+    Vec<TimerRecordLoan>,
+    Vec<ExternalTriggerRecordLoan>,
+    SchedulingReadMaterial,
+)> {
+    project_scheduling_records(
+        selected,
+        timer_limit,
+        ledger,
+        0,
+        0,
+        (0, 0),
+        read_guards,
+        cold,
         true,
     )
 }
@@ -411,6 +437,7 @@ fn select_timer_output(
     selected: &CapturedScheduling,
     limit: usize,
     cold: bool,
+    active_only: bool,
 ) -> [Option<usize>; super::resident_scheduling::SCHEDULING_HISTORY_WINDOW] {
     let mut timers = [None; super::resident_scheduling::SCHEDULING_HISTORY_WINDOW];
     let mut len = 0usize;
@@ -421,6 +448,9 @@ fn select_timer_output(
         let CanonicalSchedulingFact::Timer(timer) = &record.fact else {
             continue;
         };
+        if active_only && timer.status != TimerStatus::Active {
+            continue;
+        }
         if !selected
             .coverage
             .active_timers
@@ -469,6 +499,7 @@ fn project_scheduling_records(
     _prior: (usize, usize),
     read_guards: Vec<Arc<BudgetViewGuard>>,
     cold: bool,
+    active_only: bool,
 ) -> Result<(
     Vec<TimerRecordLoan>,
     Vec<ExternalTriggerRecordLoan>,
@@ -478,7 +509,7 @@ fn project_scheduling_records(
         timer_limit <= super::resident_scheduling::SCHEDULING_HISTORY_WINDOW,
         SchedulingReadError::NeedsHistory
     );
-    let selected_timers = select_timer_output(&selected, timer_limit, cold);
+    let selected_timers = select_timer_output(&selected, timer_limit, cold, active_only);
     let selected_trigger =
         |selected: &CapturedScheduling,
          record: &super::resident_scheduling::QualifiedSchedulingFact| {
@@ -756,6 +787,23 @@ impl RuntimeHandle {
         read: super::scheduling_reads::SchedulingReadSnapshot,
         timer_limit: usize,
     ) -> Result<SchedulingRecordsRead> {
+        self.scheduling_records_from_capture_with_filter(read, timer_limit, false)
+    }
+
+    pub(in crate::runtime) fn state_scheduling_records_from_capture(
+        &self,
+        read: super::scheduling_reads::SchedulingReadSnapshot,
+        timer_limit: usize,
+    ) -> Result<SchedulingRecordsRead> {
+        self.scheduling_records_from_capture_with_filter(read, timer_limit, true)
+    }
+
+    fn scheduling_records_from_capture_with_filter(
+        &self,
+        read: super::scheduling_reads::SchedulingReadSnapshot,
+        timer_limit: usize,
+        active_only: bool,
+    ) -> Result<SchedulingRecordsRead> {
         let limits = self.inner.input_evidence_budget.limits();
         let byte_limit = usize::try_from(
             limits
@@ -763,15 +811,25 @@ impl RuntimeHandle {
                 .checked_add(limits.pending_per_agent_bytes)
                 .context("Scheduling output limit overflow")?,
         )?;
-        let (timers, external_triggers, material) = project_selected_scheduling_records(
-            read.scheduling,
-            timer_limit,
-            &self.inner.input_evidence_budget,
-            byte_limit,
-            usize::try_from(limits.record_limit)?,
-            (0, 0),
-            Vec::new(),
-        )?;
+        let (timers, external_triggers, material) = if active_only {
+            project_state_scheduling_records(
+                read.scheduling,
+                timer_limit,
+                &self.inner.input_evidence_budget,
+                Vec::new(),
+                false,
+            )?
+        } else {
+            project_selected_scheduling_records(
+                read.scheduling,
+                timer_limit,
+                &self.inner.input_evidence_budget,
+                byte_limit,
+                usize::try_from(limits.record_limit)?,
+                (0, 0),
+                Vec::new(),
+            )?
+        };
         Ok(SchedulingRecordsRead {
             token: read.token,
             state: read.state,

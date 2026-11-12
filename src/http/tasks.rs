@@ -728,7 +728,7 @@ pub async fn work_items(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<LimitQuery>,
+    Query(query): Query<ActiveHistoryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let expected_incarnation = conversation::request_incarnation(&headers)?;
@@ -739,9 +739,11 @@ pub async fn work_items(
     let limit = query.limit.unwrap_or(50);
     let (identity, work_queue) = storage
         .read_block("http.tasks.work_items", move |storage| {
-            storage
-                .read_models()
-                .work_queue_snapshot(expected_incarnation)
+            storage.read_models().work_queue_snapshot_filtered(
+                expected_incarnation,
+                query.status,
+                limit,
+            )
         })
         .await
         .map_err(conversation::conversation_error)?
@@ -766,21 +768,20 @@ pub async fn work_item(
         .operator_agent_read_storage(&agent_id)
         .map_err(agent_access_error)?;
     let read_work_item_id = work_item_id.clone();
-    let read_agent_id = agent_id.clone();
-    let (identity, work_queue) = storage
+    let (identity, work_item) = storage
         .read_block("http.tasks.work_item", move |storage| {
             storage
                 .read_models()
-                .work_queue_snapshot(expected_incarnation)
+                .agent_work_item_snapshot(&read_work_item_id, expected_incarnation)
         })
         .await
         .map_err(conversation::conversation_error)?
-        .ok_or_else(|| agent_access_error(PublicAgentError::NotFound { agent_id }))?;
-    let Some(work_item) = work_queue
-        .items
-        .into_iter()
-        .find(|item| item.id == read_work_item_id && item.agent_id == read_agent_id)
-    else {
+        .ok_or_else(|| {
+            agent_access_error(PublicAgentError::NotFound {
+                agent_id: agent_id.clone(),
+            })
+        })?;
+    let Some(work_item) = work_item.filter(|item| item.agent_id == agent_id) else {
         return Err(error_response(
             RuntimeError::not_found(
                 "work_item_not_found",
@@ -801,7 +802,7 @@ pub async fn timers(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
-    Query(query): Query<LimitQuery>,
+    Query(query): Query<ActiveHistoryQuery>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let expected_incarnation = conversation::request_incarnation(&headers)?;
@@ -812,9 +813,11 @@ pub async fn timers(
     let limit = query.limit.unwrap_or(50);
     let (identity, timers) = storage
         .read_block("http.tasks.timers", move |storage| {
-            storage
-                .read_models()
-                .agent_timers_snapshot(expected_incarnation, limit)
+            storage.read_models().agent_timers_snapshot_filtered(
+                expected_incarnation,
+                limit,
+                query.status,
+            )
         })
         .await
         .map_err(conversation::conversation_error)?

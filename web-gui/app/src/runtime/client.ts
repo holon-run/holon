@@ -146,18 +146,13 @@ async function fetchAgentDetail(
   agentId: string,
 ): Promise<AgentDetail> {
   const encodedAgentId = encodeURIComponent(agentId);
-  const [state, conversation, workItems] = await Promise.all([
+  const [state, conversation] = await Promise.all([
     getJson<AgentStateDto>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/state`, { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS }),
     getJson<ConversationSummaryResponse>(fetchImpl, baseUrl, `/agents/${encodedAgentId}/conversation?limit=50`, { headers, timeoutMs: PROJECTION_READ_TIMEOUT_MS }).catch(() => undefined),
-    // Return undefined on failure so projectAgent falls back to state.work_items.
-    // Returning [] would shadow the state endpoint's work_items (empty array is not nullish).
-    fetchAgentWorkItems(baseUrl, fetchImpl, headers, agentId, { limit: 50 }).catch(() => undefined),
   ]);
   const agent = projectAgent(
     { identity: state.agent?.identity ?? { agent_id: agentId } },
     state,
-    undefined,
-    workItems,
   );
   return {
     agent,
@@ -226,7 +221,10 @@ interface AgentListEntryDto {
   } | null;
 }
 
-type AgentStateDto = components["schemas"]["AgentStateSnapshotDto"];
+type AgentStateDto = components["schemas"]["AgentStateSnapshotDto"] & {
+  active_work_item_count?: number;
+  active_timer_count?: number;
+};
 type AgentDetailDto = components["schemas"]["AgentDetail"];
 type SlimWorkItemDto = components["schemas"]["SlimWorkItemDto"];
 type WorkItemDto = components["schemas"]["WorkItemRecord"];
@@ -1033,7 +1031,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { headers: requestHeaders, timeoutMs: PROJECTION_READ_TIMEOUT_MS, signal, cache: "no-store" },
       );
     },
-    async getAgentWorkItems(agentId: string, options: { limit?: number; signal?: AbortSignal; incarnation?: number } = {}): Promise<WorkItemSummary[]> {
+    async getAgentWorkItems(agentId: string, options: { limit?: number; status?: "all" | "active" | "terminal"; signal?: AbortSignal; incarnation?: number } = {}): Promise<WorkItemSummary[]> {
       if (!baseUrl) {
         return [];
       }
@@ -1059,7 +1057,7 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
       return getJson<components["schemas"]["TimerRecord"][]>(
         fetchImpl,
         baseUrl,
-        `/agents/${encodeURIComponent(agentId)}/timers?limit=${encodeURIComponent(limit)}`,
+        `/agents/${encodeURIComponent(agentId)}/timers?status=active&limit=${encodeURIComponent(limit)}`,
         { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },
@@ -1904,10 +1902,11 @@ async function fetchAgentWorkItems(
   fetchImpl: typeof fetch,
   headers: Record<string, string>,
   agentId: string,
-  options: { limit?: number; signal?: AbortSignal; incarnation?: number } = {},
+  options: { limit?: number; status?: "all" | "active" | "terminal"; signal?: AbortSignal; incarnation?: number } = {},
 ): Promise<WorkItemDto[]> {
   const query = new URLSearchParams();
   if (options.limit != null) query.set("limit", String(options.limit));
+  if (options.status != null) query.set("status", options.status);
   const queryString = query.toString();
   return getJson<WorkItemDto[]>(
     fetchImpl,
@@ -2553,6 +2552,8 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     lastTurnTime: formatTime(brief?.created_at ?? state?.agent?.agent?.last_brief_at),
     pending,
     activeTaskCount,
+    activeWorkItemCount: state?.active_work_item_count,
+    activeTimerCount: state?.active_timer_count,
     waitingCount,
     posture,
     postureReason,
@@ -2563,6 +2564,7 @@ function projectAgent(entry: AgentListEntryDto, state?: AgentStateDto, brief?: B
     workspaceSummary,
     attachedWorkspaces,
     tasks,
+    timers: state?.timers,
     waits: state?.waits ?? [],
     waitingReason: state?.agent.closure.waiting_reason ?? (typeof entry.waiting_reason === "string" ? entry.waiting_reason : undefined),
     workItems,

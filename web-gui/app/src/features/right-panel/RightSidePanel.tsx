@@ -224,13 +224,13 @@ export function RightSidePanel({
             ? ((fileTitle?.viewKey === viewKey ? fileTitle.path : activeView.initialFilePath)?.split("/").pop() ?? t("rightPanel.fileBrowser"))
           : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
-  const listReadId = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.workItems?.dataRequestId);
+  const listReadId = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state?.dataRequestId);
   const listedWorkItem = activeView.kind === "work_item_detail"
     ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
     : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail"
     ? resolveWorkItemDetail(activeView.workItem, listedWorkItem, detailState, listReadId) : undefined;
-  // The list keeps refreshing while the file view pauses detail reads.
+  // The active state snapshot refreshes while the file view pauses detail reads.
   const planFileRevisions = activeView.kind === "file_browser"
     ? [...new Set([...Object.keys(workItemDetailsById), ...(agent.workItems ?? []).map((item) => item.id)])].flatMap((id): FileRevision[] => {
         const listed = agent.workItems?.find((item) => item.id === id);

@@ -60,6 +60,23 @@ impl CapturedWork {
         state: &AgentState,
         triggers: &[ExternalTriggerRecord],
     ) -> Result<Vec<QueueWorkRank<'a>>> {
+        self.queue_work_ranks_with_filter(state, triggers, false)
+    }
+
+    pub(crate) fn active_state_work_ranks<'a>(
+        &'a self,
+        state: &AgentState,
+        triggers: &[ExternalTriggerRecord],
+    ) -> Result<Vec<QueueWorkRank<'a>>> {
+        self.queue_work_ranks_with_filter(state, triggers, true)
+    }
+
+    fn queue_work_ranks_with_filter<'a>(
+        &'a self,
+        state: &AgentState,
+        triggers: &[ExternalTriggerRecord],
+        active_only: bool,
+    ) -> Result<Vec<QueueWorkRank<'a>>> {
         ensure!(
             state.id == self.scope.agent_id,
             "Work projection State scope mismatch"
@@ -67,7 +84,7 @@ impl CapturedWork {
         if !self.live_complete {
             return Err(WorkReadError::IncompleteLive.into());
         }
-        if self.nonopen.limit < WORK_NONOPEN_WINDOW && !self.nonopen.is_exhaustive {
+        if !active_only && self.nonopen.limit < WORK_NONOPEN_WINDOW && !self.nonopen.is_exhaustive {
             return Err(WorkReadError::WindowExpansion {
                 requested: WORK_NONOPEN_WINDOW,
                 prepared: self.nonopen.limit,
@@ -83,13 +100,21 @@ impl CapturedWork {
                 .all(|trigger| trigger.target_agent_id == self.scope.agent_id),
             "Work trigger adapter scope mismatch"
         );
-        let displayed = queue_displayed_work_ids(self)?;
+        let displayed = if active_only {
+            None
+        } else {
+            Some(queue_displayed_work_ids(self)?)
+        };
         let works = self
             .records
             .iter()
             .filter_map(|evidence| match &evidence.record {
                 CanonicalWorkRecord::Work(work)
-                    if displayed.binary_search(&work.id.as_str()).is_ok() =>
+                    if displayed
+                        .as_ref()
+                        .map_or(work.state != WorkItemState::Completed, |ids| {
+                            ids.binary_search(&work.id.as_str()).is_ok()
+                        }) =>
                 {
                     Some(work)
                 }

@@ -11,6 +11,7 @@ export const RECENT_TASK_LIMIT = 20;
 
 interface AgentTasksPanelProps {
   agentId: string;
+  incarnation?: number;
   tasks: TaskSummary[];
   activeTaskCount: number;
   onOpenTask: (task: TaskSummary) => void;
@@ -38,7 +39,7 @@ function TaskList({ tasks, agentId, onOpenTask, onOpenConversation }: Pick<Agent
 }
 
 export function AgentTasksPanel(props: AgentTasksPanelProps) {
-  return <AgentTasksPanelContent key={props.agentId} {...props} />;
+  return <AgentTasksPanelContent key={`${props.agentId}:${props.incarnation}`} {...props} />;
 }
 
 function AgentTasksPanelContent({
@@ -69,10 +70,13 @@ function AgentTasksPanelContent({
         </span>
       </summary>
       <div className="collapsible-inspector-body">
+        {activeTaskCount > tasks.length ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: tasks.length, count: activeTaskCount })}</p> : null}
         {tasks.length ? <TaskList tasks={tasks} agentId={agentId} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} /> : null}
         <details
           className="inspector-details-list"
-          onToggle={(event) => setRecentOpen(event.currentTarget.open)}
+          onToggle={(event) => {
+            if (event.target === event.currentTarget) setRecentOpen(event.currentTarget.open);
+          }}
         >
           <summary>{t("rightPanel.recentCompletedTasks", { count: RECENT_TASK_LIMIT })}</summary>
           {recentOpen ? (

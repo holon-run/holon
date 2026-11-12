@@ -1949,6 +1949,20 @@
       },
       "AgentStateSnapshotDto": {
         "properties": {
+          "active_timer_count": {
+            "default": 0,
+            "description": "Total active Timers; `timers` is a bounded window.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "active_work_item_count": {
+            "default": 0,
+            "description": "Total nonterminal WorkItems; `work_items` is a bounded current-first window.",
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
           "agent": {
             "properties": {
               "active_children": {
@@ -23181,7 +23195,7 @@
     },
     "/api/agents/{agent_id}/timers": {
       "get": {
-        "description": "Return recent timer records. Query parameter: limit.",
+        "description": "Return timer records. Select all, active, or terminal (completed/cancelled) history before applying limit.",
         "operationId": "agentTimers",
         "parameters": [
           {
@@ -23191,6 +23205,32 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Select all records, nonterminal active records, or terminal history before limiting.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "active",
+                "terminal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of selected records; defaults to 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],
@@ -23725,7 +23765,7 @@
     },
     "/api/agents/{agent_id}/work-items": {
       "get": {
-        "description": "Return latest work item records for the agent. Query parameter: limit.",
+        "description": "Return work item records for the agent. Select all, active (including completing), or terminal history before applying limit.",
         "operationId": "agentWorkItems",
         "parameters": [
           {
@@ -23735,6 +23775,32 @@
             "required": true,
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "description": "Select all records, nonterminal active records, or terminal history before limiting.",
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "default": "all",
+              "enum": [
+                "all",
+                "active",
+                "terminal"
+              ],
+              "type": "string"
+            }
+          },
+          {
+            "description": "Maximum number of selected records; defaults to 50.",
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "minimum": 0,
+              "type": "integer"
             }
           }
         ],

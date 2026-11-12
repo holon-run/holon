@@ -567,7 +567,13 @@ async fn cold_state_shared_storage_queue_matches_owned_groups_and_last_holder() 
             None,
         ),
     )?;
-    let owned = storage.work_queue_with_observed_scheduling(&state, &[])?;
+    let mut owned = storage.work_queue_with_observed_scheduling(&state, &[])?;
+    assert_eq!(owned.items.len(), 6);
+    assert_eq!(owned.completed_recent.len(), 1);
+    owned
+        .items
+        .retain(|item| item.state != WorkItemState::Completed);
+    owned.completed_recent.clear();
     let expected = queue_wire(&owned)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let phase = ResourceReadMaterial::new(&ledger, &scope(&identity))?;
@@ -576,11 +582,11 @@ async fn cold_state_shared_storage_queue_matches_owned_groups_and_last_holder() 
     let queue = storage.state_work_queue_with_observed_scheduling(&state, &[], &phase)?;
     phase.finish()?;
     assert_eq!(queue_wire(&queue)?, expected);
-    assert_eq!(queue.items.len(), 6);
+    assert_eq!(queue.items.len(), 5);
     assert_eq!(queue.current.as_ref().unwrap().id, "work_cold_queue");
     assert_eq!(queue.yielded.len(), 1);
     assert_eq!(queue.yielded[0].work_item.id, "yielded");
-    assert_eq!(queue.completed_recent.len(), 1);
+    assert!(queue.completed_recent.is_empty());
     let waiting = queue
         .items
         .iter()
@@ -652,7 +658,12 @@ fn assert_direct_storage_boundaries(
     state: &AgentState,
     triggers: &[crate::types::ExternalTriggerRecord],
 ) -> Result<()> {
-    let expected = queue_wire(&storage.work_queue_with_observed_scheduling(state, triggers)?)?;
+    let mut owned = storage.work_queue_with_observed_scheduling(state, triggers)?;
+    owned
+        .items
+        .retain(|item| item.state != WorkItemState::Completed);
+    owned.completed_recent.clear();
+    let expected = queue_wire(&owned)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let measure = ResourceReadMaterial::new(&ledger, &scope(identity))?;
     // No ambient entry: production must charge the supplied phase itself.
@@ -667,7 +678,20 @@ fn assert_direct_storage_boundaries(
         (total.0, total.1 - 1, false),
     ] {
         let phase =
-            ResourceReadMaterial::with_test_limits(&ledger, &scope(identity), bytes, records)?;
+            match ResourceReadMaterial::with_test_limits(&ledger, &scope(identity), bytes, records)
+            {
+                Ok(phase) => phase,
+                Err(error) => {
+                    // An empty active queue only retains the phase header.
+                    assert!(!succeeds);
+                    assert_eq!(
+                        crate::runtime_error::describe_runtime_error(&error).code,
+                        "context_resource_exhausted",
+                    );
+                    assert_eq!(ledger.report()?.observed_bytes, 0);
+                    continue;
+                }
+            };
         let result = storage.state_work_queue_with_observed_scheduling(state, triggers, &phase);
         if succeeds {
             let queue = result?;
@@ -789,7 +813,8 @@ async fn cold_state_direct_storage_preserves_all_groups_trigger_order_and_limits
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let phase = ResourceReadMaterial::new(&ledger, &scope(&identity))?;
     let queue = storage.state_work_queue_with_observed_scheduling(&state, &triggers, &phase)?;
-    assert_eq!(queue.items.len(), 50);
+    assert_eq!(queue.items.len(), 43);
+    assert!(queue.completed_recent.is_empty());
     assert_eq!(queue.current.as_ref().unwrap().id, "operator_00");
     assert!(queue.current_runnable.is_none());
     let ids = |rows: &[crate::work_item_scheduling::WorkItemSchedulingProjection<
@@ -805,7 +830,6 @@ async fn cold_state_direct_storage_preserves_all_groups_trigger_order_and_limits
         ("operator", &queue.waiting_for_operator, 3),
         ("blocked", &queue.blocked, 3),
         ("completing", &queue.completing, 3),
-        ("completed", &queue.completed_recent, 3),
     ] {
         assert_eq!(
             ids(rows),
@@ -814,10 +838,14 @@ async fn cold_state_direct_storage_preserves_all_groups_trigger_order_and_limits
                 .collect::<Vec<_>>(),
         );
     }
-    assert_eq!(
-        queue_wire(&queue)?,
-        queue_wire(&storage.work_queue_with_observed_scheduling(&state, &triggers)?)?,
-    );
+    let mut owned = storage.work_queue_with_observed_scheduling(&state, &triggers)?;
+    assert_eq!(owned.items.len(), 50);
+    assert_eq!(owned.completed_recent.len(), 3);
+    owned
+        .items
+        .retain(|item| item.state != WorkItemState::Completed);
+    owned.completed_recent.clear();
+    assert_eq!(queue_wire(&queue)?, queue_wire(&owned)?);
     drop((queue, phase));
     assert_eq!(ledger.report()?.observed_bytes, 0);
     assert_direct_storage_boundaries(&storage, &identity, &state, &triggers)?;

@@ -54,6 +54,39 @@ beforeEach(() => {
 afterEach(() => { useRuntimeStore.setState(initial, true); });
 
 describe("selected Agent resource reads", () => {
+  it("loads completed work independently without changing active state", async () => {
+    reads.state.mockResolvedValueOnce(agent({ currentWork: work, workItems: [work] }));
+    await current().refreshAgentState("agent-a");
+    const terminal = { ...work, id: "completed", state: "completed", current: false };
+    reads.workItems.mockResolvedValueOnce([terminal]);
+    const signal = new AbortController().signal;
+    await expect(current().queryAgentCompletedWorkItems("agent-a", { incarnation: 1, signal })).resolves.toEqual([terminal]);
+    expect(reads.workItems).toHaveBeenLastCalledWith("agent-a", { status: "terminal", limit: 50, incarnation: 1, signal });
+    expect(selected().workItems).toEqual([work]);
+    expect(session().resourceRefresh?.workItems).toBeUndefined();
+    await current().refreshAgentState("agent-a");
+    expect(selected().workItems).toEqual([]);
+  });
+
+  it.each(["abort", "replacement"] as const)("rejects completed work after %s", async (change) => {
+    const pending = deferred<WorkItemSummary[]>();
+    reads.workItems.mockReturnValueOnce(pending.promise);
+    const abort = new AbortController();
+    const read = current().queryAgentCompletedWorkItems("agent-a", { incarnation: 1, signal: abort.signal });
+    if (change === "abort") abort.abort();
+    else useRuntimeStore.setState({ bootstrap: { ...current().bootstrap, agents: [agent({ incarnation: 2 })] } });
+    const rejected = expect(read).rejects.toBeInstanceOf(AgentResourceSupersededError);
+    pending.resolve([]);
+    await rejected;
+  });
+
+  it("admits fenced completed history for a selected agent outside the roster", async () => {
+    useRuntimeStore.setState({ bootstrap: { ...current().bootstrap, agents: [] } });
+    reads.workItems.mockResolvedValueOnce([]);
+    await expect(current().queryAgentCompletedWorkItems("agent-a", { incarnation: 1 })).resolves.toEqual([]);
+    expect(reads.workItems).toHaveBeenCalledWith("agent-a", { status: "terminal", limit: 50, incarnation: 1 });
+  });
+
   it.each(["timers", "recentTasks"] as const)("rejects replaced %s reads instead of settling with an empty list", async (resource) => {
     const pending = deferred<[]>();
     reads[resource].mockReturnValueOnce(pending.promise);
@@ -105,18 +138,18 @@ describe("selected Agent resource reads", () => {
     );
     await current().refreshAgentWorkItems("agent-a", { incarnation: 1 });
     expect(reads.workItems).toHaveBeenLastCalledWith("agent-a", {
-      limit: 50, signal: undefined, incarnation: 1,
+      limit: 50, status: "active", signal: undefined, incarnation: 1,
     });
     expect(selected()).toMatchObject({ incarnation: 1, workItems: [work] });
     expect(session().resourceRefresh?.workItems).toMatchObject({ loading: false, stale: true });
   });
 
-  it("keeps authoritative empty list membership and cleared focus through later state and roster merges", async () => {
+  it("lets fresh state replace stale list membership and clear focus", async () => {
     reads.state.mockResolvedValueOnce(agent({ workItems: [work], currentWork: work }));
     await current().refreshAgentState("agent-a");
-    reads.workItems.mockResolvedValueOnce([]);
+    reads.workItems.mockResolvedValueOnce([work]);
     await current().refreshAgentWorkItems("agent-a");
-    reads.state.mockResolvedValueOnce(agent({ workItems: [work], currentWork: undefined }));
+    reads.state.mockResolvedValueOnce(agent({ workItems: [], currentWork: undefined }));
     await current().refreshAgentState("agent-a");
     expect(selected().workItems).toEqual([]);
     expect(selected().currentWork).toBeUndefined();
@@ -135,7 +168,7 @@ describe("selected Agent resource reads", () => {
     reads.workItems.mockResolvedValueOnce([{ ...work, objective: "Updated objective" }]);
     await current().refreshAgentWorkItems("agent-a");
     expect(selected()).toMatchObject({ activeTaskCount: 0, tasks: [], currentWork: undefined });
-    expect(selected().workItems).toEqual([{ ...work, objective: "Updated objective", current: false }]);
+    expect(selected().workItems).toEqual([]);
   });
 
   it("retains last-good data and scopes errors without declaring the conversation offline", async () => {
@@ -214,24 +247,26 @@ describe("selected Agent resource reads", () => {
     expect(session().resourceRefresh?.workItems).toBeUndefined();
   });
 
-  it("resolves canonical focus from the list when state omits the embedded record", async () => {
+  it("does not revive missing active membership while retaining the canonical focus id", async () => {
     reads.state.mockResolvedValueOnce(agent({ currentWorkItemId: work.id }));
     await current().refreshAgentState("agent-a");
     reads.workItems.mockResolvedValueOnce([work]);
     await current().refreshAgentWorkItems("agent-a");
-    expect(selected().currentWork).toEqual(work);
+    expect(selected().currentWork).toBeUndefined();
+    expect(selected().currentWorkItemId).toBe(work.id);
+    expect(selected().workItems).toEqual([]);
     reads.state.mockResolvedValueOnce(agent({ currentWorkItemId: null, workItems: [work] }));
     await current().refreshAgentState("agent-a");
     expect(selected().currentWork).toBeUndefined();
     expect(selected().workItems?.[0].current).toBe(false);
   });
 
-  it("keeps a list read that finishes before state for an admitted Agent outside the roster", async () => {
+  it("replaces an old list with fresh state for an admitted Agent outside the roster", async () => {
     useRuntimeStore.setState({ bootstrap: { ...current().bootstrap, agents: [] } });
     reads.workItems.mockResolvedValueOnce([work]);
     await current().refreshAgentWorkItems("agent-a", { incarnation: 1 });
     await current().refreshAgentState("agent-a", { incarnation: 1 });
-    expect(session().detail?.agent.workItems).toEqual([{ ...work, current: false }]);
+    expect(session().detail?.agent.workItems).toEqual([]);
     expect(current().bootstrap.agents).toEqual([]);
   });
 

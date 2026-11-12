@@ -236,12 +236,7 @@ async fn loaded_host_state_query_reconciles_original_timer_cancel_ack_before_its
         .operator_agent_state_projection(runtime.instance_agent_id(), 40, 50)
         .await
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
-    let cancelled = projection
-        .timers
-        .iter()
-        .find(|record| record.id == timer.id)
-        .context("recovered cancelled Timer missing")?;
-    assert_eq!(cancelled.status, TimerStatus::Cancelled);
+    assert!(projection.timers.iter().all(|record| record.id != timer.id));
     let root = runtime
         .inner
         .mutation_owner
@@ -258,6 +253,14 @@ async fn loaded_host_state_query_reconciles_original_timer_cancel_ack_before_its
     );
     assert_eq!(scheduling.coverage().revision, before.1);
     assert_eq!(root.state.as_ref(), &projection.agent.agent);
+    let historical = runtime.acquire_timer_record_read(&timer.id).await?;
+    assert_eq!(
+        historical
+            .record()?
+            .context("cancelled Timer history missing")?
+            .status,
+        TimerStatus::Cancelled
+    );
     assert_eq!(
         sql_snapshot()?,
         before,

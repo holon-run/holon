@@ -550,7 +550,7 @@ export interface paths {
         };
         /**
          * List timers
-         * @description Return recent timer records. Query parameter: limit.
+         * @description Return timer records. Select all, active, or terminal (completed/cancelled) history before applying limit.
          */
         get: operations["agentTimers"];
         put?: never;
@@ -710,7 +710,7 @@ export interface paths {
         };
         /**
          * List work items
-         * @description Return latest work item records for the agent. Query parameter: limit.
+         * @description Return work item records for the agent. Select all, active (including completing), or terminal history before applying limit.
          */
         get: operations["agentWorkItems"];
         put?: never;
@@ -3343,6 +3343,18 @@ export interface components {
         AgentSchedulingPosture: "unknown" | "stopped" | "active_turn" | "has_queued_input" | "has_runnable_work" | "waiting_for_task" | "waiting_for_external" | "waiting_for_operator" | "blocked" | "idle";
         /** AgentStateSnapshotDto */
         AgentStateSnapshotDto: {
+            /**
+             * Format: uint
+             * @description Total active Timers; `timers` is a bounded window.
+             * @default 0
+             */
+            active_timer_count: number;
+            /**
+             * Format: uint
+             * @description Total nonterminal WorkItems; `work_items` is a bounded current-first window.
+             * @default 0
+             */
+            active_work_item_count: number;
             agent: {
                 active_children?: {
                     /** Format: uint */
@@ -9838,7 +9850,12 @@ export interface operations {
     };
     agentTimers: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select all records, nonterminal active records, or terminal history before limiting. */
+                status?: "all" | "active" | "terminal";
+                /** @description Maximum number of selected records; defaults to 50. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description Agent id. */
@@ -10185,7 +10202,12 @@ export interface operations {
     };
     agentWorkItems: {
         parameters: {
-            query?: never;
+            query?: {
+                /** @description Select all records, nonterminal active records, or terminal history before limiting. */
+                status?: "all" | "active" | "terminal";
+                /** @description Maximum number of selected records; defaults to 50. */
+                limit?: number;
+            };
             header?: never;
             path: {
                 /** @description Agent id. */
