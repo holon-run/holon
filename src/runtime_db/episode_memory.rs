@@ -1069,7 +1069,6 @@ mod tests {
         state.current_run_id = None;
         state.current_turn_id = None;
         state.current_work_item_id = Some(work.id);
-        state.total_message_count = 7;
         state.total_input_tokens = 11;
         state.total_output_tokens = 13;
         state.last_wake_reason = Some("actual compound settlement".into());
@@ -1139,15 +1138,13 @@ mod tests {
                 non_memory.working_memory = fixture.state.working_memory.clone();
                 assert_eq!(non_memory, final_business);
                 assert_eq!(stored, *command.candidate());
-                assert_eq!(
-                    stored
-                        .working_memory
-                        .active_episode_builder
-                        .as_ref()
-                        .unwrap()
-                        .latest_message_count,
-                    final_business.total_message_count
-                );
+                assert!(stored
+                    .working_memory
+                    .active_episode_builder
+                    .as_ref()
+                    .unwrap()
+                    .latest_message_count
+                    .is_none());
                 assert_eq!(
                     transition.effects.agent_state.unwrap().record.as_ref(),
                     &stored
@@ -1168,7 +1165,7 @@ mod tests {
 
     #[test]
     fn embedded_memory_rejects_stale_non_memory_plan_and_rolls_back_business_writes() {
-        for stale in ["focus", "count", "posture", "turn"] {
+        for stale in ["focus", "pending", "posture", "turn"] {
             let fixture = Fixture::new();
             let template = fixture.command(false);
             let error = fixture
@@ -1184,7 +1181,7 @@ mod tests {
                     let mut command = embedded_command(&fixture, &final_business);
                     match stale {
                         "focus" => command.plan.candidate.current_work_item_id = None,
-                        "count" => command.plan.candidate.total_message_count = 0,
+                        "pending" => command.plan.candidate.pending += 1,
                         "posture" => command.plan.candidate.status = AgentStatus::AwakeIdle,
                         "turn" => command.plan.candidate.turn_index += 1,
                         _ => unreachable!(),
@@ -1225,7 +1222,7 @@ mod tests {
                         final_business.working_memory.compression_epoch += 1;
                         upsert_agent_state_at_tx(tx, &final_business, fixture.timestamp)?;
                     } else {
-                        final_business.total_message_count += 1;
+                        final_business.pending += 1;
                     }
                     let command = embedded_command(&fixture, &final_business);
                     write_embedded_episode_memory_tx(validated, &command, &final_business, None)

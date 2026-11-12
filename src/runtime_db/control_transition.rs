@@ -91,7 +91,6 @@ pub(crate) struct ControlSnapshot {
     pub identity: AgentIdentityRecord,
     pub state: AgentState,
     pub control_revision: u64,
-    pub message_count: usize,
     pub tasks: Vec<TaskRecord>,
     pub waits: Vec<WaitConditionRecord>,
     pub timers: Vec<TimerRecord>,
@@ -465,8 +464,6 @@ pub(crate) fn prepare_control_with_state_audit(
         candidate.pending = 0;
         if !task_results.is_empty() {
             candidate.last_wake_reason = Some("TaskResult".into());
-            candidate.total_message_count =
-                snapshot.message_count.saturating_add(task_results.len());
         }
         if let Some(protocol) = &snapshot.execution_protocol {
             let mut reduced = protocol.clone();
@@ -1807,7 +1804,6 @@ fn load_snapshot_in_with_original_scope(
         identity,
         state,
         control_revision: u64::try_from(revision)?,
-        message_count: super::message_count::for_agent(connection, &key.agent_id)?,
         tasks,
         waits,
         timers,

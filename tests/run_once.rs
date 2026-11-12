@@ -1896,7 +1896,11 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
         .agent_storage("bench-15")?
         .read_agent()?
         .expect("persistent agent state should be stored after the first run");
-    assert!(first_state.total_message_count > 0);
+    let first_seq = first_host
+        .runtime_db()
+        .messages()
+        .max_message_seq(Some("bench-15"))?;
+    assert!(first_seq > 0);
     assert_eq!(
         first_state
             .active_workspace_entry
@@ -1925,12 +1929,13 @@ async fn run_once_can_target_a_persistent_named_agent_session() -> Result<()> {
     .await?;
     assert_eq!(second.agent_id, "bench-15");
 
-    let second_state = second_host
-        .get_public_agent("bench-15")
-        .await?
-        .agent_state()
-        .await?;
-    assert!(second_state.total_message_count > first_state.total_message_count);
+    assert!(
+        second_host
+            .runtime_db()
+            .messages()
+            .max_message_seq(Some("bench-15"))?
+            > first_seq
+    );
     assert!(home_dir.join("agents").join("bench-15").exists());
     Ok(())
 }

@@ -39,7 +39,6 @@ fn extra_message(tx: &Transaction<'_>, timer: &str, id: &str, count: u64) -> Res
         [&scope().agent_id],
         |r| r.get(0),
     )?;
-    state.total_message_count = usize::try_from(count)?;
     state.pending = usize::try_from(count)?;
     upsert_agent_state_tx(tx, &state)
 }
@@ -361,7 +360,7 @@ fn bootstrap_state_native_nodes_precede_pending_metadata_typed_state_read() -> R
         extra_message(tx, "original", "first-wake", 2)
     })?;
     db.transaction(|tx| {
-        let mut state=AgentState::new(&scope().agent_id);state.pending=1;state.total_message_count=1;
+        let mut state=AgentState::new(&scope().agent_id);state.pending=1;
         state.working_memory.current_working_memory.pending_followups=(0..4096).map(|n|format!("f{n}")).collect();
         upsert_agent_state_tx(tx,&state)?;
         tx.execute("UPDATE agent_states SET payload_json=json_set(payload_json,'$.pending','bad typed count') WHERE agent_id=?1",[&scope().agent_id])?;

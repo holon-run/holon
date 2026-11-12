@@ -1633,7 +1633,6 @@ fn stop_cancels_a_real_completed_one_shot_pending_wake_without_loop_obligation()
     let before = f.db.load_control_snapshot(&f.key).unwrap().state;
     let mut after = before.clone();
     after.pending = 1;
-    after.total_message_count = 1;
     let fire =
         f.db.timers()
             .fire(&crate::runtime_db::TimerFire {

@@ -204,6 +204,16 @@ pub(crate) fn idle_evidence_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<S
             "unknown_runtime_state",
         ))?);
     };
+    let message_sequence: Option<u64> = tx
+        .query_row(
+            "SELECT last_value FROM runtime_sequences WHERE domain=?1 AND scope_key=?2",
+            rusqlite::params![
+                super::evidence::MESSAGE_SEQUENCE_DOMAIN,
+                super::evidence::agent_sequence_scope(agent_id),
+            ],
+            |row| row.get(0),
+        )
+        .optional()?;
     let latest_task: Option<String> = tx.query_row(
         "SELECT MAX(updated_at) FROM tasks WHERE owner_agent_id = ?1 OR child_agent_id = ?1",
         [agent_id],
@@ -212,7 +222,7 @@ pub(crate) fn idle_evidence_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<S
     Ok(serde_json::to_string(&(
         incarnation,
         state.turn_index,
-        state.total_message_count,
+        message_sequence,
         state.last_turn_terminal,
         latest_task,
     ))?)
@@ -284,6 +294,61 @@ mod tests {
             ))
         })
         .unwrap()
+    }
+
+    #[test]
+    fn idle_evidence_tracks_new_messages_without_a_state_update() -> Result<()> {
+        use crate::types::{
+            AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+            AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
+        };
+
+        let (_dir, db) = open_db();
+        let agent_id = "message-activity";
+        let state = settled(
+            agent_id,
+            AgentStatus::AwakeIdle,
+            TurnTerminalKind::Completed,
+        );
+        db.transaction(|tx| {
+            super::super::evidence::upsert_agent_identity_tx(
+                tx,
+                &AgentIdentityRecord::new(
+                    agent_id,
+                    AgentKind::Named,
+                    AgentVisibility::Public,
+                    AgentOwnership::SelfOwned,
+                    AgentProfilePreset::PublicNamed,
+                    None,
+                    None,
+                ),
+            )?;
+            super::super::evidence::upsert_agent_state_tx(tx, &state)
+        })?;
+        let evidence = || db.transaction(|tx| idle_evidence_tx(tx, agent_id));
+        let before = evidence()?;
+        let message = MessageEnvelope::new(
+            agent_id,
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "fixture".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "new activity".into(),
+            },
+        );
+        let stored = db.messages().append_with_index_changes(&message, &[])?;
+        assert_eq!(stored.message_seq, Some(1));
+        let after = evidence()?;
+        assert_ne!(before, after);
+        assert_eq!(db.agent_states().latest(agent_id)?, Some(state));
+
+        let replay = db.messages().append_with_index_changes(&message, &[])?;
+        assert_eq!(replay.message_seq, stored.message_seq);
+        assert_eq!(evidence()?, after);
+        Ok(())
     }
 
     #[test]

@@ -188,7 +188,6 @@ fn append_pending(
             updated_at: source.created_at,
         },
     )?;
-    state.total_message_count = 1;
     state.pending = 1;
     upsert_agent_state_tx(tx, state)?;
     Ok(source)
@@ -402,12 +401,11 @@ fn original_task_observation_keys_survive_noop_without_using_install_delta_as_wr
 
 #[test]
 fn current_unsettled_task_result_derives_exact_input_and_work_dependencies() -> Result<()> {
-    let (_dir, db, mut state, budget) = fixture()?;
+    let (_dir, db, state, budget) = fixture()?;
     db.transaction(|tx| {
         let mut source = result_message("result-task", "current-result-message");
         source.work_item_id = Some("original-work".into());
         let (source, _) = append_message_tx(tx, &source)?;
-        state.total_message_count = 1;
         upsert_agent_state_tx(tx, &state)?;
         let mut completed = task("result-task", TaskStatus::Completed);
         completed.parent_message_id = Some(source.id.clone());

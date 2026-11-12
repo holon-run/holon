@@ -739,8 +739,6 @@ fn timer_fire_fixture(f: &Fixture, message_id: &str) -> Result<crate::runtime_db
     let before = f.db.agent_states().latest(&f.scope.agent_id)?.unwrap();
     let mut after = before.clone();
     after.pending += 1;
-    // The ACK must use the count actually allocated by the original SQL transaction.
-    after.total_message_count = 999;
     Ok(crate::runtime_db::TimerFire {
         expected: timer,
         record: fired,
@@ -819,7 +817,6 @@ fn scoped_timer_fire_returns_qualified_actual_wake_and_rolls_back_the_whole_tran
     );
     let state = acknowledgement.agent_state.as_ref().unwrap();
     assert_eq!(state.expected.as_deref(), Some(&command.agent_state.0));
-    assert_eq!(state.record.total_message_count, 1);
     assert_eq!(state.record.pending, 1);
     assert_eq!(
         f.db.agent_states().latest(&f.scope.agent_id)?.as_ref(),
@@ -878,7 +875,6 @@ fn scoped_timer_fire_does_not_adopt_an_unqualified_same_name_message() -> Result
     command.agent_state.0 = f.db.agent_states().latest(&f.scope.agent_id)?.unwrap();
     command.agent_state.1 = command.agent_state.0.clone();
     command.agent_state.1.pending = 1;
-    command.agent_state.1.total_message_count = 1;
     assert!(f
         .db
         .timers()

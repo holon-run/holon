@@ -158,7 +158,7 @@ fn control_stop_publishes_only_the_final_cancelled_work_wait_and_replays_once() 
     assert_eq!(replay, receipt);
     let state = fixture.db.load_control_snapshot(&fixture.key)?;
     assert!(state.waits.is_empty());
-    assert_eq!(state.message_count, 1);
+    assert_eq!(fixture.db.messages().count(Some(&fixture.key.agent_id))?, 1);
     Ok(())
 }
 
@@ -183,13 +183,7 @@ fn control_stop_work_failure_rolls_back_trigger_cancel_alias_and_receipt() -> Re
     })?;
     assert_eq!(after.facts.state, before.facts.state);
     assert_eq!(after.resident.coverage(), before.resident.coverage());
-    assert_eq!(
-        fixture
-            .db
-            .load_control_snapshot(&fixture.key)?
-            .message_count,
-        0
-    );
+    assert_eq!(fixture.db.messages().count(Some(&fixture.key.agent_id))?, 0);
     assert!(fixture
         .db
         .control_receipt(

@@ -92,7 +92,6 @@ fn seed(tx: &Transaction<'_>) -> Result<()> {
     upsert_agent_identity_tx(tx, &identity)?;
     let mut state = AgentState::new("migration-agent");
     state.pending = 2;
-    state.total_message_count = 2;
     upsert_agent_state_tx(tx, &state)?;
     tx.execute(
         "INSERT INTO storage_domains(domain,schema_version,import_status,canonical_source,updated_at)

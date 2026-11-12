@@ -5345,17 +5345,6 @@ fn finish_transition_with_cleanup_tx(
     insert_runtime_index_changes_tx(tx, index_changes)?;
     link_transition_brief_created_events_tx(tx, &effects.briefs, &committed_events)?;
     materialize_committed_input_facts_tx(tx, agent_id, &mut effects)?;
-    if !effects.messages.is_empty() || effects.agent_state.is_some() {
-        if let Some(actual) =
-            super::input_evidence_writes::synchronize_message_count_tx(tx, agent_id)?
-        {
-            if let Some(state) = effects.agent_state.as_mut() {
-                state.record = actual.record;
-            } else {
-                effects.agent_state = Some(actual);
-            }
-        }
-    }
     if let Some(scope) = input_scope {
         if let Some(proof) = cleanup {
             proof.validate_scope_tx(tx, scope)?;

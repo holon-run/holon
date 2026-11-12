@@ -508,8 +508,7 @@ fn ensure_pending_cannot_grant_raw_task_or_raw_source_qualification() -> Result<
                 task_id: "raw:task".into(),
             };
             m.authority_class = AuthorityClass::RuntimeInstruction;
-            let mut state = f.state()?;
-            state.total_message_count = 1;
+            let state = f.state()?;
             f.db.transaction(|tx| {
                 let (actual, _) = crate::runtime_db::evidence::append_message_tx(tx, m)?;
                 upsert_agent_state_tx(tx, &state)?;

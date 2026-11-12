@@ -342,11 +342,8 @@ async fn registered_host_spawn_keeps_success_and_failure_after_original_monitor_
                             .await
                             .map_err(anyhow::Error::from)?;
                         assert_eq!(child.instance_incarnation(), created.1);
-                        {
-                            let mutation = child.begin_mutation().await?;
-                            assert!(mutation.state.total_message_count > 0);
-                        }
                         let prompt_id = acknowledged_source.as_ref().unwrap().id.clone();
+                        assert!(child.storage().read_message_by_id(&prompt_id)?.is_some());
                         child_dispatch.as_ref().unwrap().add_permits(1024);
                         child.inner.notify.notify_one();
                         tokio::time::timeout(Duration::from_secs(15), async {

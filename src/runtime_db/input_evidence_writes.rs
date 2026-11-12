@@ -79,14 +79,6 @@ pub(crate) fn acknowledge_input_evidence_tx<T>(
     facts: &[CanonicalInputEvidence],
 ) -> Result<InputEvidenceCommit<T>> {
     let input_delta = register_committed_input_evidence_tx(tx, scope, facts)?;
-    let agent_state = if facts
-        .iter()
-        .any(|fact| matches!(fact, CanonicalInputEvidence::Message(_)))
-    {
-        synchronize_message_count_tx(tx, &scope.agent_id)?
-    } else {
-        None
-    };
     Ok(InputEvidenceCommit {
         current_read_writes: None,
         work_delta: None,
@@ -94,30 +86,8 @@ pub(crate) fn acknowledge_input_evidence_tx<T>(
         task_material_budget_views: Vec::new(),
         record,
         input_delta,
-        agent_state,
+        agent_state: None,
     })
-}
-
-/// Message count is a derived State fact of the committing transaction. The
-/// root receives the exact persisted value, including non-admission producers.
-pub(super) fn synchronize_message_count_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-) -> Result<Option<super::transitions::AgentStateMutation>> {
-    let Some(previous) = super::repositories::projected_agent_state_on(tx, agent_id)? else {
-        return Ok(None);
-    };
-    let count = super::message_count::for_agent(tx, agent_id)?;
-    if previous.total_message_count == count {
-        return Ok(None);
-    }
-    let mut record = previous.clone();
-    record.total_message_count = count;
-    super::evidence::upsert_agent_state_tx(tx, &record)?;
-    Ok(Some(super::transitions::AgentStateMutation {
-        expected: Some(Box::new(previous)),
-        record: Box::new(record),
-    }))
 }
 
 /// Multiple pieces of one transaction may refresh the same related alias.

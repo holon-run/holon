@@ -72,7 +72,6 @@ fn message(
         &scope(),
         &[CanonicalInputEvidence::Message(message)],
     )?;
-    crate::runtime_db::input_evidence_writes::synchronize_message_count_tx(tx, &scope().agent_id)?;
     Ok(())
 }
 fn observe(tx: &Transaction<'_>, task: &TaskFactLocator) -> Result<TaskOutputCoverage> {
@@ -497,8 +496,7 @@ fn fixed_output_metadata_uses_original_inventory_without_alias_or_late_source_ad
         source.created_at = at();
         source.metadata = Some(serde_json::json!({"task_id":"output-task"}));
         append_message_tx(tx, &source)?;
-        let mut state = crate::types::AgentState::new(&scope().agent_id);
-        state.total_message_count = 1;
+        let state = crate::types::AgentState::new(&scope().agent_id);
         crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
         Ok(())
     })?;
@@ -827,8 +825,7 @@ fn fixed_output_order_keeps_received_headers_after_unrelated_raw_member_drift() 
             source.metadata = (index <= 2).then(|| serde_json::json!({"task_id":"output-task"}));
             append_message_tx(tx, &source)?;
         }
-        let mut state = crate::types::AgentState::new(&scope().agent_id);
-        state.total_message_count = 201;
+        let state = crate::types::AgentState::new(&scope().agent_id);
         crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)
     })?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -1002,7 +999,6 @@ fn historical_source_unavailability_does_not_promote_other_and_does_not_block_ta
                     tx.execute("DELETE FROM messages WHERE evidence_id='history-result'",[])?;
                     let removed = crate::runtime_db::input_evidence_snapshot::register_pruned_input_evidence_tx(tx,&scope(),&[InputEvidenceKey::new(InputEvidenceFamily::Message,"history-result")])?;
                     assert_eq!(removed.removals.len(),1,"use actual original qualified D3 prune ACK");
-                    crate::runtime_db::input_evidence_writes::synchronize_message_count_tx(tx,&scope().agent_id)?;
                     removed
                 }
                 "changed_version" | "missing_alias" => {
@@ -1112,8 +1108,7 @@ fn fixed_source_initialization_preserves_historical_tombstone_and_overridden_ver
                     (index <= 2).then(|| serde_json::json!({"task_id":"output-task"}));
                 append_message_tx(tx, &source)?;
             }
-            let mut state = crate::types::AgentState::new(&scope().agent_id);
-            state.total_message_count = 202;
+            let state = crate::types::AgentState::new(&scope().agent_id);
             crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)
         })?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -1166,8 +1161,7 @@ fn actual_non_task_ack_removes_fixed_source_before_or_after_initialization() -> 
                 source.metadata = Some(serde_json::json!({"task_id":"output-task"}));
                 append_message_tx(tx, &source)?;
             }
-            let mut state = crate::types::AgentState::new(&scope().agent_id);
-            state.total_message_count = 2;
+            let state = crate::types::AgentState::new(&scope().agent_id);
             crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)
         })?;
         let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -1413,8 +1407,7 @@ fn fixed_output_source_status_is_original_metadata_without_body_alias() -> Resul
         source.metadata =
             Some(serde_json::json!({"task_id":"output-task","task_status":"cancelling"}));
         append_message_tx(tx, &source)?;
-        let mut state = crate::types::AgentState::new(&scope().agent_id);
-        state.total_message_count = 1;
+        let state = crate::types::AgentState::new(&scope().agent_id);
         crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)
     })?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
@@ -1502,8 +1495,7 @@ fn repeated_fixed_source_preparation_does_not_read_the_original_message_inventor
         source.created_at = at();
         source.metadata = Some(serde_json::json!({"task_id":"output-task"}));
         append_message_tx(tx, &source)?;
-        let mut state = crate::types::AgentState::new(&scope().agent_id);
-        state.total_message_count = 1;
+        let state = crate::types::AgentState::new(&scope().agent_id);
         crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)
     })?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;

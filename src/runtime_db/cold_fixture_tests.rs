@@ -279,7 +279,6 @@ fn full_cold_combination_preserves_qualification_birth_queue_and_result_head() -
     state.status = AgentStatus::Stopped;
     state.current_work_item_id = Some(work.id.clone());
     state.turn_index = 1;
-    state.total_message_count = 2;
     state.pending = 1;
     writer.finish_state(&state)?;
 
@@ -349,13 +348,7 @@ fn bulk_rows_are_identical_to_canonical_original_inserts_across_batch_boundary()
         }
     }
     assert_eq!(bulk.messages().max_message_seq(Some("cold-fixture"))?, 129);
-    assert_eq!(
-        bulk.agent_states()
-            .latest("cold-fixture")?
-            .unwrap()
-            .total_message_count,
-        129
-    );
+    assert_eq!(bulk.messages().count(Some("cold-fixture"))?, 129);
     Ok(())
 }
 

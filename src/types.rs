@@ -2765,8 +2765,11 @@ pub struct ActiveEpisodeBuilder {
     pub started_at: DateTime<Utc>,
     pub start_turn_index: u64,
     pub latest_turn_index: u64,
-    pub start_message_count: usize,
-    pub latest_message_count: usize,
+    // Retained for legacy payloads. New builders leave both counts absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_message_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_message_count: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2786,19 +2789,13 @@ pub struct ActiveEpisodeBuilder {
 }
 
 impl ActiveEpisodeBuilder {
-    pub fn new(agent: &AgentState, snapshot: &WorkingMemorySnapshot, message_count: usize) -> Self {
-        Self::new_with_start(
-            agent.id.clone(),
-            snapshot,
-            message_count,
-            agent.turn_index.max(1),
-        )
+    pub fn new(agent: &AgentState, snapshot: &WorkingMemorySnapshot) -> Self {
+        Self::new_with_start(agent.id.clone(), snapshot, agent.turn_index.max(1))
     }
 
     pub fn new_with_start(
         _agent_id: impl Into<String>,
         snapshot: &WorkingMemorySnapshot,
-        message_count: usize,
         start_turn_index: u64,
     ) -> Self {
         let now = Utc::now();
@@ -2807,8 +2804,8 @@ impl ActiveEpisodeBuilder {
             started_at: now,
             start_turn_index,
             latest_turn_index: start_turn_index,
-            start_message_count: message_count,
-            latest_message_count: message_count,
+            start_message_count: None,
+            latest_message_count: None,
             current_work_item_id: snapshot.current_work_item_id.clone(),
             objective: snapshot.objective.clone(),
             work_summary: snapshot.work_summary.clone(),
@@ -2858,8 +2855,10 @@ pub struct ContextEpisodeRecord {
     pub finalized_at: DateTime<Utc>,
     pub start_turn_index: u64,
     pub end_turn_index: u64,
-    pub start_message_count: usize,
-    pub end_message_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start_message_count: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub end_message_count: Option<usize>,
     pub boundary_reason: EpisodeBoundaryReason,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
@@ -2956,7 +2955,6 @@ pub struct AgentState {
     pub last_brief_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub working_memory: WorkingMemoryState,
-    pub total_message_count: usize,
     #[serde(default)]
     pub total_input_tokens: u64,
     #[serde(default)]
@@ -3236,7 +3234,6 @@ impl AgentState {
             last_wake_reason: None,
             last_brief_at: None,
             working_memory: WorkingMemoryState::default(),
-            total_message_count: 0,
             total_input_tokens: 0,
             total_output_tokens: 0,
             total_model_rounds: 0,
@@ -7644,6 +7641,22 @@ mod tests {
         });
         let episode: ContextEpisodeRecord = serde_json::from_value(episode).unwrap();
         assert_eq!(episode.workspace_id, AGENT_HOME_WORKSPACE_ID);
+        let serialized = serde_json::to_value(episode).unwrap();
+        assert_eq!(serialized["start_message_count"], 1);
+        assert_eq!(serialized["end_message_count"], 2);
+    }
+
+    #[test]
+    fn legacy_agent_message_count_is_ignored_by_state_comparison() {
+        let state = AgentState::new("default");
+        let mut legacy = serde_json::to_value(&state).unwrap();
+        legacy["total_message_count"] = serde_json::json!(42);
+        let loaded: AgentState = serde_json::from_value(legacy).unwrap();
+        assert_eq!(state, loaded);
+        assert!(serde_json::to_value(loaded)
+            .unwrap()
+            .get("total_message_count")
+            .is_none());
     }
 
     #[test]

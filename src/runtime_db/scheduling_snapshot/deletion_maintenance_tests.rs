@@ -195,7 +195,6 @@ fn supervised() -> Result<(tempfile::TempDir, RuntimeDb)> {
     )?;
     let mut state = AgentState::new(&child.agent_id);
     state.status = AgentStatus::Stopped;
-    state.total_message_count = 1;
     upsert_agent_state_tx(&tx, &state)?;
     tx.execute("INSERT INTO storage_domains(domain,schema_version,import_status,canonical_source,updated_at) VALUES('context_episode_anchors',1,'complete','db',?1)",[repositories::timestamp(at())])?;
     tx.commit()?;

@@ -301,7 +301,6 @@ fn wake_parent_and_input_root_copies_use_original_phase_before_alias_write() -> 
     // after the temporary Scheduling snapshot and TLS entry are gone.
     let mut state = AgentState::new(&scope().agent_id);
     state.pending = 1;
-    state.total_message_count = 1;
     let input = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
         query: None,
         mandatory_roots: BTreeSet::new(),
