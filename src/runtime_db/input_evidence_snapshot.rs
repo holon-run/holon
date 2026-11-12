@@ -1771,9 +1771,6 @@ fn prepare_input_records_tx(
         let exhaustive = keys.len() <= requested.limit;
         keys.truncate(requested.limit);
         selected.extend(keys.iter().cloned());
-        if matches!(requested.selector, InputWindowSelector::OwnerTurns { .. }) {
-            transcript_turns.extend(keys.iter().map(|key| (key.clone(), 0)));
-        }
         windows.push(InputWindowCoverage {
             selector: requested.selector.clone(),
             limit: requested.limit,
@@ -1864,6 +1861,21 @@ fn prepare_input_records_tx(
     let mut bytes = 0usize;
     loop {
         let Some((key, depth, path)) = pending.pop_front() else {
+            for window in windows
+                .iter_mut()
+                .filter(|window| matches!(window.selector, InputWindowSelector::OwnerTurns { .. }))
+            {
+                // A qualified legacy Turn loaded through another root can
+                // match this owner even when its indexed owner is absent.
+                window.project_from_records(records.values());
+                transcript_turns.extend(
+                    window
+                        .keys
+                        .iter()
+                        .filter(|key| !turn_transcript_keys.contains_key(&key.id))
+                        .map(|key| (key.clone(), 0)),
+                );
+            }
             if transcript_turns.is_empty() {
                 break;
             }

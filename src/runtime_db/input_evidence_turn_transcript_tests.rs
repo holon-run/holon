@@ -1,6 +1,63 @@
 use super::*;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+#[test]
+fn owner_window_prepares_legacy_turn_selected_by_global_window() -> Result<()> {
+    let (_directory, db) = fresh()?;
+    let owner = TurnOwner::WorkItem {
+        work_item_id: "owned-work".into(),
+    };
+    db.transaction(|tx| {
+        for index in 1..=2 {
+            let mut turn = TurnRecord::new("agent-a", format!("turn-{index}"), index);
+            turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
+            upsert_turn_record_tx(tx, &turn)?;
+            let entry = TranscriptEntry::new(
+                "agent-a",
+                TranscriptEntryKind::AssistantRound,
+                None,
+                None,
+                serde_json::json!({"turn_id": turn.turn_id}),
+            );
+            let entry = append_transcript_entry_tx(tx, &entry)?.0;
+            register_committed_input_evidence_tx(
+                tx,
+                &scope(),
+                &[
+                    CanonicalInputEvidence::Turn(turn),
+                    CanonicalInputEvidence::Transcript(entry),
+                ],
+            )?;
+        }
+        Ok(())
+    })?;
+
+    let mut policy = request(InputWindowSelector::GlobalTurns, 2);
+    let read = |policy: &InputEvidenceLoadRequest| {
+        db.transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope(), policy))
+            .map(current)
+    };
+    assert!(read(&policy)?
+        .resident
+        .capture()?
+        .turn_transcript_keys
+        .is_empty());
+    let selector = InputWindowSelector::OwnerTurns { owner };
+    policy.windows.push(InputWindowRequest {
+        selector: selector.clone(),
+        limit: 1,
+    });
+    let prepared = read(&policy)?.resident;
+    let captured = prepared.capture()?;
+    assert_eq!(captured.window(&selector, 1)?[0].locator.key.id, "turn-2");
+    assert_eq!(captured.transcripts_for_turns(&["turn-2".into()])?.len(), 1);
+    assert!(!captured.turn_transcript_keys.contains_key("turn-1"));
+    assert!(prepared
+        .with_committed(&CommittedInputEvidenceDelta::default(), BTreeSet::new())?
+        .is_some());
+    Ok(())
+}
+
 fn migration() -> &'static crate::runtime_db::migrations::Migration {
     MIGRATIONS
         .iter()

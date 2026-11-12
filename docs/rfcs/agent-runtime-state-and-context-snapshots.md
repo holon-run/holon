@@ -1502,7 +1502,9 @@ present empty entry proves there were no qualified members in that view.
 The original writer establishes coverage when a work-owned Turn first becomes
 current. Subsequent commits update covered sets from acknowledged Transcript
 changes.
-Cold preparation reconstructs the required sets from qualified membership.
+Cold preparation projects the bounded owner window from the qualified Turns it
+has loaded before reconstructing the required sets. This includes legacy Turns
+loaded through another window or root when their effective owner matches.
 
 ### Dynamic resources and files
 
