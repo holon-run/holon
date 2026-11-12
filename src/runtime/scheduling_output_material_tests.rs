@@ -117,6 +117,7 @@ fn fixture(count: usize) -> Result<CapturedScheduling> {
     Ok(selected)
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[test]
 fn active_state_timer_filter_precedes_limit_for_loaded_and_cold_outputs() -> Result<()> {
     for cold in [false, true] {

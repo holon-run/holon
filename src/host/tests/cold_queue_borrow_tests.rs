@@ -55,18 +55,34 @@ async fn cold_borrowed_queue_dual_consumers_match_owned_oracle_and_last_holder()
         let storage = host
             .agent_storage_read_only(&identity.agent_id)
             .map_err(|error| anyhow!("{error:?}"))?;
-        let queue = storage.work_queue_with_observed_scheduling(&state, &[])?;
-        assert_eq!(queue.items.len(), 4);
+        let history = storage.work_queue_with_observed_scheduling(&state, &[])?;
+        assert_eq!(history.items.len(), 4);
+        assert_eq!(history.completed_recent.len(), 1);
+        let active = host
+            .runtime_db()
+            .work_items()
+            .nonterminal_for_agent(&identity.agent_id)?
+            .into_iter()
+            .map(|record| (record.id.clone(), record))
+            .collect();
+        let queue = crate::storage::read_models::derive_context_work_queue(
+            state.current_work_item_id.as_deref(),
+            active,
+            vec![],
+            vec![],
+            vec![],
+        )?;
+        assert_eq!(queue.items.len(), 3);
         assert!(!queue.queued_runnable.is_empty());
         assert!(!queue.blocked.is_empty());
-        assert_eq!(queue.completed_recent.len(), 1);
+        assert!(queue.completed_recent.is_empty());
         assert_eq!(
             queue.current.as_ref().map(|record| record.id.as_str()),
             current
         );
         let expected_queue = queue_wire(&queue)?;
         let posture = storage.agent_posture_projection_with_work_queue(&state, &queue)?;
-        // The former whole-queue clone path remains the behavioral oracle.
+        // The owned active queue remains the borrowed State path's oracle.
         let material =
             crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new_for_identity(
                 &host.inner.input_evidence_budget,

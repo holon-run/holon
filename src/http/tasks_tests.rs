@@ -210,6 +210,8 @@ async fn terminal_work_item_history_detail_is_not_limited_by_the_queue_window() 
     assert_eq!(headers["x-holon-agent-incarnation"], "1");
     assert_eq!(body["id"], completed.id);
     assert_eq!(body["state"], "completed");
+    assert_eq!(body["scheduling_state"], "completed");
+    assert_eq!(body["focus"], "completed");
     let (status, _, _) = request(&state, &path, Some("2")).await;
     assert_eq!(status, StatusCode::CONFLICT);
     for id in [foreign.id.as_str(), "missing"] {
@@ -222,6 +224,123 @@ async fn terminal_work_item_history_detail_is_not_limited_by_the_queue_window() 
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
     assert!(host.try_get_loaded_runtime("history").await.is_none());
+    host.shutdown().await.unwrap();
+}
+
+#[tokio::test]
+async fn work_item_details_preserve_scheduling_and_mixed_list_ranking() {
+    let home = tempfile::tempdir().unwrap();
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )
+    .unwrap();
+    let config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
+    let host =
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new("unused"))).unwrap();
+    host.create_named_agent("scheduling", None).await.unwrap();
+    host.unload_runtime("scheduling").await;
+    let mut completing =
+        WorkItemRecord::new("scheduling", "older completing", WorkItemState::Completing);
+    completing.created_at -= chrono::Duration::days(1);
+    completing.updated_at = completing.created_at;
+    let completed = WorkItemRecord::new("scheduling", "newer completed", WorkItemState::Completed);
+    for item in [&completing, &completed] {
+        host.runtime_db().work_items().insert_new(item).unwrap();
+    }
+    let state = AppState::for_unix(host.clone());
+    for query in ["limit=1", "status=all&limit=1"] {
+        let (status, _, body) = request(
+            &state,
+            &format!("/api/agents/scheduling/work-items?{query}"),
+            Some("1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body.as_array().unwrap().len(), 1);
+        assert_eq!(body[0]["id"], completing.id);
+    }
+
+    let current = WorkItemRecord::new("scheduling", "current", WorkItemState::Open);
+    let mut blocked = WorkItemRecord::new("scheduling", "blocked", WorkItemState::Open);
+    blocked.blocked_by = Some("manual dependency".into());
+    let mut waiting = WorkItemRecord::new("scheduling", "waiting", WorkItemState::Open);
+    waiting.blocked_by = Some("operator decision".into());
+    waiting.blocked_by_wait_id = Some("operator-wait".into());
+    for item in [&current, &blocked, &waiting] {
+        host.runtime_db().work_items().insert_new(item).unwrap();
+    }
+    let mut agent = AgentState::new("scheduling");
+    agent.current_work_item_id = Some(current.id.clone());
+    host.runtime_db()
+        .agent_states()
+        .upsert_for_fixture(&agent)
+        .unwrap();
+    let now = chrono::Utc::now();
+    host.runtime_db()
+        .wait_conditions()
+        .upsert(&crate::types::WaitConditionRecord {
+            id: "operator-wait".into(),
+            agent_id: "scheduling".into(),
+            work_item_id: Some(waiting.id.clone()),
+            status: crate::types::WaitConditionStatus::Active,
+            kind: crate::types::WaitConditionKind::Operator,
+            source: None,
+            subject_ref: None,
+            waiting_for: "operator decision".into(),
+            wake_sources: vec![crate::types::WakeSource::OperatorInput],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+    let (status, _, list) = request(
+        &state,
+        "/api/agents/scheduling/work-items?status=active",
+        Some("1"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{list}");
+    for (item, scheduling_state, focus) in [
+        (&current, "runnable", "current"),
+        (&blocked, "blocked", "blocked"),
+        (&waiting, "waiting_operator", "blocked"),
+        (&completing, "completing", "completing"),
+        (&completed, "completed", "completed"),
+    ] {
+        let (status, headers, body) = request(
+            &state,
+            &format!("/api/agents/scheduling/work-items/{}", item.id),
+            Some("1"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(headers["x-holon-agent-incarnation"], "1");
+        assert_eq!(body["scheduling_state"], scheduling_state, "{body}");
+        assert_eq!(body["focus"], focus, "{body}");
+        assert!(!body["readiness"].is_null(), "{body}");
+        if item.id == waiting.id {
+            assert_eq!(body["readiness"], "waiting_for_operator");
+            assert_eq!(body["reason_code"], "active_operator_wait");
+            assert_eq!(body["active_wait_conditions"][0]["id"], "operator-wait");
+        }
+        if item.state != WorkItemState::Completed {
+            let summary = list
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|summary| summary["id"] == item.id)
+                .unwrap();
+            assert_eq!(&body, summary);
+        }
+    }
+    assert!(host.try_get_loaded_runtime("scheduling").await.is_none());
     host.shutdown().await.unwrap();
 }
 

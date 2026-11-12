@@ -639,6 +639,16 @@
         "name": "agent_id",
         "location": "path",
         "required": true
+      },
+      {
+        "name": "limit",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "status",
+        "location": "query",
+        "required": false
       }
     ],
     "request_schema": null,
@@ -828,6 +838,16 @@
         "name": "agent_id",
         "location": "path",
         "required": true
+      },
+      {
+        "name": "limit",
+        "location": "query",
+        "required": false
+      },
+      {
+        "name": "status",
+        "location": "query",
+        "required": false
       }
     ],
     "request_schema": null,

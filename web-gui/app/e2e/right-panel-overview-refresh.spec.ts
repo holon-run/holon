@@ -219,6 +219,15 @@ test("active Timer snapshots follow state checkpoints and fallback without any t
 
 test("recent-task reads stop when their sections, overview or side panel are closed; timers share state", async ({ page, context, request }, info) => {
   const ui = await scenario(page, context, request, info, { timers: [timer()], recentTasks: [recentTask()] });
+  const toggleTasks = async () => {
+    // Visibility alone does not wait for the outer section's native toggle handler.
+    await Promise.all([
+      ui.tasks.evaluate((element) => new Promise<void>((resolve) => {
+        element.addEventListener("toggle", () => resolve(), { once: true });
+      })),
+      ui.tasks.locator(":scope > summary").click(),
+    ]);
+  };
   expect((await ui.counts()).recent).toBe(0);
   await ui.openRecent();
   await expect(ui.recent).toContainText(recentTask().summary);
@@ -230,14 +239,14 @@ test("recent-task reads stop when their sections, overview or side panel are clo
   expect((await ui.counts()).recent - opened.recent).toBe(1);
 
   await ui.timers.locator(":scope > summary").click();
-  await ui.tasks.locator(":scope > summary").click();
+  await toggleTasks();
   const collapsed = await ui.counts();
   await ui.checkpoint({ timers: [timer({ summary: "Changed while collapsed" })] });
   await ui.advance(60_000);
   expect((await ui.counts()).timers).toBe(collapsed.timers);
   expect((await ui.counts()).recent).toBe(collapsed.recent);
   await ui.timers.locator(":scope > summary").click();
-  await ui.tasks.locator(":scope > summary").click();
+  await toggleTasks();
   await expect(ui.recent.getByRole("button", { name: "Refresh recent tasks", exact: true })).toBeVisible();
   await ui.advance(1000);
   await expect(ui.timers).toContainText("Changed while collapsed");

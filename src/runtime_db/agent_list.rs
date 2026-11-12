@@ -173,18 +173,39 @@ impl RuntimeDb {
         agent_id: &str,
         work_item_id: &str,
         expected_incarnation: Option<u64>,
-    ) -> Result<Option<(ConversationIdentity, Option<WorkItemRecord>)>> {
+    ) -> Result<Option<(ConversationIdentity, Option<AgentListPostureRow>)>> {
         self.with_read(|connection| {
             read_agent_record_snapshot(connection, agent_id, expected_incarnation, |view| {
-                view.query_row(
-                    "SELECT payload_json FROM work_items
-                     WHERE agent_id = ?1 AND work_item_id = ?2",
-                    params![agent_id, work_item_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| decode_work_item_payload(&payload))
-                .transpose()
+                let record = view
+                    .query_row(
+                        "SELECT payload_json FROM work_items
+                         WHERE agent_id = ?1 AND work_item_id = ?2",
+                        params![agent_id, work_item_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()?
+                    .map(|payload| decode_work_item_payload(&payload))
+                    .transpose()?;
+                let Some(record) = record else {
+                    return Ok(None);
+                };
+                let mut rows = collect_agent_list_posture_rows_filtered(
+                    view,
+                    &[agent_id.to_owned()],
+                    crate::types::RecordListStatus::All,
+                    0,
+                )?;
+                let Some(mut row) = rows.rows.pop() else {
+                    return Ok(None);
+                };
+                if record.state != crate::types::WorkItemState::Open {
+                    row.facts
+                        .as_mut()
+                        .map_err(|error| anyhow::anyhow!("{error}"))?
+                        .non_open_work_items
+                        .push(record);
+                }
+                Ok(Some(row))
             })
         })
     }

@@ -68,7 +68,7 @@ async function scenario(page: Page, context: BrowserContext, request: APIRequest
     await expect.poll(async () => (await conversation())?.throughSeq ?? 0).toBeGreaterThan(previous);
   };
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
-  await update({ workItems: initial, currentWorkItemId: initial[0]?.id ?? null, stateWorkItems: [] });
+  await update({ workItems: initial, currentWorkItemId: initial[0]?.id ?? null });
   expect((await request.post(control("/__e2e__/conversation"), { data: {
     agentId, turns: [{
       turn_id: "refresh-baseline", key: { turn_id: "refresh-baseline", turn_index: 1 }, revision: 1,
@@ -87,9 +87,10 @@ async function scenario(page: Page, context: BrowserContext, request: APIRequest
   if (!(await panel.isVisible())) await page.getByRole("button", { name: "Context side panel", exact: true }).click();
   await expect(panel).toBeVisible();
   await expect.poll(async () => (await (await request.get(control("/__e2e__/right-panel"))).json()).streamAgentIds).toContain(agentId);
-  await expect.poll(async () => (await counts()).workItems).toBeGreaterThan(0);
+  await expect.poll(async () => (await counts()).state).toBeGreaterThan(0);
   await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
   await advance(5000);
+  expect((await counts()).workItems).toBe(0);
   const bar = page.locator(".current-work-bar");
   const cards = panel.locator(".work-item-button");
   const card = (objective: string) => cards.filter({ has: page.locator("strong", { hasText: objective }) });
@@ -113,18 +114,18 @@ test("checkpoint-only hints update the empty list, objective, status and current
   await expect(ui.card(first.objective)).toHaveClass(/featured/);
   await expect(ui.bar).toContainText(first.objective);
 
-  // Deliberately stale state.work_items cannot override the authoritative list.
-  const blocked = work(first.id, "Updated objective from the work-item API", {
+  // Active State is authoritative even when the historical list is stale.
+  const blocked = work(first.id, "Updated objective from the State snapshot", {
     revision: 2, scheduling_state: "waiting_operator", readiness: "blocked",
   });
   const before = await ui.counts();
   for (let revision = 2; revision <= 7; revision += 1) {
-    await ui.checkpoint({ workItems: [{ ...blocked, revision }], stateWorkItems: [first] });
+    await ui.checkpoint({ workItems: [first], stateWorkItems: [{ ...blocked, revision }] });
   }
   await ui.advance(4900);
   const burst = await ui.counts();
   expect(burst.state - before.state).toBeLessThanOrEqual(1);
-  expect(burst.workItems - before.workItems).toBeLessThanOrEqual(1);
+  expect(burst.workItems - before.workItems).toBe(0);
   await ui.advance(600);
   await expect(ui.card(blocked.objective)).toBeVisible();
   await expect(ui.card(first.objective)).toHaveCount(0);
@@ -133,7 +134,7 @@ test("checkpoint-only hints update the empty list, objective, status and current
 
   const second = work("refresh-second", "New current work item");
   const notCurrent = { ...blocked, is_current: false, focus: "background" };
-  await ui.checkpoint({ workItems: [notCurrent, second], currentWorkItemId: second.id });
+  await ui.checkpoint({ workItems: [notCurrent, second], stateWorkItems: null, currentWorkItemId: second.id });
   await ui.advance(5500);
   await expect(ui.card(second.objective)).toHaveClass(/featured/);
   await expect(ui.card(blocked.objective)).not.toHaveClass(/featured/);
@@ -144,7 +145,13 @@ test("checkpoint-only hints update the empty list, objective, status and current
     ...item, state: "completed", readiness: "completed", is_current: false, focus: "background",
   })) });
   await ui.advance(5500);
-  await expect(ui.panel.locator(".current-work .inspector-details-list > summary")).toHaveText("2 completed");
+  await expect(ui.cards).toHaveCount(0);
+  expect((await ui.counts()).workItems).toBe(0);
+  await ui.panel.locator(".current-work .inspector-details-list > summary").click();
+  await expect(ui.panel.getByRole("button", { name: "Refresh completed work items", exact: true })).toBeVisible();
+  await ui.advance(1);
+  await expect(ui.cards).toHaveCount(2);
+  expect((await ui.counts()).workItems).toBe(1);
   await expect(ui.cards.filter({ has: page.locator("small", { hasText: "Current" }) })).toHaveCount(0);
   await ui.advance(8100);
   await expect(ui.bar).toHaveCount(0);
@@ -162,7 +169,7 @@ test("silent changes converge within the 30-second fallback; hidden tabs pause a
   await expect(ui.bar).toContainText(first.objective);
   const fallback = await ui.counts();
   expect(fallback.state - before.state).toBe(1);
-  expect(fallback.workItems - before.workItems).toBe(1);
+  expect(fallback.workItems - before.workItems).toBe(0);
   // Bootstrap may legitimately mark the conversation read; only refresh deltas must stay zero.
   expect(fallback.readMarkerPosts - before.readMarkerPosts).toBe(0);
   expect(fallback.controlWrites - before.controlWrites).toBe(0);
@@ -196,22 +203,24 @@ test("resource failures keep last-known-good work visible without a conversation
     const path = new URL(response.url()).pathname;
     if (response.status() === 503 && ["/state", "/work-items"].some((suffix) => path === agentPath + suffix)) failed.push(path);
   });
-  await ui.checkpoint({ failResources: ["work-items"] });
+  const historyFailure = work(first.id, "State refresh does not depend on history", { revision: 2 });
+  await ui.checkpoint({ failResources: ["work-items"], workItems: [historyFailure] });
   await ui.advance(5500);
-  await expect.poll(() => failed).toContain(`${agentPath}/work-items`);
-  await expect(ui.card(first.objective)).toBeVisible();
-  await expect(ui.bar).toContainText(first.objective);
+  expect(failed).toEqual([]);
+  await expect(ui.card(historyFailure.objective)).toBeVisible();
+  await expect(ui.bar).toContainText(historyFailure.objective);
   await ui.healthy();
 
-  await ui.checkpoint({ failResources: ["state", "work-items"] });
+  expect((await ui.counts()).workItems).toBe(0);
+  await ui.checkpoint({ failResources: ["state"] });
   await ui.advance(5500);
   await expect.poll(() => failed).toContain(`${agentPath}/state`);
   await expect(ui.bar).toHaveAttribute("data-state", "stale");
-  await expect(ui.bar).toContainText(first.objective);
-  await expect(ui.card(first.objective)).toBeVisible();
+  await expect(ui.bar).toContainText(historyFailure.objective);
+  await expect(ui.card(historyFailure.objective)).toBeVisible();
   await ui.healthy();
 
-  const recovered = work(first.id, "Recovered right-panel refresh", { revision: 2 });
+  const recovered = work(first.id, "Recovered right-panel refresh", { revision: 3 });
   await ui.update({ failResources: [], workItems: [recovered] });
   await ui.advance(30_000);
   await expect(ui.card(recovered.objective)).toBeVisible();

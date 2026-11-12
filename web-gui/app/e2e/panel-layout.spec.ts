@@ -228,8 +228,10 @@ test("work item details prioritize results and keep technical fields and plan na
       await route.fulfill({ headers: { "x-holon-agent-id": "bootstrap-agent", "x-holon-agent-incarnation": "1" }, json: work });
       return;
     }
-    const response = await route.fetch();
-    await route.fulfill({ response, json: [work] });
+    await route.continue();
+  });
+  await request.post(`/__e2e__/right-panel?session=${encodeURIComponent(session)}`, {
+    data: { agentId: "bootstrap-agent", workItems: [work], currentWorkItemId: work.id },
   });
   await request.post(`/__e2e__/append-event?session=${encodeURIComponent(session)}`, { data: { envelope: {
     id: "work-written", event_seq: 1, event_log_epoch: "e2e-epoch",

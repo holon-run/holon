@@ -110,7 +110,7 @@ async function scenario(page: Page, context: BrowserContext, request: APIRequest
     };
   };
   await context.addCookies([{ name: "holon_e2e_session", value: session, domain: "127.0.0.1", path: "/" }]);
-  await update({ workItems: [work()], currentWorkItemId: workId, stateWorkItems: [], tasks: [],
+  await update({ workItems: [work()], currentWorkItemId: workId, tasks: [],
     workItemDetailsById: { [workId]: workDetail() }, ...initial });
   expect((await request.post(control("/__e2e__/conversation"), { data: {
     agentId, turns: [{
@@ -132,10 +132,11 @@ async function scenario(page: Page, context: BrowserContext, request: APIRequest
   const panel = page.locator(".side-panel");
   if (!(await panel.isVisible())) await page.getByRole("button", { name: "Context side panel", exact: true }).click();
   await expect.poll(async () => (await (await request.get(control("/__e2e__/right-panel"))).json()).streamAgentIds).toContain(agentId);
-  await expect.poll(async () => (await counts()).workItems).toBeGreaterThan(0);
+  await expect.poll(async () => (await counts()).state).toBeGreaterThan(0);
   await page.clock.pauseAt(await page.evaluate(() => Date.now()) + 1000);
   await advance(5000);
   const baseline = await counts();
+  expect(baseline.workItems).toBe(0);
   const healthy = async () => {
     await expect(page.locator(".conversation-sync-status .is-error, .conversation-sync-status .is-reconnecting")).toHaveCount(0);
     expect((await conversation())?.turnIds).toEqual(["detail-baseline"]);
@@ -186,7 +187,7 @@ test("checkpoint bursts refresh the mounted work detail without exceeding its sh
   const burst = await ui.counts();
   expect(burst.workDetail - before.workDetail).toBeLessThanOrEqual(1);
   expect(burst.state - before.state).toBeLessThanOrEqual(1);
-  expect(burst.workItems - before.workItems).toBeLessThanOrEqual(1);
+  expect(burst.workItems - before.workItems).toBe(0);
   await ui.advance(600);
   await expectWork(detail, 7);
   await expect(detail).not.toContainText("Detail plan revision 1");
@@ -208,7 +209,7 @@ test("silent work detail changes converge in 30 seconds and returning from overv
   const fallback = await ui.counts();
   expect(fallback.workDetail - before.workDetail).toBe(1);
   expect(fallback.state - before.state).toBe(1);
-  expect(fallback.workItems - before.workItems).toBe(1);
+  expect(fallback.workItems - before.workItems).toBe(0);
   expect((await ui.conversation())?.throughSeq).toBe(head);
 
   await ui.panel.locator(".panel-sections").getByRole("button", { name: "Overview", exact: true }).click();

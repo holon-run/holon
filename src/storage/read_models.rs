@@ -485,11 +485,21 @@ impl RuntimeReadModelView<'_> {
             agent_id,
             expected_incarnation,
             status,
-            limit,
+            if status == crate::types::RecordListStatus::All {
+                WORK_QUEUE_NON_OPEN_WINDOW
+            } else {
+                limit
+            },
         )?
         else {
             return Ok(None);
         };
+        Ok(Some((identity, Self::project_work_queue_snapshot(row)?)))
+    }
+
+    fn project_work_queue_snapshot(
+        row: crate::runtime_db::agent_list::AgentListPostureRow,
+    ) -> Result<WorkQueueReadModel> {
         let mut facts = row.facts.map_err(anyhow::Error::msg)?;
         facts.current_work_item_id = row
             .agent_state_json
@@ -512,14 +522,13 @@ impl RuntimeReadModelView<'_> {
                     .is_some_and(|item| item.state == WorkItemState::Open)
             })
         });
-        let work_queue = derive_context_work_queue(
+        derive_context_work_queue(
             facts.current_work_item_id.as_deref(),
             latest,
             facts.external_triggers,
             facts.active_wait_conditions,
             facts.active_continuations,
-        )?;
-        Ok(Some((identity, work_queue)))
+        )
     }
 
     pub(crate) fn agent_tasks_snapshot(
@@ -569,14 +578,25 @@ impl RuntimeReadModelView<'_> {
     ) -> Result<
         Option<(
             crate::runtime_db::conversation::ConversationIdentity,
-            Option<crate::types::WorkItemRecord>,
+            Option<WorkItemSchedulingProjection>,
         )>,
     > {
         let Some(agent_id) = self.agent_id.as_deref() else {
             return Ok(None);
         };
-        self.runtime_db
-            .agent_work_item_snapshot(agent_id, work_item_id, expected_incarnation)
+        let Some((identity, row)) = self.runtime_db.agent_work_item_snapshot(
+            agent_id,
+            work_item_id,
+            expected_incarnation,
+        )?
+        else {
+            return Ok(None);
+        };
+        let item = row
+            .map(Self::project_work_queue_snapshot)
+            .transpose()?
+            .and_then(|queue| queue.items.into_iter().find(|item| item.id == work_item_id));
+        Ok(Some((identity, item)))
     }
 
     /// One committed view of this agent's identity fence plus the latest
