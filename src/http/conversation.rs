@@ -834,6 +834,9 @@ pub async fn summary(
             Ok(authority) => authority,
             Err(error) => return authentication_error_response(error).into_response(),
         };
+    if limits.timeout.is_zero() {
+        return timeout_error("summary", limits.timeout).into_response();
+    }
     let snapshot = match tokio::time::timeout(
         limits.timeout,
         tokio::task::spawn_blocking(move || {

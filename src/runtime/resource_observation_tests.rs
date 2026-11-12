@@ -536,6 +536,12 @@ fn epoch_and_nonce_exhaustion_permanently_fence_older_tickets() {
 
 #[test]
 fn oversized_invalid_utf8_and_directory_count_reject_before_owned_decode() {
+    if io_probe::run_isolated_test(
+        module_path!(),
+        "oversized_invalid_utf8_and_directory_count_reject_before_owned_decode",
+    ) {
+        return;
+    }
     let dir = tempfile::tempdir().unwrap();
     let oversized = dir.path().join("large");
     std::fs::write(&oversized, vec![0xff; 1024 * 1024]).unwrap();
@@ -720,6 +726,12 @@ fn oversized_invalid_utf8_and_directory_count_reject_before_owned_decode() {
 
 #[test]
 fn ordinary_resource_capture_retains_bytes_when_reader_capability_is_denied() {
+    if io_probe::run_isolated_test(
+        module_path!(),
+        "ordinary_resource_capture_retains_bytes_when_reader_capability_is_denied",
+    ) {
+        return;
+    }
     let (registry, source) = fixture();
     let allowed = Cell::new(true);
     let attempts = Cell::new(0);
@@ -1407,6 +1419,12 @@ fn every_source_identity_component_fences_capture_and_unchanged_refresh_reuses_a
 
 #[test]
 fn instruction_read_keeps_original_guard_and_rejects_invalidated_resources() -> Result<()> {
+    if io_probe::run_isolated_test(
+        module_path!(),
+        "instruction_read_keeps_original_guard_and_rejects_invalidated_resources",
+    ) {
+        return Ok(());
+    }
     let (registry, mut source) = fixture();
     let ledger = registry.ledger.clone();
     let original = refresh(&registry, &source, "instructions");

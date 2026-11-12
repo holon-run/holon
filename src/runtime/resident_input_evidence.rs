@@ -443,6 +443,23 @@ pub(crate) struct InputWindowCoverage {
     pub keys: Vec<InputEvidenceKey>,
     pub is_exhaustive: bool,
 }
+impl InputWindowCoverage {
+    pub(crate) fn project_from_records<'a>(
+        &mut self,
+        records: impl Iterator<Item = &'a Arc<QualifiedInputEvidence>>,
+    ) {
+        let mut candidates = records
+            .filter(|record| matches_selector(&record.record, &self.selector))
+            .collect::<Vec<_>>();
+        candidates.sort_by(|a, b| compare_record_order(b, a));
+        self.is_exhaustive &= candidates.len() <= self.limit;
+        self.keys = candidates
+            .into_iter()
+            .take(self.limit)
+            .map(|record| record.locator.key.clone())
+            .collect();
+    }
+}
 /// Focused same-read-view absence of an asserted recovery source. This is not
 /// ordinary lookup availability or permission to omit a required context body.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2055,20 +2072,7 @@ impl ResidentInputEvidence {
         self.window_projection = None;
         self.validated_metadata_bytes = None;
         for window in &mut self.coverage.windows {
-            let mut candidates = self
-                .records
-                .values()
-                .filter(|record| matches_selector(&record.record, &window.selector))
-                .collect::<Vec<_>>();
-            candidates.sort_by(|a, b| compare_record_order(b, a));
-            if candidates.len() > window.limit {
-                window.is_exhaustive = false;
-            }
-            window.keys = candidates
-                .into_iter()
-                .take(window.limit)
-                .map(|record| record.locator.key.clone())
-                .collect();
+            window.project_from_records(self.records.values());
         }
         self.window_projection = Some(Arc::new(self.coverage.windows.clone()));
     }
