@@ -15554,11 +15554,9 @@ mod tests {
     #[tokio::test]
     async fn canonical_create_reuses_committed_agent_without_supervision_or_reconfiguration() {
         let (_home, host) = test_host();
-        let parent = host.default_runtime().await.unwrap();
-        let parent_agent_id = parent
-            .agent_summary()
+        let parent = default_runtime_settled(&host).await;
+        let parent_agent_id = agent_summary_settled(&parent)
             .await
-            .unwrap()
             .identity
             .agent_id
             .clone();
@@ -15587,7 +15585,7 @@ mod tests {
         );
 
         let target = host.get_public_agent("canonical-create").await.unwrap();
-        let before = target.agent_summary().await.unwrap();
+        let before = agent_summary_settled(&target).await;
         let before_bootstrap = host
             .runtime_db()
             .agent_bootstraps()
@@ -15612,7 +15610,7 @@ mod tests {
             .unwrap();
         assert!(!duplicate.receipt.created);
 
-        let after = target.agent_summary().await.unwrap();
+        let after = agent_summary_settled(&target).await;
         let after_bootstrap = host
             .runtime_db()
             .agent_bootstraps()
@@ -18940,7 +18938,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_public_named_records_lineage_without_supervision() {
         let (_home, host) = test_host();
-        let parent = host.default_runtime().await.unwrap();
+        let parent = default_runtime_settled(&host).await;
 
         let created = host
             .spawn_public_named_agent(
@@ -18969,13 +18967,8 @@ mod tests {
             Some(host.config().default_agent_id.as_str())
         );
 
-        let summary = host
-            .get_public_agent("release-bot")
-            .await
-            .unwrap()
-            .agent_summary()
-            .await
-            .unwrap();
+        let target = host.get_public_agent("release-bot").await.unwrap();
+        let summary = agent_summary_settled(&target).await;
         assert_eq!(
             summary.identity.lineage_parent_agent_id.as_deref(),
             Some(host.config().default_agent_id.as_str())
