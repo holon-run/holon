@@ -1,7 +1,7 @@
 # models.dev refresh summary
 
-- Supplement models: 57 (drafted this run: 0, retained: 57, removed: 0)
-- Deferred candidates: 189 (not auto-drafted; see below)
+- Supplement models: 58 (drafted this run: 0, retained: 58, removed: 0)
+- Deferred candidates: 188 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
@@ -50,11 +50,11 @@
 - `dashscope/qwen3-vl-235b-a22b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-vl-30b-a3b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-vl-plus` — ReleaseOutsideWindow (release 2025-09-23)
-- … and 149 more (see `holon models-dev audit`)
+- … and 148 more (see `holon models-dev audit`)
 
 ## Route metadata review (offline)
 
-Routes: 635; unknown context: 227; unknown output ceiling: 261.
+Routes: 636; unknown context: 227; unknown output ceiling: 261.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -87,7 +87,6 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `deepseek@responses/deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | context_window_tokens, max_output_tokens_upper_limit |
 | `deepseek@responses/deepseek-v4-pro` | `deepseek/deepseek-v4-pro` | context_window_tokens, max_output_tokens_upper_limit |
 | `fireworks@default/accounts/fireworks/models/kimi-k3p1-pro` | `fireworks-ai/accounts/fireworks/models/kimi-k3p1-pro` | max_output_tokens_upper_limit |
-| `gemini@default/gemini-4-carbon` | `google/gemini-4-carbon` | max_output_tokens_upper_limit |
 | `huggingface@default/openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | max_output_tokens_upper_limit |
 | `minimax@default/MiniMax-M2.5` | `minimax/MiniMax-M2.5` | max_output_tokens_upper_limit |
 | `minimax@default/MiniMax-M2.5-highspeed` | `minimax/MiniMax-M2.5-highspeed` | max_output_tokens_upper_limit |

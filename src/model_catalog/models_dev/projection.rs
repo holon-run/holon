@@ -210,17 +210,11 @@ pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> Bui
         .as_ref()
         .and_then(|l| l.context)
         .filter(|v| *v > 0);
-    let max_output_tokens_upper_limit =
-        match (model_ref.provider.as_str(), model_ref.model.as_str()) {
-            // Native Carbon supports 64K synchronous output; long decode needs
-            // a separate continuation protocol and is not enabled by this route.
-            ("gemini", "gemini-4-carbon") => Some(65_536),
-            _ => model
-                .limit
-                .as_ref()
-                .and_then(|l| l.output)
-                .filter(|v| *v > 0),
-        };
+    let max_output_tokens_upper_limit = model
+        .limit
+        .as_ref()
+        .and_then(|l| l.output)
+        .filter(|v| *v > 0);
     // Moonshot documents a 128K default separately from its 1M output ceiling.
     // Do not turn the upstream capability ceiling into the request budget.
     let default_max_output_tokens = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
@@ -344,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn gemini_carbon_uses_the_reviewed_native_synchronous_output_limit() {
+    fn gemini_carbon_keeps_the_direct_non_streaming_rest_output_limit() {
         let model: ModelsDevModel = serde_json::from_str(
             r#"{"id":"gemini-4-carbon","reasoning":true,
                 "reasoning_options":[{"type":"effort","values":["low","medium","high"]}],
@@ -354,8 +348,8 @@ mod tests {
         .unwrap();
         let metadata = project_model(&ModelRef::parse("gemini/gemini-4-carbon").unwrap(), &model);
         assert_eq!(metadata.context_window_tokens, Some(1_048_576));
-        assert_eq!(metadata.default_max_output_tokens, Some(65_536));
-        assert_eq!(metadata.max_output_tokens_upper_limit, Some(65_536));
+        assert_eq!(metadata.default_max_output_tokens, Some(32_768));
+        assert_eq!(metadata.max_output_tokens_upper_limit, Some(32_768));
         assert_eq!(metadata.reasoning_effort_options, ["low", "medium", "high"]);
         assert!(metadata.capabilities.image_input);
         assert!(metadata.capabilities.supports_reasoning);
@@ -370,6 +364,31 @@ mod tests {
             assert_eq!(metadata.default_max_output_tokens, Some(32_768));
             assert_eq!(metadata.max_output_tokens_upper_limit, Some(32_768));
         }
+    }
+
+    #[test]
+    fn gemini_hydrogen_keeps_its_distinct_native_rest_limits_and_efforts() {
+        let model: ModelsDevModel = serde_json::from_str(
+            r#"{"id":"gemini-4-hydrogen","reasoning":true,
+                "reasoning_options":[{"type":"effort","values":["low","medium","high","xhigh"]}],
+                "modalities":{"input":["text","image","video","audio","pdf"],"output":["text"]},
+                "limit":{"context":1048576,"output":65536}}"#,
+        )
+        .unwrap();
+        let metadata = project_model(
+            &ModelRef::parse("gemini/gemini-4-hydrogen").unwrap(),
+            &model,
+        );
+        assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+        assert_eq!(metadata.default_max_output_tokens, Some(65_536));
+        assert_eq!(metadata.max_output_tokens_upper_limit, Some(65_536));
+        assert_eq!(
+            metadata.reasoning_effort_options,
+            ["low", "medium", "high", "xhigh"]
+        );
+        assert!(metadata.capabilities.image_input);
+        assert!(metadata.capabilities.supports_reasoning);
+        assert!(!metadata.capabilities.image_generation);
     }
 
     #[test]

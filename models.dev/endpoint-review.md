@@ -9,6 +9,125 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-13 incremental review
+
+Baseline main is `5685f66f`. The fixed models.dev payload was sampled on
+November 12 at 20:49:19 UTC:
+`0fd23a4d9e4a865c3a785fb69375356ce6bf73692985f9e3ae04732ff2f0faf0`.
+This UTC sample belongs to the November 13 Beijing cycle.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-13)
+separates the native REST contract from SDK and streaming limits.
+
+### Native GenerateContent decisions
+
+The official [Hydrogen model page](https://aistudio.google.com/docs/models/gemini-4-hydrogen)
+and [migration guide](https://aistudio.google.com/docs/whats-new-gemini-4-hydrogen)
+confirm `gemini@default/gemini-4-hydrogen`: a unified **1,048,576**-token
+window, synchronous default and upper limit **65,536**, text/image input,
+function calling, structured output, and `low`/`medium`/`high`/`xhigh`
+thinking levels (server default `high`). The generated native supplement
+keeps conservative capabilities; it does not enable audio/video/PDF transport,
+image generation, parallel tools, or interactive execution.
+
+The official [GenerateContent long-decode contract](https://aistudio.google.com/docs/long-decode?generate-content=true)
+distinguishes direct non-streaming REST from SDK and streaming calls.
+For Carbon and Argon, direct REST without a continuation token defaults to
+**32,768** output tokens and rejects values above that cap with HTTP 400.
+Hydrogen supports **65,536** for this same transport.
+Holon calls `:generateContent` directly without streaming or a continuation
+loop. Therefore, withdraw the November 11 Carbon-only 65,536 projection
+exception and restore `gemini@default/gemini-4-carbon` default/upper limit
+to **32,768**. The broad Carbon model page's 65K synchronous statement
+does not override the explicit wire-specific restriction. Argon's existing
+32,768 values and all non-native endpoints remain unchanged.
+
+Neither model enables the separate long-decode protocol or a million-token
+output budget. Existing GenerateContent requests omit sampling parameters,
+explicit cache references and thinking selection; Hydrogen therefore uses
+the server's default thinking level. Implicit cache support is not explicit
+cache support, and an omitted request field does not imply vendor rejection.
+No account discovery, paid inference, credential or runtime configuration
+change is part of this review.
+
+### Special-endpoint review and retained boundaries
+
+The evidence groups covered 30 endpoint prefixes (332 + 142 complete
+objects), plus Codex and Zen evidence. Initial runtime equality is not a
+claim that all vendor contracts are unchanged or every field was certified.
+Group one archived 48 public source responses; group two archived 57
+(48 HTTP 200, six 404, three redirects).
+
+- **Qwen4 Token Plan:** both aliases remain deferred. Tools, text/image/video,
+  output ceiling 393,216 and Chat default 393,216 remain confirmed. Context
+  still says only `1M`. Messages requires `max_tokens`, so an omitted default
+  is not applicable rather than an unknown number. Responses permits
+  omission without declaring a default. Request adaptation remains unverified.
+- **DashScope / Volcengine / Baidu:** structured-output documentation has
+  changed, but generic Beijing Chat support does not move Token Plan models
+  to ordinary API or other regions. Volcengine prefill guidance and image
+  updates do not change these text routes. Baidu's retirement page now has
+  usable text; no existing model is newly confirmed for deletion. Its upgrade
+  notice has ambiguous chronology; do not invent an effective date.
+- **Moonshot:** the [Chat schema](https://platform.kimi.ai/docs/api/chat.md)
+  newly marks `kimi-k2.6` and `kimi-k2.7-code` unavailable to new users.
+  Accounts registered before November 1, 2026 retain access until planned
+  retirement at the end of December 2026; no precise day is stated.
+  Do not globally delete them or extend this notice to highspeed IDs.
+  K2.7 Code permits omitted/null/`all` preserved thinking; K2.6 defaults
+  to no preservation and enables it with `all`.
+- **Kimi Coding:** the [model configuration](https://www.kimi.com/code/docs/en/kimi-code/models.html)
+  and [membership](https://www.kimi.com/code/docs/en/kimi-code/membership.html)
+  pages supply six public IDs and tier-dependent capacity. Public model
+  information is no longer wholly unknown. The overview's default effort
+  `max` conflicts with the model page's `high`; exact output defaults,
+  ceilings and real account eligibility remain unresolved.
+- **Zen versus Go:** the [Zen listing](https://opencode.ai/inference/v1/models)
+  adds Hydrogen (85→86), native GenerateContent and a separate Google host.
+  Its `limit.output` is not an independent default-output contract.
+  The [Go listing](https://opencode.ai/inference/go/v1/models) stays at
+  30 objects except volatile `created` fields. Do not register Zen Hydrogen
+  on Go or present it as natively Chat/Messages/Responses.
+- **Other endpoints / Codex:** MiniMax/M Plan source bodies are unchanged;
+  NVIDIA count/usage movement is not an exact retirement contract.
+  Qwen OAuth, Xiaomi application-shell limitations and per-model
+  cache/effort/entitlement debts remain. Codex paths have migrated;
+  unchanged canonical bodies and the OpenAI API catalog do not prove
+  ChatGPT-plan eligibility. Retain zero-static-object dynamic endpoints.
+
+### Verification
+
+Initial fixed refresh and validation passed. Initial coverage is **635→636**:
+only native Hydrogen is added, and all 635 previous complete objects are
+identical before the reviewed Carbon correction. The second fixed refresh
+and validation passed; coverage failed closed for the new Hydrogen review
+and the deliberate Carbon correction. Strict full-object comparison then
+confirmed exactly those two accepted changes: the other **634** existing
+runtime objects and review records remain identical. Only the Carbon and
+Hydrogen metadata review records were updated. The Carbon regression failed
+before the fix; both native projection tests now pass. All three models.dev
+integration targets passed (**11 + 11 + 1** tests), as did final validation,
+636-route coverage, strict full-object comparison, formatting, warning-free
+all-targets checking, diff checks, and frozen hashes before/after the gates.
+
+The full local lib-c shard is **not green**: **1,971 passed, 4 failed,
+7 ignored**. Two unchanged Tailscale IPv6 tests failed with
+`AddrNotAvailable` / `NetworkUnreachable`. The other failures were
+`cookie_only_reader_checkout_failure_remains_storage_error` (reader-ready
+channel disconnected) and
+`capability_read_and_build_share_the_callers_absolute_deadline` (start
+channel `RecvError`). Each of those two tests subsequently passed twice
+in exact single-test, single-thread runs; the original failures remain
+unresolved at full-shard concurrency and require remote CI confirmation.
+The first rerun wrapper failed on zsh's read-only `status` variable after
+the cookie test passed; the corrected wrapper completed all four reruns.
+No failing test was skipped or changed.
+
+Independent incremental review found no confirmed P1/P2/P3 within its
+declared scope, including the native request chain, changed objects, and
+new evidence/documentation. It did not certify every historical field,
+source page, translated endpoint, or account entitlement; nor does it
+establish complete CI success.
+
 ## 2026-11-12 incremental review
 
 Baseline main is `b98082ef`. The fixed models.dev payload was sampled on

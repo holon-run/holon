@@ -5,6 +5,54 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-13
+
+Pinned models.dev payload:
+`0fd23a4d9e4a865c3a785fb69375356ce6bf73692985f9e3ae04732ff2f0faf0`,
+sampled November 12 at 20:49:19 UTC. Review is for the November 13 Beijing
+cycle, not a claim of fresh account entitlement.
+
+| Exact route | Reviewed facts | Primary source and UTC sample |
+|---|---|---|
+| `gemini@default/gemini-4-hydrogen` | Unified context 1,048,576; direct synchronous REST default/upper output 65,536; function calling, structured output and image input; thinking low/medium/high/xhigh, default high. Text output only. | [Model page](https://aistudio.google.com/docs/models/gemini-4-hydrogen), November 12 20:56:27 UTC, SHA256 `330de74c5fb4dfbc5ec53cd9297d6c52c405281c4f1ab0e6ea82d47b1a54dea2`; [migration](https://aistudio.google.com/docs/whats-new-gemini-4-hydrogen), 20:57:43 UTC, `276991da517da8d3c8a97a74a9c470805c5821441e01ee5deafd094bce07aff3`. |
+| `gemini@default/gemini-4-carbon` | Correct default/upper output 65,536→32,768 for Holon's direct non-streaming REST without continuation. Context and all capabilities/efforts unchanged. Argon already uses 32,768. | [GenerateContent long decode](https://aistudio.google.com/docs/long-decode?generate-content=true), November 12 21:04:13 UTC, SHA256 `23096646574d1911f3647e91b8a77c8547ad3493f0691988189cfffd81a8eb6c`. |
+
+The wire-specific guide explicitly says Carbon/Argon `generateContent`
+defaults to 32,768 and values above 32,768 without `continuation_token`
+return HTTP 400. This supersedes the November 11 decision based on the
+less-specific [Carbon model page](https://aistudio.google.com/docs/models/gemini-4-carbon),
+which still says 65,536 synchronous (resampled November 12 21:02:46 UTC,
+SHA256 `5ce69ebb4d7f122f4dd5e0020418b3a20975897fdd7134601d63f64625327b58`).
+That statement applies to other invocation modes and is not evidence that
+Holon's bare REST request supports 64K.
+
+Hydrogen's migration guide rejects `minimal`, defaults to `high`, supports
+implicit but not explicit caching, and tells clients to omit custom
+temperature/top-p/top-k. Holon's existing request shape omits these fields,
+does not select thinking effort, and does not implement continuation.
+Advertising available effort choices is not a claim that this transport
+currently sends a selected thinking level. Audio/video/PDF support in the
+vendor model is not added to Holon's text/image transport by this change.
+
+The 30-prefix special-endpoint review used fresh November 12 UTC samples:
+group one archived 48 source responses and 158 files; group two archived
+57 responses and 253 files. The parent checked both complete SHA256 manifests.
+Their full-object comparisons use the original 635→636 refresh inputs,
+not the later Carbon correction. All 332 + 142 group objects match those
+initial inputs; `route_ref` is split at its first slash without dropping keys.
+
+Source report SHA256 values:
+
+- First group: `77b0b98039ce616918cd3f40b48ddad8a2f331b0ac97d5049893d7228f0f9af9`.
+- Second group: `80d3bfbc2fcb5e92d4a8e4c809ac7983b3c7bdd0d7efcb2977803e78e04a38db`.
+
+The [endpoint review](endpoint-review.md#special-endpoint-review-and-retained-boundaries)
+records changed public contracts and unresolved eligibility separately from
+static equality. Qwen4 Messages has a required output field, not an unknown
+omitted default. Kimi Coding public model information now exists but default
+effort sources conflict. Moonshot's future account-scoped retirement notice
+is not permission to delete all current routes.
+
 ## Incremental review: 2026-11-12
 
 Pinned models.dev payload:
@@ -54,6 +102,9 @@ complete-object comparison, including 474 objects across 30 special endpoints,
 does not close historical official-field or dynamic-account evidence gaps.
 
 ## Incremental review: 2026-11-11
+
+The Carbon-specific 65,536 projection decision below is superseded by the
+November 13 direct non-streaming REST evidence above.
 
 Pinned models.dev payload:
 `f312cd2d4640b2876c8ac0b1f1878a6727f893ff38fd2a56b09fc8cb086dd433`,

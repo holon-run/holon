@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "5a4aee967f0a0586ca3bd638129ff4e39bb71518f48e0ad8385fe38212426aac",
-  "adapter_version": "0.59.0 (b98082ef6)",
+  "upstream_revision": "0fd23a4d9e4a865c3a785fb69375356ce6bf73692985f9e3ae04732ff2f0faf0",
+  "adapter_version": "0.59.0 (5685f66fd)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -532,6 +532,32 @@
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
+      "default_max_output_tokens": 32768,
+      "max_output_tokens_upper_limit": 32768,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high"
+      ],
+      "source": "models_dev_supplement"
+    },
+    {
+      "model_ref": "gemini/gemini-4-hydrogen",
+      "display_name": "Gemini 4 Hydrogen",
+      "description": "Google's Gemini 4 model for everyday coding and agentic workflows, with four thinking levels and a 1M-token context window",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 996147,
       "default_max_output_tokens": 65536,
       "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
@@ -547,7 +573,8 @@
       "reasoning_effort_options": [
         "low",
         "medium",
-        "high"
+        "high",
+        "xhigh"
       ],
       "source": "models_dev_supplement"
     },
