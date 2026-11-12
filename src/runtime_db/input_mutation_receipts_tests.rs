@@ -812,7 +812,7 @@ fn task_result_successful_empty_outcomes_replay_original_after_later_state() -> 
         originals.push((prepared, outcome));
     }
     let mut later = f.state.clone();
-    later.pending = 7;
+    later.total_input_tokens = 7;
     f.db.agent_states().upsert_for_fixture(&later)?;
     for (prepared, outcome) in originals {
         let attempt = OriginalInputMutationAttempt::new(prepared);

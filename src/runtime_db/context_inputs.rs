@@ -87,6 +87,14 @@ impl ContextScopeRead<'_> {
         scope: &InputEvidenceScope,
     ) -> Result<ContextScopeFacts> {
         self.validate(tx, scope)?;
+        // Scope validation proves the persisted identity and control State.
+        // A caller taking the projected State also needs its Queue count.
+        if let Some(state) = self.facts.state.as_ref() {
+            ensure!(
+                super::current_query::pending_queue_count(tx, &scope.agent_id)? == state.pending,
+                "context pending Queue changed after its validated read"
+            );
+        }
         Ok(self.facts)
     }
 
@@ -124,12 +132,6 @@ impl ContextScopeRead<'_> {
             scope_read_fingerprint(tx, &scope.agent_id)? == self.fingerprint,
             "context scope changed after its validated read"
         );
-        if let Some(state) = self.facts.state.as_ref() {
-            ensure!(
-                super::current_query::pending_queue_count(tx, &scope.agent_id)? == state.pending,
-                "context pending Queue changed after its validated read"
-            );
-        }
         let identity = identity.expect("validated scope identity");
         let expected = match identity.status {
             crate::types::AgentRegistryStatus::Active => "active",

@@ -144,8 +144,8 @@ fn bootstrap_pending_merge_keeps_independent_old_wake_and_drops_duplicate_withou
             .latest(&scope().agent_id)?
             .unwrap()
             .pending,
-        2,
-        "original bootstrap recalculates pending in its next phase"
+        1,
+        "State reads project the Queue after wake normalization"
     );
     assert_eq!(
         db.connection()?.query_row(

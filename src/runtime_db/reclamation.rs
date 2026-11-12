@@ -441,28 +441,30 @@ mod tests {
             TaskStatus::Running
         );
 
-        let queued_agent = settled("queued", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        db.agent_states().upsert_for_fixture(&queued_agent).unwrap();
-        let queued = QueueEntryRecord {
-            message_id: "queued-1".into(),
-            agent_id: "queued".into(),
+        let claimed_agent = settled("claimed", AgentStatus::Asleep, TurnTerminalKind::Aborted);
+        db.agent_states()
+            .upsert_for_fixture(&claimed_agent)
+            .unwrap();
+        let claimed = QueueEntryRecord {
+            message_id: "claimed-1".into(),
+            agent_id: "claimed".into(),
             priority: crate::types::Priority::Normal,
-            status: QueueEntryStatus::Queued,
+            status: QueueEntryStatus::Dequeued,
             created_at: now,
             updated_at: now,
         };
-        db.queue_entries().upsert(&queued).unwrap();
+        db.queue_entries().upsert(&claimed).unwrap();
         assert_eq!(
-            blockers(&db, "queued").0.as_deref(),
+            blockers(&db, "claimed").0.as_deref(),
             Some("queued_or_claimed_input")
         );
         assert_eq!(
             db.queue_entries()
-                .latest(&queued.message_id)
+                .latest(&claimed.message_id)
                 .unwrap()
                 .unwrap()
                 .status,
-            QueueEntryStatus::Queued
+            QueueEntryStatus::Dequeued
         );
     }
 }

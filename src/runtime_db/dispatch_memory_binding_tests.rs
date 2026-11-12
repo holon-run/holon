@@ -90,7 +90,7 @@ fn original_posture_receipt_binds_small_seed_address_and_preserves_replay() -> R
         InputMutationExecution::Replayed { .. }
     ));
     let mut later = state(&f)?;
-    later.pending = 9;
+    later.total_input_tokens = 9;
     f.db.agent_states().upsert_for_fixture(&later)?;
     assert!(matches!(
         f.db.transitions_in_scope(&f.scope)

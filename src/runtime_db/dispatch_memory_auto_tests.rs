@@ -198,7 +198,7 @@ fn automatic_finish_replay_after_done_does_not_rewrite_later_state_or_reissue_ef
         DispatchMemoryRecord::Done { .. }
     ));
     let mut later = current(&f)?;
-    later.pending = 7;
+    later.total_input_tokens = 7;
     f.db.agent_states().upsert_for_fixture(&later)?;
     let audits = count(&f, "audit_events")?;
     let retry = restored(&f, plain_terminal(&f, "auto-finish", &command)?)?;
