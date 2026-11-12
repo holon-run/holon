@@ -42,8 +42,8 @@ order: 30
   编写轻量级 SKILL.md 工作流，为测试 Agent 启用并验证其加载与遵循情况。
   <!-- mdorigin:index kind=article -->
 
-- [在项目工作区或 worktree 中工作](./work-with-workspaces.md)
-  挂载代码项目、激活执行根、在受控 worktree 中隔离改动并安全清理。
+- [在项目工作区与 Git Worktree 中工作](./work-with-workspaces.md)
+  在对话中直接挂载本地代码仓库、在受控 Git Worktree 中隔离编码改动并完成本地验证，安全清理临时工作树而不污染主工作区。
   <!-- mdorigin:index kind=article -->
 
 - [运行长生命周期任务](./run-long-lived-task.md)

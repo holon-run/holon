@@ -112,11 +112,23 @@ mod unix {
         };
         use tokio::io::AsyncWriteExt;
 
-        #[tokio::test]
-        async fn null_device_output_succeeds_without_changing_descriptor_flags() {
-            let file = File::options().write(true).open("/dev/null").unwrap();
+        fn is_nonblocking(file: &impl AsRawFd) -> bool {
+            // Darwin also reports its write-history bit in F_GETFL after I/O.
             let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            assert!(
+                flags >= 0,
+                "read file status flags: {}",
+                io::Error::last_os_error()
+            );
+            flags & libc::O_NONBLOCK != 0
+        }
+
+        #[tokio::test]
+        async fn null_device_output_succeeds_without_changing_blocking_mode() {
+            let file = File::options().write(true).open("/dev/null").unwrap();
+            assert!(!is_nonblocking(&file));
             let mut output = Stdout::from_file(file.try_clone().unwrap()).unwrap();
+            assert!(!is_nonblocking(&file));
             tokio::time::timeout(Duration::from_secs(1), async {
                 output.write_all(b"tail progress\n").await?;
                 output.flush().await
@@ -125,21 +137,19 @@ mod unix {
             .unwrap()
             .unwrap();
             drop(output);
-            assert_eq!(
-                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) },
-                flags,
-            );
+            assert!(!is_nonblocking(&file));
         }
 
         #[tokio::test]
-        async fn unread_pipe_output_times_out_and_restores_descriptor_flags() {
+        async fn unread_pipe_output_times_out_and_restores_blocking_mode() {
             let mut fds = [-1; 2];
             assert_eq!(unsafe { libc::pipe(fds.as_mut_ptr()) }, 0);
             let _unread_peer = unsafe { File::from_raw_fd(fds[0]) };
             let file = unsafe { File::from_raw_fd(fds[1]) };
-            let flags = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) };
+            assert!(!is_nonblocking(&file));
             let mut output = Stdout::from_file(file.try_clone().unwrap()).unwrap();
             assert!(matches!(&output, Stdout::Ready(_)));
+            assert!(is_nonblocking(&file));
             let bytes = vec![b'x'; 4 * 1024 * 1024];
             assert!(
                 tokio::time::timeout(Duration::from_millis(20), output.write_all(&bytes),)
@@ -147,19 +157,17 @@ mod unix {
                     .is_err()
             );
             drop(output);
-            assert_eq!(
-                unsafe { libc::fcntl(file.as_raw_fd(), libc::F_GETFL) },
-                flags,
-            );
+            assert!(!is_nonblocking(&file));
         }
 
         #[tokio::test]
-        async fn unread_socket_output_times_out_and_restores_descriptor_flags() {
+        async fn unread_socket_output_times_out_and_restores_blocking_mode() {
             let (socket, _unread_peer) = UnixStream::pair().unwrap();
-            let flags = unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) };
+            assert!(!is_nonblocking(&socket));
             let file = File::from(OwnedFd::from(socket.try_clone().unwrap()));
             let mut output = Stdout::from_file(file).unwrap();
             assert!(matches!(&output, Stdout::Ready(_)));
+            assert!(is_nonblocking(&socket));
             let bytes = vec![b'x'; 4 * 1024 * 1024];
             assert!(
                 tokio::time::timeout(Duration::from_millis(20), output.write_all(&bytes),)
@@ -167,10 +175,7 @@ mod unix {
                     .is_err()
             );
             drop(output);
-            assert_eq!(
-                unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_GETFL) },
-                flags,
-            );
+            assert!(!is_nonblocking(&socket));
         }
     }
 }

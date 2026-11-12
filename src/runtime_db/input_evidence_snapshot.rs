@@ -1771,9 +1771,6 @@ fn prepare_input_records_tx(
         let exhaustive = keys.len() <= requested.limit;
         keys.truncate(requested.limit);
         selected.extend(keys.iter().cloned());
-        if matches!(requested.selector, InputWindowSelector::OwnerTurns { .. }) {
-            transcript_turns.extend(keys.iter().map(|key| (key.clone(), 0)));
-        }
         windows.push(InputWindowCoverage {
             selector: requested.selector.clone(),
             limit: requested.limit,
@@ -1864,6 +1861,21 @@ fn prepare_input_records_tx(
     let mut bytes = 0usize;
     loop {
         let Some((key, depth, path)) = pending.pop_front() else {
+            for window in windows
+                .iter_mut()
+                .filter(|window| matches!(window.selector, InputWindowSelector::OwnerTurns { .. }))
+            {
+                // A qualified legacy Turn loaded through another root can
+                // match this owner even when its indexed owner is absent.
+                window.project_from_records(records.values());
+                transcript_turns.extend(
+                    window
+                        .keys
+                        .iter()
+                        .filter(|key| !turn_transcript_keys.contains_key(&key.id))
+                        .map(|key| (key.clone(), 0)),
+                );
+            }
             if transcript_turns.is_empty() {
                 break;
             }
@@ -3142,6 +3154,62 @@ fn qualified_turn_transcript_keys(
 
     Ok(keys)
 }
+
+/// Check the original operator admission evidence in the recovery writer's
+/// read view. A warm Input snapshot can predate an unacknowledged SQL change.
+pub(crate) fn validate_live_recovery_operator_evidence_tx<'a>(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    attachment_turns: &BTreeSet<String>,
+    operator_inputs: impl Iterator<Item = &'a String>,
+) -> Result<()> {
+    let mut keys: BTreeSet<_> = operator_inputs
+        .map(|id| Key::new(Family::Message, id))
+        .collect();
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let binding = binding_on(tx, scope)?;
+    for turn in attachment_turns {
+        keys.extend(qualified_turn_transcript_keys(
+            tx,
+            scope,
+            &binding,
+            turn,
+            MAX_RECORDS,
+        )?);
+    }
+    for key in keys {
+        let alias = alias_on(tx, scope, &key)?;
+        let Some(fingerprint) = fingerprint_on(tx, &scope.agent_id, &key)? else {
+            if alias.is_some_and(|alias| !alias.present) {
+                continue;
+            }
+            return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
+                "{}:{} unavailable without tombstone",
+                key.family.as_str(),
+                key.id
+            ))
+            .into());
+        };
+        if let Some(alias) = alias {
+            if !alias.present || alias.fingerprint != fingerprint {
+                return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id).into());
+            }
+            validate_alias_body(
+                tx,
+                &scope.agent_id,
+                &key,
+                &fingerprint,
+                alias.digest.as_deref(),
+            )?;
+        } else {
+            require_eligible(tx, &binding, &key, &fingerprint)?;
+        }
+    }
+    Ok(())
+}
+
 fn qualified_live_protocol_keys(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,

@@ -267,6 +267,17 @@ impl RuntimeTransitionRepository<'_> {
             batch.activation_id = expected_attempt.attempt_id.clone();
             turn.live_input_batches.push(batch);
         }
+        if let Some(scope) = input_scope {
+            crate::runtime_db::input_evidence_snapshot::validate_live_recovery_operator_evidence_tx(
+                tx,
+                scope,
+                &attachment_turns,
+                predecessor
+                    .input_message_ids
+                    .iter()
+                    .filter(|id| !turn.input_message_ids.contains(id)),
+            )?;
+        }
         if !restore_operator_inputs_tx(tx, predecessor, &attachment_turns, &mut turn)? {
             return Ok(TransitionCommit::default());
         }

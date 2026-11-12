@@ -1,117 +1,111 @@
 ---
-title: Work in a project workspace or worktree
-summary: Attach a project, activate its execution root, isolate changes in a managed worktree, and clean up safely.
+title: Work in a project workspace or Git worktree
+summary: Attach your local repository in conversation, isolate coding tasks in managed Git worktrees, verify changes safely, and clean up without touching your main working directory.
 order: 60
 ---
 
-# Work in a project workspace or worktree
+# Work in a project workspace or Git worktree
 
-Use workspace activation to select where runtime tools work. A shell `cd`
-changes only that command's directory. See
-[Workspaces](/concepts/workspaces.md) for bindings and execution roots.
+When you ask an AI coding agent to inspect or modify your code, letting it work directly in your primary working directory is risky. An uncommitted scratch file, a local debugging configuration, or an unintended branch switch can disrupt your flow or pollute your repo.
+
+Holon solves this by treating workspaces and Git worktrees as first-class runtime resources. Instead of cloning a huge repository or risking dirty working trees, you can ask your agent in conversation to attach your project and spin up a linked Git worktree in seconds. The agent works on an isolated branch with its own HEAD and working tree, while sharing the same underlying Git object store.
+
+This guide shows how to attach a project, activate an isolated worktree for a task, run local verification, and safely clean up—all through natural conversation in the Web GUI without memorizing CLI syntax or sending raw JSON tool payloads. For the architectural concepts, see [Workspaces and working directories](../concepts/workspaces.md).
 
 ## Before you start
 
-- An existing agent and an accessible local project.
-- A Git repository if you need a linked worktree.
-- Permission to edit that project; a workspace is not a filesystem sandbox.
-- A cleanly identified base ref and a new branch name for isolated work.
-
-The shell commands below run in your terminal. JSON examples are agent tool
-calls: have the selected agent issue them through its exposed tools. There is
-no `holon workspace switch` CLI command.
+- A running Holon instance with the [Web GUI](./use-web-gui.md) open (default `http://localhost:8080`) and a [configured model](./configure-models.md).
+- An existing agent (such as `developer` or `main`).
+- A local Git repository on your machine that you have filesystem permissions to edit (for example `/home/user/src/github.com/my-org/my-app`).
+- No need to run terminal commands or craft raw tool calls: your agent can handle workspace attachment, worktree creation, and safe cleanup directly in conversation.
 
 ## Steps
 
-1. Attach the project to your agent, replacing both values:
+### 1. Attach and activate your project workspace
 
-   ```bash
-   holon workspace attach --agent developer /absolute/path/to/project
-   ```
+In the Web GUI chat, ask your agent to attach your local project repository and make it the active workspace:
 
-   Attach adds a binding without activating it. Record the returned workspace ID.
+> "Please attach my local repository at `/home/user/src/github.com/my-org/my-app` as a workspace and switch to it for upcoming tasks."
 
-2. Have the agent inspect bindings with `GetWorkspaceState({})`, then activate
-   the returned workspace ID:
+**What happens behind the scenes:**
+- The agent calls its built-in `AttachWorkspace` tool to bind the project directory to its profile, followed by `SwitchWorkspace` to set the project as its active execution root.
+- From this moment on, relative file edits (such as code patches) and terminal commands default to this repository root instead of the agent's personal home directory.
+- Note that running a shell `cd` in a command only affects that single child process. Durable workspace switching must be performed through the runtime's workspace activation.
 
-   ```text
-   SwitchWorkspace({"workspace_id": "ws_returned_by_attach"})
-   ```
+### 2. Request an isolated Git worktree for your task
 
-   Call `GetWorkspaceState({})` again. Confirm the active root and default cwd
-   identify the project before making any edit.
+Before allowing the agent to edit files or run refactors, instruct it to create an isolated Git worktree based on a clean ref:
 
-3. Inspect the repository before choosing a base:
+> "Create a new Git worktree from `main` on branch `feat/user-auth` for this task. Do all edits and verification inside this worktree so my main working directory stays clean."
 
-   ```bash
-   git status --short
-   git branch --show-current
-   git rev-parse --verify HEAD
-   ```
+**What happens behind the scenes:**
+- The agent invokes `CreateWorktree`. Holon creates a linked Git worktree in a managed directory and switches the agent's active execution root to that worktree.
+- The worktree shares the local `.git` repository, so creation is instantaneous and consumes virtually zero extra disk space for Git history.
+- The agent's branch `feat/user-auth` has an independent working tree and HEAD. Your primary checkout remains completely unaffected even if you have uncommitted changes or are actively coding on another branch.
 
-   Run these in the activated root. Preserve unrelated changes. For an isolated
-   edit, ask the agent to create a managed worktree:
+### 3. Implement and verify changes inside the worktree
 
-   ```text
-   CreateWorktree({
-     "workspace_id": "ws_returned_by_attach",
-     "branch": "docs/example-update",
-     "base_ref": "HEAD",
-     "activate": true,
-     "on_existing": "error"
-   })
-   ```
+Now instruct the agent to carry out the coding task and run project tests:
 
-   `HEAD` means the inspected repository base; use a specific verified commit
-   or ref when you need a different starting point. Keep the returned execution
-   root ID and path. Do not infer the worktree's location from its branch name.
+> "Please implement the new authentication handler in `src/auth.rs`, add unit tests, and run `cargo test --lib auth` to make sure everything passes."
 
-4. Confirm the active worktree with `GetWorkspaceState({})`, then run `pwd`,
-   `git branch --show-current`, and `git status --short` there. Make only the
-   authorized changes and run the project's relevant checks.
+**What happens behind the scenes:**
+- The agent makes edits within the isolated worktree directory.
+- Test suites, linters, and compilers execute strictly inside the worktree's execution root.
+- The agent commits the changes to the dedicated `feat/user-auth` branch once tests succeed, or leaves clean staged commits ready for your pull request.
 
-## Confirm it worked
+### 4. Safely clean up the worktree after completion
 
-The runtime state, `pwd`, and Git branch agree on the intended worktree.
-`git diff --stat` shows your edits there. Inspect the canonical checkout
-separately to confirm you did not put the edits in the wrong root.
+Once the changes are committed, pushed, or turned into a pull request, ask the agent to return to the project root and clean up the temporary worktree:
 
-## Return and clean up
+> "The PR has been submitted. Please switch back to the main repository workspace and safely remove the `feat/user-auth` worktree, keeping the branch intact."
 
-Preserve the changes through your normal review/commit process before cleanup.
-Do not remove a worktree that another execution still uses.
+**What happens behind the scenes:**
+- The agent switches its active workspace back to the canonical project checkout.
+- It then calls `RemoveWorktree` with `branch_policy: "keep"` to remove the temporary worktree directory from disk while preserving the Git branch and commit history.
+- **Runtime safety guardrails:**
+  - **Dirty tree protection:** If there are uncommitted modifications in the worktree, the runtime automatically blocks removal to prevent data loss.
+  - **Active occupancy protection:** If background tasks or running processes are still executing in that worktree, cleanup is refused until they finish.
+  - **Path validation:** Only registered, Holon-managed worktrees can be cleaned up; arbitrary filesystem paths are rejected.
 
-```text
-SwitchWorkspace({"workspace_id": "ws_returned_by_attach"})
-RemoveWorktree({
-  "execution_root_id": "returned_worktree_root_id",
-  "branch_policy": "keep"
-})
-```
+## Key mechanisms to understand
 
-This keeps the branch. Removal requires a clean, registered, unoccupied
-worktree. To remove an active worktree, `RemoveWorktree` also requires a valid
-`return_to` selector; switching out first makes the destination explicit.
+### Execution root vs. shell `cd`
 
-Return to agent home or detach the binding when no longer needed:
+A common source of confusion in agent tooling is the difference between changing directory in a subshell and switching the runtime execution root:
+
+- **Shell `cd`:** Changes the current working directory for that single process execution. The next command or file patch tool reverts to the agent's active root.
+- **Workspace activation (`SwitchWorkspace`):** Durably switches the runtime's execution root, the base directory for relative patch tools (`ApplyPatch`), and the resolution scope for project-level `AGENTS.md` instructions.
+
+### Why Git worktrees beat fresh clones
+
+| Approach | Speed | Disk Usage | Unpushed Context |
+|---|---|---|---|
+| Direct main checkout | Instant | Zero | High risk of polluting uncommitted work |
+| Full `git clone` | Slow (minutes on large repos) | High (duplicates full history) | Misses local unpushed branches |
+| **Git worktree** | **Instant (milliseconds)** | **Minimal (shares `.git` storage)** | **Full access to local refs and commits** |
+
+## Optional: CLI alternatives for automation
+
+While natural language interaction in the Web GUI is recommended for daily development, Holon also provides CLI commands for scripted workflows or headless setups:
 
 ```bash
+# 1. Attach a repository to an agent
+holon workspace attach --agent developer /home/user/src/github.com/my-org/my-app
+
+# 2. Inspect an agent's active workspace and execution root
+holon agent get developer --detail full
+
+# 3. Detach a workspace when no longer needed
+holon workspace detach --agent developer ws_12345
+
+# 4. Exit to Agent Home
 holon workspace exit --agent developer
-holon workspace detach --agent developer ws_returned_by_attach
 ```
 
-Detaching removes the agent's binding, not the project files.
+## Next steps
 
-## Troubleshooting
-
-- **Attached but commands still run at home:** activation is a separate step.
-- **Existing branch/worktree conflict:** inspect registered roots. Use
-  `on_existing: "reuse"` only when the existing worktree is the intended one;
-  reuse does not reset it to your requested base.
-- **Cleanup refused:** inspect dirty files, occupancy, locks, and registration.
-  Resolve the reported condition instead of forcing deletion.
-- **Tool unavailable:** check the agent's capability policy. Do not replace a
-  denied lifecycle operation with manual metadata edits or `rm -rf`.
-
-Exact selectors and lifecycle rules are in the
-[Workspace reference](/reference/workspaces.md).
+- Read [Workspaces and working directories](../concepts/workspaces.md) for deeper conceptual details.
+- See [Build a Docs Steward agent](./build-docs-steward.md) to see how an agent audits documentation drift inside a dedicated worktree.
+- See [Build a Code Reviewer agent](./build-code-reviewer.md) to learn how agents review PRs using isolated checkouts.
+- Consult the [Workspace reference](../reference/workspaces.md) for full parameter schemas and error codes.

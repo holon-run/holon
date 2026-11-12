@@ -346,6 +346,31 @@ impl Drop for IoProbe {
     }
 }
 
+#[cfg(all(test, any(holon_lib_test_shard = "a", holon_lib_test_shard = "d")))]
+pub(crate) fn run_isolated_test(module: &str, test_name: &str) -> bool {
+    const CHILD_TEST: &str = "HOLON_IO_PROBE_CHILD_TEST";
+    let (_, module) = module
+        .split_once("::")
+        .expect("test module includes crate name");
+    let test = format!("{module}::{test_name}");
+    if std::env::var(CHILD_TEST).as_deref() == Ok(test.as_str()) {
+        return false;
+    }
+    // The counters include reads by unrelated tests in the same process.
+    let output = std::process::Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", &test, "--nocapture"])
+        .env(CHILD_TEST, &test)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success() && stdout.contains("test result: ok. 1 passed;"),
+        "isolated I/O probe failed: stdout={stdout}, stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    true
+}
+
 fn enabled() -> bool {
     ACTIVE.load(Ordering::Acquire) != 0
 }
