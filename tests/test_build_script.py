@@ -1,5 +1,6 @@
 """Exercise the real build script through Cargo, including linked worktrees."""
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -45,10 +46,21 @@ class BuildScriptTests(unittest.TestCase):
         env = dict(os.environ)
         env["CARGO_TARGET_DIR"] = str(directory / "target")
         env.pop("HOLON_LIB_TEST_SHARD", None)
-        self.command(directory, "cargo", "build", "--offline", "--lib", env=env)
-        output = next((directory / "target/debug/build").glob(
-            "holon-build-script-fixture-*/output"
-        ))
+        built = self.command(
+            directory, "cargo", "build", "--offline", "--lib",
+            "--message-format=json", env=env,
+        )
+        messages = [json.loads(line) for line in built.splitlines() if line.startswith("{")]
+        scripts = [message for message in messages if message["reason"] == "build-script-executed"]
+        self.assertEqual(len(scripts), 1, built)
+        build_directory = Path(scripts[0]["out_dir"]).parent
+        # Cargo 1.100 moved the captured directives from output to run/stdout.
+        outputs = [
+            path for path in (build_directory / "output", build_directory / "run/stdout")
+            if path.is_file()
+        ]
+        self.assertEqual(len(outputs), 1, f"Build script output in {build_directory}: {built}")
+        output = outputs[0]
         lines = output.read_text().splitlines()
         watched = [
             line.split("=", 1)[1] for line in lines
