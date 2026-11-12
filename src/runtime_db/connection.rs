@@ -548,6 +548,7 @@ pub(crate) fn configure_new_database_auto_vacuum(connection: &Connection) -> Res
     Ok(())
 }
 
+#[track_caller]
 pub(crate) fn run_transaction_on_connection<T>(
     connection: &Connection,
     path: &Path,
@@ -556,8 +557,15 @@ pub(crate) fn run_transaction_on_connection<T>(
     mutex_wait: Duration,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
-    run_transaction_attempt(connection, path, context, queue_wait, mutex_wait, f)
-        .map_err(|error| attach_write_context(error, context.operation, context.table))
+    run_transaction_attempt(
+        connection,
+        path,
+        context.with_caller(),
+        queue_wait,
+        mutex_wait,
+        f,
+    )
+    .map_err(|error| attach_write_context(error, context.operation, context.table))
 }
 
 fn run_transaction_attempt<T>(
@@ -568,12 +576,15 @@ fn run_transaction_attempt<T>(
     mutex_wait: Duration,
     f: impl FnOnce(&Transaction<'_>) -> Result<T>,
 ) -> Result<T> {
+    let (origin_file, origin_line) = context.origin();
     let started_at = Instant::now();
     tracing::trace!(
         path = %path.display(),
         operation = context.operation,
         table = context.table,
         mode = context.mode.as_str(),
+        origin_file,
+        origin_line,
         queue_wait_ms = queue_wait.as_millis(),
         mutex_wait_ms = mutex_wait.as_millis(),
         "runtime db write starting"
@@ -587,20 +598,32 @@ fn run_transaction_attempt<T>(
                 None,
             )
         })?;
-    match f(&transaction) {
+    let callback_started_at = Instant::now();
+    let result = f(&transaction);
+    let callback_finished_at = Instant::now();
+    let callback_elapsed = callback_finished_at.duration_since(callback_started_at);
+    match result {
         Ok(value) => {
-            transaction.commit().map_err(|error| {
+            let commit = transaction.commit();
+            let committed_at = Instant::now();
+            let commit_elapsed = committed_at.duration_since(callback_finished_at);
+            let elapsed = committed_at.duration_since(started_at);
+            let held_write_lock = elapsed.saturating_sub(begin_wait);
+            commit.map_err(|error| {
                 tracing::warn!(
                     operation = context.operation,
                     table = context.table,
+                    origin_file,
+                    origin_line,
                     phase = "commit",
                     sqlite_code = error
                         .sqlite_error()
                         .map(|failure| failure.extended_code & 0xff),
                     sqlite_extended_code =
                         error.sqlite_error().map(|failure| failure.extended_code),
-                    held_write_lock_ms =
-                        started_at.elapsed().saturating_sub(begin_wait).as_millis(),
+                    held_write_lock_ms = held_write_lock.as_millis(),
+                    callback_ms = callback_elapsed.as_millis(),
+                    commit_ms = commit_elapsed.as_millis(),
                     "runtime db commit outcome unknown"
                 );
                 mark_persistence_failure(
@@ -610,8 +633,6 @@ fn run_transaction_attempt<T>(
                     None,
                 )
             })?;
-            let elapsed = started_at.elapsed();
-            let held_write_lock = elapsed.saturating_sub(begin_wait);
             if queue_wait
                 .saturating_add(mutex_wait)
                 .saturating_add(elapsed)
@@ -621,12 +642,16 @@ fn run_transaction_attempt<T>(
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    origin_file,
+                    origin_line,
                     phase = "committed",
                     queue_wait_ms = queue_wait.as_millis(),
                     mutex_wait_ms = mutex_wait.as_millis(),
                     begin_wait_ms = begin_wait.as_millis(),
                     begin_retry_count,
                     held_write_lock_ms = held_write_lock.as_millis(),
+                    callback_ms = callback_elapsed.as_millis(),
+                    commit_ms = commit_elapsed.as_millis(),
                     elapsed_ms = elapsed.as_millis(),
                     "slow runtime db write"
                 );
@@ -636,18 +661,25 @@ fn run_transaction_attempt<T>(
                 operation = context.operation,
                 table = context.table,
                 mode = context.mode.as_str(),
+                origin_file,
+                origin_line,
                 queue_wait_ms = queue_wait.as_millis(),
                 mutex_wait_ms = mutex_wait.as_millis(),
                 begin_wait_ms = begin_wait.as_millis(),
                 begin_retry_count,
                 elapsed_ms = elapsed.as_millis(),
                 held_write_lock_us = held_write_lock.as_micros(),
+                callback_us = callback_elapsed.as_micros(),
+                commit_us = commit_elapsed.as_micros(),
                 "runtime db write committed"
             );
             Ok(value)
         }
         Err(error) => {
-            let (error, rolled_back) = match transaction.rollback() {
+            let rollback = transaction.rollback();
+            let rolled_back_at = Instant::now();
+            let rollback_elapsed = rolled_back_at.duration_since(callback_finished_at);
+            let (error, rolled_back) = match rollback {
                 Ok(()) => (
                     mark_persistence_failure(
                         error,
@@ -667,7 +699,7 @@ fn run_transaction_attempt<T>(
                     false,
                 ),
             };
-            let elapsed = started_at.elapsed();
+            let elapsed = rolled_back_at.duration_since(started_at);
             let retryable = is_retryable_db_error(&error);
             let sqlite_extended_code = sqlite_extended_code(&error);
             let sqlite_code = sqlite_extended_code.map(|code| code & 0xff);
@@ -680,10 +712,14 @@ fn run_transaction_attempt<T>(
                     sqlite_code,
                     sqlite_extended_code,
                     held_write_lock_ms = held_write_lock.as_millis(),
+                    callback_ms = callback_elapsed.as_millis(),
+                    rollback_ms = rollback_elapsed.as_millis(),
                     path = %path.display(),
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    origin_file,
+                    origin_line,
                     queue_wait_ms = queue_wait.as_millis(),
                     mutex_wait_ms = mutex_wait.as_millis(),
                     begin_wait_ms = begin_wait.as_millis(),
@@ -699,11 +735,15 @@ fn run_transaction_attempt<T>(
                     sqlite_code,
                     sqlite_extended_code,
                     held_write_lock_ms = held_write_lock.as_millis(),
+                    callback_ms = callback_elapsed.as_millis(),
+                    rollback_ms = rollback_elapsed.as_millis(),
                     rolled_back,
                     path = %path.display(),
                     operation = context.operation,
                     table = context.table,
                     mode = context.mode.as_str(),
+                    origin_file,
+                    origin_line,
                     queue_wait_ms = queue_wait.as_millis(),
                     mutex_wait_ms = mutex_wait.as_millis(),
                     begin_wait_ms = begin_wait.as_millis(),
@@ -722,6 +762,7 @@ pub(crate) fn begin_immediate_transaction_with_retry<'connection>(
     path: &Path,
     context: RuntimeDbWriteContext,
 ) -> Result<(Transaction<'connection>, u32, Duration)> {
+    let (origin_file, origin_line) = context.origin();
     let started_at = Instant::now();
     let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
     let mut retry_count = 0;
@@ -739,6 +780,8 @@ pub(crate) fn begin_immediate_transaction_with_retry<'connection>(
                     path = %path.display(),
                     operation = context.operation,
                     table = context.table,
+                    origin_file,
+                    origin_line,
                     phase = "begin",
                     sqlite_extended_code = error.sqlite_error().map(|failure| failure.extended_code),
                     retry_count,
@@ -751,6 +794,8 @@ pub(crate) fn begin_immediate_transaction_with_retry<'connection>(
                         path = %path.display(),
                         operation = context.operation,
                         table = context.table,
+                        origin_file,
+                        origin_line,
                         phase = "begin",
                         sqlite_extended_code = error.sqlite_error().map(|failure| failure.extended_code),
                         retry_count,

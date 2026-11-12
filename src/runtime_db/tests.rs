@@ -4748,23 +4748,35 @@ INSERT INTO queue_entries (
         let (_temp_dir, db_path, lock_path) = temp_paths()?;
         let first = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let second = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+        let log = tempfile::NamedTempFile::new()?;
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_writer(log.reopen()?)
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
 
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let first_writer = first.clone();
-        let first_handle = std::thread::spawn(move || -> Result<()> {
-            first_writer.transaction(|tx| {
-                entered_tx
-                    .send(())
-                    .map_err(|_| anyhow!("failed to signal first write"))?;
-                release_rx
-                    .recv_timeout(Duration::from_secs(2))
-                    .context("release signal not received")?;
-                insert_audit_event_tx(
-                    tx,
-                    Some("agent-a"),
-                    &AuditEvent::legacy("runtime_db_queue_first", serde_json::json!({})),
-                )
+        let first_dispatch = dispatch.clone();
+        let first_handle = std::thread::spawn(move || -> Result<u32> {
+            tracing::dispatcher::with_default(&first_dispatch, || {
+                let origin = line!() + 1;
+                first_writer.transaction(|tx| {
+                    entered_tx
+                        .send(())
+                        .map_err(|_| anyhow!("failed to signal first write"))?;
+                    release_rx
+                        .recv_timeout(Duration::from_secs(5))
+                        .context("release signal not received")?;
+                    insert_audit_event_tx(
+                        tx,
+                        Some("agent-a"),
+                        &AuditEvent::legacy("runtime_db_queue_first", serde_json::json!({})),
+                    )
+                })?;
+                Ok(origin)
             })
         });
 
@@ -4774,34 +4786,68 @@ INSERT INTO queue_entries (
 
         let second_writer = second.clone();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
-        let second_handle = std::thread::spawn(move || -> Result<()> {
-            second_writer.transaction(|tx| {
-                insert_audit_event_tx(
-                    tx,
-                    Some("agent-a"),
-                    &AuditEvent::legacy("runtime_db_queue_second", serde_json::json!({})),
-                )
-            })?;
-            done_tx
-                .send(())
-                .map_err(|_| anyhow!("failed to signal second write"))?;
-            Ok(())
+        let second_handle = std::thread::spawn(move || -> Result<u32> {
+            tracing::dispatcher::with_default(&dispatch, || {
+                let origin = line!() + 1;
+                second_writer.transaction_once(|tx| {
+                    insert_audit_event_tx(
+                        tx,
+                        Some("agent-a"),
+                        &AuditEvent::legacy("runtime_db_queue_second", serde_json::json!({})),
+                    )
+                })?;
+                done_tx
+                    .send(())
+                    .map_err(|_| anyhow!("failed to signal second write"))?;
+                Ok(origin)
+            })
         });
 
+        wait_until(
+            || Ok(first.writer.outstanding_writes_for_tests() == 2),
+            "second write entered the shared queue",
+        )?;
         assert!(
-            done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            done_rx.recv_timeout(Duration::from_millis(1050)).is_err(),
             "second write committed before the first queued write completed"
         );
         release_tx
             .send(())
             .map_err(|_| anyhow!("failed to release first write"))?;
 
-        first_handle
+        let first_origin = first_handle
             .join()
             .map_err(|_| anyhow!("first writer thread panicked"))??;
-        second_handle
+        let second_origin = second_handle
             .join()
             .map_err(|_| anyhow!("second writer thread panicked"))??;
+
+        let logs = std::fs::read_to_string(log.path())?;
+        let slow_write = |origin| {
+            let site = format!("origin_file=\"{}\" origin_line={origin} ", file!());
+            logs.lines()
+                .find(|line| line.contains("slow runtime db write") && line.contains(&site))
+                .with_context(|| format!("missing slow write for {site} in {logs}"))
+        };
+        let first_slow = slow_write(first_origin)?;
+        let second_slow = slow_write(second_origin)?;
+        let duration_ms = |line: &str, field: &str| -> Result<u64> {
+            let prefix = format!("{field}=");
+            let value = line
+                .split_ascii_whitespace()
+                .find_map(|part| part.strip_prefix(&prefix))
+                .with_context(|| format!("missing {field} in {line}"))?;
+            Ok(value.parse()?)
+        };
+        assert!(first_slow.contains("operation=\"runtime_db.transaction\""));
+        assert!(second_slow.contains("operation=\"runtime_db.transaction_once\""));
+        assert!(duration_ms(first_slow, "callback_ms")? >= 1_000);
+        assert!(duration_ms(second_slow, "queue_wait_ms")? >= 1_000);
+        for line in [first_slow, second_slow] {
+            assert_eq!(duration_ms(line, "begin_retry_count")?, 0);
+            duration_ms(line, "commit_ms")?;
+            eprintln!("{line}");
+        }
 
         let events = second.audit_events().recent(Some("agent-a"), 2)?;
         let kinds = events
