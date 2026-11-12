@@ -917,9 +917,7 @@ fn collect_agent_projection_anchors(
     };
 
     crate::diagnostics::resource_io::charge_owned_metadata(
-        agent_id
-            .len()
-            .saturating_add(std::mem::size_of::<(String, usize)>()) as u64,
+        agent_id.len().saturating_add(std::mem::size_of::<String>()) as u64,
         1,
     )?;
     Ok(AgentProjectionSnapshotRows {
