@@ -247,6 +247,50 @@ impl RuntimeMutation {
     }
 
     #[inline(never)]
+    pub(in crate::runtime) fn prepare_context_tasks<'a>(
+        &'a mut self,
+        request: &'a TaskCaptureRequest,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            // Context derives exact settlement keys from this activation's
+            // complete unsettled metadata. Only the requested bodies are captured.
+            match self.capture_tasks(request) {
+                Ok(tasks) if tasks.coverage.unsettled_complete => return Ok(()),
+                Ok(_) => {}
+                Err(error) if error.downcast_ref::<TaskReadError>().is_some() => {}
+                Err(error) => return Err(error),
+            }
+            self.prepare_dispatch_tasks(request, None).await
+        })
+    }
+
+    #[inline(never)]
+    pub(in crate::runtime) fn prepare_dispatch_tasks<'a>(
+        &'a mut self,
+        request: &'a TaskCaptureRequest,
+        recovery_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move {
+            let (mut load, _live_queries) = self.owner_task_load_request()?;
+            load.capture
+                .required_keys
+                .extend(request.required_keys.iter().cloned());
+            load.capture
+                .recovery_source_ids
+                .clone_from(&request.recovery_source_ids);
+            load.recovery_at = recovery_at;
+            // Dispatch needs complete active and unsettled metadata for its
+            // current activation. Retain any already published history window.
+            load.capture.terminal_limit = request.terminal_limit.max(
+                self.tasks
+                    .as_ref()
+                    .map_or(0, |tasks| tasks.coverage().terminal.limit),
+            );
+            self.prepare_owner_task_domain_request(&load).await
+        })
+    }
+
+    #[inline(never)]
     pub(in crate::runtime) fn prepare_owner_task_domain_request<'a>(
         &'a mut self,
         load: &'a TaskDomainLoadRequest,
@@ -418,6 +462,113 @@ mod tests {
         assert!(captured
             .lookup(&TaskKey::new(TaskFamily::Task, "never-observed"))
             .is_err());
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn dispatch_task_preparation_omits_unrequested_history_and_preserves_published_window(
+    ) -> Result<()> {
+        use crate::types::{TaskKind, TaskRecord, TaskStatus};
+
+        let home = tempdir()?;
+        let runtime = RuntimeHandle::new(
+            "dispatch-task-owner",
+            home.path().into(),
+            None::<crate::types::WorkspaceEntry>,
+            String::new(),
+            Arc::new(StubProvider::new("unused")),
+            "dispatch-task-owner".into(),
+            context_config(),
+        )?;
+        let at = chrono::Utc::now();
+        let active = TaskRecord {
+            id: "dispatch-active".into(),
+            agent_id: "dispatch-task-owner".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Queued,
+            created_at: at,
+            updated_at: at,
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: None,
+            recovery: None,
+        };
+        let terminal = TaskRecord {
+            id: "dispatch-terminal".into(),
+            status: TaskStatus::Cancelled,
+            ..active.clone()
+        };
+        runtime
+            .persist_task_transition(&active, "task_queued")
+            .await?;
+        runtime
+            .persist_task_transition(&terminal, "task_cancelled")
+            .await?;
+
+        let root = runtime.inner.mutation_owner.capture()?.unwrap();
+        let mut reservation = runtime.inner.mutation_owner.reserve().await?;
+        reservation.begin(crate::ids::audit_event_id())?;
+        reservation.committed_prepared_with_domains(
+            root.state.clone(),
+            root.episodes.clone(),
+            root.input_evidence.clone(),
+            root.work.clone(),
+            None,
+        )?;
+        reservation.publish(root.state.clone())?;
+        drop(reservation);
+
+        let lease =
+            runtime.register_task_query(super::super::super::task_queries::TaskQuerySpec {
+                output_task_ids: &["dispatch-missing"],
+                ..Default::default()
+            })?;
+        let missing = TaskKey::new(TaskFamily::Task, "dispatch-missing");
+        let terminal_key = TaskKey::new(TaskFamily::Task, &terminal.id);
+        let request = super::super::super::task_reads::active_task_request();
+        let mut mutation = runtime.begin_mutation().await?;
+        mutation.prepare_dispatch_tasks(&request, None).await?;
+        let prepared = mutation.capture_published_root()?;
+        let tasks = prepared.tasks.as_ref().unwrap();
+        assert!(tasks.coverage().active_task_ids.contains(&active.id));
+        assert!(tasks.coverage().unsettled_complete);
+        assert!(tasks.coverage().unsettled_result_ids.is_empty());
+        assert_eq!(tasks.coverage().terminal.limit, 0);
+        assert!(!tasks.coverage().terminal.is_exhaustive);
+        assert!(!tasks.coverage().observations.contains_key(&terminal_key));
+        assert!(tasks
+            .capture_query(lease.selection())?
+            .lookup(&missing)?
+            .is_none());
+        mutation.prepare_dispatch_tasks(&request, None).await?;
+        assert_eq!(prepared.token, mutation.capture_published_root()?.token);
+
+        let unrelated =
+            runtime.register_task_query(super::super::super::task_queries::TaskQuerySpec {
+                reply_message_ids: &["unprepared-reply"],
+                ..Default::default()
+            })?;
+        assert!(tasks.capture_query(unrelated.selection()).is_err());
+        mutation.prepare_context_tasks(&request).await?;
+        assert_eq!(prepared.token, mutation.capture_published_root()?.token);
+        drop(unrelated);
+
+        let history = TaskCaptureRequest::current();
+        mutation.prepare_dispatch_tasks(&history, None).await?;
+        let mut requested = request;
+        requested
+            .required_keys
+            .insert(TaskKey::new(TaskFamily::Task, "new-exact-observation"));
+        mutation.prepare_dispatch_tasks(&requested, None).await?;
+        let published = mutation.capture_published_root()?;
+        let tasks = published.tasks.as_ref().unwrap();
+        assert_eq!(tasks.coverage().terminal.limit, history.terminal_limit);
+        assert!(tasks.capture(&history)?.lookup(&terminal_key)?.is_some());
+        assert!(tasks
+            .capture_query(lease.selection())?
+            .lookup(&missing)?
+            .is_none());
         Ok(())
     }
 

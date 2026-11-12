@@ -424,7 +424,7 @@ impl RuntimeHandle {
             capture_mode
                 .measure(
                     Stage::TaskPreparation,
-                    owner.prepare_owner_task_request(&metadata_request),
+                    owner.prepare_context_tasks(&metadata_request),
                 )
                 .await?;
         }
@@ -526,7 +526,7 @@ impl RuntimeHandle {
             capture_mode
                 .measure(
                     Stage::TaskPreparation,
-                    owner.prepare_owner_task_request(&task_request),
+                    owner.prepare_context_tasks(&task_request),
                 )
                 .await?;
         }

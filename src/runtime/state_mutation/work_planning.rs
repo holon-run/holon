@@ -294,13 +294,8 @@ impl RuntimeMutation {
             )?;
             // Explicit acquisition for this actual message's finite Task/Wait
             // addresses. Ordinary capture below never prepares on a miss.
-            let (mut load, _live_queries) = self.owner_task_load_request()?;
-            load.capture
-                .required_keys
-                .extend(tasks.required_keys.iter().cloned());
-            load.capture.recovery_source_ids = tasks.recovery_source_ids;
-            load.recovery_at = (!load.capture.recovery_source_ids.is_empty()).then_some(now);
-            self.prepare_owner_task_domain_request(&load).await?;
+            let recovery_at = (!tasks.recovery_source_ids.is_empty()).then_some(now);
+            self.prepare_dispatch_tasks(&tasks, recovery_at).await?;
         }
         self.prepare_owner_work_request(&request).await?;
         // Execution inputs need live Work and explicitly addressed terminal
