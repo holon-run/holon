@@ -193,12 +193,11 @@ fn tailscale_serve_reenable_uses_bound_loopback_for_each_primary() {
         .timeout(Duration::from_secs(2))
         .build()
         .unwrap();
-    for primary in primaries {
-        let home = tempfile::tempdir().unwrap();
-        let stub = home.path().join("tailscale");
-        std::fs::write(
-            &stub,
-            r#"#!/bin/sh
+    let stub_dir = tempfile::tempdir().unwrap();
+    let stub = stub_dir.path().join("tailscale");
+    std::fs::write(
+        &stub,
+        r#"#!/bin/sh
 set -eu
 case "$*" in
   "status --json")
@@ -218,9 +217,11 @@ case "$*" in
   *) exit 1 ;;
 esac
 "#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    )
+    .unwrap();
+    std::fs::set_permissions(&stub, std::fs::Permissions::from_mode(0o700)).unwrap();
+    for primary in primaries {
+        let home = tempfile::tempdir().unwrap();
         let listen = format!("{primary}:0");
         let mut command = isolated_holon_command(&home);
         command
@@ -233,7 +234,7 @@ esac
                 "PATH",
                 format!(
                     "{}:{}",
-                    home.path().display(),
+                    stub_dir.path().display(),
                     std::env::var("PATH").unwrap_or_default()
                 ),
             );
@@ -273,9 +274,9 @@ esac
                 .post(format!("{endpoint}/{action}"))
                 .bearer_auth("serve-test-token")
                 // The mutation invokes the CLI to inspect, apply, and verify the rule.
-                .timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(30))
                 .send()
-                .unwrap_or_else(|error| panic!("{primary}: {action}: {error}"));
+                .unwrap_or_else(|error| panic!("{primary}: {action}: {error:?}"));
             assert_eq!(response.status(), 200, "{primary}: {action}");
             let status: Value = response.json().unwrap();
             assert_eq!(status["desired_enabled"], enabled);

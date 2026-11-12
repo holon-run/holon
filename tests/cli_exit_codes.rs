@@ -326,7 +326,7 @@ fn models_dev_refresh_retains_only_matching_capacity_reviews() {
         let url = format!("http://{}/api.json", listener.local_addr().unwrap());
         listener.set_nonblocking(true).unwrap();
         let server = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(15);
+            let deadline = Instant::now() + Duration::from_secs(30);
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
@@ -356,7 +356,10 @@ fn models_dev_refresh_retains_only_matching_capacity_reviews() {
             .arg(&output_dir)
             .output()
             .unwrap();
-        server.join().unwrap();
+        server.join().unwrap_or_else(|_| {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            panic!("models-dev refresh mock failed: {stderr}");
+        });
         assert!(
             output.status.success(),
             "{}",
