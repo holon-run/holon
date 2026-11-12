@@ -1505,6 +1505,8 @@ changes.
 Cold preparation projects the bounded owner window from the qualified Turns it
 has loaded before reconstructing the required sets. This includes legacy Turns
 loaded through another window or root when their effective owner matches.
+Interrupted live operator input recovery validates the original qualification
+in the recovery transaction before restoring admitted inputs.
 
 ### Dynamic resources and files
 
