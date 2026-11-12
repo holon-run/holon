@@ -691,10 +691,7 @@ impl AgentStateRepository<'_> {
                     entry.updated_at = now;
                     upsert_queue_entry_tx(tx, &entry)?;
                 }
-                if state.pending != 0 {
-                    state.pending = 0;
-                    upsert_agent_state_tx(tx, state)?;
-                }
+                state.pending = 0;
             }
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             if let Some((_, _, request)) = preparation {
@@ -801,22 +798,8 @@ impl AgentStateRepository<'_> {
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentState>> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| {
-                        Ok((|| {
-                            let payload = borrowed_sql_text(row, 0)?;
-                            crate::diagnostics::resource_io::admit_json_payload(payload)?;
-                            decode_agent_state_payload(payload)
-                        })())
-                    },
-                )
-                .optional()?
-                .transpose()
-        })
+        self.db
+            .with_read(|connection| projected_agent_state_on(connection, agent_id))
     }
 
     pub(crate) fn latest_for_incarnation(
@@ -825,34 +808,38 @@ impl AgentStateRepository<'_> {
         incarnation: u64,
     ) -> Result<Option<AgentState>> {
         self.db.with_read(|connection| {
-            let payloads = connection
-                .query_row(
-                    "SELECT s.payload_json, i.payload_json FROM agent_states s
-                     JOIN agent_identities i ON i.agent_id = s.agent_id
-                     WHERE s.agent_id = ?1",
-                    [agent_id],
-                    |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
-                )
-                .optional()?;
-            let Some((state, identity)) = payloads else {
-                return Ok(None);
+            let tx = connection.transaction()?;
+            let identity =
+                super::context_inputs::ContextDurableRead::new(&tx, agent_id).identity_fact()?;
+            let state = match identity {
+                Some(identity)
+                    if identity.status == AgentRegistryStatus::Active
+                        && identity.incarnation == incarnation =>
+                {
+                    projected_agent_state_on(&tx, agent_id)?
+                }
+                _ => None,
             };
-            let identity = decode_agent_identity_payload(&identity)?;
-            if identity.status != AgentRegistryStatus::Active || identity.incarnation != incarnation
-            {
-                return Ok(None);
-            }
-            decode_agent_state_payload(&state).map(Some)
+            tx.commit()?;
+            Ok(state)
         })
     }
 
     pub fn latest_all(&self) -> Result<Vec<AgentState>> {
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare("SELECT payload_json FROM agent_states")?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            rows.map(|row| decode_agent_state_payload(&row?))
-                .collect::<std::result::Result<Vec<_>, _>>()
-                .map_err(|e| anyhow::anyhow!("reading all agent states: {e}"))
+            let mut statement = connection.prepare(
+                "SELECT s.payload_json,
+                   (SELECT COUNT(*) FROM queue_entries q
+                    WHERE q.agent_id=s.agent_id AND q.status IN ('queued','interrupted'))
+                 FROM agent_states s",
+            )?;
+            let mut rows = statement.query([])?;
+            let mut states = Vec::new();
+            while let Some(row) = rows.next()? {
+                let payload = borrowed_sql_text(row, 0)?;
+                states.push(decode_agent_state_projection(payload, row.get(1)?)?);
+            }
+            Ok(states)
         })
     }
 }
@@ -4670,15 +4657,7 @@ impl TimerRepository<'_> {
             return Err(anyhow!("invalid timer cancellation transition"));
         }
         if let Some((expected, record)) = command.agent_state.as_ref() {
-            let actual = tx
-                .query_row(
-                    "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-                    [&record.id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|value| serde_json::from_str::<AgentState>(&value))
-                .transpose()?;
+            let actual = projected_agent_state_on(tx, &record.id)?;
             if actual.as_ref() != Some(expected) {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation(
                     "agent_state",
@@ -8734,6 +8713,31 @@ pub(crate) fn truncate_task_payload_string(value: &str) -> String {
 
 pub(crate) fn task_revision(record: &TaskRecord) -> i64 {
     record.updated_at.timestamp_millis()
+}
+
+pub(super) fn projected_agent_state_on(
+    connection: &Connection,
+    agent_id: &str,
+) -> Result<Option<AgentState>> {
+    let mut statement = connection.prepare(
+        "SELECT s.payload_json,
+           (SELECT COUNT(*) FROM queue_entries q
+            WHERE q.agent_id=s.agent_id AND q.status IN ('queued','interrupted'))
+         FROM agent_states s WHERE s.agent_id=?1",
+    )?;
+    let mut rows = statement.query([agent_id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(None);
+    };
+    let payload = borrowed_sql_text(row, 0)?;
+    crate::diagnostics::resource_io::admit_json_payload(payload)?;
+    Ok(Some(decode_agent_state_projection(payload, row.get(1)?)?))
+}
+
+pub(super) fn decode_agent_state_projection(payload: &str, pending: usize) -> Result<AgentState> {
+    let mut state = decode_agent_state_payload(payload)?;
+    state.pending = pending;
+    Ok(state)
 }
 
 pub(crate) fn decode_agent_state_payload(payload: &str) -> Result<AgentState> {

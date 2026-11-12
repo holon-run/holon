@@ -1986,6 +1986,7 @@ impl RuntimeMutation {
             self.control_cancellation = None;
         }
         let mut projection_error = None;
+        let mut acknowledged_queue = None;
         let changes_queue = committed.effects.changes_queue();
         let changes_events = !committed.effects.audit_events.is_empty();
         let has_current_effects = changes_queue || changes_events;
@@ -2025,6 +2026,7 @@ impl RuntimeMutation {
             } else {
                 if let Some(queue_posture) = current.queue_posture {
                     self.queue_posture = Some(queue_posture);
+                    acknowledged_queue = Some(queue_posture);
                 }
                 if let Some(scheduler_events) = current.scheduler_events {
                     self.scheduler_events = Some(scheduler_events);
@@ -2056,6 +2058,9 @@ impl RuntimeMutation {
                 &self.candidate.state == self.committed_state(),
                 "typed commit omitted a changed agent state"
             );
+        }
+        if let Some(queue) = acknowledged_queue {
+            self.candidate.state.pending = queue.pending;
         }
         for message_id in &committed.effects.removed_queue_message_ids {
             self.candidate
@@ -2610,7 +2615,10 @@ impl RuntimeMutation {
             self.candidate.queue.push(message.clone());
         }
         let queued_messages = self.candidate.queue.len();
-        self.candidate.state.pending = queued_messages;
+        anyhow::ensure!(
+            self.candidate.state.pending == queued_messages,
+            "bootstrap replay queue differs from the committed Queue count"
+        );
         scheduler_executor::apply_bootstrap_recovered_projection(
             &mut self.candidate.state,
             scheduler_executor::BootstrapRecoveryFacts { queued_messages },

@@ -26,9 +26,7 @@ use super::{
         load_receipt, EpisodeMemoryInvocation, EpisodeMemoryKey, EpisodeMemoryReceipt,
         EPISODE_MEMORY_PHASE,
     },
-    repositories::{
-        decode_agent_identity_payload, decode_agent_state_payload, decode_context_episode_payload,
-    },
+    repositories::{decode_agent_identity_payload, decode_context_episode_payload},
     RuntimeDb,
 };
 
@@ -438,7 +436,8 @@ fn load_state(
         )
         .optional()?;
     row.map(|(payload, revision)| {
-        let state = decode_agent_state_payload(&payload)?;
+        let pending = super::current_query::pending_queue_count(connection, agent_id)?;
+        let state = super::repositories::decode_agent_state_projection(&payload, pending)?;
         ensure!(
             state.id == agent_id,
             "State projection and payload disagree"
@@ -2582,7 +2581,7 @@ mod tests {
         turn.input_message_ids.push("message-1".into());
         db.turn_records().upsert(&turn).unwrap();
         let mut candidate = state.clone();
-        candidate.pending = 42;
+        candidate.total_input_tokens = 42;
         let finalized = episode_id.map(|id| {
             let mut record = episode("agent-a", id, 1, None);
             record.source_turn_ids.push(turn.turn_id.clone());
@@ -2655,7 +2654,7 @@ mod tests {
         .unwrap()
         .require_current()
         .unwrap();
-        assert_eq!(before.state.unwrap().pending, 0);
+        assert_eq!(before.state.unwrap().total_input_tokens, 0);
         assert!(before.episodes.is_empty());
         assert!(before.receipt.is_none());
         read.commit().unwrap();
@@ -2673,7 +2672,7 @@ mod tests {
             .unwrap()
             .require_current()
             .unwrap();
-        assert_eq!(after.state.unwrap().pending, 42);
+        assert_eq!(after.state.unwrap().total_input_tokens, 42);
         assert_eq!(after.episodes[0].id, "new-episode");
         assert!(after.receipt.is_some());
     }

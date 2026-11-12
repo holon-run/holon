@@ -926,7 +926,33 @@ mod tests {
             .unwrap();
         entry.status = QueueEntryStatus::Processed;
         entry.updated_at = Utc::now();
-        runtime.runtime_db().queue_entries().upsert(&entry).unwrap();
+        {
+            use crate::runtime_db::transitions::{
+                PreparedQueueTransition, QueueMutation, QueueOperation, QueueTransitionCommand,
+            };
+            let mut mutation = runtime.begin_mutation().await.unwrap();
+            let commit = mutation
+                .commit_prepared_queue(
+                    crate::ids::audit_event_id(),
+                    PreparedQueueTransition::new(QueueTransitionCommand {
+                        agent_id: entry.agent_id.clone(),
+                        operation: QueueOperation::Settle,
+                        mutation: QueueMutation::Upsert(entry),
+                        scheduler_claim_work_item: None,
+                        agent_state: None,
+                        message_evidence: Vec::new(),
+                        transcript_entries: Vec::new(),
+                        turn_record: None,
+                        audit_events: Vec::new(),
+                        notify_scheduler: false,
+                        fault: None,
+                        brief_evidence: Vec::new(),
+                    }),
+                )
+                .await
+                .unwrap();
+            assert!(commit.applied);
+        }
 
         assert_eq!(
             {

@@ -463,12 +463,8 @@ impl Fixture {
     }
 
     fn db_state(&self, connection: &Connection) -> Result<AgentState> {
-        payload_optional(
-            connection,
-            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
-            &self.key.agent_id,
-        )?
-        .context("fixture State missing")
+        crate::runtime_db::repositories::projected_agent_state_on(connection, &self.key.agent_id)?
+            .context("fixture State missing")
     }
     fn fingerprint(&self) -> String {
         let connection = self.db.connection().unwrap();

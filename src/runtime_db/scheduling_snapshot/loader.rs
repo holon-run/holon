@@ -186,7 +186,8 @@ pub(super) fn scope_facts(
     )?;
     // Identity and State are already admitted by this Material. Decode the
     // canonical State once, without a second generic scope/JSON acquisition.
-    let state = repositories::decode_agent_state_payload(payload)?;
+    let pending = super::super::current_query::pending_queue_count(tx, &scope.agent_id)?;
+    let state = repositories::decode_agent_state_projection(payload, pending)?;
     ensure!(
         state.id == scope.agent_id,
         "Scheduling canonical scope/State differs"
@@ -237,6 +238,13 @@ impl SchedulingScopeRead<'_, '_> {
             scope_fingerprint(tx, scope)? == self.fingerprint,
             "Scheduling scope changed after its validated read"
         );
+        if let Some(state) = self.facts.state.as_ref() {
+            ensure!(
+                super::super::current_query::pending_queue_count(tx, &scope.agent_id)?
+                    == state.pending,
+                "Scheduling pending Queue changed after its validated read"
+            );
+        }
         Ok(self.facts)
     }
 }

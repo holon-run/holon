@@ -1318,7 +1318,7 @@ impl RuntimeDb {
             let mut task_writes = task_request.map(|(request, ledger)|
                 task_writes::prepare_control_task_writes_tx(tx, command, request, ledger)
             ).transpose()?;
-            let actual = load_snapshot_in(tx, &command.key)?;
+            let mut actual = load_snapshot_in(tx, &command.key)?;
             if actual != *command.expected {
                 return Err(RuntimeStateTransitionConflict::concurrent_mutation("control_targets", &command.key.agent_id).into());
             }
@@ -1487,12 +1487,19 @@ impl RuntimeDb {
             }
             let (_, mut input_delta) = execution_protocol_repository::persist_execution_commands_with_input_facts_tx(tx, prepared_execution, Some(&input_scope))?;
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterExecutionWorkspaceWrites)?;
-            if command.candidate.as_ref() != &command.expected.state {
+            actual.state.pending = command.candidate.pending;
+            if command.candidate.as_ref() != &actual.state {
                 upsert_agent_state_at_tx(tx, &command.candidate, command.prepared_at)?;
             }
-            let persisted: AgentState = payload_optional(tx, "SELECT payload_json FROM agent_states WHERE agent_id = ?1", &command.key.agent_id)?
+            let persisted = super::repositories::projected_agent_state_on(tx, &command.key.agent_id)?
                 .context("Control State disappeared")?;
+            // The Stop transaction may itself retire or admit Queue rows.
+            // Verify the control candidate independently of that projection.
+            let pending = persisted.pending;
+            let mut persisted = persisted;
+            persisted.pending = command.candidate.pending;
             ensure!(persisted == *command.candidate, "Control candidate was not persisted exactly");
+            persisted.pending = pending;
             #[cfg(test)] inject_fault(command, ControlFaultPoint::AfterStateWrite)?;
             // Trigger admission and Stop cancellation share one final Work
             // version, after the exact State epilogue and before the receipt.
@@ -1685,7 +1692,8 @@ fn load_snapshot_in_with_original_scope(
         [&key.agent_id],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    let state: AgentState = serde_json::from_str(&state_payload)?;
+    let pending = super::current_query::pending_queue_count(connection, &key.agent_id)?;
+    let state = super::repositories::decode_agent_state_projection(&state_payload, pending)?;
     ensure!(
         state.id == key.agent_id,
         "Control State payload has a different scope"

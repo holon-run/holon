@@ -6014,8 +6014,13 @@ fn apply_agent_state_mutation_tx(
     let Some(mutation) = mutation else {
         return Ok(false);
     };
-    if agent_state_tx(tx, &mutation.record.id)?.as_ref() == Some(mutation.record.as_ref()) {
-        return Ok(false);
+    let durable = super::context_inputs::ContextDurableRead::new(tx, &mutation.record.id);
+    if let Some(mut stored) = durable.owned_control_state()? {
+        // Queue membership is committed by the Queue command.
+        stored.pending = mutation.record.pending;
+        if stored == *mutation.record {
+            return Ok(false);
+        }
     }
     upsert_agent_state_tx(tx, mutation.record.as_ref())?;
     Ok(true)

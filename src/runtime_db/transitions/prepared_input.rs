@@ -3514,6 +3514,17 @@ impl RuntimeTransitionRepository<'_> {
                     }
                 }
             };
+            // A State candidate owns control changes. Project pending from the
+            // Queue after the complete business transition, before finalizers
+            // validate the result and the owner receives its ACK.
+            let queue_pending = (value.effects.changes_queue()
+                || value.effects.agent_state.is_some())
+            .then(|| crate::runtime_db::current_query::pending_queue_count(tx, &scope.agent_id))
+            .transpose()?;
+            if let (Some(state), Some(pending)) = (&mut value.effects.agent_state, queue_pending) {
+                state.record.pending = pending;
+            }
+
             // Business SQL and its exact count/State epilogue are complete.
             // Qualify only the actual final Work/Wait/Frame footprint and actual
             // D3 Result writes, once, before the whole-transaction receipt.
@@ -3547,6 +3558,18 @@ impl RuntimeTransitionRepository<'_> {
                     .map(|state| state.record.as_ref())
                     .or(facts.state.as_deref())
                     .context("Work finalizer requires actual final State")?;
+                let projected_state;
+                let final_state =
+                    match queue_pending.filter(|pending| *pending != final_state.pending) {
+                        Some(pending) => {
+                            projected_state = AgentState {
+                                pending,
+                                ..final_state.clone()
+                            };
+                            &projected_state
+                        }
+                        None => final_state,
+                    };
                 let work = if preflight.finish_memory.is_some() {
                     let (facts, view) =
                         crate::runtime_db::work_snapshot::register_work_writes_with_view_tx(

@@ -74,14 +74,16 @@ const RETENTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
 /// obligation: a settled idle agent remains deletable and idle even if the last
 /// turn failed and no later turn succeeded.
 fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
-    let state: Option<String> = tx
+    let state: Option<(String, bool)> = tx
         .query_row(
-            "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
+            "SELECT payload_json, EXISTS(SELECT 1 FROM queue_entries
+              WHERE agent_id=?1 AND status IN ('queued','interrupted'))
+             FROM agent_states WHERE agent_id = ?1",
             [agent_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
         .optional()?;
-    let Some(state) = state else {
+    let Some((state, pending)) = state else {
         return Ok(Some("unknown_runtime_state".into()));
     };
     let state: crate::types::AgentState = serde_json::from_str(&state)?;
@@ -91,7 +93,7 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
             | crate::types::AgentStatus::Asleep
             | crate::types::AgentStatus::Stopped
     ) || state.current_run_id.is_some()
-        || state.pending > 0
+        || pending
         || state.sleeping_until.is_some()
         || state.pending_wake_hint.is_some()
     {
@@ -349,9 +351,18 @@ mod tests {
             Some("runtime_execution_or_wake")
         );
 
-        let mut pending = settled("pending", AgentStatus::Asleep, TurnTerminalKind::Aborted);
-        pending.pending = 1;
+        let pending = settled("pending", AgentStatus::Asleep, TurnTerminalKind::Aborted);
         db.agent_states().upsert_for_fixture(&pending).unwrap();
+        db.queue_entries()
+            .upsert(&QueueEntryRecord {
+                message_id: "pending-input".into(),
+                agent_id: pending.id,
+                priority: crate::types::Priority::Normal,
+                status: QueueEntryStatus::Interrupted,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
         assert_eq!(
             blockers(&db, "pending").0.as_deref(),
             Some("runtime_execution_or_wake")

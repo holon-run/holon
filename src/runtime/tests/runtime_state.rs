@@ -18267,11 +18267,33 @@ async fn enqueue_stale_agent_state_fails_closed_when_pending_diverges_from_queue
     .unwrap();
     runtime.control(ControlAction::Stop).await.unwrap();
 
-    let mut concurrent_state = runtime.storage().read_agent().unwrap().unwrap();
-    concurrent_state.pending = 1;
+    let concurrent_message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "already-pending".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "concurrent committed input".into(),
+        },
+    );
     runtime
         .storage()
-        .write_agent_for_fixture(&concurrent_state)
+        .append_message(&concurrent_message)
+        .unwrap();
+    runtime
+        .runtime_db()
+        .queue_entries()
+        .upsert(&QueueEntryRecord {
+            message_id: concurrent_message.id,
+            agent_id: "default".into(),
+            priority: Priority::Next,
+            status: QueueEntryStatus::Queued,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
         .unwrap();
 
     let message = MessageEnvelope::new(

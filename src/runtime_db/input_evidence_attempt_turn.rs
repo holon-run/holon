@@ -101,14 +101,7 @@ fn canonical_turn(tx: &Transaction<'_>, agent: &str, turn_id: &str) -> Result<bo
     Ok(true)
 }
 fn state_on(tx: &Transaction<'_>, agent: &str) -> Result<Option<AgentState>> {
-    tx.query_row(
-        "SELECT payload_json FROM agent_states WHERE agent_id=?1",
-        [agent],
-        |r| r.get::<_, String>(0),
-    )
-    .optional()?
-    .map(|p| serde_json::from_str(&p).map_err(anyhow::Error::from))
-    .transpose()
+    crate::runtime_db::repositories::projected_agent_state_on(tx, agent)
 }
 fn source_assignment(tx: &Transaction<'_>, attempt: &ExecutionAttempt) -> Result<Option<String>> {
     let Some(message) = &attempt.source_message_id else {

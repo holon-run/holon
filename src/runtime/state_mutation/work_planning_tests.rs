@@ -1684,6 +1684,7 @@ async fn preview_prepares_missing_facts_once_and_keeps_interrupted_queue_semanti
     assert_eq!(
         prepared.queue_posture,
         Some(crate::queue::QueuePostureFacts {
+            pending: 1,
             has_queued: false,
             has_interrupted: true,
         })

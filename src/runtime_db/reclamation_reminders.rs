@@ -70,8 +70,17 @@ fn parent_can_receive_tx(tx: &Transaction<'_>, parent: &str) -> Result<bool> {
 /// is not interrupted. Durable retention state (open work items, timers) is not
 /// "busy".
 fn parent_busy_blocker_tx(tx: &Transaction<'_>, parent: &str) -> Result<Option<String>> {
-    let payload: Option<String> = tx.query_row("SELECT s.payload_json FROM agent_states s JOIN agent_identities i USING(agent_id) WHERE i.agent_id = ?1 AND i.status = 'active'", [parent], |r| r.get(0)).optional()?;
-    let Some(payload) = payload else {
+    let state: Option<(String, bool)> = tx
+        .query_row(
+            "SELECT s.payload_json, EXISTS(SELECT 1 FROM queue_entries
+          WHERE agent_id=?1 AND status IN ('queued','interrupted'))
+         FROM agent_states s JOIN agent_identities i USING(agent_id)
+         WHERE i.agent_id=?1 AND i.status='active'",
+            [parent],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((payload, pending)) = state else {
         return Ok(Some("parent_unavailable".into()));
     };
     let state: AgentState = serde_json::from_str(&payload)?;
@@ -79,7 +88,7 @@ fn parent_busy_blocker_tx(tx: &Transaction<'_>, parent: &str) -> Result<Option<S
         state.status,
         AgentStatus::Booting | AgentStatus::AwakeRunning | AgentStatus::AwaitingTask
     ) || state.current_run_id.is_some()
-        || state.pending > 0
+        || pending
         || state.pending_wake_hint.is_some()
     {
         return Ok(Some("parent_running".into()));

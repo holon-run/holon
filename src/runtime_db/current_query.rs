@@ -2,7 +2,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use anyhow::{ensure, Context, Result};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use super::current_read_writes::{
     digest, CommittedEventRead, CurrentAddressFact, CurrentFamily, CurrentRecord,
@@ -78,21 +78,28 @@ pub(crate) fn has_queued_input(tx: &Transaction<'_>, agent_id: &str) -> Result<b
     )?)
 }
 
+pub(crate) fn pending_queue_count(connection: &Connection, agent_id: &str) -> Result<usize> {
+    let mut query = connection.prepare_cached(
+        "SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')",
+    )?;
+    Ok(query.query_row([agent_id], |row| row.get(0))?)
+}
+
 pub(crate) fn queue_posture_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<crate::queue::QueuePostureFacts> {
-    Ok(tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued'),
-                EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')",
-        [agent_id],
-        |row| {
-            Ok(crate::queue::QueuePostureFacts {
-                has_queued: row.get(0)?,
-                has_interrupted: row.get(1)?,
-            })
-        },
-    )?)
+    let mut query = tx.prepare_cached(
+        "SELECT COUNT(*), COALESCE(MAX(status='queued'),0), COALESCE(MAX(status='interrupted'),0)
+         FROM queue_entries WHERE agent_id=?1 AND status IN ('queued','interrupted')",
+    )?;
+    Ok(query.query_row([agent_id], |row| {
+        Ok(crate::queue::QueuePostureFacts {
+            pending: row.get(0)?,
+            has_queued: row.get(1)?,
+            has_interrupted: row.get(2)?,
+        })
+    })?)
 }
 
 pub(crate) fn scheduler_metadata(
@@ -108,9 +115,14 @@ fn scheduler_metadata_with_facts(
     queue: Option<crate::queue::QueuePostureFacts>,
     events: Option<SchedulerEventFacts>,
 ) -> Result<CurrentSchedulerMetadata> {
-    let queue = match queue {
-        Some(queue) => queue,
-        None => queue_posture_tx(tx, &scope.agent_id)?,
+    let (has_queued, has_interrupted) = match queue {
+        Some(queue) => (queue.has_queued, queue.has_interrupted),
+        None => tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='queued'),
+                    EXISTS(SELECT 1 FROM queue_entries WHERE agent_id=?1 AND status='interrupted')",
+            [&scope.agent_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?,
     };
     let events = match events {
         Some(events) => events,
@@ -118,8 +130,8 @@ fn scheduler_metadata_with_facts(
     };
     let (recent_brief_count, recent_event_count) = summary_counts(tx, &scope.agent_id)?;
     Ok(CurrentSchedulerMetadata {
-        has_interrupted_replay: queue.has_interrupted,
-        has_queued_input: queue.has_queued,
+        has_interrupted_replay: has_interrupted,
+        has_queued_input: has_queued,
         latest_runtime_error: events.latest_runtime_error,
         recent_brief_count,
         recent_event_count,

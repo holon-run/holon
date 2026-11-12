@@ -104,17 +104,9 @@ pub(super) fn synchronize_message_count_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<Option<super::transitions::AgentStateMutation>> {
-    let payload: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM agent_states WHERE agent_id=?1",
-            [agent_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let Some(payload) = payload else {
+    let Some(previous) = super::repositories::projected_agent_state_on(tx, agent_id)? else {
         return Ok(None);
     };
-    let previous: crate::types::AgentState = serde_json::from_str(&payload)?;
     let count = super::message_count::for_agent(tx, agent_id)?;
     if previous.total_message_count == count {
         return Ok(None);
