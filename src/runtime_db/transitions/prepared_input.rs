@@ -22,6 +22,7 @@ use crate::runtime_db::provider_admission::{
     acknowledge_frozen_stopped_provider_pause_tx, charge_frozen_stopped_provider_pause_tx,
 };
 use crate::runtime_db::repositories;
+use crate::runtime_db::write_queue::RuntimeDbWriteContext;
 use crate::types::MessageOrigin;
 pub(in crate::runtime_db) use child_binding::ExistingOriginalChildBindingWriteProof;
 pub(in crate::runtime_db) use child_running::ExistingOriginalChildRunningWriteProof;
@@ -311,6 +312,42 @@ enum InputTransitionCommand {
     },
 }
 impl InputTransitionCommand {
+    fn write_context(&self) -> RuntimeDbWriteContext {
+        let operation = match self {
+            Self::Audit { .. } => "runtime_db.prepared_input.audit",
+            Self::Posture { .. } => "runtime_db.prepared_input.posture",
+            Self::Queue(queue) => match queue.command.operation {
+                QueueOperation::Admit => "runtime_db.prepared_input.queue_admit",
+                QueueOperation::Discard => "runtime_db.prepared_input.queue_discard",
+                QueueOperation::Claim => "runtime_db.prepared_input.queue_claim",
+                QueueOperation::Interject => "runtime_db.prepared_input.queue_interject",
+                QueueOperation::Requeue => "runtime_db.prepared_input.queue_requeue",
+                QueueOperation::Settle => "runtime_db.prepared_input.queue_settle",
+                QueueOperation::RepairDrop => "runtime_db.prepared_input.queue_repair_drop",
+            },
+            Self::QueueHeadNoProgress { .. } => "runtime_db.prepared_input.queue_head_no_progress",
+            Self::Terminal(_) => "runtime_db.prepared_input.terminal",
+            Self::Task(_) => "runtime_db.prepared_input.task",
+            Self::TaskResult(_) => "runtime_db.prepared_input.task_result",
+            Self::LiveInputAttachment(_) => "runtime_db.prepared_input.live_input_attachment",
+            Self::LiveInputRecovery(_) => "runtime_db.prepared_input.live_input_recovery",
+            Self::ContextBudgetStopRecovery { .. } => {
+                "runtime_db.prepared_input.context_budget_stop_recovery"
+            }
+            Self::ProviderResultHandoff(_) => "runtime_db.prepared_input.provider_result_handoff",
+            Self::TaskStatusMetadata(_) => "runtime_db.prepared_input.task_status_metadata",
+            Self::Timer(_) => "runtime_db.prepared_input.timer",
+            Self::ExternalTrigger(_) => "runtime_db.prepared_input.external_trigger",
+            Self::TaskStopProgress(_) => "runtime_db.prepared_input.task_stop_progress",
+            Self::TaskStopContinuation(_) => "runtime_db.prepared_input.task_stop_continuation",
+            Self::Work { .. } => "runtime_db.prepared_input.work",
+            Self::Focus { .. } => "runtime_db.prepared_input.focus",
+            Self::Wait { .. } => "runtime_db.prepared_input.wait",
+        };
+        // These commands may write several tables in one transaction.
+        RuntimeDbWriteContext::sync(operation, "unknown")
+    }
+
     fn family(&self) -> InputMutationFamily {
         match self {
             Self::Audit { .. } => InputMutationFamily::Audit,
@@ -4010,14 +4047,15 @@ impl RuntimeTransitionRepository<'_> {
             }
             Ok(InputMutationExecution::Committed { value, receipt })
         };
+        let write_context = prepared.command.write_context();
         if prepared.original_child_terminal().is_some()
             || prepared.original_child_running().is_some()
         {
             // The original producer owns the bounded OCC retry policy. Do not
             // invisibly consume extra attempts inside the generic write queue.
-            self.db.transaction_once(commit)
+            self.db.transaction_once_with_context(write_context, commit)
         } else {
-            self.db.transaction(commit)
+            self.db.transaction_with_context(write_context, commit)
         }
     }
 }
