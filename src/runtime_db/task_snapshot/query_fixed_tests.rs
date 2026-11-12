@@ -153,8 +153,7 @@ fn fixed_message_inventory_preserves_actual_source_predicate_assignment_and_head
         source.id = "fixed-task-output-source".into();
         source.metadata = Some(serde_json::json!({"task_id":"metadata-selector"}));
         super::super::evidence::append_message_tx(tx, &source)?;
-        let mut state = crate::types::AgentState::new("task-agent");
-        state.total_message_count = 1;
+        let state = crate::types::AgentState::new("task-agent");
         super::super::evidence::upsert_agent_state_tx(tx, &state)?;
         Ok(())
     })?;
@@ -213,8 +212,7 @@ fn explicit_fixed_old_task_keeps_its_complete_settled_result_reverse_index() -> 
         result.settled_at = Some(target.updated_at);
         result.next_recheck_at = None;
         upsert_pending_tx(tx, &result)?;
-        let mut state = crate::types::AgentState::new("task-agent");
-        state.total_message_count = 1;
+        let state = crate::types::AgentState::new("task-agent");
         super::super::evidence::upsert_agent_state_tx(tx, &state)?;
         Ok(())
     })?;

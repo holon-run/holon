@@ -238,15 +238,11 @@ pub(super) fn project_original_terminal_business_inner_tx(
                     .checked_add(usize::from(!already_pending))
                     .context("Command pending count overflow")?;
                 next.last_wake_reason = Some(format!("{:?}", message.kind));
-                let count = crate::runtime_db::message_count::for_agent(tx, &scope.agent_id)?;
                 let exists: bool = tx.query_row(
                     "SELECT EXISTS(SELECT 1 FROM messages WHERE agent_id=?1 AND evidence_id=?2)",
                     params![scope.agent_id, message.id],
                     |row| row.get(0),
                 )?;
-                next.total_message_count = count
-                    .checked_add(usize::from(!exists))
-                    .context("Command Message count overflow")?;
                 crate::runtime::original_task_message_wake_projection(&mut next);
                 command.notify_scheduler = !already_pending;
                 if !exists {

@@ -43,7 +43,7 @@ pub fn refresh_episode_memory(
     );
 
     let phase_snapshot = episode_phase_snapshot(previous_snapshot, current_snapshot);
-    let message_count = agent.total_message_count;
+
     let mut changed = false;
 
     if boundary == Some(EpisodeBoundaryReason::ActiveWorkSwitched) {
@@ -52,7 +52,6 @@ pub fn refresh_episode_memory(
             agent,
             EpisodeBoundaryReason::ActiveWorkSwitched,
             previous_snapshot,
-            message_count,
         )?;
         changed = true;
 
@@ -60,10 +59,9 @@ pub fn refresh_episode_memory(
             let mut next_builder = ActiveEpisodeBuilder::new_with_start(
                 agent.id.clone(),
                 current_snapshot,
-                message_count,
                 agent.turn_index.max(1),
             );
-            merge_into_active_episode(&mut next_builder, agent, current_snapshot, message_count);
+            merge_into_active_episode(&mut next_builder, agent, current_snapshot);
             agent.working_memory.active_episode_id = Some(next_builder.id.clone());
             agent.working_memory.active_episode_builder = Some(next_builder);
         } else {
@@ -73,7 +71,7 @@ pub fn refresh_episode_memory(
     }
 
     if agent.working_memory.active_episode_builder.is_none() && has_material_state {
-        let builder = ActiveEpisodeBuilder::new(agent, phase_snapshot, message_count);
+        let builder = ActiveEpisodeBuilder::new(agent, phase_snapshot);
         agent.working_memory.active_episode_id = Some(builder.id.clone());
         agent.working_memory.active_episode_builder = Some(builder);
         changed = true;
@@ -87,27 +85,19 @@ pub fn refresh_episode_memory(
             current_turn_index,
             current_turn_id.as_deref(),
             current_snapshot,
-            message_count,
         );
         agent.working_memory.active_episode_id = Some(builder.id.clone());
         changed = true;
     }
 
     if let Some(reason) = boundary {
-        finalize_active_episode_before_merge(
-            storage,
-            agent,
-            reason,
-            previous_snapshot,
-            message_count,
-        )?;
+        finalize_active_episode_before_merge(storage, agent, reason, previous_snapshot)?;
         changed = true;
 
         if has_material_state {
             let next_builder = ActiveEpisodeBuilder::new_with_start(
                 agent.id.clone(),
                 current_snapshot,
-                message_count,
                 agent.turn_index.saturating_add(1).max(1),
             );
             agent.working_memory.active_episode_id = Some(next_builder.id.clone());
@@ -135,14 +125,12 @@ fn merge_into_active_episode(
     builder: &mut ActiveEpisodeBuilder,
     agent: &AgentState,
     current_snapshot: &WorkingMemorySnapshot,
-    message_count: usize,
 ) {
     merge_into_active_episode_with_turn(
         builder,
         agent.turn_index,
         agent.current_turn_id.as_deref(),
         current_snapshot,
-        message_count,
     );
 }
 
@@ -151,10 +139,8 @@ pub(super) fn merge_into_active_episode_with_turn(
     turn_index: u64,
     turn_id: Option<&str>,
     current_snapshot: &WorkingMemorySnapshot,
-    message_count: usize,
 ) {
     builder.latest_turn_index = turn_index.max(1).max(builder.latest_turn_index);
-    builder.latest_message_count = message_count.max(builder.latest_message_count);
 
     merge_unique(
         &mut builder.working_set_files,
@@ -199,7 +185,6 @@ fn finalize_active_episode_before_merge(
     agent: &mut AgentState,
     boundary_reason: EpisodeBoundaryReason,
     previous_snapshot: &WorkingMemorySnapshot,
-    message_count: usize,
 ) -> Result<()> {
     let builder = if let Some(builder) = agent.working_memory.active_episode_builder.take() {
         builder
@@ -210,7 +195,6 @@ fn finalize_active_episode_before_merge(
         ActiveEpisodeBuilder::new_with_start(
             agent.id.clone(),
             previous_snapshot,
-            message_count,
             agent.turn_index.saturating_sub(1).max(1),
         )
     };
@@ -343,8 +327,8 @@ pub(super) fn finalize_episode_at(
         finalized_at,
         start_turn_index: builder.start_turn_index,
         end_turn_index: builder.latest_turn_index,
-        start_message_count: builder.start_message_count,
-        end_message_count: builder.latest_message_count,
+        start_message_count: None,
+        end_message_count: None,
         boundary_reason,
         current_work_item_id: builder.current_work_item_id,
         objective: builder.objective,
@@ -442,7 +426,6 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.turn_index = 3;
         agent.current_turn_id = Some("turn-switch-3".into());
-        agent.total_message_count = 9;
 
         let previous = snapshot("work_a", "fix exporter");
         let mut current = snapshot("work_b", "review CI");
@@ -501,7 +484,6 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.turn_index = 4;
         agent.current_turn_id = Some("turn-anchor-review".into());
-        agent.total_message_count = 10;
 
         let previous = snapshot("work_a", "draft episode anchors");
         let current = WorkingMemorySnapshot {
@@ -553,7 +535,6 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.turn_index = 2;
         agent.current_turn_id = Some("turn-planning-anchor".into());
-        agent.total_message_count = 4;
 
         let current = WorkingMemorySnapshot {
             objective: Some("plan episode retrieval anchors".into()),
@@ -594,7 +575,6 @@ mod tests {
         let mut agent = AgentState::new("default");
         agent.turn_index = 6;
         agent.current_turn_id = Some("turn-stable-6".into());
-        agent.total_message_count = 14;
 
         let previous = snapshot("work_a", "stabilize runtime");
         let current = WorkingMemorySnapshot {
@@ -637,7 +617,6 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 2;
-        agent.total_message_count = 4;
 
         let changed = refresh_episode_memory(
             &storage,
@@ -661,7 +640,6 @@ mod tests {
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
         let mut agent = AgentState::new("default");
         agent.turn_index = 5;
-        agent.total_message_count = 11;
 
         let previous = snapshot("work_a", "finish exporter");
         let current = snapshot("work_b", "stabilize runtime");

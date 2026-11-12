@@ -357,7 +357,7 @@ settlement, and optional final brief commit together. If task authority changes
 between preparation and commit, bounded OCC retry rebuilds the wait transition
 from the current task while retaining the wait identity and final report.
 Agent-state settlement applies only the wait's changes to the current baseline,
-preserving concurrent queue admission and message counters. Explicit `silent`
+preserving concurrent queue admission. Explicit `silent`
 delivery never promotes same-round or earlier progress text to a result brief.
 Prepared waits, like prepared completions, bypass generic post-message bookkeeping
 before the queue transaction. WorkItem reference refreshes, agent-state projections,

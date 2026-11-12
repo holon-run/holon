@@ -15,8 +15,7 @@ use super::{
         register_committed_input_evidence_tx, CanonicalInputEvidence as Fact,
     },
     input_evidence_writes::{
-        acknowledge_input_evidence_tx, merge_input_evidence_delta, synchronize_message_count_tx,
-        validate_input_evidence_scope_tx,
+        acknowledge_input_evidence_tx, merge_input_evidence_delta, validate_input_evidence_scope_tx,
     },
     repositories, work_snapshot, RuntimeDb,
 };
@@ -276,7 +275,6 @@ impl<'db> ColdFixtureWriter<'db> {
                     )?;
                     merge_input_evidence_delta(&mut delta, next)?;
                 }
-                synchronize_message_count_tx(tx, &self.scope.agent_id)?;
                 delta
             } else {
                 acknowledge_input_evidence_tx(tx, &self.scope, (), &facts)?.input_delta
@@ -312,19 +310,14 @@ impl<'db> ColdFixtureWriter<'db> {
                     && state.current_run_id.is_none(),
                 "cold fixture final State must remain stopped in its scope"
             );
-            let count: usize = tx.query_row(
-                "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
-                [&state.id],
-                |row| row.get(0),
-            )?;
             let pending: usize = tx.query_row(
                 "SELECT COUNT(*) FROM queue_entries WHERE agent_id=?1 AND status='queued'",
                 [&state.id],
                 |row| row.get(0),
             )?;
             ensure!(
-                state.total_message_count == count && state.pending == pending,
-                "cold State counts differ from canonical Message/Queue"
+                state.pending == pending,
+                "cold State pending count differs from canonical Queue"
             );
             let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
             let request = SchedulingDomainLoadRequest {

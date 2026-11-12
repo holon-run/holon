@@ -745,7 +745,6 @@ fn seed_history(storage: &AppStorage, db: &RuntimeDb, agent_id: &str) -> Result<
     let mut state = AgentState::new(agent_id);
     state.status = AgentStatus::Stopped;
     state.pending = PENDING_INPUTS;
-    state.total_message_count = HISTORY_MESSAGES + PENDING_INPUTS;
     state.turn_index = HISTORY_MESSAGES as u64;
     state.current_work_item_id = Some(work_id);
     writer.finish_state(&state)?;

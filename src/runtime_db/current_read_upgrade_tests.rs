@@ -76,7 +76,6 @@ fn legacy(count: usize) -> Result<(Connection, Vec<MessageEnvelope>)> {
     )?;
     let mut state = AgentState::new(AGENT);
     state.pending = count;
-    state.total_message_count = count;
     upsert_agent_state_tx(&tx, &state)?;
     tx.execute(
         "INSERT INTO runtime_metadata(key,value,created_at,updated_at)

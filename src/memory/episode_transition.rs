@@ -77,7 +77,6 @@ pub(crate) fn plan_episode_memory(
             .unwrap_or(candidate.turn_index),
         candidate.turn_index,
     );
-    let message_count = candidate.total_message_count;
     let mut changed = false;
     let mut finalized = None;
 
@@ -86,14 +85,12 @@ pub(crate) fn plan_episode_memory(
             &mut candidate,
             EpisodeBoundaryReason::ActiveWorkSwitched,
             input.previous_snapshot,
-            message_count,
             frozen,
         );
         changed = true;
         if has_material_state {
             let mut builder = frozen_builder(
                 input.current_snapshot,
-                message_count,
                 candidate.turn_index.max(1),
                 &frozen.next_builder_id,
                 frozen.timestamp,
@@ -103,7 +100,6 @@ pub(crate) fn plan_episode_memory(
                 candidate.turn_index,
                 Some(input.actual_dispatch_turn_id),
                 input.current_snapshot,
-                message_count,
             );
             candidate.working_memory.active_episode_id = Some(builder.id.clone());
             candidate.working_memory.active_episode_builder = Some(builder);
@@ -114,7 +110,6 @@ pub(crate) fn plan_episode_memory(
         if candidate.working_memory.active_episode_builder.is_none() && has_material_state {
             let builder = frozen_builder(
                 episode_phase_snapshot(input.previous_snapshot, input.current_snapshot),
-                message_count,
                 candidate.turn_index.max(1),
                 &frozen.initial_builder_id,
                 frozen.timestamp,
@@ -129,24 +124,17 @@ pub(crate) fn plan_episode_memory(
                 candidate.turn_index,
                 Some(input.actual_dispatch_turn_id),
                 input.current_snapshot,
-                message_count,
             );
             candidate.working_memory.active_episode_id = Some(builder.id.clone());
             changed = true;
         }
         if let Some(reason) = boundary {
-            finalized = finalize_active_episode(
-                &mut candidate,
-                reason,
-                input.previous_snapshot,
-                message_count,
-                frozen,
-            );
+            finalized =
+                finalize_active_episode(&mut candidate, reason, input.previous_snapshot, frozen);
             changed = true;
             if has_material_state {
                 let builder = frozen_builder(
                     input.current_snapshot,
-                    message_count,
                     candidate.turn_index.saturating_add(1).max(1),
                     &frozen.next_builder_id,
                     frozen.timestamp,
@@ -207,7 +195,6 @@ fn finalize_active_episode(
     candidate: &mut AgentState,
     reason: EpisodeBoundaryReason,
     previous_snapshot: &WorkingMemorySnapshot,
-    message_count: usize,
     frozen: &FrozenEpisodeMemoryValues,
 ) -> Option<ContextEpisodeRecord> {
     let builder = match candidate.working_memory.active_episode_builder.take() {
@@ -218,7 +205,6 @@ fn finalize_active_episode(
         }
         None => frozen_builder(
             previous_snapshot,
-            message_count,
             candidate.turn_index.saturating_sub(1).max(1),
             &frozen.fallback_builder_id,
             frozen.timestamp,
@@ -234,7 +220,6 @@ fn finalize_active_episode(
 
 fn frozen_builder(
     snapshot: &WorkingMemorySnapshot,
-    message_count: usize,
     start_turn_index: u64,
     id: &str,
     timestamp: DateTime<Utc>,
@@ -244,8 +229,8 @@ fn frozen_builder(
         started_at: timestamp,
         start_turn_index,
         latest_turn_index: start_turn_index,
-        start_message_count: message_count,
-        latest_message_count: message_count,
+        start_message_count: None,
+        latest_message_count: None,
         current_work_item_id: snapshot.current_work_item_id.clone(),
         objective: snapshot.objective.clone(),
         work_summary: snapshot.work_summary.clone(),
@@ -354,7 +339,7 @@ mod tests {
         let mut agent = AgentState::new("agent-a");
         agent.turn_index = 3;
         agent.current_turn_id = Some("turn-3".into());
-        let mut builder = frozen_builder(&previous, 2, 1, "episode-prior", frozen.timestamp);
+        let mut builder = frozen_builder(&previous, 1, "episode-prior", frozen.timestamp);
         builder.latest_turn_index = 2;
         builder.source_turn_ids = vec!["turn-1".into(), "turn-2".into()];
         agent.working_memory.active_episode_id = Some(builder.id.clone());
@@ -515,7 +500,7 @@ mod tests {
         let snapshot = snapshot("work-a");
         agent.turn_index = 13;
         agent.current_turn_id = Some("turn-13".into());
-        let mut builder = frozen_builder(&snapshot, 1, 1, "episode-prior", frozen().timestamp);
+        let mut builder = frozen_builder(&snapshot, 1, "episode-prior", frozen().timestamp);
         builder.latest_turn_index = 12;
         builder.source_turn_ids = (1..=12).map(|index| format!("turn-{index}")).collect();
         agent.working_memory.active_episode_id = Some(builder.id.clone());

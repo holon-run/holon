@@ -347,8 +347,7 @@ pub(crate) fn admitted_fixture() -> Result<(CapturedTasks, Vec<MessageEnvelope>)
         )
         .map_err(anyhow::Error::msg)?;
         crate::runtime_db::transitions::persist_state_tx(tx, &admitted.state)?;
-        let mut state = AgentState::new("default");
-        state.total_message_count = 5;
+        let state = AgentState::new("default");
         upsert_agent_state_tx(tx, &state)?;
         register_task_writes_tx(tx, &proof, &keys, &state, &load_request())?;
         let resident = prepare_task_domain_snapshot_tx(tx, &scope(), &load_request())?
@@ -529,7 +528,7 @@ fn result_deadline_and_retry_order_match_normalized_sql_without_durable_tables()
         let proof=prepare_task_write_tx(tx,&scope(),&keys)?;
         for task in &tasks {repositories::upsert_task_tx(tx,task)?;}
         for row in &rows {upsert_pending_tx(tx,row)?;}
-        let mut state=AgentState::new("default");state.total_message_count=2;upsert_agent_state_tx(tx,&state)?;
+        let state=AgentState::new("default");upsert_agent_state_tx(tx,&state)?;
         register_task_writes_tx(tx,&proof,&keys,&state,&load_request())?;
         let current=prepare_task_domain_snapshot_tx(tx,&scope(),&load_request())?.require_current()?.resident;
         let mut query=tx.prepare("SELECT result_identity FROM task_result_settlements WHERE agent_id='default' AND state='persisted_pending' ORDER BY created_at ASC,result_identity ASC")?;
@@ -588,7 +587,7 @@ fn due_recovery_selection_matches_sql_limit_and_millis_without_tables() -> Resul
         let proof=prepare_task_write_tx(tx,&scope(),&keys)?;
         for value in &values {repositories::upsert_task_tx(tx,value)?;}
         for result in &rows {upsert_pending_tx(tx,result)?;}
-        let mut state=AgentState::new("default");state.total_message_count=12;upsert_agent_state_tx(tx,&state)?;
+        let state=AgentState::new("default");upsert_agent_state_tx(tx,&state)?;
         register_task_writes_tx(tx,&proof,&keys,&state,&load_request())?;
         let mut query=tx.prepare("SELECT result_identity FROM task_result_settlements WHERE agent_id=?1 AND next_recheck_at IS NOT NULL AND next_recheck_at<=?2 AND (state='persisted_pending' OR (state='caller_admitted' AND NOT EXISTS(SELECT 1 FROM execution_protocol_attempts a WHERE a.agent_id=task_result_settlements.agent_id AND a.attempt_id=task_result_settlements.activation_id AND a.lifecycle_state='open'))) ORDER BY next_recheck_at ASC,created_at ASC,result_identity ASC LIMIT 8")?;
         let expected=query.query_map(rusqlite::params!["default",crate::runtime_db::migrations::timestamp(now)],|r|r.get::<_,String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;

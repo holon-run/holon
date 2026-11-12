@@ -613,7 +613,6 @@ pub async fn control_agent_reincarnation_clears_history_and_resets_turn_sequence
     }
     let mut old_state = AgentState::new(agent_id);
     old_state.turn_index = 22;
-    old_state.total_message_count = 22;
     old_state.total_input_tokens = 1234;
     old_state.total_output_tokens = 5678;
     old_state.total_model_rounds = 22;
@@ -685,7 +684,6 @@ pub async fn control_agent_reincarnation_clears_history_and_resets_turn_sequence
         let runtime = host.get_or_create_agent(agent_id).await?;
         let fresh = runtime.storage().read_agent()?.expect("fresh agent state");
         assert_eq!(fresh.pending, 0);
-        assert_eq!(fresh.total_message_count, 0);
         assert_eq!(runtime.storage().count_messages()?, 0);
         assert_eq!(fresh.total_input_tokens, 0);
         assert_eq!(fresh.total_output_tokens, 0);

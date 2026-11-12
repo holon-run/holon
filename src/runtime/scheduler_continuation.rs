@@ -1135,8 +1135,6 @@ impl RuntimeHandle {
                 let previous_sleeping_until = committed_state.sleeping_until;
                 committed_state.pending = guard.queue.len().saturating_add(1);
                 committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
-                committed_state.total_message_count =
-                    self.inner.storage.count_messages()?.saturating_add(1);
                 let mut audit_events = base_audit_events.clone();
                 if scheduler::apply_message_wake_projection(&mut committed_state) {
                     audit_events.push(AuditEvent::legacy(

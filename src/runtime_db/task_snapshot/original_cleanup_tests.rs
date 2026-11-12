@@ -248,8 +248,7 @@ fn original_cleanup_complete_finalizer_updates_once_and_uses_actual_stored_resul
         repositories::upsert_task_tx(tx, &terminal)?;
         let pending_ack = pending.execute_original_task_cleanup(&proof)?;
         let proof = proof.into_task_write_proof(tx, &pending_ack.actual_result_ids)?;
-        let mut final_state = AgentState::new("task-agent");
-        final_state.total_message_count = 1;
+        let final_state = AgentState::new("task-agent");
         upsert_agent_state_tx(tx, &final_state)?;
         let facts = register_task_writes_tx(tx, &proof, &keys, &final_state, &request())?;
         assert_eq!(facts.delta.revision, old_revision + 1);

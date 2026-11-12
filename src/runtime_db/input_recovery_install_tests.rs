@@ -235,7 +235,7 @@ fn original_missing_target_rolls_back_receipt_and_preceding_state_write() -> Res
         .db
         .transaction(|tx| {
             let mut changed = before.clone();
-            changed.total_message_count = 99;
+            changed.last_wake_reason = Some("uncommitted fixture".into());
             upsert_agent_state_tx(tx, &changed)?;
             insert_input_mutation_receipt_tx(
                 tx,

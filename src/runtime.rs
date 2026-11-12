@@ -5275,8 +5275,6 @@ impl RuntimeHandle {
                 .len()
                 .saturating_add(usize::from(queue_needs_push && !discard_due_to_stop));
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
-            // The original transaction returns its actual canonical count.
-            committed_state.total_message_count = guard.state.total_message_count;
             if !discard_due_to_stop
                 && scheduler::apply_message_wake_projection(&mut committed_state)
             {

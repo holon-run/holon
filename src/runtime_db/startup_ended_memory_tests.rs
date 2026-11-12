@@ -94,7 +94,6 @@ impl Fixture {
             let mut state = AgentState::new(&scope.agent_id);
             state.status = AgentStatus::AwakeRunning;
             state.turn_index = 1;
-            state.total_message_count = 1;
             state.current_turn_id = Some(turn.turn_id.clone());
             state.current_run_id = turn.run_id.clone();
             state.current_execution_binding = Some(WorkItemExecutionBinding {

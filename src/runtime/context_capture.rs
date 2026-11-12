@@ -1904,12 +1904,6 @@ mod tests {
                         let mut state: AgentState = serde_json::from_str(&payload)?;
                         anyhow::ensure!(state == expected, "history fixture State changed");
                         state.turn_index = state.turn_index.max(count as u64);
-                        let message_count: i64 = tx.query_row(
-                            "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
-                            [&expected.id],
-                            |row| row.get(0),
-                        )?;
-                        state.total_message_count = usize::try_from(message_count)?;
                         upsert_agent_state_tx(tx, &state)?;
                         let payload: String = tx.query_row(
                             "SELECT payload_json FROM agent_states WHERE agent_id=?1",
@@ -2068,11 +2062,11 @@ mod tests {
                 AuthorityClass::OperatorInstruction,
                 Priority::Normal,
                 MessageBody::Text {
-                    text: "fixture history not yet reflected in posture count".into(),
+                    text: "fixture history appended outside the State publication".into(),
                 },
             ))
             .unwrap();
-        assert!(runtime.storage().read_all_messages().unwrap().len() > before.total_message_count);
+        assert_eq!(runtime.agent_state().await.unwrap(), before);
         runtime
             .preview_prompt(
                 "inspect without changing posture".into(),

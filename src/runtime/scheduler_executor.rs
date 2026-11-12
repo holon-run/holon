@@ -5049,7 +5049,6 @@ mod tests {
         state.status = AgentStatus::AwakeIdle;
         state.turn_index = 1;
         state.pending = 1;
-        state.total_message_count = 1;
         upsert_agent_state_tx(&tx, &state).unwrap();
         let message = append_message_tx(&tx, &message).unwrap().0;
         let source_revision = message.message_seq.expect("actual legacy source sequence");
@@ -7114,7 +7113,6 @@ mod tests {
                             execution_protocol_repository::load_state_tx(tx, "default")?;
                         let mut state = before.clone();
                         state.turn_index = turn.turn_index;
-                        state.total_message_count += 1;
                         upsert_agent_state_tx(tx, &state)?;
                         let input_evidence_delta = register_committed_input_evidence_tx(
                             tx,

@@ -41,7 +41,6 @@ pub(crate) mod input_mutation_receipts;
 pub(crate) mod input_preparation;
 pub(crate) mod input_recovery_install;
 mod legacy_scheduler_wire;
-mod message_count;
 mod migration_history;
 pub mod migrations;
 pub mod persistence;

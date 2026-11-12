@@ -253,7 +253,7 @@ curl http://127.0.0.1:7878/api/control/runtime/performance
 
 **`provider.retry` 频繁** — 模型提供商在返回错误或超时。检查提供商日志（`holon daemon logs`）和网络连通性。
 
-**`turn.context_build` 增长** — 提示词拼装变慢，通常说明累积的历史需要压缩。对照配置的压缩阈值检查 Agent 的 `total_message_count`。
+**`turn.context_build` 增长** — 检查每轮选中的历史范围和提示词 token 预算。
 
 **`scheduler.poll.idle` 比例偏高** — 没有 Agent 处于唤醒状态时属正常。如果有 Agent 有待处理工作，检查唤醒提示和等待条件。
 

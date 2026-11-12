@@ -171,7 +171,6 @@ pub(super) fn wake(
         |r| r.get(0),
     )?;
     state.pending = usize::try_from(n)?;
-    state.total_message_count = usize::try_from(n)?;
     upsert_agent_state_tx(tx, &state)?;
     tx.execute("INSERT INTO timer_wakes(timer_id,message_id,fire_count,status,created_at,updated_at) VALUES(?1,?2,?3,'pending',?4,?4)",params![timer_id,message_id,count,repositories::timestamp(at())])?;
     Ok(())

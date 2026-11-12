@@ -159,7 +159,6 @@ fn historical(tx: &Transaction<'_>) -> Result<()> {
     }
     let mut state = AgentState::new("task-agent");
     state.turn_index = 514;
-    state.total_message_count = 202;
     evidence::upsert_agent_state_tx(tx, &state)?;
     Ok(())
 }

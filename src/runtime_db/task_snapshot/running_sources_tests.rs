@@ -54,8 +54,7 @@ fn original(tx: &Transaction<'_>) -> Result<()> {
             updated_at: source.created_at,
         },
     )?;
-    let mut state = AgentState::new(&scope().agent_id);
-    state.total_message_count = 1;
+    let state = AgentState::new(&scope().agent_id);
     evidence::upsert_agent_state_tx(tx, &state)?;
     Ok(())
 }

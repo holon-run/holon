@@ -12481,12 +12481,6 @@ mod tests {
                     .expect("canonical TaskResult has an actual sequence");
                 let authority = authority_fences_tx(tx, agent_id)?;
                 agent.turn_index = agent.turn_index.saturating_add(1);
-                let message_count: i64 = tx.query_row(
-                    "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
-                    [agent_id],
-                    |row| row.get(0),
-                )?;
-                agent.total_message_count = usize::try_from(message_count)?;
                 upsert_agent_state_tx(tx, &agent)?;
                 let mut turn = TurnRecord::new(agent_id, &turn_id, agent.turn_index);
                 turn.run_id = Some(run_id.clone());
@@ -26499,16 +26493,21 @@ mod tests {
             .unwrap()
             .pop()
             .unwrap();
-        let mut state = host
-            .runtime_db()
-            .agent_states()
-            .latest("reminder-page-00")
+        let activity = MessageEnvelope::new(
+            "reminder-page-00",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "reclamation-test".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "new activity without a queue entry".into(),
+            },
+        );
+        host.agent_storage("reminder-page-00")
             .unwrap()
-            .unwrap();
-        state.total_message_count += 1;
-        host.runtime_db()
-            .agent_states()
-            .upsert_for_fixture(&state)
+            .append_message(&activity)
             .unwrap();
         assert!(
             !host
@@ -31261,7 +31260,6 @@ mod tests {
                     },
                 )?;
                 state.pending = 1;
-                state.total_message_count = 1;
                 crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
                 crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
                     tx,
@@ -32420,7 +32418,6 @@ mod tests {
         prior_state.status = AgentStatus::AwakeRunning;
         prior_state.current_run_id = Some("prior-process-claim-run".into());
         prior_state.pending = 7;
-        prior_state.total_message_count = 7;
         upsert_agent_state_tx(&tx, &prior_state).unwrap();
         tx.commit().unwrap();
         drop(connection);

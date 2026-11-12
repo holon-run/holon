@@ -1843,19 +1843,14 @@ mod tests {
             let mut state = AgentState::new(&scope.agent_id);
             state.status = AgentStatus::AwakeRunning;
             state.turn_index = 1;
-            state.total_message_count = 1;
             state.current_turn_id = Some(turn.turn_id.clone());
             state.current_run_id = turn.run_id.clone();
             let baseline = crate::types::WorkingMemorySnapshot {
                 objective: Some("original startup dispatch memory".into()),
                 ..Default::default()
             };
-            let mut builder = crate::types::ActiveEpisodeBuilder::new_with_start(
-                &scope.agent_id,
-                &baseline,
-                1,
-                1,
-            );
+            let mut builder =
+                crate::types::ActiveEpisodeBuilder::new_with_start(&scope.agent_id, &baseline, 1);
             builder.id = "host-startup-original-episode".into();
             builder.started_at = at;
             builder.source_turn_ids = vec![turn.turn_id.clone()];

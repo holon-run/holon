@@ -57,7 +57,6 @@ fn seed_legacy_timer_backlog_with_wait(
     upsert_agent_identity_tx(&tx, &identity).unwrap();
     let mut state = AgentState::new("default");
     state.pending = messages.len();
-    state.total_message_count = messages.len();
     upsert_agent_state_tx(&tx, &state).unwrap();
     if let Some((work, wait, state)) = work_wait {
         // Use v81's original columns; current writers require post-migration projections.
@@ -3158,7 +3157,7 @@ async fn timer_fire_with_persisted_working_memory_keeps_exact_wait_and_acks() {
                 "runtime: awaiting_timer".into(),
             ],
         };
-        let mut episode = ActiveEpisodeBuilder::new(&mutation.state, &snapshot, 0);
+        let mut episode = ActiveEpisodeBuilder::new(&mutation.state, &snapshot);
         episode.started_at = clock.now();
         mutation.state.working_memory.current_working_memory = snapshot;
         mutation.state.working_memory.active_episode_id = Some(episode.id.clone());

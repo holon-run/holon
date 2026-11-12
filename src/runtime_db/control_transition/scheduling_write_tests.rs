@@ -111,7 +111,7 @@ fn seed(f: &Fixture, ledger: &InputEvidenceBudgetLedger, qualified: bool) -> Res
         // A Completed Timer may retain its original earlier fire-count Wake.
         tx.execute("INSERT INTO timer_wakes(timer_id,message_id,fire_count,status,created_at,updated_at) VALUES(?1,?2,3,'pending',?3,?3)",
             params!["original-completed-timer",message.id,f.time.to_rfc3339()])?;
-        let mut state = f.db_state(tx)?; state.pending = 1; state.total_message_count = 1;
+        let mut state = f.db_state(tx)?; state.pending = 1;
         super::super::super::evidence::upsert_agent_state_tx(tx, &state)?;
         if let Some(proof) = proof {
             scheduling::register_scheduling_writes_tx(tx, &proof, &keys(), &state, &request())?;
