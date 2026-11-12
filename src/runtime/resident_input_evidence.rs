@@ -560,7 +560,7 @@ pub(crate) struct CommittedInputEvidenceDelta {
     pub records: Vec<Arc<QualifiedInputEvidence>>,
     pub removals: Vec<CommittedEvidenceRemoval>,
     pub replay_source_absences: BTreeMap<String, ReplaySourceAbsence>,
-    /// Exact qualified Transcript frontier for each Turn included in this commit.
+    /// Complete coverage established by this commit for newly current Turns.
     pub turn_transcript_keys: BTreeMap<String, BTreeSet<InputEvidenceKey>>,
     /// None is an actual same-view unassigned input, not a missing preparation.
     pub message_turn_keys: BTreeMap<String, Option<String>>,
@@ -1962,12 +1962,6 @@ impl ResidentInputEvidence {
                     "committed Message is missing its canonical assignment observation"
                 );
             }
-            if let PreparedInputEvidence::Turn(turn) = &record.record {
-                ensure!(
-                    delta.turn_transcript_keys.contains_key(&turn.turn_id),
-                    "committed Turn is missing its qualified transcript frontier"
-                );
-            }
             ensure!(
                 record.locator.scope == self.scope && record.locator.key == record.record.key(),
                 "committed evidence scope/key mismatch"
@@ -2022,16 +2016,13 @@ impl ResidentInputEvidence {
                 for keys in next.coverage.turn_transcript_keys.values_mut() {
                     keys.remove(&evidence.locator.key);
                 }
-                if let Some(turn_id) = entry
+                if let Some(keys) = entry
                     .data
                     .get("turn_id")
                     .and_then(serde_json::Value::as_str)
+                    .and_then(|turn_id| next.coverage.turn_transcript_keys.get_mut(turn_id))
                 {
-                    next.coverage
-                        .turn_transcript_keys
-                        .entry(turn_id.to_string())
-                        .or_default()
-                        .insert(evidence.locator.key.clone());
+                    keys.insert(evidence.locator.key.clone());
                 }
             }
         }

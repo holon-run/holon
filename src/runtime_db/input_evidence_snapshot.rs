@@ -977,6 +977,7 @@ fn register_committed_input_evidence_inner_tx(
         }
     }
     let mut final_records = BTreeMap::new();
+    let mut new_turns = BTreeSet::new();
     for supplied in &actual_records {
         let supplied = supplied.as_ref();
         let key = supplied.key();
@@ -1011,7 +1012,7 @@ fn register_committed_input_evidence_inner_tx(
             }
             _ => None,
         };
-        let revision = upsert_alias_tx(
+        let (revision, was_present) = upsert_alias_tx(
             tx,
             scope,
             &key,
@@ -1022,6 +1023,9 @@ fn register_committed_input_evidence_inner_tx(
             "committed_writer",
             binding.seed_id.as_deref(),
         )?;
+        if key.family == Family::Turn && !was_present {
+            new_turns.insert(key.id.clone());
+        }
         let record = prepare_record_on(tx, &scope.agent_id, &key, Some(actual))?;
         final_records.insert(
             key.clone(),
@@ -1046,12 +1050,12 @@ fn register_committed_input_evidence_inner_tx(
                 present_input_turn_on(tx, scope, &message.id)?,
             );
         }
-        if let PreparedInputEvidence::Turn(turn) = &record.record {
-            turn_transcript_keys.insert(
-                turn.turn_id.clone(),
-                qualified_turn_transcript_keys(tx, scope, &binding, &turn.turn_id, MAX_RECORDS)?,
-            );
-        }
+    }
+    // Establish coverage once when a Turn first becomes current. A newly
+    // registered Turn ID can already have qualified Transcript relations.
+    for turn_id in new_turns {
+        let keys = qualified_turn_transcript_keys(tx, scope, &binding, &turn_id, MAX_RECORDS)?;
+        turn_transcript_keys.insert(turn_id, keys);
     }
     let mut replay_source_absences = BTreeMap::new();
     for record in final_records.values() {
@@ -1574,6 +1578,7 @@ impl ObservedInputQualification {
             "legacy_prepared",
             binding.seed_id.as_deref(),
         )
+        .map(|(revision, _)| revision)
     }
 }
 
@@ -2673,8 +2678,9 @@ fn upsert_alias_tx(
     attempt_turn_proof: Option<&AttemptTurnProof>,
     qualification: &str,
     seed: Option<&str>,
-) -> Result<u64> {
+) -> Result<(u64, bool)> {
     let old = alias_on(tx, scope, key)?;
+    let was_present = old.as_ref().is_some_and(|alias| alias.present);
     if let Some(old) = old.as_ref() {
         if old.fingerprint == *fingerprint
             && old.digest.as_deref() == digest
@@ -2696,7 +2702,7 @@ fn upsert_alias_tx(
                 old.revision,
                 fingerprint.related_turn_id.as_deref(),
             )?;
-            return Ok(old.revision);
+            return Ok((old.revision, was_present));
         }
     }
     let revision = old.map_or(Ok(1), |old| {
@@ -2721,7 +2727,7 @@ fn upsert_alias_tx(
             && stored.attempt_turn_proof.as_ref() == attempt_turn_proof,
         "input evidence alias exact readback mismatch"
     );
-    Ok(revision)
+    Ok((revision, was_present))
 }
 fn normalized_payload_digest(hash: &str) -> Result<String> {
     let digest = hash
@@ -3543,7 +3549,7 @@ pub(crate) fn register_pruned_input_evidence_tx(
             };
             (fingerprint, digest, None)
         };
-        let revision = upsert_alias_tx(
+        let (revision, _) = upsert_alias_tx(
             tx,
             scope,
             key,

@@ -199,3 +199,103 @@ fn turn_transcript_upgrade_accepts_preinstalled_indexes_without_rebuilding() -> 
     );
     Ok(())
 }
+
+#[test]
+fn committed_transcripts_extend_turn_coverage_without_refreshing_existing_turns() -> Result<()> {
+    let (_home, db) = fresh()?;
+    let mut turn = TurnRecord::new("agent-a", "covered-turn", 1);
+    turn.created_at = time();
+    let turn_key = Key::new(Family::Turn, &turn.turn_id);
+    let policy = request(
+        InputWindowSelector::OwnerTurns {
+            owner: crate::types::TurnOwner::WorkItem {
+                work_item_id: "unused-owner".into(),
+            },
+        },
+        0,
+    );
+    let initial =
+        current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?);
+    let start = db.transaction(|tx| {
+        upsert_turn_record_tx(tx, &turn)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(turn.clone())],
+        )
+    })?;
+    assert_eq!(
+        start.turn_transcript_keys.get(&turn.turn_id),
+        Some(&BTreeSet::new())
+    );
+    let roots = BTreeSet::from([turn_key.clone()]);
+    let mut resident = initial
+        .resident
+        .with_committed(&start, roots.clone())?
+        .unwrap();
+
+    let mut keys = BTreeSet::new();
+    for round in 1..=2 {
+        let transcript = TranscriptEntry::new(
+            "agent-a",
+            TranscriptEntryKind::AssistantRound,
+            Some(round),
+            None,
+            serde_json::json!({"turn_id": turn.turn_id}),
+        );
+        keys.insert(Key::new(Family::Transcript, &transcript.id));
+        for _ in 0..2 {
+            let delta = db.transaction(|tx| {
+                let actual = append_transcript_entry_tx(tx, &transcript)?.0;
+                register_committed_input_evidence_tx(
+                    tx,
+                    &scope(),
+                    &[CanonicalInputEvidence::Transcript(actual)],
+                )
+            })?;
+            assert!(delta
+                .records
+                .iter()
+                .any(|record| record.locator.key == turn_key));
+            assert!(delta.turn_transcript_keys.is_empty());
+            resident = resident.with_committed(&delta, roots.clone())?.unwrap();
+            assert_eq!(
+                resident.capture()?.turn_transcript_keys[&turn.turn_id],
+                keys
+            );
+        }
+    }
+    let mut terminal = turn.clone();
+    terminal.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: crate::types::TurnTerminalKind::Completed,
+        reason: None,
+        no_brief_reason: None,
+        completed_at: time(),
+        duration_ms: 1,
+    });
+    let settled = db.transaction(|tx| {
+        upsert_turn_record_tx(tx, &terminal)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(terminal.clone())],
+        )
+    })?;
+    assert!(settled.turn_transcript_keys.is_empty());
+    resident = resident.with_committed(&settled, roots)?.unwrap();
+    let scope = scope();
+    let cold_keys = db.transaction(|tx| {
+        qualified_turn_transcript_keys(
+            tx,
+            &scope,
+            &binding_on(tx, &scope)?,
+            &turn.turn_id,
+            MAX_RECORDS,
+        )
+    })?;
+    assert_eq!(
+        resident.capture()?.turn_transcript_keys[&turn.turn_id],
+        cold_keys
+    );
+    Ok(())
+}
