@@ -697,3 +697,7 @@ mod startup_metadata_tests;
 #[cfg(holon_lib_test_shard = "b")]
 #[path = "deletion_maintenance_tests.rs"]
 mod deletion_maintenance_tests;
+
+#[cfg(holon_lib_test_shard = "b")]
+#[path = "metadata_reads_tests.rs"]
+mod metadata_reads;

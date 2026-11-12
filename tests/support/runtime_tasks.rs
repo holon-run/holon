@@ -3383,6 +3383,102 @@ pub async fn exec_command_auto_promotes_long_running_command_task() -> Result<()
     Ok(())
 }
 
+pub async fn running_exec_command_does_not_block_another_agent() -> Result<()> {
+    let host = RuntimeHost::new_with_provider(
+        test_config(),
+        Arc::new(StubProvider::new("other agent remains responsive")),
+    )?;
+    attach_default_workspace(&host).await?;
+    host.create_named_agent("command-peer", None).await?;
+    let owner = host.default_runtime().await?;
+    let peer = host.get_or_create_agent("command-peer").await?;
+
+    struct ReleaseCommand(PathBuf);
+    impl Drop for ReleaseCommand {
+        fn drop(&mut self) {
+            let _ = std::fs::write(&self.0, b"release");
+        }
+    }
+    let release = ReleaseCommand(owner.workspace_root().join("release-command"));
+    let registry = ToolRegistry::new(owner.workspace_root());
+    let result = registry
+        .execute(
+            &owner,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &ToolCall {
+                id: "long-command-isolation".into(),
+                name: "ExecCommand".into(),
+                input: json!({
+                    "cmd": "printf started > command-started; while [ ! -f release-command ]; do sleep 0.01; done; printf finished",
+                    "login": false,
+                    "yield_time_ms": 0,
+                }),
+            },
+        )
+        .await?;
+    let payload = parse_tool_result_payload(&result.0)?;
+    let task_id = payload["task_handle"]["task_id"]
+        .as_str()
+        .context("ExecCommand should promote the live command")?
+        .to_owned();
+    eventually_for(Duration::from_secs(10), || {
+        Ok(owner.workspace_root().join("command-started").exists()
+            && owner
+                .storage()
+                .latest_task_records()?
+                .iter()
+                .any(|task| task.id == task_id && task.status == TaskStatus::Running))
+    })
+    .await?;
+
+    let message = MessageEnvelope::new(
+        "command-peer",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "confirm responsiveness".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    peer.enqueue(message.clone()).await?;
+    eventually_for(Duration::from_secs(10), || {
+        Ok(peer.storage().read_recent_briefs(10)?.iter().any(|brief| {
+            brief.related_message_id.as_deref() == Some(message.id.as_str())
+                && brief.text == "other agent remains responsive"
+        }))
+    })
+    .await?;
+    assert!(
+        !release.0.exists(),
+        "peer must respond before command release"
+    );
+    assert!(owner
+        .storage()
+        .latest_task_records()?
+        .iter()
+        .any(|task| { task.id == task_id && task.status == TaskStatus::Running }));
+    drop(release);
+    eventually_for(Duration::from_secs(10), || {
+        Ok(owner
+            .storage()
+            .latest_task_records()?
+            .iter()
+            .any(|task| task.id == task_id && task.status == TaskStatus::Completed))
+    })
+    .await?;
+    host.shutdown().await?;
+    Ok(())
+}
+
 pub async fn exec_command_reuses_equivalent_active_command_task_by_default() -> Result<()> {
     let host =
         RuntimeHost::new_with_provider(test_config(), Arc::new(StubProvider::new("ignored")))?;

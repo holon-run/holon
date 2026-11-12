@@ -1,5 +1,5 @@
 use super::*;
-use loader::{current_coverage, load_original, persist_coverage};
+use loader::{current_coverage, current_revision, load_original, persist_coverage};
 /// Freezes only this original transaction's finite Task/result footprint.
 /// Qualification is not a substitute for Task/rejoin/State business OCC.
 pub(crate) struct TaskWriteProof {
@@ -128,7 +128,7 @@ fn prepare(
     }
     Ok(TaskWriteProof {
         scope: scope.clone(),
-        base_revision: current_coverage(tx, scope)?.map_or(1, |c| c.revision),
+        base_revision: current_revision(tx, scope)?.unwrap_or(1),
         before,
         original_recovery,
     })
@@ -140,7 +140,7 @@ pub(crate) fn preflight_task_write_snapshot_tx(
     request: &TaskDomainLoadRequest,
 ) -> Result<TaskBootstrapSnapshot> {
     ensure!(
-        current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision) == proof.base_revision,
+        current_revision(tx, &proof.scope)?.unwrap_or(1) == proof.base_revision,
         "Task proof base changed"
     );
     load_original(tx, &proof.scope, request, false, proof.original_recovery)
@@ -153,7 +153,7 @@ pub(crate) fn preflight_task_write_snapshot_with_budget_tx(
     budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
 ) -> Result<TaskBootstrapSnapshot> {
     ensure!(
-        current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision) == proof.base_revision,
+        current_revision(tx, &proof.scope)?.unwrap_or(1) == proof.base_revision,
         "Task proof base changed"
     );
     loader::load_original_with_budget(
@@ -176,8 +176,7 @@ pub(crate) fn preflight_task_write_snapshot_with_memory_budget_tx(
     match memory_budget {
         Some(memory) => {
             ensure!(
-                current_coverage(tx, &proof.scope)?.map_or(1, |c| c.revision)
-                    == proof.base_revision,
+                current_revision(tx, &proof.scope)?.unwrap_or(1) == proof.base_revision,
                 "Task proof base changed"
             );
             loader::load_with_memory_budget(
