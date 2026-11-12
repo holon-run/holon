@@ -1603,7 +1603,7 @@ mod tests {
 
     #[test]
     fn active_state_work_keeps_completing_outside_the_history_window() -> Result<()> {
-        let mut records = (0..60)
+        let mut records = (0..=WORK_NONOPEN_WINDOW)
             .map(|index| {
                 qualified(
                     &format!("completed-{index:03}"),
@@ -1614,8 +1614,11 @@ mod tests {
             .collect::<Vec<_>>();
         records.push(qualified("zz-completing", WorkItemState::Completing, 1));
         records.push(qualified("open", WorkItemState::Open, 1));
-        let captured = domain(records.clone(), coverage(&records, 1))
-            .capture(&WorkCaptureRequest::current())?;
+        let mut prepared = coverage(&records, 1);
+        prepared.nonopen.keys.truncate(WORK_NONOPEN_WINDOW);
+        prepared.nonopen.is_exhaustive = false;
+        let captured = domain(records, prepared).capture(&WorkCaptureRequest::current())?;
+        assert_eq!(captured.nonopen.keys.len(), WORK_NONOPEN_WINDOW);
         assert!(!captured
             .nonopen
             .keys
