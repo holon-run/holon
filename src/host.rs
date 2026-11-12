@@ -20369,7 +20369,7 @@ mod tests {
     #[tokio::test]
     async fn parent_summary_shows_private_children_but_public_listing_hides_them() {
         let (_home, host) = test_host();
-        let default_runtime = host.default_runtime().await.unwrap();
+        let default_runtime = default_runtime_settled(&host).await;
 
         let child = AgentIdentityRecord::new(
             "child_test",
@@ -20405,7 +20405,7 @@ mod tests {
             })
             .unwrap();
 
-        let summary = default_runtime.agent_summary().await.unwrap();
+        let summary = agent_summary_settled(&default_runtime).await;
         assert_eq!(summary.identity.kind, AgentKind::Default);
         assert_eq!(summary.active_children.len(), 1);
         assert_eq!(summary.active_children[0].identity.agent_id, "child_test");
