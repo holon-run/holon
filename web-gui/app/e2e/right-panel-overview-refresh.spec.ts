@@ -446,6 +446,7 @@ test("refreshed plan artifact hashes flag the preserved file snapshot until expl
   await ui.panel.locator(".workspace-path-link").click();
   const browser = ui.panel.locator(".file-browser");
   await expect(browser.locator(".file-browser-markdown")).toContainText("Original plan");
+  await ui.advance(1);
   const opened = await ui.counts();
 
   await ui.update({
@@ -458,7 +459,8 @@ test("refreshed plan artifact hashes flag the preserved file snapshot until expl
   await expect(hint).toContainText("File may have changed.");
   await expect(browser.locator(".file-browser-markdown")).toContainText("Original plan");
   expect((await ui.counts()).files).toBe(opened.files);
-  expect((await ui.counts()).workItemDetail).toBe(opened.workItemDetail);
+  expect((await ui.counts()).workItemDetail - opened.workItemDetail).toBe(1);
+  expect((await ui.counts()).workLists).toBe(opened.workLists);
   await hint.getByRole("button", { name: "Reload", exact: true }).click();
   await expect(browser.locator(".file-browser-markdown")).toContainText("Updated plan");
   await expect(hint).toHaveCount(0);
