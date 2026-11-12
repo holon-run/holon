@@ -1402,7 +1402,15 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             context_window_tokens: (model == "kimi-k3-1-pro").then_some(1_048_576),
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
             auto_compact_token_limit: None,
-            default_max_output_tokens: None,
+            // Responses documents an exact default, not an output hard limit.
+            // Do not propagate it to the separately reviewed subscription IDs.
+            default_max_output_tokens: matches!(
+                model,
+                "deepseek-v4-1-flash-261017"
+                    | "deepseek-v4-1-flash-260910"
+                    | "deepseek-v4-1-flash-economy-261017"
+            )
+            .then_some(131_072),
             max_output_tokens_upper_limit: (model == "kimi-k3-1-pro").then_some(1_048_576),
             default_verbosity: None,
             tool_output_truncation_estimated_tokens: Some(
@@ -1504,7 +1512,14 @@ fn volcengine_native_responses_ids_keep_protocol_and_unknown_limits_scoped() {
             (model == "kimi-k3-1-pro").then_some(1_048_576)
         );
         assert_eq!(metadata.auto_compact_token_limit, None);
-        assert_eq!(metadata.default_max_output_tokens, None);
+        let default_output = matches!(
+            model,
+            "deepseek-v4-1-flash-261017"
+                | "deepseek-v4-1-flash-260910"
+                | "deepseek-v4-1-flash-economy-261017"
+        )
+        .then_some(131_072);
+        assert_eq!(metadata.default_max_output_tokens, default_output);
         assert_eq!(
             metadata.max_output_tokens_upper_limit,
             (model == "kimi-k3-1-pro").then_some(1_048_576)
@@ -1520,6 +1535,23 @@ fn volcengine_native_responses_ids_keep_protocol_and_unknown_limits_scoped() {
         };
         assert_eq!(metadata.reasoning_effort_options, efforts);
         let api = ModelRouteRef::parse(&format!("volcengine@default/{model}")).unwrap();
+        let policy = catalog.resolve_route_policy(
+            &api,
+            &HashMap::new(),
+            &HashMap::new(),
+            None,
+            &ContextConfig::default(),
+            8_192,
+        );
+        assert_eq!(
+            policy.runtime_max_output_tokens,
+            default_output.unwrap_or(8_192)
+        );
+        assert_eq!(policy.context_window_tokens, metadata.context_window_tokens);
+        assert_eq!(
+            policy.max_output_tokens_upper_limit,
+            metadata.max_output_tokens_upper_limit
+        );
         // Responses caching is not evidence for Anthropic cache_control.
         assert!(catalog
             .get_route(&api)

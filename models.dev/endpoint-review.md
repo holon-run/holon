@@ -9,6 +9,88 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-12 incremental review
+
+Baseline main is `b98082ef`. The fixed models.dev payload was sampled on
+November 11 at 21:03:40 UTC:
+`5a4aee967f0a0586ca3bd638129ff4e39bb71518f48e0ad8385fe38212426aac`.
+November 11 UTC sampling corresponds to this Beijing cycle.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-12)
+distinguishes endpoint defaults from unknown hard limits.
+
+### Accepted increment
+
+The native Responses API documents `max_output_tokens` default **131072** for
+exactly these existing `volcengine@default` IDs:
+
+- `deepseek-v4-1-flash-261017`
+- `deepseek-v4-1-flash-260910`
+- `deepseek-v4-1-flash-economy-261017`
+
+Only their built-in default output changes from unknown to 131,072. Neither
+context nor output hard upper limits become known. Do not infer an upper limit
+from a default, multiply ambiguous `K` units, or copy this Responses contract to
+Messages, Coding Plan, Agent Plan, or dotted subscription IDs. Existing
+capabilities, effort choices, cache policy, aliases and preferred mappings stay
+unchanged. K3.1's separate conflicting output specifications remain unresolved.
+
+The refreshed artifact contains reviewed upstream additions, removals and
+capacity changes for OpenRouter/NearAI metadata. It does not grant access to new
+special-endpoint models. Before this manual three-route correction, all 635
+complete runtime coverage objects were identical to the baseline, including the
+30 special endpoints' 332 + 142 objects. This is a static comparison, not
+first-party certification of every field or an account-entitlement test.
+
+### Deferred candidates and evidence boundaries
+
+Alibaba's separate personal and team Token Plan tables add
+`qwen4-max-preview` and callable alias `qwen4.0-max-preview`; the preview runs
+from November 11, 2026 at 10:00 through November 25 at 24:00 (UTC+8), after which
+it is scheduled to go offline. The Messages contract marks this model as
+**Token Plan only**: do not add it to the default API or either Coding endpoint.
+It documents vision/reasoning, default thinking, `output_config.effort`
+low/medium/xhigh (default xhigh; high/max map to xhigh), and strict JSON Schema.
+Subsequent model-specific documentation confirms Function Calling and the
+393,216-token output hard limit, shared by reasoning and answer tokens.
+The independently documented Chat default is also 393,216; do not transfer that
+default to Messages or Responses. Context is stated only as `1M Token`, without
+an exact integer. Neither ID is registered in this change: exact context,
+Messages/Responses defaults and runtime request compatibility remain unresolved.
+Do not infer eligibility from a generic schema or ship an unreachable adaptation.
+
+The new ERNIE-Light candidate likewise lacks sufficient tool/capacity evidence
+for admission. Volcengine's Kimi K3 subscription notice says it will go offline
+soon without an exact date; retain existing routes and do not remove K3.1.
+Other previously recorded per-model, per-region, cache and account-qualification
+uncertainties remain open. HTTP success, saved hashes, unchanged static objects
+and a model listing are not interchangeable evidence.
+
+### Verification status
+
+Fixed refresh/validate and the original 635-route coverage check passed.
+The existing exact native-Responses regression failed once on the expected
+unknown-versus-131072 default assertion before the production correction.
+Snapshot regeneration and the corrected regression each passed exactly one test.
+Final coverage and strict complete-object review passed: only the three exact
+defaults, their derived runtime values and three review records changed; the
+other 632 objects and review records, route set, capabilities, cache policy,
+aliases and preferred mappings remain unchanged.
+
+The actual CI group `c` ran with Rust 1.99.1 and reported **1970 passed, 2 failed,
+7 ignored**. The unchanged IPv6 listener tests
+`ipv6_wildcard_listener_accepts_selected_backend_target` and
+`localhost_legacy_rule_can_migrate_to_resolved_listener` failed with
+`Network is unreachable` and `Cannot assign requested address`, respectively.
+This is not a fully green local suite; both tests still require remote CI
+verification. `models_dev_adapter` passed 11 tests and `context_budget` passed
+one. Validation, the 635-route coverage check, strict object comparison,
+`cargo fmt --all -- --check`, locked all-targets checking with all shards and
+`RUSTFLAGS="-D warnings"`, `git diff --check` and nine-file freeze checks passed.
+Cargo still emitted its existing manifest diagnostics for redundant homepage
+and unused `rpassword`; the successful build is not a claim of no diagnostics.
+Independent local patch review found no confirmed findings, without certifying
+the unresolved vendor fields or account entitlements described above.
+
 ## 2026-11-11 incremental review
 
 Baseline main is `a7d285db`; November 10 UTC sampling corresponds to this
