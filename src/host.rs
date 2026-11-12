@@ -820,7 +820,7 @@ fn bounded_bootstrap_error(error: &anyhow::Error) -> String {
 /// Default bootstrap initialization message for agents created without an
 /// explicit `initial_message` (#2795): a runtime-owned, deterministic-id
 /// instruction that makes the new agent run one initialization turn so its
-/// conversation is not empty. Mirrors the `first_run_intro` contract.
+/// conversation has an initial message.
 fn default_agent_bootstrap_initial_message(
     bootstrap: &AgentBootstrapRecord,
 ) -> AgentBootstrapInitialMessage {
@@ -5637,10 +5637,7 @@ impl RuntimeHost {
         desired: AgentBootstrapDesiredState,
         execution: AgentBootstrapExecution,
     ) -> Result<AgentCreateResult> {
-        // The default bootstrap initialization turn requires a usable model
-        // provider, mirroring `first_run_intro`. Drop the intent when no
-        // provider is ready (e.g. onboarding bootstrap mode) instead of
-        // enqueueing a message the new agent cannot run.
+        // Default initialization needs a usable model provider.
         let desired = if desired.default_initial_message && !self.config().default_provider_ready()
         {
             AgentBootstrapDesiredState {

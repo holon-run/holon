@@ -49,7 +49,7 @@ use holon::{
     provider::{provider_doctor, resolved_model_availability},
     resource_policy::{apply_startup_policy, startup_report},
     run_once::{run_once, RunOnceRequest},
-    runtime::{maybe_enqueue_first_run_intro, seed_scheduler_terminal_recovery_fixture},
+    runtime::seed_scheduler_terminal_recovery_fixture,
     runtime_db::{
         RuntimeDb, RuntimeDbAuditCheck, RuntimeDbAuditOptions, RuntimeDbAuditReport, RuntimeDbLock,
     },
@@ -1228,12 +1228,6 @@ fn resolve_daemon_serve_plan_with_inputs(
     })
 }
 
-async fn emit_first_run_intro(config: &AppConfig, runtime: &holon::runtime::RuntimeHandle) {
-    if let Err(error) = maybe_enqueue_first_run_intro(config, runtime).await {
-        eprintln!("failed to enqueue first-run intro: {error:#}");
-    }
-}
-
 fn resolve_recorded_daemon_serve_plan(
     config: &AppConfig,
     metadata: &holon::daemon::RuntimeServiceMetadata,
@@ -1382,22 +1376,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                     Ok(())
                 })
                 .await?;
-            let runtime = startup
+            startup
                 .observe("default_activation", async {
                     if host.configured_default_agent_id()?.is_some() {
-                        let runtime = host
-                            .default_runtime_bootstrapped_observed(Some(startup.clone()))
+                        host.default_runtime_bootstrapped_observed(Some(startup.clone()))
                             .await?;
-                        Ok(Some(runtime))
-                    } else {
-                        Ok(None)
-                    }
-                })
-                .await?;
-            startup
-                .observe("first_run", async {
-                    if let Some(runtime) = runtime.as_ref() {
-                        emit_first_run_intro(&config, runtime).await;
                     }
                     Ok(())
                 })

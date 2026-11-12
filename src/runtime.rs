@@ -61,7 +61,6 @@ pub(crate) mod ended_dispatch;
 pub(crate) mod episode_recovery;
 pub(crate) mod execution_admission;
 mod failure;
-mod first_run_intro;
 pub(crate) mod input_consumption;
 pub(crate) mod input_evidence_budget;
 mod input_preparation;
@@ -178,7 +177,6 @@ pub(crate) use agent_message_delivery::{
     PreparedAgentMessageDelivery,
 };
 pub(crate) use closure::runtime_error_active;
-pub use first_run_intro::maybe_enqueue_first_run_intro;
 pub(crate) use lifecycle::build_child_agent_observability_with_active_tasks;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
