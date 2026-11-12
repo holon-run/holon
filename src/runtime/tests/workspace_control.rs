@@ -24,7 +24,7 @@ fn git(repo: &Path, args: &[&str]) -> String {
 }
 
 fn init_git_repo() -> TempDir {
-    let repo = tempdir().unwrap();
+    let repo = canonical_tempdir().unwrap();
     git(repo.path(), &["init", "-b", "main"]);
     git(repo.path(), &["config", "user.name", "Holon Test"]);
     git(
@@ -1064,7 +1064,7 @@ async fn removed_path_reuse_gets_new_generation_and_old_id_cannot_remove_it() {
 async fn workspace_state_refresh_preserves_retained_roots_and_removed_evidence() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let repo = init_git_repo();
-    let roots_dir = tempdir().unwrap();
+    let roots_dir = canonical_tempdir().unwrap();
     let workspace = runtime
         .attach_workspace_path(repo.path().to_path_buf())
         .await
