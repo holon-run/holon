@@ -157,8 +157,9 @@ pub enum ContextCaptureStage {
     DurableCapture,
     ResidentCapture,
     PreviewSchedulerPreflight,
-    PreviewToolPolicyPreparation,
+    ContextToolPolicyPreparation,
     PreviewReadyCapture,
+    ReadyTurnCapture,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
@@ -244,6 +245,7 @@ pub(crate) fn record_context_owner_reserved(started: Option<Instant>) {
                 sample.stage,
                 ContextCaptureStage::OwnerAcquisition
                     | ContextCaptureStage::PreviewSchedulerPreflight
+                    | ContextCaptureStage::ReadyTurnCapture
             ) && sample.owner_reservation_wait_micros.is_none()
             {
                 sample.owner_reservation_wait_micros = Some(elapsed_micros(started.elapsed()));

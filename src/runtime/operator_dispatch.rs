@@ -336,7 +336,7 @@ impl RuntimeHandle {
                     message,
                     continuation_resolution,
                     model_selection.fallback_model(),
-                    true,
+                    &dispatch_turn_id,
                 )
                 .await?;
             let available_bytes = idle_input_budget(&built);
@@ -723,11 +723,11 @@ impl RuntimeHandle {
         self.select_provider_tools(fallback_model, None).await
     }
 
-    pub(super) async fn preview_provider_tools(
+    pub(super) async fn captured_context_tools(
         &self,
         state: &AgentState,
         fallback_model: Option<&ModelRouteRef>,
-        allowed: super::context_capture::PreviewToolFamilies,
+        allowed: super::context_capture::ContextToolFamilies,
     ) -> Result<(Vec<ToolSpec>, ApplyPatchSurface)> {
         let (_, tools, surface, _, _) = self
             .select_provider_tools(fallback_model, Some((state, allowed)))
@@ -738,7 +738,7 @@ impl RuntimeHandle {
     async fn select_provider_tools(
         &self,
         fallback_model: Option<&ModelRouteRef>,
-        preview: Option<(&AgentState, super::context_capture::PreviewToolFamilies)>,
+        captured: Option<(&AgentState, super::context_capture::ContextToolFamilies)>,
     ) -> Result<(
         Arc<dyn AgentProvider>,
         Vec<ToolSpec>,
@@ -755,7 +755,7 @@ impl RuntimeHandle {
             &web_config.search,
         );
         let native_web_search = native_web_search_selection.request;
-        let (apply_patch_surface, available_tools) = if let Some((state, allowed)) = preview {
+        let (apply_patch_surface, available_tools) = if let Some((state, allowed)) = captured {
             let surface = self.apply_patch_surface_for_turn(state, fallback_model);
             let tools =
                 self.tool_specs_for_apply_patch_surface(surface, |family| allowed.allows(family))?;

@@ -276,7 +276,7 @@ impl RuntimeMutation {
         {
             trace_publication(observation.token);
         }
-        self.base = self.candidate.clone();
+        self.refresh_baseline()?;
         Ok(())
     }
 }

@@ -153,8 +153,8 @@ impl RuntimeHandle {
         );
         let snapshot = self.inner.runtime_db.load_control_snapshot(&key)?;
         anyhow::ensure!(
-            snapshot.state == mutation.last_persisted_state
-                && mutation.state == mutation.last_persisted_state,
+            &snapshot.state == mutation.committed_state()
+                && &mutation.state == mutation.committed_state(),
             "Control preparation requires the exact published durable baseline"
         );
         let prepared_at = self.now();

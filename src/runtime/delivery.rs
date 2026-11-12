@@ -104,7 +104,7 @@ impl RuntimeHandle {
 
     async fn persist_brief_owned(&self, mut bound_brief: BriefRecord) -> Result<()> {
         let (workspace_id, turn_id, default_turn_work_item_id) = self
-            .read_committed_agent(|agent| {
+            .read_committed_agent(|agent, _| {
                 (
                     agent
                         .state

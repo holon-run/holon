@@ -11,16 +11,16 @@ use crate::types::{
     AgentCapabilityFamily, AgentCapabilityPolicyRecord, AgentIdentityRecord, AgentPolicyEffect,
 };
 
-pub(in crate::runtime) struct PreviewToolPolicy {
+pub(in crate::runtime) struct ContextToolPolicy {
     identity_revision: u64,
     generation: u64,
-    tools: PreviewToolFamilies,
+    tools: ContextToolFamilies,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(in crate::runtime) struct PreviewToolFamilies(u8);
+pub(in crate::runtime) struct ContextToolFamilies(u8);
 
-impl PreviewToolFamilies {
+impl ContextToolFamilies {
     fn bit(family: AgentCapabilityFamily) -> u8 {
         1 << match family {
             AgentCapabilityFamily::CoreAgent => 0,
@@ -65,14 +65,9 @@ impl RuntimeHandle {
             .await
         {
             Ok(prepared) => return self.project_loaded_context_prompt(prepared, None).await,
-            Err(error) if preview_requires_preparation(&error) => ContextPreparationRetries {
-                writers: usize::from(
-                    error.is::<crate::host::context_resources::ContextResourceWritersActive>(),
-                ),
-                sources: usize::from(
-                    super::super::resource_refresh::is_resource_preparation_conflict(&error),
-                ),
-            },
+            Err(error) if ready_context_requires_preparation(&error) => {
+                ContextPreparationRetries::after(&error)
+            }
             Err(error) => return Err(error),
         };
         let prior = ContextCaptureMode::Preview
@@ -100,6 +95,77 @@ impl RuntimeHandle {
         self.project_loaded_context_prompt(prepared, None).await
     }
 
+    pub(super) async fn capture_ready_turn_context(
+        &self,
+        message: &MessageEnvelope,
+        continuation: Option<&ContinuationResolution>,
+        fallback_model: Option<&ModelRouteRef>,
+        admission: Option<ContextAdmissionPlan<'_>>,
+        expected: Option<&Arc<resident_state::AgentSnapshot>>,
+    ) -> Result<PreparedLoadedContext> {
+        let db = &self.inner.runtime_db;
+        db.check_read_scope()?;
+        let root = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .ok_or(ContextNeedsPreparation)?;
+        if expected.is_some_and(|planned| !Arc::ptr_eq(planned, &root)) {
+            return Err(AdmissionContextChanged.into());
+        }
+        let identity = root.identity.as_deref().ok_or(ContextNeedsPreparation)?;
+        anyhow::ensure!(
+            identity.agent_id == message.agent_id
+                && identity.agent_id == root.state.id
+                && identity.incarnation == self.inner.identity_incarnation
+                && identity.incarnation == root.token.identity_incarnation
+                && identity.status == crate::types::AgentRegistryStatus::Active,
+            "Context identity is outside the active publication scope"
+        );
+        if self.inner.resources.registry.freshness()? != ResourceFreshness::Ready {
+            return Err(ContextNeedsPreparation.into());
+        }
+        let (mode, tools) = if admission.is_some() {
+            (ContextCaptureMode::Admission, None)
+        } else {
+            (
+                ContextCaptureMode::Execution,
+                Some(
+                    self.ready_context_tool_policy(identity)
+                        .ok_or(ContextNeedsPreparation)?,
+                ),
+            )
+        };
+        let prepared = self
+            .capture_loaded_context(
+                ContextPublication::Ready(&root),
+                mode,
+                message,
+                continuation,
+                fallback_model,
+                admission.is_none(),
+                admission,
+            )
+            .await?;
+        let current = self
+            .inner
+            .mutation_owner
+            .capture()?
+            .ok_or(ContextNeedsPreparation)?;
+        if !Arc::ptr_eq(&current, &root) {
+            return if expected.is_some() {
+                Err(AdmissionContextChanged.into())
+            } else {
+                Err(ContextDependencyChanged.into())
+            };
+        }
+        if tools.is_some_and(|tools| self.ready_context_tool_policy(identity) != Some(tools)) {
+            return Err(ContextNeedsPreparation.into());
+        }
+        db.check_read_scope()?;
+        Ok(prepared)
+    }
+
     async fn capture_ready_prompt_preview(
         &self,
         message: &MessageEnvelope,
@@ -109,19 +175,19 @@ impl RuntimeHandle {
             .inner
             .mutation_owner
             .capture()?
-            .ok_or(PreviewNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation)?;
         if !self.preview_scheduler_has_facts(&root)? {
-            return Err(PreviewNeedsPreparation.into());
+            return Err(ContextNeedsPreparation.into());
         }
-        let identity = root.identity.as_deref().ok_or(PreviewNeedsPreparation)?;
+        let identity = root.identity.as_deref().ok_or(ContextNeedsPreparation)?;
         let tool_policy = self
-            .ready_preview_tool_policy(identity)
-            .ok_or(PreviewNeedsPreparation)?;
+            .ready_context_tool_policy(identity)
+            .ok_or(ContextNeedsPreparation)?;
         if self.inner.resources.registry.freshness()? != ResourceFreshness::Ready {
-            return Err(PreviewNeedsPreparation.into());
+            return Err(ContextNeedsPreparation.into());
         }
         let _admission = if root.state.status != AgentStatus::Stopped {
-            let scheduling = root.scheduling.as_ref().ok_or(PreviewNeedsPreparation)?;
+            let scheduling = root.scheduling.as_ref().ok_or(ContextNeedsPreparation)?;
             anyhow::ensure!(
                 scheduling.scope() == &self.inner.resources.scope,
                 "preview Trigger scope differs"
@@ -130,7 +196,7 @@ impl RuntimeHandle {
                 .active_default_trigger()?
                 .is_some_and(|trigger| trigger.token.is_some())
             {
-                return Err(PreviewNeedsPreparation.into());
+                return Err(ContextNeedsPreparation.into());
             }
             Some(self.execution_admission_lease()?)
         } else {
@@ -157,17 +223,17 @@ impl RuntimeHandle {
             .inner
             .mutation_owner
             .capture()?
-            .ok_or(PreviewNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation)?;
         if !Arc::ptr_eq(&current, &root)
             || !self.preview_scheduler_has_facts(&root)?
-            || self.ready_preview_tool_policy(identity) != Some(tool_policy)
+            || self.ready_context_tool_policy(identity) != Some(tool_policy)
         {
-            return Err(PreviewNeedsPreparation.into());
+            return Err(ContextNeedsPreparation.into());
         }
         Ok(prepared)
     }
 
-    pub(super) fn preview_completion_deliveries(
+    pub(super) fn ready_completion_deliveries(
         &self,
         root: &resident_state::AgentSnapshot,
         work: &CapturedWork,
@@ -192,29 +258,29 @@ impl RuntimeHandle {
             .filter(|view| {
                 view.generation == generation && needed.all(|id| view.summaries.contains_key(id))
             })
-            .ok_or(PreviewNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation)?;
         Ok(Some(covered.clone()))
     }
 
-    pub(super) fn ready_preview_tool_policy(
+    pub(super) fn ready_context_tool_policy(
         &self,
         identity: &AgentIdentityRecord,
-    ) -> Option<PreviewToolFamilies> {
+    ) -> Option<ContextToolFamilies> {
         if self.inner.host_bridge.is_none() {
-            return Some(PreviewToolFamilies(u8::MAX));
+            return Some(ContextToolFamilies(u8::MAX));
         }
-        let published = self.inner.preview_tool_policy.load();
+        let published = self.inner.context_tool_policy.load();
         let policy = published.as_ref()?;
         (policy.identity_revision == identity.revision
             && Some(policy.generation) == self.inner.runtime_db.capability_policy_generation())
         .then_some(policy.tools)
     }
 
-    pub(super) fn prepare_preview_tool_policy(
+    pub(super) fn prepare_context_tool_policy(
         &self,
         identity: &AgentIdentityRecord,
-    ) -> Result<PreviewToolFamilies> {
-        if let Some(tools) = self.ready_preview_tool_policy(identity) {
+    ) -> Result<ContextToolFamilies> {
+        if let Some(tools) = self.ready_context_tool_policy(identity) {
             return Ok(tools);
         }
         let db = &self.inner.runtime_db;
@@ -222,13 +288,13 @@ impl RuntimeHandle {
         let policy = db
             .agent_canonical_relations()
             .prepare_capability_policy(identity)?;
-        let tools = PreviewToolFamilies::from_policy(policy);
+        let tools = ContextToolFamilies::from_policy(policy);
         if let Some(generation) =
             generation.filter(|generation| Some(*generation) == db.capability_policy_generation())
         {
             self.inner
-                .preview_tool_policy
-                .store(Some(Arc::new(PreviewToolPolicy {
+                .context_tool_policy
+                .store(Some(Arc::new(ContextToolPolicy {
                     identity_revision: identity.revision,
                     generation,
                     tools,
@@ -238,8 +304,8 @@ impl RuntimeHandle {
     }
 }
 
-fn preview_requires_preparation(error: &anyhow::Error) -> bool {
-    error.is::<PreviewNeedsPreparation>()
+pub(super) fn ready_context_requires_preparation(error: &anyhow::Error) -> bool {
+    error.is::<ContextNeedsPreparation>()
         || error.is::<ContextDependencyChanged>()
         || error.is::<ContextConfigurationChanged>()
         || error.is::<InputEvidenceReadError>()

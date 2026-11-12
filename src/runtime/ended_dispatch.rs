@@ -340,7 +340,7 @@ impl RuntimeHandle {
             };
             let scope = mutation.input_evidence_scope();
             let owner_epoch = self.inner.mutation_owner.owner_epoch();
-            let state = mutation.last_persisted_state.clone();
+            let state = mutation.committed_state().clone();
             // The ordinary completed path has no Stop work. Do not discover a
             // different command while its original run is still canonical.
             if state.current_run_id.as_deref() == Some(original.run_id()) {

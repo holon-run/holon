@@ -237,7 +237,7 @@ impl RuntimeHandle {
                             .pop_next_matching(|message| message.id == message_id);
                         mutation.state.pending = mutation.queue.len();
                         let agent_state = crate::runtime_db::transitions::AgentStateMutation {
-                            expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                            expected: Some(Box::new(mutation.committed_state().clone())),
                             record: Box::new(mutation.state.clone()),
                         };
                         mutation

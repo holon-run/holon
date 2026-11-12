@@ -210,7 +210,7 @@ impl RuntimeMutation {
                     .reconcile_reserved_mutations(&mut self.reservations)
                     .await?;
                 self.candidate = Box::new(self.runtime.inner.agent.lock().await.clone());
-                self.base = self.candidate.clone();
+                self.refresh_baseline()?;
                 let root = self.runtime.inner.mutation_owner.capture()?;
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());

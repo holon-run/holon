@@ -370,12 +370,12 @@ async fn context_admission_uses_claim_owner_minimum_instead_of_current_focus() {
         + input_cost
         + crate::prompt::time::RUNTIME_TIME_RESERVED_TOKENS;
     assert!(runtime
-        .prepare_input_projection(message, &state, None)
+        .prepare_input_projection(message, &state, None, None)
         .await
         .unwrap()
         .is_some());
     assert!(runtime
-        .prepare_input_projection(message, &owner_state, None)
+        .prepare_input_projection(message, &owner_state, None, None)
         .await
         .unwrap()
         .is_none());

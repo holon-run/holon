@@ -28,7 +28,8 @@ use crate::{
 };
 
 mod preview;
-pub(super) use preview::{PreviewToolFamilies, PreviewToolPolicy};
+use preview::ready_context_requires_preparation;
+pub(super) use preview::{ContextToolFamilies, ContextToolPolicy};
 
 #[derive(Debug, thiserror::Error)]
 #[error("context configuration changed during acquisition")]
@@ -47,7 +48,8 @@ struct PreparedLoadedContext {
     identity: AgentIdentityView,
     material: crate::prompt::ResourcePromptMaterial,
     tools: Option<(Vec<crate::tool::ToolSpec>, crate::tool::ApplyPatchSurface)>,
-    preview_media_defaults: Option<crate::provider::media::MediaToolDefaults>,
+    ready_media_defaults: Option<crate::provider::media::MediaToolDefaults>,
+    admission_source_matches: bool,
 }
 
 enum ContextPublication<'a> {
@@ -65,13 +67,36 @@ impl ContextPublication<'_> {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("loaded Preview requires preparation")]
-struct PreviewNeedsPreparation;
+#[error("loaded Context requires preparation")]
+struct ContextNeedsPreparation;
+
+#[derive(Debug, thiserror::Error)]
+#[error("scheduler admission publication changed")]
+pub(super) struct AdmissionContextChanged;
 
 #[derive(Default)]
 struct ContextPreparationRetries {
     writers: usize,
     sources: usize,
+    unstable_acquisitions: usize,
+}
+
+impl ContextPreparationRetries {
+    fn after(error: &anyhow::Error) -> Self {
+        Self {
+            writers: usize::from(
+                error.is::<crate::host::context_resources::ContextResourceWritersActive>(),
+            ),
+            sources: usize::from(super::resource_refresh::is_resource_preparation_conflict(
+                error,
+            )),
+            unstable_acquisitions: usize::from(context_dependencies_changed(error)),
+        }
+    }
+}
+
+fn context_dependencies_changed(error: &anyhow::Error) -> bool {
+    error.is::<ContextConfigurationChanged>() || error.is::<ContextDependencyChanged>()
 }
 
 #[cfg(test)]
@@ -105,18 +130,39 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         continuation: Option<&ContinuationResolution>,
         fallback_model: Option<&ModelRouteRef>,
-        require_execution: bool,
+        dispatch_turn_id: &str,
     ) -> Result<EffectivePrompt> {
-        let prepared = self
-            .prepare_loaded_context_snapshot(
-                message,
-                continuation,
-                fallback_model,
-                require_execution,
-                None,
-                ContextPreparationRetries::default(),
+        let prepared = match ContextCaptureMode::Execution
+            .measure(
+                Stage::ReadyTurnCapture,
+                Box::pin(self.capture_ready_turn_context(
+                    message,
+                    continuation,
+                    fallback_model,
+                    None,
+                    None,
+                )),
             )
-            .await?;
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) if ready_context_requires_preparation(&error) => {
+                self.prepare_loaded_context_snapshot(
+                    message,
+                    continuation,
+                    fallback_model,
+                    true,
+                    None,
+                    ContextPreparationRetries::after(&error),
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
+        anyhow::ensure!(
+            prepared.snapshot.agent().current_turn_id.as_deref() == Some(dispatch_turn_id),
+            "context execution differs from the original dispatch Turn"
+        );
         self.project_loaded_context_prompt(prepared, fallback_model)
             .await
     }
@@ -126,21 +172,42 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         continuation: Option<&ContinuationResolution>,
         admission: ContextAdmissionPlan<'_>,
-    ) -> Result<usize> {
-        let prepared = self
-            .prepare_loaded_context_snapshot(
-                message,
-                continuation,
-                None,
-                false,
-                Some(admission),
-                ContextPreparationRetries::default(),
+        expected: Option<&Arc<resident_state::AgentSnapshot>>,
+    ) -> Result<Option<usize>> {
+        let prepared = match ContextCaptureMode::Admission
+            .measure(
+                Stage::ReadyTurnCapture,
+                Box::pin(self.capture_ready_turn_context(
+                    message,
+                    continuation,
+                    None,
+                    Some(admission),
+                    expected,
+                )),
             )
-            .await?;
-        crate::context::input_admission_tokens_from_snapshot(
+            .await
+        {
+            Ok(prepared) => prepared,
+            Err(error) if ready_context_requires_preparation(&error) => {
+                self.prepare_loaded_context_snapshot(
+                    message,
+                    continuation,
+                    None,
+                    false,
+                    Some(admission),
+                    ContextPreparationRetries::after(&error),
+                )
+                .await?
+            }
+            Err(error) => return Err(error),
+        };
+        if !prepared.admission_source_matches {
+            return Ok(None);
+        }
+        Ok(Some(crate::context::input_admission_tokens_from_snapshot(
             &prepared.snapshot,
             prepared.snapshot.prepared_budget(),
-        )
+        )?))
     }
 
     async fn prepare_loaded_context_snapshot(
@@ -161,6 +228,7 @@ impl RuntimeHandle {
                     fallback_model,
                     require_execution,
                     admission,
+                    retries.unstable_acquisitions,
                 )
                 .await
             {
@@ -210,6 +278,7 @@ impl RuntimeHandle {
                     fallback_model,
                     require_execution,
                     None,
+                    0,
                 )
                 .await?;
             self.project_loaded_context_prompt(prepared, fallback_model)
@@ -225,6 +294,7 @@ impl RuntimeHandle {
         fallback_model: Option<&'a ModelRouteRef>,
         require_execution: bool,
         admission: Option<ContextAdmissionPlan<'a>>,
+        prior_attempts: usize,
     ) -> std::pin::Pin<
         Box<impl std::future::Future<Output = Result<PreparedLoadedContext>> + Send + 'a>,
     > {
@@ -234,6 +304,7 @@ impl RuntimeHandle {
             fallback_model,
             require_execution,
             admission,
+            prior_attempts,
         ))
     }
 
@@ -244,9 +315,10 @@ impl RuntimeHandle {
         fallback_model: Option<&ModelRouteRef>,
         require_execution: bool,
         admission: Option<ContextAdmissionPlan<'_>>,
+        prior_attempts: usize,
     ) -> Result<PreparedLoadedContext> {
         self.await_initial_resources().await;
-        for attempt in 0..3 {
+        for attempt in prior_attempts..3 {
             match self
                 .build_loaded_context_snapshot_once(
                     message,
@@ -258,12 +330,7 @@ impl RuntimeHandle {
                 .await
             {
                 Ok(prompt) => return Ok(prompt),
-                Err(error)
-                    if error
-                        .downcast_ref::<ContextConfigurationChanged>()
-                        .is_some()
-                        || error.downcast_ref::<ContextDependencyChanged>().is_some() =>
-                {
+                Err(error) if context_dependencies_changed(&error) => {
                     tracing::debug!(agent_id = %message.agent_id, attempt = attempt + 1,
                         "retrying context acquisition after a frozen dependency changed");
                     tokio::task::yield_now().await;
@@ -600,7 +667,7 @@ impl RuntimeHandle {
                 .await?;
             deliveries
         } else {
-            self.preview_completion_deliveries(
+            self.ready_completion_deliveries(
                 publication.root()?.as_ref(),
                 &planned_work,
                 &completion_work_ids,
@@ -613,7 +680,7 @@ impl RuntimeHandle {
                 .as_ref()
                 .is_none_or(|episodes| !episodes.covers(config.recent_episode_candidates))
         {
-            return Err(PreviewNeedsPreparation.into());
+            return Err(ContextNeedsPreparation.into());
         }
         let captured = root.capture_context_with_inputs_and_work_and_tasks(
             config.recent_episode_candidates,
@@ -658,25 +725,20 @@ impl RuntimeHandle {
             )
         })?;
 
-        let tools = if capture_mode == ContextCaptureMode::Preview {
+        let tools = if admission.is_none() {
             let policy = match &publication {
                 ContextPublication::Ready(_) => self
-                    .ready_preview_tool_policy(identity_record)
-                    .ok_or(PreviewNeedsPreparation)?,
+                    .ready_context_tool_policy(identity_record)
+                    .ok_or(ContextNeedsPreparation)?,
                 ContextPublication::Reserved(_) => capture_mode
-                    .measure_sync(Stage::PreviewToolPolicyPreparation, || {
-                        self.prepare_preview_tool_policy(identity_record)
+                    .measure_sync(Stage::ContextToolPolicyPreparation, || {
+                        self.prepare_context_tool_policy(identity_record)
                     })?,
             };
             Some(
-                self.preview_provider_tools(state, fallback_model, policy)
+                self.captured_context_tools(state, fallback_model, policy)
                     .await?,
             )
-        } else if admission.is_none() {
-            let (_, tools, surface, _, _) = self
-                .provider_tool_selection_for_turn(fallback_model)
-                .await?;
-            Some((tools, surface))
         } else {
             None
         };
@@ -697,6 +759,25 @@ impl RuntimeHandle {
             })
         })?;
 
+        let admission_source_matches = if admission.is_some() {
+            resource_material.read(|| {
+                let Some(original) = resident.lookup_borrowed(Family::Message, &message.id)? else {
+                    return Ok(false);
+                };
+                let super::resident_input_evidence::PreparedInputEvidence::Message(original) =
+                    &original.record
+                else {
+                    anyhow::bail!("admission source differs from its captured Message key");
+                };
+                Ok(
+                    super::input_consumption::projection::input_projection_source_matches(
+                        original, message,
+                    ),
+                )
+            })?
+        } else {
+            false
+        };
         let acquisition_timer = crate::diagnostics::attribution::CONTEXT_ACQUIRE.start();
         let acquired = capture_mode.measure_sync(Stage::ResidentCapture, || {
             let _resource_io = resource_material.enter();
@@ -737,14 +818,15 @@ impl RuntimeHandle {
             resource_material.finish()?;
             snapshot?
         };
-        let preview_media_defaults = if matches!(&publication, ContextPublication::Ready(_)) {
-            Some(
-                self.media_tool_defaults_for_state(state, &config_version, fallback_model)
-                    .await,
-            )
-        } else {
-            None
-        };
+        let ready_media_defaults =
+            if admission.is_none() && matches!(&publication, ContextPublication::Ready(_)) {
+                Some(
+                    self.media_tool_defaults_for_state(state, &config_version, fallback_model)
+                        .await,
+                )
+            } else {
+                None
+            };
         drop(acquisition_timer);
         #[cfg(test)]
         if self
@@ -786,7 +868,8 @@ impl RuntimeHandle {
                 model: Some(model),
             },
             tools,
-            preview_media_defaults,
+            ready_media_defaults,
+            admission_source_matches,
         })
     }
 
@@ -800,7 +883,8 @@ impl RuntimeHandle {
             identity,
             material,
             tools,
-            preview_media_defaults,
+            ready_media_defaults,
+            ..
         } = prepared;
         let observation = &material.observation;
         let loaded_agents_md =
@@ -810,7 +894,7 @@ impl RuntimeHandle {
         let (prompt_tools, apply_patch_surface) =
             tools.ok_or_else(|| anyhow!("admission snapshot has no execution tool selection"))?;
         let agent_home = self.agent_home();
-        let media_defaults = match preview_media_defaults {
+        let media_defaults = match ready_media_defaults {
             Some(defaults) => defaults,
             None => self.media_tool_defaults(fallback_model).await?,
         };
@@ -1272,8 +1356,10 @@ mod tests {
                     work_item_id: Some(&focus.id),
                     token_budget: usize::MAX,
                 },
+                None,
             )
-            .await?;
+            .await?
+            .context("admission source missing")?;
         let prepared = runtime
             .prepare_loaded_context_snapshot(
                 &message,
@@ -2541,6 +2627,177 @@ mod resource_read_tests {
     }
 
     #[tokio::test]
+    async fn ready_admission_uses_the_published_message_without_owner_or_sqlite() -> Result<()> {
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.wait_for_bootstrap().await?;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        runtime.await_initial_resources().await;
+        let message = runtime
+            .enqueue(MessageEnvelope::new(
+                runtime.instance_agent_id(),
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "capture the acknowledged input".into(),
+                },
+            ))
+            .await
+            .context("enqueue admission fixture")?;
+        let before = runtime.inner.mutation_owner.capture()?.unwrap();
+        let original = runtime
+            .prepare_input_projection(&message, &before.state, None, None)
+            .await?
+            .context("canonical input did not fit")?;
+
+        let refresh = runtime.hold_resource_refresh_for_test().await?;
+        let owner = runtime.inner.mutation_owner.reserve().await?;
+        let root = owner.capture_ready_snapshot()?.unwrap();
+        let db = runtime.runtime_db();
+        let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        let writes = writer.write_channel_admissions_for_tests()?;
+        let ordinary = db.reader_pool_stats_for_tests().checkout_attempts;
+        let preparation = db.preparation_pool_stats_for_tests().checkout_attempts;
+        let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+        let mut modified = message.clone();
+        modified.body = MessageBody::Text {
+            text: "a different input with the same key".into(),
+        };
+        let (projected, rejected) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                let projected = runtime
+                    .prepare_input_projection(&message, &root.state, None, Some(&root))
+                    .await?;
+                let rejected = runtime
+                    .prepare_input_projection(&modified, &root.state, None, Some(&root))
+                    .await?;
+                Ok::<_, anyhow::Error>((projected, rejected))
+            })
+            .await??;
+        assert_eq!(
+            projected.context("Ready input did not fit")?.rendered,
+            original.rendered
+        );
+        assert!(rejected.is_none());
+        assert_eq!(denied.attempts(), 0);
+        drop(denied);
+        assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, ordinary);
+        assert_eq!(
+            db.preparation_pool_stats_for_tests().checkout_attempts,
+            preparation
+        );
+        assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+        assert!(Arc::ptr_eq(
+            &owner.capture_ready_snapshot()?.unwrap(),
+            &root
+        ));
+
+        drop((owner, refresh, run_loop));
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ready_execution_uses_the_started_turn_without_owner_or_sqlite() -> Result<()> {
+        use crate::runtime::scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor};
+
+        let (_home, host, runtime) = resource_host().await?;
+        runtime.wait_for_bootstrap().await?;
+        let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+        runtime.await_initial_resources().await;
+        let accepted = runtime
+            .enqueue(MessageEnvelope::new(
+                runtime.instance_agent_id(),
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "capture the started turn".into(),
+                },
+            ))
+            .await
+            .context("enqueue execution fixture")?;
+        let RunLoopPoll::Message(scheduled) =
+            SchedulerDecisionExecutor::new(&runtime).poll().await?
+        else {
+            anyhow::bail!("scheduler did not claim the operator input");
+        };
+        let message = &scheduled.message;
+        assert_eq!(message.id, accepted.id);
+        let plan = &scheduled.dispatch_plan;
+        let continuation = plan.continuation_resolution.as_ref();
+        let (turn_id, _) = runtime
+            .begin_dispatch_turn(
+                message,
+                None,
+                None,
+                plan.execution_admission_provenance.clone(),
+                &plan.prior_closure,
+            )
+            .await
+            .context("start the claimed execution fixture")?;
+        let original = runtime
+            .prepare_loaded_context_prompt(message, continuation, None, &turn_id)
+            .await?;
+
+        let refresh = runtime.hold_resource_refresh_for_test().await?;
+        let owner = runtime.inner.mutation_owner.reserve().await?;
+        let root = owner.capture_ready_snapshot()?.unwrap();
+        let db = runtime.runtime_db();
+        let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        let writes = writer.write_channel_admissions_for_tests()?;
+        let ordinary = db.reader_pool_stats_for_tests().checkout_attempts;
+        let preparation = db.preparation_pool_stats_for_tests().checkout_attempts;
+        let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+        let captured = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runtime.prepare_loaded_context_prompt(message, continuation, None, &turn_id),
+        )
+        .await??;
+        let error = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            runtime.prepare_loaded_context_prompt(message, continuation, None, "different-turn"),
+        )
+        .await?
+        .err()
+        .context("Ready Execution accepted a different dispatch Turn")?;
+        assert!(error
+            .to_string()
+            .contains("differs from the original dispatch Turn"));
+        assert_eq!(denied.attempts(), 0);
+        drop(denied);
+        assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, ordinary);
+        assert_eq!(
+            db.preparation_pool_stats_for_tests().checkout_attempts,
+            preparation
+        );
+        assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+        assert!(Arc::ptr_eq(
+            &owner.capture_ready_snapshot()?.unwrap(),
+            &root
+        ));
+        assert_eq!(
+            captured.rendered_system_prompt,
+            original.rendered_system_prompt
+        );
+        assert!(captured
+            .rendered_context_attachment
+            .contains("capture the started turn"));
+
+        drop((owner, refresh, scheduled, run_loop));
+        host.shutdown().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn preview_requalifies_tool_policy_after_a_committed_change() -> Result<()> {
         use crate::types::{AgentCapabilityFamily, AgentCapabilityPolicyRule, AgentPolicyEffect};
 
@@ -2555,7 +2812,7 @@ mod resource_read_tests {
         let root = runtime.inner.mutation_owner.capture()?.unwrap();
         let identity = root.identity.as_deref().unwrap();
         let original = runtime
-            .ready_preview_tool_policy(identity)
+            .ready_context_tool_policy(identity)
             .context("policy not prepared")?;
         assert!(original.allows(AgentCapabilityFamily::AgentCreation));
 
@@ -2571,7 +2828,7 @@ mod resource_read_tests {
         host.runtime_db()
             .agent_canonical_relations()
             .upsert_capability_policy(&policy)?;
-        assert!(runtime.ready_preview_tool_policy(identity).is_none());
+        assert!(runtime.ready_context_tool_policy(identity).is_none());
 
         runtime
             .preview_prompt(
@@ -2580,7 +2837,7 @@ mod resource_read_tests {
             )
             .await?;
         let updated = runtime
-            .ready_preview_tool_policy(identity)
+            .ready_context_tool_policy(identity)
             .context("updated policy not prepared")?;
         assert!(!updated.allows(AgentCapabilityFamily::AgentCreation));
         assert_eq!(

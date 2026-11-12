@@ -174,7 +174,8 @@ pub(crate) struct RecoveryRecord {
     pub witness: Option<MutationWitness>,
     // A successor claim clears its root. Preserve the original cold boundary
     // so recovery cannot reinterpret a formerly published State as absent.
-    original_root_absent: bool,
+    pub(super) original_state: Option<Arc<AgentState>>,
+    pub(super) installed_state_readback: Option<Arc<AgentState>>,
     original_identity: Option<Arc<AgentIdentityRecord>>,
     identity_rename: Option<Arc<AgentIdentityRecord>>,
     prepared_queue_posture: Option<crate::queue::QueuePostureFacts>,
@@ -668,6 +669,43 @@ impl MutationOwner {
         self.capture_with_token().map(|(_, root)| root)
     }
 
+    #[cfg(test)]
+    pub(super) fn state_for_fixture_rollback(&self) -> Option<Arc<AgentState>> {
+        let publication = self.slot.publication.lock().expect("publication poisoned");
+        self.validate_publication(&publication).ok()?;
+        self.slot.root.load_full().map(|root| root.state.clone())
+    }
+
+    #[cfg(test)]
+    pub(super) fn publish_fixture_state(
+        &self,
+        original: &Arc<PostureObservation>,
+        state: Arc<AgentState>,
+    ) -> Result<(), MutationOwnerError> {
+        let mut publication = self.slot.publication.lock().expect("publication poisoned");
+        self.validate_publication(&publication)?;
+        if let Some(recovery) = &publication.recovery {
+            return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
+        }
+        if !self
+            .slot
+            .root
+            .load_full()
+            .is_some_and(|root| Arc::ptr_eq(&root, original))
+        {
+            return Err(MutationOwnerError::TicketMismatch);
+        }
+        publication.generation = publication
+            .generation
+            .checked_add(1)
+            .expect("publication generation exhausted");
+        let mut root = original.as_ref().clone();
+        root.token.generation = publication.generation;
+        root.state = state;
+        self.slot.root.store(Some(Arc::new(root)));
+        Ok(())
+    }
+
     /// Cold observations also need the generation when no Root is published.
     pub(crate) fn capture_with_token(
         &self,
@@ -968,7 +1006,8 @@ impl MutationReservation {
                 committed_runtime: None,
                 known: None,
                 witness: witness.clone(),
-                original_root_absent: original_root.is_none(),
+                original_state: original_root.as_ref().map(|root| root.state.clone()),
+                installed_state_readback: None,
                 original_identity: original_root.and_then(|root| root.identity.clone()),
                 identity_rename: None,
                 prepared_queue_posture: None,
@@ -1417,7 +1456,7 @@ impl MutationReservation {
                                 publication
                                     .recovery
                                     .as_ref()
-                                    .is_some_and(|recovery| recovery.original_root_absent)
+                                    .is_some_and(|recovery| recovery.original_state.is_none())
                                     && reservation.owner.slot.root.load_full().is_none()
                             };
                         if startup_cold && !cold_current {
@@ -1708,6 +1747,35 @@ impl MutationReservation {
             .expect("publication poisoned");
         self.owner.validate_publication(&publication)?;
         Ok(publication.recovery.clone())
+    }
+
+    pub(super) fn mark_state_readback_installed(
+        &self,
+        key: &RecoveryKey,
+        state: &Arc<AgentState>,
+    ) -> Result<(), MutationOwnerError> {
+        let mut publication = self
+            .owner
+            .slot
+            .publication
+            .lock()
+            .expect("publication poisoned");
+        self.owner.validate_publication(&publication)?;
+        let record = publication
+            .recovery
+            .as_mut()
+            .ok_or(MutationOwnerError::TicketMismatch)?;
+        if &record.key != key
+            || !record
+                .known
+                .as_ref()
+                .and_then(KnownCommit::state)
+                .is_some_and(|known| known == state)
+        {
+            return Err(MutationOwnerError::TicketMismatch);
+        }
+        record.installed_state_readback = Some(state.clone());
+        Ok(())
     }
 
     pub(crate) fn begin(

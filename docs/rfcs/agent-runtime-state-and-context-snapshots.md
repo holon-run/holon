@@ -410,14 +410,17 @@ and records, copying only changed records and the affected index structures.
 Atomic root replacement publishes the complete compatible state together.
 Records and indexes reachable from a published root are not mutated in place.
 
-For a published owner, mutation entry initializes the candidate State from that
-root, not from the compatibility cache. Private cache edits cannot grant a new
-command selectors or authority. Preparing a read does not publish or repair those
-edits; an intentional State change still requires its original commit and ACK.
-An enqueue OCC baseline refresh must separately reject a dirty compatibility
-cache under the owner reservation before adopting a different durable baseline.
-That refresh protection does not prevent candidates or reads from using the
-already-published State.
+A loaded mutation pins the published State as its optimistic concurrency and
+rollback baseline. A candidate starts from that State and takes transient queue
+and run handles from the runtime cache. The baseline advances after publication.
+An enqueue OCC refresh still checks the cache against the pinned State before
+adopting an exact durable readback.
+
+Pending recovery retains the original State from its fenced root. Exact
+readback can replace a cache that still matches that State. If a group retries
+after installing a readback, the same recovery record carries the installation
+proof until the group publishes. A private cache edit cannot supply that proof
+even if it matches the durable readback.
 
 Each canonical commit returns a typed committed-domain delta containing all
 records and removals in its invariant, including database-assigned sequences.
@@ -4384,8 +4387,14 @@ preparation reads the canonical policy and identity in one transaction. For an
 Agent that is running, a qualified active default Trigger with a token supplies
 the existing ingress proof. A missing or tokenless Trigger goes through the
 original ingress writer. Missing coverage, invalidated resources and pending
-recovery enter the existing preparation paths. Admission planning and execution
-retain their owner reservations and execution validation.
+recovery enter the existing preparation paths. Admission and Execution also
+capture covered Context from a Ready Agent root without a separate owner
+reservation. Admission qualifies the original Message in the captured Input
+domain and checks the scheduler's planned root. The original Claim transaction
+still validates the selected source and admission facts. Execution qualifies
+the original dispatch Turn and retains the provider admission and cancellation
+fences. Both modes enter owner-reserved preparation when the publication lacks
+coverage.
 
 The operator State endpoint now uses one held parent owner cut for
 State/Work/Task/Scheduling and Current metadata. Explicit Current preparation

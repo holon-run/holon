@@ -94,8 +94,15 @@ async fn canonical_turn_start_failure_keeps_memory_and_state_unchanged() {
         Some(before.clone())
     );
     assert_eq!(
-        runtime.inner.agent.lock().await.last_persisted_state,
-        before
+        runtime
+            .inner
+            .mutation_owner
+            .capture()
+            .unwrap()
+            .unwrap()
+            .state
+            .as_ref(),
+        &before
     );
     let count: i64 = runtime
         .inner

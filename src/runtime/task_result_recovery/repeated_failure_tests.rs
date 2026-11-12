@@ -644,7 +644,7 @@ async fn remove_source(
             mutation: QueueMutation::Upsert(entry.clone()),
             scheduler_claim_work_item: None,
             agent_state: Some(AgentStateMutation {
-                expected: Some(Box::new(mutation.last_persisted_state.clone())),
+                expected: Some(Box::new(mutation.committed_state().clone())),
                 record: Box::new(mutation.state.clone()),
             }),
             message_evidence: Vec::new(),

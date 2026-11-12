@@ -913,7 +913,7 @@ impl RuntimeHandle {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
                 scheduler_audit_frontier,
-                preview_tool_policy: ArcSwapOption::empty(),
+                context_tool_policy: ArcSwapOption::empty(),
                 mutation_owner: mutation_owner.clone(),
                 resources: super::resource_refresh::RuntimeResources::new(
                     &input_evidence_budget,
@@ -929,7 +929,6 @@ impl RuntimeHandle {
                 agent: Mutex::new(RuntimeAgent {
                     #[cfg(test)]
                     mutation_owner,
-                    last_persisted_state: state.clone(),
                     state,
                     queue,
                     current_run_abort: None,

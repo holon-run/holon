@@ -777,7 +777,7 @@ async fn finish_scheduler_acceptance_run(runtime: &RuntimeHandle) -> Result<()> 
     let mut guard = runtime.begin_mutation().await?;
     scheduler::apply_idle_projection(&mut guard.state, &runtime.inner.storage)?;
     guard.current_run_abort = None;
-    if guard.state == guard.last_persisted_state {
+    if &guard.state == guard.committed_state() {
         guard.install_transient().await
     } else {
         guard.persist_state(&runtime.inner.storage).await
