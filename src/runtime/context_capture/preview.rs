@@ -7,6 +7,7 @@ use super::super::{
     resource_observation::ResourceFreshness,
 };
 use super::*;
+use crate::diagnostics::io_probe::ReadyContextOutcome;
 use crate::types::{
     AgentCapabilityFamily, AgentCapabilityPolicyRecord, AgentIdentityRecord, AgentPolicyEffect,
 };
@@ -58,9 +59,10 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
     ) -> Result<EffectivePrompt> {
         let retries = match ContextCaptureMode::Preview
-            .measure(
+            .measure_ready(
                 Stage::PreviewReadyCapture,
                 Box::pin(self.capture_ready_prompt_preview(message)),
+                ready_capture_outcome,
             )
             .await
         {
@@ -109,11 +111,14 @@ impl RuntimeHandle {
             .inner
             .mutation_owner
             .capture()?
-            .ok_or(ContextNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation::Publication)?;
         if expected.is_some_and(|planned| !Arc::ptr_eq(planned, &root)) {
             return Err(AdmissionContextChanged.into());
         }
-        let identity = root.identity.as_deref().ok_or(ContextNeedsPreparation)?;
+        let identity = root
+            .identity
+            .as_deref()
+            .ok_or(ContextNeedsPreparation::Identity)?;
         anyhow::ensure!(
             identity.agent_id == message.agent_id
                 && identity.agent_id == root.state.id
@@ -123,7 +128,7 @@ impl RuntimeHandle {
             "Context identity is outside the active publication scope"
         );
         if self.inner.resources.registry.freshness()? != ResourceFreshness::Ready {
-            return Err(ContextNeedsPreparation.into());
+            return Err(ContextNeedsPreparation::Resources.into());
         }
         let (mode, tools) = if admission.is_some() {
             (ContextCaptureMode::Admission, None)
@@ -132,7 +137,7 @@ impl RuntimeHandle {
                 ContextCaptureMode::Execution,
                 Some(
                     self.ready_context_tool_policy(identity)
-                        .ok_or(ContextNeedsPreparation)?,
+                        .ok_or(ContextNeedsPreparation::ToolPolicy)?,
                 ),
             )
         };
@@ -151,7 +156,7 @@ impl RuntimeHandle {
             .inner
             .mutation_owner
             .capture()?
-            .ok_or(ContextNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation::Publication)?;
         if !Arc::ptr_eq(&current, &root) {
             return if expected.is_some() {
                 Err(AdmissionContextChanged.into())
@@ -160,7 +165,7 @@ impl RuntimeHandle {
             };
         }
         if tools.is_some_and(|tools| self.ready_context_tool_policy(identity) != Some(tools)) {
-            return Err(ContextNeedsPreparation.into());
+            return Err(ContextNeedsPreparation::ToolPolicy.into());
         }
         db.check_read_scope()?;
         Ok(prepared)
@@ -175,19 +180,25 @@ impl RuntimeHandle {
             .inner
             .mutation_owner
             .capture()?
-            .ok_or(ContextNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation::Publication)?;
         if !self.preview_scheduler_has_facts(&root)? {
-            return Err(ContextNeedsPreparation.into());
+            return Err(ContextNeedsPreparation::SchedulerCoverage.into());
         }
-        let identity = root.identity.as_deref().ok_or(ContextNeedsPreparation)?;
+        let identity = root
+            .identity
+            .as_deref()
+            .ok_or(ContextNeedsPreparation::Identity)?;
         let tool_policy = self
             .ready_context_tool_policy(identity)
-            .ok_or(ContextNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation::ToolPolicy)?;
         if self.inner.resources.registry.freshness()? != ResourceFreshness::Ready {
-            return Err(ContextNeedsPreparation.into());
+            return Err(ContextNeedsPreparation::Resources.into());
         }
         let _admission = if root.state.status != AgentStatus::Stopped {
-            let scheduling = root.scheduling.as_ref().ok_or(ContextNeedsPreparation)?;
+            let scheduling = root
+                .scheduling
+                .as_ref()
+                .ok_or(ContextNeedsPreparation::SchedulerCoverage)?;
             anyhow::ensure!(
                 scheduling.scope() == &self.inner.resources.scope,
                 "preview Trigger scope differs"
@@ -196,7 +207,7 @@ impl RuntimeHandle {
                 .active_default_trigger()?
                 .is_some_and(|trigger| trigger.token.is_some())
             {
-                return Err(ContextNeedsPreparation.into());
+                return Err(ContextNeedsPreparation::SchedulerCoverage.into());
             }
             Some(self.execution_admission_lease()?)
         } else {
@@ -223,12 +234,15 @@ impl RuntimeHandle {
             .inner
             .mutation_owner
             .capture()?
-            .ok_or(ContextNeedsPreparation)?;
-        if !Arc::ptr_eq(&current, &root)
-            || !self.preview_scheduler_has_facts(&root)?
-            || self.ready_context_tool_policy(identity) != Some(tool_policy)
-        {
-            return Err(ContextNeedsPreparation.into());
+            .ok_or(ContextNeedsPreparation::Publication)?;
+        if !Arc::ptr_eq(&current, &root) {
+            return Err(ContextNeedsPreparation::Publication.into());
+        }
+        if !self.preview_scheduler_has_facts(&root)? {
+            return Err(ContextNeedsPreparation::SchedulerCoverage.into());
+        }
+        if self.ready_context_tool_policy(identity) != Some(tool_policy) {
+            return Err(ContextNeedsPreparation::ToolPolicy.into());
         }
         Ok(prepared)
     }
@@ -258,7 +272,7 @@ impl RuntimeHandle {
             .filter(|view| {
                 view.generation == generation && needed.all(|id| view.summaries.contains_key(id))
             })
-            .ok_or(ContextNeedsPreparation)?;
+            .ok_or(ContextNeedsPreparation::CompletionDelivery)?;
         Ok(Some(covered.clone()))
     }
 
@@ -302,6 +316,58 @@ impl RuntimeHandle {
         }
         Ok(tools)
     }
+}
+
+pub(super) fn ready_capture_outcome<T>(result: &Result<T>) -> ReadyContextOutcome {
+    use super::super::resource_observation::ResourceObservationError;
+    use ReadyContextOutcome as Outcome;
+
+    let Err(error) = result else {
+        return Outcome::Ready;
+    };
+    if let Some(need) = error.downcast_ref::<ContextNeedsPreparation>() {
+        return match need {
+            ContextNeedsPreparation::Publication => Outcome::Publication,
+            ContextNeedsPreparation::Identity => Outcome::Identity,
+            ContextNeedsPreparation::Resources => Outcome::ResourcesNotReady,
+            ContextNeedsPreparation::ToolPolicy => Outcome::ToolPolicy,
+            ContextNeedsPreparation::SchedulerCoverage => Outcome::SchedulerCoverage,
+            ContextNeedsPreparation::Episodes => Outcome::Episodes,
+            ContextNeedsPreparation::CompletionDelivery => Outcome::CompletionDelivery,
+        };
+    }
+    if error.is::<AdmissionContextChanged>() {
+        return Outcome::Publication;
+    }
+    if !ready_context_requires_preparation(error) {
+        return Outcome::Failed;
+    }
+    if error.is::<MutationOwnerError>() {
+        return Outcome::PendingRecovery;
+    }
+    if error.is::<crate::host::context_resources::ContextResourceWritersActive>() {
+        return Outcome::ResourceWriter;
+    }
+    if let Some(resource) = error.downcast_ref::<ResourceObservationError>() {
+        return match resource {
+            ResourceObservationError::SourceChanged => Outcome::ResourceSourceChanged,
+            ResourceObservationError::NotReady(_) => Outcome::ResourcesNotReady,
+            _ => Outcome::DependenciesChanged,
+        };
+    }
+    if error.is::<InputEvidenceReadError>() || error.is::<InputEvidenceSnapshotError>() {
+        return Outcome::Input;
+    }
+    if error.is::<WorkReadError>() {
+        return Outcome::Work;
+    }
+    if error.is::<TaskReadError>() {
+        return Outcome::Task;
+    }
+    if error.is::<SchedulingReadError>() {
+        return Outcome::Scheduling;
+    }
+    Outcome::DependenciesChanged
 }
 
 pub(super) fn ready_context_requires_preparation(error: &anyhow::Error) -> bool {

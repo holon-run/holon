@@ -28,7 +28,7 @@ use crate::{
 };
 
 mod preview;
-use preview::ready_context_requires_preparation;
+use preview::{ready_capture_outcome, ready_context_requires_preparation};
 pub(super) use preview::{ContextToolFamilies, ContextToolPolicy};
 
 #[derive(Debug, thiserror::Error)]
@@ -68,7 +68,15 @@ impl ContextPublication<'_> {
 
 #[derive(Debug, thiserror::Error)]
 #[error("loaded Context requires preparation")]
-struct ContextNeedsPreparation;
+enum ContextNeedsPreparation {
+    Publication,
+    Identity,
+    Resources,
+    ToolPolicy,
+    SchedulerCoverage,
+    Episodes,
+    CompletionDelivery,
+}
 
 #[derive(Debug, thiserror::Error)]
 #[error("scheduler admission publication changed")]
@@ -133,7 +141,7 @@ impl RuntimeHandle {
         dispatch_turn_id: &str,
     ) -> Result<EffectivePrompt> {
         let prepared = match ContextCaptureMode::Execution
-            .measure(
+            .measure_ready(
                 Stage::ReadyTurnCapture,
                 Box::pin(self.capture_ready_turn_context(
                     message,
@@ -142,6 +150,7 @@ impl RuntimeHandle {
                     None,
                     None,
                 )),
+                ready_capture_outcome,
             )
             .await
         {
@@ -175,7 +184,7 @@ impl RuntimeHandle {
         expected: Option<&Arc<resident_state::AgentSnapshot>>,
     ) -> Result<Option<usize>> {
         let prepared = match ContextCaptureMode::Admission
-            .measure(
+            .measure_ready(
                 Stage::ReadyTurnCapture,
                 Box::pin(self.capture_ready_turn_context(
                     message,
@@ -184,6 +193,7 @@ impl RuntimeHandle {
                     Some(admission),
                     expected,
                 )),
+                ready_capture_outcome,
             )
             .await
         {
@@ -680,7 +690,7 @@ impl RuntimeHandle {
                 .as_ref()
                 .is_none_or(|episodes| !episodes.covers(config.recent_episode_candidates))
         {
-            return Err(ContextNeedsPreparation.into());
+            return Err(ContextNeedsPreparation::Episodes.into());
         }
         let captured = root.capture_context_with_inputs_and_work_and_tasks(
             config.recent_episode_candidates,
@@ -729,7 +739,7 @@ impl RuntimeHandle {
             let policy = match &publication {
                 ContextPublication::Ready(_) => self
                     .ready_context_tool_policy(identity_record)
-                    .ok_or(ContextNeedsPreparation)?,
+                    .ok_or(ContextNeedsPreparation::ToolPolicy)?,
                 ContextPublication::Reserved(_) => capture_mode
                     .measure_sync(Stage::ContextToolPolicyPreparation, || {
                         self.prepare_context_tool_policy(identity_record)
