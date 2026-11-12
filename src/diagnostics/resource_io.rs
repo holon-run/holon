@@ -1010,30 +1010,6 @@ pub(crate) fn assert_retryable_resource_error(error: &anyhow::Error) {
 mod tests {
     use super::*;
 
-    fn run_isolated_plan_probe(test_name: &str) -> bool {
-        const CHILD_TEST: &str = "HOLON_RESOURCE_PLAN_PROBE_CHILD";
-        if std::env::var(CHILD_TEST).as_deref() == Ok(test_name) {
-            return false;
-        }
-        // IoProbe counts the whole process, including other tests' file reads.
-        let output = std::process::Command::new(std::env::current_exe().unwrap())
-            .args([
-                "--exact",
-                &format!("diagnostics::resource_io::tests::{test_name}"),
-                "--nocapture",
-            ])
-            .env(CHILD_TEST, test_name)
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "isolated plan probe failed: stdout={}, stderr={}",
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        true
-    }
-
     fn fixture() -> (InputEvidenceBudgetLedger, InputEvidenceScope) {
         (
             InputEvidenceBudgetLedger::new(Default::default()).unwrap(),
@@ -1899,7 +1875,8 @@ mod tests {
     }
     #[test]
     fn empty_and_small_plans_admit_owned_metadata_at_exact_byte_and_record_limits() {
-        if run_isolated_plan_probe(
+        if crate::diagnostics::io_probe::run_isolated_test(
+            module_path!(),
             "empty_and_small_plans_admit_owned_metadata_at_exact_byte_and_record_limits",
         ) {
             return;
@@ -2033,7 +2010,8 @@ mod tests {
 
     #[test]
     fn optional_plans_stop_open_read_and_creation_after_the_first_quota_failure() {
-        if run_isolated_plan_probe(
+        if crate::diagnostics::io_probe::run_isolated_test(
+            module_path!(),
             "optional_plans_stop_open_read_and_creation_after_the_first_quota_failure",
         ) {
             return;
