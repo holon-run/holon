@@ -859,9 +859,16 @@ fn context_capture_stage_summary(report: &IoProbeReport) -> Vec<Value> {
     stages
         .into_iter()
         .map(|((mode, stage), samples)| {
+            let mut ready_outcomes = BTreeMap::new();
+            for (_, sample) in &samples {
+                if let Some(outcome) = sample.ready_outcome {
+                    *ready_outcomes.entry(outcome).or_insert(0usize) += 1;
+                }
+            }
             json!({
                 "mode": mode,
                 "stage": stage,
+                "ready_outcomes": ready_outcomes,
                 "latency": quantiles(samples.iter().map(|(elapsed, _)| u128::from(*elapsed) * 1000)),
                 "owner_reservation_wait": quantiles(samples.iter()
                     .filter_map(|(_, sample)| sample.owner_reservation_wait_micros)

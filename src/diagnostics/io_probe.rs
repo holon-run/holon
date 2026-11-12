@@ -162,10 +162,34 @@ pub enum ContextCaptureStage {
     ReadyTurnCapture,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReadyContextOutcome {
+    Ready,
+    Publication,
+    Identity,
+    ResourcesNotReady,
+    ResourceSourceChanged,
+    ResourceWriter,
+    ToolPolicy,
+    SchedulerCoverage,
+    Episodes,
+    Input,
+    Work,
+    Task,
+    Scheduling,
+    CompletionDelivery,
+    PendingRecovery,
+    DependenciesChanged,
+    Failed,
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct ContextCaptureSample {
     pub mode: ContextCaptureMode,
     pub stage: ContextCaptureStage,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ready_outcome: Option<ReadyContextOutcome>,
     pub sql_read_statements: u64,
     pub sql_write_statements: u64,
     pub sql_control_statements: u64,
@@ -193,6 +217,7 @@ impl ContextCaptureMode {
         Cell::new(ContextCaptureSample {
             mode: self,
             stage,
+            ready_outcome: None,
             sql_read_statements: 0,
             sql_write_statements: 0,
             sql_control_statements: 0,
@@ -211,6 +236,29 @@ impl ContextCaptureMode {
         CONTEXT_CAPTURE
             .scope(self.sample(stage), async {
                 let result = future.await;
+                record_context_capture(started);
+                result
+            })
+            .await
+    }
+
+    pub(crate) async fn measure_ready<T>(
+        self,
+        stage: ContextCaptureStage,
+        future: impl Future<Output = T>,
+        outcome: impl FnOnce(&T) -> ReadyContextOutcome,
+    ) -> T {
+        let Some(started) = start_timer() else {
+            return future.await;
+        };
+        CONTEXT_CAPTURE
+            .scope(self.sample(stage), async {
+                let result = future.await;
+                CONTEXT_CAPTURE.with(|current| {
+                    let mut sample = current.get();
+                    sample.ready_outcome = Some(outcome(&result));
+                    current.set(sample);
+                });
                 record_context_capture(started);
                 result
             })

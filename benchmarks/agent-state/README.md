@@ -144,7 +144,10 @@ Audit Event effects.
 
 The preview report and each scripted group also report `context_capture_stages`.
 These are per-call samples from the loaded context capture path, grouped by
-capture mode (preview, admission planning, or execution) and stage:
+capture mode (preview, admission planning, or execution) and stage. Ready
+attempts include `ready_outcomes` counts by result or preparation reason.
+Pass `--require-ready-admission` when verifying a candidate expected to capture
+every measured Admission from Ready without SQLite or a Context reservation.
 
 | Stage | Measured boundary |
 | --- | --- |

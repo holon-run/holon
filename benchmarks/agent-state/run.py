@@ -82,6 +82,27 @@ def validate(artifact: dict) -> list[str]:
     return errors
 
 
+def validate_ready_admission(artifact: dict) -> list[str]:
+    errors = []
+    groups = artifact.get("scripted_dispatch", {}).get("groups", [])
+    for index, group in enumerate(groups):
+        stages = [stage for stage in group["context_capture_stages"] if stage["mode"] == "admission"]
+        attempts = [stage for stage in stages if stage["stage"] == "ready_turn_capture"]
+        if not attempts or any(
+            not stage["latency"]["count"]
+            or stage.get("ready_outcomes") != {"ready": stage["latency"]["count"]}
+            for stage in attempts
+        ):
+            errors.append(f"group {index}: Admission did not capture every measured attempt from Ready")
+        if any(
+            stage["stage"] == "owner_acquisition" or stage["owner_reservation_wait"] is not None
+            or stage["sql_read_statements"] or stage["sql_write_statements"] or stage["sql_control_statements"]
+            for stage in stages
+        ):
+            errors.append(f"group {index}: Admission capture used a reservation or SQLite")
+    return errors
+
+
 def reports(artifact: dict):
     for name in ("loaded_preview", "enqueue_commit_publication"):
         yield name, artifact.get(name, {}).get("actual_io", {})
@@ -180,6 +201,8 @@ def run(args) -> int:
                     raise RuntimeError(f"workload exited {result.returncode}; inspect stderr")
                 artifact = json.loads(stdout.read_text())
                 errors = validate(artifact)
+                if not errors and args.require_ready_admission:
+                    errors = validate_ready_admission(artifact)
                 if errors:
                     raise ValueError("; ".join(errors))
                 path = output / f"{stem}.json"
@@ -272,6 +295,8 @@ def main() -> int:
     runner.add_argument("--timeout", type=float, default=7200)
     runner.add_argument("--warmup-per-agent", type=int, help="pilot sample override; fixture dimensions stay fixed")
     runner.add_argument("--measured-per-agent", type=int, help="pilot sample override; fixture dimensions stay fixed")
+    runner.add_argument("--require-ready-admission", action="store_true",
+                        help="require measured Admission captures to use Ready without SQLite or a Context reservation")
     runner.set_defaults(function=run)
     comparison = subparsers.add_parser("compare", help="compare same-instrumentation artifact directories")
     comparison.add_argument("--baseline", type=Path, required=True)
