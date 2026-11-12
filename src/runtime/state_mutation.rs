@@ -4168,12 +4168,15 @@ impl RuntimeHandle {
                 recovery.known.as_ref().and_then(KnownCommit::state) == Some(state),
                 "State readback differs from the original commit"
             );
+            // The baseline is retained only while its publication lives; a
+            // released baseline means no live publication could have diverged,
+            // so the durable known facts stay authoritative.
             let original = recovery
                 .original_state
-                .as_deref()
-                .context("loaded recovery has no committed State baseline")?;
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade);
             let already_installed = recovery.installed_state_readback.as_ref() == Some(state);
-            self.install_exact_durable_readback(state, original, already_installed)
+            self.install_exact_durable_readback(state, original.as_deref(), already_installed)
                 .await?;
             reservation.mark_state_readback_installed(&recovery.key, state)?;
         }
@@ -4192,12 +4195,13 @@ impl RuntimeHandle {
     async fn install_exact_durable_readback(
         &self,
         state: &Arc<AgentState>,
-        original: &AgentState,
+        original: Option<&AgentState>,
         already_installed: bool,
     ) -> Result<()> {
         let mut agent = self.inner.agent.lock().await;
         anyhow::ensure!(
-            &agent.state == original || (already_installed && &agent.state == state.as_ref()),
+            original.is_none_or(|original| &agent.state == original)
+                || (already_installed && &agent.state == state.as_ref()),
             "runtime recovery cannot discard unpersisted state"
         );
         // An identical durable readback does not replace transient run handles.

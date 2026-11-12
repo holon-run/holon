@@ -561,7 +561,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
     ) -> Result<StaleRunProjectionReconciliation> {
         let needs_reconciliation = self
             .runtime
-            .read_committed_agent(|guard, _| {
+            .read_resident_agent(|guard| {
                 guard.state.status != AgentStatus::Stopped
                     && (guard.state.status == AgentStatus::AwakeRunning
                         || guard.state.current_run_id.is_some())

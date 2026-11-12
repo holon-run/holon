@@ -52,7 +52,7 @@ async fn durable_readback_preserves_the_same_state_terminal_handle() -> Result<(
     let (runtime, _home, handle) = terminal_handle_fixture().await?;
     let state = Arc::new(runtime.inner.agent.lock().await.state.clone());
     runtime
-        .install_exact_durable_readback(&state, &state, false)
+        .install_exact_durable_readback(&state, Some(&state), false)
         .await?;
     let agent = runtime.inner.agent.lock().await;
     assert_eq!(&agent.state, state.as_ref());
@@ -73,7 +73,7 @@ async fn durable_readback_rejects_changed_state_with_a_conflicting_handle() -> R
     let mut changed = before.clone();
     changed.total_input_tokens += 1;
     let error = runtime
-        .install_exact_durable_readback(&Arc::new(changed), &before, false)
+        .install_exact_durable_readback(&Arc::new(changed), Some(&before), false)
         .await
         .unwrap_err();
     assert!(error
@@ -100,7 +100,7 @@ async fn durable_readback_rejects_unpersisted_state_even_when_readback_matches()
         (persisted, Arc::new(agent.state.clone()))
     };
     let error = runtime
-        .install_exact_durable_readback(&dirty, &persisted, false)
+        .install_exact_durable_readback(&dirty, Some(&persisted), false)
         .await
         .unwrap_err();
     assert!(error

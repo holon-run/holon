@@ -3240,6 +3240,31 @@ impl CurrentRunAbortSnapshot {
 }
 
 impl RuntimeHandle {
+    /// Legacy reads observe the resident compatibility cache. An absent
+    /// publication root (for example after a NoState ACK) still serves the
+    /// cached value; the cache is never treated as a Ready publication.
+    async fn read_resident_agent<T>(
+        &self,
+        read: impl FnOnce(&RuntimeAgent) -> T + Send,
+    ) -> Result<T> {
+        loop {
+            let lock_wait = crate::diagnostics::attribution::AGENT_LOCK.start();
+            let guard = self.inner.agent.lock().await;
+            drop(lock_wait);
+            match self.inner.mutation_owner.capture() {
+                Ok(_) => return Ok(read(&guard)),
+                Err(mutation_owner::MutationOwnerError::NeedsReconcile(_)) => {}
+                Err(error) => return Err(error.into()),
+            }
+            drop(guard);
+            // Wait for normal publication without holding the state lock.
+            // Unknown outcomes remain fenced rather than borrowing a DB row.
+            self.reconcile_posture_observation().await?;
+        }
+    }
+
+    /// Baseline reads consume the committed State publication itself and fail
+    /// closed when its root is missing instead of borrowing the cache.
     async fn read_committed_agent<T>(
         &self,
         read: impl FnOnce(&RuntimeAgent, &AgentState) -> T + Send,
