@@ -117,6 +117,7 @@ runtime_async_tests!(
     command_task_runner_failure_marks_task_failed_and_cleans_up,
     command_task_nonzero_exit_produces_failed_output_and_runtime_state,
     exec_command_auto_promotes_long_running_command_task,
+    running_exec_command_does_not_block_another_agent,
     exec_command_reuses_equivalent_active_command_task_by_default,
     exec_command_can_start_new_with_duplicate_policy,
     exec_command_non_equivalent_same_preview_does_not_reuse,

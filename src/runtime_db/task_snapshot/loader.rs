@@ -918,6 +918,19 @@ fn result_metadata(
         next_recheck_at: x.next_recheck_at,
     })
 }
+pub(super) fn current_revision(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+) -> Result<Option<u64>> {
+    Ok(tx
+        .query_row(
+            "SELECT revision FROM task_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",
+            params![scope.agent_id, scope.identity_incarnation],
+            |row| row.get(0),
+        )
+        .optional()?)
+}
+
 pub(super) fn current_coverage(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
