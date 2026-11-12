@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::panic::Location;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Condvar, Mutex, OnceLock, RwLock, Weak};
@@ -152,6 +153,7 @@ pub(crate) struct RuntimeDbWriteContext {
     pub(crate) operation: &'static str,
     pub(crate) table: &'static str,
     pub(crate) mode: RuntimeDbWriteMode,
+    origin: Option<&'static Location<'static>>,
 }
 
 impl RuntimeDbWriteContext {
@@ -166,6 +168,7 @@ impl RuntimeDbWriteContext {
             operation,
             table,
             mode,
+            origin: None,
         }
     }
 
@@ -175,6 +178,17 @@ impl RuntimeDbWriteContext {
 
     pub(crate) const fn background(operation: &'static str, table: &'static str) -> Self {
         Self::new(operation, table, RuntimeDbWriteMode::Background)
+    }
+
+    #[track_caller]
+    pub(crate) fn with_caller(mut self) -> Self {
+        self.origin.get_or_insert(Location::caller());
+        self
+    }
+
+    pub(crate) fn origin(self) -> (&'static str, u32) {
+        self.origin
+            .map_or(("unknown", 0), |origin| (origin.file(), origin.line()))
     }
 }
 
@@ -307,6 +321,7 @@ impl RuntimeDbWriter {
         self.state.protection_status()
     }
 
+    #[track_caller]
     pub(crate) fn append(
         &self,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
@@ -317,13 +332,14 @@ impl RuntimeDbWriter {
         )
     }
 
+    #[track_caller]
     pub(crate) fn append_with_context(
         &self,
         context: RuntimeDbWriteContext,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
     ) -> Result<()> {
         let request = RuntimeDbWriteRequest {
-            context,
+            context: context.with_caller(),
             job: Box::new(f),
             #[cfg(test)]
             completion: None,
@@ -337,8 +353,9 @@ impl RuntimeDbWriter {
         }
     }
 
+    #[track_caller]
     pub(crate) fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        at_blocking_boundary(|| self.state.append_wait(f))
+        self.append_wait_with_context(RuntimeDbWriteContext::TRANSACTION, f)
     }
 
     #[cfg(test)]
@@ -358,14 +375,17 @@ impl RuntimeDbWriter {
             .map_err(|error| anyhow!(error))
     }
 
+    #[track_caller]
     pub(crate) fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
         f: impl FnMut(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
+        let context = context.with_caller();
         at_blocking_boundary(|| self.state.append_wait_with_context(context, f))
     }
 
+    #[track_caller]
     pub(crate) fn append_wait_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
@@ -376,11 +396,13 @@ impl RuntimeDbWriter {
         )
     }
 
+    #[track_caller]
     pub(crate) fn append_wait_once_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
     ) -> Result<T> {
+        let context = context.with_caller();
         at_blocking_boundary(|| self.state.append_wait_once(context, f))
     }
 }
@@ -490,10 +512,6 @@ impl RuntimeDbWriterState {
         })
     }
 
-    fn append_wait<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
-        self.append_wait_with_context(RuntimeDbWriteContext::TRANSACTION, f)
-    }
-
     fn append_wait_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
@@ -512,6 +530,7 @@ impl RuntimeDbWriterState {
         let mut retry_delay = RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY;
         let mut retry_count = 0u32;
         let mut next_warn_at = RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL;
+        let (origin_file, origin_line) = context.origin();
         loop {
             self.ensure_protected().map_err(before_begin_failure)?;
             match self
@@ -527,6 +546,8 @@ impl RuntimeDbWriterState {
                         operation = context.operation,
                         table = context.table,
                         mode = context.mode.as_str(),
+                        origin_file,
+                        origin_line,
                         retry_count,
                         retry_delay_ms = retry_delay.as_millis(),
                         "runtime db transaction retrying"
@@ -538,6 +559,8 @@ impl RuntimeDbWriterState {
                             operation = context.operation,
                             table = context.table,
                             mode = context.mode.as_str(),
+                            origin_file,
+                            origin_line,
                             retry_count,
                             elapsed_ms = elapsed.as_millis(),
                             retry_delay_ms = retry_delay.as_millis(),

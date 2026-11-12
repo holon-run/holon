@@ -1202,10 +1202,12 @@ impl RuntimeDb {
     /// The callback must not control the transaction or perform external effects:
     /// it may run more than once. Failure certainty is available through
     /// [`persistence_certainty`]; an indeterminate result must be reconciled before replay.
+    #[track_caller]
     pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
         self.writer.append_wait(f)
     }
 
+    #[track_caller]
     pub(crate) fn transaction_with_context<T>(
         &self,
         context: RuntimeDbWriteContext,
@@ -1214,6 +1216,7 @@ impl RuntimeDb {
         self.writer.append_wait_with_context(context, f)
     }
 
+    #[track_caller]
     pub(crate) fn transaction_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
@@ -1221,6 +1224,7 @@ impl RuntimeDb {
         self.writer.append_wait_once(f)
     }
 
+    #[track_caller]
     pub(crate) fn recovery_transaction_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
@@ -1232,6 +1236,7 @@ impl RuntimeDb {
     }
 
     /// Enqueue a background transaction. Success means queue acceptance, not commit.
+    #[track_caller]
     pub fn append(
         &self,
         f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,

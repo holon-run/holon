@@ -679,11 +679,21 @@ impl EvidenceRepository<'_> {
             prepared.command.as_ref(),
             EvidenceCommand::ToolResult { .. }
         );
-        let context = if tool_result {
-            RuntimeDbWriteContext::sync("runtime_db.tool_result", "tool_executions")
-        } else {
-            RuntimeDbWriteContext::TRANSACTION
+        let (operation, table) = match prepared.command.as_ref() {
+            #[cfg(test)]
+            EvidenceCommand::Message { .. } => ("runtime_db.input_message", "messages"),
+            #[cfg(test)]
+            EvidenceCommand::Turn { .. } => ("runtime_db.input_turn", "turn_records"),
+            EvidenceCommand::TurnBarrier { .. } => ("runtime_db.turn_barrier", "turn_records"),
+            EvidenceCommand::TurnIdleBatch { .. } => ("runtime_db.turn_idle_batch", "turn_records"),
+            EvidenceCommand::Transcript { .. } => {
+                ("runtime_db.input_transcript", "transcript_entries")
+            }
+            EvidenceCommand::Tool { .. } => ("runtime_db.tool_execution", "tool_executions"),
+            EvidenceCommand::ToolResult { .. } => ("runtime_db.tool_result", "tool_executions"),
+            EvidenceCommand::BriefCreated { .. } => ("runtime_db.input_brief", "briefs"),
         };
+        let context = RuntimeDbWriteContext::sync(operation, table);
         self.db.transaction_with_context(context, |tx| {
             ensure!(
                 scope.agent_id == agent && prepared.descriptor.scopes().contains(scope),
