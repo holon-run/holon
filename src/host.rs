@@ -14881,7 +14881,8 @@ mod tests {
     async fn list_agent_entries_never_starts_or_touches_runtimes() {
         let (_home, host) = test_host();
         append_public_identity(&host, "resident-agent");
-        host.get_or_create_agent("resident-agent").await.unwrap();
+        let runtime = host.get_or_create_agent("resident-agent").await.unwrap();
+        runtime.wait_for_bootstrap().await.unwrap();
 
         let before = host.inner.runtimes.read().await.agents.len();
         assert!(before >= 1);
@@ -14903,12 +14904,26 @@ mod tests {
         assert!(entries
             .iter()
             .any(|entry| entry.identity.agent_id == "resident-agent"));
+        let root = host
+            .inner
+            .mutation_owners
+            .current_owner("resident-agent", runtime.instance_incarnation())
+            .unwrap()
+            .capture()
+            .unwrap()
+            .expect("bootstrapped runtime should have a published root");
+        drop(runtime);
         host.unload_runtime("resident-agent").await;
         let entries = host.list_agent_entries().await.unwrap();
         assert!(entries
             .iter()
             .any(|entry| entry.identity.agent_id == "resident-agent"));
         assert!(!host.has_runtime_entry_for_fixture("resident-agent").await);
+        assert_eq!(
+            Arc::strong_count(&root),
+            1,
+            "only the test capture should retain the unloaded runtime's published root"
+        );
     }
 
     #[cfg(holon_lib_test_shard = "d")]

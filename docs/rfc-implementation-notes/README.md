@@ -13,6 +13,7 @@ would be noisy or misleading if duplicated inside each RFC.
 
 ## Current notes
 
+- [agent-runtime-state-acceptance](agent-runtime-state-acceptance.md)
 - [control-plane-and-delegation](control-plane-and-delegation.md)
 - [event-and-operator-transport](event-and-operator-transport.md)
 - [event-timeline-projection-audit](event-timeline-projection-audit.md)

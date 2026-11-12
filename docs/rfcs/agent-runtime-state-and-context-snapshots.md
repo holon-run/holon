@@ -179,8 +179,8 @@ allowances, and quota failure latches. Those references describe ownership
 accounting and the existing explicit test fault-injection harness, not an
 availability condition.
 
-Selected-source query limits, per-body/input limits, actual pending admission,
-resident-history sizing, protocol/identity validation, canonical hashes,
+Selected-source query limits, per-body/input limits, exact pending obligations,
+bounded history selection, protocol/identity validation, canonical hashes,
 qualification and real I/O errors retain their separate contracts. Observation
 ownership remains scope/ledger-bound and follows its last holder; observing an
 allocation never grants authority to read or mutate a record. See
@@ -256,6 +256,12 @@ respective contracts. The addressing, provenance, transactional-change, and
 state-projection requirements of
 [#3478](https://github.com/holon-run/holon/issues/3478) are part of this
 architecture. They do not require a separate canonical context store.
+
+The resident state contract covers current facts, bounded recent windows and
+explicit cold references. The internal publication and capture boundaries
+implement this contract. The
+[implementation and acceptance record](../rfc-implementation-notes/agent-runtime-state-acceptance.md)
+tracks verified runtime paths and outstanding rollout evidence.
 
 ### SQLite-only upgrade boundary
 
@@ -536,7 +542,7 @@ the state graph.
 | Class | Examples | Residency and recovery |
 | --- | --- | --- |
 | Current business facts | identity/control, execution binding, open WorkItems, active tasks/waits/timers/triggers, pending input identities | Resident while the agent state owner is loaded; recovered from committed persistence |
-| Continuity working set | relevant operator input, recent turn evidence, pending results, selected episode previews | Resident under explicit limits, with required references pinned; recoverable from their canonical sources |
+| Continuity working set | relevant operator input, recent turn evidence, pending results, selected episode previews | Resident in bounded selector windows plus their required dependency closures; recoverable from their canonical sources |
 | Derived indexes and projections | readiness indexes, by-ref lookup, context candidates, token estimates | Rebuilt from published facts; no independent business authority |
 | Transient resources | process handles, clients, locks, cancellation tokens | Initialized or reattached according to existing recovery rules; not restored by deserializing handles |
 | Observed external resources | plan files, AGENTS.md, curated memory, skill catalogs, configuration | Canonical source retains ownership; memory stores the latest explicitly observed version |
@@ -548,11 +554,10 @@ input. Large results and attachments may use locators with resident bounded
 previews where the input protocol permits it. Accepted queued messages must
 retain the input payload required for their ordinary execution while the owner
 is loaded, including an operator anchor that subsequent rounds still require.
-A locator cannot replace a required root-input body merely to meet a cache
-budget. Account pending input bytes separately, apply backpressure before
-accepting more input, and release them to history policy only after consumption
+A required root-input body stays resident with the accepted obligation. Account
+pending input separately and release it to history policy only after consumption
 or cancellation and all continuity pins end. Bootstrap restores pending input
-before readiness; ordinary queue claim is not a cold-hydration exemption.
+before readiness. Ordinary queue claims use those resident inputs.
 
 Logical accepted-input accounting follows the durable pending obligation across
 runtime unload and reload. Physical allocation accounting follows the actual
@@ -579,47 +584,24 @@ The prepared history coverage includes the current owner's configured window
 and the agent-tail fallback that the enabled selector can use. Ordinary window
 advancement incorporates committed evidence; it does not repeatedly hydrate.
 
-If an existing accepted backlog exceeds the configured activation budget,
-activation reports explicit resource exhaustion with required and available
-capacity. Durable work and identity remain intact; an operator can adjust the
-budget and retry. Activation does not silently drop payloads, overcommit without
-a bound, or replace ordinary claims with per-message cold reads.
-
-If required live metadata or pending payloads exceed resource limits, apply
-explicit admission/backpressure or report resource exhaustion; do not silently
-forget accepted work. Unloaded agents remain unloadable without losing identity.
-
 Task status and recovery obligations are durable even though the associated
 process handle is transient. Observed file content is not ephemeral merely
 because it is cached in memory: the file remains its persistent source.
 
 ### Memory budgets
 
-History residency is byte-budgeted per agent and across the host, with record
-count and per-body limits as additional guards. The proposed starting budgets
-are 32 MiB per loaded agent and 512 MiB across the host for reclaimable history.
-These are configurable sizing assumptions to calibrate with measurements,
-not total agent/process memory limits or established production defaults.
+The residency contract is current facts, bounded recent windows, and explicit
+cold references. Each domain defines its current selection and recent window.
+Ordinary commits advance those windows and release superseded data when the
+last holder releases it. Current facts, accepted input bodies, mandatory
+dependency closures and live request pins keep their own lifetimes. A window
+limit selects optional history and preserves required facts.
 
-Accounting separates current business metadata, reclaimable history, pinned
-request evidence, observations, index overhead, and temporary candidate copies.
-Within the historical payload pool, shared allocations are counted once;
-pinning reclassifies a retained allocation rather than charging it twice.
-Pinned evidence remains visible in total retained-memory accounting even when
-it cannot be reclaimed to satisfy the history budget.
-Per-agent accounting charges the allocations that agent retains; host-wide
-physical accounting deduplicates allocations shared across agents. Observations
-and superseded versions still pinned by requests are accounted separately from
-the 32 MiB / 512 MiB reclaimable-history budgets, with explicit size and
-admission limits rather than an unmeasured exemption.
-
-Eviction removes only unpinned, nonrequired history from the resident working
-set. The prepared ordinary-context window and its bounded dependency closure
-remain available. Memory pressure cannot convert ordinary history-window
-advancement into repeated disk hydration. If mandatory facts or pins prevent
-bounded operation, limit additional optional hydration and apply explicit
-admission/backpressure before accepting more work. Do not evict accepted work,
-invalidate a live snapshot, or delete identity to satisfy a cache budget.
+Legacy state-memory sizing settings and cumulative estimates are observational.
+They do not set a dynamic eviction threshold or a total process memory bound.
+Retained-memory observations distinguish shared allocations and request pins
+from selector membership. The limits on a specific cold lookup, body or
+structural shape apply at that boundary.
 
 ### Snapshot identity
 
@@ -1409,12 +1391,13 @@ commit. Files retain their own persistence and acknowledgement contracts.
 
 ### Capture and render interfaces
 
-The conceptual boundary is:
+The capture boundary is internal to the runtime. It distinguishes a ready
+snapshot, a structured preparation reason and an unavailable snapshot:
 
 ```text
 capture_context(state, resources, request, policy)
   -> Ready(ContextSnapshot)
-   | NeedsHydration(required_refs, reason)
+   | NeedsPreparation(reason)
    | NotReady(reason)
 
 build_context(snapshot, budget) -> BuiltContext
@@ -1433,16 +1416,20 @@ snapshots may include newly committed tool results and admitted input. A retry
 of one snapshot with a smaller budget preserves its input set and state
 identity; it cannot consume queued input again.
 
-Loaded Context acquires its owner reservation and resolves any pending original
-commit before checking identity. A matching Active identity in the Ready
-publication qualifies the reserved Agent and incarnation. Without that proof,
-acquisition uses the durable identity check. After owner preparation, Context
-assembles the final snapshot under the held reservation from one Ready
-publication. The planned Work, Task and Scheduling selections must still
-match that publication. Execution capture
-checks the bound Message, Turn and open Attempt from resident Input evidence.
-Configuration and publication tokens fence the assembled snapshot. SQLite
-qualification and readback belong to named preparation, commit and recovery.
+Loaded Preview, Admission and Execution first try a coherent Ready publication.
+The successful capture uses the published identity, State and selected resident
+domains without SQLite or a Context owner reservation. Execution checks the
+bound Message, Turn and open Attempt from resident Input evidence.
+Configuration and publication tokens fence the assembled snapshot.
+
+When required coverage is missing or invalidated, scoped preparation can
+acquire the owner reservation. It resolves pending original commits, checks
+identity and prepares only the named dependencies. The final capture uses one
+coherent publication and rechecks the planned Work, Task and Scheduling
+selections. SQLite qualification and readback belong to this preparation,
+bootstrap, explicit cold queries, commit and recovery. A routine publication
+that repeatedly misses required coverage needs a fix at the writer or
+invalidation boundary.
 
 Late operator input is admitted at the existing safe boundary. Arrival after
 capture does not mutate an already-submitted provider request. Provider
@@ -1472,22 +1459,21 @@ requires the validated source turn, root message, and predecessor execution.
 Typed bounded dependency rules determine the necessary closure; the runtime
 does not recursively load every historical lineage edge.
 
-A genuinely nonresident dependency can request hydration under a typed cause:
-`Bootstrap`, `ExplicitRefRecall`, `ExecutionOwnerChange`, `WorkspaceChange`,
-`ValidatedRecovery`, or explicit `ProjectionPolicyExpansion`. Ordinary
-relevance selection and advancement of the recent-history window are not
-hydration causes. New committed evidence updates the resident window directly;
-ordinary selection operates on that prepared window. A new policy requiring
-more archived history must declare its expansion rather than silently fall
-back to storage each turn.
+A genuinely nonresident dependency can require bootstrap, scoped preparation
+or an explicit cold read. Examples include an execution owner change, workspace
+change, validated recovery, an explicit history policy expansion or a caller's
+qualified historical lookup. New committed evidence updates the resident window
+directly and ordinary relevance selection uses that window. A new policy
+requiring more archived history declares its expansion before capture.
 
-The loader authorizes the target, reads the needed
-version, and returns immutable records. The owner revalidates their dependency
-versions before installing them. A mutable current-state reference must match
-the requested current revision; an explicit immutable historical reference
-may legitimately resolve an older version. A changed request binding, mismatched
-version, or unauthorized target rejects installation rather than substituting
-the newest record. Existing same-agent cross-workspace ref access remains valid;
+The loader authorizes the target, reads the needed version and returns immutable
+records. When installing preparation results, the owner revalidates their
+dependency versions. Explicit read-only queries can return qualified results
+without creating a publication or activating the agent. A mutable current-state
+reference must match the requested current revision. An explicit immutable
+historical reference may resolve an older version. Installation rejects a
+changed request binding, mismatched version, or unauthorized target. Existing
+same-agent cross-workspace ref access remains valid;
 the active workspace alone is not an authorization boundary.
 Missing optional history is represented as unavailable; missing mandatory
 continuity evidence prevents `Ready` with a typed reason.
@@ -1499,12 +1485,11 @@ not reselect the model or replace that request with default policy. The owner
 retains all accepted payloads; each request pins only its selected dependency
 closure, rather than pinning the entire pending queue or published root.
 
-Hydration has explicit ref/count/byte/depth limits and records its reason,
-source reads, bytes, and duration. Oversized bodies remain addressable through
-existing tools with bounded previews. Hitting a bound cannot silently remove
-the root operator input or fabricate an empty history. Snapshot references pin
-the records they use until the request, its reprojections, and any in-flight
-provider continuation release them; resource accounting includes these pins.
+Explicit cold resolution uses the existing typed reference and authorizes its
+owner, source version and requested shape. Lookup limits and bounded previews
+apply at that boundary. Preparation diagnostics record the reason and attributed
+I/O and duration. Snapshot references pin the records they use until the request,
+its reprojections, and any in-flight provider continuation release them.
 
 Ordinary steady-state capture must not perform recurring "preparation" queries
 for the latest records. Moving current I/O into a wrapper before the pure
@@ -1524,11 +1509,10 @@ Cold preparation reconstructs the required sets from qualified membership.
 Resource observations carry source identity, content digest when applicable,
 an immutable body or bounded preview, and an observation epoch. Known file-tool
 writes, workspace switches, configuration reloads, and explicit refresh requests
-invalidate or update the affected observation. Watchers discover external edits;
-watcher overflow, restart, or known missed events invalidate affected
-observations and schedule reconciliation. An explicit refresh operation remains
-available when watching is unsupported or unreliable. The renderer never polls
-or scans files once per turn to simulate fresh memory state.
+invalidate or update the affected observation. An external editor's changes
+become visible when an applicable observation refresh completes, such as an
+explicit refresh or the next bootstrap. A filesystem watcher is optional. The
+renderer consumes the published observation.
 An asynchronous refresh carries the invalidation generation it observed;
 installation revalidates that generation, workspace, and source identity so a
 late read cannot overwrite a newer invalidation or observation. The resource
