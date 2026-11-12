@@ -13664,10 +13664,10 @@
       "route_ref": "gemini@default/gemini-4-carbon",
       "facts": {
         "context_window_tokens": 1048576,
-        "default_max_output_tokens": 65536,
-        "max_output_tokens_upper_limit": 65536,
+        "default_max_output_tokens": 32768,
+        "max_output_tokens_upper_limit": 32768,
         "prompt_budget_estimated_tokens": 996147,
-        "runtime_max_output_tokens": 65536,
+        "runtime_max_output_tokens": 32768,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -13686,7 +13686,13 @@
       },
       "inputs": {
         "model": {
+          "context_window_tokens": 1048576,
+          "effective_context_window_percent": 95,
           "auto_compact_token_limit": 996147,
+          "default_max_output_tokens": 32768,
+          "max_output_tokens_upper_limit": 32768,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -13695,21 +13701,97 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 1048576,
-          "default_max_output_tokens": 65536,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 65536,
           "reasoning_effort_options": [
             "low",
             "medium",
             "high"
-          ],
-          "tool_output_truncation_estimated_tokens": 2500
+          ]
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "model_builtin",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
+      "route_ref": "gemini@default/gemini-4-hydrogen",
+      "facts": {
+        "context_window_tokens": 1048576,
+        "default_max_output_tokens": 65536,
+        "max_output_tokens_upper_limit": 65536,
+        "prompt_budget_estimated_tokens": 996147,
+        "runtime_max_output_tokens": 65536,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "high",
+          "xhigh"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "context_window_tokens": 1048576,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": 996147,
+          "default_max_output_tokens": 65536,
+          "max_output_tokens_upper_limit": 65536,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "high",
+            "xhigh"
+          ]
+        },
+        "route": {
+          "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
