@@ -330,6 +330,12 @@ fn models_dev_refresh_retains_only_matching_capacity_reviews() {
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("configure mock stream blocking mode");
+                        stream
+                            .set_read_timeout(Some(Duration::from_secs(10)))
+                            .unwrap();
                         assert!(read_http_request(&mut stream).starts_with("GET /api.json "));
                         write_json_response(&mut stream, "{}");
                         break;
@@ -388,11 +394,14 @@ fn events_tail_resolves_caller_and_operator_targets() {
         listener.set_nonblocking(true).unwrap();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
         let server = thread::spawn(move || {
-            let deadline = Instant::now() + Duration::from_secs(10);
+            let deadline = Instant::now() + Duration::from_secs(30);
             let mut paths = Vec::new();
             loop {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
+                        stream
+                            .set_nonblocking(false)
+                            .expect("configure mock stream blocking mode");
                         stream
                             .set_read_timeout(Some(Duration::from_secs(2)))
                             .unwrap();
@@ -455,9 +464,11 @@ fn events_tail_resolves_caller_and_operator_targets() {
             command.args(["--agent", explicit]);
         }
         let output = command.output().expect("run events tail CLI");
-        done_tx.send(()).unwrap();
-        let paths = server.join().unwrap();
+        let _ = done_tx.send(());
         let (stdout, stderr) = output_text(&output);
+        let paths = server
+            .join()
+            .unwrap_or_else(|_| panic!("events tail mock failed: {stderr}"));
         let mut expected_paths = Vec::new();
         if caller.is_none() && explicit.is_none() {
             expected_paths.push("/api".to_owned());
@@ -713,7 +724,7 @@ fn remote_skill_errors_render_codes_and_recovery_hints_and_exit_one() {
             let addr = listener.local_addr().unwrap();
             let handle = thread::spawn(move || {
                 listener.set_nonblocking(true).unwrap();
-                let deadline = Instant::now() + Duration::from_secs(10);
+                let deadline = Instant::now() + Duration::from_secs(30);
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => break stream,
@@ -724,6 +735,9 @@ fn remote_skill_errors_render_codes_and_recovery_hints_and_exit_one() {
                         Err(error) => panic!("{error}"),
                     }
                 };
+                stream
+                    .set_nonblocking(false)
+                    .expect("configure mock stream blocking mode");
                 stream
                     .set_read_timeout(Some(Duration::from_secs(10)))
                     .unwrap();
@@ -766,8 +780,10 @@ fn remote_skill_errors_render_codes_and_recovery_hints_and_exit_one() {
                 ])
                 .output()
                 .unwrap();
-            handle.join().unwrap();
             let (stdout, stderr) = output_text(&output);
+            handle
+                .join()
+                .unwrap_or_else(|_| panic!("skills {subcommand} mock failed: {stderr}"));
             assert_eq!(output.status.code(), Some(1), "{subcommand}: {stderr}");
             assert!(stdout.is_empty(), "{stdout}");
             assert!(stderr.contains(code), "{stderr}");

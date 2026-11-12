@@ -272,8 +272,10 @@ esac
             let response = client
                 .post(format!("{endpoint}/{action}"))
                 .bearer_auth("serve-test-token")
+                // The mutation invokes the CLI to inspect, apply, and verify the rule.
+                .timeout(Duration::from_secs(10))
                 .send()
-                .unwrap();
+                .unwrap_or_else(|error| panic!("{primary}: {action}: {error}"));
             assert_eq!(response.status(), 200, "{primary}: {action}");
             let status: Value = response.json().unwrap();
             assert_eq!(status["desired_enabled"], enabled);
