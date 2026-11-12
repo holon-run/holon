@@ -39,7 +39,9 @@ const AGENT_ROSTER_IDENTITIES_SQL: &str = "SELECT i.agent_id,
        ON watermarks.scope_key = 'agent:' || i.agent_id
      WHERE i.status = 'active' AND i.visibility = 'public'
      ORDER BY i.agent_id";
-const AGENT_ROSTER_STATES_SQL: &str = "SELECT s.agent_id, s.payload_json
+const AGENT_ROSTER_STATES_SQL: &str = "SELECT s.agent_id, s.payload_json,
+       (SELECT COUNT(*) FROM queue_entries q
+        WHERE q.agent_id = s.agent_id AND q.status IN ('queued', 'interrupted'))
      FROM agent_states s
      JOIN agent_identities i ON i.agent_id = s.agent_id
      WHERE i.status = 'active' AND i.visibility = 'public'";
@@ -109,6 +111,7 @@ pub struct AgentRosterRow {
     pub agent_id: String,
     pub identity_json: String,
     pub agent_state_json: Option<String>,
+    pub pending_input_count: usize,
     pub event_head_seq: u64,
     pub oldest_retained_seq: u64,
     pub latest_brief: Option<AgentRosterLatestBriefRow>,
@@ -179,6 +182,7 @@ pub struct AgentProjectionSnapshotRow {
     /// Committed AgentState payload; `None` while the identity has no
     /// persisted state yet (stopped placeholder semantics).
     pub agent_state_json: Option<String>,
+    pub pending_input_count: usize,
     /// Greatest committed `event_seq` for the Agent in this view.
     pub event_head_seq: u64,
     pub oldest_retained_seq: u64,
@@ -644,6 +648,7 @@ fn verify_roster_snapshot_view(connection: &Connection) -> Result<bool> {
     for table in [
         "agent_identities",
         "agent_states",
+        "queue_entries",
         "audit_events",
         "audit_event_retention_watermarks",
         "runtime_sequences",
@@ -685,6 +690,7 @@ fn verify_projection_snapshot_view(connection: &Connection) -> Result<bool> {
     for table in [
         "agent_identities",
         "agent_states",
+        "queue_entries",
         "audit_events",
         "audit_event_retention_watermarks",
         "runtime_sequences",
@@ -810,15 +816,23 @@ fn collect_agent_projection_anchors(
 
     let membership = connection
         .query_row(
-            "SELECT i.payload_json,
-                    (SELECT s.payload_json FROM agent_states s WHERE s.agent_id = i.agent_id)
+            "SELECT i.payload_json, s.payload_json,
+                    (SELECT COUNT(*) FROM queue_entries q
+                     WHERE q.agent_id = s.agent_id AND q.status IN ('queued', 'interrupted'))
              FROM agent_identities i
+             LEFT JOIN agent_states s ON s.agent_id = i.agent_id
              WHERE i.agent_id = ?1 AND i.status = 'active' AND i.visibility = 'public'",
             [agent_id],
-            |row| Ok((projection_text(row, 0)?, projection_optional_text(row, 1)?)),
+            |row| {
+                Ok((
+                    projection_text(row, 0)?,
+                    projection_optional_text(row, 1)?,
+                    row.get::<_, usize>(2)?,
+                ))
+            },
         )
         .optional()?;
-    let Some((identity_json, agent_state_json)) = membership else {
+    let Some((identity_json, agent_state_json, pending_input_count)) = membership else {
         return Ok(AgentProjectionSnapshotRows {
             runtime_id,
             event_log_epoch,
@@ -903,7 +917,9 @@ fn collect_agent_projection_anchors(
     };
 
     crate::diagnostics::resource_io::charge_owned_metadata(
-        agent_id.len().saturating_add(std::mem::size_of::<String>()) as u64,
+        agent_id
+            .len()
+            .saturating_add(std::mem::size_of::<(String, usize)>()) as u64,
         1,
     )?;
     Ok(AgentProjectionSnapshotRows {
@@ -915,6 +931,7 @@ fn collect_agent_projection_anchors(
             identity_json,
             canonical_relations,
             agent_state_json,
+            pending_input_count,
             event_head_seq: to_seq(head)?,
             oldest_retained_seq: to_seq(oldest)?,
             current_work_item,
@@ -1038,20 +1055,24 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
         }
     }
 
-    let mut agent_states: HashMap<String, String> = HashMap::new();
+    let mut agent_states: HashMap<String, (String, usize)> = HashMap::new();
     {
         let mut statement = connection.prepare(AGENT_ROSTER_STATES_SQL)?;
         let rows = statement.query_map([], |row| {
-            Ok((projection_text(row, 0)?, projection_text(row, 1)?))
+            Ok((
+                projection_text(row, 0)?,
+                projection_text(row, 1)?,
+                row.get::<_, usize>(2)?,
+            ))
         })?;
         for row in rows {
-            let (agent_id, payload) = row?;
+            let (agent_id, payload, pending) = row?;
             crate::diagnostics::resource_io::charge_owned_metadata(
-                (std::mem::size_of::<String>() * 2) as u64,
+                std::mem::size_of::<(String, String, usize)>() as u64,
                 1,
             )?;
             agent_states.try_reserve(1)?;
-            agent_states.insert(agent_id, payload);
+            agent_states.insert(agent_id, (payload, pending));
         }
     }
 
@@ -1060,11 +1081,15 @@ fn collect_agent_roster_rows(connection: &Connection) -> Result<AgentRosterSnaps
     };
     let mut rows = Vec::new();
     for (agent_id, identity_json, head, oldest) in identities {
+        let (agent_state_json, pending_input_count) = agent_states
+            .remove(&agent_id)
+            .map_or((None, 0), |(payload, pending)| (Some(payload), pending));
         let row = AgentRosterRow {
             event_head_seq: to_seq(head)?,
             oldest_retained_seq: to_seq(oldest)?,
             latest_brief: latest_briefs.remove(&agent_id),
-            agent_state_json: agent_states.remove(&agent_id),
+            agent_state_json,
+            pending_input_count,
             agent_id,
             identity_json,
         };

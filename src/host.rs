@@ -7593,7 +7593,7 @@ impl RuntimeHost {
                 None
             };
             let build = || -> Result<AgentRosterEntryData> {
-                let agent_state = row
+                let mut agent_state = row
                     .agent_state_json
                     .as_deref()
                     .map(|payload| {
@@ -7606,6 +7606,9 @@ impl RuntimeHost {
                         })
                     })
                     .transpose()?;
+                if let Some(state) = &mut agent_state {
+                    state.pending = row.pending_input_count;
+                }
                 let latest_brief = row
                     .latest_brief
                     .map(|brief| -> Result<AgentRosterLatestBriefData> {
@@ -7722,7 +7725,7 @@ impl RuntimeHost {
                     row.agent_id
                 )
             })?;
-        let agent_state = row
+        let mut agent_state = row
             .agent_state_json
             .as_deref()
             .map(|payload| {
@@ -7735,6 +7738,9 @@ impl RuntimeHost {
                 })
             })
             .transpose()?;
+        if let Some(state) = &mut agent_state {
+            state.pending = row.pending_input_count;
+        }
         let config = self.config();
         let catalog = crate::config::ModelListCatalog::from_config(&config);
         let agent =

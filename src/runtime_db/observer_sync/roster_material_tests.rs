@@ -112,7 +112,7 @@ fn gates(connection: &Connection) -> Result<Vec<(&'static str, (u64, usize))>> {
     gates.extend([
         ("state-agent", text(&id)),
         ("state-json", text(&state)),
-        ("state-slot", slot::<(String, String)>()),
+        ("state-slot", slot::<(String, String, usize)>()),
         ("rows-slot", slot::<AgentRosterRow>()),
     ]);
     Ok(gates)

@@ -1500,6 +1500,51 @@ mod tests {
         }
 
         #[tokio::test]
+        async fn observer_snapshots_project_pending_from_queue() -> anyhow::Result<()> {
+            use crate::types::{AgentState, Priority, QueueEntryRecord, QueueEntryStatus};
+
+            let (_home, host) = projection_test_host().await;
+            let db = host.runtime_db();
+            db.agent_states()
+                .upsert_for_fixture(&AgentState::new("web"))?;
+            let now = chrono::Utc::now();
+            for (id, status) in [
+                ("queued", QueueEntryStatus::Queued),
+                ("interrupted", QueueEntryStatus::Interrupted),
+                ("processed", QueueEntryStatus::Processed),
+            ] {
+                db.queue_entries().upsert(&QueueEntryRecord {
+                    message_id: format!("observer-{id}"),
+                    agent_id: "web".into(),
+                    priority: Priority::Normal,
+                    status,
+                    created_at: now,
+                    updated_at: now,
+                })?;
+            }
+            for legacy in [false, true] {
+                if legacy {
+                    db.connection()?.execute(
+                        "UPDATE agent_states
+                         SET payload_json = json_set(payload_json, '$.pending', 99)
+                         WHERE agent_id = 'web'",
+                        [],
+                    )?;
+                }
+                let roster = host.agent_roster_snapshot()?;
+                let member = roster
+                    .agents
+                    .iter()
+                    .find(|entry| entry.agent.identity.agent_id == "web")
+                    .unwrap();
+                assert_eq!(member.agent.pending, 2, "legacy payload: {legacy}");
+                let projection = host.agent_projection_snapshot("web")?.unwrap();
+                assert_eq!(projection.agent.pending, 2, "legacy payload: {legacy}");
+            }
+            Ok(())
+        }
+
+        #[tokio::test]
         async fn projection_snapshot_host_retains_original_phase_and_releases_failed_assembly() {
             use crate::{
                 config::StateMemoryLimits,

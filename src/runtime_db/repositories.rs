@@ -675,7 +675,7 @@ impl AgentStateRepository<'_> {
                 actual.entry(wait.agent_id.clone()).or_default().extend(writes)?;
             }
             let mut scheduling_actual=BTreeMap::new();
-            for state in states.values_mut().filter(|state| state.status == AgentStatus::Stopped) {
+            for state in states.values().filter(|state| state.status == AgentStatus::Stopped) {
                 let writes=cancel_active_timers_with_writes_tx(tx,&state.id,now)?;
                 scheduling_actual.insert(state.id.clone(),writes);
                 let pending = {
@@ -691,7 +691,9 @@ impl AgentStateRepository<'_> {
                     entry.updated_at = now;
                     upsert_queue_entry_tx(tx, &entry)?;
                 }
-                state.pending = 0;
+            }
+            for state in states.values_mut() {
+                state.pending = super::current_query::pending_queue_count(tx, &state.id)?;
             }
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             if let Some((_, _, request)) = preparation {
