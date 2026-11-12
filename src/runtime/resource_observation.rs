@@ -30,7 +30,6 @@ pub(crate) struct ContextResourceSource {
     pub include_user_skills: bool,
     pub config_generation: u64,
     pub active_skills_selector: [u8; 32],
-    pub work_revision: u64,
     pub plans: Vec<ContextPlanSource>,
 }
 
@@ -52,7 +51,7 @@ impl ContextResourceSource {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ContextPlanSource {
     pub work_item_id: String,
-    pub recorded: bool,
+    pub recorded_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

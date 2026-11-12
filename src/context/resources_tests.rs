@@ -30,7 +30,6 @@ fn loaded_resource_views_keep_selected_plans_notes_and_original_guard() -> Resul
         include_user_skills: false,
         config_generation: 1,
         active_skills_selector: [0; 32],
-        work_revision: 0,
         plans: Vec::new(),
     };
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;

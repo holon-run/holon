@@ -458,6 +458,7 @@ impl RuntimeHandle {
                 .notified()
                 .await;
         }
+        let resource_token = root.token;
         let observation = self.capture_context_resources_from_root(
             &state,
             &root,
@@ -700,16 +701,21 @@ impl RuntimeHandle {
             &resource_material,
             planned_scheduling,
         )?;
+        if root.token != resource_token {
+            // Preparation can publish a different Work selection after resources
+            // were pinned. Revalidate only the inputs to the physical observation.
+            let _io = resource_material.enter();
+            let source =
+                self.context_resource_source_with_root(&root.state, &config_version, &root)?;
+            if &source != observation.source() {
+                return Err(ContextDependencyChanged.into());
+            }
+        }
         drop(root);
         let work = captured
             .work
             .as_ref()
             .ok_or_else(|| crate::runtime::resident_work::WorkReadError::IncompleteLive)?;
-        // State remains reserved and configuration is checked below. Work
-        // hydration must also preserve the resource source captured above.
-        if observation.source().work_revision != work.revision {
-            return Err(ContextDependencyChanged.into());
-        }
         validate_work_selection(&planned_work, work)?;
         let tasks = captured
             .tasks

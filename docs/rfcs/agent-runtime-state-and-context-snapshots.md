@@ -1517,7 +1517,11 @@ available when watching is unsupported or unreliable. The renderer never polls
 or scans files once per turn to simulate fresh memory state.
 An asynchronous refresh carries the invalidation generation it observed;
 installation revalidates that generation, workspace, and source identity so a
-late read cannot overwrite a newer invalidation or observation.
+late read cannot overwrite a newer invalidation or observation. The resource
+source includes the selected Work plan IDs and their recorded artifact hashes.
+Ordinary Work and scheduling revisions keep the resource observation when
+those plan inputs and the other resource sources are unchanged. Context still
+validates its Work and Scheduling selection against the captured Agent root.
 
 The runtime promises the latest observed resource version, not instantaneous
 agreement with arbitrary external file writes. Once a required observation is

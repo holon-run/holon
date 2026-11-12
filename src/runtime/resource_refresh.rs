@@ -919,7 +919,7 @@ impl RuntimeHandle {
         self.context_resource_source_with_root(state, config, &root)
     }
 
-    fn context_resource_source_with_root(
+    pub(super) fn context_resource_source_with_root(
         &self,
         state: &AgentState,
         config: &ConfigSnapshot,
@@ -956,13 +956,17 @@ impl RuntimeHandle {
         let mut plans = Vec::new();
         for value in &captured.records {
             if let super::resident_work::CanonicalWorkRecord::Work(item) = &value.record {
+                let hash = item.plan_artifact.as_ref().map(|artifact| &artifact.hash);
                 resource_io::charge_owned_metadata(
-                    (item.id.len() + std::mem::size_of::<ContextPlanSource>() + 512) as u64,
+                    (item.id.len()
+                        + hash.map_or(0, String::len)
+                        + std::mem::size_of::<ContextPlanSource>()
+                        + 512) as u64,
                     4,
                 )?;
                 plans.push(ContextPlanSource {
                     work_item_id: item.id.clone(),
-                    recorded: item.plan_artifact.is_some(),
+                    recorded_hash: hash.cloned(),
                 });
             }
         }
@@ -980,7 +984,6 @@ impl RuntimeHandle {
             include_user_skills: state.id == self.inner.default_agent_id,
             config_generation: config.resource_generation,
             active_skills_selector: selector.into(),
-            work_revision: captured.revision,
             plans,
         })
     }
@@ -1212,7 +1215,7 @@ impl RuntimeHandle {
                     &source.agent_home,
                     &source.scope.agent_id,
                     &plan.work_item_id,
-                    plan.recorded,
+                    plan.recorded_hash.is_some(),
                 )?;
                 plans.insert(plan.work_item_id.clone(), observed);
             }
@@ -1491,6 +1494,61 @@ mod tests {
         let refresh = runtime.inner.resources.refresh_lock.lock().await;
         let attempts = runtime.inner.resources.attempts.load(Ordering::Acquire);
         tokio::time::timeout(Duration::from_secs(2), runtime.ensure_context_resources()).await??;
+        assert_eq!(
+            runtime.inner.resources.attempts.load(Ordering::Acquire),
+            attempts
+        );
+        drop(refresh);
+        runtime.close_execution_admission();
+        runtime.join_retiring_resources().await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn work_metadata_commit_preserves_the_ready_plan_observation() -> Result<()> {
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("work-resource-source", home.path())?;
+        runtime.await_initial_resources().await;
+        let work = runtime
+            .create_work_item(
+                "original objective".into(),
+                Some(crate::types::WorkItemPlanStatus::NeedsInput),
+                None,
+                Vec::new(),
+            )
+            .await?;
+        let original = runtime.ensure_context_resources().await?;
+        let owner = &runtime.inner.mutation_owner;
+        let original_revision = owner
+            .capture()?
+            .unwrap()
+            .work
+            .as_ref()
+            .unwrap()
+            .coverage()
+            .revision;
+        let mut updated = work.clone();
+        updated.objective = "refined objective".into();
+        updated.revision += 1;
+        runtime
+            .update_work_item_record_expected(&updated, work.revision)
+            .await?;
+        let current_revision = owner
+            .capture()?
+            .unwrap()
+            .work
+            .as_ref()
+            .unwrap()
+            .coverage()
+            .revision;
+        assert!(current_revision > original_revision);
+
+        let refresh = runtime.hold_resource_refresh_for_test().await?;
+        let attempts = runtime.inner.resources.attempts.load(Ordering::Acquire);
+        let retained =
+            tokio::time::timeout(Duration::from_secs(2), runtime.ensure_context_resources())
+                .await??;
+        assert!(Arc::ptr_eq(&original, &retained));
         assert_eq!(
             runtime.inner.resources.attempts.load(Ordering::Acquire),
             attempts

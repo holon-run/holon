@@ -27,7 +27,6 @@ fn source() -> ContextResourceSource {
         include_user_skills: true,
         config_generation: 1,
         active_skills_selector: [0; 32],
-        work_revision: 0,
         plans: Vec::new(),
     }
 }
@@ -1359,7 +1358,11 @@ fn candidate_old_snapshot_and_installed_version_keep_the_actual_original_guards(
 
 #[test]
 fn every_source_identity_component_fences_capture_and_unchanged_refresh_reuses_arc() {
-    let (registry, source) = fixture();
+    let (registry, mut source) = fixture();
+    source.plans.push(ContextPlanSource {
+        work_item_id: "work-a".into(),
+        recorded_hash: Some("original".into()),
+    });
     let old = refresh(&registry, &source, "same");
     let same = refresh(&registry, &source, "same");
     assert!(Arc::ptr_eq(&old, &same));
@@ -1377,15 +1380,9 @@ fn every_source_identity_component_fences_capture_and_unchanged_refresh_reuses_a
             8 => changed.include_user_skills = false,
             9 => changed.config_generation += 1,
             10 => changed.active_skills_selector[0] = 1,
-            11 => changed.work_revision += 1,
-            12 => changed.plans.push(ContextPlanSource {
-                work_item_id: "work-a".into(),
-                recorded: false,
-            }),
-            _ => changed.plans.push(ContextPlanSource {
-                work_item_id: "work-a".into(),
-                recorded: true,
-            }),
+            11 => changed.plans[0].work_item_id = "work-b".into(),
+            12 => changed.plans[0].recorded_hash = None,
+            _ => changed.plans[0].recorded_hash = Some("edited".into()),
         }
         let error = registry.capture(&changed).unwrap_err();
         assert!(error.is::<ResourceObservationError>());
@@ -1415,7 +1412,10 @@ fn instruction_read_keeps_original_guard_and_rejects_invalidated_resources() -> 
     let original = refresh(&registry, &source, "instructions");
     let guard = Arc::downgrade(&original._material);
     let source_guard = Arc::downgrade(&original.source._material);
-    source.work_revision += 1;
+    source.plans.push(ContextPlanSource {
+        work_item_id: "work-a".into(),
+        recorded_hash: None,
+    });
     let before = ledger.report()?.observed_bytes;
     let probe = IoProbe::start();
     let instructions = registry.capture_instructions(&source)?;
