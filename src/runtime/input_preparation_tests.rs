@@ -767,6 +767,48 @@ async fn input_birth_cursor_preparation_preserves_qualified_history() -> Result<
             );
         }
         assert_eq!(cursor()?, Some(0));
+        fixture.db.transaction(|tx| {
+            tx.execute_batch("DROP TRIGGER reject_scheduling_rewrite;")?;
+            tx.execute(
+                "DELETE FROM scheduling_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",
+                rusqlite::params![fixture.scope.agent_id, fixture.scope.identity_incarnation],
+            )?;
+            Ok(())
+        })?;
+        let scheduling = std::time::Instant::now();
+        assert_eq!(load()?, first);
+        if trace.is_some() {
+            eprintln!(
+                "Scheduling qualification fixture history={history_len} total_us={}",
+                scheduling.elapsed().as_micros()
+            );
+            fixture.db.transaction(|tx| {
+                tx.execute(
+                    "DELETE FROM scheduling_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",
+                    rusqlite::params![fixture.scope.agent_id, fixture.scope.identity_incarnation],
+                )?;
+                Ok(())
+            })?;
+            // Exercise the original full-loader writer on the same fixture.
+            fixture.db.transaction_with_context(
+                crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                    "runtime_db.input_preparation_fixture",
+                    "full_qualification",
+                ),
+                |tx| {
+                    crate::runtime_db::input_preparation::prepare_input_with_scheduling_tx(
+                        tx,
+                        &fixture.scope,
+                        &original.state,
+                        &request,
+                        12,
+                        &fixture.budget,
+                        &crate::runtime::resident_scheduling::SchedulingCaptureRequest::current(),
+                    )?;
+                    Ok(())
+                },
+            )?;
+        }
         assert!(Arc::ptr_eq(&original, &fixture.owner.capture()?.unwrap()));
         assert!(reservation.recovery()?.is_none());
     }

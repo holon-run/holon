@@ -257,6 +257,7 @@ pub(crate) fn prepare_partial_task_stop_input_recovery_tx(
 }
 
 /// Explicit finite Scheduling preparation under the same existing owner and State.
+#[cfg(test)]
 pub(crate) fn prepare_input_with_scheduling_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -283,33 +284,6 @@ pub(crate) fn prepare_input_with_scheduling_tx(
         true,
     )
 }
-pub(crate) fn prepare_original_input_with_scheduling_tx(
-    tx: &Transaction<'_>,
-    scope: &InputEvidenceScope,
-    state: &AgentState,
-    request: &InputEvidenceLoadRequest,
-    recent_episode_limit: usize,
-    budget: &InputEvidenceBudgetLedger,
-    scheduling: &crate::runtime::resident_scheduling::SchedulingCaptureRequest,
-) -> Result<PreparedInputRead> {
-    prepare_input_domains_inner_tx(
-        tx,
-        scope,
-        state,
-        request,
-        recent_episode_limit,
-        budget,
-        true,
-        None,
-        false,
-        None,
-        None,
-        None,
-        Some(scheduling),
-        true,
-    )
-}
-
 pub(in crate::runtime_db) fn prepare_child_terminal_input_recovery_tx(
     tx: &Transaction<'_>,
     view: &super::child_task_terminal::OriginalChildTerminalReadView<'_, '_>,
@@ -391,6 +365,48 @@ pub(crate) fn initialize_input_birth_cursor_tx(
     let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
     validate_preparation_scope(&facts, scope, published_state, original_recovery)?;
     super::input_evidence_snapshot::initialize_birth_cursor_tx(tx, scope)
+}
+
+pub(crate) fn prepare_scheduling_for_input_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    budget: &InputEvidenceBudgetLedger,
+    scheduling: &crate::runtime::resident_scheduling::SchedulingCaptureRequest,
+    original_recovery: bool,
+) -> Result<()> {
+    let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
+    validate_preparation_scope(read.facts(), scope, published_state, original_recovery)?;
+    let scheduling = scheduling_capture::PreparedSchedulingRequest::new(
+        scope,
+        Some(scheduling),
+        request.record_limit,
+        request.byte_limit,
+        budget,
+    )?;
+    super::scheduling_snapshot::prepare_scheduling_with_context_scope_tx(
+        tx,
+        scope,
+        &scheduling.request,
+        budget,
+        original_recovery,
+        &read,
+    )?
+    .require_current()?;
+    Ok(())
+}
+
+pub(crate) fn qualify_input_for_preparation_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    plan: &super::input_evidence_snapshot::InputQualificationPlan,
+    original_recovery: bool,
+) -> Result<()> {
+    let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
+    validate_preparation_scope(&facts, scope, published_state, original_recovery)?;
+    super::input_evidence_snapshot::qualify_planned_input_tx(tx, scope, plan)
 }
 
 fn validate_preparation_scope(
@@ -608,7 +624,7 @@ fn prepare_input_domains_inner_tx(
     let prepared = (if prepare {
         prepare_input_evidence_with_scope_read_tx
     } else {
-        super::input_evidence_snapshot::load_existing_input_evidence_with_scope_read_tx
+        super::input_evidence_snapshot::load_or_plan_input_qualification_with_scope_read_tx
     })(tx, scope, request, original_recovery, scope_read)?;
     let input = match prepared {
         InputEvidenceBootstrapSnapshot::Current(input) => input,

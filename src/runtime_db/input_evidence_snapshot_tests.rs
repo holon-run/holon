@@ -3893,3 +3893,66 @@ fn fixed_metadata_selection_preserves_every_key_beyond_former_cumulative_quotas(
     assert!(selected.contains(&Key::new(Family::Message, format!("source-{MAX_RECORDS}"))));
     Ok(())
 }
+
+#[test]
+fn read_only_input_preparation_plans_only_missing_fixed_members() -> Result<()> {
+    let (_directory, db) = legacy(|tx| {
+        for id in ["fixed-one", "fixed-two", "outside-request"] {
+            let mut entry = TranscriptEntry::new(
+                "agent-a",
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                serde_json::json!({"blocks":[{"type":"text","text":id}]}),
+            );
+            entry.id = id.into();
+            entry.created_at = time();
+            append_transcript_entry_tx(tx, &entry)?;
+        }
+        Ok(())
+    })?;
+    let scope = scope();
+    let mut wanted = request(InputWindowSelector::GlobalTurns, 1);
+    wanted.windows.clear();
+    wanted.mandatory_roots.extend(
+        ["fixed-one", "fixed-two"]
+            .into_iter()
+            .map(|id| Key::new(Family::Transcript, id)),
+    );
+    let read = || {
+        db.read_for_preparation(|tx| {
+            let read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
+            load_or_plan_input_qualification_with_scope_read_tx(
+                tx,
+                &scope,
+                wanted.borrowed(),
+                false,
+                read,
+            )
+        })
+    };
+    let err = read()
+        .err()
+        .context("fixed members need writer qualification")?;
+    let plan = err
+        .downcast_ref::<InputQualificationPlan>()
+        .with_context(|| format!("missing Input plan: {err:#}"))?;
+    assert_eq!(plan.keys(), &wanted.mandatory_roots);
+    db.transaction(|tx| {
+        for key in plan.keys() {
+            assert!(
+                alias_on(tx, &scope, key)?.is_none(),
+                "reader wrote a qualification"
+            );
+        }
+        qualify_planned_input_tx(tx, &scope, plan)?;
+        assert!(alias_on(tx, &scope, &Key::new(Family::Transcript, "outside-request"))?.is_none());
+        Ok(())
+    })?;
+    let prepared = current(read()?);
+    let captured = prepared.resident.capture_for_request(&wanted)?;
+    for key in &wanted.mandatory_roots {
+        assert!(captured.lookup(key)?.is_some());
+    }
+    Ok(())
+}
