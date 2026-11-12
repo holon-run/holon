@@ -2358,14 +2358,6 @@ impl ResidentInputEvidence {
                         "selected Message has no canonical assignment observation"
                     );
                 }
-                if let PreparedInputEvidence::Turn(turn) = &record.record {
-                    ensure!(
-                        self.coverage
-                            .turn_transcript_keys
-                            .contains_key(&turn.turn_id),
-                        "selected Turn has no qualified transcript coverage"
-                    );
-                }
                 bytes = bytes.saturating_add(record.resident_bytes)
             } else {
                 ensure!(
@@ -2394,6 +2386,15 @@ impl ResidentInputEvidence {
                 window.is_exhaustive || window.keys.len() == window.limit,
                 "partial history coverage is not ready"
             );
+            if matches!(window.selector, InputWindowSelector::OwnerTurns { .. }) {
+                ensure!(
+                    window
+                        .keys
+                        .iter()
+                        .all(|key| self.coverage.turn_transcript_keys.contains_key(&key.id)),
+                    "owner Turn window has missing transcript coverage"
+                );
+            }
         }
         Ok(Arc::new(selected))
     }
@@ -2987,9 +2988,22 @@ mod tests {
             .context("warm window projection")?;
         let mut corrupt = warm.clone();
         corrupt.coverage.turn_transcript_keys.remove("a");
-        assert!(corrupt
+        let without_turn_coverage = corrupt
             .with_committed(&CommittedInputEvidenceDelta::default(), BTreeSet::new())?
-            .is_none());
+            .context("global Turn window does not require per-Turn transcripts")?;
+        assert!(matches!(
+            without_turn_coverage
+                .capture()?
+                .transcripts_for_turns(&["a".into()]),
+            Err(InputEvidenceReadError::NeedsPreparation(_)),
+        ));
+        let mut scoped = without_turn_coverage;
+        scoped.coverage.windows[0].selector = InputWindowSelector::OwnerTurns {
+            owner: TurnOwner::AgentLifecycle {
+                agent_id: scope().agent_id,
+            },
+        };
+        assert!(scoped.trim_and_validate().is_err());
         let mut policy = warm;
         policy.coverage.windows[0].limit = LEGACY_INPUT_WINDOW + 2;
         assert!(policy
@@ -3297,7 +3311,9 @@ mod tests {
             .is_err());
         // Deliberately corrupt an unpublished candidate, not a cached view.
         original.validated_keys = None;
-        original.coverage.turn_transcript_keys.remove("a");
+        original
+            .records
+            .remove(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "a"));
         assert!(original.validated_required_keys().is_err());
         assert!(original.capture().is_err());
         assert!(original
@@ -3332,7 +3348,9 @@ mod tests {
         assert!(Arc::ptr_eq(&selected, &original.validated_required_keys()?));
 
         let mut invalid = next.clone();
-        invalid.coverage.turn_transcript_keys.remove("a");
+        invalid
+            .records
+            .remove(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "a"));
         assert!(invalid.trim_and_validate().is_err());
         assert!(invalid.validated_keys.is_none());
         assert!(invalid.validated_metadata_bytes.is_none());
@@ -3482,7 +3500,9 @@ mod tests {
                     .map(key)
                     .collect()
             );
-            original.coverage.turn_transcript_keys.remove("a");
+            original
+                .records
+                .remove(&InputEvidenceKey::new(InputEvidenceFamily::Turn, "a"));
             assert!(original.nonterminal_execution_roots_after(&delta).is_err());
         }
         Ok(())

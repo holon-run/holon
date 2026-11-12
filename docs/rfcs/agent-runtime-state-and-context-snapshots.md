@@ -1510,6 +1510,15 @@ Ordinary steady-state capture must not perform recurring "preparation" queries
 for the latest records. Moving current I/O into a wrapper before the pure
 renderer is an intermediate refactor, not achievement of the memory-read goal.
 
+Work-item history and provider recovery require complete Transcript coverage
+for their selected Turns. Global history uses its recent Transcript window.
+An absent per-Turn coverage entry means the relation has not been loaded. A
+present empty entry proves there were no qualified members in that view.
+The original writer establishes coverage when a work-owned Turn first becomes
+current. Subsequent commits update covered sets from acknowledged Transcript
+changes.
+Cold preparation reconstructs the required sets from qualified membership.
+
 ### Dynamic resources and files
 
 Resource observations carry source identity, content digest when applicable,

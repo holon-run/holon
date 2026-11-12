@@ -1023,7 +1023,9 @@ fn register_committed_input_evidence_inner_tx(
             "committed_writer",
             binding.seed_id.as_deref(),
         )?;
-        if key.family == Family::Turn && !was_present {
+        if !was_present
+            && matches!(&actual, CanonicalInputEvidence::Turn(turn) if turn.current_work_item_id.is_some())
+        {
             new_turns.insert(key.id.clone());
         }
         let record = prepare_record_on(tx, &scope.agent_id, &key, Some(actual))?;
@@ -1051,8 +1053,8 @@ fn register_committed_input_evidence_inner_tx(
             );
         }
     }
-    // Establish coverage once when a Turn first becomes current. A newly
-    // registered Turn ID can already have qualified Transcript relations.
+    // Prepare new work-owned Turns for the resident owner history window.
+    // A newly registered Turn ID can already have qualified Transcript relations.
     for turn_id in new_turns {
         let keys = qualified_turn_transcript_keys(tx, scope, &binding, &turn_id, MAX_RECORDS)?;
         turn_transcript_keys.insert(turn_id, keys);
@@ -1750,6 +1752,7 @@ fn prepare_input_records_tx(
             .iter()
             .map(|id| Key::new(Family::Brief, id)),
     );
+    let mut transcript_turns = BTreeMap::new();
     for requested in request.windows {
         if requested.limit > requested.selector.maximum_candidates() {
             return Err(InputEvidenceSnapshotError::PolicyOutsideQualification {
@@ -1768,6 +1771,9 @@ fn prepare_input_records_tx(
         let exhaustive = keys.len() <= requested.limit;
         keys.truncate(requested.limit);
         selected.extend(keys.iter().cloned());
+        if matches!(requested.selector, InputWindowSelector::OwnerTurns { .. }) {
+            transcript_turns.extend(keys.iter().map(|key| (key.clone(), 0)));
+        }
         windows.push(InputWindowCoverage {
             selector: requested.selector.clone(),
             limit: requested.limit,
@@ -1856,7 +1862,33 @@ fn prepare_input_records_tx(
         BTreeMap::<String, (String, crate::types::TurnTerminalKind, usize)>::new();
     let mut expanded_provider_sources = BTreeSet::new();
     let mut bytes = 0usize;
-    while let Some((key, depth, path)) = pending.pop_front() {
+    loop {
+        let Some((key, depth, path)) = pending.pop_front() else {
+            if transcript_turns.is_empty() {
+                break;
+            }
+            // Recovery can name a Turn that the history windows already loaded.
+            // Expand demanded relations only after their Turn bodies qualify.
+            for (key, depth) in std::mem::take(&mut transcript_turns) {
+                if !records.contains_key(&key) || turn_transcript_keys.contains_key(&key.id) {
+                    continue;
+                }
+                let keys = qualified_turn_transcript_keys(
+                    tx,
+                    scope,
+                    &binding,
+                    &key.id,
+                    request.record_limit.min(MAX_RECORDS),
+                )?;
+                pending.extend(
+                    keys.iter()
+                        .cloned()
+                        .map(|key| (key, depth + 1, CompletionInputPath::Strict)),
+                );
+                turn_transcript_keys.insert(key.id, keys);
+            }
+            continue;
+        };
         if !expanded_paths.insert((key.clone(), path.clone())) {
             continue;
         }
@@ -2007,17 +2039,6 @@ fn prepare_input_records_tx(
                     refs.insert(child);
                 }
             }
-        }
-        if let PreparedInputEvidence::Turn(turn) = &qualified.record {
-            let keys = qualified_turn_transcript_keys(
-                tx,
-                scope,
-                &binding,
-                &turn.turn_id,
-                request.record_limit.min(MAX_RECORDS),
-            )?;
-            refs.extend(keys.iter().cloned());
-            turn_transcript_keys.insert(turn.turn_id.clone(), keys);
         }
         if is_completion_edge && !missing_qualifications.is_empty() {
             records.insert(key, qualified);
@@ -2202,6 +2223,9 @@ fn prepare_input_records_tx(
                     selected.insert(child.clone());
                     pending.push_back((child, source_depth + 1, CompletionInputPath::Strict));
                 }
+                transcript_turns
+                    .entry(Key::new(Family::Turn, turn_id))
+                    .or_insert(source_depth);
                 expanded_provider_sources.insert(source);
             }
         }
