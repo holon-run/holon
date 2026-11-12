@@ -40,8 +40,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Author a small SKILL.md workflow, enable it for a test agent, and verify that it is loaded and followed.
   <!-- mdorigin:index kind=article -->
 
-- [Work in a project workspace or worktree](./work-with-workspaces.md)
-  Attach a project, activate its execution root, isolate changes in a managed worktree, and clean up safely.
+- [Work in a project workspace or Git worktree](./work-with-workspaces.md)
+  Attach your local repository in conversation, isolate coding tasks in managed Git worktrees, verify changes safely, and clean up without touching your main working directory.
   <!-- mdorigin:index kind=article -->
 
 - [Run a long-lived task](./run-long-lived-task.md)
