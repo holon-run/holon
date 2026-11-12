@@ -17956,7 +17956,7 @@ async fn control_stop_cancels_waits_and_discards_pending_input() {
 
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
-    let now = Utc::now();
+    let now = runtime.now();
 
     for (id, status, triggered_at) in [
         ("wait-stop-active", WaitConditionStatus::Active, None),
