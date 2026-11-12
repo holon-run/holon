@@ -1026,11 +1026,16 @@ fn coherent_read_transaction_preserves_old_alias_and_canonical_payload_together(
 
 #[test]
 fn selected_turn_and_message_closure_materialize_frozen_full_transcript() -> Result<()> {
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: "owned-work".into(),
+    };
     let (_directory, db) = legacy(|tx| {
         let input = message("accepted-old-turn");
         append_message_tx(tx, &input)?;
         for index in 1..=2 {
             let mut turn = TurnRecord::new("agent-a", format!("turn-{index}"), index);
+            turn.owner = Some(owner.clone());
+            turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
             if index == 1 {
                 turn.input_message_ids.push(input.id.clone());
             }
@@ -1073,13 +1078,8 @@ fn selected_turn_and_message_closure_materialize_frozen_full_transcript() -> Res
     assert!(replay_capture
         .lookup(&Key::new(Family::Message, "accepted-old-turn"))?
         .is_some());
-    assert_eq!(
-        replay_capture
-            .transcripts_for_turns(&["turn-1".into()])?
-            .len(),
-        1
-    );
-    let mut policy = request(InputWindowSelector::GlobalTurns, 1);
+    assert!(replay_capture.turn_transcript_keys.is_empty());
+    let mut policy = request(InputWindowSelector::OwnerTurns { owner }, 2);
     policy
         .mandatory_roots
         .insert(Key::new(Family::Message, "accepted-old-turn"));
@@ -1334,7 +1334,12 @@ fn qualified_related_projection_refresh_uses_original_transaction() -> Result<()
         )?;
         Ok(actual)
     })?;
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: "owned-work".into(),
+    };
     let mut turn = TurnRecord::new("agent-a", "turn-a", 1);
+    turn.owner = Some(owner.clone());
+    turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
     turn.input_message_ids.push(input.id.clone());
     let delta = db.transaction(|tx| {
         upsert_turn_record_tx(tx, &turn)?;
@@ -1352,7 +1357,7 @@ fn qualified_related_projection_refresh_uses_original_transaction() -> Result<()
         .records
         .iter()
         .any(|r| r.locator.key.family == Family::Message && r.locator.revision == 2));
-    let policy = request(InputWindowSelector::GlobalTurns, 1);
+    let policy = request(InputWindowSelector::OwnerTurns { owner }, 1);
     let before =
         current(db.transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope(), &policy))?);
     let mut trace = TranscriptEntry::new(
@@ -1497,9 +1502,15 @@ fn trigger_only_turn_closes_over_its_canonical_message() -> Result<()> {
 #[test]
 fn actual_related_writer_refreshes_fixed_unmaterialized_member_but_not_fresh_history() -> Result<()>
 {
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: "owned-work".into(),
+    };
     for adopted in [true, false] {
         let setup = |tx: &Transaction<'_>| {
-            upsert_turn_record_tx(tx, &TurnRecord::new("agent-a", "old-turn", 1))
+            let mut turn = TurnRecord::new("agent-a", "old-turn", 1);
+            turn.owner = Some(owner.clone());
+            turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
+            upsert_turn_record_tx(tx, &turn)
         };
         let (_directory, db) = if adopted {
             legacy(setup)?
@@ -1535,7 +1546,12 @@ fn actual_related_writer_refreshes_fixed_unmaterialized_member_but_not_fresh_his
             prepare_input_evidence_snapshot_tx(
                 tx,
                 &scope(),
-                &request(InputWindowSelector::GlobalTurns, 1),
+                &request(
+                    InputWindowSelector::OwnerTurns {
+                        owner: owner.clone(),
+                    },
+                    1,
+                ),
             )
         })?)
         .resident
@@ -2401,6 +2417,29 @@ fn provider_lineage_request(latest: &MessageEnvelope) -> InputEvidenceLoadReques
 fn cold_multihop_provider_lineage_prepares_complete_sources_without_history_windows() -> Result<()>
 {
     let (_directory, db, latest) = provider_lineage_fixture()?;
+    let transcripts = db.transaction(|tx| {
+        let mut keys = BTreeMap::new();
+        for turn_id in ["lineage-turn-0", "lineage-turn-1"] {
+            let entry = TranscriptEntry::new(
+                "agent-a",
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                serde_json::json!({"turn_id": turn_id}),
+            );
+            let actual = append_transcript_entry_tx(tx, &entry)?.0;
+            keys.insert(
+                turn_id.to_owned(),
+                BTreeSet::from([Key::new(Family::Transcript, &actual.id)]),
+            );
+            register_committed_input_evidence_tx(
+                tx,
+                &scope(),
+                &[CanonicalInputEvidence::Transcript(actual)],
+            )?;
+        }
+        Ok(keys)
+    })?;
     let wanted = provider_lineage_request(&latest);
     // No old resident/previous request is carried into this fresh SQLite view.
     let snapshot =
@@ -2421,6 +2460,15 @@ fn cold_multihop_provider_lineage_prepares_complete_sources_without_history_wind
         crate::runtime::provider_recovery::resolve_from_captured(&captured, &latest, &protocol)?;
     assert_eq!(resolved.predecessor.attempt_id, "lineage-attempt-1");
     assert_eq!(resolved.root_message.id, "lineage-original");
+    assert_eq!(captured.turn_transcript_keys, transcripts);
+    for turn in &resolved.source_turns {
+        assert_eq!(
+            captured
+                .transcripts_for_turns(std::slice::from_ref(&turn.turn_id))?
+                .len(),
+            1,
+        );
+    }
     // Reading an already-prepared namespace also follows the same finite graph.
     let loaded =
         current(db.transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope(), &wanted))?);

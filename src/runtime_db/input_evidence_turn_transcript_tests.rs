@@ -199,3 +199,288 @@ fn turn_transcript_upgrade_accepts_preinstalled_indexes_without_rebuilding() -> 
     );
     Ok(())
 }
+
+#[test]
+fn committed_transcripts_extend_turn_coverage_without_refreshing_existing_turns() -> Result<()> {
+    let (_home, db) = fresh()?;
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: "covered-work".into(),
+    };
+    let mut turn = TurnRecord::new("agent-a", "covered-turn", 1);
+    turn.created_at = time();
+    turn.owner = Some(owner.clone());
+    turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
+    let turn_key = Key::new(Family::Turn, &turn.turn_id);
+    let policy = request(InputWindowSelector::OwnerTurns { owner }, 2);
+    let initial =
+        current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), &policy))?);
+    let start = db.transaction(|tx| {
+        upsert_turn_record_tx(tx, &turn)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(turn.clone())],
+        )
+    })?;
+    assert_eq!(
+        start.turn_transcript_keys.get(&turn.turn_id),
+        Some(&BTreeSet::new())
+    );
+    let roots = BTreeSet::from([turn_key.clone()]);
+    let mut resident = initial
+        .resident
+        .with_committed(&start, roots.clone())?
+        .unwrap();
+
+    let mut keys = BTreeSet::new();
+    for (round, kind) in [
+        (1, TranscriptEntryKind::AssistantRound),
+        (2, TranscriptEntryKind::ToolResults),
+    ] {
+        let mut transcript = TranscriptEntry::new(
+            "agent-a",
+            kind,
+            Some(round),
+            None,
+            serde_json::json!({"turn_id": turn.turn_id}),
+        );
+        transcript.id = format!("committed-transcript-{round}");
+        keys.insert(Key::new(Family::Transcript, &transcript.id));
+        for _ in 0..2 {
+            let delta = db.transaction(|tx| {
+                let actual = append_transcript_entry_tx(tx, &transcript)?.0;
+                register_committed_input_evidence_tx(
+                    tx,
+                    &scope(),
+                    &[CanonicalInputEvidence::Transcript(actual)],
+                )
+            })?;
+            assert!(delta
+                .records
+                .iter()
+                .any(|record| record.locator.key == turn_key));
+            assert!(delta.turn_transcript_keys.is_empty());
+            resident = resident.with_committed(&delta, roots.clone())?.unwrap();
+            assert_eq!(
+                resident.capture()?.turn_transcript_keys[&turn.turn_id],
+                keys
+            );
+        }
+    }
+    let mut terminal = turn.clone();
+    terminal.terminal = Some(crate::types::TurnTerminalSummary {
+        kind: crate::types::TurnTerminalKind::Completed,
+        reason: None,
+        no_brief_reason: None,
+        completed_at: time(),
+        duration_ms: 1,
+    });
+    let settled = db.transaction(|tx| {
+        upsert_turn_record_tx(tx, &terminal)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(terminal.clone())],
+        )
+    })?;
+    assert!(settled.turn_transcript_keys.is_empty());
+    resident = resident.with_committed(&settled, BTreeSet::new())?.unwrap();
+
+    let pruned = keys.first().context("fixture transcript")?;
+    let removed = db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM transcript_entries WHERE evidence_id=?1",
+            [&pruned.id],
+        )?;
+        register_pruned_input_evidence_tx(tx, &scope(), std::slice::from_ref(pruned))
+    })?;
+    resident = resident.with_committed(&removed, BTreeSet::new())?.unwrap();
+
+    let mut successor = TurnRecord::new("agent-a", "next-turn", 2);
+    successor.owner = turn.owner.clone();
+    successor.current_work_item_id = turn.current_work_item_id.clone();
+    let next = db.transaction(|tx| {
+        upsert_turn_record_tx(tx, &successor)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(successor.clone())],
+        )
+    })?;
+    let roots = BTreeSet::from([Key::new(Family::Turn, &successor.turn_id)]);
+    resident = resident.with_committed(&next, roots.clone())?.unwrap();
+
+    let moved = keys.last().context("second fixture transcript")?;
+    let reassigned = db.transaction(|tx| {
+        use crate::runtime_db::evidence::{committed_transcript_tx, upsert_transcript_entry_tx};
+        let mut actual = committed_transcript_tx(tx, "agent-a", &moved.id)?;
+        actual.data["turn_id"] = serde_json::json!(successor.turn_id);
+        upsert_transcript_entry_tx(tx, &actual)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Transcript(actual)],
+        )
+    })?;
+    assert!(reassigned.turn_transcript_keys.is_empty());
+    let warm = resident
+        .with_committed(&reassigned, roots)?
+        .unwrap()
+        .capture()?;
+    assert!(warm.unavailable.contains(pruned));
+    assert!(warm
+        .transcripts_for_turns(std::slice::from_ref(&turn.turn_id))?
+        .is_empty());
+    assert_eq!(
+        warm.transcripts_for_turns(std::slice::from_ref(&successor.turn_id))?
+            .len(),
+        1
+    );
+    for turn_id in [turn.turn_id, successor.turn_id] {
+        let cold_keys = db.transaction(|tx| {
+            let scope = scope();
+            qualified_turn_transcript_keys(
+                tx,
+                &scope,
+                &binding_on(tx, &scope)?,
+                &turn_id,
+                MAX_RECORDS,
+            )
+        })?;
+        assert_eq!(warm.turn_transcript_keys[&turn_id], cold_keys);
+    }
+    Ok(())
+}
+
+#[test]
+fn first_work_turn_registration_includes_previously_qualified_transcripts() -> Result<()> {
+    let (_home, db) = fresh()?;
+    let owner = crate::types::TurnOwner::WorkItem {
+        work_item_id: "preallocated-work".into(),
+    };
+    let mut turn = TurnRecord::new("agent-a", "preallocated-turn", 1);
+    turn.current_work_item_id = owner.work_item_id().map(str::to_owned);
+    turn.owner = Some(owner);
+    let turn_key = Key::new(Family::Turn, &turn.turn_id);
+    let transcript = TranscriptEntry::new(
+        "agent-a",
+        TranscriptEntryKind::AssistantRound,
+        Some(1),
+        None,
+        serde_json::json!({"turn_id": turn.turn_id}),
+    );
+    let transcript_key = Key::new(Family::Transcript, &transcript.id);
+    db.transaction(|tx| {
+        let (actual, _) = append_transcript_entry_tx(tx, &transcript)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Transcript(actual)],
+        )?;
+        Ok(())
+    })?;
+
+    let policy = request(InputWindowSelector::RecentTranscript, 1);
+    let prepared =
+        current(db.transaction(|tx| load_input_evidence_snapshot_tx(tx, &scope(), &policy))?);
+    assert!(prepared.resident.capture()?.turn_transcript_keys.is_empty());
+
+    let start = db.transaction(|tx| {
+        assert!(payload_on(tx, "agent-a", &turn_key)?.is_none());
+        validate_existing_input_evidence_tx(tx, &scope(), &transcript_key)?;
+        upsert_turn_record_tx(tx, &turn)?;
+        register_committed_input_evidence_tx(
+            tx,
+            &scope(),
+            &[CanonicalInputEvidence::Turn(turn.clone())],
+        )
+    })?;
+
+    assert_eq!(
+        start.turn_transcript_keys.get(&turn.turn_id),
+        Some(&BTreeSet::from([transcript_key.clone()])),
+    );
+    let resident = prepared
+        .resident
+        .with_committed(&start, BTreeSet::from([turn_key]))?
+        .context("the new Turn can reuse the previously loaded Transcript")?;
+    let captured = resident.capture()?;
+    let entries = captured.transcripts_for_turns(std::slice::from_ref(&turn.turn_id))?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].locator.key, transcript_key);
+    Ok(())
+}
+
+#[test]
+fn only_owner_history_hydrates_turn_transcripts_in_an_ordinary_snapshot() -> Result<()> {
+    use crate::runtime::resident_input_evidence::InputEvidenceReadError;
+    use crate::types::TurnOwner;
+
+    let (_home, db) = fresh()?;
+    let owner = TurnOwner::WorkItem {
+        work_item_id: "owned-work".into(),
+    };
+    let mut owned = TurnRecord::new("agent-a", "owned-turn", 1);
+    owned.owner = Some(owner.clone());
+    owned.current_work_item_id = owner.work_item_id().map(str::to_owned);
+    let global = TurnRecord::new("agent-a", "global-only", 2);
+    let (owned_transcript, global_transcript) = db.transaction(|tx| {
+        let mut transcript_ids = Vec::new();
+        for turn in [&owned, &global] {
+            upsert_turn_record_tx(tx, turn)?;
+            let entry = TranscriptEntry::new(
+                "agent-a",
+                TranscriptEntryKind::AssistantRound,
+                Some(1),
+                None,
+                serde_json::json!({"turn_id": turn.turn_id}),
+            );
+            let actual = append_transcript_entry_tx(tx, &entry)?.0;
+            transcript_ids.push(Key::new(Family::Transcript, &actual.id));
+            let delta = register_committed_input_evidence_tx(
+                tx,
+                &scope(),
+                &[
+                    CanonicalInputEvidence::Turn(turn.clone()),
+                    CanonicalInputEvidence::Transcript(actual),
+                ],
+            )?;
+            assert_eq!(
+                delta.turn_transcript_keys.contains_key(&turn.turn_id),
+                turn.current_work_item_id.is_some(),
+            );
+        }
+        Ok((transcript_ids.remove(0), transcript_ids.remove(0)))
+    })?;
+    let mut policy = request(InputWindowSelector::GlobalTurns, 2);
+    policy.windows.push(InputWindowRequest {
+        selector: InputWindowSelector::RecentTranscript,
+        limit: 1,
+    });
+    let load = |policy: &InputEvidenceLoadRequest| {
+        Ok::<_, anyhow::Error>(
+            current(db.transaction(|tx| prepare_input_evidence_snapshot_tx(tx, &scope(), policy))?)
+                .resident
+                .capture()?,
+        )
+    };
+    let global_history = load(&policy)?;
+    assert!(global_history.turn_transcript_keys.is_empty());
+    assert!(global_history.lookup(&global_transcript)?.is_some());
+    assert!(matches!(
+        global_history.transcripts_for_turns(std::slice::from_ref(&global.turn_id)),
+        Err(InputEvidenceReadError::NeedsPreparation(_)),
+    ));
+    policy.windows.push(InputWindowRequest {
+        selector: InputWindowSelector::OwnerTurns { owner },
+        limit: 1,
+    });
+    let scoped_history = load(&policy)?;
+    assert_eq!(
+        scoped_history.turn_transcript_keys,
+        BTreeMap::from([(owned.turn_id, BTreeSet::from([owned_transcript.clone()]))]),
+    );
+    assert!(scoped_history.lookup(&owned_transcript)?.is_some());
+    assert!(scoped_history.lookup(&global_transcript)?.is_some());
+    Ok(())
+}

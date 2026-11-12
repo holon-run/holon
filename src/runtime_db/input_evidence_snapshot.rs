@@ -977,6 +977,7 @@ fn register_committed_input_evidence_inner_tx(
         }
     }
     let mut final_records = BTreeMap::new();
+    let mut new_turns = BTreeSet::new();
     for supplied in &actual_records {
         let supplied = supplied.as_ref();
         let key = supplied.key();
@@ -1011,7 +1012,7 @@ fn register_committed_input_evidence_inner_tx(
             }
             _ => None,
         };
-        let revision = upsert_alias_tx(
+        let (revision, was_present) = upsert_alias_tx(
             tx,
             scope,
             &key,
@@ -1022,6 +1023,11 @@ fn register_committed_input_evidence_inner_tx(
             "committed_writer",
             binding.seed_id.as_deref(),
         )?;
+        if !was_present
+            && matches!(&actual, CanonicalInputEvidence::Turn(turn) if turn.current_work_item_id.is_some())
+        {
+            new_turns.insert(key.id.clone());
+        }
         let record = prepare_record_on(tx, &scope.agent_id, &key, Some(actual))?;
         final_records.insert(
             key.clone(),
@@ -1046,12 +1052,12 @@ fn register_committed_input_evidence_inner_tx(
                 present_input_turn_on(tx, scope, &message.id)?,
             );
         }
-        if let PreparedInputEvidence::Turn(turn) = &record.record {
-            turn_transcript_keys.insert(
-                turn.turn_id.clone(),
-                qualified_turn_transcript_keys(tx, scope, &binding, &turn.turn_id, MAX_RECORDS)?,
-            );
-        }
+    }
+    // Prepare new work-owned Turns for the resident owner history window.
+    // A newly registered Turn ID can already have qualified Transcript relations.
+    for turn_id in new_turns {
+        let keys = qualified_turn_transcript_keys(tx, scope, &binding, &turn_id, MAX_RECORDS)?;
+        turn_transcript_keys.insert(turn_id, keys);
     }
     let mut replay_source_absences = BTreeMap::new();
     for record in final_records.values() {
@@ -1574,6 +1580,7 @@ impl ObservedInputQualification {
             "legacy_prepared",
             binding.seed_id.as_deref(),
         )
+        .map(|(revision, _)| revision)
     }
 }
 
@@ -1745,6 +1752,7 @@ fn prepare_input_records_tx(
             .iter()
             .map(|id| Key::new(Family::Brief, id)),
     );
+    let mut transcript_turns = BTreeMap::new();
     for requested in request.windows {
         if requested.limit > requested.selector.maximum_candidates() {
             return Err(InputEvidenceSnapshotError::PolicyOutsideQualification {
@@ -1763,6 +1771,9 @@ fn prepare_input_records_tx(
         let exhaustive = keys.len() <= requested.limit;
         keys.truncate(requested.limit);
         selected.extend(keys.iter().cloned());
+        if matches!(requested.selector, InputWindowSelector::OwnerTurns { .. }) {
+            transcript_turns.extend(keys.iter().map(|key| (key.clone(), 0)));
+        }
         windows.push(InputWindowCoverage {
             selector: requested.selector.clone(),
             limit: requested.limit,
@@ -1851,7 +1862,33 @@ fn prepare_input_records_tx(
         BTreeMap::<String, (String, crate::types::TurnTerminalKind, usize)>::new();
     let mut expanded_provider_sources = BTreeSet::new();
     let mut bytes = 0usize;
-    while let Some((key, depth, path)) = pending.pop_front() {
+    loop {
+        let Some((key, depth, path)) = pending.pop_front() else {
+            if transcript_turns.is_empty() {
+                break;
+            }
+            // Recovery can name a Turn that the history windows already loaded.
+            // Expand demanded relations only after their Turn bodies qualify.
+            for (key, depth) in std::mem::take(&mut transcript_turns) {
+                if !records.contains_key(&key) || turn_transcript_keys.contains_key(&key.id) {
+                    continue;
+                }
+                let keys = qualified_turn_transcript_keys(
+                    tx,
+                    scope,
+                    &binding,
+                    &key.id,
+                    request.record_limit.min(MAX_RECORDS),
+                )?;
+                pending.extend(
+                    keys.iter()
+                        .cloned()
+                        .map(|key| (key, depth + 1, CompletionInputPath::Strict)),
+                );
+                turn_transcript_keys.insert(key.id, keys);
+            }
+            continue;
+        };
         if !expanded_paths.insert((key.clone(), path.clone())) {
             continue;
         }
@@ -2002,17 +2039,6 @@ fn prepare_input_records_tx(
                     refs.insert(child);
                 }
             }
-        }
-        if let PreparedInputEvidence::Turn(turn) = &qualified.record {
-            let keys = qualified_turn_transcript_keys(
-                tx,
-                scope,
-                &binding,
-                &turn.turn_id,
-                request.record_limit.min(MAX_RECORDS),
-            )?;
-            refs.extend(keys.iter().cloned());
-            turn_transcript_keys.insert(turn.turn_id.clone(), keys);
         }
         if is_completion_edge && !missing_qualifications.is_empty() {
             records.insert(key, qualified);
@@ -2197,6 +2223,9 @@ fn prepare_input_records_tx(
                     selected.insert(child.clone());
                     pending.push_back((child, source_depth + 1, CompletionInputPath::Strict));
                 }
+                transcript_turns
+                    .entry(Key::new(Family::Turn, turn_id))
+                    .or_insert(source_depth);
                 expanded_provider_sources.insert(source);
             }
         }
@@ -2673,8 +2702,9 @@ fn upsert_alias_tx(
     attempt_turn_proof: Option<&AttemptTurnProof>,
     qualification: &str,
     seed: Option<&str>,
-) -> Result<u64> {
+) -> Result<(u64, bool)> {
     let old = alias_on(tx, scope, key)?;
+    let was_present = old.as_ref().is_some_and(|alias| alias.present);
     if let Some(old) = old.as_ref() {
         if old.fingerprint == *fingerprint
             && old.digest.as_deref() == digest
@@ -2696,7 +2726,7 @@ fn upsert_alias_tx(
                 old.revision,
                 fingerprint.related_turn_id.as_deref(),
             )?;
-            return Ok(old.revision);
+            return Ok((old.revision, was_present));
         }
     }
     let revision = old.map_or(Ok(1), |old| {
@@ -2721,7 +2751,7 @@ fn upsert_alias_tx(
             && stored.attempt_turn_proof.as_ref() == attempt_turn_proof,
         "input evidence alias exact readback mismatch"
     );
-    Ok(revision)
+    Ok((revision, was_present))
 }
 fn normalized_payload_digest(hash: &str) -> Result<String> {
     let digest = hash
@@ -3543,7 +3573,7 @@ pub(crate) fn register_pruned_input_evidence_tx(
             };
             (fingerprint, digest, None)
         };
-        let revision = upsert_alias_tx(
+        let (revision, _) = upsert_alias_tx(
             tx,
             scope,
             key,
