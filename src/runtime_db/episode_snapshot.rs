@@ -2529,7 +2529,7 @@ mod tests {
     fn active_builder_collision_is_checked_outside_the_window_even_at_zero_limit() {
         let fixture = Fixture::legacy(|tx| {
             let mut state = state("agent-a");
-            let builder = crate::types::ActiveEpisodeBuilder::new(&state, &Default::default(), 0);
+            let builder = crate::types::ActiveEpisodeBuilder::new(&state, &Default::default());
             state.working_memory.active_episode_id = Some(builder.id.clone());
             state.working_memory.active_episode_builder = Some(builder.clone());
             upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();

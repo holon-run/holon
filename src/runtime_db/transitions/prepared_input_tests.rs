@@ -399,15 +399,6 @@ fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() ->
             assert_eq!(old_capture.query.as_ref().unwrap().birth_cursor, 0);
             assert!(old_capture.records.is_empty());
             assert!(value.applied);
-            assert_eq!(
-                value
-                    .effects
-                    .agent_state
-                    .unwrap()
-                    .record
-                    .total_message_count,
-                1
-            );
             assert_eq!(value.effects.messages[0].message_seq, Some(1));
             assert_eq!(value.effects.queued_messages[0].message_seq, Some(1));
             assert!(receipt.outcome.scopes[0].notify_memory_index);
@@ -2673,7 +2664,6 @@ fn original_queue_finalizes_all_nested_waits_after_implicit_cancellations() -> R
         );
     }
     assert_eq!(f.state()?.pending, 1);
-    assert_eq!(f.state()?.total_message_count, 1);
     let before = namespace_rows(&f)?;
     assert!(matches!(
         f.db.transitions_in_scope(&f.scope)

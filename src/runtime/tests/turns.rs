@@ -1593,10 +1593,6 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
     if let Some(concurrent_message) = concurrent_message {
         assert_eq!(committed.pending, state_before_commit.pending);
         assert_eq!(
-            committed.total_message_count,
-            state_before_commit.total_message_count
-        );
-        assert_eq!(
             committed.last_wake_reason,
             state_before_commit.last_wake_reason
         );
@@ -3932,12 +3928,6 @@ fn publish_committed_history_fixture<'a>(
                         "history fixture State changed outside original owner"
                     );
                     state.turn_index = state.turn_index.max(actual_turn.turn_index);
-                    let message_count: i64 = tx.query_row(
-                        "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
-                        [&turn.agent_id],
-                        |row| row.get(0),
-                    )?;
-                    state.total_message_count = usize::try_from(message_count)?;
                     upsert_agent_state_tx(tx, &state)?;
                     let payload: String = tx.query_row(
                         "SELECT payload_json FROM agent_states WHERE agent_id=?1",

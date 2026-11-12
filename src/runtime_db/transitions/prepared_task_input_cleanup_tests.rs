@@ -111,7 +111,6 @@ fn setup_terminal(f: &Fixture, id: &str, deleting: bool) -> Result<TaskTransitio
     let old = f.state()?;
     let mut next = old.clone();
     next.pending += 1;
-    next.total_message_count += 1;
     next.last_wake_reason = Some("TaskResult".into());
     // This original no-run Booting fixture wakes to idle for its TaskResult.
     next.status = crate::types::AgentStatus::AwakeIdle;
@@ -278,7 +277,6 @@ fn deleting_original_task_result_commits_message_queue_wait_and_three_domains_on
     })?;
     let state = f.state()?;
     assert_eq!(state.pending, 1);
-    assert_eq!(state.total_message_count, 2);
     assert!(
         state.current_run_id.is_none()
             && state.current_turn_id.is_none()

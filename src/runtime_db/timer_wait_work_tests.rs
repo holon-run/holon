@@ -146,10 +146,7 @@ fn scoped_timer_fire_publishes_triggered_wait_in_original_work_ack() -> Result<(
         WaitConditionStatus::Triggered
     );
     assert_eq!(ack.record.message.as_ref().unwrap().message_seq, Some(1));
-    assert_eq!(
-        ack.agent_state.as_ref().unwrap().record.total_message_count,
-        1
-    );
+    assert_eq!(ack.agent_state.as_ref().unwrap().record.pending, 1);
     let replay = f.db.timers().fire_with_wait_in_scope(
         &f.scope,
         &command,

@@ -1400,10 +1400,6 @@ impl RuntimeHandle {
         let mut committed_state = expected_state.clone();
         committed_state.pending = queue_len.saturating_add(usize::from(!already_in_memory));
         committed_state.last_wake_reason = Some("TaskResult".into());
-        let storage = self.inner.storage.clone();
-        committed_state.total_message_count =
-            tokio::task::spawn_blocking(move || storage.count_messages()).await??
-                + usize::from(canonical_recovery && existing_entry.is_none());
         scheduler::apply_message_wake_projection(&mut committed_state);
         if let (Some(work_item_id), Some(updated)) =
             (waiter_work_item_id.as_deref(), work_item.as_ref())
@@ -2301,8 +2297,6 @@ impl RuntimeHandle {
             let mut committed_state = guard.state.clone();
             committed_state.pending = guard.queue.len().saturating_add(1);
             committed_state.last_wake_reason = Some(format!("{:?}", message.kind));
-            committed_state.total_message_count =
-                self.inner.storage.count_messages()?.saturating_add(1);
             scheduler::apply_message_wake_projection(&mut committed_state);
             let command = crate::runtime_db::TimerFire {
                 expected: expected.clone(),

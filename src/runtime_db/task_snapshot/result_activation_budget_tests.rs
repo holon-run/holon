@@ -35,7 +35,7 @@ fn result_activation_header_budget_precedes_oversized_projection_decode() -> Res
         let keys=BTreeSet::from([TaskKey::new(TaskFamily::Task,&value.id),TaskKey::new(TaskFamily::ResultSettlement,&result.result_identity)]);
         let proof=prepare_task_write_tx(tx,&scope(),&keys)?;
         repositories::upsert_task_tx(tx,&value)?;upsert_pending_tx(tx,&result)?;
-        let mut state=AgentState::new("task-agent");state.total_message_count=1;upsert_agent_state_tx(tx,&state)?;
+        let state=AgentState::new("task-agent");upsert_agent_state_tx(tx,&state)?;
         register_task_writes_tx(tx,&proof,&keys,&state,&request())?;
         Ok(())
     })?;

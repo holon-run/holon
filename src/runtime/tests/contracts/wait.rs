@@ -314,12 +314,6 @@ fn publish_contract_execution(
                         work_item_id: id.clone(),
                         record: final_execution.work_items[id].clone(),
                     }));
-                    let count: i64 = tx.query_row(
-                        "SELECT COUNT(*) FROM messages WHERE agent_id='default'",
-                        [],
-                        |row| row.get(0),
-                    )?;
-                    state.total_message_count = usize::try_from(count)?;
                     upsert_agent_state_tx(tx, &state)?;
                     let input_evidence_delta =
                         register_committed_input_evidence_tx(tx, scope, &facts)?;
@@ -368,7 +362,6 @@ fn publish_original_reply<'a>(
                     let reply = append_message_tx(tx, reply)?.0;
                     let mut state = before.clone();
                     state.turn_index += 1;
-                    state.total_message_count += 1;
                     let mut turn = crate::types::TurnRecord::new(
                         "default",
                         reply.turn_id.clone().expect("original reply Turn"),

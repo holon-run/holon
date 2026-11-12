@@ -141,12 +141,6 @@ impl Fixture {
         let mut state = self.state.clone();
         state.current_turn_id = Some(turn.turn_id);
         state.turn_index = 1;
-        // Actual same-view count epilogue, not a preSQL estimate.
-        state.total_message_count = tx.query_row(
-            "SELECT COUNT(*) FROM messages WHERE agent_id='agent-a'",
-            [],
-            |r| r.get(0),
-        )?;
         upsert_agent_state_tx(tx, &state)?;
         let mut event = AuditEvent::legacy(
             "original_receipt_fixture",
@@ -578,7 +572,6 @@ fn lost_ack_proves_original_outcome_and_reads_later_state_without_rewinding() ->
             |r| r.get(0),
         )?;
         assert_eq!(serde_json::from_str::<AgentState>(&payload)?, later);
-        assert_eq!(later.total_message_count, 1);
         Ok(())
     })?;
     assert_eq!(f.count("messages")?, 1);

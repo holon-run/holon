@@ -4571,10 +4571,8 @@ impl TimerRepository<'_> {
             )?;
             let actual = super::transitions::agent_state_tx(tx, &scope.agent_id)?
                 .ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            let mut expected_ack = clone_timer_body(&command.agent_state.1)?;
-            expected_ack.total_message_count = actual.total_message_count;
             anyhow::ensure!(
-                actual == expected_ack,
+                actual == command.agent_state.1,
                 "timer fire State ACK differs from the committed wake projection"
             );
             if !defer_work && !wait_writes.wait_ids.is_empty() {
@@ -5420,17 +5418,22 @@ impl MessageRepository<'_> {
             .with_read(|connection| Self::count_on(&connection, agent_id))
     }
 
+    #[cfg(all(test, holon_lib_test_shard = "b"))]
     pub(crate) fn count_for_preparation(&self, agent_id: Option<&str>) -> Result<usize> {
         self.db
             .read_for_preparation(|tx| Self::count_on(tx, agent_id))
     }
 
     fn count_on(connection: &Connection, agent_id: Option<&str>) -> Result<usize> {
-        if let Some(agent_id) = agent_id {
-            return super::message_count::for_agent(connection, agent_id);
-        }
-        let count: i64 =
-            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?;
+        let count: i64 = if let Some(agent_id) = agent_id {
+            connection.query_row(
+                "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
+                [agent_id],
+                |row| row.get(0),
+            )?
+        } else {
+            connection.query_row("SELECT COUNT(*) FROM messages", [], |row| row.get(0))?
+        };
         Ok(usize::try_from(count).unwrap_or(usize::MAX))
     }
 

@@ -205,7 +205,7 @@ fn complete_unsettled_frontier_includes_caller_admitted_open_activation() -> Res
             state:ExecutionAttemptState::Open,run_id:None,turn_id:None,recovery_of_attempt_id:None,terminal_outcome_id:None,admitted_at:at().to_rfc3339(),terminal_at:None,
         }}).map_err(anyhow::Error::msg)?;
         crate::runtime_db::transitions::persist_state_tx(tx,&admitted.state)?;
-        let mut state=AgentState::new("task-agent");state.total_message_count=1;upsert_agent_state_tx(tx,&state)?;
+        let state=AgentState::new("task-agent");upsert_agent_state_tx(tx,&state)?;
         let facts=register_task_writes_tx(tx,&proof,&keys,&state,&request())?;
         assert!(facts.delta.coverage.unsettled_complete);
         assert!(facts.delta.coverage.unsettled_result_ids.contains(&result.result_identity));

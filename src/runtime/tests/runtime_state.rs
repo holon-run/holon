@@ -2985,12 +2985,6 @@ async fn provider_recovery_message(runtime: &RuntimeHandle, work_item_id: &str) 
                     "provider recovery fixture State changed outside its owner"
                 );
                 state.turn_index = state.turn_index.checked_add(1).expect("fixture turn index");
-                let message_count: i64 = tx.query_row(
-                    "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
-                    [&source.agent_id],
-                    |row| row.get(0),
-                )?;
-                state.total_message_count = usize::try_from(message_count)?;
                 upsert_agent_state_tx(tx, &state)?;
                 let payload: String = tx.query_row(
                     "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
@@ -11550,17 +11544,7 @@ fn legacy_task_rejoin_missing_execution_work_fixture(
         .read_recent_turns(usize::MAX)
         .unwrap()
         .is_empty());
-    assert_eq!(
-        runtime
-            .inner
-            .runtime_db
-            .agent_states()
-            .latest("default")
-            .unwrap()
-            .unwrap()
-            .total_message_count,
-        0
-    );
+    assert_eq!(runtime.storage().count_messages().unwrap(), 0);
     (dir, workspace, runtime, work, result)
 }
 
@@ -18132,7 +18116,6 @@ async fn enqueue_retries_stale_agent_state_from_safe_persisted_baseline() {
     let committed_state = runtime.storage().read_agent().unwrap().unwrap();
     assert_eq!(committed_state.total_input_tokens, 41);
     assert_eq!(committed_state.pending, 0);
-    assert_eq!(committed_state.total_message_count, 1);
     assert!(runtime
         .storage()
         .read_message_by_id(&message_id)
@@ -24507,7 +24490,6 @@ fn d5_sealed_legacy_result_before_sqlite_upgrade_fixture(
     let mut state = AgentState::new("default");
     state.current_work_item_id = (!closed).then(|| work.id.clone());
     state.turn_index = 1;
-    state.total_message_count = 2;
     upsert_agent_state_tx(&tx, &state).unwrap();
     upsert_task_tx(&tx, &task).unwrap();
     // v81 stores wake sources/continuation only in the original payload.

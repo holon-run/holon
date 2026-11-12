@@ -185,7 +185,7 @@ async fn captured_state_keeps_its_cut_without_retaining_the_old_root() -> Result
     assert_eq!(*before, expected);
     let after = runtime.capture_committed_state().await?;
     assert!(!Arc::ptr_eq(&before, &after));
-    assert_eq!(after.total_message_count, before.total_message_count + 1);
+    assert_eq!(after.pending, before.pending + 1);
     Ok(())
 }
 

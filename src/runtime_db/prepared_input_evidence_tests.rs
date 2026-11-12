@@ -853,7 +853,11 @@ fn message_actual_count_and_turn_assignment_are_acknowledged_before_receipts() -
     else {
         panic!("first Message ACK missing")
     };
-    assert_eq!(value.agent_state.unwrap().record.total_message_count, 1);
+    assert!(value.agent_state.is_none());
+    let PreparedEvidenceValue::Message(actual) = value.record else {
+        panic!("expected a committed Message");
+    };
+    assert_eq!(actual.message_seq, Some(1));
     let mut turn = TurnRecord::new(&f.scope.agent_id, "turn:original", 1);
     turn.input_message_ids.push(message.id.clone());
     let prepared =

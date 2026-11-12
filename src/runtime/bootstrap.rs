@@ -2723,10 +2723,6 @@ fn prepare_runtime_storage_owned(
         )?;
     }
     state.pending = queued_messages;
-    state.total_message_count = runtime_db
-        .messages()
-        .count_for_preparation(Some(&agent_id))
-        .unwrap_or_default();
     scheduler_executor::apply_bootstrap_recovered_projection(
         &mut state,
         scheduler_executor::BootstrapRecoveryFacts { queued_messages },

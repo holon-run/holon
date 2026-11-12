@@ -1397,13 +1397,6 @@ fn render_default_external_ingress(
     )
 }
 
-pub fn sync_agent_message_count(storage: &AppStorage, agent: &mut AgentState) -> Result<bool> {
-    let total_message_count = storage.count_messages()?;
-    let previous_total_message_count = agent.total_message_count;
-    agent.total_message_count = total_message_count;
-    Ok(agent.total_message_count != previous_total_message_count)
-}
-
 fn render_active_tasks(tasks: &[TaskRecord], total_count: usize) -> String {
     let mut lines = vec![format!(
         "Active managed tasks (bounded to {ACTIVE_TASKS_CONTEXT_LIMIT}; use ListTasks for the full list):"
@@ -7099,35 +7092,6 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[test]
-    fn sync_agent_message_count_updates_total_without_compaction() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        for idx in 0..6 {
-            let msg = MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator {
-                    actor_id: None,
-                    actor_display_name: None,
-                },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: format!("message-{idx}"),
-                },
-            );
-            storage.append_message(&msg).unwrap();
-        }
-
-        let mut session = AgentState::new("default");
-        let changed = sync_agent_message_count(&storage, &mut session).unwrap();
-        assert!(changed);
-        assert_eq!(session.total_message_count, 6);
-        assert_eq!(session.working_memory.compression_epoch, 0);
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
     fn context_fingerprint_changes_when_projected_context_lineage_changes() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
@@ -7194,7 +7158,6 @@ mod tests {
             delegated_from_task_id: None,
         };
 
-        sync_agent_message_count(&storage, &mut session).unwrap();
         let first_prompt = build_effective_prompt(
             &storage,
             &session,
@@ -7228,7 +7191,6 @@ mod tests {
         storage.append_message(&new_message).unwrap();
         append_turn_for_message(&storage, &new_message, "turn-message-6", 7);
 
-        sync_agent_message_count(&storage, &mut session).unwrap();
         let second_prompt = build_effective_prompt(
             &storage,
             &session,
@@ -7338,7 +7300,6 @@ mod tests {
 
         let mut session = AgentState::new("default");
         session.total_model_rounds = 1;
-        session.total_message_count = 2;
         session.last_brief_at = Some(chrono::Utc::now());
 
         let built = build_context(
@@ -8259,34 +8220,6 @@ mod tests {
         assert!(!recent_turns
             .content
             .contains("legacy-message-without-turn-record"));
-    }
-
-    #[cfg(holon_lib_test_shard = "d")]
-    #[test]
-    fn sync_agent_message_count_persists_message_count_without_compaction() {
-        let dir = tempdir().unwrap();
-        let storage = AppStorage::new_for_test(dir.path()).unwrap();
-        storage
-            .append_message(&MessageEnvelope::new(
-                "default",
-                MessageKind::OperatorPrompt,
-                MessageOrigin::Operator {
-                    actor_id: None,
-                    actor_display_name: None,
-                },
-                AuthorityClass::OperatorInstruction,
-                Priority::Normal,
-                MessageBody::Text {
-                    text: "short".into(),
-                },
-            ))
-            .unwrap();
-
-        let mut session = AgentState::new("default");
-        let changed = sync_agent_message_count(&storage, &mut session).unwrap();
-
-        assert!(changed);
-        assert_eq!(session.total_message_count, 1);
     }
 
     #[cfg(holon_lib_test_shard = "d")]
@@ -12413,8 +12346,8 @@ mod tests {
             finalized_at: chrono::Utc::now(),
             start_turn_index: 1,
             end_turn_index: 3,
-            start_message_count: 1,
-            end_message_count: 6,
+            start_message_count: Some(1),
+            end_message_count: Some(6),
             boundary_reason: EpisodeBoundaryReason::HardTurnCap,
             current_work_item_id: Some("work_old".into()),
             objective: Some("Refactor parser".into()),
@@ -12438,8 +12371,8 @@ mod tests {
             finalized_at: chrono::Utc::now(),
             start_turn_index: 4,
             end_turn_index: 7,
-            start_message_count: 7,
-            end_message_count: 14,
+            start_message_count: Some(7),
+            end_message_count: Some(14),
             boundary_reason: EpisodeBoundaryReason::WaitBoundary,
             current_work_item_id: Some("work_runtime".into()),
             objective: Some("Fix wake path".into()),
@@ -12549,8 +12482,8 @@ mod tests {
             finalized_at: chrono::Utc::now(),
             start_turn_index: 1,
             end_turn_index: 2,
-            start_message_count: 1,
-            end_message_count: 4,
+            start_message_count: Some(1),
+            end_message_count: Some(4),
             boundary_reason: EpisodeBoundaryReason::HardTurnCap,
             current_work_item_id: Some("work_wake".into()),
             objective: Some("Fix wake path".into()),
@@ -12659,8 +12592,8 @@ mod tests {
                 finalized_at: chrono::Utc::now(),
                 start_turn_index: 1,
                 end_turn_index: 2,
-                start_message_count: 1,
-                end_message_count: 4,
+                start_message_count: Some(1),
+                end_message_count: Some(4),
                 boundary_reason: EpisodeBoundaryReason::HardTurnCap,
                 current_work_item_id: Some(work_item.id.clone()),
                 objective: Some("Fix wake path".into()),

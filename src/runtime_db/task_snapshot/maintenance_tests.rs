@@ -46,12 +46,7 @@ fn qualify_result(
     )]);
     let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
     upsert_pending_tx(tx, &result)?;
-    let mut state = AgentState::new("task-agent");
-    state.total_message_count = tx.query_row(
-        "SELECT COUNT(*) FROM messages WHERE agent_id='task-agent'",
-        [],
-        |r| r.get(0),
-    )?;
+    let state = AgentState::new("task-agent");
     upsert_agent_state_tx(tx, &state)?;
     register_task_writes_tx(tx, &proof, &keys, &state, &request())?;
     Ok(result)
@@ -284,8 +279,7 @@ fn matching_same_agent_unqualified_task_is_not_adopted_by_result_relation() -> R
             )]);
             let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
             upsert_pending_tx(tx, &result)?;
-            let mut state = AgentState::new("task-agent");
-            state.total_message_count = 1;
+            let state = AgentState::new("task-agent");
             upsert_agent_state_tx(tx, &state)?;
             register_task_writes_tx(tx, &proof, &keys, &state, &request())
         })
@@ -347,7 +341,7 @@ fn task_only_writer_refreshes_result_predicate_and_rejects_old_revision() -> Res
         value.status=TaskStatus::Completed;
         value.updated_at=at()+Duration::seconds(1);
         repositories::upsert_task_tx(tx,&value)?;
-        let mut state=AgentState::new("task-agent");state.total_message_count=1;
+        let state=AgentState::new("task-agent");
         let facts=register_task_writes_tx(tx,&proof,&keys,&state,&request())?;
         // There was no actual Result write. The original admitted generation
         // now has its legal Running -> Completed Task, so the dependency becomes valid.
@@ -440,8 +434,7 @@ fn pruned_and_fixed_unavailable_result_dependencies_are_distinct_and_never_reviv
         let result = TaskResultSettlementRecord::pending(&value, &source, at())?.unwrap();
         upsert_pending_tx(tx, &result)?;
         // The fixture is a real v81 source/result, with no actual Task row.
-        let mut state = AgentState::new("task-agent");
-        state.total_message_count = 1;
+        let state = AgentState::new("task-agent");
         upsert_agent_state_tx(tx, &state)?;
         fixed_id = result.result_identity;
         Ok(())
@@ -478,8 +471,7 @@ fn real_v81_foreign_invalid_result_upgrades_without_foreign_task_qualification()
         )?;
         let result = TaskResultSettlementRecord::pending(&expected, &source, at())?.unwrap();
         upsert_pending_tx(tx, &result)?;
-        let mut state = AgentState::new("task-agent");
-        state.total_message_count = 1;
+        let state = AgentState::new("task-agent");
         upsert_agent_state_tx(tx, &state)?;
         result_id = result.result_identity;
         Ok(())

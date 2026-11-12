@@ -1062,8 +1062,7 @@ fn v81_running_restart() -> std::pin::Pin<Box<dyn std::future::Future<Output = R
                         None,
                     ),
                 )?;
-                let mut state = AgentState::new(id);
-                state.total_message_count = 1;
+                let state = AgentState::new(id);
                 evidence::upsert_agent_state_tx(&tx, &state)?;
             }
             // These admission and insert writers already existed at schema 81.

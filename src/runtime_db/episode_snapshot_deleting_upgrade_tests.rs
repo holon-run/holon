@@ -164,7 +164,6 @@ impl Fixture {
         let mut state = AgentState::new(AGENT);
         // An admitted Dequeued claim is no longer in the pending queue.
         state.pending = usize::from(!open_attempt);
-        state.total_message_count = 1;
         if started_turn {
             state.turn_index = 1;
             state.current_turn_id = Some(STARTED_TURN.into());

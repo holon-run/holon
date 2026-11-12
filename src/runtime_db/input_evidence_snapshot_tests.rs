@@ -3178,7 +3178,6 @@ fn nullable_hash_fixed_messages_validate_original_pretty_bytes_before_first_alia
         }
         let mut state = AgentState::new("agent-a");
         state.pending = 2;
-        state.total_message_count = 2;
         upsert_agent_state_tx(tx, &state)
     })?;
     let good = Key::new(Family::Message, "nullable-good");

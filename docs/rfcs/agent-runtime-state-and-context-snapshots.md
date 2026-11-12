@@ -355,6 +355,11 @@ read adapters serve unloaded inspection and bootstrap; transaction-time fence
 and revision validation remains part of persistence rather than a second
 runtime read model.
 
+The total number of retained Message rows is a diagnostic query. It does not
+participate in State publication or Turn preparation. Child idle observation
+uses the existing Message sequence frontier as evidence of newly appended
+messages, alongside the existing execution and lifecycle checks.
+
 An illustrative organization is:
 
 ```text
@@ -2807,7 +2812,7 @@ preflight has explicit preparation entrypoints using the original decoders;
 ordinary Queue/Delivery repository reads use the ordinary bounded reader pool. These
 reads neither cache canonical facts nor retain a transaction across an await,
 and claim commit retains its original in-transaction authority/source checks.
-Bootstrap workspace, Message count and execution-root lookups, and startup
+Bootstrap workspace and execution-root lookups, and startup
 recovery Queue/Turn scans use explicit preparation entrypoints under this same
 contract. They share SQL and decoders with ordinary reads, including scope,
 ordering, empty limits and malformed-payload rejection. Each call ends its own

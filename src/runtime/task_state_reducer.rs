@@ -643,11 +643,6 @@ impl RuntimeHandle {
                     guard.queue.len().saturating_add(1)
                 });
             state.last_wake_reason = Some("TaskResult".into());
-            state.total_message_count = self
-                .inner
-                .storage
-                .count_messages()?
-                .saturating_add(usize::from(result_message_is_new));
             scheduler::apply_message_wake_projection(&mut state);
         }
         let agent_state =

@@ -31,7 +31,6 @@ fn fire(db: &RuntimeDb, id: &str, message_id: &str) -> Result<TimerFire> {
     })?;
     let mut record_state = expected_state.clone();
     record_state.pending += 1;
-    record_state.total_message_count += 1;
     let queue_entry = QueueEntryRecord {
         message_id: message.id.clone(),
         agent_id: scope().agent_id,

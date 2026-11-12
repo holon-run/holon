@@ -119,11 +119,14 @@ completion includes task/timer recovery, scheduler bootstrap settlement, and
 canonical orphan-claim recovery; spawning a runtime task alone is not sufficient
 evidence that startup reconciliation completed.
 
+Agent creation owns the optional initialization message. Daemon startup
+activates the configured default agent and resumes existing bootstrap work.
+
 ### Startup phase observations
 
 Startup observations are diagnostic evidence, not admission or readiness state.
 One `startup_id` correlates storage preparation, host construction, durable
-reconciliation, candidate discovery, serial owner activation, first-run work,
+reconciliation, candidate discovery, serial owner activation,
 listener binding, router construction, and the existing healthy transition.
 The internal pre-server-prepared marker carries this identifier across daemon
 launch; legacy markers remain accepted, and the marker is removed before

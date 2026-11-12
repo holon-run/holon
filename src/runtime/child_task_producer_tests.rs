@@ -260,10 +260,6 @@ async fn original_running_whole_ack_after_admission_close_installs_task_input_qu
             .unwrap();
         assert_eq!(root.state.as_ref(), &durable);
         assert_eq!(durable.pending, baseline.pending + 1);
-        assert_eq!(
-            durable.total_message_count,
-            baseline.total_message_count + 1
-        );
         let actual = f
             .runtime
             .storage()

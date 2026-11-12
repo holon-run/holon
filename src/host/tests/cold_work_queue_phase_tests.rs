@@ -177,7 +177,6 @@ async fn typed_cold_fixture_requires_business_stop_and_restores_pending_preview(
             .context("stopped setup State")?;
         state.current_work_item_id = Some(work.id.clone());
         state.pending = pending;
-        state.total_message_count = history + pending;
         state.turn_index = history as u64;
         writer.finish_state(&state)?;
         let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf()))?;

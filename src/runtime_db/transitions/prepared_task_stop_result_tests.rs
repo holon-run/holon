@@ -362,7 +362,6 @@ fn frozen_stop_result_delivers_without_physical_join_and_owns_work_wait_input_ac
     assert!(value.effects.work_delta.is_some() && value.effects.task_delta.is_some());
     assert!(!value.effects.audit_events.is_empty());
     assert_eq!(f.state()?.pending, 1);
-    assert_eq!(f.state()?.total_message_count, 1);
     let durable = rows(&f)?;
     let after = load(&f, source.record.effect_seq, &l)?;
     let retry = PreparedInputTransition::task_stop_result(&after.record, &request(), &l)?
