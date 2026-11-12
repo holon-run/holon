@@ -125,6 +125,61 @@ impl Fixture {
 
 #[cfg(holon_lib_test_shard = "b")]
 #[test]
+fn prepared_queue_write_context_distinguishes_admit_claim_and_settle() -> Result<()> {
+    use crate::runtime_db::persistence::{PersistenceFailure, PersistenceFailurePhase};
+
+    let f = Fixture::new()?;
+    let repo = f.db.transitions_in_scope(&f.scope);
+    let commit = |queue: PreparedQueueTransition, operation: &str| -> Result<()> {
+        let mut failing = PreparedQueueTransition::new(queue.command.clone());
+        failing.command.fault = Some(TransitionFaultPoint::AfterValidation);
+        let failed =
+            PreparedInputTransition::queue(f.scope.clone(), operation.into(), f.at, failing)?;
+        let error = repo
+            .commit_prepared_transition(&failed)
+            .err()
+            .context("injected fault must abort prepared queue write")?;
+        let failure = error
+            .downcast_ref::<PersistenceFailure>()
+            .context("prepared queue write omitted transaction context")?;
+        assert_eq!(failure.phase(), PersistenceFailurePhase::Callback);
+        assert_eq!(failure.operation(), Some(operation));
+
+        let prepared =
+            PreparedInputTransition::queue(f.scope.clone(), operation.into(), f.at, queue)?;
+        repo.commit_prepared_transition(&prepared)?;
+        Ok(())
+    };
+    let queue = f.queue()?;
+    let QueueMutation::Upsert(mut entry) = queue.command.mutation.clone() else {
+        unreachable!()
+    };
+    commit(queue, "runtime_db.prepared_input.queue_admit")?;
+
+    let mut queue = f.queue()?;
+    queue.command.agent_state = None;
+    queue.command.message_evidence.clear();
+    queue.command.operation = QueueOperation::Claim;
+    entry.status = QueueEntryStatus::Dequeued;
+    queue.command.mutation = QueueMutation::Consume(entry.clone());
+    commit(
+        PreparedQueueTransition::new(queue.command.clone()),
+        "runtime_db.prepared_input.queue_claim",
+    )?;
+
+    queue.command.operation = QueueOperation::Settle;
+    let mut settled = entry.clone();
+    settled.status = QueueEntryStatus::Interrupted;
+    queue.command.mutation = QueueMutation::CompareAndSet {
+        expected: entry,
+        record: settled,
+    };
+    commit(queue, "runtime_db.prepared_input.queue_settle")?;
+    Ok(())
+}
+
+#[cfg(holon_lib_test_shard = "b")]
+#[test]
 fn interrupted_queue_writer_ack_does_not_require_a_wake_or_removal_notification() -> Result<()> {
     use crate::runtime_db::current_read_writes::CurrentFamily;
     let f = Fixture::new()?;

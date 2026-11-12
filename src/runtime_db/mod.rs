@@ -1225,6 +1225,15 @@ impl RuntimeDb {
     }
 
     #[track_caller]
+    pub(crate) fn transaction_once_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_once_with_context(context, f)
+    }
+
+    #[track_caller]
     pub(crate) fn recovery_transaction_once<T>(
         &self,
         f: impl FnOnce(&Transaction<'_>) -> Result<T>,
