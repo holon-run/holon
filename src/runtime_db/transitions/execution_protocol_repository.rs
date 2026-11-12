@@ -250,33 +250,27 @@ pub(super) fn validate_model_queue_claim_tx(
     }) else {
         return Ok(());
     };
-    // A bootstrap can already include this transaction's final owner revision;
-    // only a persisted partition is evidence of the pre-claim snapshot.
-    let initial_work_items = if prepared.initialized_partition {
-        BTreeMap::new()
-    } else {
-        load_state_tx(tx, agent_id)?.work_items
-    };
-    validate_work_item_admission_snapshot_tx(
-        tx,
-        agent_id,
-        &initial_work_items,
-        &prepared.state,
-        attempt,
-        mutations,
-    )
-}
-
-fn validate_work_item_admission_snapshot_tx(
-    tx: &Transaction<'_>,
-    agent_id: &str,
-    initial_work_items: &BTreeMap<String, execution_protocol::WorkItemExecutionRecord>,
-    final_state: &ExecutionProtocolState,
-    attempt: &ExecutionAttempt,
-    mutations: &[WorkItemMutation],
-) -> Result<()> {
     let execution_protocol::ExecutionBinding::WorkItem { work_item_id } = &attempt.binding else {
         return Ok(());
+    };
+    // Command validation already checked the partition in this transaction.
+    // A bootstrap can contain the final revision, so only a stored row can
+    // prove the WorkItem's initial revision.
+    let initial_source_revision = if prepared.initialized_partition {
+        None
+    } else {
+        tx.query_row(
+            "SELECT payload_json
+             FROM execution_protocol_work_items WHERE agent_id = ?1 AND work_item_id = ?2",
+            params![agent_id, work_item_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|payload| {
+            serde_json::from_str::<execution_protocol::WorkItemExecutionRecord>(&payload)
+                .map(|record| record.source_revision)
+        })
+        .transpose()?
     };
     let durable = tx
         .query_row(
@@ -289,16 +283,13 @@ fn validate_work_item_admission_snapshot_tx(
         .transpose()?;
     // Existing drift in either direction is not evidence of a legal writer.
     // Only this transaction's validated mutations may advance the snapshot.
-    if let Some(initial) = initial_work_items.get(work_item_id) {
-        if let Some(durable_record) = durable.as_ref() {
-            if initial.source_revision != durable_record.revision {
-                bail!(
-                    "WorkItem admission requires an aligned initial snapshot: \
-                     work_item={work_item_id}, source={}, durable={}",
-                    initial.source_revision,
-                    durable_record.revision
-                );
-            }
+    if let (Some(initial), Some(durable_record)) = (initial_source_revision, durable.as_ref()) {
+        if initial != durable_record.revision {
+            bail!(
+                "WorkItem admission requires an aligned initial snapshot: \
+                 work_item={work_item_id}, source={initial}, durable={}",
+                durable_record.revision
+            );
         }
     }
     let final_work_item = mutations
@@ -315,7 +306,8 @@ fn validate_work_item_admission_snapshot_tx(
     {
         bail!("WorkItem admission requires its open transaction owner");
     }
-    let execution = final_state
+    let execution = prepared
+        .state
         .work_items
         .get(work_item_id)
         .ok_or_else(|| anyhow!("WorkItem admission requires canonical owner authority"))?;
@@ -2573,6 +2565,110 @@ mod tests {
                 assert_eq!(db.work_items().latest(&work.id)?.unwrap(), work);
             }
         }
+        Ok(())
+    }
+
+    #[test]
+    fn model_queue_claim_checks_initial_work_revision_without_reloading_history() -> Result<()> {
+        use crate::domain::execution_protocol::*;
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+
+        let home = tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("state/runtime.sqlite"),
+            home.path().join("state/runtime.lock"),
+        )?;
+        let (work, mut state, attempt) = work_item_claim_fixture(&db, 1)?;
+        for index in 0..1024 {
+            let mut historical = attempt.clone();
+            historical.attempt_id = format!("historical-attempt-{index}");
+            historical.state = ExecutionAttemptState::Settled;
+            let outcome = ExecutionOutcomeRecord {
+                outcome_id: format!("historical-outcome-{index}"),
+                attempt_id: historical.attempt_id.clone(),
+                outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Continue),
+                created_at: historical.admitted_at.clone(),
+            };
+            historical.terminal_outcome_id = Some(outcome.outcome_id.clone());
+            historical.terminal_at = Some(outcome.created_at.clone());
+            state
+                .attempts
+                .insert(historical.attempt_id.clone(), historical);
+            state.outcomes.insert(outcome.outcome_id.clone(), outcome);
+        }
+        db.transaction(|tx| persist_state_tx(tx, &state))?;
+        let commands = [ExecutionProtocolCommand::Admit(Box::new(AdmitExecution {
+            attempt: attempt.clone(),
+        }))];
+        let message_id = attempt.source_message_id.as_deref().unwrap();
+        db.transaction(|tx| {
+            let prepared =
+                validate_execution_commands_tx(tx, &work.agent_id, None, &commands, &[], &[], &[])?;
+            let ticks = Arc::new(AtomicUsize::new(0));
+            tx.progress_handler(
+                100,
+                Some({
+                    let ticks = ticks.clone();
+                    move || {
+                        ticks.fetch_add(1, Ordering::Relaxed);
+                        false
+                    }
+                }),
+            );
+            let result = validate_model_queue_claim_tx(
+                tx,
+                &work.agent_id,
+                message_id,
+                prepared.as_ref(),
+                &[],
+            );
+            tx.progress_handler(0, None::<fn() -> bool>);
+            result?;
+            assert!(
+                ticks.load(Ordering::Relaxed) < 3,
+                "claim's initial revision check traversed unrelated history"
+            );
+            Ok(())
+        })?;
+
+        let mut updated = work.clone();
+        updated.revision += 1;
+        db.transaction(|tx| {
+            assert!(
+                crate::runtime_db::repositories::update_expected_work_item_tx(
+                    tx,
+                    &updated,
+                    work.revision
+                )?
+            );
+            Ok(())
+        })?;
+        let error = db
+            .transaction(|tx| {
+                let prepared = validate_execution_commands_tx(
+                    tx,
+                    &work.agent_id,
+                    None,
+                    &commands,
+                    &[],
+                    &[],
+                    &[],
+                )?;
+                validate_model_queue_claim_tx(
+                    tx,
+                    &work.agent_id,
+                    message_id,
+                    prepared.as_ref(),
+                    &[],
+                )
+            })
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("requires an aligned initial snapshot"));
         Ok(())
     }
 
