@@ -9385,7 +9385,12 @@ mod tests {
         let mut processed = queued.clone();
         processed.status = QueueEntryStatus::Processed;
         processed.updated_at = now + chrono::Duration::seconds(2);
+        let initial_state = db
+            .agent_states()
+            .latest("agent-a")?
+            .context("missing State")?;
         let mut committed_state = initial_state.clone();
+        committed_state.pending = 0;
         committed_state.current_work_item_id = None;
         committed_state.current_turn_work_item_id = None;
         committed_state.current_turn_id = Some("turn-completion-cotouch".into());

@@ -3562,6 +3562,7 @@ impl RuntimeTransitionRepository<'_> {
                 let final_state =
                     match queue_pending.filter(|pending| *pending != final_state.pending) {
                         Some(pending) => {
+                            crate::diagnostics::resource_io::admit_cloned_value(final_state)?;
                             projected_state = AgentState {
                                 pending,
                                 ..final_state.clone()
@@ -3794,6 +3795,7 @@ impl RuntimeTransitionRepository<'_> {
                 scheduling.finish(
                     tx,
                     &mut value,
+                    queue_pending,
                     scheduling_request,
                     preflight.memory_budget.as_mut(),
                 )?;

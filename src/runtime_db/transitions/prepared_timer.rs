@@ -398,6 +398,7 @@ impl SchedulingTransaction<'_, '_> {
         self,
         tx: &Transaction<'_>,
         value: &mut TransitionCommit,
+        queue_pending: Option<usize>,
         request: &scheduling::SchedulingDomainLoadRequest,
         memory: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     ) -> Result<()> {
@@ -408,6 +409,18 @@ impl SchedulingTransaction<'_, '_> {
             // No State write means the original State remains the ACK.
             // The finalizer compares it with canonical SQL before publishing.
             self.proof.state_before()?
+        };
+        let projected_state;
+        let state = match queue_pending.filter(|pending| *pending != state.pending) {
+            Some(pending) => {
+                crate::diagnostics::resource_io::admit_cloned_value(state)?;
+                projected_state = AgentState {
+                    pending,
+                    ..state.clone()
+                };
+                &projected_state
+            }
+            None => state,
         };
         let mut facts = scheduling::register_scheduling_writes_with_memory_budget_tx(
             tx,

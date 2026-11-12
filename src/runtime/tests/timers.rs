@@ -3276,16 +3276,9 @@ async fn timer_fire_with_persisted_working_memory_keeps_exact_wait_and_acks() {
     assert_eq!(state.pending, 1);
     assert_eq!(state.working_memory, memory_before);
     let connection = db.connection().unwrap();
-    let state_json: String = connection
-        .query_row(
-            "SELECT payload_json FROM agent_states WHERE agent_id='default'",
-            [],
-            |row| row.get(0),
-        )
-        .unwrap();
     assert_eq!(
         state,
-        serde_json::from_str::<AgentState>(&state_json).unwrap(),
+        db.agent_states().latest("default").unwrap().unwrap(),
         "installed State ACK must equal the committed original writer result"
     );
     let (qualification, digest, payload): (String, String, String) = connection
