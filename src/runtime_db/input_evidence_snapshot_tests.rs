@@ -21,6 +21,8 @@ use rusqlite::Connection;
 mod claim_successor_tests;
 #[path = "input_evidence_provider_replay_tests.rs"]
 mod provider_replay_tests;
+#[path = "input_evidence_turn_transcript_tests.rs"]
+mod turn_transcript_tests;
 
 fn time() -> DateTime<Utc> {
     "2026-10-12T00:00:00Z".parse().unwrap()
