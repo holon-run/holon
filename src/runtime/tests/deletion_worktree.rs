@@ -34,7 +34,7 @@ struct WorktreeFixture {
 
 async fn worktree_fixture() -> WorktreeFixture {
     let (home, host, runtime) = host_backed_test_runtime().await;
-    let repo = tempdir().unwrap();
+    let repo = canonical_tempdir().unwrap();
     let repo_path = repo.path().join("repo");
     std::fs::create_dir(&repo_path).unwrap();
     git(&repo_path, &["init", "-b", "main"]);

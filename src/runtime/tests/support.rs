@@ -46,6 +46,11 @@ pub(crate) use lifecycle::{
     TERMINAL_PRE_COMMIT_FAULTS,
 };
 
+/// Use the same physical directory spelling that Git reports for worktrees.
+pub(super) fn canonical_tempdir() -> std::io::Result<TempDir> {
+    tempfile::tempdir_in(std::env::temp_dir().canonicalize()?)
+}
+
 /// Seed Queue progress through the original writer, including its Current ACK.
 pub(crate) async fn persist_native_queue_fixture(
     runtime: &RuntimeHandle,
