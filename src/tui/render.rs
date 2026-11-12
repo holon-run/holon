@@ -997,26 +997,6 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
 
     lines.push(String::new());
     lines.push(format!(
-        "Children: {}",
-        if agent.active_children.is_empty() {
-            "none".into()
-        } else {
-            agent
-                .active_children
-                .iter()
-                .map(|child| {
-                    format!(
-                        "{}:{}:{:?}",
-                        child.identity.display_name(),
-                        child.identity.agent_id,
-                        child.status
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        }
-    ));
-    lines.push(format!(
         "External triggers: {}",
         agent.active_external_triggers.len()
     ));
@@ -1264,7 +1244,7 @@ mod tests {
         assert!(
             rendered.contains("Cleanup authority: canonical lifecycle attachment and supervision")
         );
-        assert!(rendered.contains("Children: child_1:child_1:AwakeRunning"));
+        assert!(!rendered.contains("Children:"));
         assert!(rendered.contains("Execution backend: host_local"));
         assert!(rendered.contains("Process execution: runtime_shaped"));
         assert!(rendered.contains(

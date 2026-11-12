@@ -5365,15 +5365,10 @@ impl RuntimeHost {
             })
             .map_err(PublicAgentError::Runtime)?;
         crate::diagnostics::record_projection_state_tasks(tasks_started.elapsed());
-        // Parent facts are frozen. Release before another agent's summary await.
         if let Some(observation) = observation {
             observation.check().map_err(PublicAgentError::Runtime)?;
         }
         drop(reservations);
-        let active_children = self
-            .child_agent_summaries(agent_id)
-            .await
-            .map_err(PublicAgentError::Runtime)?;
         let agent = LightweightAgentStateProjection {
             identity: AgentIdentityView::from_owned_record(
                 identity,
@@ -5389,22 +5384,18 @@ impl RuntimeHost {
             agent: agent_state,
             scheduling_posture,
             closure,
-            active_children,
+            active_children: Vec::new(),
             work_queue,
             _work_budget: None,
             _scheduling_material: None,
         };
         crate::diagnostics::record_projection_state_agent(agent_started.elapsed());
-        let mut material = crate::runtime::StateProjectionMaterial {
+        let material = crate::runtime::StateProjectionMaterial {
             acquisition,
             _work: None,
             _tasks: None,
             _scheduling: Some(scheduling_material),
-            _children: Vec::new(),
         };
-        material
-            .retain_children(&agent.active_children)
-            .map_err(PublicAgentError::Runtime)?;
         Ok(AgentStateReadProjection {
             waits,
             source: AgentStateProjectionSource::Storage,

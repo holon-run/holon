@@ -1449,16 +1449,7 @@ fn agent_has_active_activity(agent: &AgentSummary) -> bool {
             | crate::types::AgentStatus::AwakeRunning
             | crate::types::AgentStatus::AwaitingTask
     );
-    let active_child = agent.active_children.iter().any(|child| {
-        matches!(
-            child.status,
-            crate::types::AgentStatus::Booting
-                | crate::types::AgentStatus::AwakeRunning
-                | crate::types::AgentStatus::AwaitingTask
-        ) || child.pending > 0
-            || child.active_task_count > 0
-    });
-    active_parent || agent.agent.pending > 0 || agent.active_task_count > 0 || active_child
+    active_parent || agent.agent.pending > 0 || agent.active_task_count > 0
 }
 
 fn latest_action_event<'a>(
@@ -1523,7 +1514,6 @@ fn active_activity_speaker(agent: &AgentSummary) -> String {
         crate::types::AgentStatus::AwaitingTask => "Holon (waiting)".into(),
         crate::types::AgentStatus::AwakeRunning => "Holon (working)".into(),
         crate::types::AgentStatus::AwakeIdle if agent.agent.pending > 0 => "Holon (queued)".into(),
-        _ if !agent.active_children.is_empty() => "Holon (delegating)".into(),
         crate::types::AgentStatus::AwakeIdle => "Holon (idle)".into(),
         crate::types::AgentStatus::Asleep => "Holon (sleeping)".into(),
         crate::types::AgentStatus::Stopped => "Holon (stopped)".into(),
@@ -2054,6 +2044,26 @@ mod tests {
 
         assert!(agent_has_active_activity(&agent));
         assert_eq!(active_activity_speaker(&agent), "Holon (queued)");
+    }
+
+    #[test]
+    fn retained_child_summary_does_not_imply_parent_activity() {
+        for posture in [
+            AgentSchedulingPosture::Unknown,
+            AgentSchedulingPosture::Idle,
+        ] {
+            let mut agent = agent_summary(AgentStatus::AwakeIdle, posture);
+            agent.active_children = vec![serde_json::from_value(json!({
+                "identity": agent.identity,
+                "status": "awake_running",
+                "pending": 1,
+                "active_task_count": 1,
+                "observability": {"phase": "running"}
+            }))
+            .unwrap()];
+            assert!(!agent_has_active_activity(&agent));
+            assert_eq!(active_activity_speaker(&agent), "Holon (idle)");
+        }
     }
 }
 

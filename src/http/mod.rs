@@ -3572,7 +3572,7 @@ mod tests {
             .await
             .unwrap();
         let id = runtime.instance_agent_id();
-        let app = router(AppState::for_tcp(host.clone()));
+        let app = router(AppState::for_unix(host.clone()));
         let response = app
             .oneshot(
                 Request::builder()
@@ -3588,6 +3588,7 @@ mod tests {
         assert_eq!(wire["agent"]["agent"]["id"], id);
         assert!(wire["tasks"].is_array() && wire["waits"].is_array());
         assert_eq!(wire["timers"][0]["id"], timer.id);
+        assert!(wire["agent"].get("active_children").is_none());
         assert!(wire.get("material").is_none());
         host.shutdown().await.unwrap();
     }
@@ -3615,7 +3616,7 @@ mod tests {
             None,
         );
         host.append_agent_identity(&child).unwrap();
-        let mut state = AppState::for_tcp(host.clone());
+        let mut state = AppState::for_unix(host.clone());
         // Expire fresh entries immediately while exercising a previously built projection.
         state.projection_gate = Arc::new(ProjectionGate::new(4, Duration::ZERO));
         let app = router(state);
@@ -3652,12 +3653,21 @@ mod tests {
             for requested_id in requested_ids {
                 let response = get_state(requested_id).await.unwrap();
                 let status = response.status();
-                assert!(response.headers().contains_key(header::RETRY_AFTER));
+                let observes_pending_owner = requested_id == agent_id;
+                assert_eq!(
+                    response.headers().contains_key(header::RETRY_AFTER),
+                    observes_pending_owner
+                );
                 let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
-                assert_eq!(body["code"], "agent_reconciliation_pending", "{body}");
-                assert_eq!(body["retryable"], true);
+                if observes_pending_owner {
+                    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+                    assert_eq!(body["code"], "agent_reconciliation_pending", "{body}");
+                    assert_eq!(body["retryable"], true);
+                } else {
+                    assert_eq!(status, StatusCode::OK, "{body}");
+                    assert!(body["agent"].get("active_children").is_none());
+                }
                 assert!(!body.to_string().contains("private-recovery-ticket"));
                 assert!(matches!(
                     owner.capture(),
@@ -3674,6 +3684,79 @@ mod tests {
         assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
         drop(run_loop);
         host.shutdown().await.unwrap();
+    }
+
+    #[cfg(holon_lib_test_shard = "c")]
+    #[tokio::test]
+    async fn operator_state_route_ignores_child_reconciliation_for_loaded_and_cold_agents() {
+        use crate::runtime::mutation_owner::{MutationOwnerError, MutationReservation};
+        use crate::types::{
+            AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
+        };
+
+        for parent_loaded in [false, true] {
+            for child_loaded in [false, true] {
+                let (_home, host, runtime) =
+                    crate::runtime::tests::support::host_backed_test_runtime().await;
+                let parent_id = runtime.instance_agent_id().to_owned();
+                let child = AgentIdentityRecord::new(
+                    "unobserved-state-child",
+                    AgentKind::Child,
+                    AgentVisibility::Private,
+                    AgentOwnership::ParentSupervised,
+                    AgentProfilePreset::PrivateChild,
+                    Some(parent_id.clone()),
+                    None,
+                );
+                host.append_agent_identity(&child).unwrap();
+                if child_loaded {
+                    host.get_or_create_agent(&child.agent_id).await.unwrap();
+                }
+                if !parent_loaded {
+                    host.unload_runtime(&parent_id).await;
+                }
+                let owner = host
+                    .bridge()
+                    .mutation_owner_for(&child.agent_id, child.incarnation)
+                    .unwrap();
+                let mut reservation = owner.reserve().await.unwrap();
+                let key = reservation
+                    .begin("unobserved-child-recovery".into())
+                    .unwrap();
+                let response = router(AppState::for_unix(host.clone()))
+                    .oneshot(
+                        Request::builder()
+                            .uri(format!("/api/agents/{parent_id}/state"))
+                            .body(Body::empty())
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                let status = response.status();
+                let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+                let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(status, StatusCode::OK, "{body}");
+                assert!(body["agent"].get("active_children").is_none());
+                assert!(matches!(
+                    owner.capture(),
+                    Err(MutationOwnerError::NeedsReconcile(pending)) if pending == key
+                ));
+                assert_eq!(
+                    host.try_get_loaded_runtime(&parent_id).await.is_some(),
+                    parent_loaded
+                );
+                assert_eq!(
+                    host.try_get_loaded_runtime(&child.agent_id).await.is_some(),
+                    child_loaded
+                );
+                MutationReservation::definitely_not_committed_all(std::slice::from_mut(
+                    &mut reservation,
+                ))
+                .unwrap();
+                drop(reservation);
+                host.shutdown().await.unwrap();
+            }
+        }
     }
 
     #[cfg(holon_lib_test_shard = "c")]

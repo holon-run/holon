@@ -449,7 +449,6 @@ fn build_agent_state_projection(
     let snapshot = material
         .acquisition
         .read(|| {
-            crate::diagnostics::resource_io::admit_typed_cloned_value(&projection.active_children)?;
             let waits = state_projection
                 .waits
                 .into_iter()
@@ -479,7 +478,7 @@ fn build_agent_state_projection(
                 lifecycle: projection.lifecycle,
                 model: projection.model.into(),
                 closure: (&projection.closure).into(),
-                active_children: projection.active_children.iter().map(Into::into).collect(),
+                active_children: Vec::new(),
             };
             tracing::debug!(
                 agent_id,

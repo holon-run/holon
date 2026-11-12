@@ -466,7 +466,6 @@ async fn operator_state_json_rejects_one_byte_short_without_mutating_the_prior_v
             _work: None,
             _tasks: None,
             _scheduling: None,
-            _children: Vec::new(),
         })
     };
     let phase = make(8192)?;
