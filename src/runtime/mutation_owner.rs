@@ -174,7 +174,9 @@ pub(crate) struct RecoveryRecord {
     pub witness: Option<MutationWitness>,
     // A successor claim clears its root. Preserve the original cold boundary
     // so recovery cannot reinterpret a formerly published State as absent.
-    pub(super) original_state: Option<Arc<AgentState>>,
+    // The baseline stays weak: recovery verifies a still-live publication,
+    // but pending records must not extend the published State body lifetime.
+    pub(super) original_state: Option<Weak<AgentState>>,
     pub(super) installed_state_readback: Option<Arc<AgentState>>,
     original_identity: Option<Arc<AgentIdentityRecord>>,
     identity_rename: Option<Arc<AgentIdentityRecord>>,
@@ -1006,7 +1008,9 @@ impl MutationReservation {
                 committed_runtime: None,
                 known: None,
                 witness: witness.clone(),
-                original_state: original_root.as_ref().map(|root| root.state.clone()),
+                original_state: original_root
+                    .as_ref()
+                    .map(|root| Arc::downgrade(&root.state)),
                 installed_state_readback: None,
                 original_identity: original_root.and_then(|root| root.identity.clone()),
                 identity_rename: None,
