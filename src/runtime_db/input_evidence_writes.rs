@@ -115,12 +115,7 @@ pub(super) fn synchronize_message_count_tx(
         return Ok(None);
     };
     let previous: crate::types::AgentState = serde_json::from_str(&payload)?;
-    let count: i64 = tx.query_row(
-        "SELECT COUNT(*) FROM messages WHERE agent_id=?1",
-        [agent_id],
-        |row| row.get(0),
-    )?;
-    let count = usize::try_from(count).context("canonical message count cannot be represented")?;
+    let count = super::message_count::for_agent(tx, agent_id)?;
     if previous.total_message_count == count {
         return Ok(None);
     }

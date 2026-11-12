@@ -1795,16 +1795,11 @@ fn load_snapshot_in_with_original_scope(
             && matches!(&message.body, MessageBody::Text { text } if text == "start" || text == "stop"))
         .map(|message| message.id.clone());
     let reducer_source_message_id = reducer_source.map(|message| message.id);
-    let count: i64 = connection.query_row(
-        "SELECT COUNT(*) FROM messages WHERE agent_id = ?1",
-        [&key.agent_id],
-        |row| row.get(0),
-    )?;
     Ok(ControlSnapshot {
         identity,
         state,
         control_revision: u64::try_from(revision)?,
-        message_count: usize::try_from(count)?,
+        message_count: super::message_count::for_agent(connection, &key.agent_id)?,
         tasks,
         waits,
         timers,
