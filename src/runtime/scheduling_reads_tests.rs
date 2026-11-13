@@ -435,11 +435,27 @@ async fn summary_query_after_active_metadata_ack_rejects_unqualified_canonical_d
 }
 
 #[tokio::test]
-async fn scoped_http_state_prepares_scheduling_after_active_metadata_ack() -> Result<()> {
+async fn scoped_http_state_requires_published_scheduling_after_active_metadata_ack() -> Result<()> {
     let home = tempdir()?;
     let runtime = runtime(home.path())?;
     runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
     publish_active_metadata_ack(&runtime).await?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let reader_before = runtime
+        .runtime_db()
+        .reader_pool_stats_for_tests()
+        .checkout_attempts;
+    let preparation_before = runtime
+        .runtime_db()
+        .preparation_pool_stats_for_tests()
+        .checkout_attempts;
+    let writer = runtime
+        .runtime_db()
+        .reader_pool_writer_weak_for_tests()
+        .upgrade()
+        .unwrap();
+    let writes_before = writer.write_channel_admissions_for_tests()?;
     let db = runtime
         .inner
         .runtime_db
@@ -448,15 +464,41 @@ async fn scoped_http_state_prepares_scheduling_after_active_metadata_ack() -> Re
         ));
     let handle = tokio::runtime::Handle::current();
     let reader = runtime.clone();
-    let id = tokio::task::spawn_blocking(move || -> Result<String> {
-        // Exactly the loaded production /state preparation and capture path;
+    tokio::task::spawn_blocking(move || -> Result<()> {
+        // Exactly the loaded production /state capture path;
         // do not warm through agent_summary or an unscoped State read.
-        let projection =
-            reader.acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)?;
-        Ok(projection.agent.agent.id.clone())
+        let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+        let error = reader
+            .acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)
+            .err()
+            .unwrap();
+        assert!(
+            error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+            "{error:#}"
+        );
+        assert_eq!(denied.attempts(), 0);
+        Ok(())
     })
     .await??;
-    assert_eq!(id, "scheduling-reader");
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .reader_pool_stats_for_tests()
+            .checkout_attempts,
+        reader_before
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .preparation_pool_stats_for_tests()
+            .checkout_attempts,
+        preparation_before
+    );
+    assert_eq!(writer.write_channel_admissions_for_tests()?, writes_before);
+    assert!(Arc::ptr_eq(
+        &root,
+        &runtime.inner.mutation_owner.capture()?.unwrap()
+    ));
     Ok(())
 }
 
@@ -531,12 +573,24 @@ async fn observer_metadata_reconstruction_uses_readers_without_owner_or_writer_a
     let reader = runtime.clone();
     let db = runtime.runtime_db().clone();
     let handle = tokio::runtime::Handle::current();
-    let state = tokio::task::spawn_blocking(move || {
-        reader.acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)
+    let state = tokio::task::spawn_blocking(move || -> Result<()> {
+        let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+        let error = reader
+            .acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)
+            .err()
+            .unwrap();
+        assert!(
+            error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+            "{error:#}"
+        );
+        assert_eq!(denied.attempts(), 0);
+        Ok(())
     });
-    let state = tokio::time::timeout(std::time::Duration::from_secs(5), state).await???;
-    assert_eq!(state.agent.agent.id, "scheduling-reader");
-    assert_eq!(state.timers.len(), 1);
+    tokio::time::timeout(std::time::Duration::from_secs(5), state).await???;
+    assert!(Arc::ptr_eq(
+        &before,
+        &runtime.inner.mutation_owner.capture()?.unwrap()
+    ));
     let child = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         runtime.child_agent_summary_observation(),
