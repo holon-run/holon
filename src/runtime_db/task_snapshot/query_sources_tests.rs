@@ -183,6 +183,51 @@ fn output_source_recent_and_historical_ties_keep_distinct_original_id_order() ->
 }
 
 #[test]
+fn output_window_preserves_legacy_order_and_the_200_header_boundary() -> Result<()> {
+    let (_dir, db) = fresh()?;
+    db.transaction(|tx| {
+        let task = task_locator(tx)?;
+        let empty = observe(tx, &task)?.window.unwrap();
+        assert!(empty.message_ids.is_empty() && empty.is_exhaustive);
+        let legacy_order = "SELECT evidence_id FROM task_message_order_headers
+            WHERE agent_id=?1 AND identity_incarnation=?2
+            ORDER BY message_seq IS NULL ASC,message_seq DESC,created_at DESC,message_id ASC
+            LIMIT 200";
+        let scope = scope();
+        // Legacy imports can have no sequence or message ID. Repeat timestamps
+        // and sequence values to exercise both levels of the tie-break.
+        let mut insert = tx.prepare(
+            "INSERT INTO task_message_order_headers
+             (agent_id,identity_incarnation,evidence_id,message_id,message_seq,created_at,revision,content_digest)
+             VALUES(?1,?2,?3,?4,?5,?6,1,?7)",
+        )?;
+        let digest = "a".repeat(64);
+        for index in 0..201 {
+            let id = format!("header-{:03}", 200 - index);
+            insert.execute(params![
+                scope.agent_id,
+                scope.identity_incarnation,
+                id,
+                (index % 3 != 0).then_some(id.as_str()),
+                (index % 2 != 0).then_some(index / 7),
+                format!("2026-10-01T00:00:{:02}Z", index % 5),
+                digest,
+            ])?;
+            if (198..=200).contains(&index) {
+                let expected = tx
+                    .prepare(legacy_order)?
+                    .query_map(params![scope.agent_id, scope.identity_incarnation], |row| row.get(0))?
+                    .collect::<rusqlite::Result<Vec<String>>>()?;
+                let observed = observe(tx, &task)?.window.unwrap();
+                assert_eq!(observed.message_ids, expected);
+                assert_eq!(observed.is_exhaustive, index < 200);
+            }
+        }
+        Ok(())
+    })
+}
+
+#[test]
 fn output_source_explicit_none_requires_complete_original_inventory_and_exact_task_version(
 ) -> Result<()> {
     let (_dir, db) = fresh()?;

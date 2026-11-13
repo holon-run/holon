@@ -355,6 +355,15 @@ impl RuntimeMutation {
             }
         }
         let tasks = self.runtime.inner.runtime_db.transaction(|tx| {
+            let _span = tracing::trace_span!(
+                "task_domain_prepare",
+                agent_id = %scope.agent_id,
+                terminal_limit = load.capture.terminal_limit,
+                required_keys = load.capture.required_keys.len(),
+                recovery_sources = load.capture.recovery_source_ids.len(),
+            )
+            .entered();
+            let _stage = crate::diagnostics::attribution::TASK_DOMAIN_PREPARE.start();
             let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
             anyhow::ensure!(
                 facts.state.as_deref() == Some(root.state.as_ref())
