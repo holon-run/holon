@@ -1,4 +1,4 @@
-//! Bounded, content-free read-side timings. Nested stages overlap; timers count
+//! Bounded, content-free stage timings. Nested stages overlap; timers count
 //! attempts including errors/cancellation. Snapshots are not transactional.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -67,7 +67,7 @@ impl Drop for Timer {
         tracing::trace!(
             target: "holon::performance",
             stage = self.stage.name, elapsed_ns, rows = self.rows,
-            "read-side stage completed"
+            "performance stage completed"
         );
     }
 }
@@ -103,6 +103,11 @@ stages! {
     READER_CHECKOUT => "db.reader.checkout",
     READER_LEASE => "db.reader.lease_held",
     READER_OPERATION => "db.reader.operation",
+    TASK_RESULT_DEFER_PREFLIGHT => "db.task_result.defer.preflight",
+    TASK_RESULT_DEFER_RESULT => "db.task_result.defer.result",
+    TASK_RESULT_DEFER_FINALIZATION => "db.task_result.defer.finalization",
+    TASK_RESULT_DEFER_RECEIPT => "db.task_result.defer.receipt",
+    TASK_RESULT_DEFER_PUBLICATION => "runtime.task_result.defer.publication",
     ROSTER_READ => "projection.roster.read",
     ROSTER_LATEST_BRIEFS => "projection.roster.latest_briefs_query",
     AGENT_PROJECTION_READ => "projection.agent_anchors.read",

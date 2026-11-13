@@ -65,6 +65,31 @@ pub(crate) enum TaskResultOperation {
         at: chrono::DateTime<Utc>,
     },
 }
+impl TaskResultOperation {
+    pub(super) fn write_operation(&self) -> &'static str {
+        match self {
+            Self::EnsurePending { .. } => "runtime_db.prepared_input.task_result.ensure_pending",
+            #[cfg(test)]
+            Self::AdmitUnsettled { .. } => "runtime_db.prepared_input.task_result.admit_unsettled",
+            #[cfg(test)]
+            Self::AdmitReply { .. } => "runtime_db.prepared_input.task_result.admit_reply",
+            Self::AdmitSnapshot { .. } => "runtime_db.prepared_input.task_result.admit_snapshot",
+            Self::AdmitMessage { .. } => "runtime_db.prepared_input.task_result.admit_message",
+            Self::SettleInvalidOnly { .. } => {
+                "runtime_db.prepared_input.task_result.settle_invalid_only"
+            }
+            Self::SettleOwnerUnavailable { .. } => {
+                "runtime_db.prepared_input.task_result.settle_owner_unavailable"
+            }
+            Self::Defer { .. } => "runtime_db.prepared_input.task_result.defer",
+            Self::MarkRecoveryDiagnostic { .. } => {
+                "runtime_db.prepared_input.task_result.mark_recovery_diagnostic"
+            }
+            Self::Wake { .. } => "runtime_db.prepared_input.task_result.wake",
+        }
+    }
+}
+
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct PreparedTaskResultTransition {
     agent_id: String,

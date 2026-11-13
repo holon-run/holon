@@ -265,6 +265,7 @@ fn task_result_metadata_cost_profile() -> Result<()> {
         for mode in ["metadata", "result_defer"] {
             db.transaction(|tx| loader::persist_coverage(tx, &scope(), &coverage))?;
             SQL_PROFILE.with(|profile| profile.borrow_mut().clear());
+            let attribution_before = crate::diagnostics::attribution::snapshot();
             let started = Instant::now();
             if mode == "metadata" {
                 db.transaction(|tx| {
@@ -284,12 +285,21 @@ fn task_result_metadata_cost_profile() -> Result<()> {
                 defer(&db, &format!("profile-defer-{records}"), &ledger)?;
             }
             let micros = started.elapsed().as_micros();
+            let defer_stages_us = attribution_before
+                .into_iter()
+                .zip(crate::diagnostics::attribution::snapshot())
+                .filter(|(before, after)| {
+                    after.name.starts_with("db.task_result.defer.") && after.count > before.count
+                })
+                .map(|(before, after)| (after.name, (after.total_ns - before.total_ns) / 1_000))
+                .collect::<BTreeMap<_, _>>();
             SQL_PROFILE.with(|profile| {
                 eprintln!(
                     "SYNTHETIC_PROFILE {}",
                     serde_json::json!({
                         "records": records, "coverage_bytes": bytes, "mode": mode,
                         "total_us": micros, "sql": *profile.borrow(),
+                        "defer_stages_us": defer_stages_us,
                     })
                 );
             });

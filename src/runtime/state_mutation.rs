@@ -1788,6 +1788,8 @@ impl RuntimeMutation {
         let replay_observation = witness.clone();
         let mut original_result = None;
         let mut original_material_views = Vec::new();
+        let measure_defer = prepared.is_task_result_defer();
+        let mut defer_publication = None;
         let result = self
             .commit_transition_inner(operation_id, Some(witness), || {
                 match db
@@ -1801,6 +1803,9 @@ impl RuntimeMutation {
                         current_query_source.as_ref(),
                     )? {
                     InputMutationExecution::Committed { value, receipt } => {
+                        defer_publication = measure_defer.then(|| {
+                            crate::diagnostics::attribution::TASK_RESULT_DEFER_PUBLICATION.start()
+                        });
                         replay_observation.mark_original_input_receipt_pending(&receipt, false)?;
                         original_material_views
                             .extend(value.effects.task_material_budget_views.iter().cloned());
@@ -1824,6 +1829,7 @@ impl RuntimeMutation {
                 }
             })
             .await;
+        drop(defer_publication);
         match result {
             Err(error) if error.downcast_ref::<PreparedInputReplay>().is_some() => {
                 let replay = error

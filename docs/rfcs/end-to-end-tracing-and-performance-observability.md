@@ -26,7 +26,7 @@ The current runtime already has:
 
 - `tracing`-based structured logs and an HTTP `TraceLayer`;
 - bounded process-global count, total, average, and maximum metrics;
-- detailed read-side attribution counters;
+- detailed read-side and TaskResult Defer attribution counters;
 - persisted message, turn, provider-attempt, and tool-execution identifiers;
 - opt-in provider HTTP request/response capture for protocol diagnosis.
 
@@ -141,6 +141,26 @@ counts, bytes, tokens, row counts, queue depth, retry counts, and stable
 enums. They must not contain prompts, assistant text, tool bodies, HTTP bodies,
 URL queries, authorization data, cookies, environment variables, or file
 contents.
+
+## TaskResult Writer Attribution
+
+Standalone TaskResult writer operations use the fixed
+`runtime_db.prepared_input.task_result.*` prefix with a command-specific suffix,
+including `defer`, `admit_snapshot`, and `settle_invalid_only`. Compare writer
+queue wait, lock hold, callback, and COMMIT under each operation name.
+
+The process-wide attribution snapshot exposes four Defer callback stages under
+`db.task_result.defer`: `preflight`, `result`, `finalization`, and `receipt`.
+They time qualification and snapshot preparation, result execution, Task
+snapshot maintenance, and receipt insertion. The result stage counts updated
+Result rows, including zero for a successful no-op. A receipt replay reaches
+preflight only. The stages cover selected callback boundaries and need not sum
+to the entire callback.
+
+`runtime.task_result.defer.publication` runs after the original SQL commit
+returns. It covers acknowledgment and installation of the resident mutation
+and ends before post-commit effects. The publication stage also covers
+successful receipt-only original commits. Replays use the recovery path.
 
 ## Provider And Tool Phases
 

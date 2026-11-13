@@ -400,6 +400,46 @@ async fn paused_result_does_not_block_same_owner_new_results_or_charge_scanner_p
     .is_some());
 }
 
+#[cfg(holon_lib_test_shard = "b")]
+#[tokio::test]
+async fn original_defer_records_resident_publication() -> anyhow::Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let record = pending_command_result(runtime, "publication-task", harness.now()).await;
+    let publication_count = || {
+        crate::diagnostics::attribution::snapshot()
+            .into_iter()
+            .find(|sample| sample.name == "runtime.task_result.defer.publication")
+            .unwrap()
+            .count
+    };
+    let before = publication_count();
+    let now = harness.now();
+    let deadline = now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS);
+    let outcome = runtime
+        .apply_task_result_operation((&record.message_id, now, deadline), || {
+            crate::runtime_db::transitions::TaskResultOperation::Defer {
+                message_id: record.message_id.clone(),
+                reason: "synthetic".into(),
+                at: now,
+                deadline,
+            }
+        })
+        .await?;
+    assert_eq!(
+        outcome.record()?.as_ref().unwrap().next_recheck_at,
+        Some(deadline)
+    );
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let tasks = root.tasks.as_ref().unwrap();
+    assert_eq!(
+        tasks.coverage().result_metadata[&record.result_identity].next_recheck_at,
+        Some(deadline)
+    );
+    assert!(publication_count() > before);
+    Ok(())
+}
+
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() {
