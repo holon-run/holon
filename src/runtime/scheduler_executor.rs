@@ -334,6 +334,28 @@ pub(super) struct WaitingReplyQueue {
     pub(super) token: Option<super::mutation_owner::PublicationToken>,
 }
 
+impl WaitingReplyQueue {
+    pub(super) fn is_current(
+        &self,
+        mutation: &super::state_mutation::RuntimeMutation,
+    ) -> Result<bool> {
+        Ok(self.token.is_none() || self.token == Some(mutation.capture_published_root()?.token))
+    }
+
+    pub(super) fn has_eligible_input(
+        &self,
+        mutation: &super::state_mutation::RuntimeMutation,
+    ) -> bool {
+        if self.ids.is_empty() {
+            return !mutation.queue.is_empty();
+        }
+        mutation
+            .queue
+            .shared_messages()
+            .any(|message| !self.ids.contains(&message.id))
+    }
+}
+
 enum PrepareMessageOutcome {
     Poll(RunLoopPoll),
     Replan,
@@ -889,7 +911,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if matches!(guard.state.status, AgentStatus::Stopped) {
             return Ok(None);
         }
-        if waiting.token.is_some() && waiting.token != Some(guard.capture_published_root()?.token) {
+        if !waiting.is_current(&guard)? {
             return Ok(None);
         }
         // A new input or changed publication requires a fresh poll.

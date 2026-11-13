@@ -178,6 +178,75 @@ async fn queued_reply_waits_for_owner_without_blocking_sleep_or_losing_delivery(
 }
 
 #[tokio::test(start_paused = true)]
+async fn waiting_reply_allows_other_work_to_receive_an_idle_tick() {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let owner = runtime
+        .create_work_item(
+            "reply owner".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let (_, reply_id) = reply_result(runtime, &owner).await;
+    let other = runtime
+        .create_work_item(
+            "runnable work".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let executor = scheduler_executor::SchedulerDecisionExecutor::new(runtime);
+    let mut waiting = scheduler_executor::WaitingReplyQueue::default();
+    assert!(matches!(
+        executor
+            .poll_with_waiting_replies(&mut waiting)
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(waiting.ids.contains(&reply_id));
+    assert!(runtime
+        .maybe_emit_pending_system_tick_with_replies(None, &mut waiting)
+        .await
+        .unwrap());
+    let tick = runtime
+        .storage()
+        .read_recent_messages(16)
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            message.kind == MessageKind::SystemTick
+                && message.work_item_id.as_deref() == Some(other.id.as_str())
+        })
+        .expect("runnable work received a durable tick");
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&tick.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&reply_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test(start_paused = true)]
 async fn scanner_suspends_dropped_reply_and_late_exact_wait_still_claims_it() {
     let mut harness = LifecycleHarness::new();
     let (_, task, reply_id) = dropped_reply(&harness).await;

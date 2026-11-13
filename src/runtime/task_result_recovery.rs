@@ -18,6 +18,7 @@ struct DeferredProbe {
     result_revision: u64,
     durable_deadline: ProbeTime,
     work_item_id: Option<String>,
+    wait_condition_id: Option<String>,
     reason: &'static str,
     delay_seconds: i64,
     next: ProbeTime,
@@ -47,6 +48,7 @@ impl RuntimeHandle {
         &self,
         record: &crate::runtime_db::TaskResultSettlementRecord,
         owner: Option<&str>,
+        blocking_wait: Option<&str>,
         reason: &'static str,
         now: ProbeTime,
         result_revision: u64,
@@ -73,6 +75,7 @@ impl RuntimeHandle {
                 result_revision,
                 durable_deadline,
                 work_item_id: owner.map(str::to_owned),
+                wait_condition_id: blocking_wait.map(str::to_owned),
                 reason,
                 delay_seconds,
                 next: now
@@ -96,6 +99,14 @@ impl RuntimeHandle {
         })
     }
 
+    pub(super) fn reset_task_result_probes_after_reconciliation(&self) {
+        let mut probes = self.inner.task_result_probes.lock().unwrap();
+        if !probes.pending.is_empty() {
+            probes.pending.clear();
+            self.inner.notify.notify_one();
+        }
+    }
+
     pub(super) fn wake_task_result_probes(
         &self,
         effects: &crate::runtime_db::transitions::PostCommitEffects,
@@ -114,6 +125,7 @@ impl RuntimeHandle {
             })
         });
         let mut probes = self.inner.task_result_probes.lock().unwrap();
+        let pending = probes.pending.len();
         probes.pending.retain(|id, probe| {
             if effects
                 .task_write_keys
@@ -141,7 +153,10 @@ impl RuntimeHandle {
                     delta.records.iter().any(|row| match &row.record {
                         CanonicalWorkRecord::Wait(wait) => {
                             effects.wait_condition_writes.wait_ids.contains(&wait.id)
-                                && wait.work_item_id.as_deref() == owner
+                                && probe.wait_condition_id.as_deref().map_or_else(
+                                    || wait.work_item_id.as_deref() == owner,
+                                    |id| id == wait.id,
+                                )
                                 && matches!(
                                     wait.status,
                                     WaitConditionStatus::Resolved | WaitConditionStatus::Cancelled
@@ -151,6 +166,9 @@ impl RuntimeHandle {
                     })
                 })
         });
+        if probes.pending.len() != pending {
+            self.inner.notify.notify_one();
+        }
     }
 }
 
@@ -776,19 +794,21 @@ impl RuntimeHandle {
                 .map_or(record.work_item_id.as_deref(), |wait| {
                     wait.work_item_id.as_deref()
                 });
-            let deferred_reason = match self
+            let (deferred_reason, blocking_wait) = match self
                 .inner
                 .runtime_db
                 .task_result_settlements()
                 .classify_obligation(&record, None, consuming_owner)?
             {
-                TaskResultObligation::Recoverable => None,
+                TaskResultObligation::Recoverable => (None, None),
                 TaskResultObligation::AlreadyAdmitted { .. }
-                | TaskResultObligation::InFlight { .. } => Some("canonical_admission_in_flight"),
-                TaskResultObligation::ClaimedByOtherWaiter { .. } => {
-                    Some("claimed_by_other_waiter")
+                | TaskResultObligation::InFlight { .. } => {
+                    (Some("canonical_admission_in_flight"), None)
                 }
-                TaskResultObligation::InvalidOrStale => Some("invalid_or_stale_obligation"),
+                TaskResultObligation::ClaimedByOtherWaiter {
+                    wait_condition_id, ..
+                } => (Some("claimed_by_other_waiter"), Some(wait_condition_id)),
+                TaskResultObligation::InvalidOrStale => (Some("invalid_or_stale_obligation"), None),
                 TaskResultObligation::Settled { .. } | TaskResultObligation::Paused => continue,
             };
             if deferred_reason == Some("invalid_or_stale_obligation")
@@ -797,7 +817,14 @@ impl RuntimeHandle {
                 continue;
             }
             if let Some(reason) = deferred_reason {
-                self.defer_task_result_probe(record, consuming_owner, reason, now, result_revision);
+                self.defer_task_result_probe(
+                    record,
+                    consuming_owner,
+                    blocking_wait.as_deref(),
+                    reason,
+                    now,
+                    result_revision,
+                );
                 continue;
             }
             // A lifecycle-owned settlement whose result message already exists
@@ -910,7 +937,7 @@ impl RuntimeHandle {
                     if self.converge_task_result(record, now).await? {
                         continue;
                     }
-                    self.defer_task_result_probe(record, consuming_owner, "dropped_reply_evidence_unavailable", now, result_revision);
+                    self.defer_task_result_probe(record, consuming_owner, None, "dropped_reply_evidence_unavailable", now, result_revision);
                     continue;
                 }
                 if !recoverable {
@@ -924,7 +951,14 @@ impl RuntimeHandle {
                 }
             }
             if !eligible {
-                self.defer_task_result_probe(record, consuming_owner, reason, now, result_revision);
+                self.defer_task_result_probe(
+                    record,
+                    consuming_owner,
+                    None,
+                    reason,
+                    now,
+                    result_revision,
+                );
                 continue;
             }
             let owner_key = recovery_owner_key_for(&record.agent_id, consuming_owner);
@@ -934,6 +968,7 @@ impl RuntimeHandle {
                 self.defer_task_result_probe(
                     record,
                     consuming_owner,
+                    None,
                     "recovery_wake_outstanding",
                     now,
                     result_revision,

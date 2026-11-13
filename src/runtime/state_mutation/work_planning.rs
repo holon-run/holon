@@ -1048,13 +1048,9 @@ impl RuntimeHandle {
         Box::pin(async move {
             let mut mutation = self.begin_mutation().await?;
             if !mutation.accepts_ordinary_scheduler_preparation()
-                || mutation
-                    .queue
-                    .shared_messages()
-                    .any(|message| !waiting.ids.contains(&message.id))
+                || waiting.has_eligible_input(&mutation)
                 || mutation.state.current_run_id.is_some()
-                || waiting.token.is_some()
-                    && waiting.token != Some(mutation.capture_published_root()?.token)
+                || !waiting.is_current(&mutation)?
             {
                 return Ok(None);
             }

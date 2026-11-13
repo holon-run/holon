@@ -640,7 +640,7 @@ impl RuntimeMutation {
             &runtime.inner.input_evidence_budget,
             &read.tasks.scope,
         )?;
-        let recoverable = runtime.with_idle_read(Some(&read.state), &material, |idle| {
+        let recoverable = runtime.observe_idle_read(&read.state, &material, |idle| {
             let mut recoverable = BTreeSet::new();
             idle.validate_task_observation(read.tasks.revision)?;
             idle.prepare_result_sources(read.due()

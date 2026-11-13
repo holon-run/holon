@@ -3,6 +3,7 @@ use crate::provider::StubProvider;
 use crate::runtime::tests::support::{context_config, controlled_clock, isolate_test_user_home};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+use tracing::Instrument;
 use tracing_subscriber::prelude::*;
 
 #[derive(Default)]
@@ -10,7 +11,7 @@ struct WriterEvent {
     held_us: u64,
     queue_ms: u64,
     operation: String,
-    origin_file: String,
+    recovery: bool,
     committed: bool,
 }
 impl tracing::field::Visit for WriterEvent {
@@ -23,7 +24,6 @@ impl tracing::field::Visit for WriterEvent {
         match field.name() {
             "message" => self.committed = value == "runtime db write committed",
             "operation" => value.clone_into(&mut self.operation),
-            "origin_file" => value.clone_into(&mut self.origin_file),
             _ => {}
         }
     }
@@ -41,8 +41,15 @@ impl tracing::field::Visit for WriterEvent {
 
 #[derive(Clone, Default)]
 struct WriterTrace(Arc<Mutex<Vec<WriterEvent>>>);
-impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WriterTrace {
-    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+impl<S> tracing_subscriber::Layer<S> for WriterTrace
+where
+    S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        context: tracing_subscriber::layer::Context<'_, S>,
+    ) {
         if event.metadata().target() != "holon::runtime_db::connection"
             || event
                 .metadata()
@@ -55,6 +62,9 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for WriterTrace {
         let mut fields = WriterEvent::default();
         event.record(&mut fields);
         if fields.committed {
+            fields.recovery = context
+                .event_scope(event)
+                .is_some_and(|mut scope| scope.any(|span| span.name() == "fixture_recovery_scan"));
             self.0.lock().unwrap().push(fields);
         }
     }
@@ -287,6 +297,7 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
         clock.advance(Duration::from_secs(60));
         let mut queue_waits = Vec::new();
         let mut steady_writer_us = Vec::new();
+        let mut saw_convergence_write = false;
         for trial in 0..TRIALS {
             writer.0.lock().unwrap().clear();
             let before = defer_totals();
@@ -297,6 +308,7 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
                     let admitted = runtime.emit_due_task_result_recovery().await?;
                     Ok::<_, anyhow::Error>((admitted, started.elapsed().as_micros()))
                 }
+                .instrument(tracing::info_span!("fixture_recovery_scan"))
             });
             let (provider_us, delivery_us) = deliver_prompt(&foreground).await?;
             let (admitted, scan_us) = scan.await??;
@@ -318,7 +330,9 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
             let writes = std::mem::take(&mut *writer.0.lock().unwrap());
             let prompt_queue_ms = writes
                 .iter()
-                .find(|write| write.operation == "runtime_db.prepared_input.queue_admit")
+                .find(|write| {
+                    !write.recovery && write.operation == "runtime_db.prepared_input.queue_admit"
+                })
                 .with_context(|| {
                     format!(
                         "fixture prompt writer trace missing among {:?}",
@@ -332,16 +346,13 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
             queue_waits.push(prompt_queue_ms);
             let recovery_writer_us: u64 = writes
                 .iter()
-                .filter(|write| {
-                    write.operation.contains("task_result.")
-                        || write.origin_file.ends_with("task_preparation.rs")
-                        || write.origin_file.ends_with("task_result_recovery/read.rs")
-                        || write
-                            .origin_file
-                            .ends_with("task_result_settlement/obligation.rs")
-                })
+                .filter(|write| write.recovery)
                 .map(|write| write.held_us)
                 .sum();
+            saw_convergence_write |= writes.iter().any(|write| {
+                write.recovery
+                    && write.operation == "runtime_db.prepared_input.task_result.converge"
+            });
             let defer_writer_us: u64 = writes
                 .iter()
                 .filter(|write| write.operation == "runtime_db.prepared_input.task_result.defer")
@@ -353,6 +364,7 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
                     RESULT_RECHECK_LIMIT
                 );
                 assert!(defer_writer_us > 0);
+                assert!(recovery_writer_us >= defer_writer_us);
             } else {
                 assert_eq!(stages["db.task_result.defer.result"]["rows"], 0);
                 assert_eq!(defer_writer_us, 0);
@@ -406,6 +418,10 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
             clock.advance(Duration::from_secs(RESULT_RECHECK_SECONDS as u64 + 1));
         }
         if !baseline {
+            assert!(
+                saw_convergence_write,
+                "fixture did not attribute the recovery convergence write"
+            );
             queue_waits.sort_unstable();
             let p95 = queue_waits[(queue_waits.len() * 95).div_ceil(100) - 1];
             assert!(

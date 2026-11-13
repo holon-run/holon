@@ -529,6 +529,13 @@ async fn original_defer_records_resident_publication() -> anyhow::Result<()> {
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
 async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() {
+    for fault in [None, Some(TransitionFaultPoint::BeforeCacheUpdate)] {
+        assert_cross_owner_wait_cancellation_rechecks_result(fault).await;
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn assert_cross_owner_wait_cancellation_rechecks_result(fault: Option<TransitionFaultPoint>) {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
     let record = pending_command_result(
@@ -537,33 +544,60 @@ async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() 
         harness.now() - chrono::Duration::seconds(2000),
     )
     .await;
-    let waiter = WorkItemRecord::new("default", "claim task result", WorkItemState::Open);
-    runtime.storage().append_work_item(&waiter).unwrap();
-    runtime
-        .storage()
-        .append_wait_condition(&WaitConditionRecord {
-            id: "other-owner-wait".into(),
-            agent_id: "default".into(),
-            work_item_id: Some(waiter.id),
-            status: WaitConditionStatus::Active,
-            kind: WaitConditionKind::Task,
-            source: None,
-            subject_ref: Some(record.task_id.clone()),
-            waiting_for: "task result".into(),
-            wake_sources: vec![WakeSource::TaskResult {
-                task_id: record.task_id.clone(),
-            }],
-            continuation: None,
-            created_at: harness.now(),
-            updated_at: harness.now(),
-            expires_at: None,
-            resolved_at: None,
-            cancelled_at: None,
-            turn_id: None,
-            trigger_message_id: None,
-            triggered_at: None,
-        })
+    use crate::runtime_db::transitions::{WaitConditionExpectation, WaitTransitionCommand};
+
+    let waiter = runtime
+        .create_work_item("claim task result".into(), None, None, Vec::new())
+        .await
         .unwrap();
+    let wait = WaitConditionRecord {
+        id: "other-owner-wait".into(),
+        agent_id: "default".into(),
+        work_item_id: Some(waiter.id),
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::Task,
+        source: None,
+        subject_ref: Some(record.task_id.clone()),
+        waiting_for: "task result".into(),
+        wake_sources: vec![WakeSource::TaskResult {
+            task_id: record.task_id.clone(),
+        }],
+        continuation: None,
+        created_at: harness.now(),
+        updated_at: harness.now(),
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
+    };
+    let mut command = WaitTransitionCommand {
+        agent_id: wait.agent_id.clone(),
+        work_items: Vec::new(),
+        expected_wait_conditions: Vec::new(),
+        wait_conditions: vec![wait.clone()],
+        timer_wake: None,
+        task_result_admission: None,
+        agent_state: None,
+        audit_events: Vec::new(),
+        index_changes: Vec::new(),
+        notify_scheduler: true,
+        fault: None,
+    };
+    let commit = runtime
+        .begin_mutation()
+        .await
+        .unwrap()
+        .commit_wait_transition(
+            crate::ids::audit_event_id(),
+            command.clone(),
+            Default::default(),
+            None,
+        )
+        .await
+        .unwrap();
+    runtime.apply_transition_commit(commit).await;
 
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     let deferred = runtime
@@ -586,6 +620,54 @@ async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() 
     )
     .unwrap()
     .is_none());
+    let expected = WaitConditionExpectation {
+        id: wait.id.clone(),
+        agent_id: wait.agent_id.clone(),
+        status: wait.status.clone(),
+        updated_at: wait.updated_at,
+    };
+    let mut cancelled = wait;
+    cancelled.status = WaitConditionStatus::Cancelled;
+    cancelled.cancelled_at = Some(harness.now());
+    command.expected_wait_conditions.push(expected);
+    command.wait_conditions = vec![cancelled];
+    command.fault = fault;
+    let commit = runtime
+        .begin_mutation()
+        .await
+        .unwrap()
+        .commit_wait_transition(
+            crate::ids::audit_event_id(),
+            command,
+            Default::default(),
+            None,
+        )
+        .await;
+    if fault.is_some() {
+        assert!(commit
+            .err()
+            .expect("publication fault")
+            .to_string()
+            .contains("publication requires reconciliation"));
+        assert!(runtime
+            .inner
+            .task_result_probes
+            .lock()
+            .unwrap()
+            .pending
+            .contains_key(&record.result_identity));
+        runtime.reconcile_posture_observation().await.unwrap();
+    } else {
+        runtime.apply_transition_commit(commit.unwrap()).await;
+    }
+    assert!(!runtime
+        .inner
+        .task_result_probes
+        .lock()
+        .unwrap()
+        .pending
+        .contains_key(&record.result_identity));
+    assert!(runtime.emit_due_task_result_recovery().await.unwrap());
 }
 
 #[cfg(holon_lib_test_shard = "a")]
