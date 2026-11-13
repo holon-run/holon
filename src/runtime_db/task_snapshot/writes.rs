@@ -73,6 +73,176 @@ pub(crate) struct CommittedTaskFacts {
     pub _input_roots: BTreeSet<InputEvidenceKey>,
     pub _work_roots: BTreeSet<String>,
 }
+/// The existing published selection remains complete when only one unsettled
+/// Result's deferral fields change. The exact SQL body still supplies the ACK.
+pub(in crate::runtime_db) struct PreparedTaskDefer {
+    coverage: TaskCoverage,
+    key: TaskKey,
+}
+
+impl PreparedTaskDefer {
+    pub(in crate::runtime_db) fn prepare(
+        tx: &Transaction<'_>,
+        proof: &TaskWriteProof,
+        keys: &BTreeSet<TaskKey>,
+        base: &ResidentTaskDomain,
+        request: &TaskDomainLoadRequest,
+        material: &mut read_preparation::TaskReadMaterial<'_>,
+    ) -> Result<Option<Self>> {
+        if proof.original_recovery
+            || base.scope() != &proof.scope
+            || base.coverage().revision != proof.base_revision
+            || request.query != Default::default()
+            || request.recovery_at.is_some()
+            || !request.capture.recovery_source_ids.is_empty()
+        {
+            return Ok(None);
+        }
+        // The selected Result also carries its original Task as an observation.
+        let mut results = keys
+            .iter()
+            .filter(|key| key.family == TaskFamily::ResultSettlement);
+        let Some(key) = results.next() else {
+            return Ok(None);
+        };
+        if results.next().is_some() {
+            return Ok(None);
+        }
+        let Some(before) = proof.before.get(key).and_then(Option::as_ref) else {
+            return Ok(None);
+        };
+        let CanonicalTaskFact::ResultSettlement(result) = &before.fact else {
+            return Ok(None);
+        };
+        let published = base.coverage();
+        if result.state
+            == crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled
+            || result.recovery_paused_at.is_some()
+            || !published.active_complete
+            || !published.unsettled_complete
+            || !published.unsettled_result_ids.contains(&key.id)
+            || published.terminal.limit != request.capture.terminal_limit
+            || published.required_keys != request.capture.required_keys
+            || published.query.birth_after.is_some()
+            || !published.query.reply_task_ids.is_empty()
+            || !published.query.parent_turn_tasks.is_empty()
+            || published.recovery_at.is_some()
+        {
+            return Ok(None);
+        }
+        let Some(coverage) = material.read_current_metadata(tx)? else {
+            return Ok(None);
+        };
+        if &coverage != published {
+            return Ok(None);
+        }
+        let seed = binding(tx, &proof.scope)?;
+        let dependency = result_relation::observe_result_dependency_tx(
+            tx,
+            &proof.scope,
+            seed.as_deref(),
+            before,
+            request,
+            material,
+        )?;
+        let metadata = loader::result_metadata(tx, &proof.scope, result, request, 0, material)?;
+        if !matches!(
+            dependency.relation,
+            crate::runtime::resident_task::TaskResultDependencyRelation::QualifiedCurrent { .. }
+        ) {
+            return Ok(None);
+        }
+        if coverage.result_dependencies.get(&key.id) != Some(&dependency)
+            || coverage.result_metadata.get(&key.id) != Some(&metadata)
+        {
+            return Ok(None);
+        }
+        // A previously absent deadline and two decimal revision increases are
+        // the only possible growth. The read already admitted the base JSON.
+        material.charge_ids(128, 0)?;
+        Ok(Some(Self {
+            coverage,
+            key: key.clone(),
+        }))
+    }
+
+    pub(in crate::runtime_db) fn finish(
+        mut self,
+        tx: &Transaction<'_>,
+        proof: &TaskWriteProof,
+        actual: &BTreeSet<TaskKey>,
+    ) -> Result<Option<CommittedTaskDelta>> {
+        ensure!(
+            actual.iter().all(|key| key == &self.key),
+            "Defer ACK escaped its original Result"
+        );
+        if actual.is_empty() {
+            return Ok(None);
+        }
+        let before = proof.before[&self.key]
+            .as_ref()
+            .context("Defer omitted its original Result")?;
+        let after = stored_on(tx, &proof.scope.agent_id, &self.key)?
+            .context("Defer actual Result is missing")?;
+        if before == &after {
+            return Ok(None);
+        }
+        let (
+            CanonicalTaskFact::ResultSettlement(before),
+            CanonicalTaskFact::ResultSettlement(result),
+        ) = (&before.fact, &after.fact)
+        else {
+            anyhow::bail!("Defer ACK has another Task family");
+        };
+        let mut expected = before.clone();
+        expected.deferred_reason.clone_from(&result.deferred_reason);
+        expected.deferred_at = result.deferred_at;
+        expected.next_recheck_at = result.next_recheck_at;
+        expected.updated_at = result.updated_at;
+        ensure!(
+            &expected == result,
+            "Defer changed fields outside its original operation"
+        );
+        let revision = proof
+            .base_revision
+            .checked_add(1)
+            .context("Task revision overflow")?;
+        let fact = after.qualified(&proof.scope, revision)?;
+        upsert_alias(
+            tx,
+            &proof.scope,
+            &self.key,
+            &Alias {
+                revision,
+                availability: TaskAvailability::Present,
+                digest: Some(fact.locator.content_digest.clone()),
+                projection_digest: Some(fact.locator.projection_digest.clone()),
+            },
+        )?;
+        self.coverage.revision = revision;
+        self.coverage
+            .result_metadata
+            .get_mut(&self.key.id)
+            .context("Defer coverage omitted Result metadata")?
+            .next_recheck_at = result.next_recheck_at;
+        self.coverage
+            .result_dependencies
+            .get_mut(&self.key.id)
+            .context("Defer coverage omitted Result dependency")?
+            .result = fact.locator.clone();
+        persist_coverage(tx, &proof.scope, &self.coverage)?;
+        Ok(Some(CommittedTaskDelta {
+            scope: proof.scope.clone(),
+            base_revision: proof.base_revision,
+            revision,
+            records: vec![fact],
+            stop_records: Vec::new(),
+            removals: BTreeMap::new(),
+            coverage: self.coverage,
+        }))
+    }
+}
+
 pub(crate) fn prepare_task_write_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,

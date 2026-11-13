@@ -127,6 +127,133 @@ fn register(host: &RuntimeHost, id: &str, parent: &str) -> Result<AgentIdentityR
 }
 
 #[tokio::test]
+async fn fleet_list_isolates_pending_members_without_database_admission() -> Result<()> {
+    let (_home, host) = host()?;
+    let pending = register(&host, "a-pending", "isolation-parent")?;
+    register(&host, "z-healthy", "isolation-parent")?;
+    host.refresh_agent_list()?;
+    let mut reservations = host
+        .reserve_agent_mutations(&[pending.agent_id.clone()])
+        .await?;
+    reservations[0].begin(ids::audit_event_id())?;
+
+    let db = host.runtime_db();
+    let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+    let reads = db.reader_pool_stats_for_tests().checkout_attempts;
+    let preparations = db.preparation_pool_stats_for_tests().checkout_attempts;
+    let writes = writer.write_channel_admissions_for_tests()?;
+    let entries = tokio::time::timeout(
+        Duration::from_millis(250),
+        host.list_agent_entries_for_parent(Some("isolation-parent")),
+    )
+    .await??;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity.agent_id, "z-healthy");
+    let bytes = entries.into_json_bytes()?;
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&bytes)?[0]["identity"]["agent_id"],
+        "z-healthy"
+    );
+    drop(bytes);
+    assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
+    assert_eq!(
+        db.preparation_pool_stats_for_tests().checkout_attempts,
+        preparations
+    );
+    assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+    assert!(host.inner.runtimes.read().await.agents.is_empty());
+
+    reservations[0].definitely_not_committed()?;
+    drop(reservations);
+    let entries = host
+        .list_agent_entries_for_parent(Some("isolation-parent"))
+        .await?;
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.identity.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a-pending", "z-healthy"]
+    );
+    drop(entries);
+    assert_eq!(host.inner.input_evidence_budget.report()?.observed_bytes, 0);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_list_isolates_unlisted_and_changed_identity_publications() -> Result<()> {
+    let (_home, host) = host()?;
+    let unavailable = register(&host, "a-unavailable", "isolation-parent")?;
+    register(&host, "z-healthy", "isolation-parent")?;
+    host.refresh_agent_list()?;
+    // The canonical identity changes before its replacement projection is ready.
+    let mut changed = unavailable.clone();
+    changed.revision += 1;
+    host.inner.registry.append_agent_identity(&changed)?;
+    let entries = host.list_agent_entries().await?;
+    assert!(entries
+        .iter()
+        .any(|entry| entry.identity.agent_id == "z-healthy"));
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.identity.agent_id == changed.agent_id));
+    drop(entries);
+
+    host.inner
+        .mutation_owners
+        .forget_agent_list(&changed.agent_id, changed.incarnation);
+    let entries = host
+        .list_agent_entries_for_parent(Some("isolation-parent"))
+        .await?;
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].identity.agent_id, "z-healthy");
+    drop(entries);
+    let healthy = host.agent_identity_record("z-healthy")?.unwrap();
+    host.inner
+        .mutation_owners
+        .forget_agent_list(&healthy.agent_id, healthy.incarnation);
+    let empty = host
+        .list_agent_entries_for_parent(Some("isolation-parent"))
+        .await?;
+    assert_eq!(empty.into_json_bytes()?.as_ref(), b"[]");
+    assert!(host
+        .list_agent_entries_for_parent(Some("other-parent"))
+        .await?
+        .is_empty());
+    assert_eq!(host.inner.input_evidence_budget.report()?.observed_bytes, 0);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_list_keeps_request_cancellation_as_a_failure() -> Result<()> {
+    let (_home, host) = host()?;
+    let identity = host.ensure_default_agent_identity()?;
+    host.inner
+        .mutation_owners
+        .forget_agent_list(&identity.agent_id, identity.incarnation);
+    let scope = crate::runtime_db::RuntimeDbReadScope::new(
+        std::time::Instant::now() + Duration::from_secs(5),
+    );
+    scope.cancel();
+    let db = host.runtime_db().with_read_scope(scope);
+    let error = host
+        .list_agent_entries_for_parent_in(None, &db)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error
+            .downcast_ref::<crate::runtime_db::RuntimeDbRetryableError>()
+            .unwrap()
+            .operation(),
+        "scoped reader"
+    );
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn full_fleet_summaries_filter_before_copy_and_keep_cold_agents_unloaded() -> Result<()> {
     let (_home, host) = host()?;
     for id in ["z-cold-summary", "a-cold-summary"] {
@@ -455,6 +582,16 @@ async fn cold_roster_repairs_a_failed_publication_without_a_new_mutation() -> Re
         .agent_list_projection(&latest, None, db)
         .unwrap_err()
         .is::<crate::runtime_db::RuntimeDbRetryableError>());
+
+    // This repair obligation belongs to one Agent, not to the fleet response.
+    let entries = host.list_agent_entries().await?;
+    assert!(!entries
+        .iter()
+        .any(|entry| entry.identity.agent_id == latest.agent_id));
+    assert!(entries
+        .iter()
+        .any(|entry| entry.identity.agent_id == host.config().default_agent_id));
+    drop(entries);
 
     db.transaction(|tx| {
         tx.execute_batch("ALTER TABLE unavailable_list_work RENAME TO work_items")?;

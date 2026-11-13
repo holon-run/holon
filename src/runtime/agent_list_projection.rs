@@ -33,6 +33,25 @@ use crate::{
 
 pub(super) const PUBLICATION_OPERATION: &str = "observer publication";
 
+/// A single member's unavailable observation never invalidates fleet discovery.
+#[derive(Debug, Clone, Copy, thiserror::Error)]
+pub(crate) enum AgentListUnavailable {
+    #[error("identity changed")]
+    IdentityChanged,
+    #[error("publication missing")]
+    Missing,
+    #[error("reconciliation pending")]
+    ReconciliationPending,
+    #[error("identity revision changed")]
+    RevisionChanged,
+    #[error("owner publication changed")]
+    OwnerChanged,
+    #[error("publication repair pending")]
+    RepairPending,
+    #[error("publication unlisted")]
+    Unlisted,
+}
+
 pub(crate) fn is_listed(identity: &AgentIdentityRecord) -> bool {
     identity.status == AgentRegistryStatus::Active && identity.visibility == AgentVisibility::Public
 }

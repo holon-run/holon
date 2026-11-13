@@ -132,6 +132,7 @@ pub(super) struct TaskTransaction<'tx, 'connection, 'command> {
     material_total: (usize, usize),
     original_state_material: usize,
     child_phase: bool,
+    defer: Option<tasks::PreparedTaskDefer>,
 }
 impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
     pub(super) fn task_write_proof(&self) -> &tasks::TaskWriteProof {
@@ -420,7 +421,7 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
         value
             .effects
             .task_observation_keys
-            .extend(self.observations);
+            .append(&mut self.observations);
         let after = tasks::task_maintenance_material_tx(tx, self.proof.scope(), &self.allowed)?;
         let state_material = state_material_tx(tx, self.proof.scope())?;
         let additional_bytes = after
@@ -452,6 +453,20 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
                 .map(|key| key.id.clone())
                 .collect();
             self.proof = cleanup.into_task_write_proof(tx, &actual_result_ids)?;
+        }
+        if let Some(defer) = self.defer.take() {
+            anyhow::ensure!(
+                inserted.is_none() && actual == value.effects.task_write_keys,
+                "Defer finalization has unrelated effects"
+            );
+            if let Some(delta) = defer.finish(tx, &self.proof, &actual)? {
+                self.attach_delta(value, delta, ledger)?;
+            }
+            value.effects.task_material_budget_views.extend(self.guards);
+            return Ok(tasks::TaskMaintenanceMaterial {
+                bytes: self.material_total.0,
+                records: self.material_total.1,
+            });
         }
         let final_state = crate::runtime_db::context_inputs::ContextDurableRead::new(
             tx,
@@ -511,33 +526,43 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
                 )?,
             }
         };
+        self.attach_delta(value, facts.delta, ledger)?;
+        value.effects.task_material_budget_views.extend(self.guards);
+        Ok(tasks::TaskMaintenanceMaterial {
+            bytes: self.material_total.0,
+            records: self.material_total.1,
+        })
+    }
+
+    fn attach_delta(
+        &mut self,
+        value: &mut TransitionCommit,
+        delta: crate::runtime::resident_task::CommittedTaskDelta,
+        ledger: &InputEvidenceBudgetLedger,
+    ) -> Result<()> {
         // Delta owns the selected Arcs and a by-value coverage. These observations
         // outlive SQL and remain with the ACK until authoritative root installation.
         self.guards.push(ledger.register_task_view(
             self.proof.scope(),
             InputMemoryCategory::Candidate,
-            facts.delta.records.iter(),
+            delta.records.iter(),
         )?);
         self.guards.push(ledger.register_task_stop_view(
             self.proof.scope(),
             InputMemoryCategory::Candidate,
-            facts.delta.stop_records.iter(),
+            delta.stop_records.iter(),
         )?);
         self.guards.push(ledger.register_owned_bytes(
             self.proof.scope(),
             InputMemoryCategory::Candidate,
             OwnedBytesEstimate {
                 payload_bytes: 0,
-                metadata_estimate_bytes: serialized_bytes(&facts.delta.coverage)?,
+                metadata_estimate_bytes: serialized_bytes(&delta.coverage)?,
             },
         )?);
-        value.effects.task_delta = Some(facts.delta);
+        value.effects.task_delta = Some(delta);
         value.effects.task_delta_requires_prepared_domain = true;
-        value.effects.task_material_budget_views.extend(self.guards);
-        Ok(tasks::TaskMaintenanceMaterial {
-            bytes: self.material_total.0,
-            records: self.material_total.1,
-        })
+        Ok(())
     }
 }
 
@@ -612,6 +637,7 @@ pub(super) fn prepare_supervised_parent_transaction_tx<'tx, 'connection, 'comman
         material_total,
         original_state_material: state_material,
         child_phase: false,
+        defer: None,
     }))
 }
 
@@ -1125,6 +1151,30 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
         allowed.insert(cap.result_key());
     }
     let final_request = request.clone();
+    let defer = if let Some(base) = &prepared.defer_task_base {
+        let mut phase =
+            tasks::read_preparation::TaskReadMaterial::new(scope, &final_request, Some(ledger))
+                .with_memory_budget(material.memory_budget.as_deref_mut())
+                .with_admitted_material(tasks::TaskMaintenanceMaterial {
+                    bytes: material.bytes,
+                    records: material.records,
+                })?;
+        let defer = tasks::PreparedTaskDefer::prepare(
+            tx,
+            &proof,
+            &allowed,
+            base,
+            &final_request,
+            &mut phase,
+        )?;
+        let usage = phase.material_estimate();
+        material.bytes = usage.bytes;
+        material.records = usage.records;
+        material.guards.extend(phase.into_guards());
+        defer
+    } else {
+        None
+    };
     let memory = material.memory_budget.take();
     if child_phase {
         let mut phase =
@@ -1151,7 +1201,7 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
         material.bytes = usage.bytes;
         material.records = usage.records;
         material.guards.extend(phase.into_guards());
-    } else {
+    } else if defer.is_none() {
         tasks::preflight_task_write_snapshot_with_memory_budget_tx(
             tx,
             &proof,
@@ -1173,6 +1223,7 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
         material_total: (material.bytes, material.records),
         original_state_material,
         child_phase,
+        defer,
         guards: material.guards,
     }))
 }

@@ -404,12 +404,14 @@ impl MutationOwnerRegistry {
         loaded_epoch: Option<u64>,
         db: &crate::runtime_db::RuntimeDb,
     ) -> anyhow::Result<Arc<AgentListProjection>> {
-        let unavailable = || {
-            crate::runtime_db::RuntimeDbRetryableError::new(
+        use super::agent_list_projection::AgentListUnavailable;
+
+        let unavailable = |reason: AgentListUnavailable| {
+            anyhow::Error::new(reason).context(crate::runtime_db::RuntimeDbRetryableError::new(
                 PUBLICATION_OPERATION,
                 db.path(),
                 "Agent list publication is temporarily unavailable",
-            )
+            ))
         };
         let slot = self
             .slots
@@ -417,19 +419,25 @@ impl MutationOwnerRegistry {
             .expect("mutation registry poisoned")
             .get(&(identity.agent_id.clone(), identity.incarnation))
             .cloned()
-            .ok_or_else(unavailable)?;
+            .ok_or_else(|| unavailable(AgentListUnavailable::Missing))?;
         let publication = slot.publication.lock().expect("publication poisoned");
+        if publication.recovery.is_some() {
+            return Err(unavailable(AgentListUnavailable::ReconciliationPending));
+        }
         match &publication.roster {
-            PreparedAgentList::Ready(entry)
-                if publication.recovery.is_none()
-                    && entry.identity_revision == identity.revision
-                    && loaded_epoch.is_none_or(|epoch| {
-                        epoch == publication.epoch && slot.root.load().is_some()
-                    }) =>
-            {
+            PreparedAgentList::Ready(entry) => {
+                if entry.identity_revision != identity.revision {
+                    return Err(unavailable(AgentListUnavailable::RevisionChanged));
+                }
+                if loaded_epoch
+                    .is_some_and(|epoch| epoch != publication.epoch || slot.root.load().is_none())
+                {
+                    return Err(unavailable(AgentListUnavailable::OwnerChanged));
+                }
                 Ok(entry.clone())
             }
-            _ => Err(unavailable().into()),
+            PreparedAgentList::Repair(_) => Err(unavailable(AgentListUnavailable::RepairPending)),
+            PreparedAgentList::Unlisted => Err(unavailable(AgentListUnavailable::Unlisted)),
         }
     }
 

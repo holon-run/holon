@@ -48,7 +48,7 @@ normal tool loop still uses the existing provider result format. An unowned
 aborts the original queued dispatch under the existing unknown-side-effect
 policy. Legacy Turn markers remain readable for commands and Turns using them.
 
-Loaded State, summary, child summary, runtime activity and roster observations
+Loaded State, summary, child summary, runtime activity and operator tree observations
 capture a Ready immutable root without acquiring its mutation reservation or reconciling an
 unfinished operation. Pending responsibility returns a retryable unavailable
 result. An already captured complete root remains usable for its in-flight
@@ -81,8 +81,14 @@ projection per Active/Public identity. Host initialization and startup recovery
 prepare cold members without activating them. The original mutation publication
 updates the list projection for both loaded and cold Agents. The projection
 outlives unloading and retains only list fields and their model inputs, scoped
-to the identity incarnation and revision. A pending or missing publication
-returns the existing retryable observer error. The list does not reserve an
+to the identity incarnation and revision. A pending, missing or repairing
+publication excludes only that member from the legacy list response. An identity
+or owner mismatch also excludes that member; it never supplies an invented
+status or a projection from another identity. Structured debug logs identify the
+skipped Agent, incarnation and reason. This endpoint is a best-effort status list,
+not membership/removal authority: clients needing complete discovery use the
+independent `/api/agents/snapshot` contract. Database protection, read-scope and
+resource admission failures still fail the request. The list does not reserve an
 execution owner, read SQLite, or prepare missing domains on demand.
 If list preparation fails after a commit, the Host retains a repair obligation.
 One background worker retries with backoff using the ordinary query-only reader
@@ -5007,6 +5013,13 @@ Work preparation still replaces its coverage; it is not a global union cache.
 Reuse requires both named relation keys, including prepared empty relations;
 it never substitutes one waiter's grant for another. Each waiter still executes
 the canonical source SQL predicate, Result qualification and Turn preparation.
+For a standalone Result `Defer`, the original writer can reuse a complete
+published Task selection at the matching durable revision. It validates the
+target's qualification, Task relation and Result metadata in the original
+transaction. Only the actual Result readback supplies the new alias, recheck
+deadline, dependency locator and resident delta. The durable coverage and
+receipt commit together. If coverage or the requested selectors differ, the
+writer uses the existing snapshot path.
 Recovery candidate selection and filtering share one transaction-bound
 `RecoverySnapshotRead`: the complete Attempt ancestry is decoded and validated
 once for that read-only selection cut, not once per subquery. Filtering still

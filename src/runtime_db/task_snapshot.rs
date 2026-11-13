@@ -131,7 +131,6 @@ pub(crate) use startup_metadata::{
     prepare_exclusive_startup_task_metadata_tx, StartupTaskMetadataProof,
 };
 pub(crate) use task_stop_readback::prepare_task_sql_readback_tx;
-pub(in crate::runtime_db) use writes::register_original_task_writes_using_material_tx;
 #[cfg(test)]
 pub(crate) use writes::{
     preflight_task_write_snapshot_tx, register_task_writes_tx, CommittedTaskFacts,
@@ -142,6 +141,9 @@ pub(crate) use writes::{
     prepare_task_write_tx, register_task_writes_with_budget_tx,
     register_task_writes_with_memory_budget_tx, register_task_writes_with_stop_observation_tx,
     register_task_writes_with_stop_result_observation_tx, TaskWriteProof,
+};
+pub(in crate::runtime_db) use writes::{
+    register_original_task_writes_using_material_tx, PreparedTaskDefer,
 };
 mod stop_progress;
 pub(crate) use stop_progress::invalidate_task_scope_for_stop_progress_tx;
