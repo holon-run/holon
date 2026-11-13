@@ -88,7 +88,11 @@ pub async fn ready_observer_get(request: reqwest::RequestBuilder) -> Result<reqw
         anyhow::ensure!(
             matches!(
                 error["code"].as_str(),
-                Some("runtime_db_busy" | "projection_stale_unhandled")
+                Some(
+                    "runtime_db_busy"
+                        | "projection_stale_unhandled"
+                        | "agent_reconciliation_pending"
+                )
             ) && error["retryable"] == true
                 && Instant::now() < deadline,
             "observer GET {url} failed: {error}"
