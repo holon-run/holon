@@ -116,6 +116,8 @@ pub(crate) mod observer_sync;
 mod projection_gate;
 mod skills;
 mod state;
+#[cfg(all(test, holon_lib_test_shard = "c"))]
+mod state_workspace_tests;
 mod tasks;
 mod templates;
 mod types;

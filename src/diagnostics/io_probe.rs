@@ -346,7 +346,14 @@ impl Drop for IoProbe {
     }
 }
 
-#[cfg(all(test, any(holon_lib_test_shard = "a", holon_lib_test_shard = "d")))]
+#[cfg(all(
+    test,
+    any(
+        holon_lib_test_shard = "a",
+        holon_lib_test_shard = "c",
+        holon_lib_test_shard = "d"
+    )
+))]
 pub(crate) fn run_isolated_test(module: &str, test_name: &str) -> bool {
     const CHILD_TEST: &str = "HOLON_IO_PROBE_CHILD_TEST";
     let (_, module) = module

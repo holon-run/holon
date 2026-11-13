@@ -868,12 +868,7 @@ impl WorkspaceEntryRepository<'_> {
         self.db.write_workspace_context(|tx, ready| {
             let changed = upsert_workspace_entry_tx(tx, record)?;
             insert_runtime_index_changes_tx(tx, changes)?;
-            let change = (ready && changed).then(|| {
-                WorkspaceContextChange::Anchor(
-                    record.workspace_id.clone(),
-                    record.workspace_anchor.clone(),
-                )
-            });
+            let change = (ready && changed).then(|| WorkspaceContextChange::Entry(record.clone()));
             Ok(((), change))
         })
     }
