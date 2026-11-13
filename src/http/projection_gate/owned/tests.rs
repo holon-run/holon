@@ -33,6 +33,83 @@ fn assert_deadline(result: ProjectionDelivery) {
     }
 }
 
+#[tokio::test]
+async fn state_requests_share_only_their_inflight_build() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_secs(60)));
+    let started = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let mut leader = Box::pin(gate.run_owned(key(), deadline(), Duration::from_secs(10), {
+        let started = Arc::clone(&started);
+        let release = Arc::clone(&release);
+        move |_| async move {
+            started.notify_one();
+            release.notified().await;
+            Ok(Bytes::from_static(b"shared"))
+        }
+    }));
+    enroll(leader.as_mut()).await;
+    started.notified().await;
+    let mut follower = Box::pin(gate.run_owned(
+        key(),
+        deadline(),
+        Duration::from_secs(10),
+        |_| async { panic!("in-flight State callers must share the build") },
+    ));
+    enroll(follower.as_mut()).await;
+    release.notify_one();
+    assert_eq!(leader.await.unwrap(), Bytes::from_static(b"shared"));
+    assert_eq!(follower.await.unwrap(), Bytes::from_static(b"shared"));
+    assert_eq!(
+        gate.run_owned(key(), deadline(), Duration::from_secs(10), |_| async {
+            Ok(Bytes::from_static(b"fresh"))
+        })
+        .await
+        .unwrap(),
+        Bytes::from_static(b"fresh")
+    );
+    {
+        let state = gate.state.lock().unwrap();
+        assert!(state.entries.is_empty());
+        assert!(state.stale.is_empty());
+    }
+    gate.close_and_drain().await;
+}
+
+#[tokio::test]
+async fn state_retryable_failure_never_reuses_completed_bytes() {
+    let gate = Arc::new(ProjectionGate::new(1, Duration::from_secs(60)));
+    gate.run_owned(key(), deadline(), Duration::from_secs(10), |_| async {
+        Ok(Bytes::from_static(b"old"))
+    })
+    .await
+    .unwrap();
+    let result = gate
+        .run_owned(key(), deadline(), Duration::from_secs(10), |_| async {
+            Err(ProjectionFailure {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                body: json!({"code": "agent_state_dependencies_unavailable", "retryable": true}),
+            })
+        })
+        .await;
+    match result {
+        Err(ProjectionGateError::Build(failure)) => {
+            assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
+            assert_eq!(
+                failure.error_code(),
+                Some("agent_state_dependencies_unavailable")
+            );
+            assert_eq!(failure.retryable(), Some(true));
+        }
+        other => panic!("State must surface the current typed failure, got {other:?}"),
+    }
+    {
+        let state = gate.state.lock().unwrap();
+        assert!(state.entries.is_empty());
+        assert!(state.stale.is_empty());
+    }
+    gate.close_and_drain().await;
+}
+
 #[tokio::test(start_paused = true)]
 async fn cancellation_commits_the_deadline_crossed_since_the_precheck() {
     let gate = ProjectionGate::new(1, Duration::from_millis(250));
@@ -317,13 +394,14 @@ async fn invalidated_worker_cannot_publish_over_a_replacement() {
     );
     release.notify_one();
     gate.drain_tasks().await;
+    assert!(gate.state.lock().unwrap().entries.is_empty());
     assert_eq!(
         gate.run_owned(key(), deadline(), Duration::from_secs(10), |_| async {
-            panic!("replacement must remain cached")
+            Ok(Bytes::from_static(b"fresh"))
         })
         .await
         .unwrap(),
-        Bytes::from_static(b"replacement")
+        Bytes::from_static(b"fresh")
     );
     gate.close_and_drain().await;
 }

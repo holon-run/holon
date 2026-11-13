@@ -158,3 +158,7 @@ harness = false
 [[bench]]
 name = "agent_state_workload"
 harness = false
+
+[[bench]]
+name = "state_http"
+harness = false

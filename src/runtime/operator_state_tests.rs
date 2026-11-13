@@ -3,6 +3,48 @@ use crate::runtime::tests::support::LifecycleHarness;
 use crate::types::WorkItemPlanStatus;
 
 #[tokio::test]
+async fn state_http_does_not_hide_an_open_commit_window_with_completed_bytes() -> Result<()> {
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.await_initial_resources().await;
+    let _run_loop = runtime.pause_run_loop_for_monitor_test().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let app = crate::http::router(crate::http::AppState::for_unix(host.clone()));
+    let uri = format!("/api/agents/{}/state", runtime.instance_agent_id());
+    let read = || {
+        let app = app.clone();
+        let uri = uri.clone();
+        async move {
+            let response = app
+                .oneshot(Request::builder().uri(uri).body(Body::empty())?)
+                .await?;
+            let status = response.status();
+            let body = to_bytes(response.into_body(), usize::MAX).await?;
+            Ok::<_, anyhow::Error>((status, serde_json::from_slice::<serde_json::Value>(&body)?))
+        }
+    };
+    assert_eq!(read().await?.0, StatusCode::OK);
+    let mut reservation = runtime.inner.mutation_owner.reserve().await?;
+    reservation.begin("state-http-open-commit-window".into())?;
+    let during = tokio::time::timeout(std::time::Duration::from_secs(1), read()).await;
+    reservation.definitely_not_committed()?;
+    drop(reservation);
+    let (status, body) = during??;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
+    assert_eq!(body["code"], "agent_reconciliation_pending");
+    assert_eq!(body["retryable"], true);
+    assert_eq!(read().await?.0, StatusCode::OK);
+    drop((_refresh, _run_loop));
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn loaded_state_first_read_and_commits_do_not_acquire_storage() -> Result<()> {
     async fn read(runtime: &RuntimeHandle) -> Result<crate::host::AgentStateReadProjection> {
         let db = runtime.runtime_db().clone();

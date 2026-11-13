@@ -383,7 +383,8 @@ impl<'a> LeaderGuard<'a> {
                     diagnostics::record_projection_gate_stale_expired_by(
                         (before - state.stale.len()) as u64,
                     );
-                    // The State route returns the typed failure on an unavailable cut.
+                    // State shares only in-flight results: each later request
+                    // captures a new cut or returns the typed unavailable failure.
                     if !matches!(self.key, ProjectionKey::AgentState(_)) {
                         state.stale.insert(
                             self.key.clone(),
@@ -392,14 +393,16 @@ impl<'a> LeaderGuard<'a> {
                                 built_at,
                             },
                         );
+                        state.entries.insert(
+                            self.key.clone(),
+                            Entry::Ready {
+                                bytes: bytes.clone(),
+                                expires_at: Instant::now() + self.gate.ttl,
+                            },
+                        );
+                    } else {
+                        state.entries.remove(&self.key);
                     }
-                    state.entries.insert(
-                        self.key.clone(),
-                        Entry::Ready {
-                            bytes: bytes.clone(),
-                            expires_at: Instant::now() + self.gate.ttl,
-                        },
-                    );
                     Ok(bytes)
                 }
                 Err(failure) => {
@@ -725,7 +728,7 @@ mod tests {
         let gate = ProjectionGate::new(4, Duration::from_millis(250));
 
         gate.run(
-            ProjectionKey::AgentState("removed-agent".into()),
+            ProjectionKey::AgentProjectionSnapshot("removed-agent".into(), "operator".into()),
             || async { Ok(Bytes::from_static(b"stale")) },
         )
         .await
@@ -740,7 +743,10 @@ mod tests {
         let state = gate.state.lock().unwrap();
         assert!(!state
             .entries
-            .contains_key(&ProjectionKey::AgentState("removed-agent".into())));
+            .contains_key(&ProjectionKey::AgentProjectionSnapshot(
+                "removed-agent".into(),
+                "operator".into()
+            )));
         assert!(state.entries.contains_key(&ProjectionKey::AgentsList(None)));
     }
 

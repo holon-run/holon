@@ -5453,7 +5453,17 @@ returns retryable unavailable; ordinary State reads never prepare, reconcile
 or publish. Initial loading and the original commit/recovery writers must
 publish these dependencies before their successful result becomes observable.
 Current and Preview retain their independent preparation contracts. Workspace
-enrichment and State response-byte caching are separate from this boundary.
+enrichment remains a separate publication boundary.
+
+State shares one bounded in-flight assembly per agent key, but retains neither
+fresh TTL response bytes nor stale fallback bytes after that assembly completes.
+Each later independent request captures the latest available qualified cuts;
+an unavailable dependency returns the existing typed retryable failure rather
+than an earlier successful response. This removes the response-cache freshness
+window, not client polling delay or publication latency, and does not promise a
+Host-wide atomic snapshot. Gate capacity, shared assembly budgets, independent
+caller deadlines, cancellation and invalidation fences remain unchanged.
+Other projection routes retain their existing TTL and stale policies.
 
 The loaded State dependency cut is:
 
