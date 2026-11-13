@@ -103,7 +103,7 @@ fn ensure_command(
 ) -> Result<PreparedInputTransition> {
     let observed =
         db.external_triggers()
-            .observe_default_for_writer(&scope(), &request(), budget)?;
+            .observe_default_for_writer(&scope(), &request(), budget, None)?;
     PreparedInputTransition::external_trigger(
         scope(),
         nonce.into(),
@@ -126,7 +126,7 @@ fn reset_command(
 ) -> Result<PreparedInputTransition> {
     let observed =
         db.external_triggers()
-            .observe_default_for_writer(&scope(), &request(), budget)?;
+            .observe_default_for_writer(&scope(), &request(), budget, None)?;
     PreparedInputTransition::external_trigger(
         scope(),
         nonce.into(),
@@ -581,7 +581,7 @@ fn trigger_observation_and_intent_above_legacy_hint_commit_one_exact_noop_receip
     let (_home, db, budget) = fixture(Some(original))?;
     let observed =
         db.external_triggers()
-            .observe_default_for_writer(&scope(), &request(), &budget)?;
+            .observe_default_for_writer(&scope(), &request(), &budget, None)?;
     let (observation_bytes, _) = observed.material(&budget)?;
     let command = PreparedExternalTriggerTransition::ensure(
         observed,
@@ -679,7 +679,7 @@ fn trigger_body_construction_outside_tls_keeps_real_observation_through_replay()
     let observed = {
         let _entry = phase.enter();
         db.external_triggers()
-            .observe_default_for_writer(&scope(), &request(), &budget)?
+            .observe_default_for_writer(&scope(), &request(), &budget, None)?
     };
     assert_eq!(observed.record(), Some(&trigger()));
     let before = phase.finish()?;
@@ -745,7 +745,7 @@ fn trigger_failed_observation_phase_cannot_refresh_at_commit_or_observe() -> Res
         let _entry = phase.enter();
         let error = db
             .external_triggers()
-            .observe_default_for_writer(&scope(), &request(), &budget)
+            .observe_default_for_writer(&scope(), &request(), &budget, None)
             .unwrap_err();
         assert!(
             format!("{error:#}").contains("resourceexhausted"),

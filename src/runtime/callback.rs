@@ -48,29 +48,54 @@ impl RuntimeHandle {
         if mutation.state.status == AgentStatus::Stopped {
             bail!("cannot ensure default external ingress for stopped agent");
         }
-        let agent_id = mutation.state.id.clone();
         let now = Utc::now();
-        let external_trigger_id = crate::ids::external_trigger_id();
-        let token = generate_callback_token();
+        let scope = mutation.input_evidence_scope();
         let request = mutation.scheduling_writer_request()?;
         let observed = self
             .inner
             .runtime_db
             .external_triggers()
             .observe_default_for_writer(
-                &mutation.input_evidence_scope(),
+                &scope,
                 &request,
                 &self.inner.input_evidence_budget,
+                Some(mutation.committed_state()),
             )?;
+        if let Some(descriptor) = observed.record() {
+            let root = mutation.capture_published_root()?;
+            if let Some(scheduling) = root.scheduling.as_ref() {
+                anyhow::ensure!(
+                    scheduling.scope() == &scope,
+                    "default Trigger publication scope differs"
+                );
+                if scheduling.coverage().active_triggers_complete
+                    && observed.current_revision() == Some(scheduling.coverage().revision)
+                    && scheduling.active_default_trigger()? == Some(descriptor)
+                    && descriptor.status == ExternalTriggerStatus::Active
+                    && descriptor.token.as_deref().is_some_and(|token| {
+                        !token.is_empty()
+                            && crate::callbacks::callback_token_hash_matches(
+                                token,
+                                &descriptor.token_hash,
+                            )
+                    })
+                {
+                    return observed.with_command_phase(|| {
+                        capability_from_record(&self.inner.callback_base_url, descriptor)
+                    });
+                }
+            }
+        }
+        let agent_id = mutation.state.id.clone();
         let command = PreparedExternalTriggerTransition::ensure(
             observed,
-            external_trigger_id,
-            token,
+            crate::ids::external_trigger_id(),
+            generate_callback_token(),
             now,
             None,
         )?;
         let prepared = PreparedInputTransition::external_trigger(
-            mutation.input_evidence_scope(),
+            scope,
             crate::ids::audit_event_id(),
             now,
             command,
@@ -309,6 +334,7 @@ impl RuntimeHandle {
                 &mutation.input_evidence_scope(),
                 &request,
                 &self.inner.input_evidence_budget,
+                Some(mutation.committed_state()),
             )?;
         let command = PreparedExternalTriggerTransition::reset(
             observed,
@@ -492,13 +518,28 @@ mod mutation_tests {
         let first = runtime
             .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
             .await?;
+        let db = runtime.runtime_db();
+        let writer_state = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        let root = runtime.inner.mutation_owner.capture()?.unwrap();
+        let tickets = writer_state.write_channel_admissions_for_tests()?;
         let noop = runtime
             .ensure_default_external_ingress(CallbackDeliveryMode::EnqueueMessage)
             .await?;
         assert_eq!(first, noop);
+        assert_eq!(writer_state.write_channel_admissions_for_tests()?, tickets);
+        assert_eq!(
+            runtime.inner.mutation_owner.capture()?.unwrap().token,
+            root.token
+        );
         let reset = runtime.reset_external_trigger().await?;
         assert_ne!(first.external_trigger_id, reset.external_trigger_id);
         assert_ne!(first.trigger_url, reset.trigger_url);
+        assert_eq!(
+            runtime
+                .ensure_default_external_ingress(CallbackDeliveryMode::WakeHint)
+                .await?,
+            reset
+        );
         assert_eq!(
             runtime
                 .inner
@@ -531,9 +572,53 @@ mod mutation_tests {
                 (SELECT COUNT(*) FROM scheduling_domain_records WHERE family='external_trigger')",
             [],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?)))?)
             })?;
-        assert_eq!(receipts, 4);
+        assert_eq!(receipts, 3);
         assert_eq!(starts, 0);
         assert_eq!(aliases, 2);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn existing_default_ingress_reads_while_the_writer_is_held() -> Result<()> {
+        let home = tempdir()?;
+        let workspace = tempdir()?;
+        let runtime = RuntimeHandle::new(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )?;
+        let first = runtime
+            .default_external_trigger(CallbackDeliveryMode::WakeHint)
+            .await?;
+        let db = runtime.runtime_db().clone();
+        let (held, entered) = std::sync::mpsc::channel();
+        let (release, wait_for_release) = std::sync::mpsc::channel();
+        let timeout = std::time::Duration::from_secs(10);
+        let writer = std::thread::spawn(move || {
+            db.transaction(|_| {
+                held.send(())?;
+                wait_for_release.recv_timeout(timeout)?;
+                Ok(())
+            })
+        });
+        entered.recv_timeout(timeout)?;
+        let existing = runtime
+            .default_external_trigger(CallbackDeliveryMode::WakeHint)
+            .await;
+        let released = release.send(());
+        writer.join().expect("writer thread panicked")?;
+        released?;
+        assert_eq!(existing?, first);
+
+        runtime.control(crate::types::ControlAction::Stop).await?;
+        assert!(runtime
+            .default_external_trigger(CallbackDeliveryMode::WakeHint)
+            .await
+            .is_err());
         Ok(())
     }
 }
