@@ -275,6 +275,13 @@
         "summary": "持续维护已授权客户簿、管道复核节奏和附来源的待批草稿；不发送外联，也不写入 CRM。"
       }
     },
+    "support-ops-steward": {
+      "category": "operations",
+      "zh-CN": {
+        "name": "支持运营管家",
+        "summary": "持续维护已授权支持队列的优先级、负责人、升级时限和未关闭项；默认不回复客户，不改工单系统。"
+      }
+    },
     "talent-ops-steward": {
       "category": "operations",
       "zh-CN": {
