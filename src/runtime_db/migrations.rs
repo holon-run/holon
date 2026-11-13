@@ -4420,6 +4420,14 @@ CREATE INDEX IF NOT EXISTS idx_input_evidence_recovery_transcript_turn
   ) WHERE family='transcript';
 "#,
     },
+    Migration {
+        version: 108,
+        name: "index_task_result_settlement_by_task",
+        sql: r#"
+CREATE INDEX IF NOT EXISTS idx_task_result_settlements_agent_task_identity
+  ON task_result_settlements(agent_id, task_id, result_identity);
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
