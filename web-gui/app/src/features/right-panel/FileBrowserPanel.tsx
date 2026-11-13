@@ -372,12 +372,16 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const [showRendered, setShowRendered] = useState(snapshot?.showRendered ?? true);
   const [viewMode, setViewMode] = useState<"files" | "preview">(snapshot?.viewMode ?? "files");
+  const [directoryVisible, setDirectoryVisible] = useState(snapshot?.directoryVisible ?? true);
+  const [wide, setWide] = useState(false);
+  const split = wide && directoryVisible && Boolean(selectedFile);
+  const previewVisible = Boolean(selectedFile) && (viewMode === "preview" || split);
   const planWorkItemId = selectedRevision?.workItemId;
   // Slim State has no plan descriptor; only the visible plan owns a detail read.
   useVisibleAgentResourceRefresh(
     agentId ?? "",
     `planFile:${planWorkItemId ?? ""}`,
-    viewMode === "preview" && Boolean(agentId && planWorkItemId),
+    previewVisible && Boolean(agentId && planWorkItemId),
     (id, options) => useRuntimeStore.getState().loadAgentWorkItemDetail(id, planWorkItemId, {
       ...options, force: true, throwOnError: true,
     }),
@@ -385,8 +389,6 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
   const [filterText, setFilterText] = useState(snapshot?.filterText ?? "");
   const [sortKey, setSortKey] = useState<"name" | "size" | "modified">(snapshot?.sortKey ?? "name");
   const [sortAsc, setSortAsc] = useState(snapshot?.sortAsc ?? true);
-  const [directoryVisible, setDirectoryVisible] = useState(snapshot?.directoryVisible ?? true);
-  const [wide, setWide] = useState(false);
   const browserRef = useRef<HTMLDivElement>(null);
   const scroll = useRef(snapshot?.scroll ?? {});
   const history = useRef<FileBrowserLocation[]>(snapshot?.history ?? []);
@@ -410,7 +412,6 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
       if (saved) { node.scrollTop = saved.top; node.scrollLeft = saved.left; }
     });
   }, [viewMode, wide, directoryVisible, selectedFile?.path, showRendered]);
-  const split = wide && directoryVisible && Boolean(selectedFile);
   const rememberLocation = () => {
     const current = latestSnapshot.current;
     if (!current?.selectedFile || current.selectedFile.loading) return;
@@ -755,7 +756,6 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
     : originalFileUrl;
   const selectedFileTotalBytes =
     selectedFile?.totalSize ?? selectedFile?.size;
-  const previewVisible = Boolean(selectedFile) && (viewMode === "preview" || split);
   const largePreviewHint =
     selectedFileTotalBytes != null && isLargePreview(selectedFileTotalBytes)
       ? t("fileBrowser.largeFileHint", { size: formatSize(selectedFileTotalBytes) })

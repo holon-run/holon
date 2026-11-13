@@ -141,6 +141,53 @@ describe("FileBrowserPanel explicit refresh", () => {
     expect(mocks.workDetail).not.toHaveBeenCalled();
   });
 
+  it("refreshes a plan revealed by a wide split after narrow directory browsing", async () => {
+    let resize: ResizeObserverCallback | undefined;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const setWidth = async (width: number) => {
+      await act(async () => {
+        resize!([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    };
+    registerSelectedAgentRefreshContext({
+      key: "a:1", agentId: "a", incarnation: 1, scopeKey: "scope", onAccessError: vi.fn(),
+    });
+    await render({ agentId: "a", fileRevisions: [{ ...revision("hash-a"), workItemId: "wi" }] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(1);
+    const initialSignal = mocks.workDetail.mock.calls.at(-1)![2].signal as AbortSignal;
+    await clickButton("fileBrowser.browseDirectory");
+    expect(initialSignal.aborted).toBe(true);
+    expect(host.querySelector(".file-browser-markdown")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(1);
+
+    await setWidth(960);
+    expect(snapshot?.viewMode).toBe("files");
+    expect(host.querySelector(".file-browser")?.getAttribute("data-split")).toBe("true");
+    const body = host.querySelector(".file-browser-markdown");
+    expect(body).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.workDetail.mock.calls.length).toBeGreaterThan(1);
+    await render({ fileRevisions: [{ ...revision("hash-b"), workItemId: "wi" }] });
+    expect(host.querySelector(".file-browser-update-hint")?.textContent).toContain("File may have changed.");
+    expect(host.querySelector(".file-browser-markdown")).toBe(body);
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+
+    const splitSignal = mocks.workDetail.mock.calls.at(-1)![2].signal as AbortSignal;
+    const calls = mocks.workDetail.mock.calls.length;
+    await setWidth(959);
+    expect(splitSignal.aborted).toBe(true);
+    expect(host.querySelector(".file-browser-markdown")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(calls);
+  });
+
   it("does not poll or reread on checkpoint renders; revision hints preserve body, scroll, and selection", async () => {
     await render();
     const body = host.querySelector<HTMLElement>(".file-browser-markdown")!;

@@ -481,7 +481,7 @@ fn collect_agent_list_posture_rows_filtered(
             }
         }
 
-        if status != RecordListStatus::Active {
+        if status != RecordListStatus::Active && non_open_window > 0 {
             // Per-agent terminal window equal to
             // WorkItemRepository::latest_non_open_for_agent.
             let predicate = if status == RecordListStatus::Terminal {

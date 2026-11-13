@@ -11,6 +11,103 @@ use crate::types::{
 };
 
 #[test]
+fn zero_history_window_skips_ranking_and_preserves_live_facts() -> Result<()> {
+    use crate::types::{AgentState, QueueEntryRecord, RecordListStatus};
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    let home = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        home.path().join("runtime.sqlite"),
+        home.path().join("runtime.lock"),
+    )?;
+    let agent_id = "zero-window-agent";
+    let now = chrono::Utc::now();
+    db.agent_states()
+        .upsert_for_fixture(&AgentState::new(agent_id))?;
+    db.queue_entries().upsert(&QueueEntryRecord {
+        message_id: "queued-input".into(),
+        agent_id: agent_id.into(),
+        priority: crate::types::Priority::Normal,
+        status: QueueEntryStatus::Queued,
+        created_at: now,
+        updated_at: now,
+    })?;
+    let open = WorkItemRecord::new(agent_id, "open item", WorkItemState::Open);
+    db.work_items().insert_new(&open)?;
+    db.work_items().insert_new(&WorkItemRecord::new(
+        agent_id,
+        "completed item",
+        WorkItemState::Completed,
+    ))?;
+    db.external_triggers().upsert(&ExternalTriggerRecord {
+        external_trigger_id: "active-trigger".into(),
+        target_agent_id: agent_id.into(),
+        scope: crate::types::ExternalTriggerScope::Agent,
+        delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+        token: None,
+        token_hash: "hash".into(),
+        status: crate::types::ExternalTriggerStatus::Active,
+        created_at: now,
+        revoked_at: None,
+        last_delivered_at: None,
+        delivery_count: 0,
+    })?;
+    let agent_ids = [agent_id.to_owned()];
+    let mut connection = db.connection()?;
+    connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Function { function_name }
+            if function_name.eq_ignore_ascii_case("row_number") =>
+        {
+            Authorization::Deny
+        }
+        _ => Authorization::Allow,
+    }));
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    for status in [RecordListStatus::All, RecordListStatus::Terminal] {
+        let rows = collect_agent_list_posture_rows_filtered(&tx, &agent_ids, status, 0)?;
+        let row = &rows.rows[0];
+        assert!(row.agent_state_json.is_some());
+        assert!(row.has_queued_input);
+        let facts = row
+            .facts
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(facts.has_queued_input);
+        if status == RecordListStatus::All {
+            assert_eq!(facts.open_work_items, vec![open.clone()]);
+        } else {
+            assert!(facts.open_work_items.is_empty());
+        }
+        assert!(facts.non_open_work_items.is_empty());
+        assert_eq!(facts.external_triggers.len(), 1);
+        assert_eq!(
+            facts.external_triggers[0].external_trigger_id,
+            "active-trigger"
+        );
+        // Nonzero history must still execute ranking, proving the guard detects it.
+        let error = collect_agent_list_posture_rows_filtered(&tx, &agent_ids, status, 1)
+            .err()
+            .expect("history ranking must be denied");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("row_number"),
+            "{error}"
+        );
+    }
+    let rows =
+        collect_agent_list_posture_rows_filtered(&tx, &agent_ids, RecordListStatus::Active, 1)?;
+    let facts = rows.rows[0]
+        .facts
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert_eq!(facts.open_work_items, vec![open]);
+    assert!(facts.non_open_work_items.is_empty());
+    Ok(())
+}
+
+#[test]
 fn explicit_history_filters_before_limits_and_active_work_keeps_all_completing() -> Result<()> {
     use crate::types::RecordListStatus;
     let home = tempfile::tempdir()?;
