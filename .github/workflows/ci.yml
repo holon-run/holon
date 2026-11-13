@@ -483,10 +483,33 @@ jobs:
           bash ../../scripts/test-android-release-version.sh
           bash ../../scripts/test-android-release-packaging.sh
           python3 ../../scripts/test-android-release-channels.py
-          ./gradlew --no-daemon :sdk:test \
-            :app:testDirectDebugUnitTest :app:testPlayDebugUnitTest \
-            :app:assembleDirectDebug :app:assemblePlayDebug \
-            :app:assembleDirectRelease :app:assemblePlayRelease :app:bundlePlayRelease
+          # AGP's incremental packaging splitter can fail on nightly runners with
+          # a transient IncrementalSplitterRunnable crash (issue #4098,
+          # rerun-cured); retry only that signature so real test failures still
+          # fail immediately.
+          set -o pipefail
+          log="${RUNNER_TEMP:-/tmp}/gradle-build.log"
+          ok=0
+          for attempt in 1 2 3; do
+            if ./gradlew --no-daemon :sdk:test \
+                :app:testDirectDebugUnitTest :app:testPlayDebugUnitTest \
+                :app:assembleDirectDebug :app:assemblePlayDebug \
+                :app:assembleDirectRelease :app:assemblePlayRelease :app:bundlePlayRelease \
+                2>&1 | tee "$log"; then
+              ok=1
+              break
+            fi
+            if ! grep -q 'IncrementalSplitterRunnable' "$log"; then
+              echo "::error::Gradle build failed without the IncrementalSplitterRunnable flake signature; not retrying (issue #4098)"
+              exit 1
+            fi
+            echo "Gradle incremental packaging flake (IncrementalSplitterRunnable) on attempt ${attempt}/3 (issue #4098)"
+            if [ "$attempt" -lt 3 ]; then sleep $((attempt * 10)); fi
+          done
+          if [ "$ok" != 1 ]; then
+            echo "::error::Gradle build failed after 3 attempts (IncrementalSplitterRunnable packaging flake, see #4098)"
+            exit 1
+          fi
           python3 ../../scripts/verify-android-release-channels.py \
             app/build/outputs/apk/direct/release/app-direct-release-unsigned.apk \
             app/build/outputs/bundle/playRelease/app-play-release.aab
