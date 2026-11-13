@@ -414,6 +414,9 @@ publication and reload boundary, rather than a per-Agent registry copy.
 Ordinary invalid selected metadata retains State's best-effort enrichment
 fallback. Unprepared or NeedsReload publication, protection failures and read
 deadlines remain errors; a GET does not prepare or reload the registry.
+Capture returns a typed retryable failure immediately when a workspace writer
+holds the publication lock, rather than waiting beyond the read deadline and
+retaining projection build capacity.
 Invalid material fails capture for its own workspace. The selected execution
 root references preserve exact historical URI resolution within attached
 workspaces. Removal and detachment exclude those roots from later captures.

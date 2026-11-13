@@ -193,7 +193,7 @@ impl RuntimeDb {
         self.read_for_preparation(|tx| WorkspaceContext::load(tx))
     }
 
-    /// The callback only copies the selected material, with no I/O or owner acquisition.
+    /// The callback only copies selected material; contention never waits on a writer.
     pub(crate) fn with_workspace_context<T>(
         &self,
         capture: impl FnOnce(&WorkspaceContext) -> Result<T>,
@@ -201,9 +201,14 @@ impl RuntimeDb {
         let slot = self.workspace_context_publication();
         let publication = match slot.try_read() {
             Ok(publication) => publication,
-            Err(TryLockError::WouldBlock) => at_blocking_boundary(|| slot.read())
-                .ok()
-                .context("workspace context publication poisoned")?,
+            Err(TryLockError::WouldBlock) => {
+                return Err(RuntimeDbRetryableError::new(
+                    "workspace context publication",
+                    self.path(),
+                    "workspace registry publication is busy",
+                )
+                .into());
+            }
             Err(TryLockError::Poisoned(_)) => {
                 anyhow::bail!("workspace context publication poisoned")
             }
@@ -217,6 +222,11 @@ impl RuntimeDb {
             .into());
         };
         capture(current)
+    }
+
+    #[cfg(all(test, holon_lib_test_shard = "c"))]
+    pub(crate) fn hold_workspace_context_publication_for_test(&self) -> impl Drop + '_ {
+        self.workspace_context_publication().write().unwrap()
     }
 
     /// Only workspace writers take this gate. It spans the SQL commit and

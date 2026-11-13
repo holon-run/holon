@@ -67,6 +67,68 @@ fn workspace<'a>(state: &'a Value, id: &str) -> Option<&'a Value> {
 }
 
 #[tokio::test]
+async fn workspace_context_contention_releases_projection_capacity_before_writer_finishes(
+) -> anyhow::Result<()> {
+    use super::{ProjectionFailure, ProjectionGateError, ProjectionKey};
+    use axum::body::Bytes;
+    use tokio::time::Instant;
+
+    let home = tempfile::tempdir()?;
+    let db = crate::runtime_db::RuntimeDb::open_and_migrate(
+        home.path().join("runtime.sqlite"),
+        home.path().join("runtime.lock"),
+    )?;
+    db.prepare_workspace_context()?;
+    let before = db.reader_pool_stats_for_tests().checkout_attempts;
+    let publication = db.hold_workspace_context_publication_for_test();
+    let gate = Arc::new(ProjectionGate::new(1, Duration::ZERO));
+    let budget = Duration::from_millis(50);
+    let reader = db.clone();
+    let failed = gate
+        .run_owned(
+            ProjectionKey::AgentState("contended-workspace".into()),
+            Instant::now() + budget,
+            budget,
+            move |context| async move {
+                context
+                    .blocking(move |scope| {
+                        reader
+                            .with_read_scope(scope)
+                            .with_workspace_context(|_| Ok(Bytes::from_static(b"unexpected")))
+                            .map_err(super::error_response)
+                            .map_err(ProjectionFailure::from)
+                    })
+                    .await?
+            },
+        )
+        .await;
+
+    // Keep the writer locked beyond the original read deadline. An abandoned
+    // blocking reader must not retain this gate's only build permit.
+    tokio::time::sleep(budget + Duration::from_millis(10)).await;
+    let healthy = gate
+        .run_owned(
+            ProjectionKey::AgentsList(None),
+            Instant::now() + Duration::from_secs(1),
+            Duration::from_secs(1),
+            |_| async { Ok(Bytes::from_static(b"independent")) },
+        )
+        .await;
+    // Release before asserting so a regressed blocking worker can still exit.
+    drop(publication);
+
+    let Err(ProjectionGateError::Build(failure)) = failed else {
+        panic!("expected retryable workspace contention, got {failed:?}");
+    };
+    assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(failure.retryable(), Some(true));
+    assert_ne!(failure.error_code(), Some("projection_deadline_exhausted"));
+    assert_eq!(healthy.unwrap(), Bytes::from_static(b"independent"));
+    assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, before);
+    db.with_workspace_context(|_| Ok(()))
+}
+
+#[tokio::test]
 async fn loaded_state_http_workspace_lifecycle_is_storage_free() -> anyhow::Result<()> {
     if run_isolated_test(
         module_path!(),
