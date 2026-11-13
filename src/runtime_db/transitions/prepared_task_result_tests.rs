@@ -258,6 +258,108 @@ fn result_defer_records_callback_phases_and_preserves_receipt_replay() -> Result
 }
 
 #[test]
+fn result_defer_rebuilds_selection_when_resident_base_cannot_be_reused() -> Result<()> {
+    for mismatch in ["revision", "durable coverage", "requested keys"] {
+        let f = Fixture::new()?;
+        let ledger = ledger()?;
+        let (source, result_id) = pending(&f, &ledger, false)?;
+        let mut request = request();
+        let read = |request: &tasks::TaskDomainLoadRequest| {
+            f.db.transaction(|tx| {
+                Ok(tasks::load_task_domain_snapshot_tx(tx, &f.scope, request)?
+                    .require_current()?
+                    .resident)
+            })
+        };
+        let base = std::sync::Arc::new(read(&request)?);
+        let task_key = TaskKey::new(TaskFamily::Task, "result:task");
+        let defer = |nonce: &str, seconds| {
+            freeze_result(
+                &f,
+                nonce,
+                TaskResultOperation::Defer {
+                    message_id: source.id.clone(),
+                    reason: "waiting for original owner".into(),
+                    at: f.at + chrono::Duration::seconds(seconds),
+                    deadline: f.at + chrono::Duration::seconds(seconds + 30),
+                },
+            )
+        };
+        let durable_base = match mismatch {
+            "revision" => {
+                let first = defer("result:advance", 1)?;
+                drop(execute(&f, &first, &request, &ledger)?);
+                let current = read(&request)?;
+                assert!(current.coverage().revision > base.coverage().revision);
+                current
+            }
+            "durable coverage" => {
+                let mut alternate = request.clone();
+                alternate.capture.required_keys.insert(task_key.clone());
+                let current = f.db.transaction(|tx| {
+                    Ok(
+                        tasks::prepare_task_domain_snapshot_tx(tx, &f.scope, &alternate)?
+                            .require_current()?
+                            .resident,
+                    )
+                })?;
+                assert_eq!(current.coverage().revision, base.coverage().revision);
+                assert_ne!(
+                    current.coverage().required_keys,
+                    base.coverage().required_keys
+                );
+                current
+            }
+            "requested keys" => {
+                let current = read(&request)?;
+                assert_eq!(current.coverage(), base.coverage());
+                request.capture.required_keys.insert(task_key.clone());
+                current
+            }
+            _ => unreachable!(),
+        };
+        let p = defer("result:fallback", 2)?.with_defer_task_base(Some(base));
+        let InputMutationExecution::Committed { value, receipt } =
+            execute(&f, &p, &request, &ledger)?
+        else {
+            panic!("{mismatch}: original Defer must commit");
+        };
+        let delta = value.effects.task_delta.as_ref().unwrap();
+        assert!(
+            delta
+                .records
+                .iter()
+                .any(|fact| fact.locator.key == task_key),
+            "{mismatch}: expected a full Task snapshot"
+        );
+        let published = durable_base.with_committed(delta)?;
+        let durable = read(&request)?;
+        assert_eq!(published.coverage(), durable.coverage(), "{mismatch}");
+        assert_eq!(
+            published.selected_install_records(),
+            durable.selected_install_records(),
+            "{mismatch}"
+        );
+        assert_eq!(
+            published.coverage().required_keys,
+            request.capture.required_keys
+        );
+        let results::TaskResultWriteOutcome::Record(Some(record)) = outcome(&receipt) else {
+            panic!("{mismatch}: Defer must return the updated Result");
+        };
+        assert_eq!(
+            record.next_recheck_at,
+            Some(f.at + chrono::Duration::seconds(32))
+        );
+        assert_eq!(
+            published.coverage().result_metadata[&result_id].next_recheck_at,
+            record.next_recheck_at
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn result_successful_empty_returns_have_original_receipts_before_later_rows() -> Result<()> {
     let f = Fixture::new()?;
     let ledger = ledger()?;

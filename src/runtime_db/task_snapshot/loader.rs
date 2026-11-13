@@ -838,7 +838,7 @@ fn namespace_ids(
     );
     Ok(out)
 }
-fn result_metadata(
+pub(super) fn result_metadata(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     x: &TaskResultSettlementRecord,

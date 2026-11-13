@@ -10,6 +10,10 @@ use crate::types::{
     WakeSource, WorkItemRecord,
 };
 
+#[cfg(holon_lib_test_shard = "a")]
+#[path = "writer_contention_fixture.rs"]
+mod writer_contention_fixture;
+
 async fn pending_command_result(
     runtime: &RuntimeHandle,
     task_id: &str,
@@ -403,9 +407,37 @@ async fn paused_result_does_not_block_same_owner_new_results_or_charge_scanner_p
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_defer_records_resident_publication() -> anyhow::Result<()> {
+    use crate::runtime::resident_task::{ResidentTaskDomain, TaskFamily, TaskKey};
+    use crate::runtime_db::transitions::{
+        PreparedInputTransition, PreparedTaskResultTransition, TaskResultOperation,
+    };
+
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();
-    let record = pending_command_result(runtime, "publication-task", harness.now()).await;
+    let now = harness.now();
+    {
+        let mut mutation = runtime.begin_mutation().await?;
+        let parent = crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::turn(
+            mutation.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            now,
+            crate::types::TurnRecord::new("default", "parent", 1),
+        )?;
+        mutation.commit_prepared_evidence(parent, None).await?;
+    }
+    let record = pending_command_result(runtime, "publication-task", now).await;
+    let owner = &runtime.inner.mutation_owner;
+    let before_root = owner.capture()?.unwrap();
+    let before_tasks = before_root.tasks.as_ref().unwrap();
+    let task_key = TaskKey::new(TaskFamily::Task, &record.task_id);
+    let selected = |tasks: &ResidentTaskDomain, key: &TaskKey| {
+        tasks
+            .selected_install_records()
+            .into_iter()
+            .find(|fact| &fact.locator.key == key)
+            .unwrap()
+    };
+    let before_task = selected(before_tasks, &task_key);
     let publication_count = || {
         crate::diagnostics::attribution::snapshot()
             .into_iter()
@@ -414,29 +446,83 @@ async fn original_defer_records_resident_publication() -> anyhow::Result<()> {
             .count
     };
     let before = publication_count();
-    let now = harness.now();
     let deadline = now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS);
-    let outcome = runtime
-        .apply_task_result_operation((&record.message_id, now, deadline), || {
-            crate::runtime_db::transitions::TaskResultOperation::Defer {
-                message_id: record.message_id.clone(),
-                reason: "synthetic".into(),
-                at: now,
-                deadline,
-            }
-        })
-        .await?;
-    assert_eq!(
-        outcome.record()?.as_ref().unwrap().next_recheck_at,
-        Some(deadline)
-    );
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let prepare = |mutation: &crate::runtime::state_mutation::RuntimeMutation| {
+        let scope = mutation.input_evidence_scope();
+        let operation = TaskResultOperation::Defer {
+            message_id: record.message_id.clone(),
+            reason: "synthetic".into(),
+            at: now,
+            deadline,
+        };
+        let command = PreparedTaskResultTransition::new(scope.agent_id.clone(), operation)?;
+        PreparedInputTransition::task_result(
+            scope,
+            "fixture-defer-publication".into(),
+            now,
+            command,
+        )
+    };
+    let outcome = {
+        let mut mutation = runtime.begin_mutation().await?;
+        let prepared = prepare(&mutation)?;
+        mutation.commit_prepared_task_result(prepared).await?
+    };
+    let written = outcome.record()?.as_ref().unwrap();
+    assert_eq!(written.next_recheck_at, Some(deadline));
+    let root = owner.capture()?.unwrap();
     let tasks = root.tasks.as_ref().unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        &before_task,
+        &selected(tasks, &task_key)
+    ));
+    let result_key = TaskKey::new(TaskFamily::ResultSettlement, &record.result_identity);
+    let result = selected(tasks, &result_key);
+    assert_eq!(
+        tasks.coverage().result_dependencies[&record.result_identity].result,
+        result.locator
+    );
+    assert_eq!(
+        tasks.coverage().revision,
+        before_tasks.coverage().revision + 1
+    );
     assert_eq!(
         tasks.coverage().result_metadata[&record.result_identity].next_recheck_at,
         Some(deadline)
     );
+    let request = {
+        let mutation = runtime.begin_mutation().await?;
+        mutation.owner_task_load_request()?.0
+    };
+    runtime.runtime_db().transaction(|tx| {
+        let durable = crate::runtime_db::task_snapshot::load_task_domain_snapshot_tx(
+            tx,
+            tasks.scope(),
+            &request,
+        )?
+        .require_current()?;
+        assert_eq!(durable.resident.coverage(), tasks.coverage());
+        assert_eq!(selected(&durable.resident, &result_key), result);
+        Ok(())
+    })?;
     assert!(publication_count() > before);
+    let replay = {
+        let mut mutation = runtime.begin_mutation().await?;
+        let prepared = prepare(&mutation)?;
+        mutation.commit_prepared_task_result(prepared).await?
+    };
+    assert_eq!(replay.record()?.as_ref(), Some(written));
+    assert_eq!(
+        owner
+            .capture()?
+            .unwrap()
+            .tasks
+            .as_ref()
+            .unwrap()
+            .coverage()
+            .revision,
+        tasks.coverage().revision
+    );
     Ok(())
 }
 

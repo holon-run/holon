@@ -5007,6 +5007,13 @@ Work preparation still replaces its coverage; it is not a global union cache.
 Reuse requires both named relation keys, including prepared empty relations;
 it never substitutes one waiter's grant for another. Each waiter still executes
 the canonical source SQL predicate, Result qualification and Turn preparation.
+For a standalone Result `Defer`, the original writer can reuse a complete
+published Task selection at the matching durable revision. It validates the
+target's qualification, Task relation and Result metadata in the original
+transaction. Only the actual Result readback supplies the new alias, recheck
+deadline, dependency locator and resident delta. The durable coverage and
+receipt commit together. If coverage or the requested selectors differ, the
+writer uses the existing snapshot path.
 Recovery candidate selection and filtering share one transaction-bound
 `RecoverySnapshotRead`: the complete Attempt ancestry is decoded and validated
 once for that read-only selection cut, not once per subquery. Filtering still
