@@ -248,15 +248,8 @@ impl RuntimeHandle {
                         "candidate_count": selection.candidate_count(),
                     }),
                 );
-                if waiting.ids.is_empty() {
-                    self.append_original_audit_event(event).await?;
-                } else {
-                    let mut mutation = self.begin_mutation().await?;
-                    if !waiting.is_current(&mutation)? || waiting.has_eligible_input(&mutation) {
-                        return Ok(false);
-                    }
-                    mutation.append_original_audit_event(event).await?;
-                    waiting.token = Some(mutation.capture_published_root()?.token);
+                if !self.append_idle_tick_audit(event, waiting).await? {
+                    return Ok(false);
                 }
             }
         }
@@ -323,7 +316,7 @@ impl RuntimeHandle {
                         result_brief_id,
                     )) = duplicate
                     {
-                        self.append_original_audit_event(AuditEvent::legacy(
+                        let event = AuditEvent::legacy(
                             "system_tick_suppressed",
                             serde_json::json!({
                                 "subsystem": "work_queue",
@@ -331,8 +324,10 @@ impl RuntimeHandle {
                                 "work_item_id": active.id,
                                 "result_brief_id": result_brief_id
                             }),
-                        ))
-                        .await?;
+                        );
+                        if !self.append_idle_tick_audit(event, waiting).await? {
+                            return Ok(false);
+                        }
                     }
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
@@ -480,6 +475,25 @@ impl RuntimeHandle {
                 Ok(false)
             }
         }
+    }
+
+    async fn append_idle_tick_audit(
+        &self,
+        event: AuditEvent,
+        waiting: &mut scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
+        if waiting.ids.is_empty() {
+            self.append_original_audit_event(event).await?;
+        } else {
+            let mut mutation = self.begin_mutation().await?;
+            if !waiting.is_current(&mutation)? || waiting.has_eligible_input(&mutation) {
+                return Ok(false);
+            }
+            mutation.append_original_audit_event(event).await?;
+            // Keep the idle observation current across our own Audit publication.
+            waiting.token = Some(mutation.capture_published_root()?.token);
+        }
+        Ok(true)
     }
 
     async fn consume_due_work_item_rechecks(&self, agent_id: &str) -> Result<()> {
