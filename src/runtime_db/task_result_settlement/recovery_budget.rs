@@ -89,7 +89,7 @@ fn recheck_delay(attempts: u32) -> Duration {
     Duration::seconds(30 * (1_i64 << attempts.min(TASK_RESULT_RECOVERY_LIMIT - 1)))
 }
 
-fn by_identity_tx(
+pub(super) fn by_identity_tx(
     tx: &Transaction<'_>,
     identity: &str,
 ) -> Result<Option<TaskResultSettlementRecord>> {

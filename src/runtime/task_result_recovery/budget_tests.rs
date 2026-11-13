@@ -572,15 +572,12 @@ async fn scanner_defers_obligation_claimed_by_another_waiter_without_charging() 
         .latest_for_message(&record.message_id)
         .unwrap()
         .unwrap();
+    assert_eq!(deferred, record);
     assert_eq!(
-        deferred.deferred_reason.as_deref(),
-        Some("claimed_by_other_waiter"),
+        runtime.inner.task_result_probes.lock().unwrap().pending[&record.result_identity].reason,
+        "claimed_by_other_waiter"
     );
-    assert_eq!(deferred.recovery_attempts, 0);
-    assert_eq!(
-        deferred.next_recheck_at,
-        Some(harness.now() + chrono::Duration::seconds(RESULT_RECHECK_SECONDS)),
-    );
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert!(outstanding_recovery_message_id(
         runtime,
         "default",
@@ -630,15 +627,18 @@ async fn scanner_uses_obligation_classification_instead_of_queue_progress() {
             .unwrap()
             .unwrap();
         assert_eq!(deferred.recovery_attempts, 0);
-        if !should_recover {
+        if should_recover {
             assert_eq!(
-                deferred.deferred_reason.as_deref(),
-                Some("invalid_or_stale_obligation"),
+                deferred.next_recheck_at,
+                Some(harness.now() + chrono::Duration::seconds(RESULT_RECHECK_SECONDS)),
             );
+        } else {
+            assert_eq!(deferred.state, TaskResultSettlementState::Settled);
+            assert_eq!(
+                deferred.disposition,
+                Some(TaskResultSettlementDisposition::InvalidOrStale)
+            );
+            assert_eq!(deferred.next_recheck_at, None);
         }
-        assert_eq!(
-            deferred.next_recheck_at,
-            Some(harness.now() + chrono::Duration::seconds(RESULT_RECHECK_SECONDS)),
-        );
     }
 }

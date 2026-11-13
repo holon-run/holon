@@ -1175,6 +1175,14 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
     } else {
         None
     };
+    let _defer_branch = prepared.is_task_result_defer().then(|| {
+        use crate::diagnostics::attribution;
+        if defer.is_some() {
+            attribution::TASK_RESULT_DEFER_NARROW.start()
+        } else {
+            attribution::TASK_RESULT_DEFER_FALLBACK.start()
+        }
+    });
     let memory = material.memory_budget.take();
     if child_phase {
         let mut phase =

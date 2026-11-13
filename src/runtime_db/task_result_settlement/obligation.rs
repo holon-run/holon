@@ -48,7 +48,7 @@ impl TaskResultSettlementRepository<'_> {
         record: &TaskResultSettlementRecord,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<Option<WaitConditionRecord>> {
-        self.db.transaction(|tx| {
+        self.db.read_for_preparation(|tx| {
             if !super::recovery_budget::recovery_admission_eligible_tx(tx, record, "", now)? {
                 return Ok(None);
             }
@@ -138,7 +138,7 @@ impl TaskResultSettlementRepository<'_> {
         current_activation_id: Option<&str>,
         waiter_work_item_id: Option<&str>,
     ) -> Result<TaskResultObligation> {
-        self.db.transaction(|tx| {
+        self.db.read_for_preparation(|tx| {
             classify_obligation_tx(tx, record, current_activation_id, waiter_work_item_id)
         })
     }

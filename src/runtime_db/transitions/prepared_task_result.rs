@@ -49,6 +49,11 @@ pub(crate) enum TaskResultOperation {
         disposition: results::TaskResultSettlementDisposition,
         at: chrono::DateTime<Utc>,
     },
+    ConvergeRecovery {
+        result_identity: String,
+        message_id: String,
+        at: chrono::DateTime<Utc>,
+    },
     Defer {
         message_id: String,
         reason: String,
@@ -81,6 +86,7 @@ impl TaskResultOperation {
             Self::SettleOwnerUnavailable { .. } => {
                 "runtime_db.prepared_input.task_result.settle_owner_unavailable"
             }
+            Self::ConvergeRecovery { .. } => "runtime_db.prepared_input.task_result.converge",
             Self::Defer { .. } => "runtime_db.prepared_input.task_result.defer",
             Self::MarkRecoveryDiagnostic { .. } => {
                 "runtime_db.prepared_input.task_result.mark_recovery_diagnostic"
@@ -157,6 +163,14 @@ impl PreparedTaskResultTransition {
             TaskResultOperation::SettleInvalidOnly { message_id, .. }
             | TaskResultOperation::SettleOwnerUnavailable { message_id, .. }
             | TaskResultOperation::Defer { message_id, .. } => required(message_id)?,
+            TaskResultOperation::ConvergeRecovery {
+                result_identity,
+                message_id,
+                ..
+            } => {
+                required(result_identity)?;
+                required(message_id)?;
+            }
             TaskResultOperation::MarkRecoveryDiagnostic {
                 result_identity, ..
             } => required(result_identity)?,
@@ -252,6 +266,18 @@ impl PreparedTaskResultTransition {
                 tx,
                 message_id,
                 *disposition,
+                *at,
+                limits,
+            ),
+            TaskResultOperation::ConvergeRecovery {
+                result_identity,
+                message_id,
+                at,
+            } => results::select_converge_recovery_tx(
+                tx,
+                &self.agent_id,
+                result_identity,
+                message_id,
                 *at,
                 limits,
             ),

@@ -842,6 +842,7 @@ struct RuntimeInner {
     control_cancellations: control_cancellation::ControlCancellationRegistry,
     mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
     task_queries: task_queries::TaskQueryRegistry,
+    task_result_probes: StdMutex<task_result_recovery::TaskResultProbes>,
     input_queries: input_query_roles::InputQueryRegistry,
     current_queries: current_queries::CurrentQueryRegistry,
     recovered_tasks: Mutex<Option<bootstrap::BootstrapTaskRecovery>>,
@@ -3600,6 +3601,7 @@ impl RuntimeHandle {
             warnings.extend(self.inner.storage.publish_transition_events(effects));
         }
         warnings.extend(self.inner.storage.notify_transition_memory_index(effects));
+        self.wake_task_result_probes(effects);
         if effects.notify_scheduler {
             if effects.fault == Some(TransitionFaultPoint::BeforeSchedulerNotification) {
                 warnings.push(PostCommitWarning {
@@ -6969,7 +6971,7 @@ impl RuntimeHandle {
                     .into_iter()
                     .flatten()
                     .min();
-                    let result_recheck_at = idle_read.tasks.next_recheck_at()?;
+                    let result_recheck_at = self.next_task_result_probe(&idle_read.tasks)?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),

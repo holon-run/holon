@@ -264,6 +264,35 @@ impl RuntimeMutation {
         })
     }
 
+    pub(in crate::runtime) async fn prepare_recovery_tasks(
+        &mut self,
+        request: &TaskCaptureRequest,
+    ) -> Result<()> {
+        let root = self.capture_published_root()?;
+        if let Some(tasks) = &root.tasks {
+            anyhow::ensure!(
+                tasks.scope() == &self.input_evidence_scope(),
+                "published Task scope differs"
+            );
+            match tasks.capture(request) {
+                Ok(_) => return Ok(()),
+                Err(error) if error.downcast_ref::<TaskReadError>().is_some() => {}
+                Err(error) => return Err(error),
+            }
+        }
+        drop(root);
+        let (mut load, _live_queries) = self.owner_task_load_request()?;
+        load.capture.terminal_limit = self
+            .tasks
+            .as_ref()
+            .map_or(0, |tasks| tasks.coverage().terminal.limit);
+        load.capture
+            .required_keys
+            .extend(request.required_keys.iter().cloned());
+        let _stage = crate::diagnostics::attribution::TASK_RESULT_RECOVERY_TASK_PREPARE.start();
+        self.prepare_owner_task_domain_request(&load).await
+    }
+
     #[inline(never)]
     pub(in crate::runtime) fn prepare_dispatch_tasks<'a>(
         &'a mut self,
