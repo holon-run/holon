@@ -2,7 +2,7 @@
 use super::*;
 use crate::{
     diagnostics::resource_io::{self, ResourceReadMaterial},
-    runtime::agent_list_projection::is_listed,
+    runtime::agent_list_projection::{is_listed, AgentListUnavailable},
 };
 use std::ops::Deref;
 
@@ -183,22 +183,29 @@ impl RuntimeHost {
                     .get(&identity.agent_id)
                     .filter(|entry| !entry.task.is_finished())
                     .map(|entry| &entry.runtime);
-                anyhow::ensure!(
-                    self.inner.registry.matches_agent_identity(&identity)
-                        && runtime.is_none_or(
-                            |runtime| runtime.instance_incarnation() == identity.incarnation
-                        ),
-                    crate::runtime_db::RuntimeDbRetryableError::new(
-                        "observer publication",
-                        db.path(),
-                        "Agent list identity changed",
-                    ),
-                );
-                let projection = self.inner.mutation_owners.agent_list_projection(
+                if !self.inner.registry.matches_agent_identity(&identity)
+                    || runtime.is_some_and(|runtime| {
+                        runtime.instance_incarnation() != identity.incarnation
+                    })
+                {
+                    trace_unavailable_member(&identity, AgentListUnavailable::IdentityChanged);
+                    continue;
+                }
+                let projection = match self.inner.mutation_owners.agent_list_projection(
                     &identity,
                     runtime.map(|runtime| runtime.instance_owner_epoch()),
                     db,
-                )?;
+                ) {
+                    Ok(projection) => projection,
+                    Err(error) => {
+                        db.check_read_scope()?;
+                        let Some(reason) = error.downcast_ref::<AgentListUnavailable>() else {
+                            return Err(error);
+                        };
+                        trace_unavailable_member(&identity, *reason);
+                        continue;
+                    }
+                };
                 (projection, runtime.cloned())
             };
             let entry = material.read(|| {
@@ -227,6 +234,15 @@ impl RuntimeHost {
         db.check_read_scope()?;
         Ok(OwnedAgentListRead { entries })
     }
+}
+
+fn trace_unavailable_member(identity: &AgentIdentityRecord, reason: AgentListUnavailable) {
+    tracing::debug!(
+        agent_id = %identity.agent_id,
+        incarnation = identity.incarnation,
+        reason = %reason,
+        "skipping unavailable Agent list member"
+    );
 }
 
 mod tree;
