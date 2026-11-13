@@ -10,6 +10,10 @@ use crate::types::{
     WakeSource, WorkItemRecord,
 };
 
+#[cfg(holon_lib_test_shard = "a")]
+#[path = "writer_contention_fixture.rs"]
+mod writer_contention_fixture;
+
 async fn pending_command_result(
     runtime: &RuntimeHandle,
     task_id: &str,
