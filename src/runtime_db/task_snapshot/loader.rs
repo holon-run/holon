@@ -762,6 +762,15 @@ fn load_selected_with_scope_material(
 fn sql_text(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
+fn namespace_ids_sql(family: TaskFamily, predicate: &str, limit: Option<usize>) -> String {
+    let (table, id, owner) = family_table(family);
+    let order = if limit.is_some() {
+        format!("c.updated_at DESC,c.created_at DESC,c.{id} ASC")
+    } else {
+        format!("c.{id} ASC")
+    };
+    format!("SELECT c.{id} FROM {table} c WHERE c.{owner}=?1 AND ({predicate}) AND NOT EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability!='present') AND (EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability='present') OR EXISTS(SELECT 1 FROM task_domain_eligibility e WHERE e.seed_id=?4 AND e.family=?3 AND e.record_id=c.{id} AND e.availability='present') OR EXISTS(SELECT 1 FROM task_query_fixed_results q WHERE q.inventory_id=?6 AND q.result_identity=c.{id})) ORDER BY {order} LIMIT ?5")
+}
 fn namespace_ids(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -775,7 +784,7 @@ fn namespace_ids(
     >,
     material: &mut read_preparation::TaskReadMaterial<'_>,
 ) -> Result<Vec<String>> {
-    let (table, id, owner) = family_table(family);
+    let (_, id, _) = family_table(family);
     if let Some(inventory) = query_inventory {
         ensure!(
             family == TaskFamily::ResultSettlement && inventory.agent_id == scope.agent_id,
@@ -783,12 +792,7 @@ fn namespace_ids(
         );
         super::super::episode_snapshot::task_checkpoint::queries::validate(tx, inventory)?;
     }
-    let order = if limit.is_some() {
-        format!("c.updated_at DESC,c.created_at DESC,c.{id} ASC")
-    } else {
-        format!("c.{id} ASC")
-    };
-    let sql=format!("SELECT c.{id} FROM {table} c WHERE c.{owner}=?1 AND ({predicate}) AND NOT EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability!='present') AND (EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability='present') OR EXISTS(SELECT 1 FROM task_domain_eligibility e WHERE e.seed_id=?4 AND e.family=?3 AND e.record_id=c.{id} AND e.availability='present') OR EXISTS(SELECT 1 FROM task_query_fixed_results q WHERE q.inventory_id=?6 AND q.result_identity=c.{id})) ORDER BY {order} LIMIT ?5");
+    let sql = namespace_ids_sql(family, predicate, limit);
     let query_limit = limit.map(i64::try_from).transpose()?.unwrap_or(-1);
     let query_family = family_name(family);
     let query_inventory_id = query_inventory.map(|inventory| inventory.id.as_str());
@@ -1201,3 +1205,7 @@ mod status_loader_tests {
         Ok(())
     }
 }
+
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+#[path = "result_reverse_index_tests.rs"]
+mod result_reverse_index_tests;
