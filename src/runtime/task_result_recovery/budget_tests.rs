@@ -400,7 +400,7 @@ async fn paused_result_does_not_block_same_owner_new_results_or_charge_scanner_p
     .is_some());
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn original_defer_records_resident_publication() -> anyhow::Result<()> {
     let harness = LifecycleHarness::new();
