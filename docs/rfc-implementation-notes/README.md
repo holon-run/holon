@@ -13,6 +13,7 @@ would be noisy or misleading if duplicated inside each RFC.
 
 ## Current notes
 
+- [Agent loop 与 TaskResult 处理的简化方案](agent-loop-and-task-result-simplification.md)
 - [agent-runtime-state-acceptance](agent-runtime-state-acceptance.md)
 - [control-plane-and-delegation](control-plane-and-delegation.md)
 - [event-and-operator-transport](event-and-operator-transport.md)
