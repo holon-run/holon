@@ -3067,6 +3067,34 @@ impl RuntimeTransitionRepository<'_> {
             "prepared input transition scope differs from its repository"
         );
         let measure_defer = prepared.is_task_result_defer();
+        let write_context = prepared.command.write_context();
+        let queue = match prepared.command.as_ref() {
+            InputTransitionCommand::Queue(queue)
+                if matches!(
+                    queue.command.operation,
+                    QueueOperation::Admit | QueueOperation::Claim
+                ) =>
+            {
+                Some(queue)
+            }
+            _ => None,
+        };
+        let _queue_span = queue.map(|queue| {
+            let message_id = match &queue.command.mutation {
+                QueueMutation::Consume(record) | QueueMutation::Upsert(record) => {
+                    Some(record.message_id.as_str())
+                }
+                _ => None,
+            };
+            tracing::trace_span!(
+                "prepared_queue",
+                operation = write_context.operation,
+                agent_id = %scope.agent_id,
+                message_id,
+            )
+            .entered()
+        });
+        let measure_queue = queue.is_some();
         let commit = |tx: &Transaction<'_>| {
             if let InputTransitionCommand::ExternalTrigger(command) = prepared.command.as_ref() {
                 return trigger_writes::commit_tx(
@@ -3141,6 +3169,7 @@ impl RuntimeTransitionRepository<'_> {
             }
             let defer_preflight =
                 measure_defer.then(|| attribution::TASK_RESULT_DEFER_PREFLIGHT.start());
+            let queue_preflight = measure_queue.then(|| attribution::QUEUE_INPUT_PREFLIGHT.start());
             let preflight = Self::prepare_transition_preflight_tx(
                 tx,
                 prepared,
@@ -3152,7 +3181,7 @@ impl RuntimeTransitionRepository<'_> {
                 input_query_source,
                 current_query_source,
             );
-            drop(defer_preflight);
+            drop((defer_preflight, queue_preflight));
             let mut preflight = match preflight? {
                 PreparedTransitionPreflight::Ready(context) => context,
                 PreparedTransitionPreflight::Replayed {
@@ -3587,6 +3616,8 @@ impl RuntimeTransitionRepository<'_> {
                     }
                 }
             };
+            let _queue_finalization =
+                measure_queue.then(|| attribution::QUEUE_INPUT_FINALIZATION.start());
             // A State candidate owns control changes. Project pending from the
             // Queue after the complete business transition, before finalizers
             // validate the result and the owner receives its ACK.
@@ -4088,7 +4119,6 @@ impl RuntimeTransitionRepository<'_> {
             }
             Ok(InputMutationExecution::Committed { value, receipt })
         };
-        let write_context = prepared.command.write_context();
         if prepared.original_child_terminal().is_some()
             || prepared.original_child_running().is_some()
         {

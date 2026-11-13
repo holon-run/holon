@@ -1,6 +1,8 @@
 use super::{pending_command_result, *};
 use crate::provider::StubProvider;
-use crate::runtime::tests::support::{context_config, controlled_clock, isolate_test_user_home};
+use crate::runtime::tests::support::{
+    context_config, controlled_clock, isolate_test_user_home, LifecycleHarness,
+};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tracing::Instrument;
@@ -81,9 +83,9 @@ fn defer_totals() -> Vec<crate::diagnostics::attribution::StageSnapshot> {
         .collect()
 }
 
-async fn deliver_prompt(runtime: &RuntimeHandle) -> anyhow::Result<(u128, u128)> {
+async fn deliver_prompt(runtime: &RuntimeHandle, agent_id: &str) -> anyhow::Result<(u128, u128)> {
     let mut message = MessageEnvelope::new(
-        "foreground",
+        agent_id,
         MessageKind::OperatorPrompt,
         MessageOrigin::Operator {
             actor_id: Some("control".into()),
@@ -310,7 +312,7 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
                 }
                 .instrument(tracing::info_span!("fixture_recovery_scan"))
             });
-            let (provider_us, delivery_us) = deliver_prompt(&foreground).await?;
+            let (provider_us, delivery_us) = deliver_prompt(&foreground, "foreground").await?;
             let (admitted, scan_us) = scan.await??;
             assert!(!admitted);
             let stages = defer_totals()
@@ -433,6 +435,161 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
                     .windows(2)
                     .all(|pair| pair.iter().sum::<u64>() < 1_000_000),
                 "recovery exceeded one second of writer time per minute"
+            );
+        }
+    }
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit Task output history performance fixture"]
+async fn task_output_history_writer_cost() -> anyhow::Result<()> {
+    use crate::runtime::resident_task::{TaskCaptureRequest, TaskFamily, TaskKey};
+
+    let writer = WriterTrace::default();
+    tracing::subscriber::set_global_default(tracing_subscriber::registry().with(writer.clone()))?;
+    let stage_totals = || {
+        crate::diagnostics::attribution::snapshot()
+            .into_iter()
+            .filter(|stage| {
+                stage.name.starts_with("db.input.")
+                    || stage.name.starts_with("db.queue.input.")
+                    || matches!(
+                        stage.name.as_str(),
+                        "db.task.output_heads" | "db.task.domain_prepare"
+                    )
+            })
+            .collect::<Vec<_>>()
+    };
+    let stage_delta = |before: Vec<crate::diagnostics::attribution::StageSnapshot>| {
+        stage_totals()
+            .into_iter()
+            .zip(before)
+            .map(|(after, before)| (after.name, (after.total_ns - before.total_ns) / 1_000))
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    for header_count in [2_000, 20_000, 100_000] {
+        let harness = LifecycleHarness::with_provider(Arc::new(StubProvider::new(REPLY)));
+        let runtime = harness.runtime();
+        let db = runtime.runtime_db();
+        let tasks = (0..128)
+            .map(|index| TaskRecord {
+                id: format!("fixture-output-{index:03}"),
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Cancelled,
+                created_at: harness.now(),
+                updated_at: harness.now(),
+                parent_message_id: None,
+                work_item_id: None,
+                summary: None,
+                detail: None,
+                recovery: None,
+            })
+            .collect::<Vec<_>>();
+        let keys = tasks
+            .iter()
+            .map(|task| TaskKey::new(TaskFamily::Task, &task.id))
+            .collect();
+        super::owned_task_fixture_write(runtime, keys, move |tx| {
+            for task in &tasks {
+                crate::runtime_db::repositories::upsert_task_tx(tx, task)?;
+            }
+            Ok(())
+        })
+        .await;
+        // Headers are older than native prompt writes. Half the Tasks have
+        // a source in the recent window, and half use the historical fallback.
+        db.transaction(|tx| {
+            let mut insert = tx.prepare(
+                "INSERT INTO task_message_order_headers
+                 VALUES('default',1,?1,?1,NULL,'2000-01-01T00:00:00.000Z',1,?2)",
+            )?;
+            let digest = "0".repeat(64);
+            for index in 0..header_count {
+                insert.execute(rusqlite::params![format!("history-{index:08}"), digest])?;
+            }
+            let mut insert_source = tx.prepare(
+                "INSERT INTO task_message_sources VALUES('default',1,?1,?2,1,'cancelled',?3)",
+            )?;
+            for index in 0..128 {
+                let header_index = if index % 2 == 0 {
+                    index
+                } else {
+                    header_count - 128 + index
+                };
+                let source = format!("history-{header_index:08}");
+                let locator = serde_json::json!({
+                    "scope": {"agent_id":"default","identity_incarnation":1},
+                    "key": {"family":"message","id":source},
+                    "revision": 1, "content_digest":digest,
+                });
+                insert_source.execute(rusqlite::params![
+                    source,
+                    format!("fixture-output-{index:03}"),
+                    locator.to_string(),
+                ])?;
+            }
+            Ok(())
+        })?;
+
+        for trial in 0..3 {
+            let mut mutation = runtime.begin_mutation().await?;
+            let mut request = TaskCaptureRequest::current();
+            request.required_keys.insert(TaskKey::new(
+                TaskFamily::Task,
+                format!("fixture-missing-{trial}"),
+            ));
+            writer.0.lock().unwrap().clear();
+            let before = stage_totals();
+            mutation.prepare_owner_task_request(&request).await?;
+            let captured = mutation.capture_tasks(&request)?;
+            assert_eq!(captured.coverage.terminal.limit, 128);
+            assert_eq!(captured.coverage.output.heads.len(), 128);
+            let source = captured.coverage.output.heads["fixture-output-000"]
+                .source
+                .as_ref()
+                .context("fixture output source missing")?;
+            assert_eq!(source.message.key.id, "history-00000000");
+            assert_eq!(
+                source.availability,
+                crate::runtime::resident_task::TaskOutputSourceAvailability::MissingVersion
+            );
+            drop((captured, mutation));
+            let writes = std::mem::take(&mut *writer.0.lock().unwrap());
+            let prepare = writes
+                .first()
+                .context("Task prepare writer trace missing")?;
+            assert_eq!(writes.len(), 1);
+            let prepare_stages = stage_delta(before);
+
+            let before = stage_totals();
+            let (provider_us, delivery_us) = deliver_prompt(runtime, "default").await?;
+            let writes = std::mem::take(&mut *writer.0.lock().unwrap());
+            let writer_event = |operation| {
+                writes
+                    .iter()
+                    .find(|write| write.operation == operation)
+                    .with_context(|| format!("writer trace missing for {operation}"))
+            };
+            let admit = writer_event("runtime_db.prepared_input.queue_admit")?;
+            let claim = writer_event("runtime_db.prepared_input.queue_claim")?;
+            println!(
+                "TASK_OUTPUT_HISTORY {}",
+                serde_json::json!({
+                    "headers": header_count,
+                    "trial": trial,
+                    "prepare_hold_us": prepare.held_us,
+                    "prepare_queue_ms": prepare.queue_ms,
+                    "prepare_stages_us": prepare_stages,
+                    "prompt_stages_us": stage_delta(before),
+                    "admit_hold_us": admit.held_us,
+                    "admit_queue_ms": admit.queue_ms,
+                    "claim_hold_us": claim.held_us,
+                    "claim_queue_ms": claim.queue_ms,
+                    "provider_us": provider_us,
+                    "delivery_us": delivery_us,
+                }),
             );
         }
     }

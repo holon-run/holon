@@ -9,11 +9,37 @@ use crate::{
 
 // Both the fixed and current paths use received order metadata. A raw
 // canonical update cannot move another accepted Source into the global window.
-const HEADERS: &str = "SELECT h.evidence_id,h.message_seq,h.created_at,h.message_id FROM task_message_order_headers h WHERE h.agent_id=?1 AND h.identity_incarnation=?2";
 const SOURCE_AVAILABILITY: &str = "SELECT         EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3 AND availability='pruned') OR (NOT EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3) AND EXISTS(SELECT 1 FROM task_message_source_inventory i JOIN task_output_fixed_input_prunes p ON p.inventory_id=i.query_inventory_id AND p.family='message' JOIN task_query_fixed_messages f ON f.inventory_id=p.inventory_id AND f.evidence_id=p.record_id AND f.content_digest=p.content_digest WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND p.record_id=?3)),        EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3 AND availability='present' AND revision=?4 AND content_digest=?5),        EXISTS(SELECT 1 FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family='message' AND record_id=?3),        EXISTS(SELECT 1 FROM task_message_source_inventory i JOIN task_query_fixed_messages f ON f.inventory_id=i.query_inventory_id WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND f.evidence_id=?3 AND f.content_digest=?5), EXISTS(SELECT 1 FROM task_message_order_headers h WHERE h.agent_id=?1 AND h.identity_incarnation=?2 AND h.evidence_id=?3 AND h.revision=?4 AND h.content_digest=?5) ";
-fn recent_headers() -> String {
-    format!("{HEADERS} ORDER BY message_seq IS NULL ASC,message_seq DESC,created_at DESC,message_id ASC LIMIT 200")
-}
+
+const RECENT_HEADERS: &str = "
+    SELECT h.evidence_id, s.task_id, s.is_result
+    FROM task_message_order_headers h
+    LEFT JOIN task_message_sources s
+      ON s.agent_id=h.agent_id AND s.identity_incarnation=h.identity_incarnation
+      AND s.source_id=h.evidence_id
+    WHERE h.agent_id=?1 AND h.identity_incarnation=?2
+    ORDER BY h.message_seq DESC,h.created_at DESC,h.message_id ASC,h.evidence_id ASC
+    LIMIT ?3";
+
+const HISTORICAL_HEAD: &str = "
+    SELECT s.source_id
+    FROM task_message_sources s JOIN task_message_order_headers h
+      ON h.agent_id=s.agent_id AND h.identity_incarnation=s.identity_incarnation
+      AND h.evidence_id=s.source_id
+    WHERE s.agent_id=?1 AND s.identity_incarnation=?2 AND s.task_id=?3 AND s.is_result=?4
+    ORDER BY h.message_seq DESC,h.created_at DESC,h.message_id DESC
+    LIMIT 1";
+
+const SOURCE_HEAD: &str = "
+    SELECT s.source_id,s.source_locator_json,s.message_status,
+           length(CAST(s.source_locator_json AS BLOB))+length(CAST(s.message_status AS BLOB))
+           +length(CAST(s.source_id AS BLOB))+length(CAST(s.task_id AS BLOB))
+           +COALESCE((SELECT length(CAST(a.content_digest AS BLOB))+length(CAST(a.availability AS BLOB))
+                      FROM input_evidence_current a
+                      WHERE a.agent_id=?1 AND a.identity_incarnation=?2
+                        AND a.family='message' AND a.record_id=s.source_id),0)+128
+    FROM task_message_sources s
+    WHERE s.agent_id=?1 AND s.identity_incarnation=?2";
 
 /// Fresh-empty bootstrap is the only non-fixed way to seal an empty inventory.
 /// Existing canonical history needs the original fixed collector, not this API.
@@ -137,108 +163,167 @@ pub(super) fn observe_output_heads_tx(
     tasks: &[&TaskFactLocator],
     mut charge: impl FnMut(usize, usize) -> Result<()>,
 ) -> Result<TaskOutputCoverage> {
-    let complete = source_inventory_complete_tx(tx, scope)?;
-    ensure!(complete, TaskSnapshotError::OutputSourcesIncomplete);
-    let received_recent = recent_headers();
-    // Keep received tombstones/version misses in the ordering pool. The exact
-    // selected head carries availability; ordinary Task writers do not require
-    // an unrelated Source body or promote another historical candidate.
-    let (count,bytes):(usize,usize)=tx.query_row(&format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(evidence_id AS BLOB))+128),0) FROM ({received_recent})"),params![scope.agent_id,scope.identity_incarnation],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    charge(bytes, count)?;
-    let mut statement = tx.prepare(&format!("SELECT evidence_id FROM ({received_recent})"))?;
-    let message_ids = statement
-        .query_map(params![scope.agent_id, scope.identity_incarnation], |r| {
-            r.get::<_, String>(0)
-        })?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut timing = crate::diagnostics::attribution::TASK_OUTPUT_HEADS.start();
+    timing.rows(tasks.len());
     ensure!(
-        message_ids.len() == count,
-        "Task output window changed in original read view"
+        source_inventory_complete_tx(tx, scope)?,
+        TaskSnapshotError::OutputSourcesIncomplete
     );
-    let more: bool = tx.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM ({HEADERS}) LIMIT 1 OFFSET 200)"),
-        params![scope.agent_id, scope.identity_incarnation],
-        |r| r.get(0),
+    // SQLite sorts NULL sequences last in DESC order. The existing index
+    // supplies the first three ordering terms. The old scan broke exact ties
+    // in evidence ID order, including legacy headers with a NULL message ID.
+    // Store only the window positions of the first result and other source per
+    // selected Task. Unavailable sources still participate in the ordering.
+    charge(
+        std::mem::size_of::<(&str, [Option<usize>; 2])>()
+            .checked_add(64)
+            .and_then(|size| size.checked_mul(tasks.len()))
+            .context("Task output window selectors overflow")?,
+        0,
     )?;
-    let mut coverage = TaskOutputCoverage {
-        window: Some(TaskOutputWindowObservation {
-            message_ids,
-            is_exhaustive: !more,
-        }),
-        heads: BTreeMap::new(),
-    };
-    let mut source_availability = tx.prepare(SOURCE_AVAILABILITY)?;
+    let mut recent_heads = BTreeMap::new();
     for task in tasks {
         ensure!(
             task.scope == *scope && task.key.family == TaskFamily::Task,
             "Task output selector crossed namespace"
         );
-        let missing_order:bool=tx.query_row("SELECT EXISTS(SELECT 1 FROM task_message_sources s WHERE s.agent_id=?1 AND s.identity_incarnation=?2 AND s.task_id=?3 AND NOT EXISTS(SELECT 1 FROM task_message_order_headers h WHERE h.agent_id=s.agent_id AND h.identity_incarnation=s.identity_incarnation AND h.evidence_id=s.source_id))",params![scope.agent_id,scope.identity_incarnation,task.key.id],|row|row.get(0))?;
-        ensure!(!missing_order, TaskSnapshotError::OutputSourcesIncomplete);
-        let mut selected = None;
-        for (recent, result, place) in [
-            (true, true, TaskOutputSourcePlace::RecentResult),
-            (true, false, TaskOutputSourcePlace::RecentOther),
-            (false, true, TaskOutputSourcePlace::HistoricalResult),
-            (false, false, TaskOutputSourcePlace::HistoricalOther),
-        ] {
-            let predicate = if recent {
-                format!("m.evidence_id IN (SELECT evidence_id FROM ({received_recent}))")
-            } else {
-                "1".into()
-            };
-            let direction = if recent { "ASC" } else { "DESC" };
-            let from=format!("FROM task_message_sources s JOIN ({HEADERS}) m ON m.evidence_id=s.source_id WHERE s.agent_id=?1 AND s.identity_incarnation=?2 AND s.task_id=?3 AND s.is_result=?4 AND {predicate} ORDER BY m.message_seq IS NULL ASC,m.message_seq DESC,m.created_at DESC,m.message_id {direction} LIMIT 1");
-            let bytes:Option<usize>=tx.query_row(&format!("SELECT length(CAST(s.source_locator_json AS BLOB))+length(CAST(s.message_status AS BLOB))+length(CAST(s.source_id AS BLOB))+length(CAST(s.task_id AS BLOB))+COALESCE((SELECT length(CAST(a.content_digest AS BLOB))+length(CAST(a.availability AS BLOB)) FROM input_evidence_current a WHERE a.agent_id=?1 AND a.identity_incarnation=?2 AND a.family='message' AND a.record_id=s.source_id),0)+128 {from}"),params![scope.agent_id,scope.identity_incarnation,task.key.id,result],|r|r.get(0)).optional()?;
-            if let Some(bytes) = bytes {
-                charge(bytes, 1)?;
-                let (source_id, raw, message_status): (String, String, String) = tx.query_row(
-                    &format!("SELECT s.source_id,s.source_locator_json,s.message_status {from}"),
-                    params![
-                        scope.agent_id,
-                        scope.identity_incarnation,
-                        task.key.id,
-                        result
-                    ],
-                    |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-                )?;
-                let message: EvidenceLocator = serde_json::from_str(&raw)?;
-                ensure!(
-                    message.key.id == source_id
-                        && message.scope == *scope
-                        && message.key.family == InputEvidenceFamily::Message
-                        && message.revision > 0
-                        && valid_input_digest(&message.content_digest),
-                    "Task output source locator corrupt"
-                );
-                let availability =
-                    source_availability_tx(&mut source_availability, scope, &message)?;
-                let message_status =
-                    serde_json::from_value(serde_json::Value::String(message_status))?;
-                selected = Some(TaskOutputSourceHead {
-                    place,
-                    message,
-                    availability,
-                    message_status,
-                });
-                break;
+        ensure!(
+            recent_heads
+                .insert(task.key.id.as_str(), [None; 2])
+                .is_none(),
+            "duplicate Task output selector"
+        );
+    }
+    let mut message_ids = Vec::new();
+    let mut statement = tx.prepare_cached(RECENT_HEADERS)?;
+    let mut rows = statement.query(params![
+        scope.agent_id,
+        scope.identity_incarnation,
+        TASK_OUTPUT_RECENT_MESSAGES + 1,
+    ])?;
+    let mut is_exhaustive = true;
+    while let Some(row) = rows.next()? {
+        if message_ids.len() == TASK_OUTPUT_RECENT_MESSAGES {
+            is_exhaustive = false;
+            break;
+        }
+        let id = repositories::borrowed_payload(row)?;
+        charge(id.len() + 128, 1)?;
+        if let Some(task) = row.get_ref(1)?.as_str_or_null()? {
+            if let Some(heads) = recent_heads.get_mut(task) {
+                let result: bool = row.get(2)?;
+                heads[usize::from(result)].get_or_insert(message_ids.len());
             }
         }
+        message_ids.push(id.to_owned());
+    }
+    drop(rows);
+    drop(statement);
+    let mut heads = BTreeMap::new();
+    let mut missing_order = tx.prepare_cached(
+        "SELECT EXISTS(SELECT 1 FROM task_message_sources s
+         WHERE s.agent_id=?1 AND s.identity_incarnation=?2 AND s.task_id=?3
+           AND NOT EXISTS(SELECT 1 FROM task_message_order_headers h
+                          WHERE h.agent_id=s.agent_id AND h.identity_incarnation=s.identity_incarnation
+                            AND h.evidence_id=s.source_id))",
+    )?;
+    let mut recent_source = tx.prepare_cached(&format!("{SOURCE_HEAD} AND s.source_id=?3"))?;
+    let mut historical_source = tx.prepare_cached(&format!(
+        "{SOURCE_HEAD} AND s.source_id=({HISTORICAL_HEAD})"
+    ))?;
+    let mut source_availability = tx.prepare_cached(SOURCE_AVAILABILITY)?;
+    for task in tasks {
+        let missing: bool = missing_order.query_row(
+            params![scope.agent_id, scope.identity_incarnation, task.key.id],
+            |row| row.get(0),
+        )?;
+        ensure!(!missing, TaskSnapshotError::OutputSourcesIncomplete);
+        let [other, result] = recent_heads[task.key.id.as_str()];
+        let selected = if let Some((index, place)) = result
+            .map(|index| (index, TaskOutputSourcePlace::RecentResult))
+            .or_else(|| other.map(|index| (index, TaskOutputSourcePlace::RecentOther)))
+        {
+            let mut rows = recent_source.query(params![
+                scope.agent_id,
+                scope.identity_incarnation,
+                message_ids[index]
+            ])?;
+            let row = rows
+                .next()?
+                .context("Task output window source disappeared")?;
+            Some(read_source_head(
+                row,
+                scope,
+                place,
+                &mut source_availability,
+                &mut charge,
+            )?)
+        } else {
+            let mut selected = None;
+            for (result, place) in [
+                (true, TaskOutputSourcePlace::HistoricalResult),
+                (false, TaskOutputSourcePlace::HistoricalOther),
+            ] {
+                let mut rows = historical_source.query(params![
+                    scope.agent_id,
+                    scope.identity_incarnation,
+                    task.key.id,
+                    result,
+                ])?;
+                if let Some(row) = rows.next()? {
+                    selected = Some(read_source_head(
+                        row,
+                        scope,
+                        place,
+                        &mut source_availability,
+                        &mut charge,
+                    )?);
+                    break;
+                }
+            }
+            selected
+        };
         charge(read_preparation::encoded_metadata_bytes(task)? + 128, 1)?;
         let observed = TaskOutputHeadObservation {
             task: (*task).clone(),
             source: selected,
         };
         observed.validate(task)?;
-        ensure!(
-            coverage
-                .heads
-                .insert(task.key.id.clone(), observed)
-                .is_none(),
-            "duplicate Task output selector"
-        );
+        heads.insert(task.key.id.clone(), observed);
     }
-    Ok(coverage)
+    Ok(TaskOutputCoverage {
+        window: Some(TaskOutputWindowObservation {
+            message_ids,
+            is_exhaustive,
+        }),
+        heads,
+    })
+}
+
+fn read_source_head(
+    row: &rusqlite::Row<'_>,
+    scope: &InputEvidenceScope,
+    place: TaskOutputSourcePlace,
+    availability: &mut rusqlite::Statement<'_>,
+    charge: &mut impl FnMut(usize, usize) -> Result<()>,
+) -> Result<TaskOutputSourceHead> {
+    charge(row.get(3)?, 1)?;
+    let source_id = repositories::borrowed_payload(row)?;
+    let message: EvidenceLocator = serde_json::from_str(row.get_ref(1)?.as_str()?)?;
+    ensure!(
+        message.key.id == source_id
+            && message.scope == *scope
+            && message.key.family == InputEvidenceFamily::Message
+            && message.revision > 0
+            && valid_input_digest(&message.content_digest),
+        "Task output source locator corrupt"
+    );
+    Ok(TaskOutputSourceHead {
+        place,
+        availability: source_availability_tx(availability, scope, &message)?,
+        message,
+        message_status: serde_json::from_value(serde_json::Value::String(row.get(2)?))?,
+    })
 }
 
 fn source_availability_tx(

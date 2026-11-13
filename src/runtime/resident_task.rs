@@ -33,7 +33,7 @@ mod query;
 pub(crate) use query::{
     task_output_status_from_message, TaskOutputCoverage, TaskOutputHeadObservation,
     TaskOutputSourceAvailability, TaskOutputSourceHead, TaskOutputSourcePlace,
-    TaskOutputWindowObservation,
+    TaskOutputWindowObservation, TASK_OUTPUT_RECENT_MESSAGES,
 };
 
 #[path = "resident_task_status.rs"]

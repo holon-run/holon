@@ -153,6 +153,7 @@ impl ContextScopeRead<'_> {
 
 fn scope_read_fingerprint(connection: &Connection, agent: &str) -> Result<[u8; 32]> {
     use sha2::{Digest, Sha256};
+    let _stage = crate::diagnostics::attribution::INPUT_SCOPE_FINGERPRINT.start();
     Ok(connection
         .query_row(
             "SELECT i.agent_id,i.payload_json,i.status,s.payload_json,s.control_revision
@@ -261,8 +262,10 @@ impl<'a> ContextDurableRead<'a> {
         proof: Option<&ContextStateDecode>,
     ) -> Result<ContextScopeRead<'a>> {
         let identity = self.identity_fact()?;
-        let (state, control_revision, decoded_state) =
-            self.state_facts_using_decode(identity.as_ref(), proof, true)?;
+        let (state, control_revision, decoded_state) = {
+            let _stage = crate::diagnostics::attribution::INPUT_SCOPE_STATE.start();
+            self.state_facts_using_decode(identity.as_ref(), proof, true)?
+        };
         let facts = ContextScopeFacts {
             identity,
             state,
@@ -337,6 +340,7 @@ impl<'a> ContextDurableRead<'a> {
                 })
             }
             None => {
+                let mut stage = crate::diagnostics::attribution::INPUT_STATE_DECODE.start();
                 // A typed State or serialization match cannot mint this proof.
                 // This decoder owns one State, not a completion/resolver tree.
                 // Admit raw JSON before SQLite traversal and owning nodes before
@@ -360,6 +364,7 @@ impl<'a> ContextDurableRead<'a> {
                         return Err(error.into());
                     }
                 };
+                stage.rows(nodes);
                 crate::diagnostics::resource_io::charge_owned_metadata(
                     u64::try_from(nodes)?
                         .checked_mul(u64::try_from(std::mem::size_of::<serde_json::Value>())?)
