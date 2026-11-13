@@ -267,53 +267,17 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
                 == 0,
             InputQueryError::FrontierNotPrepared
         );
-        db.transaction_with_context(
-            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
-                "runtime_db.input_preparation",
-                "input_query_birth_cursors",
-            ),
-            |tx| {
-                crate::runtime_db::input_preparation::initialize_input_birth_cursor_tx(
-                    tx,
-                    &scope,
-                    &published.state,
-                    original_recovery,
-                )
-            },
-        )?;
+        initialize_input_birth_cursor(db, &scope, &published.state, original_recovery)?;
         loaded = read();
     }
-    let mut attempted_keys = std::collections::BTreeSet::new();
-    while let Some(plan) = loaded.as_ref().err().and_then(|error| {
-        error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputQualificationPlan>()
-    }) {
-        // Completion edges require the previous batch to be qualified before
-        // the reader can discover another batch. Repeated keys cannot progress.
-        if !plan
-            .keys()
-            .iter()
-            .all(|key| attempted_keys.insert(key.clone()))
-        {
-            break;
-        }
-        tracing::debug!(agent_id = %scope.agent_id, keys = plan.keys().len(), "qualifying selected Input evidence");
-        db.transaction_with_context(
-            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
-                "runtime_db.input_preparation",
-                "input_evidence_qualification",
-            ),
-            |tx| {
-                crate::runtime_db::input_preparation::qualify_input_for_preparation_tx(
-                    tx,
-                    &scope,
-                    &published.state,
-                    plan,
-                    original_recovery,
-                )
-            },
-        )?;
-        loaded = read();
-    }
+    let loaded = qualify_and_reload_input(
+        db,
+        &scope,
+        &published.state,
+        original_recovery,
+        loaded,
+        read,
+    );
     let (prepared, current) = loaded?;
     // Sidecar preparation is idempotent and cannot change canonical facts.
     // A failed/indeterminate transaction leaves the old published root intact;
@@ -364,6 +328,90 @@ enum QualificationMiss {
     SchedulingEvidence,
     SchedulingCoverage,
     InputQuery,
+}
+
+/// Retry an owner-held read only when it identifies exact, eligible Input keys.
+fn qualify_and_reload_input<T>(
+    db: &RuntimeDb,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    original_recovery: bool,
+    mut loaded: Result<T>,
+    mut read: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    let mut attempted_keys = std::collections::BTreeSet::new();
+    while let Some(plan) = loaded.as_ref().err().and_then(|error| {
+        error.downcast_ref::<crate::runtime_db::input_evidence_snapshot::InputQualificationPlan>()
+    }) {
+        // Completion edges require the previous batch to be qualified before
+        // the reader can discover another batch. Repeated keys cannot progress.
+        if !plan
+            .keys()
+            .iter()
+            .all(|key| attempted_keys.insert(key.clone()))
+        {
+            break;
+        }
+        tracing::debug!(agent_id = %scope.agent_id, keys = plan.keys().len(), "qualifying selected Input evidence");
+        db.transaction_with_context(
+            crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+                "runtime_db.input_preparation",
+                "input_evidence_qualification",
+            ),
+            |tx| {
+                crate::runtime_db::input_preparation::qualify_input_for_preparation_tx(
+                    tx,
+                    scope,
+                    state,
+                    plan,
+                    original_recovery,
+                )
+            },
+        )?;
+        loaded = read();
+    }
+    loaded
+}
+
+/// The caller holds the same owner through the read and any sidecar repair.
+/// A reader lease ends before any writer ticket is acquired.
+pub(super) fn read_owner_input<T>(
+    db: &RuntimeDb,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    original_recovery: bool,
+    mut observe: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
+) -> Result<T> {
+    let mut read = || db.read_for_preparation(&mut observe);
+    let mut loaded = read();
+    if loaded.as_ref().err().and_then(qualification_miss) == Some(QualificationMiss::BirthCursor) {
+        // These finite selections never request a birth range.
+        initialize_input_birth_cursor(db, scope, state, original_recovery)?;
+        loaded = read();
+    }
+    qualify_and_reload_input(db, scope, state, original_recovery, loaded, read)
+}
+
+fn initialize_input_birth_cursor(
+    db: &RuntimeDb,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    original_recovery: bool,
+) -> Result<()> {
+    db.transaction_with_context(
+        crate::runtime_db::write_queue::RuntimeDbWriteContext::sync(
+            "runtime_db.input_preparation",
+            "input_query_birth_cursors",
+        ),
+        |tx| {
+            crate::runtime_db::input_preparation::initialize_input_birth_cursor_tx(
+                tx,
+                scope,
+                state,
+                original_recovery,
+            )
+        },
+    )
 }
 
 fn qualification_miss(error: &anyhow::Error) -> Option<QualificationMiss> {

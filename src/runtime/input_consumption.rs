@@ -907,7 +907,7 @@ impl RuntimeHandle {
             &mutation.input_evidence_scope(),
         )?;
         let (state, snapshot, cancelled) = mutation.idle_selection_snapshot(&material)?;
-        let selected = self.with_idle_read(Some(&state), &material, |read| {
+        let selected = self.with_idle_preparation_read(&mutation, &material, |read| {
         let state = &state;
         let Some(binding) = state.current_execution_binding.as_ref() else {
             return Ok(None);
@@ -1611,7 +1611,7 @@ impl RuntimeHandle {
             &mutation.input_evidence_scope(),
         )?;
         let (state, _, cancelled) = mutation.idle_selection_snapshot(&material)?;
-        let plan = self.with_idle_read(Some(&state), &material, |read| {
+        let plan = self.with_idle_preparation_read(&mutation, &material, |read| {
             let expected = &state;
             let Some(binding) = expected.current_execution_binding.as_ref() else {
                 return Ok(None);
@@ -1691,7 +1691,7 @@ impl RuntimeHandle {
             &mutation.input_evidence_scope(),
         )?;
         let (expected, snapshot, cancelled) = mutation.idle_selection_snapshot(&material)?;
-        let plan = self.with_idle_read(Some(&expected), &material, |read| {
+        let plan = self.with_idle_preparation_read(&mutation, &material, |read| {
             let Some(binding) = expected.current_execution_binding.as_ref() else {
                 return Ok(None);
             };

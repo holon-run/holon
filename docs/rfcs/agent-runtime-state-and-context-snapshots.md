@@ -2858,6 +2858,11 @@ through a pooled read. Only typed missing qualification permits its original
 initialization transaction. Pool admission failures and canonical drift do not
 authorize that fallback. Pure query reads never initialize a missing birth
 cursor. First qualification remains atomic under the same held owner.
+Prompt recovery and idle input selection, and Brief image preparation, observe
+their exact candidates in a pooled Deferred transaction under the held owner.
+An explicit qualification plan or missing empty query cursor closes that read
+before a scoped sidecar write. Selection then reads a fresh view. Actual input
+consumption and Brief publication retain their existing commit boundaries.
 Projection-effect inventory verification borrows grouped SQLite kind/schema
 text. Unsupported diagnostic Strings and their list slots are admitted together
 before formatting on the original caller phase; the warning streams borrowed

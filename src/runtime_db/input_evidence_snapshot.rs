@@ -1494,6 +1494,7 @@ pub(crate) fn prepare_named_input_evidence_tx(
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
     read: &ContextScopeRead<'_>,
+    plan_qualification: bool,
 ) -> Result<ResidentInputEvidence> {
     read.validate(tx, scope)?;
     ensure!(
@@ -1514,7 +1515,11 @@ pub(crate) fn prepare_named_input_evidence_tx(
         tx,
         scope,
         request.borrowed(),
-        QualificationMode::Write,
+        if plan_qualification {
+            QualificationMode::Plan
+        } else {
+            QualificationMode::Write
+        },
         None,
         Some(read),
         false,
