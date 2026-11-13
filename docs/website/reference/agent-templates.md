@@ -157,6 +157,16 @@ discrepancies, missing documentation, and upcoming renewal deadlines visible. It
 does not initiate payments or fund transfers, cancel subscriptions, or certify
 tax filings without explicit operator approval.
 
+## Support operations
+
+`support-ops-steward` maintains an authorized support queue: source and
+collection time, open-item priority, owner, waiting party, escalation deadline,
+last human decision, and why an item cannot close. It drafts handoffs that need
+a human reply, refund, security review, or legal review. It does not reply to
+customers, change ticket, email, spreadsheet, or chat systems, or promise
+refunds, compensation, or fix times without explicit approval. Customer health,
+email triage, and GitHub issue triage stay with their own roles.
+
 ## Delegated leadership and coordination
 
 `chief-of-staff` represents the operator within an explicit mandate, turns
