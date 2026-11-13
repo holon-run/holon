@@ -38,6 +38,7 @@ fn observation(
     Ok(ExternalTriggerWriterObservation {
         scope: scope(),
         record,
+        current_revision: None,
         bytes: 0,
         records: 0,
         ledger: budget.clone(),

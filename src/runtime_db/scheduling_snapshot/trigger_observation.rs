@@ -11,6 +11,7 @@ mod body_budget_tests;
 pub(crate) struct ExternalTriggerWriterObservation {
     scope: InputEvidenceScope,
     record: Option<ExternalTriggerRecord>,
+    current_revision: Option<u64>,
     bytes: usize,
     records: usize,
     ledger: InputEvidenceBudgetLedger,
@@ -42,6 +43,9 @@ impl ExternalTriggerWriterObservation {
     }
     pub(crate) fn record(&self) -> Option<&ExternalTriggerRecord> {
         self.record.as_ref()
+    }
+    pub(crate) fn current_revision(&self) -> Option<u64> {
+        self.current_revision
     }
     pub(crate) fn scope(&self) -> &InputEvidenceScope {
         &self.scope
@@ -75,13 +79,19 @@ fn observe_tx(
     original_cleanup: bool,
     request: &SchedulingDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
+    expected_state: Option<&crate::types::AgentState>,
 ) -> Result<ExternalTriggerWriterObservation> {
     let phase =
         crate::diagnostics::resource_io::ResourceReadMaterial::current_or_new(ledger, scope)?;
     let _resource_io = phase.enter();
     let mut material = Material::new(scope, request, ledger);
-    loader::scope_facts(tx, scope, &mut material, original_cleanup)?
+    let facts = loader::scope_facts(tx, scope, &mut material, original_cleanup)?
         .context(SchedulingSnapshotError::RetiredScope)?;
+    ensure!(
+        expected_state.is_none_or(|state| facts.state.as_deref() == Some(state)),
+        "Trigger observation differs from the held State"
+    );
+    drop(facts);
     let id = if let Some(id) = id {
         material.charge(
             id.len()
@@ -118,6 +128,7 @@ fn observe_tx(
         return Ok(ExternalTriggerWriterObservation {
             scope: scope.clone(),
             record: None,
+            current_revision: None,
             bytes: material.bytes,
             records: material.records,
             ledger: ledger.clone(),
@@ -145,6 +156,7 @@ fn observe_tx(
     Ok(ExternalTriggerWriterObservation {
         scope: scope.clone(),
         record,
+        current_revision: proof.had_coverage.then_some(proof.base_revision),
         bytes: proof.material_bytes,
         records: proof.material_records,
         ledger: ledger.clone(),
@@ -158,9 +170,11 @@ impl ExternalTriggerRepository<'_> {
         scope: &InputEvidenceScope,
         request: &SchedulingDomainLoadRequest,
         ledger: &InputEvidenceBudgetLedger,
+        expected_state: Option<&crate::types::AgentState>,
     ) -> Result<ExternalTriggerWriterObservation> {
-        self.db
-            .transaction(|tx| observe_tx(tx, scope, None, false, request, ledger))
+        self.db.read_for_preparation(|tx| {
+            observe_tx(tx, scope, None, false, request, ledger, expected_state)
+        })
     }
     pub(crate) fn observe_active_for_admission(
         &self,
@@ -170,7 +184,7 @@ impl ExternalTriggerRepository<'_> {
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<ExternalTriggerWriterObservation> {
         self.db
-            .transaction(|tx| observe_tx(tx, scope, Some(id), false, request, ledger))
+            .transaction(|tx| observe_tx(tx, scope, Some(id), false, request, ledger, None))
     }
     /// Original accounting/revocation only; it grants no new Active ingress.
     pub(crate) fn observe_existing_for_cleanup(
@@ -181,7 +195,7 @@ impl ExternalTriggerRepository<'_> {
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<ExternalTriggerWriterObservation> {
         self.db
-            .transaction(|tx| observe_tx(tx, scope, Some(id), true, request, ledger))
+            .transaction(|tx| observe_tx(tx, scope, Some(id), true, request, ledger, None))
     }
 }
 impl SchedulingWriteProof<'_, '_> {
