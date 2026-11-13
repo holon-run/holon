@@ -258,6 +258,7 @@ pub(in crate::runtime) struct IdleRead<'a, 'connection> {
     pub tx: &'a Transaction<'connection>,
     pub scope: crate::runtime::resident_input_evidence::InputEvidenceScope,
     scope_read: ContextScopeRead<'a>,
+    plan_input_qualification: bool,
     task_material: ResourceReadMaterial,
     source_read: results::TaskResultSourceRead<'a, 'connection>,
     input_reads: RefCell<
@@ -279,6 +280,7 @@ impl<'a, 'connection> IdleRead<'a, 'connection> {
         runtime: &'a RuntimeHandle,
         tx: &'a Transaction<'connection>,
         expected: Option<&AgentState>,
+        plan_input_qualification: bool,
     ) -> Result<Self> {
         let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
             agent_id: runtime.inner.mutation_owner.agent_id().to_owned(),
@@ -314,6 +316,7 @@ impl<'a, 'connection> IdleRead<'a, 'connection> {
             tx,
             scope,
             scope_read: facts,
+            plan_input_qualification,
             task_material,
             source_read: results::TaskResultSourceRead::new(
                 tx,
@@ -355,8 +358,13 @@ impl<'a, 'connection> IdleRead<'a, 'connection> {
             self.scope_read.validate(self.tx, &self.scope)?;
             return Ok(captured.clone());
         }
-        let resident =
-            prepare_named_input_evidence_tx(self.tx, &self.scope, request, &self.scope_read)?;
+        let resident = prepare_named_input_evidence_tx(
+            self.tx,
+            &self.scope,
+            request,
+            &self.scope_read,
+            self.plan_input_qualification,
+        )?;
         let captured = resident
             .with_budget(self.runtime.inner.input_evidence_budget.clone())?
             .capture_for_request(request)?;
@@ -1616,9 +1624,28 @@ impl RuntimeHandle {
         material.read(|| {
             self.inner.runtime_db.transaction(|tx| {
                 prepare.take().context("idle selection already executed")?(&IdleRead::new(
-                    self, tx, expected,
+                    self, tx, expected, false,
                 )?)
             })
+        })
+    }
+
+    pub(super) fn with_idle_preparation_read<T>(
+        &self,
+        owner: &super::super::state_mutation::RuntimeMutation,
+        material: &ResourceReadMaterial,
+        mut observe: impl FnMut(&IdleRead<'_, '_>) -> Result<T>,
+    ) -> Result<T> {
+        let scope = owner.input_evidence_scope();
+        let state = owner.committed_state();
+        material.read(|| {
+            super::super::input_preparation::read_owner_input(
+                &self.inner.runtime_db,
+                &scope,
+                state,
+                false,
+                |tx| observe(&IdleRead::new(self, tx, Some(state), true)?),
+            )
         })
     }
 }

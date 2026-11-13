@@ -264,6 +264,89 @@ async fn image_inputs_refuse_raw_and_changed_tools_without_publication() -> Resu
 }
 
 #[tokio::test]
+async fn qualified_prompt_observations_finish_while_the_writer_is_held() -> Result<()> {
+    let (runtime, _home, turn) = fixture().await?;
+    let anchor_id = runtime
+        .agent_state()
+        .await?
+        .current_execution_binding
+        .context("fixture execution binding missing")?
+        .source_message_id;
+    let anchor = runtime
+        .storage()
+        .read_message_by_id(&anchor_id)?
+        .context("fixture message missing")?;
+    let record = tool(&turn, 1);
+    runtime.persist_tool_execution_evidence(&record).await?;
+
+    let db = runtime.runtime_db().clone();
+    let (held, writer_started) = std::sync::mpsc::channel();
+    let (release, wait_for_release) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        db.transaction(|_| {
+            held.send(())?;
+            wait_for_release.recv_timeout(std::time::Duration::from_secs(10))?;
+            Ok(())
+        })
+    });
+    writer_started.recv_timeout(std::time::Duration::from_secs(10))?;
+    let observations = async {
+        assert!(!runtime.recover_interrupted_live_inputs(&anchor).await?);
+        assert!(!runtime.admit_idle_task_results(&anchor, 24 * 1024).await?);
+        assert!(
+            !runtime
+                .attach_idle_sender_inputs(&anchor, 24 * 1024)
+                .await?
+        );
+        let images = runtime.read_generated_image_inputs(&turn).await?;
+        assert_eq!(images.tools[0].id, record.id);
+        Ok::<_, anyhow::Error>(())
+    }
+    .await;
+    let released = release.send(());
+    writer.join().expect("writer thread panicked")?;
+    released?;
+    observations
+}
+
+#[tokio::test]
+async fn image_read_initializes_a_missing_empty_query_cursor() -> Result<()> {
+    let (runtime, _home, turn) = fixture().await?;
+    runtime.runtime_db().transaction(|tx| {
+        // Model a preexisting agent with no birth inventory for this query.
+        tx.execute(
+            "DELETE FROM input_query_birth_members WHERE agent_id='image-inputs'",
+            [],
+        )?;
+        tx.execute(
+            "DELETE FROM input_query_birth_cursors WHERE agent_id='image-inputs'",
+            [],
+        )?;
+        Ok(())
+    })?;
+    let token = runtime.inner.mutation_owner.capture()?.unwrap().token;
+    assert!(runtime
+        .read_generated_image_inputs(&turn)
+        .await?
+        .tools
+        .is_empty());
+    runtime.runtime_db().read_for_preparation(|tx| {
+        let cursor: u64 = tx.query_row(
+            "SELECT high_water FROM input_query_birth_cursors WHERE agent_id='image-inputs'",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(cursor, 0);
+        Ok(())
+    })?;
+    assert_eq!(
+        runtime.inner.mutation_owner.capture()?.unwrap().token,
+        token
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn image_attachment_decode_enters_original_material_before_allocating() -> Result<()> {
     let (runtime, _home, turn) = fixture().await?;
     runtime
