@@ -410,6 +410,7 @@ pub(crate) struct PreparedInputTransition {
     ended_memory: Option<crate::runtime::ended_dispatch::EndedDispatchAuthorization>,
     original_dispatch_claim: Option<crate::runtime::started_dispatch::OriginalDispatchClaim>,
     auto_base_descriptor: Option<PreparedInputMutation>,
+    defer_task_base: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
 }
 impl PreparedInputTransition {
     /// Only the original typed Queue ACK can carry this read-only observation.
@@ -813,6 +814,7 @@ impl PreparedInputTransition {
             ended_memory: None,
             original_dispatch_claim: None,
             auto_base_descriptor: None,
+            defer_task_base: None,
         })
     }
     pub(crate) fn with_original_dispatch_claim(
@@ -847,6 +849,16 @@ impl PreparedInputTransition {
                 ..
             })
         )
+    }
+
+    pub(crate) fn with_defer_task_base(
+        mut self,
+        tasks: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
+    ) -> Self {
+        if self.is_task_result_defer() {
+            self.defer_task_base = tasks;
+        }
+        self
     }
 
     pub(crate) fn owned_payload_bytes(&self) -> Result<u64> {

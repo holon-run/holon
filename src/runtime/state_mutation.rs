@@ -1693,7 +1693,9 @@ impl RuntimeMutation {
                 },
             )
             .collect::<Vec<_>>();
-        let prepared = prepared.with_scope_group(scopes)?;
+        let prepared = prepared
+            .with_scope_group(scopes)?
+            .with_defer_task_base(self.tasks.clone());
         self.validate_initial_readonly_stop(&prepared)?;
         let prepared = self.attach_actual_dispatch_memory(prepared)?;
         let _owned = self
