@@ -13,6 +13,7 @@ mod child_terminal;
 mod command_terminal;
 #[path = "prepared_task_terminal_business.rs"]
 mod task_terminal_business;
+use crate::diagnostics::attribution;
 use crate::runtime_db::input_mutation_receipts::{
     canonical_command_digest, insert_input_mutation_receipt_tx, lookup_input_mutation_receipt_tx,
     InputMutationFamily, InputMutationOutcome, InputMutationReceipt, InputMutationResult,
@@ -328,7 +329,7 @@ impl InputTransitionCommand {
             Self::QueueHeadNoProgress { .. } => "runtime_db.prepared_input.queue_head_no_progress",
             Self::Terminal(_) => "runtime_db.prepared_input.terminal",
             Self::Task(_) => "runtime_db.prepared_input.task",
-            Self::TaskResult(_) => "runtime_db.prepared_input.task_result",
+            Self::TaskResult(command) => command.operation.write_operation(),
             Self::LiveInputAttachment(_) => "runtime_db.prepared_input.live_input_attachment",
             Self::LiveInputRecovery(_) => "runtime_db.prepared_input.live_input_recovery",
             Self::ContextBudgetStopRecovery { .. } => {
@@ -836,6 +837,16 @@ impl PreparedInputTransition {
     }
     pub(crate) fn descriptor(&self) -> &PreparedInputMutation {
         &self.descriptor
+    }
+
+    pub(crate) fn is_task_result_defer(&self) -> bool {
+        matches!(
+            self.command.as_ref(),
+            InputTransitionCommand::TaskResult(PreparedTaskResultTransition {
+                operation: TaskResultOperation::Defer { .. },
+                ..
+            })
+        )
     }
 
     pub(crate) fn owned_payload_bytes(&self) -> Result<u64> {
@@ -3043,6 +3054,7 @@ impl RuntimeTransitionRepository<'_> {
                 && prepared.command.agent_id() == scope.agent_id,
             "prepared input transition scope differs from its repository"
         );
+        let measure_defer = prepared.is_task_result_defer();
         let commit = |tx: &Transaction<'_>| {
             if let InputTransitionCommand::ExternalTrigger(command) = prepared.command.as_ref() {
                 return trigger_writes::commit_tx(
@@ -3115,7 +3127,9 @@ impl RuntimeTransitionRepository<'_> {
                     current_query_source,
                 );
             }
-            let mut preflight = match Self::prepare_transition_preflight_tx(
+            let defer_preflight =
+                measure_defer.then(|| attribution::TASK_RESULT_DEFER_PREFLIGHT.start());
+            let preflight = Self::prepare_transition_preflight_tx(
                 tx,
                 prepared,
                 scope,
@@ -3125,7 +3139,9 @@ impl RuntimeTransitionRepository<'_> {
                 scheduling_request,
                 input_query_source,
                 current_query_source,
-            )? {
+            );
+            drop(defer_preflight);
+            let mut preflight = match preflight? {
                 PreparedTransitionPreflight::Ready(context) => context,
                 PreparedTransitionPreflight::Replayed {
                     receipt,
@@ -3272,12 +3288,20 @@ impl RuntimeTransitionRepository<'_> {
                         InputMutationResult::Transition,
                     )
                 }
-                InputTransitionCommand::TaskResult(_) => Self::commit_prepared_task_result_tx(
-                    preflight
-                        .task_transaction
-                        .as_mut()
-                        .context("TaskResult omitted its original proof")?,
-                )?,
+                InputTransitionCommand::TaskResult(_) => {
+                    let mut timer =
+                        measure_defer.then(|| attribution::TASK_RESULT_DEFER_RESULT.start());
+                    let (value, result) = Self::commit_prepared_task_result_tx(
+                        preflight
+                            .task_transaction
+                            .as_mut()
+                            .context("TaskResult omitted its original proof")?,
+                    )?;
+                    if let Some(timer) = &mut timer {
+                        timer.rows(value.effects.task_write_keys.len());
+                    }
+                    (value, result)
+                }
                 InputTransitionCommand::Task(task) => {
                     let pending = preflight
                         .task_transaction
@@ -3780,6 +3804,8 @@ impl RuntimeTransitionRepository<'_> {
             }
             let mut child_usage = None;
             if let Some(tasks) = preflight.task_transaction {
+                let _defer_finalization =
+                    measure_defer.then(|| attribution::TASK_RESULT_DEFER_FINALIZATION.start());
                 if prepared.original_child_terminal().is_some() {
                     child_usage = Some(tasks.finish_original_child(
                         tx,
@@ -4012,8 +4038,11 @@ impl RuntimeTransitionRepository<'_> {
                         .context("automatic memory omitted intent")?,
                 )?;
             }
-            let receipt =
-                insert_input_mutation_receipt_tx(tx, &prepared.descriptor, &outcome, Utc::now())?;
+            let receipt = {
+                let _defer_receipt =
+                    measure_defer.then(|| attribution::TASK_RESULT_DEFER_RECEIPT.start());
+                insert_input_mutation_receipt_tx(tx, &prepared.descriptor, &outcome, Utc::now())?
+            };
             // A successful no-op still wrote its receipt in this transaction.
             if let InputTransitionCommand::Audit { fault, .. } = prepared.command.as_ref() {
                 inject_fault(*fault, TransitionFaultPoint::BeforeCommit)?;

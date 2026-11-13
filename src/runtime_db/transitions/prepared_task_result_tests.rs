@@ -193,6 +193,71 @@ fn pending(
 }
 
 #[test]
+fn result_defer_records_callback_phases_and_preserves_receipt_replay() -> Result<()> {
+    use crate::diagnostics::attribution;
+
+    let f = Fixture::new()?;
+    let ledger = ledger()?;
+    let (source, _) = pending(&f, &ledger, false)?;
+    let request = request();
+    for (nonce, message_id, applied) in [
+        ("measure-defer-absent", "absent-message", false),
+        ("measure-defer-pending", source.id.as_str(), true),
+    ] {
+        let at = f.at + chrono::Duration::seconds(1);
+        let deadline = at + chrono::Duration::seconds(30);
+        let p = freeze_result(
+            &f,
+            nonce,
+            TaskResultOperation::Defer {
+                message_id: message_id.into(),
+                reason: "synthetic-defer-reason".into(),
+                at,
+                deadline,
+            },
+        )?;
+        assert_eq!(
+            p.command.write_context().operation,
+            "runtime_db.prepared_input.task_result.defer"
+        );
+
+        let before = attribution::snapshot();
+        let InputMutationExecution::Committed { value, receipt } =
+            execute(&f, &p, &request, &ledger)?
+        else {
+            panic!("Defer original must commit");
+        };
+        let after = attribution::snapshot();
+        for phase in ["preflight", "result", "finalization", "receipt"] {
+            let stage = format!("db.task_result.defer.{phase}");
+            let before = before.iter().find(|sample| sample.name == stage).unwrap();
+            let after = after.iter().find(|sample| sample.name == stage).unwrap();
+            // Other tests can contribute to these process-wide counters.
+            assert!(after.count > before.count, "{stage}");
+            if applied && phase == "result" {
+                assert!(after.rows > before.rows);
+            }
+        }
+        assert_eq!(value.applied, applied);
+        let results::TaskResultWriteOutcome::Record(record) = outcome(&receipt) else {
+            panic!("Defer must return a record outcome");
+        };
+        assert_eq!(
+            record.as_ref().and_then(|record| record.next_recheck_at),
+            applied.then_some(deadline)
+        );
+        let InputMutationExecution::Replayed {
+            receipt: replayed, ..
+        } = execute(&f, &p, &request, &ledger)?
+        else {
+            panic!("Defer repeated nonce must replay");
+        };
+        assert_eq!(replayed, receipt);
+    }
+    Ok(())
+}
+
+#[test]
 fn result_successful_empty_returns_have_original_receipts_before_later_rows() -> Result<()> {
     let f = Fixture::new()?;
     let ledger = ledger()?;
