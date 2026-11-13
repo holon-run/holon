@@ -5430,9 +5430,44 @@ Metadata invalidation, pure captures and rejection of changed/unqualified bodies
 remain mandatory. A committed Work write is not retried to repair its result
 projection.
 
-The blocking State projection retains the same read scope through preparation
-and final capture under one owner. No intervening metadata publication may
-separate a prepared cut from its capture.
+Loaded State captures only a Ready publication under the original read scope.
+Its identity, Queue posture and bounded scheduler Event facts come from that
+same root, not a prepared CurrentQuery. Work, Task, Scheduling, RecentBriefs
+and the live execution frontier retain their existing qualified selectors,
+limits and material ownership. An absent dependency or stale Event frontier
+returns retryable unavailable; ordinary State reads never prepare, reconcile
+or publish. Initial loading and the original commit/recovery writers must
+publish these dependencies before their successful result becomes observable.
+Current and Preview retain their independent preparation contracts. Workspace
+enrichment and State response-byte caching are separate from this boundary.
+
+The loaded State dependency cut is:
+
+| State input | Published source | Publication responsibility |
+| --- | --- | --- |
+| Identity | `AgentSnapshot.identity` | Bootstrap validates the Active incarnation; Metadata ACKs carry the exact identity. |
+| Queue posture | `queue_posture` | Bootstrap and original Queue ACKs publish queued/interrupted counts; a proved Task-only related ACK preserves them. |
+| Bounded Event/error posture | `scheduler_events` | Bootstrap, original Event ACKs, Episode commits and rename receipts publish the scheduler window cursor/error facts. |
+| RecentBriefs and live execution | `input_evidence` | Bootstrap and qualified Input deltas preserve the scheduler selector and its mandatory roots. |
+| Active Work | `work` | Original Work coverage/deltas, including removal qualification; State applies its active window only after capture. |
+| Active Task | `tasks` | Original Task coverage/deltas, including related-owner updates and removal qualification. |
+| Timers, triggers and eligibility | `scheduling` | Original Scheduling coverage/deltas and same-cut receipt recovery; a proved rename leaves the domain unchanged. |
+
+Scalar Event ACKs are scope-bound and independent of Current record/body
+qualification. The original Episode writer also records a history ACK for
+each new audit Event in the same transaction; later explicit Current history
+preparation must not invent that authority from canonical rows. This archive
+ACK does not qualify a live Current Event selection.
+Episode receipt recovery must retain the Queue/Event facts
+already prepared in its fresh receipt transaction. An exact positive ACK saves
+these facts with the complete owner group before asynchronous installation, so
+an installation retry does not require another latest-facts query. Recovery
+followed by another write under the same mutation also restores Scheduling,
+not only the other resident domains.
+None of these ACKs grants a missing domain complete coverage. In particular,
+a sparse delta or removal from a non-exhaustive Input window may leave a domain
+unprepared. Active Metadata other than a proved rename retains its independent
+invalidation/preparation contract; State must not repair that invalidation.
 
 `/agents/{id}/state` observes only the selected agent: it never enumerates child
 identities, acquires child owners or builds child summaries. Its shared slim

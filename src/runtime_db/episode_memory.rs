@@ -414,6 +414,10 @@ fn write_validated_episode_memory_tx(
     #[cfg(test)]
     inject_fault(command, EpisodeMemoryFaultPoint::AfterStateWrite)?;
 
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: command.key.agent_id.clone(),
+        identity_incarnation: command.key.identity_incarnation,
+    };
     let mut audit_events = Vec::new();
     let mut audit_bindings = Vec::new();
     for event in &command.plan.audit_events {
@@ -424,6 +428,7 @@ fn write_validated_episode_memory_tx(
             event_log_epoch: event.event_log_epoch.clone(),
         });
         if inserted {
+            super::current_read_writes::append_event_history_ack_tx(tx, &scope, &event.id)?;
             let ack = match &audit_material {
                 Some(material) => super::transitions::AuditEventAck::with_dispatch_material(
                     event,
@@ -510,6 +515,13 @@ fn write_validated_episode_memory_tx(
                     record: Box::new(candidate.clone()),
                 }),
                 audit_events,
+                scheduler_events: Some(super::current_query::CommittedSchedulerEventFacts {
+                    scope,
+                    facts: super::current_query::SchedulerEventFacts::read(
+                        tx,
+                        &command.key.agent_id,
+                    )?,
+                }),
                 notify_memory_index: command.plan.finalized_episode.is_some(),
                 ..Default::default()
             }),
@@ -1418,6 +1430,7 @@ mod tests {
             for table in [
                 "context_episode_anchors",
                 "audit_events",
+                "event_history_acks",
                 "runtime_index_outbox",
                 "runtime_index_outbox_watermarks",
                 "episode_memory_results",
@@ -1479,6 +1492,7 @@ mod tests {
         assert!(transition.effects.notify_memory_index);
         assert_eq!(fixture.count("context_episode_anchors"), 1);
         assert_eq!(fixture.count("audit_events"), 1);
+        assert_eq!(fixture.count("event_history_acks"), 1);
         assert_eq!(fixture.count("runtime_index_outbox"), 1);
         assert_eq!(fixture.count("episode_memory_results"), 1);
         let connection = fixture.db.connection().unwrap();

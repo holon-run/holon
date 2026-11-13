@@ -120,6 +120,48 @@ async fn definitely_not_committed_preserves_the_old_observation_and_generation()
 }
 
 #[tokio::test]
+async fn scalar_commit_facts_reject_changed_retries_and_survive_reconciliation() {
+    let owner = MutationOwner::standalone("default", 7);
+    let mut permits = vec![owner.reserve().await.unwrap()];
+    MutationReservation::begin_all(&mut permits, "scalar-ack".into()).unwrap();
+    let known = prepared_facts(state(1), prepared_episodes("default", 7));
+    let facts = StateReadFacts {
+        queue_posture: Some(crate::queue::QueuePostureFacts {
+            pending: 1,
+            has_queued: true,
+            has_interrupted: false,
+        }),
+        scheduler_events: Some(crate::runtime_db::current_query::SchedulerEventFacts {
+            event_cursor: 8,
+            latest_runtime_error: None,
+        }),
+    };
+    MutationReservation::committed_all_with_read_facts(
+        &mut permits,
+        vec![(known.clone(), Some(facts))],
+    )
+    .unwrap();
+    let mut different = facts;
+    different.scheduler_events.as_mut().unwrap().event_cursor += 1;
+    assert!(matches!(
+        MutationReservation::committed_all_with_read_facts(
+            &mut permits,
+            vec![(known.clone(), Some(different))],
+        ),
+        Err(MutationOwnerError::TicketMismatch)
+    ));
+    // A retry with no extra scalar ACK must not erase already saved facts.
+    MutationReservation::committed_all(&mut permits, vec![known]).unwrap();
+    drop(permits);
+    let mut recovery = vec![owner.reserve().await.unwrap()];
+    let known = MutationReservation::validate_group_known(&recovery).unwrap();
+    let roots = MutationReservation::reconcile_all(&mut recovery, known).unwrap();
+    let root = roots[0].as_ref().unwrap();
+    assert_eq!(root.queue_posture, facts.queue_posture);
+    assert_eq!(root.scheduler_events, facts.scheduler_events);
+}
+
+#[tokio::test]
 async fn known_commit_survives_publication_failure_and_reconciles_without_another_mutation() {
     let owner = MutationOwner::standalone("default", 7);
     let old = install_test_observation(&owner, "initial", state(1)).await;
@@ -871,19 +913,26 @@ async fn unfinished_or_reconstructed_witness_cannot_clear_an_unknown_fence() {
     let mut permits = vec![owner.reserve().await.unwrap()];
     assert!(permits[0].ticket.is_none());
     assert!(matches!(
-        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None),
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None, None),
         Err(MutationOwnerError::NeedsReconcile(_))
     ));
     let reconstructed = episode_witness("episode", "default", 7);
     reconstructed.finish_original_attempt();
     assert!(matches!(
-        MutationReservation::resolve_episode_unknown(&mut permits, &key, &reconstructed, None),
+        MutationReservation::resolve_episode_unknown(
+            &mut permits,
+            &key,
+            &reconstructed,
+            None,
+            None
+        ),
         Err(MutationOwnerError::TicketMismatch)
     ));
     assert_needs_reconcile(&owner, &key);
     witness.finish_original_attempt();
     assert_eq!(
-        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None).unwrap(),
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None, None)
+            .unwrap(),
         WitnessUnknownResolution::NotCommitted
     );
     assert!(owner.capture().unwrap().is_none());
@@ -908,7 +957,8 @@ async fn completed_absence_preserves_the_exact_old_root_and_generation() {
     };
     let mut permits = vec![owner.reserve().await.unwrap()];
     assert_eq!(
-        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None).unwrap(),
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None, None)
+            .unwrap(),
         WitnessUnknownResolution::NotCommitted
     );
     let current = owner.capture().unwrap().unwrap();
@@ -943,7 +993,8 @@ async fn receipt_presence_promotes_current_loader_facts_but_does_not_publish() {
             &mut permits,
             &key,
             &witness,
-            Some(prepared_facts(state(9), episodes.clone()))
+            Some(prepared_facts(state(9), episodes.clone())),
+            None
         )
         .unwrap(),
         WitnessUnknownResolution::Known
@@ -998,7 +1049,8 @@ async fn witness_survives_epoch_replacement_but_old_owner_access_remains_rejecte
             &mut permits,
             &key,
             &saved,
-            Some(prepared_facts(state(4), prepared_episodes("default", 7)))
+            Some(prepared_facts(state(4), prepared_episodes("default", 7))),
+            None
         )
         .unwrap(),
         WitnessUnknownResolution::Known
@@ -1023,11 +1075,17 @@ async fn episode_resolver_cannot_resolve_unwitnessed_other_family_or_partial_gro
         .unwrap();
     let keys = MutationReservation::begin_all(&mut permits, "ordinary".into()).unwrap();
     assert!(matches!(
-        MutationReservation::resolve_episode_unknown(&mut permits, &keys[0], &witness, None),
+        MutationReservation::resolve_episode_unknown(&mut permits, &keys[0], &witness, None, None),
         Err(MutationOwnerError::TicketMismatch)
     ));
     assert!(matches!(
-        MutationReservation::resolve_episode_unknown(&mut permits[..1], &keys[0], &witness, None),
+        MutationReservation::resolve_episode_unknown(
+            &mut permits[..1],
+            &keys[0],
+            &witness,
+            None,
+            None
+        ),
         Err(MutationOwnerError::NeedsReconcile(_))
     ));
     assert_needs_reconcile(&a, &keys[0]);
@@ -1037,7 +1095,7 @@ async fn episode_resolver_cannot_resolve_unwitnessed_other_family_or_partial_gro
     let mut permits = vec![a.reserve().await.unwrap()];
     let key = permits[0].begin("ordinary".into()).unwrap();
     assert!(matches!(
-        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None),
+        MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, None, None),
         Err(MutationOwnerError::TicketMismatch)
     ));
     assert_needs_reconcile(&a, &key);
@@ -1065,7 +1123,8 @@ async fn episode_resolution_rejects_unprepared_or_foreign_facts_without_opening_
                 &mut permits,
                 &key,
                 &witness,
-                Some(invalid)
+                Some(invalid),
+                None
             ),
             Err(MutationOwnerError::TicketMismatch)
         ));
@@ -1183,8 +1242,14 @@ async fn positive_receipt_for_retired_scope_publishes_absence_without_touching_s
             state: None,
         }));
         assert_eq!(
-            MutationReservation::resolve_episode_unknown(&mut permits, &key, &witness, Some(facts))
-                .unwrap(),
+            MutationReservation::resolve_episode_unknown(
+                &mut permits,
+                &key,
+                &witness,
+                Some(facts),
+                None
+            )
+            .unwrap(),
             WitnessUnknownResolution::Known
         );
         assert_needs_reconcile(&owner, &key);
@@ -1232,7 +1297,8 @@ async fn retired_receipt_resolution_rejects_current_active_or_any_successor_stat
                 &mut permits,
                 &key,
                 &witness,
-                Some(KnownCommit::Metadata(Arc::new(facts)))
+                Some(KnownCommit::Metadata(Arc::new(facts))),
+                None
             ),
             Err(MutationOwnerError::TicketMismatch)
         ));

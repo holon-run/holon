@@ -1839,6 +1839,7 @@ impl RuntimeMutation {
                 self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
                 self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
                 self.work = root.as_ref().and_then(|root| root.work.clone());
+                self.scheduling = root.as_ref().and_then(|root| root.scheduling.clone());
                 self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
                 self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
                 self.tasks = root.and_then(|root| root.tasks.clone());
@@ -1990,11 +1991,24 @@ impl RuntimeMutation {
         let changes_queue = committed.effects.changes_queue();
         let changes_events = !committed.effects.audit_events.is_empty();
         let has_current_effects = changes_queue || changes_events;
+        let acknowledged_events = committed
+            .effects
+            .scheduler_events
+            .as_ref()
+            .and_then(|events| {
+                if events.scope == self.input_evidence_scope() {
+                    Some(events.facts)
+                } else {
+                    projection_error =
+                        Some(anyhow::anyhow!("Event ACK belongs to another State scope"));
+                    None
+                }
+            });
         if changes_queue {
             self.queue_posture = None;
         }
         if changes_events {
-            self.scheduler_events = None;
+            self.scheduler_events = acknowledged_events;
         }
         if let Some(mut current) = committed.effects.current_read_writes.take() {
             let install: Result<()> = (|| {
@@ -2519,6 +2533,7 @@ impl RuntimeMutation {
         self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
         self.work = root.as_ref().and_then(|root| root.work.clone());
         self.tasks = root.as_ref().and_then(|root| root.tasks.clone());
+        self.scheduling = root.as_ref().and_then(|root| root.scheduling.clone());
         self.refresh_baseline()?;
         self.deferred_abort = None;
         self.control_cancellation = None;
@@ -2555,6 +2570,7 @@ impl RuntimeMutation {
                 "related Task delta has no reserved owner"
             );
         }
+        let mut read_facts = vec![None; self.reservations.len()];
         let known =
             self.reservations
                 .iter()
@@ -2636,6 +2652,10 @@ impl RuntimeMutation {
                                 .map(|tasks| tasks.with_committed(delta).map(Arc::new))
                                 .transpose()?;
                         }
+                        read_facts[index] = Some(super::mutation_owner::StateReadFacts {
+                            queue_posture: prior.and_then(|root| root.queue_posture),
+                            scheduler_events: prior.and_then(|root| root.scheduler_events),
+                        });
                         return Ok(KnownCommit::State {
                             state: metadata
                                 .state
@@ -2660,7 +2680,10 @@ impl RuntimeMutation {
                 KnownCommit::State { .. } => self.metadata[index].clone(),
             })
             .collect();
-        MutationReservation::committed_all(&mut self.reservations, known)?;
+        MutationReservation::committed_all_with_read_facts(
+            &mut self.reservations,
+            known.into_iter().zip(read_facts).collect(),
+        )?;
         self.metadata = metadata;
         Ok(())
     }

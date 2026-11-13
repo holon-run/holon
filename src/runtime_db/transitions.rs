@@ -195,6 +195,7 @@ pub(crate) enum QueueOperation {
 #[derive(Debug, Clone, Default)]
 pub(crate) struct PostCommitEffects {
     pub current_read_writes: Option<super::current_read_writes::CommittedCurrentWrites>,
+    pub scheduler_events: Option<super::current_query::CommittedSchedulerEventFacts>,
     pub scheduling_delta:
         Option<Box<crate::runtime::resident_scheduling::CommittedSchedulingDelta>>,
     pub scheduling_delta_requires_prepared_domain: bool,

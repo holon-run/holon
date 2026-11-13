@@ -8,7 +8,7 @@ use std::sync::Arc;
 use anyhow::{ensure, Context, Result};
 
 use super::{
-    mutation_owner::{IdentityMutationFacts, KnownCommit, MutationReservation},
+    mutation_owner::{IdentityMutationFacts, KnownCommit, MutationReservation, StateReadFacts},
     mutation_witness::MutationWitnessFamily,
     resident_state::ResidentEpisodes,
     RuntimeHandle,
@@ -49,6 +49,7 @@ struct EpisodeRecoveryDomains {
     work: Arc<super::resident_work::ResidentWorkDomain>,
     tasks: Arc<super::resident_task::ResidentTaskDomain>,
     scheduling: Arc<super::resident_scheduling::ResidentSchedulingDomain>,
+    read_facts: StateReadFacts,
 }
 
 fn load_episode_recovery_with_domains(
@@ -163,6 +164,10 @@ fn load_episode_recovery_with_domains(
             task_selection,
         )?;
         let domains = EpisodeRecoveryDomains {
+            read_facts: StateReadFacts {
+                queue_posture: Some(prepared.queue_posture),
+                scheduler_events: prepared.scheduler_events,
+            },
             inputs: Arc::new(prepared.inputs.with_budget(budget.clone())?),
             work: prepared
                 .work
@@ -298,7 +303,13 @@ fn resolve_single_episode_recovery(
     // flag, exact ticket/epoch and complete single-owner group under its gate.
     // Absence clears only that ticket, preserving the old root/generation; it is
     // never a business Applied result. Presence only upgrades unknown to known.
-    MutationReservation::resolve_episode_unknown(reservations, &recovery.key, witness, committed)?;
+    MutationReservation::resolve_episode_unknown(
+        reservations,
+        &recovery.key,
+        witness,
+        committed,
+        domains.as_ref().map(|domains| domains.read_facts),
+    )?;
     Ok(true)
 }
 

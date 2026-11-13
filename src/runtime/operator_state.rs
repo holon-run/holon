@@ -64,39 +64,10 @@ impl RuntimeHandle {
             timer_limit <= super::resident_scheduling::SCHEDULING_HISTORY_WINDOW,
             super::resident_scheduling::SchedulingReadError::NeedsHistory
         );
-        let projection = {
-            let mut reservations = super::mutation_owner::MutationOwner::reserve_all(vec![self
-                .inner
-                .mutation_owner
-                .clone()])
+        let root = self
+            .observer_ready_root_bounded(&self.inner.runtime_db)
             .await?;
-            self.reconcile_reserved_mutations(&mut reservations).await?;
-            let root = self
-                .inner
-                .mutation_owner
-                .capture()?
-                .context("State root needs publication")?;
-            if root
-                .current
-                .as_ref()
-                .and_then(|current| current.query.as_ref())
-                .is_none()
-            {
-                drop(root);
-                drop(reservations);
-                // Explicit accepted query preparation; a Ready read never creates a candidate.
-                let mut owner = self.begin_mutation().await?;
-                owner.prepare_current_query(None).await?;
-                self.operator_state_from_root(
-                    owner.capture_published_root()?.as_ref(),
-                    task_limit,
-                    timer_limit,
-                )?
-            } else {
-                self.operator_state_from_root(&root, task_limit, timer_limit)?
-            }
-        };
-        Ok(projection)
+        self.operator_state_from_root(&root, task_limit, timer_limit)
     }
 
     pub(super) fn operator_state_from_root(
@@ -110,21 +81,43 @@ impl RuntimeHandle {
                 && root.token.identity_incarnation == self.inner.identity_incarnation,
             "State root scope differs"
         );
-        let mut read = self.capture_state_scheduler_from_root(root, self.now())?;
+        let unavailable = || {
+            crate::runtime_db::RuntimeDbRetryableError::new(
+                Self::OBSERVER_PUBLICATION_OPERATION,
+                self.inner.runtime_db.path(),
+                "State dependencies need publication",
+            )
+        };
+        let identity = root.identity.as_deref().ok_or_else(unavailable)?;
+        anyhow::ensure!(
+            identity.agent_id == root.state.id
+                && identity.incarnation == root.token.identity_incarnation
+                && identity.status == crate::types::AgentRegistryStatus::Active,
+            "State projection identity differs"
+        );
+        anyhow::ensure!(
+            root.queue_posture.is_some()
+                && root.scheduler_events.is_some_and(|events| {
+                    events.event_cursor
+                        >= self.inner.scheduler_audit_frontier.load(Ordering::Acquire)
+                })
+                && root.work.is_some()
+                && root.tasks.is_some()
+                && root.scheduling.is_some()
+                && root.input_evidence.is_some(),
+            unavailable()
+        );
+        let mut read = self
+            .capture_state_scheduler_from_root(root, self.now())
+            .map_err(|error| {
+                if state_domains_need_publication(&error) {
+                    error.context(unavailable())
+                } else {
+                    error
+                }
+            })?;
         let acquisition = read.acquisition.clone();
         acquisition.read(|| {
-            let query = root
-                .current
-                .as_ref()
-                .and_then(|current| current.query.as_ref())
-                .context("Current identity needs preparation")?;
-            let identity = query.identity.as_ref();
-            anyhow::ensure!(
-                identity.agent_id == read.state.id
-                    && identity.incarnation == self.inner.identity_incarnation
-                    && identity.status == crate::types::AgentRegistryStatus::Active,
-                "State projection identity differs"
-            );
             resource_io::admit_cloned_value(&(identity, read.state.as_ref()))?;
             let identity = AgentIdentityView::from_record(identity, &self.inner.default_agent_id);
             let state = read.state.as_ref().clone();
@@ -192,4 +185,49 @@ impl RuntimeHandle {
             })
         })
     }
+}
+
+fn state_domains_need_publication(error: &anyhow::Error) -> bool {
+    use super::{
+        resident_input_evidence::{InputEvidenceReadError, InputQueryError},
+        resident_scheduling::SchedulingReadError,
+        resident_task::TaskReadError,
+        resident_work::WorkReadError,
+    };
+    use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+
+    matches!(
+        error.downcast_ref::<WorkReadError>(),
+        Some(
+            WorkReadError::NeedsPreparation(_)
+                | WorkReadError::TurnWaitsNotPrepared(_)
+                | WorkReadError::TaskWaitsNotPrepared(_)
+                | WorkReadError::TriggerWaitsNotPrepared(_)
+                | WorkReadError::IncompleteLive
+                | WorkReadError::WindowExpansion { .. }
+        )
+    ) || matches!(
+        error.downcast_ref::<TaskReadError>(),
+        Some(
+            TaskReadError::NeedsPreparation(_)
+                | TaskReadError::IncompleteActive
+                | TaskReadError::IncompleteResults
+                | TaskReadError::WindowExpansion
+        )
+    ) || matches!(
+        error.downcast_ref::<SchedulingReadError>(),
+        Some(
+            SchedulingReadError::IncompleteLive
+                | SchedulingReadError::NeedsHistory
+                | SchedulingReadError::NeedsPreparation(_)
+        )
+    ) || error.is::<InputEvidenceReadError>()
+        || matches!(
+            error.downcast_ref::<InputQueryError>(),
+            Some(InputQueryError::NeedsPreparation)
+        )
+        || matches!(
+            error.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::NeedsPreparation(_))
+        )
 }

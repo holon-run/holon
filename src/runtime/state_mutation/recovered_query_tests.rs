@@ -18,6 +18,18 @@ async fn episode_lost_ack_on(
     crate::runtime::scheduler_executor::ScheduledMessage,
     Option<crate::runtime::task_queries::TaskBirthSession>,
 )> {
+    episode_commit_on(runtime, live_birth, true, Vec::new()).await
+}
+
+async fn episode_commit_on(
+    runtime: &RuntimeHandle,
+    live_birth: bool,
+    lose_ack: bool,
+    audit_events: Vec<crate::types::AuditEvent>,
+) -> Result<(
+    crate::runtime::scheduler_executor::ScheduledMessage,
+    Option<crate::runtime::task_queries::TaskBirthSession>,
+)> {
     use crate::runtime::scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor};
     runtime
         .enqueue(MessageEnvelope::new(
@@ -46,11 +58,19 @@ async fn episode_lost_ack_on(
     } else {
         None
     };
-    inject_episode_lost_ack(runtime).await?;
+    commit_episode_fixture(runtime, lose_ack, audit_events).await?;
     Ok((scheduled, session))
 }
 
 async fn inject_episode_lost_ack(runtime: &RuntimeHandle) -> Result<()> {
+    commit_episode_fixture(runtime, true, Vec::new()).await
+}
+
+async fn commit_episode_fixture(
+    runtime: &RuntimeHandle,
+    lose_ack: bool,
+    audit_events: Vec<crate::types::AuditEvent>,
+) -> Result<()> {
     use crate::{
         memory::episode_transition::{EpisodeMemoryOutcome, EpisodeMemoryPlan},
         runtime_db::episode_memory::{
@@ -97,19 +117,23 @@ async fn inject_episode_lost_ack(runtime: &RuntimeHandle) -> Result<()> {
         EpisodeMemoryPlan {
             candidate: state.clone(),
             finalized_episode: None,
-            audit_events: Vec::new(),
+            audit_events,
             outcome,
         },
         runtime.now(),
-    )?
-    .with_fault(EpisodeMemoryFaultPoint::AfterCommitBeforeAck);
-    let error = Box::pin(mutation.commit_episode_memory(&command))
-        .await
-        .unwrap_err();
-    assert_eq!(
-        crate::runtime_db::persistence_certainty(&error),
-        Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
-    );
+    )?;
+    if lose_ack {
+        let command = command.with_fault(EpisodeMemoryFaultPoint::AfterCommitBeforeAck);
+        let error = Box::pin(mutation.commit_episode_memory(&command))
+            .await
+            .unwrap_err();
+        assert_eq!(
+            crate::runtime_db::persistence_certainty(&error),
+            Some(crate::runtime_db::PersistenceCertainty::Indeterminate)
+        );
+    } else {
+        Box::pin(mutation.commit_episode_memory(&command)).await?;
+    }
     drop(mutation);
     Ok(())
 }
@@ -194,20 +218,94 @@ async fn episode_recovery_prepares_secondary_loaded_owner_before_group_publicati
 
 #[tokio::test]
 async fn episode_recovery_publishes_live_domains_before_observer_capture() -> Result<()> {
-    let (_home, runtime, _scheduled, _session) = episode_lost_ack_fixture(false).await?;
+    let (_home, runtime) = fixture();
+    let event = crate::types::AuditEvent::legacy("episode_state_facts", serde_json::json!({}));
+    let event_id = event.id.clone();
+    let (_scheduled, _session) = episode_commit_on(&runtime, false, true, vec![event]).await?;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
     // This is actual receipt reconciliation, not a manually narrowed snapshot.
     drop(runtime.begin_mutation().await?);
     let published = runtime.inner.mutation_owner.capture()?.unwrap();
     // Positive recovery completes the publication cut: State plus live domains.
     assert!(published.input_evidence.is_some() && published.work.is_some());
     assert!(published.tasks.is_some() && published.scheduling.is_some());
-    let observed = runtime
-        .capture_observer_root_async(runtime.runtime_db())
-        .await?;
-    let projection = runtime.operator_state_from_root(&observed, 10, 10);
+    assert!(published.queue_posture.is_some() && published.scheduler_events.is_some());
+    let db = runtime.runtime_db();
+    let reads = db.reader_pool_stats_for_tests().checkout_attempts;
+    let preparations = db.preparation_pool_stats_for_tests().checkout_attempts;
+    let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+    let writes = writer.write_channel_admissions_for_tests()?;
+    let projection = runtime.operator_state_read_projection(10, 10).await?;
     let current = runtime.inner.mutation_owner.capture()?.unwrap();
     assert!(Arc::ptr_eq(&published, &current));
-    projection?;
+    assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
+    assert_eq!(db.preparation_pool_stats_for_tests().checkout_attempts, preparations);
+    assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+    drop(projection);
+    assert_episode_event_history_only(
+        &runtime,
+        &event_id,
+        published.scheduler_events.unwrap().event_cursor,
+    )?;
+    Ok(())
+}
+
+fn assert_episode_event_history_only(
+    runtime: &RuntimeHandle,
+    event_id: &str,
+    event_cursor: u64,
+) -> Result<()> {
+    use crate::runtime_db::current_query::{prepare, prepare_event_page, CurrentSelection};
+    let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+        agent_id: runtime.instance_agent_id().to_owned(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    let selection = CurrentSelection {
+        events_after: Some(event_cursor.checked_sub(1).context("Episode Event cursor missing")?),
+        ..Default::default()
+    };
+    runtime.runtime_db().with_read(|connection| {
+        let tx = connection.transaction()?;
+        let ledger = &runtime.inner.input_evidence_budget;
+        let page = prepare_event_page(
+            &tx,
+            &scope,
+            ledger,
+            None,
+            selection.events_after,
+            1,
+            crate::storage::EventLogPageOrder::Asc,
+            |_| true,
+        )?;
+        assert_eq!(page.events().map(|event| event.id.as_str()).collect::<Vec<_>>(), [event_id]);
+        // A standalone Episode archive ACK is not live Current authority.
+        let error = prepare(&tx, &scope, Some(&selection), ledger, (1024 * 1024, 1024))
+            .err()
+            .context("Episode history ACK granted live Current authority")?;
+        assert!(error.to_string().contains("Current body needs original writer preparation"));
+        Ok(())
+    })
+}
+
+#[tokio::test]
+async fn original_episode_event_facts_publish_without_current_preparation() -> Result<()> {
+    let (_home, runtime) = fixture();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let event = crate::types::AuditEvent::legacy("episode_state_facts", serde_json::json!({}));
+    let event_id = event.id.clone();
+    let (_scheduled, _session) = episode_commit_on(&runtime, false, false, vec![event]).await?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    assert!(root.queue_posture.is_some());
+    let events = root.scheduler_events.context("Episode Event facts missing")?;
+    assert!(events.event_cursor > 0);
+    let reads = runtime.runtime_db().reader_pool_stats_for_tests().checkout_attempts;
+    let preparations = runtime.runtime_db().preparation_pool_stats_for_tests().checkout_attempts;
+    drop(runtime.operator_state_read_projection(10, 10).await?);
+    assert_eq!(runtime.runtime_db().reader_pool_stats_for_tests().checkout_attempts, reads);
+    assert_eq!(runtime.runtime_db().preparation_pool_stats_for_tests().checkout_attempts, preparations);
+    assert!(Arc::ptr_eq(&root, &runtime.inner.mutation_owner.capture()?.unwrap()));
+    assert_episode_event_history_only(&runtime, &event_id, events.event_cursor)?;
     Ok(())
 }
 

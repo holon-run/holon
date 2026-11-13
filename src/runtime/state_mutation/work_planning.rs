@@ -745,7 +745,7 @@ impl RuntimeHandle {
                     .is_some();
         let (has_interrupted_replay, has_queued_input, latest_error) = if matches!(
             adapter_root,
-            SchedulerAdapterRoot::PreviewPublication
+            SchedulerAdapterRoot::PreviewPublication | SchedulerAdapterRoot::PublishedState
         ) {
             let queue = root
                 .queue_posture
@@ -758,10 +758,8 @@ impl RuntimeHandle {
                 queue.has_queued,
                 events.latest_runtime_error,
             )
-        } else if matches!(
-            adapter_root,
-            SchedulerAdapterRoot::PublishedCurrent | SchedulerAdapterRoot::PublishedState
-        ) || cached_observation
+        } else if matches!(adapter_root, SchedulerAdapterRoot::PublishedCurrent)
+            || cached_observation
         {
             let query = root
                 .current

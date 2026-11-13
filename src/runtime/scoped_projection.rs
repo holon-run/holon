@@ -17,6 +17,7 @@ impl RuntimeHandle {
         std::time::Duration::from_millis(20);
 
     /// Observers pin one Ready cut; they never reserve an execution owner.
+    #[cfg(test)]
     pub(super) fn capture_observer_root(
         &self,
         db: &RuntimeDb,
@@ -201,18 +202,6 @@ impl RuntimeHandle {
         Ok(Arc::new(selected?))
     }
 
-    fn with_scoped_scheduler_query<T>(
-        &self,
-        db: &RuntimeDb,
-        _handle: &Handle,
-        read: impl FnOnce(&resident_state::AgentSnapshot) -> Result<T>,
-    ) -> Result<T> {
-        let root = self.capture_observer_root(db)?;
-        let result = read(&root)?;
-        db.check_read_scope()?;
-        Ok(result)
-    }
-
     #[cfg(test)]
     fn with_scoped_ready_root<T>(
         &self,
@@ -265,16 +254,15 @@ impl RuntimeHandle {
         task_limit: usize,
         timer_limit: usize,
         db: &RuntimeDb,
-        handle: &Handle,
+        _handle: &Handle,
     ) -> Result<crate::host::AgentStateReadProjection> {
         db.check_read_scope()?;
         anyhow::ensure!(
             timer_limit <= resident_scheduling::SCHEDULING_HISTORY_WINDOW,
             resident_scheduling::SchedulingReadError::NeedsHistory
         );
-        let projection = self.with_scoped_scheduler_query(db, handle, |root| {
-            self.operator_state_from_root(root, task_limit, timer_limit)
-        })?;
+        let root = self.observer_ready_root(db)?;
+        let projection = self.operator_state_from_root(&root, task_limit, timer_limit)?;
         db.check_read_scope()?;
         Ok(projection)
     }
@@ -416,13 +404,15 @@ mod tests {
             .begin("scoped-host-unprepared-current".into())
             .unwrap();
         reservation
-            .committed_prepared_with_scheduling_domains(
+            .committed_prepared_domains(
                 root.state.clone(),
                 root.episodes.clone(),
                 root.input_evidence.clone(),
                 root.work.clone(),
                 root.tasks.clone(),
                 root.scheduling.clone(),
+                root.queue_posture,
+                root.scheduler_events,
             )
             .unwrap();
         let unprepared = reservation.publish(root.state.clone()).unwrap();
@@ -984,13 +974,15 @@ mod tests {
             .begin("scoped-unprepared-current".into())
             .unwrap();
         reservation
-            .committed_prepared_with_scheduling_domains(
+            .committed_prepared_domains(
                 root.state.clone(),
                 root.episodes.clone(),
                 root.input_evidence.clone(),
                 root.work.clone(),
                 root.tasks.clone(),
                 root.scheduling.clone(),
+                root.queue_posture,
+                root.scheduler_events,
             )
             .unwrap();
         let unprepared = reservation.publish(root.state.clone()).unwrap();
@@ -1015,18 +1007,9 @@ mod tests {
             })
             .await
             .unwrap();
-            if operation == 0 {
-                let error = result.unwrap_err();
-                assert!(
-                    error
-                        .to_string()
-                        .contains("Current scheduler metadata needs preparation"),
-                    "{error:#}"
-                );
-            } else {
-                // Child observability uses its published bodies and narrow scalars.
-                result.unwrap();
-            }
+            // State needs only published facts; child observability may still
+            // use its narrow response-local scalar reads.
+            result.unwrap();
             assert!(Arc::ptr_eq(
                 &unprepared,
                 &runtime.inner.mutation_owner.capture().unwrap().unwrap()

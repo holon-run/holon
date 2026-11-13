@@ -64,6 +64,13 @@ pub(crate) struct SchedulerEventFacts {
     pub latest_runtime_error: Option<chrono::DateTime<chrono::Utc>>,
 }
 
+/// Minimal Event facts from an original transaction, without Current bodies.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CommittedSchedulerEventFacts {
+    pub scope: InputEvidenceScope,
+    pub facts: SchedulerEventFacts,
+}
+
 impl SchedulerEventFacts {
     pub(crate) fn read(connection: &rusqlite::Connection, agent_id: &str) -> Result<Self> {
         super::repositories::scheduler_event_facts_on(connection, agent_id)

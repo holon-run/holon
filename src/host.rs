@@ -2851,6 +2851,25 @@ impl RuntimeHost {
         reservations: &mut [MutationReservation],
         persist: impl FnOnce() -> Result<(T, Vec<IdentityMutationFacts>)>,
     ) -> Result<T> {
+        Self::acknowledge_started_external_metadata_with_read_facts(reservations, || {
+            let (result, facts) = persist()?;
+            Ok((
+                result,
+                facts.into_iter().map(|facts| (facts, None)).collect(),
+            ))
+        })
+    }
+
+    fn acknowledge_started_external_metadata_with_read_facts<T>(
+        reservations: &mut [MutationReservation],
+        persist: impl FnOnce() -> Result<(
+            T,
+            Vec<(
+                IdentityMutationFacts,
+                Option<crate::runtime::mutation_owner::StateReadFacts>,
+            )>,
+        )>,
+    ) -> Result<T> {
         let (result, facts) = match persist() {
             Ok(committed) => committed,
             Err(error) => {
@@ -2863,11 +2882,11 @@ impl RuntimeHost {
             }
         };
         // Recording the exact ACK must precede every asynchronous install.
-        MutationReservation::committed_all(
+        MutationReservation::committed_all_with_read_facts(
             reservations,
             facts
                 .into_iter()
-                .map(|facts| KnownCommit::Metadata(Arc::new(facts)))
+                .map(|(facts, reads)| (KnownCommit::Metadata(Arc::new(facts)), reads))
                 .collect(),
         )?;
         Ok(result)
@@ -5231,36 +5250,44 @@ impl RuntimeHost {
         reservation
             .begin_identity_rename(operation_id.clone(), existing_identity.clone())
             .map_err(PublicAgentError::Runtime)?;
-        let identity = Self::acknowledge_started_external_metadata(&mut reservations, || {
-            let facts = self.runtime_db().agent_identities().rename(
-                &existing_identity,
-                requested_name,
-                actor,
-                &operation_id,
-            )?;
-            let identity = facts
-                .identity
-                .expect("rename transaction returns its identity");
-            Ok((
-                identity.clone(),
-                vec![IdentityMutationFacts {
-                    identity: Some(Arc::new(identity)),
-                    state: facts.state,
-                }],
-            ))
-        })
-        .map_err(|error| {
-            if error.to_string().contains("agent_name_conflict")
-                || error.to_string().contains("UNIQUE constraint failed")
-            {
-                PublicAgentError::NameConflict {
-                    agent_id: agent_id.to_owned(),
-                    name: requested_name.trim().to_string(),
+        let identity =
+            Self::acknowledge_started_external_metadata_with_read_facts(&mut reservations, || {
+                let facts = self.runtime_db().agent_identities().rename(
+                    &existing_identity,
+                    requested_name,
+                    actor,
+                    &operation_id,
+                )?;
+                let identity = facts
+                    .scope
+                    .identity
+                    .expect("rename transaction returns its identity");
+                Ok((
+                    identity.clone(),
+                    vec![(
+                        IdentityMutationFacts {
+                            identity: Some(Arc::new(identity)),
+                            state: facts.scope.state,
+                        },
+                        Some(crate::runtime::mutation_owner::StateReadFacts {
+                            queue_posture: None,
+                            scheduler_events: Some(facts.scheduler_events),
+                        }),
+                    )],
+                ))
+            })
+            .map_err(|error| {
+                if error.to_string().contains("agent_name_conflict")
+                    || error.to_string().contains("UNIQUE constraint failed")
+                {
+                    PublicAgentError::NameConflict {
+                        agent_id: agent_id.to_owned(),
+                        name: requested_name.trim().to_string(),
+                    }
+                } else {
+                    PublicAgentError::Runtime(error)
                 }
-            } else {
-                PublicAgentError::Runtime(error)
-            }
-        })?;
+            })?;
         self.publish_external_metadata(&mut reservations)
             .await
             .map_err(PublicAgentError::Runtime)?;

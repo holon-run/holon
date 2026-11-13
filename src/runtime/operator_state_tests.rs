@@ -3,6 +3,114 @@ use crate::runtime::tests::support::LifecycleHarness;
 use crate::types::WorkItemPlanStatus;
 
 #[tokio::test]
+async fn loaded_state_first_read_and_commits_do_not_acquire_storage() -> Result<()> {
+    async fn read(runtime: &RuntimeHandle) -> Result<crate::host::AgentStateReadProjection> {
+        let db = runtime.runtime_db().clone();
+        let root = runtime.inner.mutation_owner.capture()?.unwrap();
+        let reader_before = db.reader_pool_stats_for_tests().checkout_attempts;
+        let preparation_before = db.preparation_pool_stats_for_tests().checkout_attempts;
+        let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        let writes_before = writer.write_channel_admissions_for_tests()?;
+        let runtime_reader = runtime.clone();
+        let handle = tokio::runtime::Handle::current();
+        // A memory-only observer may read a Ready root while its owner is held.
+        let _reservation = runtime.inner.mutation_owner.reserve().await?;
+        let projection = tokio::task::spawn_blocking(move || {
+            runtime_reader.acquire_operator_state_read_projection_scoped(10, 10, &db, &handle)
+        })
+        .await??;
+        let db = runtime.runtime_db();
+        assert_eq!(
+            db.reader_pool_stats_for_tests().checkout_attempts,
+            reader_before
+        );
+        assert_eq!(
+            db.preparation_pool_stats_for_tests().checkout_attempts,
+            preparation_before
+        );
+        assert_eq!(writer.write_channel_admissions_for_tests()?, writes_before);
+        assert!(Arc::ptr_eq(
+            &root,
+            &runtime.inner.mutation_owner.capture()?.unwrap()
+        ));
+        Ok(projection)
+    }
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    assert!(read(runtime).await?.agent.work_queue.items.is_empty());
+    let work = runtime
+        .create_work_item(
+            "State writer coverage".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await?;
+    assert_eq!(
+        read(runtime).await?.agent.work_queue.items[0].work_item.id,
+        work.id
+    );
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    assert_eq!(read(runtime).await?.timers[0].id, timer.id);
+    runtime.cancel_timer(&timer.id).await?;
+    assert!(read(runtime).await?.timers.is_empty());
+    runtime
+        .append_original_audit_event(crate::types::AuditEvent::legacy(
+            "runtime_error",
+            serde_json::json!({}),
+        ))
+        .await?;
+    drop(read(runtime).await?);
+    Ok(())
+}
+
+#[tokio::test]
+async fn state_capture_needs_only_its_published_dependencies() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let mut selected = root.as_ref().clone();
+    selected.current = None;
+    selected.episodes = None;
+    drop(runtime.operator_state_from_root(&selected, 10, 10)?);
+    for missing in 0..8 {
+        let mut incomplete = selected.clone();
+        match missing {
+            0 => incomplete.identity = None,
+            1 => incomplete.queue_posture = None,
+            2 => incomplete.scheduler_events = None,
+            3 => incomplete.work = None,
+            4 => incomplete.tasks = None,
+            5 => incomplete.scheduling = None,
+            6 => incomplete.input_evidence = None,
+            _ => incomplete.token.identity_incarnation += 1,
+        }
+        let error = runtime
+            .operator_state_from_root(&incomplete, 10, 10)
+            .err()
+            .unwrap();
+        if missing == 7 {
+            assert!(error.to_string().contains("State root scope differs"));
+        } else {
+            assert!(
+                error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+                "{error:#}"
+            );
+        }
+        assert!(Arc::ptr_eq(
+            &root,
+            &runtime.inner.mutation_owner.capture()?.unwrap()
+        ));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> Result<()> {
     fn queue_wire<W: serde::Serialize>(
         queue: &crate::work_item_scheduling::WorkQueueReadModel<W>,
@@ -52,7 +160,11 @@ async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> 
     assert_eq!(queue_wire(&operator.agent.work_queue)?, expected);
     assert!(operator.material._work.is_some());
 
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    // The full-inventory adapter keeps its independent Current preparation.
+    // State above already used only the minimal published root.
+    let root = runtime
+        .capture_observer_root_async(runtime.runtime_db())
+        .await?;
     let mut read = runtime.capture_operator_scheduler_from_root(&root, runtime.now())?;
     let usage = read.acquisition.finish()?;
     let (queue, budget) = read.full_state_work_queue(&runtime.inner.input_evidence_budget)?;
@@ -244,7 +356,7 @@ async fn operator_state_keeps_scheduler_window_after_narrow_owner_preparation() 
             .capture()?
             .lookup(&key)?
             .is_some());
-        let read = runtime.capture_operator_scheduler_from_root(&prepared, runtime.now())?;
+        let read = runtime.capture_state_scheduler_from_root(&prepared, runtime.now())?;
         assert!(
             matches!(
                 read.inputs.lookup(&key),
@@ -328,8 +440,15 @@ async fn operator_state_metadata_uses_original_window_without_granting_event_bod
                 serde_json::json!({"raw":"no original body qualification"}),
             ))?;
     }
-    drop(runtime.operator_state_read_projection(10, 10).await?);
-    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    // Raw storage writes bypass publication. Only the independent Current
+    // preparation may repair this fixture; State must not perform that work.
+    assert!(runtime
+        .operator_state_read_projection(10, 10)
+        .await
+        .is_err());
+    let root = runtime
+        .capture_observer_root_async(runtime.runtime_db())
+        .await?;
     let query = root.current.as_ref().unwrap().query.as_ref().unwrap();
     assert!(query.scheduler.latest_runtime_error.is_some());
     assert!(
@@ -352,11 +471,20 @@ async fn operator_state_metadata_uses_original_window_without_granting_event_bod
         ))
         .await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
-    let query = root.current.as_ref().unwrap().query.as_ref().unwrap();
+    assert!(
+        root.current
+            .as_ref()
+            .and_then(|current| current.query.as_ref())
+            .is_none(),
+        "a metadata-only append must not grant CurrentQuery"
+    );
     assert_eq!(
-        query.scheduler.latest_runtime_error, None,
+        root.scheduler_events.unwrap().latest_runtime_error,
+        None,
         "the 65th event must move the old error outside the original window"
     );
+    drop(root);
+    runtime.operator_state_read_projection(10, 10).await?;
     Ok(())
 }
 
