@@ -1630,6 +1630,19 @@ impl RuntimeHandle {
         })
     }
 
+    pub(in crate::runtime) fn observe_idle_read<T>(
+        &self,
+        expected: &AgentState,
+        material: &ResourceReadMaterial,
+        observe: impl FnOnce(&IdleRead<'_, '_>) -> Result<T>,
+    ) -> Result<T> {
+        material.read(|| {
+            self.inner.runtime_db.read_for_preparation(|tx| {
+                observe(&IdleRead::new(self, tx, Some(expected), false)?)
+            })
+        })
+    }
+
     pub(super) fn with_idle_preparation_read<T>(
         &self,
         owner: &super::super::state_mutation::RuntimeMutation,

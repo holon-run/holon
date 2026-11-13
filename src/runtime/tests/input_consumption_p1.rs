@@ -4130,7 +4130,7 @@ async fn p1_null_ingress_turn_recovers_twice_without_rebinding_attempt_turns() {
             .await;
             assert!(prepared.message.turn_id.is_none());
             let commit = target
-                .enqueue_attempt(&prepared.message, Some(&prepared.record), None, None)
+                .enqueue_attempt(&prepared.message, Some(&prepared.record), None, None, None)
                 .await
                 .unwrap();
             target.apply_transition_commit(commit).await;
@@ -5034,7 +5034,7 @@ async fn p1_recovery_rejects_missing_or_foreign_snapshot_admission() {
             );
             message.id = "msg_deadbeef".into();
             let commit = target
-                .enqueue_attempt(&message, None, None, None)
+                .enqueue_attempt(&message, None, None, None, None)
                 .await
                 .unwrap();
             assert!(commit.applied);

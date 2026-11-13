@@ -271,6 +271,12 @@ pub(crate) struct TaskCoverage {
     pub terminal: TaskHistoryCoverage,
 }
 impl TaskCoverage {
+    pub(crate) fn result_revision(&self, id: &str) -> Option<u64> {
+        self.result_dependencies
+            .get(id)
+            .map(|dependency| dependency.result.revision)
+    }
+
     pub(crate) fn owned_metadata_record_count(&self) -> Result<usize> {
         coverage_record_count(self)
     }
@@ -1056,7 +1062,14 @@ impl CapturedTasks {
         });
         Ok(rows)
     }
+    #[cfg(test)]
     pub(crate) fn next_recheck_at(&self) -> Result<Option<DateTime<Utc>>> {
+        self.next_recheck_at_by(|row| row.next_recheck_at)
+    }
+    pub(crate) fn next_recheck_at_by(
+        &self,
+        deadline: impl Fn(&TaskResultMetadata) -> Option<DateTime<Utc>>,
+    ) -> Result<Option<DateTime<Utc>>> {
         if !self.coverage.unsettled_complete {
             return Err(TaskReadError::IncompleteResults.into());
         }
@@ -1070,7 +1083,7 @@ impl CapturedTasks {
                     .contains(&r.result_identity)
                     && !r.activation_open
             })
-            .filter_map(|r| r.next_recheck_at)
+            .filter_map(deadline)
             .min_by_key(|at| at.timestamp_millis())
             .map(|at| {
                 DateTime::from_timestamp_millis(at.timestamp_millis())

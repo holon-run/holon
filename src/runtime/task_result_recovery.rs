@@ -7,6 +7,171 @@ use sha2::{Digest, Sha256};
 const RESULT_RECHECK_SECONDS: i64 = 30;
 const RESULT_RECHECK_LIMIT: usize = 8;
 
+type ProbeTime = chrono::DateTime<Utc>;
+
+#[derive(Default)]
+pub(super) struct TaskResultProbes {
+    pending: std::collections::BTreeMap<String, DeferredProbe>,
+}
+
+struct DeferredProbe {
+    result_revision: u64,
+    durable_deadline: ProbeTime,
+    work_item_id: Option<String>,
+    wait_condition_id: Option<String>,
+    reason: &'static str,
+    delay_seconds: i64,
+    next: ProbeTime,
+}
+
+impl TaskResultProbes {
+    fn deadline(
+        &self,
+        row: &super::resident_task::TaskResultMetadata,
+        result_revision: Option<u64>,
+    ) -> Option<ProbeTime> {
+        let deadline = row.next_recheck_at?;
+        Some(
+            self.pending
+                .get(&row.result_identity)
+                .filter(|probe| {
+                    Some(probe.result_revision) == result_revision
+                        && probe.durable_deadline == deadline
+                })
+                .map_or(deadline, |probe| probe.next),
+        )
+    }
+}
+
+impl RuntimeHandle {
+    fn defer_task_result_probe(
+        &self,
+        record: &crate::runtime_db::TaskResultSettlementRecord,
+        owner: Option<&str>,
+        blocking_wait: Option<&str>,
+        reason: &'static str,
+        now: ProbeTime,
+        result_revision: u64,
+    ) {
+        let _stage = crate::diagnostics::attribution::TASK_RESULT_RECOVERY_PROBE.start();
+        let Some(durable_deadline) = record.next_recheck_at else {
+            return;
+        };
+        let mut probes = self.inner.task_result_probes.lock().unwrap();
+        let delay_seconds = probes
+            .pending
+            .get(&record.result_identity)
+            .filter(|old| {
+                old.result_revision == result_revision
+                    && old.durable_deadline == durable_deadline
+                    && old.reason == reason
+            })
+            .map_or(RESULT_RECHECK_SECONDS, |old| {
+                (old.delay_seconds * 2).min(300)
+            });
+        probes.pending.insert(
+            record.result_identity.clone(),
+            DeferredProbe {
+                result_revision,
+                durable_deadline,
+                work_item_id: owner.map(str::to_owned),
+                wait_condition_id: blocking_wait.map(str::to_owned),
+                reason,
+                delay_seconds,
+                next: now
+                    + chrono::Duration::seconds(delay_seconds)
+                    + chrono::Duration::milliseconds(i64::from(
+                        record.result_identity.bytes().fold(0_u16, |seed, byte| {
+                            seed.wrapping_mul(31).wrapping_add(u16::from(byte))
+                        }) % 1_000,
+                    )),
+            },
+        );
+    }
+
+    pub(super) fn next_task_result_probe(
+        &self,
+        tasks: &super::resident_task::CapturedTasks,
+    ) -> Result<Option<ProbeTime>> {
+        let probes = self.inner.task_result_probes.lock().unwrap();
+        tasks.next_recheck_at_by(|row| {
+            probes.deadline(row, tasks.coverage.result_revision(&row.result_identity))
+        })
+    }
+
+    pub(super) fn reset_task_result_probes_after_reconciliation(&self) {
+        let mut probes = self.inner.task_result_probes.lock().unwrap();
+        if !probes.pending.is_empty() {
+            probes.pending.clear();
+            self.inner.notify.notify_one();
+        }
+    }
+
+    pub(super) fn wake_task_result_probes(
+        &self,
+        effects: &crate::runtime_db::transitions::PostCommitEffects,
+    ) {
+        use crate::runtime::resident_work::CanonicalWorkRecord;
+        if effects.task_write_keys.is_empty()
+            && effects.work_items.is_empty()
+            && effects.wait_condition_writes.wait_ids.is_empty()
+            && effects.execution_protocol.is_none()
+        {
+            return;
+        }
+        let lane_available = effects.execution_protocol.as_ref().is_some_and(|protocol| {
+            !protocol.attempts.values().any(|attempt| {
+                attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
+            })
+        });
+        let mut probes = self.inner.task_result_probes.lock().unwrap();
+        let pending = probes.pending.len();
+        probes.pending.retain(|id, probe| {
+            if effects
+                .task_write_keys
+                .contains(&super::resident_task::TaskKey::new(
+                    super::resident_task::TaskFamily::ResultSettlement,
+                    id,
+                ))
+            {
+                return false;
+            }
+            if lane_available
+                && matches!(
+                    probe.reason,
+                    "execution_lane_busy" | "canonical_admission_in_flight"
+                )
+            {
+                return false;
+            }
+            let owner = probe.work_item_id.as_deref();
+            !effects
+                .work_items
+                .iter()
+                .any(|work| Some(work.id.as_str()) == owner && work.is_runnable())
+                && !effects.work_delta.as_ref().is_some_and(|delta| {
+                    delta.records.iter().any(|row| match &row.record {
+                        CanonicalWorkRecord::Wait(wait) => {
+                            effects.wait_condition_writes.wait_ids.contains(&wait.id)
+                                && probe.wait_condition_id.as_deref().map_or_else(
+                                    || wait.work_item_id.as_deref() == owner,
+                                    |id| id == wait.id,
+                                )
+                                && matches!(
+                                    wait.status,
+                                    WaitConditionStatus::Resolved | WaitConditionStatus::Cancelled
+                                )
+                        }
+                        _ => false,
+                    })
+                })
+        });
+        if probes.pending.len() != pending {
+            self.inner.notify.notify_one();
+        }
+    }
+}
+
 #[cfg(test)]
 pub(super) mod budget_tests;
 
@@ -44,7 +209,12 @@ fn recovery_message_id() -> String {
 
 mod read;
 #[cfg(test)]
-pub(super) use read::due_results as due_recovery_results;
+pub(super) fn due_recovery_results(
+    tasks: &super::resident_task::CapturedTasks,
+    now: ProbeTime,
+) -> Result<[Option<&super::resident_task::TaskResultMetadata>; RESULT_RECHECK_LIMIT]> {
+    read::select_due_results(&tasks.coverage, &TaskResultProbes::default(), now)
+}
 pub(super) use read::prepare_outstanding_recovery_message_id;
 
 /// Compatibility for exact-wait repair's synchronous planner. Only active
@@ -538,6 +708,32 @@ impl RuntimeHandle {
         }
     }
 
+    async fn converge_task_result(
+        &self,
+        record: &crate::runtime_db::TaskResultSettlementRecord,
+        now: ProbeTime,
+    ) -> Result<bool> {
+        if !self
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .recovery_can_converge(record, now)?
+        {
+            return Ok(false);
+        }
+        let _stage = crate::diagnostics::attribution::TASK_RESULT_RECOVERY_CONVERGE.start();
+        self.apply_task_result_operation(
+            (&record.result_identity, "converge_recovery", now),
+            || crate::runtime_db::transitions::TaskResultOperation::ConvergeRecovery {
+                result_identity: record.result_identity.clone(),
+                message_id: record.message_id.clone(),
+                at: now,
+            },
+        )
+        .await?
+        .changed()
+    }
+
     /// Rechecks are eligibility probes, not permission to consume a wait.
     pub(super) async fn emit_due_task_result_recovery(&self) -> Result<bool> {
         let state = self.agent_state().await?;
@@ -566,8 +762,13 @@ impl RuntimeHandle {
         {
             enqueued |= acceptance_enqueued;
         }
-        for metadata in read::due_results(&read.tasks, now)?.into_iter().flatten() {
+        for metadata in read.due() {
             let record = read.record(metadata)?;
+            let result_revision = read
+                .tasks
+                .result_dependency(&record.result_identity)?
+                .result
+                .revision;
             if read.invalid_result(&record.result_identity)? {
                 self.apply_task_result_operation((&record.message_id, "invalid_only", now), || {
                     crate::runtime_db::transitions::TaskResultOperation::SettleInvalidOnly {
@@ -593,33 +794,37 @@ impl RuntimeHandle {
                 .map_or(record.work_item_id.as_deref(), |wait| {
                     wait.work_item_id.as_deref()
                 });
-            let deferred_reason = match self
+            let (deferred_reason, blocking_wait) = match self
                 .inner
                 .runtime_db
                 .task_result_settlements()
                 .classify_obligation(&record, None, consuming_owner)?
             {
-                TaskResultObligation::Recoverable => None,
+                TaskResultObligation::Recoverable => (None, None),
                 TaskResultObligation::AlreadyAdmitted { .. }
-                | TaskResultObligation::InFlight { .. } => Some("canonical_admission_in_flight"),
-                TaskResultObligation::ClaimedByOtherWaiter { .. } => {
-                    Some("claimed_by_other_waiter")
+                | TaskResultObligation::InFlight { .. } => {
+                    (Some("canonical_admission_in_flight"), None)
                 }
-                TaskResultObligation::InvalidOrStale => Some("invalid_or_stale_obligation"),
+                TaskResultObligation::ClaimedByOtherWaiter {
+                    wait_condition_id, ..
+                } => (Some("claimed_by_other_waiter"), Some(wait_condition_id)),
+                TaskResultObligation::InvalidOrStale => (Some("invalid_or_stale_obligation"), None),
                 TaskResultObligation::Settled { .. } | TaskResultObligation::Paused => continue,
             };
+            if deferred_reason == Some("invalid_or_stale_obligation")
+                && self.converge_task_result(record, now).await?
+            {
+                continue;
+            }
             if let Some(reason) = deferred_reason {
-                self.apply_task_result_operation(
-                    (&record.message_id, reason, now, RESULT_RECHECK_SECONDS),
-                    || crate::runtime_db::transitions::TaskResultOperation::Defer {
-                        message_id: record.message_id.clone(),
-                        reason: reason.to_owned(),
-                        at: now,
-                        deadline: now + chrono::Duration::seconds(RESULT_RECHECK_SECONDS),
-                    },
-                )
-                .await?
-                .record()?;
+                self.defer_task_result_probe(
+                    record,
+                    consuming_owner,
+                    blocking_wait.as_deref(),
+                    reason,
+                    now,
+                    result_revision,
+                );
                 continue;
             }
             // A lifecycle-owned settlement whose result message already exists
@@ -726,14 +931,51 @@ impl RuntimeHandle {
                         at:now}).await?.changed()?;
                     continue;
                 }
+                if !recoverable && read.reply_dropped(reply_id)
+                    && record.state == crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+                {
+                    if self.converge_task_result(record, now).await? {
+                        continue;
+                    }
+                    self.defer_task_result_probe(record, consuming_owner, None, "dropped_reply_evidence_unavailable", now, result_revision);
+                    continue;
+                }
                 if !recoverable {
                     // The original queue source still owns first delivery.
                     eligible = false;
-                    reason = "awaiting_original_agent_reply_admission";
+                    reason = if read.reply_dropped(reply_id) {
+                        "dropped_reply_evidence_unavailable"
+                    } else {
+                        "awaiting_original_agent_reply_admission"
+                    };
                 }
             }
-            // Advance first: a crash or enqueue failure still leaves a bounded
-            // retry, while an ineligible owner cannot create a hot loop.
+            if !eligible {
+                self.defer_task_result_probe(
+                    record,
+                    consuming_owner,
+                    None,
+                    reason,
+                    now,
+                    result_revision,
+                );
+                continue;
+            }
+            let owner_key = recovery_owner_key_for(&record.agent_id, consuming_owner);
+            if !queued_owners.insert(owner_key.clone())
+                || read.outstanding(consuming_owner, &owner_key)?.is_some()
+            {
+                self.defer_task_result_probe(
+                    record,
+                    consuming_owner,
+                    None,
+                    "recovery_wake_outstanding",
+                    now,
+                    result_revision,
+                );
+                continue;
+            }
+            // An enqueue failure must still leave a durable retry.
             let deferred = self
                 .apply_task_result_operation(
                     (&record.message_id, reason, now, RESULT_RECHECK_SECONDS),
@@ -748,20 +990,6 @@ impl RuntimeHandle {
             let Some(record) = deferred.record()? else {
                 continue;
             };
-            let owner_key = recovery_owner_key_for(&record.agent_id, consuming_owner);
-            if !eligible || !queued_owners.insert(owner_key.clone()) {
-                continue;
-            }
-            if let Some(message_id) = read.outstanding(consuming_owner, &owner_key)? {
-                tracing::debug!(
-                    agent_id = %state.id,
-                    work_item_id = ?record.work_item_id,
-                    owner_key = %owner_key,
-                    message_id = %message_id,
-                    "task-result recovery wake already outstanding"
-                );
-                continue;
-            }
             let mut message = MessageEnvelope::new(
                 &state.id,
                 MessageKind::InternalFollowup,

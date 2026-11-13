@@ -2221,6 +2221,7 @@ impl RuntimeMutation {
             self.runtime
                 .resume_saved_control_cancellation(&cancellation)?;
         }
+        self.runtime.wake_task_result_probes(&committed.effects);
         strip_authoritative_effects(&mut committed.effects);
         if let Some(started) = self.measurement_started.take() {
             use crate::diagnostics::io_probe::{record_timing, TimingKind};
@@ -4069,6 +4070,7 @@ impl RuntimeHandle {
         }
         let mut notifications = Vec::new();
         let mut cancellations = Vec::new();
+        let mut restored_runtimes = Vec::new();
         for (reservation, saved) in reservations.iter().zip(&known) {
             let Some(saved) = saved else {
                 continue;
@@ -4106,13 +4108,18 @@ impl RuntimeHandle {
                     cancellations.push((runtime.clone(), plan));
                 }
                 if let Some(facts) = runtime.install_saved_mutation(reservation, saved).await? {
-                    notifications.push((runtime, facts));
+                    notifications.push((runtime.clone(), facts));
                 }
+                restored_runtimes.push(runtime);
             }
         }
         let observations = MutationReservation::reconcile_all(reservations, known)?;
         for observation in observations.into_iter().flatten() {
             trace_publication(observation.token);
+        }
+        // A restored receipt can lack the effects needed for selective invalidation.
+        for runtime in restored_runtimes {
+            runtime.reset_task_result_probes_after_reconciliation();
         }
         for (runtime, plan) in cancellations {
             runtime.resume_saved_control_cancellation(&plan)?;

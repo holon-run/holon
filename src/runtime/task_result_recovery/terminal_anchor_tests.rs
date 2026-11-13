@@ -529,9 +529,9 @@ async fn reply_anchored_lifecycle_settlement_defers_to_reply_channel() {
     let deferred = latest_record(&runtime, &record.message_id);
     assert_eq!(deferred.state, TaskResultSettlementState::PersistedPending);
     assert!(deferred.disposition.is_none());
+    assert_eq!(deferred, record);
     assert_eq!(
-        deferred.deferred_reason.as_deref(),
-        Some("awaiting_original_agent_reply_admission")
+        runtime.inner.task_result_probes.lock().unwrap().pending[&record.result_identity].reason,
+        "awaiting_original_agent_reply_admission"
     );
-    assert!(deferred.next_recheck_at.is_some());
 }

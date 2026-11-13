@@ -14,11 +14,31 @@ async fn dropped_reply(harness: &LifecycleHarness) -> (WorkItemRecord, TaskRecor
         .await
         .unwrap();
     let (task, reply_id) = reply_result(runtime, &owner).await;
-    let poll = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
-        .poll()
+    // A pre-upgrade runtime rejected this reply before its WorkItem could run.
+    let mut entry = runtime
+        .runtime_db()
+        .queue_entries()
+        .latest(&reply_id)
+        .unwrap()
+        .unwrap();
+    entry.status = QueueEntryStatus::Dropped;
+    entry.updated_at = runtime.now();
+    runtime
+        .commit_queue_settlement(
+            entry,
+            vec![AuditEvent::legacy(
+                "scheduler_authority_input_rejected",
+                serde_json::json!({
+                    "message_id": reply_id,
+                    "agent_id": "default",
+                    "reason": "canonical_internal_followup_work_item_not_runnable",
+                    "queue_disposition": "dropped",
+                }),
+            )],
+            true,
+        )
         .await
         .unwrap();
-    assert!(matches!(poll, scheduler_executor::RunLoopPoll::Idle));
     assert_eq!(
         runtime
             .runtime_db()
@@ -38,6 +58,222 @@ async fn dropped_reply(harness: &LifecycleHarness) -> (WorkItemRecord, TaskRecor
     assert_eq!(delivery.state, AgentMessageDeliveryState::Failed);
     assert!(!delivery.retryable);
     (owner, task, reply_id)
+}
+
+#[tokio::test(start_paused = true)]
+async fn queued_reply_waits_for_owner_without_blocking_sleep_or_losing_delivery() {
+    let mut harness = LifecycleHarness::with_provider(Arc::new(
+        crate::provider::StubProvider::new("fixture reply"),
+    ));
+    let runtime = harness.runtime();
+    let owner = runtime
+        .create_work_item(
+            "reply owner awaiting approval".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let (_, reply_id) = reply_result(runtime, &owner).await;
+    let executor = scheduler_executor::SchedulerDecisionExecutor::new(runtime);
+    let mut waiting = scheduler_executor::WaitingReplyQueue::default();
+    assert!(matches!(
+        executor
+            .poll_with_waiting_replies(&mut waiting)
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(waiting.ids.contains(&reply_id));
+    let projection = runtime
+        .prepare_idle_scheduler_projection_with_replies(&mut waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(projection.projection.queue_len, 0);
+    assert!(executor
+        .transition_run_loop_idle_to_sleep_with_replies(None, &waiting)
+        .await
+        .unwrap()
+        .is_some());
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&reply_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+
+    let prompt = runtime
+        .enqueue(
+            MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Next,
+                MessageBody::Text {
+                    text: "foreground prompt".into(),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::HttpControlPrompt,
+                AdmissionContext::ControlAuthenticated,
+            ),
+        )
+        .await
+        .unwrap();
+    let scheduled = claim_model(runtime).await;
+    assert_eq!(scheduled.message.id, prompt.id);
+    process(runtime, scheduled).await;
+
+    harness.restart();
+    let runtime = harness.runtime();
+    let executor = scheduler_executor::SchedulerDecisionExecutor::new(runtime);
+    let mut waiting = scheduler_executor::WaitingReplyQueue::default();
+    assert!(matches!(
+        executor
+            .poll_with_waiting_replies(&mut waiting)
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(waiting.ids.contains(&reply_id));
+    runtime
+        .update_work_item_fields(
+            owner.id.clone(),
+            None,
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(executor
+        .transition_run_loop_idle_to_sleep_with_replies(None, &waiting)
+        .await
+        .unwrap()
+        .is_none());
+    let scheduled = claim_model(runtime).await;
+    assert_eq!(scheduled.message.id, reply_id);
+    process(runtime, scheduled).await;
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest_for_message(&reply_id)
+            .unwrap()
+            .unwrap()
+            .state,
+        AgentMessageDeliveryState::Consumed
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn waiting_reply_allows_other_work_to_receive_an_idle_tick() {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let owner = runtime
+        .create_work_item(
+            "reply owner".into(),
+            Some(WorkItemPlanStatus::NeedsInput),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let (_, reply_id) = reply_result(runtime, &owner).await;
+    let other = runtime
+        .create_work_item(
+            "runnable work".into(),
+            Some(WorkItemPlanStatus::Ready),
+            None,
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+    let executor = scheduler_executor::SchedulerDecisionExecutor::new(runtime);
+    let mut waiting = scheduler_executor::WaitingReplyQueue::default();
+    assert!(matches!(
+        executor
+            .poll_with_waiting_replies(&mut waiting)
+            .await
+            .unwrap(),
+        scheduler_executor::RunLoopPoll::Idle
+    ));
+    assert!(waiting.ids.contains(&reply_id));
+    assert!(runtime
+        .maybe_emit_pending_system_tick_with_replies(None, &mut waiting)
+        .await
+        .unwrap());
+    let tick = runtime
+        .storage()
+        .read_recent_messages(16)
+        .unwrap()
+        .into_iter()
+        .find(|message| {
+            message.kind == MessageKind::SystemTick
+                && message.work_item_id.as_deref() == Some(other.id.as_str())
+        })
+        .expect("runnable work received a durable tick");
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&tick.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&reply_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+}
+
+#[tokio::test(start_paused = true)]
+async fn scanner_suspends_dropped_reply_and_late_exact_wait_still_claims_it() {
+    let mut harness = LifecycleHarness::new();
+    let (_, task, reply_id) = dropped_reply(&harness).await;
+    let message_id = task.parent_message_id.as_deref().unwrap();
+    let before = latest(harness.runtime(), message_id);
+    let due = before.next_recheck_at.unwrap();
+    harness
+        .advance((due - harness.now()).to_std().unwrap() + std::time::Duration::from_secs(1))
+        .await;
+    let runtime = harness.runtime();
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    let suspended = latest(runtime, message_id);
+    assert_eq!(suspended.state, TaskResultSettlementState::PersistedPending);
+    assert_eq!(
+        suspended.deferred_reason.as_deref(),
+        Some("awaiting_exact_waiter")
+    );
+    assert_eq!(suspended.next_recheck_at, None);
+    assert_eq!(suspended.recovery_attempts, 0);
+    harness.restart();
+    let runtime = harness.runtime();
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    assert_eq!(latest(runtime, message_id), suspended);
+    let outcome = wait_for_reply(runtime, None, &task).await;
+    assert!(
+        matches!(outcome, WaitForRegistrationOutcome::TaskResultRecoveryQueued { recovery_message_id, .. } if recovery_message_id != reply_id)
+    );
 }
 
 #[tokio::test(start_paused = true)]

@@ -96,6 +96,25 @@ admission. The ledger derives eligibility from the persisted last admission
 time and count; a restart, repeated wake, or stale scanner check cannot bypass
 the delay or reset the budget. Scanner rechecks are not admissions.
 
+## Scanner convergence
+
+The scanner checks the published unsettled Result deadlines before preparing
+individual records. Its queue and obligation observations use reader
+transactions. A pending obligation that cannot currently advance keeps its
+durable deadline and backs off in memory. The same effective deadline governs
+candidate selection and idle sleep. A committed change to the Result or its
+blocking wait, owner, or execution lane can make it eligible sooner. Restart
+resumes from the durable deadline. The durable admission budget still applies
+at claim time.
+
+Proven invalid obligations converge in the Result transaction. The transaction
+selects the exact Result identity and revalidates the current obligation before
+settling it. An in-flight activation retains its existing admission. A proven
+historical reply rejected while its owner was waiting can suspend automatic
+rechecks with reason `awaiting_exact_waiter` and an empty deadline. The pending
+obligation and its admission budget remain available to the existing exact
+`WaitFor` path.
+
 ## Repeated failed exact-wait recovery
 
 A failed recovery retains its original consumption grant only through canonical

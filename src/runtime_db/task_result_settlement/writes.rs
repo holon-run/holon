@@ -271,6 +271,9 @@ enum Operation {
         disposition: TaskResultSettlementDisposition,
         now: DateTime<Utc>,
     },
+    ConvergeRecovery {
+        now: DateTime<Utc>,
+    },
     Defer {
         reason: String,
         now: DateTime<Utc>,
@@ -1041,6 +1044,28 @@ impl PreparedTaskResultMutation<'_, '_> {
                     TaskResultWriteOutcome::Changed(false)
                 }
             }
+            Operation::ConvergeRecovery { now } => {
+                let mut changed = false;
+                if let Some(selected) = self.selected.into_iter().next() {
+                    let mut record = selected.record;
+                    if let Some(action) = recovery_convergence_tx(tx, &record, now)? {
+                        match action {
+                            RecoveryConvergence::Settle(disposition) => {
+                                settle(&mut record, disposition, now)
+                            }
+                            RecoveryConvergence::AwaitExactWaiter => {
+                                record.deferred_reason = Some("awaiting_exact_waiter".into());
+                                record.deferred_at = Some(now);
+                                record.updated_at = now;
+                            }
+                        }
+                        record.next_recheck_at = None;
+                        write_ack(tx, &record, false, &mut actual)?;
+                        changed = true;
+                    }
+                }
+                TaskResultWriteOutcome::Changed(changed)
+            }
             Operation::Defer {
                 reason,
                 now,
@@ -1582,6 +1607,24 @@ pub(crate) fn select_settle_owner_unavailable_tx<'tx, 'connection>(
         limits,
     )
 }
+pub(crate) fn select_converge_recovery_tx<'tx, 'connection>(
+    tx: &'tx Transaction<'connection>,
+    agent: &str,
+    identity: &str,
+    message: &str,
+    now: DateTime<Utc>,
+    limits: TaskResultWriteLimits,
+) -> Result<TaskResultSelection<'tx, 'connection>> {
+    inventory(
+        tx,
+        Operation::ConvergeRecovery { now },
+        "SELECT payload_json FROM task_result_settlements WHERE result_identity=?1 AND agent_id=?2 AND message_id=?3",
+        params![identity, agent, message],
+        Some(message),
+        limits,
+    )
+}
+
 pub(crate) fn select_mark_deferred_tx<'tx, 'connection>(
     tx: &'tx Transaction<'connection>,
     message: &str,

@@ -805,7 +805,17 @@ fn assert_recovery_snapshot(runtime: &RuntimeHandle, record: &TaskResultSettleme
 }
 
 async fn reply_result(runtime: &RuntimeHandle, owner: &WorkItemRecord) -> (TaskRecord, String) {
-    persist_completed_task_parent_fixture(runtime, "repeated-reply-parent", Some(&owner.id))
+    reply_result_with_key(runtime, owner, "repeated-reply").await
+}
+
+pub(super) async fn reply_result_with_key(
+    runtime: &RuntimeHandle,
+    owner: &WorkItemRecord,
+    key: &str,
+) -> (TaskRecord, String) {
+    let parent_id = format!("{key}-parent");
+    let task_id = format!("{key}-task");
+    persist_completed_task_parent_fixture(runtime, &parent_id, Some(&owner.id))
         .await
         .unwrap();
     let mut prepared =
@@ -815,7 +825,7 @@ async fn reply_result(runtime: &RuntimeHandle, owner: &WorkItemRecord) -> (TaskR
                 content: MessageBody::Text {
                     text: "repeated-reply-evidence".into(),
                 },
-                client_idempotency_key: "repeated-recovery-reply".into(),
+                client_idempotency_key: key.into(),
                 correlation_id: None,
                 causation_id: None,
                 requested_priority: Some(Priority::Normal),
@@ -856,7 +866,7 @@ async fn reply_result(runtime: &RuntimeHandle, owner: &WorkItemRecord) -> (TaskR
         .unwrap()
         .unwrap();
     let running = TaskRecord {
-        id: "repeated-reply-task".into(),
+        id: task_id.clone(),
         agent_id: "default".into(),
         kind: TaskKind::AgentMessageWait,
         status: TaskStatus::Running,
@@ -867,8 +877,8 @@ async fn reply_result(runtime: &RuntimeHandle, owner: &WorkItemRecord) -> (TaskR
         summary: None,
         recovery: None,
         detail: Some(serde_json::json!({
-            "rejoin_obligation_id": "repeated-reply-task",
-            "rejoin_generation": 1, "parent_turn_id": "repeated-reply-parent",
+            "rejoin_obligation_id": task_id,
+            "rejoin_generation": 1, "parent_turn_id": parent_id,
         })),
     };
     runtime

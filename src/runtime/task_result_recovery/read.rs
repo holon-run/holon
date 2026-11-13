@@ -31,58 +31,55 @@ const ACTIVE_QUEUE_PREDICATE: &str =
 
 /// Fixed-size borrowed selection preserves the original SQL LIMIT without an
 /// all-unsettled temporary allocation. The metadata namespace remains complete.
-pub(in crate::runtime) fn due_results(
-    tasks: &CapturedTasks,
+pub(super) fn due_results<'a>(
+    coverage: &'a super::super::resident_task::TaskCoverage,
+    runtime: &RuntimeHandle,
     now: chrono::DateTime<Utc>,
-) -> Result<[Option<&TaskResultMetadata>; RESULT_RECHECK_LIMIT]> {
+) -> Result<[Option<&'a TaskResultMetadata>; RESULT_RECHECK_LIMIT]> {
+    let probes = runtime.inner.task_result_probes.lock().unwrap();
+    select_due_results(coverage, &probes, now)
+}
+
+pub(super) fn select_due_results<'a>(
+    coverage: &'a super::super::resident_task::TaskCoverage,
+    probes: &TaskResultProbes,
+    now: chrono::DateTime<Utc>,
+) -> Result<[Option<&'a TaskResultMetadata>; RESULT_RECHECK_LIMIT]> {
     anyhow::ensure!(
-        tasks.coverage.unsettled_complete,
+        coverage.unsettled_complete,
         TaskReadError::IncompleteResults
     );
     let mut selected = [None; RESULT_RECHECK_LIMIT];
-    for id in &tasks.coverage.unsettled_result_ids {
-        let row = tasks.coverage.result_metadata.get(id).ok_or_else(|| {
+    for id in &coverage.unsettled_result_ids {
+        let row = coverage.result_metadata.get(id).ok_or_else(|| {
             TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::ResultSettlement, id))
         })?;
         anyhow::ensure!(
             row.result_identity == *id,
             "Task result metadata identity differs"
         );
-        if row
-            .next_recheck_at
-            .is_none_or(|at| at.timestamp_millis() > now.timestamp_millis())
-            || !matches!(
-                row.state,
-                TaskResultSettlementState::PersistedPending
-                    | TaskResultSettlementState::CallerAdmitted
-            )
-            || (row.state == TaskResultSettlementState::CallerAdmitted && row.activation_open)
+        let Some(deadline) = probes.deadline(row, coverage.result_revision(id)) else {
+            continue;
+        };
+        if deadline.timestamp_millis() > now.timestamp_millis()
+            || row.activation_open
+            || row.state == TaskResultSettlementState::Settled
         {
             continue;
         }
-        let before = |old: &TaskResultMetadata| {
-            row.next_recheck_at
-                .expect("selected due deadline")
-                .timestamp_millis()
-                .cmp(
-                    &old.next_recheck_at
-                        .expect("selected due deadline")
-                        .timestamp_millis(),
-                )
-                .then_with(|| {
-                    row.created_at
-                        .timestamp_millis()
-                        .cmp(&old.created_at.timestamp_millis())
-                })
-                .then_with(|| row.result_identity.cmp(&old.result_identity))
-                .is_lt()
-        };
-        if let Some(index) = selected.iter().position(|old| old.is_none_or(before)) {
+        let order = (
+            deadline.timestamp_millis(),
+            row.created_at.timestamp_millis(),
+            &row.result_identity,
+        );
+        if let Some(index) = selected.iter().position(|old: &Option<(_, _)>| {
+            old.as_ref().is_none_or(|(previous, _)| order < *previous)
+        }) {
             selected[index..].rotate_right(1);
-            selected[index] = Some(row);
+            selected[index] = Some((order, row));
         }
     }
-    Ok(selected)
+    Ok(selected.map(|entry| entry.map(|(_, row)| row)))
 }
 
 struct QueueObservation {
@@ -224,15 +221,23 @@ fn outstanding<'a>(
 pub(super) struct RecoveryRead {
     pub state: Arc<AgentState>,
     pub tasks: CapturedTasks,
+    due: Vec<String>,
     pub work: CapturedWork,
     pub inputs: CapturedInputEvidence,
     queue: QueueObservation,
     processed_replies: BTreeSet<String>,
+    dropped_replies: BTreeSet<String>,
     recoverable_replies: BTreeSet<String>,
     _selectors: Vec<Arc<BudgetViewGuard>>,
 }
 
 impl RecoveryRead {
+    pub(super) fn due(&self) -> impl Iterator<Item = &TaskResultMetadata> + Clone {
+        self.due
+            .iter()
+            .filter_map(|id| self.tasks.coverage.result_metadata.get(id))
+    }
+
     pub(super) fn record<'a>(
         &'a self,
         metadata: &TaskResultMetadata,
@@ -290,6 +295,9 @@ impl RecoveryRead {
     }
     pub(super) fn reply_processed(&self, id: &str) -> bool {
         self.processed_replies.contains(id)
+    }
+    pub(super) fn reply_dropped(&self, id: &str) -> bool {
+        self.dropped_replies.contains(id)
     }
     pub(super) fn reply_recoverable(&self, id: &str) -> bool {
         self.recoverable_replies.contains(id)
@@ -369,6 +377,7 @@ impl RuntimeMutation {
         input_request: &InputEvidenceLoadRequest,
         queue: QueueObservation,
         selectors: Vec<Arc<BudgetViewGuard>>,
+        due: Vec<String>,
     ) -> Result<RecoveryRead> {
         let root = self.capture_published_root()?;
         let scope = self.input_evidence_scope();
@@ -388,10 +397,12 @@ impl RuntimeMutation {
         Ok(RecoveryRead {
             state: root.state.clone(),
             tasks: tasks.capture(task_request)?,
+            due,
             work: work.capture(work_request)?,
             inputs: inputs.capture_for_request(input_request)?,
             queue,
             processed_replies: Default::default(),
+            dropped_replies: Default::default(),
             recoverable_replies: Default::default(),
             _selectors: selectors,
         })
@@ -425,12 +436,35 @@ impl RuntimeMutation {
             recovery_source_ids: Default::default(),
             required_keys: Default::default(),
         };
-        self.prepare_owner_task_request(&metadata_request).await?;
-        let metadata = self.capture_task_read(&TaskCaptureRequest {
-            include_unsettled: false,
-            ..metadata_request
-        })?;
-        let due = due_results(&metadata.tasks, now)?;
+        let mut root = self.capture_published_root()?;
+        if !root
+            .tasks
+            .as_ref()
+            .is_some_and(|tasks| tasks.coverage().unsettled_complete)
+        {
+            self.prepare_recovery_tasks(&metadata_request).await?;
+            root = self.capture_published_root()?;
+        }
+        let coverage = root
+            .tasks
+            .as_ref()
+            .context("recovery Task metadata was not prepared")?
+            .coverage();
+        runtime
+            .inner
+            .task_result_probes
+            .lock()
+            .unwrap()
+            .pending
+            .retain(|id, probe| {
+                coverage.unsettled_result_ids.contains(id)
+                    && coverage.result_revision(id) == Some(probe.result_revision)
+                    && coverage
+                        .result_metadata
+                        .get(id)
+                        .is_some_and(|row| row.next_recheck_at == Some(probe.durable_deadline))
+            });
+        let due = due_results(coverage, runtime, now)?;
         if due[0].is_none() {
             return Ok(None);
         }
@@ -441,23 +475,23 @@ impl RuntimeMutation {
             .context("recovery selector bytes overflow")?;
 
         let selectors = runtime.inner.input_evidence_budget.register_owned_bytes(
-            &metadata.tasks.scope,
+            &self.input_evidence_scope(),
             InputMemoryCategory::Candidate,
             OwnedBytesEstimate {
                 payload_bytes: 0,
                 metadata_estimate_bytes: bytes,
             },
         )?;
-        let queue = runtime.inner.runtime_db.transaction(|tx| {
+        let queue = runtime.inner.runtime_db.read_for_preparation(|tx| {
             queue_observation_tx(
                 tx,
                 runtime,
-                &metadata.tasks.scope,
-                &metadata.state,
+                &self.input_evidence_scope(),
+                &root.state,
                 record_limit,
                 byte_limit,
                 None,
-                Some(metadata.tasks.revision),
+                Some(coverage.revision),
             )
         })?;
         let mut task_request = TaskCaptureRequest {
@@ -468,8 +502,10 @@ impl RuntimeMutation {
             required_keys: Default::default(),
         };
         let mut work_request = super::super::work_reads::live_work_request();
+        let mut due_ids = Vec::new();
         let (mut roots, _, _) = self.context_input_evidence_policy()?;
         for row in due.into_iter().flatten() {
+            due_ids.push(row.result_identity.clone());
             task_request.required_keys.insert(TaskKey::new(
                 TaskFamily::ResultSettlement,
                 &row.result_identity,
@@ -477,20 +513,28 @@ impl RuntimeMutation {
             roots.insert(Key::new(Family::Message, &row.message_id));
         }
         roots.extend(queue.ids.iter().map(|id| Key::new(Family::Message, id)));
-        if let Some(binding) = &metadata.state.current_execution_binding {
+        if let Some(binding) = &root.state.current_execution_binding {
             roots.insert(Key::new(Family::Message, &binding.source_message_id));
             roots.insert(Key::new(Family::Turn, &binding.turn_id));
             if let Some(id) = &binding.activation_id {
                 roots.insert(Key::new(Family::Attempt, id));
             }
         }
-        drop(metadata);
-        self.prepare_owner_task_request(&task_request).await?;
+        drop(root);
+        self.prepare_recovery_tasks(&task_request).await?;
         // A Result's raw Work hint becomes an owning root only through its
         // qualified current Task relation. Invalid cleanup must remain possible
         // without reading a foreign/unqualified Work declaration.
         let selected = self.capture_task_read(&task_request)?;
-        for row in due_results(&selected.tasks, now)?.into_iter().flatten() {
+        for id in &due_ids {
+            let row = selected
+                .tasks
+                .coverage
+                .result_metadata
+                .get(id)
+                .ok_or_else(|| {
+                    TaskReadError::NeedsPreparation(TaskKey::new(TaskFamily::ResultSettlement, id))
+                })?;
             if matches!(
                 &selected
                     .tasks
@@ -574,17 +618,19 @@ impl RuntimeMutation {
             &capture_request,
             queue,
             vec![selectors, work_selectors, input_selectors],
+            due_ids,
         )?;
-        runtime.inner.runtime_db.transaction(|tx| {
+        runtime.inner.runtime_db.read_for_preparation(|tx| {
             let verified=queue_observation_tx(tx,runtime,&read.tasks.scope,&read.state,record_limit,byte_limit,Some(read.work.revision),Some(read.tasks.revision))?;
             anyhow::ensure!(verified.ids==read.queue.ids,"recovery Queue observation changed during named preparation");
             read.queue._guards.extend(verified._guards);
-            for row in due_results(&read.tasks,now)?.into_iter().flatten() {
-                if let Some(id)=&row.reply_message_id {
-                    let status:Option<(bool,bool,bool)>=tx.query_row("SELECT agent_id=?1,status='processed',CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.message_id') IS message_id AND json_extract(payload_json,'$.agent_id') IS agent_id AND json_extract(payload_json,'$.status') IS status ELSE 0 END FROM queue_entries WHERE message_id=?2",params![read.state.id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?))).optional()?;
-                    if let Some((same,processed,canonical))=status {
+            for result_id in &read.due {
+                if let Some(id)=read.tasks.coverage.result_metadata.get(result_id).and_then(|row| row.reply_message_id.as_ref()) {
+                    let status:Option<(bool,bool,bool,bool)>=tx.query_row("SELECT agent_id=?1,status='processed',status='dropped',CASE WHEN json_valid(payload_json) THEN json_extract(payload_json,'$.message_id') IS message_id AND json_extract(payload_json,'$.agent_id') IS agent_id AND json_extract(payload_json,'$.status') IS status ELSE 0 END FROM queue_entries WHERE message_id=?2",params![read.state.id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
+                    if let Some((same,processed,dropped,canonical))=status {
                         anyhow::ensure!(same && canonical,"recovery reply Queue scope/projection differs");
                         if processed {read.processed_replies.insert(id.clone());}
+                        if dropped {read.dropped_replies.insert(id.clone());}
                     }
                 }
             }
@@ -594,23 +640,22 @@ impl RuntimeMutation {
             &runtime.inner.input_evidence_budget,
             &read.tasks.scope,
         )?;
-        let recoverable = runtime.with_idle_read(Some(&read.state), &material, |idle| {
+        let recoverable = runtime.observe_idle_read(&read.state, &material, |idle| {
             let mut recoverable = BTreeSet::new();
             idle.validate_task_observation(read.tasks.revision)?;
-            let due = due_results(&read.tasks, now)?;
-            idle.prepare_result_sources(due.iter().flatten()
+            idle.prepare_result_sources(read.due()
                 .filter(|row| row.reply_message_id.is_some())
                 .map(|row| row.result_identity.as_str()))?;
             // Borrow exactly this frozen due selection; do not clone Result
             // bodies or expand a single-record Work capture into a union cache.
             let mut source_records = [None; RESULT_RECHECK_LIMIT];
             for (slot, row) in source_records.iter_mut().zip(
-                due.iter().flatten().filter(|row| row.reply_message_id.is_some())
+                read.due().filter(|row| row.reply_message_id.is_some())
             ) {
                 *slot = Some(read.record(row)?);
             }
             idle.prepare_reply_source_work_records(source_records.into_iter().flatten())?;
-            for row in due.into_iter().flatten() {
+            for row in read.due() {
                 if row.reply_message_id.is_some() {
                     let record = read.record(&row)?;
                     if record.state != crate::runtime_db::task_result_settlement::TaskResultSettlementState::Settled

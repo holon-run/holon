@@ -842,6 +842,7 @@ struct RuntimeInner {
     control_cancellations: control_cancellation::ControlCancellationRegistry,
     mutation_tasks: StdMutex<state_mutation::OwnedMutationTasks>,
     task_queries: task_queries::TaskQueryRegistry,
+    task_result_probes: StdMutex<task_result_recovery::TaskResultProbes>,
     input_queries: input_query_roles::InputQueryRegistry,
     current_queries: current_queries::CurrentQueryRegistry,
     recovered_tasks: Mutex<Option<bootstrap::BootstrapTaskRecovery>>,
@@ -5032,9 +5033,20 @@ impl RuntimeHandle {
         Ok(())
     }
 
+    async fn enqueue_idle_tick_with_replies(
+        &self,
+        message: MessageEnvelope,
+        waiting: &scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
+        let (_, _, applied) =
+            Box::pin(self.enqueue_internal(message, None, None, None, Some(waiting))).await?;
+        Ok(applied)
+    }
+
     pub async fn enqueue(&self, message: MessageEnvelope) -> Result<MessageEnvelope> {
         // Keep admission state out of nested provider/dispatch futures.
-        let (message, _) = Box::pin(self.enqueue_internal(message, None, None, None)).await?;
+        let (message, _, _) =
+            Box::pin(self.enqueue_internal(message, None, None, None, None)).await?;
         Ok(message)
     }
 
@@ -5046,10 +5058,11 @@ impl RuntimeHandle {
     ) -> Result<MessageEnvelope> {
         // Preserve the same admission heap boundary as ordinary enqueue:
         // supervised admission also runs beneath provider/tool dispatch.
-        let (message, _) = Box::pin(self.enqueue_internal(
+        let (message, _, _) = Box::pin(self.enqueue_internal(
             message,
             None,
             Some((parent_task, child_incarnation)),
+            None,
             None,
         ))
         .await?;
@@ -5061,8 +5074,8 @@ impl RuntimeHandle {
         message: MessageEnvelope,
         delivery: &AgentMessageDeliveryRecord,
     ) -> Result<AgentMessageDeliveryReceipt> {
-        let (_, receipt) =
-            Box::pin(self.enqueue_internal(message, Some(delivery), None, None)).await?;
+        let (_, receipt, _) =
+            Box::pin(self.enqueue_internal(message, Some(delivery), None, None, None)).await?;
         receipt.context("delivery admission completed without a receipt")
     }
 
@@ -5079,6 +5092,7 @@ impl RuntimeHandle {
             None,
             Some((parent_task, child_incarnation)),
             Some(fault),
+            None,
         )
         .await
         .map(|value| value.0)
@@ -5090,7 +5104,8 @@ impl RuntimeHandle {
         delivery: Option<&AgentMessageDeliveryRecord>,
         supervised_invocation: Option<(&TaskRecord, u64)>,
         mut original_fault: Option<TransitionFaultPoint>,
-    ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>)> {
+        idle_replies: Option<&scheduler_executor::WaitingReplyQueue>,
+    ) -> Result<(MessageEnvelope, Option<AgentMessageDeliveryReceipt>, bool)> {
         let _admission = self.execution_admission_lease()?;
         if supervised_invocation.is_some() {
             if let Some(existing) = self.inner.storage.read_message_by_id(&message.id)? {
@@ -5117,6 +5132,7 @@ impl RuntimeHandle {
                 delivery,
                 supervised_invocation,
                 original_fault.take(),
+                idle_replies,
             ))
             .await
             {
@@ -5127,6 +5143,7 @@ impl RuntimeHandle {
                                 && !receipt.idempotent_replay
                         });
                     let receipt = commit.delivery_receipt.clone();
+                    let applied = commit.applied;
                     self.apply_transition_commit(commit).await;
                     if let Some(parent) = message.trace_context.as_ref() {
                         let span_context = parent.child();
@@ -5149,7 +5166,7 @@ impl RuntimeHandle {
                             ),
                         );
                     }
-                    return Ok((message, receipt));
+                    return Ok((message, receipt, applied));
                 }
                 Err(error) => {
                     let can_retry = attempt + 1 < ENQUEUE_AGENT_STATE_MAX_ATTEMPTS
@@ -5193,6 +5210,7 @@ impl RuntimeHandle {
         delivery: Option<&AgentMessageDeliveryRecord>,
         supervised_invocation: Option<(&TaskRecord, u64)>,
         original_fault: Option<TransitionFaultPoint>,
+        idle_replies: Option<&scheduler_executor::WaitingReplyQueue>,
     ) -> Result<TransitionCommit> {
         let existing_queue_entry = self.inner.runtime_db.queue_entries().latest(&message.id)?;
         if supervised_invocation.is_none()
@@ -5240,6 +5258,11 @@ impl RuntimeHandle {
                     let (guard, scope) = self.begin_message_delivery_mutation(delivery).await?;
                     (guard, None, scope)
                 };
+            if let Some(waiting) = idle_replies {
+                if !waiting.is_current(&guard)? || waiting.has_eligible_input(&guard) {
+                    return Ok(TransitionCommit::default());
+                }
+            }
             anyhow::ensure!(
                 !self.inner.shutdown_requested.load(Ordering::SeqCst),
                 "runtime_execution_admission_closed"
@@ -6889,8 +6912,9 @@ impl RuntimeHandle {
             if self.emit_due_agent_wait_recheck().await? {
                 continue;
             }
+            let mut waiting_replies = scheduler_executor::WaitingReplyQueue::default();
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                .poll()
+                .poll_with_waiting_replies(&mut waiting_replies)
                 .await?;
             if !matches!(
                 poll,
@@ -6938,10 +6962,20 @@ impl RuntimeHandle {
                     let notified = self.inner.notify.notified();
                     tokio::pin!(notified);
                     notified.as_mut().enable();
-                    if self.maybe_emit_pending_system_tick(None).await? {
+                    if Box::pin(
+                        self.maybe_emit_pending_system_tick_with_replies(
+                            None,
+                            &mut waiting_replies,
+                        ),
+                    )
+                    .await?
+                    {
                         continue;
                     }
-                    let Some(idle_read) = self.prepare_idle_scheduler_projection().await? else {
+                    let Some(idle_read) = self
+                        .prepare_idle_scheduler_projection_with_replies(&mut waiting_replies)
+                        .await?
+                    else {
                         continue;
                     };
                     let decision = scheduler::decide_next_action(
@@ -6969,7 +7003,7 @@ impl RuntimeHandle {
                     .into_iter()
                     .flatten()
                     .min();
-                    let result_recheck_at = idle_read.tasks.next_recheck_at()?;
+                    let result_recheck_at = self.next_task_result_probe(&idle_read.tasks)?;
                     let next_recheck_at = match (next_recheck_at, result_recheck_at) {
                         (Some(left), Some(right)) => Some(left.min(right)),
                         (left, right) => left.or(right),
@@ -6977,7 +7011,10 @@ impl RuntimeHandle {
                     // A sleeping loop retains deadlines, not owned Work bodies or Pins.
                     drop(idle_read);
                     let idle_transition = scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                        .transition_run_loop_idle_to_sleep(next_recheck_at)
+                        .transition_run_loop_idle_to_sleep_with_replies(
+                            next_recheck_at,
+                            &waiting_replies,
+                        )
                         .await?;
                     let Some(idle_transition) = idle_transition else {
                         continue;

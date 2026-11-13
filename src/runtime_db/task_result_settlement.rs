@@ -492,8 +492,9 @@ impl TaskResultSettlementRepository<'_> {
         record: &TaskResultSettlementRecord,
         require_owner_grant: bool,
     ) -> Result<bool> {
-        self.db
-            .transaction(|tx| reply_source_consumption_matches_tx(tx, record, require_owner_grant))
+        self.db.read_for_preparation(|tx| {
+            reply_source_consumption_matches_tx(tx, record, require_owner_grant)
+        })
     }
 
     /// The caller reserves rendered bytes and every waiter identity before this
@@ -1340,6 +1341,101 @@ fn matching_durable_task_read(
         && fence.generation == record.rejoin_generation
         && fence.source == record.source;
     Ok(matches.then_some(task))
+}
+
+impl TaskResultSettlementRepository<'_> {
+    pub(crate) fn recovery_can_converge(
+        &self,
+        expected: &TaskResultSettlementRecord,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        self.db.read_for_preparation(|tx| {
+            let Some(current) = recovery_budget::by_identity_tx(tx, &expected.result_identity)?
+            else {
+                return Ok(false);
+            };
+            Ok(&current == expected && recovery_convergence_tx(tx, &current, now)?.is_some())
+        })
+    }
+}
+
+enum RecoveryConvergence {
+    Settle(TaskResultSettlementDisposition),
+    AwaitExactWaiter,
+}
+
+fn recovery_convergence_tx(
+    tx: &Transaction<'_>,
+    record: &TaskResultSettlementRecord,
+    now: DateTime<Utc>,
+) -> Result<Option<RecoveryConvergence>> {
+    use crate::domain::execution_protocol::ExecutionAttemptState;
+    use TaskResultSettlementDisposition as Disposition;
+    if record.state == TaskResultSettlementState::Settled
+        || record.recovery_paused_at.is_some()
+        || record
+            .next_recheck_at
+            .is_none_or(|at| at.timestamp_millis() > now.timestamp_millis())
+    {
+        return Ok(None);
+    }
+    if let Some(activation) = record.activation_id.as_deref() {
+        if reply_admission_attempt_tx(tx, &record.agent_id, activation)?
+            .is_some_and(|attempt| attempt.state == ExecutionAttemptState::Open)
+        {
+            return Ok(None);
+        }
+    }
+    match obligation::classify_obligation_tx(tx, record, None, record.work_item_id.as_deref())? {
+        TaskResultObligation::InvalidOrStale => {
+            let owner_state: Option<String> = match record.work_item_id.as_deref() {
+                Some(owner) => tx
+                    .query_row(
+                        "SELECT state FROM work_items WHERE work_item_id=?1 AND agent_id=?2",
+                        params![owner, record.agent_id],
+                        |row| row.get(0),
+                    )
+                    .optional()?,
+                None => None,
+            };
+            Ok(Some(RecoveryConvergence::Settle(
+                match owner_state.as_deref() {
+                    None if record.work_item_id.is_some() => Disposition::OwnerMissing,
+                    Some(state) if state != "open" => Disposition::OwnerClosed,
+                    _ => Disposition::InvalidOrStale,
+                },
+            )))
+        }
+        TaskResultObligation::Recoverable
+            if record.state == TaskResultSettlementState::PersistedPending
+                && dropped_reply_source_tx(tx, record)?.is_some() =>
+        {
+            if reply_source_consumption_matches_tx(tx, record, false)? {
+                return Ok(Some(RecoveryConvergence::Settle(
+                    Disposition::ReplyConsumedElsewhere,
+                )));
+            }
+            let mut waits = tx.prepare(
+                "SELECT payload_json FROM wait_conditions WHERE agent_id=?1
+                 AND status IN ('active','triggered','resolved') AND kind='task'",
+            )?;
+            for payload in waits.query_map([&record.agent_id], |row| row.get::<_, String>(0))? {
+                let wait: crate::types::WaitConditionRecord = serde_json::from_str(&payload?)?;
+                if wait.cancelled_at.is_none()
+                    && wait.expires_at.is_none_or(|deadline| deadline > now)
+                    && wait.wake_sources.iter().any(|source| {
+                        matches!(source, crate::types::WakeSource::TaskResult { task_id } if task_id == &record.task_id)
+                    })
+                    && (wait.status == crate::types::WaitConditionStatus::Active
+                        || exact_waiter::wait_claims_result_tx(tx, &wait, record)?)
+                {
+                    return Ok(None);
+                }
+            }
+            Ok(Some(RecoveryConvergence::AwaitExactWaiter))
+        }
+        _ => Ok(None),
+    }
 }
 
 fn settle_invalid_or_stale_tx(

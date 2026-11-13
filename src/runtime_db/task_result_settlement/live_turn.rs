@@ -162,7 +162,7 @@ impl TaskResultSettlementRepository<'_> {
     /// an open bound attempt can never run a same-turn admission again.
     pub(crate) fn anchor_turn_live(&self, agent_id: &str, turn_id: &str) -> Result<bool> {
         self.db
-            .transaction(|tx| anchor_turn_live_tx(tx, agent_id, turn_id))
+            .read_for_preparation(|tx| anchor_turn_live_tx(tx, agent_id, turn_id))
     }
 }
 

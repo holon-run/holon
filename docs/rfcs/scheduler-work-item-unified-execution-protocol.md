@@ -512,6 +512,13 @@ entire prepared claim and rebuilds the candidate from current durable facts;
 the runtime never retries the old execution plan against a refreshed partial
 baseline.
 
+A verified agent reply with a pending TaskResult and accepted queued delivery
+can wait in place while its open WorkItem is temporarily waiting. A poll skips
+the reply so later eligible work can run. An agent with only these replies can
+sleep after revalidating the observed publication and queue. A scheduler
+notification or restart re-evaluates the original reply against current
+admission facts.
+
 ## Persistence And Compatibility
 
 The runtime database remains the transactional store. The target normalized

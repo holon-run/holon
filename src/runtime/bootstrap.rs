@@ -974,6 +974,7 @@ impl RuntimeHandle {
                     super::control_cancellation::ControlCancellationRegistry::default(),
                 mutation_tasks: StdMutex::new(super::state_mutation::OwnedMutationTasks::default()),
                 task_queries: super::task_queries::TaskQueryRegistry::default(),
+                task_result_probes: Default::default(),
                 input_queries: super::input_query_roles::InputQueryRegistry::default(),
                 current_queries: super::current_queries::CurrentQueryRegistry::default(),
                 recovered_tasks: Mutex::new(Some(active_tasks)),

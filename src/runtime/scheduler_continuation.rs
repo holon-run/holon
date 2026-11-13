@@ -135,12 +135,19 @@ impl RuntimeHandle {
         &'a self,
         triggering_continuation: Option<&'a ContinuationResolution>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<bool>> + Send + 'a>> {
-        Box::pin(self.maybe_emit_pending_system_tick_inner(triggering_continuation))
+        Box::pin(async move {
+            self.maybe_emit_pending_system_tick_with_replies(
+                triggering_continuation,
+                &mut scheduler_executor::WaitingReplyQueue::default(),
+            )
+            .await
+        })
     }
 
-    async fn maybe_emit_pending_system_tick_inner(
+    pub(super) async fn maybe_emit_pending_system_tick_with_replies(
         &self,
         triggering_continuation: Option<&ContinuationResolution>,
+        waiting: &mut scheduler_executor::WaitingReplyQueue,
     ) -> Result<bool> {
         scheduler_executor::SchedulerDecisionExecutor::new(self)
             .reconcile_stale_run_projection(
@@ -151,15 +158,18 @@ impl RuntimeHandle {
         if !mutation.accepts_ordinary_scheduler_preparation() {
             return Ok(false);
         }
+        if !waiting.is_current(&mutation)? {
+            return Ok(false);
+        }
+        let has_input = waiting.has_eligible_input(&mutation);
         // Sleep posture may precede the original dispatch's physical settlement.
         // That dispatch still owns the pending wake and cannot consume an idle tick.
         let eligible = matches!(
             mutation.state.status,
             AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
         ) && mutation.state.current_run_id.is_none()
-            && mutation.queue.is_empty();
-        let consume_rechecks =
-            mutation.state.status == AgentStatus::AwakeRunning || !mutation.queue.is_empty();
+            && !has_input;
+        let consume_rechecks = mutation.state.status == AgentStatus::AwakeRunning || has_input;
         let agent_id = mutation.state.id.clone();
         if !eligible {
             drop(mutation);
@@ -171,6 +181,10 @@ impl RuntimeHandle {
         let mut read = mutation
             .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
             .await?;
+        if !waiting.ids.is_empty() {
+            waiting.token = Some(mutation.capture_published_root()?.token);
+            read.projection.queue_len = 0;
+        }
         let mut pending_wake_hint = read.state.pending_wake_hint.clone();
         // The hook can invoke runtime APIs. Only selected owned observations,
         // never the owner reservation, survive its await.
@@ -203,12 +217,19 @@ impl RuntimeHandle {
         };
         if used_async_hook {
             let mut mutation = self.begin_mutation().await?;
-            if !mutation.accepts_ordinary_scheduler_preparation() {
+            if !mutation.accepts_ordinary_scheduler_preparation()
+                || !waiting.is_current(&mutation)?
+                || (!waiting.ids.is_empty() && waiting.has_eligible_input(&mutation))
+            {
                 return Ok(false);
             }
             read = mutation
                 .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
                 .await?;
+            if !waiting.ids.is_empty() {
+                read.projection.queue_len = 0;
+                waiting.token = Some(mutation.capture_published_root()?.token);
+            }
             drop(mutation);
             pending_wake_hint = read.state.pending_wake_hint.clone();
             scheduler_projection = read.projection;
@@ -219,15 +240,17 @@ impl RuntimeHandle {
         }
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
-                self.append_original_audit_event(AuditEvent::legacy(
+                let event = AuditEvent::legacy(
                     "autonomous_continuation_selection_fallback",
                     serde_json::json!({
-                        "agent_id": self.agent_id().await?,
+                        "agent_id": agent_id,
                         "reason": reason.as_str(),
                         "candidate_count": selection.candidate_count(),
                     }),
-                ))
-                .await?;
+                );
+                if !self.append_idle_tick_audit(event, waiting).await? {
+                    return Ok(false);
+                }
             }
         }
         let work_reactivation = selection
@@ -248,6 +271,13 @@ impl RuntimeHandle {
         let suppress_continue_active = triggering_continuation
             .is_some_and(|continuation| continuation.model_reentry)
             || self.take_continue_active_suppression().await;
+
+        if !waiting.ids.is_empty() {
+            let mutation = self.begin_mutation().await?;
+            if !waiting.is_current(&mutation)? || waiting.has_eligible_input(&mutation) {
+                return Ok(false);
+            }
+        }
 
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active, generation)) => {
@@ -286,7 +316,7 @@ impl RuntimeHandle {
                         result_brief_id,
                     )) = duplicate
                     {
-                        self.append_original_audit_event(AuditEvent::legacy(
+                        let event = AuditEvent::legacy(
                             "system_tick_suppressed",
                             serde_json::json!({
                                 "subsystem": "work_queue",
@@ -294,19 +324,26 @@ impl RuntimeHandle {
                                 "work_item_id": active.id,
                                 "result_brief_id": result_brief_id
                             }),
-                        ))
-                        .await?;
+                        );
+                        if !self.append_idle_tick_audit(event, waiting).await? {
+                            return Ok(false);
+                        }
                     }
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                self.emit_system_tick_from_work_queue(
-                    &active,
-                    generation,
-                    "continue_active",
-                    Some(&decision),
-                )
-                .await?;
+                if !self
+                    .emit_system_tick_from_work_queue_with_replies(
+                        &active,
+                        generation,
+                        "continue_active",
+                        Some(&decision),
+                        waiting,
+                    )
+                    .await?
+                {
+                    return Ok(false);
+                }
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -341,13 +378,18 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                self.emit_system_tick_from_work_queue(
-                    &queued,
-                    generation,
-                    "queued_available",
-                    Some(&decision),
-                )
-                .await?;
+                if !self
+                    .emit_system_tick_from_work_queue_with_replies(
+                        &queued,
+                        generation,
+                        "queued_available",
+                        Some(&decision),
+                        waiting,
+                    )
+                    .await?
+                {
+                    return Ok(false);
+                }
                 self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
@@ -379,9 +421,22 @@ impl RuntimeHandle {
                     self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
-                self.append_scheduler_decision(&decision).await?;
-                self.emit_system_tick_from_wake_hint(&pending, decision.work_item_id.as_deref())
-                    .await?;
+                if waiting.ids.is_empty() {
+                    self.append_scheduler_decision(&decision).await?;
+                }
+                if !self
+                    .emit_system_tick_from_wake_hint_with_replies(
+                        &pending,
+                        decision.work_item_id.as_deref(),
+                        waiting,
+                    )
+                    .await?
+                {
+                    return Ok(false);
+                }
+                if !waiting.ids.is_empty() {
+                    self.append_scheduler_decision(&decision).await?;
+                }
 
                 #[cfg(test)]
                 if crate::runtime::test_util::checkpoint_matches_agent(&self.agent_id().await?) {
@@ -398,7 +453,12 @@ impl RuntimeHandle {
                 Ok(true)
             }
             Some(IdleTickTrigger::BlockedRecheck(items)) => {
-                self.emit_system_tick_from_blocked_recheck(&items).await?;
+                if !self
+                    .emit_system_tick_from_blocked_recheck(&items, waiting)
+                    .await?
+                {
+                    return Ok(false);
+                }
                 for item in items {
                     let _ = self.consume_work_item_recheck(&item.id).await?;
                 }
@@ -415,6 +475,25 @@ impl RuntimeHandle {
                 Ok(false)
             }
         }
+    }
+
+    async fn append_idle_tick_audit(
+        &self,
+        event: AuditEvent,
+        waiting: &mut scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
+        if waiting.ids.is_empty() {
+            self.append_original_audit_event(event).await?;
+        } else {
+            let mut mutation = self.begin_mutation().await?;
+            if !waiting.is_current(&mutation)? || waiting.has_eligible_input(&mutation) {
+                return Ok(false);
+            }
+            mutation.append_original_audit_event(event).await?;
+            // Keep the idle observation current across our own Audit publication.
+            waiting.token = Some(mutation.capture_published_root()?.token);
+        }
+        Ok(true)
     }
 
     async fn consume_due_work_item_rechecks(&self, agent_id: &str) -> Result<()> {
@@ -962,6 +1041,21 @@ impl RuntimeHandle {
         pending: &PendingWakeHint,
         work_item_id_override: Option<&str>,
     ) -> Result<()> {
+        self.emit_system_tick_from_wake_hint_with_replies(
+            pending,
+            work_item_id_override,
+            &scheduler_executor::WaitingReplyQueue::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn emit_system_tick_from_wake_hint_with_replies(
+        &self,
+        pending: &PendingWakeHint,
+        work_item_id_override: Option<&str>,
+        waiting: &scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
         let correlation_id = pending.correlation_id.clone();
         let causation_id = pending.causation_id.clone();
         let work_item_id = match work_item_id_override {
@@ -1014,7 +1108,7 @@ impl RuntimeHandle {
         {
             message.source_refs.insert("wait_id".into(), wait_id);
         }
-        self.append_original_audit_event(AuditEvent::legacy(
+        let event = AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "wake_hint",
@@ -1024,10 +1118,8 @@ impl RuntimeHandle {
                     .and_then(|value| value.get("wake_hint"))
                     .cloned()
             }),
-        ))
-        .await?;
-        let _ = self.enqueue(message).await?;
-        Ok(())
+        );
+        self.emit_idle_tick(message, event, waiting).await
     }
 
     pub(super) async fn emit_system_tick_from_work_queue(
@@ -1037,6 +1129,25 @@ impl RuntimeHandle {
         reason: &str,
         decision: Option<&scheduler::SchedulerDecision>,
     ) -> Result<()> {
+        self.emit_system_tick_from_work_queue_with_replies(
+            work_item,
+            work_item_generation,
+            reason,
+            decision,
+            &scheduler_executor::WaitingReplyQueue::default(),
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn emit_system_tick_from_work_queue_with_replies(
+        &self,
+        work_item: &crate::types::WorkItemRecord,
+        work_item_generation: Option<u64>,
+        reason: &str,
+        decision: Option<&scheduler::SchedulerDecision>,
+        waiting: &scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
         let idempotency_key =
             scheduler::work_queue_tick_idempotency_key(work_item, reason, work_item_generation);
         let mut message = MessageEnvelope::new(
@@ -1129,6 +1240,11 @@ impl RuntimeHandle {
                     ));
                 }
                 let mut guard = self.begin_mutation().await?;
+                if !waiting.ids.is_empty()
+                    && (!waiting.is_current(&guard)? || waiting.has_eligible_input(&guard))
+                {
+                    return Ok(false);
+                }
                 let expected_persisted_state = guard.committed_state().clone();
                 let mut committed_state = guard.state.clone();
                 let previous_status = committed_state.status.clone();
@@ -1212,13 +1328,14 @@ impl RuntimeHandle {
         };
         commit.effects.notify_scheduler = true;
         self.apply_transition_commit(commit).await;
-        Ok(())
+        Ok(true)
     }
 
-    pub(super) async fn emit_system_tick_from_blocked_recheck(
+    async fn emit_system_tick_from_blocked_recheck(
         &self,
         work_items: &[crate::types::WorkItemRecord],
-    ) -> Result<()> {
+        waiting: &scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
         // Stable primary selection: earliest due recheck, then WorkItem id.
         let mut ordered: Vec<&crate::types::WorkItemRecord> = work_items.iter().collect();
         ordered.sort_by(|left, right| {
@@ -1298,7 +1415,7 @@ impl RuntimeHandle {
         if message.turn_id.is_none() {
             message.turn_id = Some(crate::ids::turn_id());
         }
-        self.append_original_audit_event(AuditEvent::legacy(
+        let event = AuditEvent::legacy(
             "system_tick_emitted",
             serde_json::json!({
                 "subsystem": "work_item_recheck",
@@ -1308,10 +1425,28 @@ impl RuntimeHandle {
                     .and_then(|value| value.get("work_item_recheck"))
                     .cloned()
             }),
-        ))
-        .await?;
-        let _ = self.enqueue(message).await?;
-        Ok(())
+        );
+        self.emit_idle_tick(message, event, waiting).await
+    }
+
+    async fn emit_idle_tick(
+        &self,
+        message: MessageEnvelope,
+        event: AuditEvent,
+        waiting: &scheduler_executor::WaitingReplyQueue,
+    ) -> Result<bool> {
+        if waiting.ids.is_empty() {
+            self.append_original_audit_event(event).await?;
+            self.enqueue(message).await?;
+        } else if self
+            .enqueue_idle_tick_with_replies(message, waiting)
+            .await?
+        {
+            self.append_original_audit_event(event).await?;
+        } else {
+            return Ok(false);
+        }
+        Ok(true)
     }
 }
 
