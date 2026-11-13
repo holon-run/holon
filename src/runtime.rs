@@ -6891,8 +6891,9 @@ impl RuntimeHandle {
             if self.emit_due_agent_wait_recheck().await? {
                 continue;
             }
+            let mut waiting_replies = scheduler_executor::WaitingReplyQueue::default();
             let poll = scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                .poll()
+                .poll_with_waiting_replies(&mut waiting_replies)
                 .await?;
             if !matches!(
                 poll,
@@ -6943,7 +6944,10 @@ impl RuntimeHandle {
                     if self.maybe_emit_pending_system_tick(None).await? {
                         continue;
                     }
-                    let Some(idle_read) = self.prepare_idle_scheduler_projection().await? else {
+                    let Some(idle_read) = self
+                        .prepare_idle_scheduler_projection_with_replies(&mut waiting_replies)
+                        .await?
+                    else {
                         continue;
                     };
                     let decision = scheduler::decide_next_action(
@@ -6979,7 +6983,10 @@ impl RuntimeHandle {
                     // A sleeping loop retains deadlines, not owned Work bodies or Pins.
                     drop(idle_read);
                     let idle_transition = scheduler_executor::SchedulerDecisionExecutor::new(&self)
-                        .transition_run_loop_idle_to_sleep(next_recheck_at)
+                        .transition_run_loop_idle_to_sleep_with_replies(
+                            next_recheck_at,
+                            &waiting_replies,
+                        )
                         .await?;
                     let Some(idle_transition) = idle_transition else {
                         continue;

@@ -1028,26 +1028,44 @@ impl RuntimeMutation {
 }
 
 impl RuntimeHandle {
-    #[inline(never)]
-    pub(in crate::runtime) fn prepare_idle_scheduler_projection(
+    #[cfg(test)]
+    pub(in crate::runtime) async fn prepare_idle_scheduler_projection(
         &self,
+    ) -> Result<Option<PreparedSchedulerRead>> {
+        self.prepare_idle_scheduler_projection_with_replies(
+            &mut super::super::scheduler_executor::WaitingReplyQueue::default(),
+        )
+        .await
+    }
+
+    #[inline(never)]
+    pub(in crate::runtime) fn prepare_idle_scheduler_projection_with_replies<'a>(
+        &'a self,
+        waiting: &'a mut super::super::scheduler_executor::WaitingReplyQueue,
     ) -> std::pin::Pin<
-        Box<impl std::future::Future<Output = Result<Option<PreparedSchedulerRead>>> + Send + '_>,
+        Box<impl std::future::Future<Output = Result<Option<PreparedSchedulerRead>>> + Send + 'a>,
     > {
         Box::pin(async move {
             let mut mutation = self.begin_mutation().await?;
             if !mutation.accepts_ordinary_scheduler_preparation()
-                || !mutation.queue.is_empty()
+                || mutation
+                    .queue
+                    .shared_messages()
+                    .any(|message| !waiting.ids.contains(&message.id))
                 || mutation.state.current_run_id.is_some()
+                || waiting.token.is_some()
+                    && waiting.token != Some(mutation.capture_published_root()?.token)
             {
                 return Ok(None);
             }
-            // An intervening producer can replace the Context window after poll.
-            // The idle actor prepares its own policy; ordinary captures stay pure.
-            mutation
+            let mut read = mutation
                 .prepare_scheduler_read(None, Default::default(), Default::default(), self.now())
-                .await
-                .map(Some)
+                .await?;
+            if !waiting.ids.is_empty() {
+                read.projection.queue_len = 0;
+                waiting.token = Some(mutation.capture_published_root()?.token);
+            }
+            Ok(Some(read))
         })
     }
 

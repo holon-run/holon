@@ -233,6 +233,7 @@ enum CanonicalClaimOutcome {
         scenario_class: crate::domain::scheduler::SchedulerScenarioClass,
         reason: &'static str,
     },
+    WaitForReplyOwner,
     HardBlocker(CanonicalClaimHardBlocker),
 }
 
@@ -327,6 +328,12 @@ struct CanonicalClaimObservation {
     canonical_execution: Option<crate::domain::execution_protocol::WorkItemExecutionRecord>,
 }
 
+#[derive(Default)]
+pub(super) struct WaitingReplyQueue {
+    pub(super) ids: std::collections::BTreeSet<String>,
+    pub(super) token: Option<super::mutation_owner::PublicationToken>,
+}
+
 enum PrepareMessageOutcome {
     Poll(RunLoopPoll),
     Replan,
@@ -334,6 +341,7 @@ enum PrepareMessageOutcome {
     /// the outcome instead of being appended outside the qualified Audit.
     ProviderParked(Option<AuditEvent>),
     DeferredUntilRunnable,
+    WaitingReply,
 }
 
 impl<'a> SchedulerDecisionExecutor<'a> {
@@ -860,22 +868,39 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
+    #[cfg(test)]
     pub(super) async fn transition_run_loop_idle_to_sleep(
         &self,
         sleeping_until: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Result<Option<SleepTransition>> {
+        self.transition_run_loop_idle_to_sleep_with_replies(
+            sleeping_until,
+            &WaitingReplyQueue::default(),
+        )
+        .await
+    }
+
+    pub(super) async fn transition_run_loop_idle_to_sleep_with_replies(
+        &self,
+        sleeping_until: Option<chrono::DateTime<Utc>>,
+        waiting: &WaitingReplyQueue,
     ) -> Result<Option<SleepTransition>> {
         let mut guard = self.runtime.begin_mutation().await?;
         if matches!(guard.state.status, AgentStatus::Stopped) {
             return Ok(None);
         }
-        // Provider parking retains input; only an unparked/due input prevents sleep.
+        if waiting.token.is_some() && waiting.token != Some(guard.capture_published_root()?.token) {
+            return Ok(None);
+        }
+        // A new input or changed publication requires a fresh poll.
         for message in guard.queue.shared_messages() {
-            if self
-                .runtime
-                .inner
-                .runtime_db
-                .provider_queue_parking(&message.agent_id, &message.id)?
-                .is_none_or(|parking| parking.not_before <= self.runtime.now())
+            if !waiting.ids.contains(&message.id)
+                && self
+                    .runtime
+                    .inner
+                    .runtime_db
+                    .provider_queue_parking(&message.agent_id, &message.id)?
+                    .is_none_or(|parking| parking.not_before <= self.runtime.now())
             {
                 return Ok(None);
             }
@@ -922,10 +947,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         &self,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<RunLoopPoll>> + Send + '_>>
     {
-        Box::pin(self.poll_inner())
+        Box::pin(async move {
+            self.poll_with_waiting_replies(&mut WaitingReplyQueue::default())
+                .await
+        })
     }
 
-    async fn poll_inner(&self) -> Result<RunLoopPoll> {
+    #[inline(never)]
+    pub(super) fn poll_with_waiting_replies<'b>(
+        &'b self,
+        waiting: &'b mut WaitingReplyQueue,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<RunLoopPoll>> + Send + 'b>>
+    {
+        Box::pin(self.poll_inner(waiting))
+    }
+
+    async fn poll_inner(&self, waiting: &mut WaitingReplyQueue) -> Result<RunLoopPoll> {
         let started_at = std::time::Instant::now();
         self.reconcile_stale_run_projection(StaleRunProjectionBoundary::RunLoopPoll)
             .await?;
@@ -934,6 +971,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .publish_pending_source_revision_repair_briefs(&self.runtime.agent_id().await?)?;
         let mut replans = 0;
         let mut provider_parked = std::collections::BTreeSet::new();
+        let mut reply_revisions = None;
         loop {
             let candidate = {
                 let mut guard = self.runtime.begin_mutation().await?;
@@ -957,6 +995,20 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 let request = super::work_reads::live_work_request();
                 guard.prepare_owner_work_request(&request).await?;
                 let work = guard.capture_work(&request)?;
+                let root = guard.capture_published_root()?;
+                let revisions = (
+                    work.revision,
+                    root.tasks.as_ref().map(|tasks| tasks.coverage().revision),
+                    root.scheduling
+                        .as_ref()
+                        .map(|scheduling| scheduling.coverage().revision),
+                );
+                if reply_revisions.is_some_and(|previous| previous != revisions) {
+                    for id in std::mem::take(&mut waiting.ids) {
+                        provider_parked.remove(&id);
+                    }
+                }
+                reply_revisions = Some(revisions);
                 let wait_trigger_message_ids = work
                     .unresolved_wait_conditions()?
                     .into_iter()
@@ -973,7 +1025,11 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     )
                     .await?;
                 let Some(message) = message else {
-                    if let Some(head) = guard.queue.peek() {
+                    if let Some(head) = guard
+                        .queue
+                        .peek()
+                        .filter(|head| !waiting.ids.contains(&head.id))
+                    {
                         let material = crate::diagnostics::resource_io::ResourceReadMaterial::new(
                             &self.runtime.inner.input_evidence_budget,
                             &guard.input_evidence_scope(),
@@ -996,6 +1052,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                                 guard.append_original_audit_event(event).await?;
                             }
                         }
+                    }
+                    if !waiting.ids.is_empty() {
+                        waiting.token = Some(guard.capture_published_root()?.token);
                     }
                     let poll = RunLoopPoll::Idle;
                     crate::diagnostics::record_scheduler_poll(
@@ -1029,6 +1088,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         // The original writer owns the qualified Audit body.
                         self.runtime.append_original_audit_event(event).await?;
                     }
+                }
+                PrepareMessageOutcome::WaitingReply => {
+                    waiting.ids.insert(candidate.message.id.clone());
+                    provider_parked.insert(candidate.message.id.clone());
                 }
                 PrepareMessageOutcome::DeferredUntilRunnable => {
                     provider_parked.insert(candidate.message.id.clone());
@@ -1267,6 +1330,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 // Terminalization notifies the scheduler, so the next poll can
                 // advance past the rejected queue head in the same session.
                 return Ok(PrepareMessageOutcome::Poll(RunLoopPoll::Idle));
+            }
+            Ok(CanonicalClaimOutcome::WaitForReplyOwner) => {
+                return Ok(PrepareMessageOutcome::WaitingReply);
             }
             Ok(CanonicalClaimOutcome::DeferUntilRunnable {
                 scenario_class,
@@ -2270,6 +2336,57 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         }))
     }
 
+    fn is_waiting_agent_reply(
+        &self,
+        message: &MessageEnvelope,
+        tasks: &super::resident_task::CapturedTasks,
+        work_item_id: &str,
+    ) -> Result<bool> {
+        use crate::types::{AgentMessageDeliveryOutcome, AgentMessageDeliveryState};
+        if !crate::wake_contract::is_agent_message(message)
+            || !tasks.coverage.reply_result_ids.get(&message.id).is_some_and(|ids| {
+                ids.iter().any(|id| {
+                    tasks.coverage.unsettled_result_ids.contains(id)
+                        && tasks.coverage.result_metadata.get(id).is_some_and(|record| {
+                            record.work_item_id.as_deref() == Some(work_item_id)
+                                && record.state == crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending
+                        })
+                })
+            })
+        {
+            return Ok(false);
+        }
+        let delivery_id = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("agent_message_delivery"))
+            .and_then(|delivery| delivery.get("delivery_id"))
+            .and_then(serde_json::Value::as_str);
+        let delivery = self
+            .runtime
+            .inner
+            .runtime_db
+            .agent_message_deliveries()
+            .latest_for_message_preparation(&message.id)?;
+        Ok(delivery.is_some_and(|delivery| {
+            delivery.outcome == AgentMessageDeliveryOutcome::Accepted
+                && delivery.state == AgentMessageDeliveryState::Queued
+                && delivery.activation_id.is_none()
+                && delivery.turn_id.is_none()
+                && delivery.message_id.as_deref() == Some(message.id.as_str())
+                && delivery_id == Some(delivery.delivery_id.as_str())
+                && delivery.target_agent_id == tasks.scope.agent_id
+                && delivery
+                    .expected_incarnation
+                    .is_none_or(|incarnation| incarnation == tasks.scope.identity_incarnation)
+                && delivery.routing_context == message.routing_context
+                && delivery.caller.origin == message.origin
+                && delivery.caller.authority_class == message.authority_class
+                && Some(delivery.caller.delivery_surface) == message.delivery_surface
+                && Some(delivery.caller.admission_context) == message.admission_context
+        }))
+    }
+
     fn canonical_activation_plan(
         &self,
         projection: &scheduler::SchedulerProjection,
@@ -2674,6 +2791,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
         ) && work_projection.scheduling_state != crate::types::WorkItemSchedulingState::Runnable
         {
+            use crate::types::WorkItemSchedulingState as Scheduling;
+            if matches!(
+                scenario,
+                scheduler::CanonicalActivationScenario::InternalFollowup { .. }
+            ) && matches!(
+                work_projection.scheduling_state,
+                Scheduling::WaitingOperator
+                    | Scheduling::WaitingTask
+                    | Scheduling::WaitingExternal
+                    | Scheduling::WaitingTimer
+                    | Scheduling::WaitingSystem
+                    | Scheduling::Blocked
+            ) && self.is_waiting_agent_reply(message, captured_tasks, work_item_id)?
+            {
+                return Ok(CanonicalClaimOutcome::WaitForReplyOwner);
+            }
             return Ok(CanonicalClaimOutcome::RejectQueued {
                 scenario_class,
                 reason: match scenario {
@@ -6329,7 +6462,8 @@ mod tests {
                 PrepareMessageOutcome::ProviderParked(_) => {
                     panic!("selected non-head message was unexpectedly provider parked");
                 }
-                PrepareMessageOutcome::DeferredUntilRunnable => {
+                PrepareMessageOutcome::DeferredUntilRunnable
+                | PrepareMessageOutcome::WaitingReply => {
                     panic!("selected non-head message was unexpectedly deferred");
                 }
             }

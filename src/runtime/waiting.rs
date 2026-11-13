@@ -996,20 +996,6 @@ impl RuntimeHandle {
                     activation_id,
                 })
             }
-            TaskResultObligation::Settled { disposition }
-                if matches!(
-                    disposition,
-                    crate::runtime_db::TaskResultSettlementDisposition::OwnerClosed
-                        | crate::runtime_db::TaskResultSettlementDisposition::OwnerMissing
-                        | crate::runtime_db::TaskResultSettlementDisposition::InvalidOrStale
-                ) =>
-            {
-                Some(WaitForRegistrationOutcome::TaskResultUnavailable {
-                    task_id: task.id.clone(),
-                    result_message_id: result_message_id.clone(),
-                    reason: disposition.as_str().into(),
-                })
-            }
             TaskResultObligation::Settled { disposition } => {
                 Some(WaitForRegistrationOutcome::TaskResultAlreadyConsumed {
                     task_id: task.id.clone(),

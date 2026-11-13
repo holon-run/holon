@@ -41,6 +41,13 @@ unknown rejection, aborted reply sources without a recovery grant, and
 quarantined sources fail closed; a fresh wake cannot bypass quarantine. Queueing
 the wake does not charge or reset the existing recovery admission budget.
 
+A validated, unconsumed agent reply bound to an open but temporarily waiting
+WorkItem remains on its original queue entry. Later eligible inputs can pass
+it. Once the owner is runnable, the scheduler can claim the original message
+through normal admission. An exact wait retains its existing precedence.
+Historical canonically dropped replies may suspend automatic rechecks while
+remaining available to an exact waiter.
+
 Task completion, caller admission, and successful activation settlement remain
 separate durable facts. The existing settlement ledger retains deferred results,
 restart recovery, and generation fences. A reply can satisfy concurrent observer
