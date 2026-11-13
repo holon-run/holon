@@ -1554,6 +1554,14 @@ fn cold_route_fixture_host() -> Result<RuntimeHost> {
     db.agent_identities().upsert(&identity)?;
     let mut state = AgentState::new(&agent_id);
     state.status = AgentStatus::Asleep;
+    let mut workspace = holon::types::WorkspaceEntry::new(
+        "cold-workspace",
+        config.home_dir.join("cold-project"),
+        Some("cold-repository".into()),
+    );
+    workspace.workspace_alias = Some("cold-alias".into());
+    db.workspace_entries().upsert(&workspace)?;
+    state.attached_workspaces.push(workspace.workspace_id);
     db.agent_states()
         .initialize_cold_for_fixture(&state, identity.incarnation)?;
     drop(db);
@@ -1581,6 +1589,21 @@ pub async fn unloaded_agent_state_route_uses_storage_without_starting_runtime() 
     let payload: serde_json::Value = response.json().await?;
 
     assert_eq!(payload["agent"]["agent"]["status"], "asleep");
+    let workspaces = payload["workspace"]["workspaces"]
+        .as_array()
+        .expect("cold workspace metadata");
+    assert_eq!(workspaces.len(), 1);
+    assert_eq!(workspaces[0]["workspace_id"], "cold-workspace");
+    assert_eq!(workspaces[0]["workspace_alias"], "cold-alias");
+    assert_eq!(workspaces[0]["repo_name"], "cold-repository");
+    assert_eq!(
+        workspaces[0]["workspace_anchor"],
+        host.config()
+            .home_dir
+            .join("cold-project")
+            .display()
+            .to_string()
+    );
     assert!(!host.has_runtime_entry_for_fixture(&agent_id).await);
     assert!(
         !agent_state_path.exists(),

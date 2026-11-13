@@ -81,6 +81,7 @@ impl RuntimeRegistry {
             )?;
         }
         runtime_db.initialize_sqlite_storage_domains()?;
+        runtime_db.prepare_workspace_context()?;
         let agent_identities = identities
             .into_iter()
             .map(|record| (record.agent_id.clone(), record))

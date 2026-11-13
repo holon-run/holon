@@ -396,15 +396,24 @@ without repeating it.
 ### Shared workspace context
 
 The loaded Agent supplies the active binding and attached workspace IDs. The
-runtime database publishes the current workspace anchors and live execution
+runtime database publishes the current WorkspaceEntry metadata and live execution
 root references through one in-memory registry shared by its runtimes.
-Bootstrap initializes the view from one durable read. Workspace and execution
+Host registry initialization prepares the view from one durable read before
+serving cold State requests; standalone runtime bootstrap also prepares it.
+Workspace and execution
 root writes publish their affected entries after commit, including when another
 Agent registered or removed a root. An ambiguous commit reloads the view at the
 writer boundary. Failed reload leaves the view unavailable until preparation or
 a later writer can reload it.
 
-Context capture copies only the requested workspace material from this view.
+Context and State capture copy only the requested workspace material from this view.
+State selects the active and attached workspace IDs from its captured Agent
+root; it does not read the durable registry or copy unrelated registry entries.
+Workspace aliases, anchors and repository metadata share the existing writer
+publication and reload boundary, rather than a per-Agent registry copy.
+Ordinary invalid selected metadata retains State's best-effort enrichment
+fallback. Unprepared or NeedsReload publication, protection failures and read
+deadlines remain errors; a GET does not prepare or reload the registry.
 Invalid material fails capture for its own workspace. The selected execution
 root references preserve exact historical URI resolution within attached
 workspaces. Removal and detachment exclude those roots from later captures.

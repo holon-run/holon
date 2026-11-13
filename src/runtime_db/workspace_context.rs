@@ -1,13 +1,14 @@
 //! Current workspace material shared by the loaded runtimes of one database.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::{RwLock, TryLockError};
 
 use anyhow::{ensure, Context, Result};
 use rusqlite::{Connection, Transaction};
 
 use crate::system::ExecutionRootRef;
+use crate::types::WorkspaceEntry;
 
 use super::blocking::at_blocking_boundary;
 use super::repositories::{decode_execution_root_entry_payload, decode_workspace_entry_payload};
@@ -17,7 +18,7 @@ type Observed<T> = std::result::Result<T, String>;
 type ObservedRoots = Observed<Vec<ExecutionRootRef>>;
 
 pub(crate) struct WorkspaceContext {
-    anchors: BTreeMap<String, Observed<PathBuf>>,
+    entries: BTreeMap<String, Observed<WorkspaceEntry>>,
     roots: BTreeMap<String, ObservedRoots>,
 }
 
@@ -30,46 +31,47 @@ pub(super) enum WorkspaceContextPublication {
 }
 
 pub(super) enum WorkspaceContextChange {
-    Anchor(String, PathBuf),
+    Entry(WorkspaceEntry),
     Roots(Vec<(String, Option<ObservedRoots>)>),
 }
 
 impl WorkspaceContext {
     fn load(connection: &Connection) -> Result<Self> {
-        let mut anchors = BTreeMap::new();
+        let mut entries = BTreeMap::new();
         let mut statement =
             connection.prepare("SELECT workspace_id, payload_json FROM workspace_entries")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let workspace_id: String = row.get(0)?;
-            let anchor = (|| {
+            let entry = (|| {
                 let entry = decode_workspace_entry_payload(row.get_ref(1)?.as_str()?)?;
                 ensure!(
                     entry.workspace_id == workspace_id,
                     "context workspace projection mismatch"
                 );
-                Ok(entry.workspace_anchor)
+                Ok(entry)
             })();
-            anchors.insert(
+            entries.insert(
                 workspace_id,
-                anchor.map_err(|error: anyhow::Error| error.to_string()),
+                entry.map_err(|error: anyhow::Error| error.to_string()),
             );
         }
         Ok(Self {
-            anchors,
+            entries,
             roots: load_roots(connection, None)?,
         })
     }
 
     pub(crate) fn anchor(&self, workspace_id: &str) -> Result<Option<&Path>> {
-        self.anchors
+        Ok(self
+            .entry(workspace_id)?
+            .map(|entry| entry.workspace_anchor.as_path()))
+    }
+
+    pub(crate) fn entry(&self, workspace_id: &str) -> Result<Option<&WorkspaceEntry>> {
+        self.entries
             .get(workspace_id)
-            .map(|anchor| {
-                anchor
-                    .as_ref()
-                    .map(PathBuf::as_path)
-                    .map_err(|error| anyhow::anyhow!("{error}"))
-            })
+            .map(|entry| entry.as_ref().map_err(|error| anyhow::anyhow!("{error}")))
             .transpose()
     }
 
@@ -84,8 +86,8 @@ impl WorkspaceContext {
 
     fn apply(&mut self, change: WorkspaceContextChange) {
         match change {
-            WorkspaceContextChange::Anchor(workspace_id, anchor) => {
-                self.anchors.insert(workspace_id, Ok(anchor));
+            WorkspaceContextChange::Entry(entry) => {
+                self.entries.insert(entry.workspace_id.clone(), Ok(entry));
             }
             WorkspaceContextChange::Roots(workspaces) => {
                 for (workspace_id, roots) in workspaces {
@@ -296,6 +298,7 @@ mod tests {
             Some(PersistenceCertainty::Indeterminate)
         );
         db.with_workspace_context(|view| {
+            assert_eq!(view.entry("workspace")?, Some(&workspace));
             assert_eq!(
                 view.anchor("workspace")?,
                 Some(workspace.workspace_anchor.as_path())
@@ -351,6 +354,10 @@ mod tests {
 
         let original = workspace.clone();
         workspace.workspace_anchor = home.path().join("updated");
+        workspace.workspace_alias = Some("renamed".into());
+        workspace.repo_name = Some("updated-repository".into());
+        workspace.workspace_kind = Some("project".into());
+        workspace.owner_agent_id = Some("another-agent".into());
         workspace.updated_at += TimeDelta::seconds(1);
         let writer = open()?;
         writer.workspace_entries().upsert(&workspace)?;
@@ -363,6 +370,7 @@ mod tests {
         })
         .unwrap_err();
         db.with_workspace_context(|view| {
+            assert_eq!(view.entry("workspace")?, Some(&workspace));
             assert_eq!(
                 view.anchor("workspace")?,
                 Some(workspace.workspace_anchor.as_path())
@@ -393,6 +401,7 @@ mod tests {
         let reopened = open()?;
         reopened.prepare_workspace_context()?;
         reopened.with_workspace_context(|view| {
+            assert_eq!(view.entry("workspace")?, Some(&workspace));
             assert_eq!(
                 view.anchor("workspace")?,
                 Some(workspace.workspace_anchor.as_path())
@@ -400,6 +409,51 @@ mod tests {
             assert!(view.roots("workspace")?.is_empty());
             assert!(view.roots("unrelated")?.is_empty());
             assert!(view.anchor("unrelated").is_err());
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn workspace_context_failed_ambiguous_reload_stays_unavailable_until_writer_repairs(
+    ) -> Result<()> {
+        let home = tempfile::tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            home.path().join("runtime.sqlite"),
+            home.path().join("runtime.lock"),
+        )?;
+        let mut workspace = WorkspaceEntry::new("workspace", home.path().join("workspace"), None);
+        db.workspace_entries().upsert(&workspace)?;
+        db.prepare_workspace_context()?;
+        let error = db
+            .write_workspace_context(|tx, _| {
+                tx.execute_batch(
+                    "ALTER TABLE workspace_entries RENAME TO saved_workspace_entries; COMMIT",
+                )?;
+                Ok(((), None))
+            })
+            .unwrap_err();
+        assert_eq!(
+            persistence_certainty(&error),
+            Some(PersistenceCertainty::Indeterminate)
+        );
+        let before = db.preparation_pool_stats_for_tests().checkout_attempts;
+        let error = db
+            .with_workspace_context(|view| Ok(view.entry("workspace")?.cloned()))
+            .unwrap_err();
+        assert!(error.is::<RuntimeDbRetryableError>(), "{error:#}");
+        assert_eq!(
+            db.preparation_pool_stats_for_tests().checkout_attempts,
+            before
+        );
+        db.transaction(|tx| {
+            tx.execute_batch("ALTER TABLE saved_workspace_entries RENAME TO workspace_entries")?;
+            Ok(())
+        })?;
+        workspace.workspace_alias = Some("repaired-by-writer".into());
+        workspace.updated_at += TimeDelta::seconds(1);
+        db.workspace_entries().upsert(&workspace)?;
+        db.with_workspace_context(|view| {
+            assert_eq!(view.entry("workspace")?, Some(&workspace));
             Ok(())
         })
     }

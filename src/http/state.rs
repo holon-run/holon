@@ -829,10 +829,30 @@ fn state_workspace_snapshot(
     agent: &AgentState,
     db: &crate::runtime_db::RuntimeDb,
 ) -> Result<crate::http_dto::StateWorkspaceSnapshotDto, ProjectionFailure> {
+    use crate::types::AgentWorkspaceInfo;
+    use std::collections::HashSet;
+
     db.check_read_scope()
         .map_err(error_response)
         .map_err(ProjectionFailure::from)?;
-    let all_entries = match db.workspace_entries().latest_all() {
+    let all_entries = match db.with_workspace_context(|context| {
+        let mut entries = Vec::new();
+        let mut selected = HashSet::new();
+        let workspace_ids = agent
+            .active_workspace_entry
+            .iter()
+            .map(|entry| entry.workspace_id.as_str())
+            .chain(agent.attached_workspaces.iter().map(String::as_str));
+        for workspace_id in workspace_ids {
+            db.check_read_cancellation()?;
+            if selected.insert(workspace_id) {
+                if let Some(entry) = context.entry(workspace_id)? {
+                    entries.push(entry.clone());
+                }
+            }
+        }
+        Ok(entries)
+    }) {
         Ok(entries) => entries,
         Err(error)
             if error.is::<crate::runtime_db::RuntimeDbRetryableError>()
@@ -843,9 +863,6 @@ fn state_workspace_snapshot(
         // Registry enrichment has historically been best-effort for ordinary errors.
         Err(_) => Vec::new(),
     };
-
-    use crate::types::AgentWorkspaceInfo;
-    use std::collections::HashSet;
 
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut workspaces: Vec<AgentWorkspaceInfo> = Vec::new();
@@ -980,6 +997,47 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn workspace_enrichment_selects_only_attached_ids_and_keeps_missing_id_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let db = crate::runtime_db::RuntimeDb::open_and_migrate(
+            directory.path().join("runtime.sqlite"),
+            directory.path().join("runtime.lock"),
+        )
+        .unwrap();
+        let mut entry =
+            crate::types::WorkspaceEntry::new("selected", directory.path().join("selected"), None);
+        entry.workspace_alias = Some("selected-alias".into());
+        db.workspace_entries().upsert(&entry).unwrap();
+        let unrelated = crate::types::WorkspaceEntry::new(
+            "unrelated",
+            directory.path().join("unrelated"),
+            None,
+        );
+        db.workspace_entries().upsert(&unrelated).unwrap();
+        db.connection()
+            .unwrap()
+            .execute(
+                "UPDATE workspace_entries SET payload_json='{}' WHERE workspace_id=?1",
+                [&unrelated.workspace_id],
+            )
+            .unwrap();
+        db.prepare_workspace_context().unwrap();
+        let mut agent = crate::types::AgentState::new("workspace-agent");
+        agent.attached_workspaces = vec!["selected".into(), "missing".into(), "selected".into()];
+        let before = db.reader_pool_stats_for_tests().checkout_attempts;
+        let projection = super::state_workspace_snapshot(&agent, &db).unwrap();
+        assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, before);
+        assert_eq!(projection.workspaces.len(), 2);
+        assert_eq!(
+            projection.workspaces[0].workspace_alias.as_deref(),
+            Some("selected-alias")
+        );
+        assert_eq!(projection.workspaces[1].workspace_id, "missing");
+        assert!(projection.workspaces[1].workspace_anchor.is_none());
+        assert!(projection.workspaces.iter().all(|entry| !entry.is_active));
+    }
+
+    #[test]
     fn workspace_enrichment_propagates_scope_failure_but_preserves_ordinary_fallback() {
         use crate::runtime_db::{RuntimeDb, RuntimeDbReadScope};
         use std::time::{Duration, Instant};
@@ -992,8 +1050,29 @@ mod tests {
         .unwrap();
         let mut agent = crate::types::AgentState::new("workspace-agent");
         agent.attached_workspaces.push("workspace-a".into());
+        let failure = super::state_workspace_snapshot(&agent, &db).unwrap_err();
+        assert_eq!(
+            failure.status(),
+            axum::http::StatusCode::SERVICE_UNAVAILABLE
+        );
+        assert_eq!(failure.retryable(), Some(true));
+        let entry = crate::types::WorkspaceEntry::new(
+            "workspace-a",
+            directory.path().join("workspace-a"),
+            None,
+        );
+        db.workspace_entries().upsert(&entry).unwrap();
+        db.connection()
+            .unwrap()
+            .execute(
+                "UPDATE workspace_entries SET payload_json='{}' WHERE workspace_id=?1",
+                [&entry.workspace_id],
+            )
+            .unwrap();
+        db.prepare_workspace_context().unwrap();
         let healthy = super::state_workspace_snapshot(&agent, &db).unwrap();
         assert_eq!(healthy.workspaces.len(), 1);
+        assert!(healthy.workspaces[0].workspace_anchor.is_none());
         let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
         let scoped = db.with_read_scope(scope.clone());
         // Cancellation happens after earlier state phases, at workspace enrichment.
