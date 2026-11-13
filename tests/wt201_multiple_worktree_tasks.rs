@@ -148,6 +148,16 @@ where
     Err(anyhow::anyhow!("timed out waiting for condition"))
 }
 
+fn is_terminal_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled
+            | TaskStatus::Interrupted
+    )
+}
+
 async fn attach_default_workspace(host: &RuntimeHost) -> Result<()> {
     let runtime = host.default_runtime().await?;
     let workspace = host.ensure_workspace_entry(host.config().workspace_dir.clone())?;
@@ -213,6 +223,21 @@ async fn wt201_one_session_can_coordinate_multiple_worktree_tasks() -> Result<()
     // Wait for all tasks to complete
     wait_until_async(|| async { Ok(runtime.active_tasks(10).await?.is_empty()) }).await?;
 
+    // A task's terminal record can land after the active list drains (#4077),
+    // so poll the records until every scheduled task reached a terminal state.
+    // A timeout falls through to the per-task diagnostic assert below instead
+    // of failing with a generic condition error.
+    let scheduled_ids = [&task1.id, &task2.id, &task3.id];
+    let _ = wait_until_async(|| async {
+        let tasks = runtime.latest_task_records().await?;
+        Ok(scheduled_ids.iter().all(|id| {
+            tasks
+                .iter()
+                .any(|record| record.id == **id && is_terminal_task_status(&record.status))
+        }))
+    })
+    .await;
+
     // Verify all tasks completed successfully
     let tasks = runtime.latest_task_records().await?;
     let completed_tasks: Vec<_> = tasks
@@ -221,9 +246,23 @@ async fn wt201_one_session_can_coordinate_multiple_worktree_tasks() -> Result<()
         .filter(|task| task.is_worktree_child_agent_task())
         .collect();
 
+    // Distinguish "terminal record not visible" from "task failed": report
+    // each scheduled task's latest status when this count assertion fails.
+    let scheduled_states = scheduled_ids
+        .iter()
+        .map(|id| {
+            let status = tasks
+                .iter()
+                .find(|record| record.id == **id)
+                .map(|record| format!("{:?}", record.status))
+                .unwrap_or_else(|| "no terminal record".to_string());
+            format!("{id}={status}")
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     assert!(
         completed_tasks.len() >= 3,
-        "expected at least 3 completed worktree tasks, got {}",
+        "expected at least 3 completed worktree tasks, got {} (scheduled: {scheduled_states})",
         completed_tasks.len()
     );
 
