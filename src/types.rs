@@ -5374,6 +5374,16 @@ pub struct TimerRecord {
     pub calendar: Option<CalendarSchedule>,
 }
 
+/// Selection for explicit active/history list reads, applied before the limit.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordListStatus {
+    #[default]
+    All,
+    Active,
+    Terminal,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum TimerStatus {

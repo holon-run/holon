@@ -29,7 +29,7 @@ function agent(overrides: Partial<AgentSummary> = {}): AgentSummary {
 }
 
 beforeEach(() => {
-  reads.state.mockReset().mockResolvedValue(agent({ currentWorkItemId: "w1" }));
+  reads.state.mockReset().mockResolvedValue(agent({ currentWorkItemId: "w1", currentWork: work, workItems: [work] }));
   reads.workItems.mockReset().mockResolvedValue([work]);
   useRuntimeStore.setState({
     ...initial,
@@ -41,12 +41,12 @@ beforeEach(() => {
 afterEach(() => { useRuntimeStore.setState(initial, true); });
 
 describe("resume reconciliation", () => {
-  it("re-hydrates state and work items for the selected Agent after the scope reset", async () => {
+  it("re-hydrates only active state for the selected Agent after the scope reset", async () => {
     await useRuntimeStore.getState().reconcileAfterResume();
     const state = useRuntimeStore.getState();
     expect(reads.state.mock.calls.some((call) => call[0] === "agent-a")).toBe(true);
-    expect(reads.workItems.mock.calls.some((call) => call[0] === "agent-a")).toBe(true);
+    expect(reads.workItems).not.toHaveBeenCalled();
     expect(state.bootstrap.agents[0]?.workItems).toEqual([work]);
-    expect(state.sessionsByAgentId["agent-a"]?.workItemsSnapshot).toEqual([work]);
+    expect(state.sessionsByAgentId["agent-a"]?.workItemsSnapshot).toBeUndefined();
   });
 });

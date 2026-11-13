@@ -37,7 +37,7 @@ async function renderPanel(
   roots.push(root);
   const onOpenTask = vi.fn();
   await act(async () => root.render(
-    <AgentTasksPanel agentId="parent" tasks={tasks} activeTaskCount={tasks.length} loadRecentTasks={loadRecentTasks} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} />,
+    <AgentTasksPanel agentId="parent" incarnation={1} tasks={tasks} activeTaskCount={tasks.length} loadRecentTasks={loadRecentTasks} onOpenTask={onOpenTask} onOpenConversation={onOpenConversation} />,
   ));
   const recentDetails = host.querySelector(".inspector-details-list") as HTMLDetailsElement;
   async function openRecent() {
@@ -140,13 +140,15 @@ describe("AgentTasksPanel", () => {
 
   it("does not publish a request that completes after the section closes", async () => {
     let resolve!: (tasks: TaskSummary[]) => void;
-    const load = vi.fn(() => new Promise<TaskSummary[]>((done) => { resolve = done; }));
+    const load = vi.fn((_agentId: string, _options?: { signal?: AbortSignal }) => new Promise<TaskSummary[]>((done) => { resolve = done; }));
     const { host, openRecent, recentDetails } = await renderPanel(load);
     await openRecent();
+    const signal = load.mock.calls[0][1]?.signal;
     await act(async () => {
       recentDetails.open = false;
       recentDetails.dispatchEvent(new Event("toggle"));
     });
+    expect(signal?.aborted).toBe(true);
     await act(async () => resolve([task("stale")]));
     expect(host.textContent).not.toContain("Task stale");
   });
@@ -181,6 +183,37 @@ describe("AgentTasksPanel", () => {
     await act(async () => resolve([task("parent-only")]));
     expect(host.textContent).not.toContain("Task parent-only");
     expect((host.querySelector(".inspector-details-list") as HTMLDetailsElement).open).toBe(false);
+    expect(load).toHaveBeenCalledTimes(1);
+  });
+
+  it("aborts pending recent tasks when the outer section closes", async () => {
+    let resolve!: (tasks: TaskSummary[]) => void;
+    const load = vi.fn((_agentId: string, _options?: { signal?: AbortSignal }) => new Promise<TaskSummary[]>((done) => { resolve = done; }));
+    const { host, openRecent } = await renderPanel(load);
+    await openRecent();
+    const signal = load.mock.calls[0][1]?.signal;
+    const outer = host.querySelector(".collapsible-inspector-card") as HTMLDetailsElement;
+    await act(async () => {
+      outer.open = false;
+      outer.dispatchEvent(new Event("toggle"));
+    });
+    expect(signal?.aborted).toBe(true);
+    await act(async () => resolve([task("obsolete")]));
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(load).toHaveBeenCalledTimes(1);
+    expect(host.textContent).not.toContain("Task obsolete");
+  });
+
+  it("resets expanded recent tasks when the same agent is recreated", async () => {
+    const load = vi.fn().mockResolvedValue([task("old-incarnation")]);
+    const { host, root, openRecent, onOpenTask } = await renderPanel(load);
+    await openRecent();
+    await act(async () => {
+      registerSelectedAgentRefreshContext({ key: "parent-2", agentId: "parent", incarnation: 2, scopeKey: "test", onAccessError: vi.fn() });
+      root.render(<AgentTasksPanel agentId="parent" incarnation={2} tasks={[]} activeTaskCount={0} loadRecentTasks={load} onOpenTask={onOpenTask} />);
+    });
+    expect((host.querySelector(".inspector-details-list") as HTMLDetailsElement).open).toBe(false);
+    expect(host.textContent).not.toContain("Task old-incarnation");
     expect(load).toHaveBeenCalledTimes(1);
   });
 });

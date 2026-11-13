@@ -1084,7 +1084,7 @@ impl AppStorage {
         I::IntoIter: Clone,
     {
         self.read_models()
-            .state_work_queue_with_observed_scheduling(state, triggers, material)
+            .active_state_work_queue_with_observed_scheduling(state, triggers, material)
     }
 
     pub fn agent_posture_projection(&self, agent: &AgentState) -> Result<AgentPostureProjection> {

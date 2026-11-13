@@ -177,7 +177,8 @@ pub use types::*;
 pub use web::web_or_not_found_handler;
 
 pub(crate) const STATE_BOOTSTRAP_TASK_LIMIT: usize = 40;
-pub(crate) const STATE_BOOTSTRAP_WORK_ITEM_LIMIT: usize = 50;
+pub(crate) const STATE_BOOTSTRAP_WORK_ITEM_LIMIT: usize =
+    crate::runtime::resident_work::STATE_ACTIVE_WORK_ITEM_LIMIT;
 pub(crate) const STATE_BOOTSTRAP_TEXT_PREVIEW_LIMIT: usize = 512;
 pub(crate) const STATE_BOOTSTRAP_LAST_TURN_TEXT_LIMIT: usize = 2048;
 #[cfg(test)]
@@ -3778,7 +3779,11 @@ mod tests {
             .operator_state_read_projection(40, 50)
             .await
             .unwrap();
-        assert_eq!(projection.agent.work_queue.items.len(), 200);
+        assert_eq!(
+            projection.agent.work_queue.items.len(),
+            STATE_BOOTSTRAP_WORK_ITEM_LIMIT
+        );
+        assert_eq!(projection.active_work_item_count, 200);
         drop(projection);
 
         let id = runtime.instance_agent_id();
@@ -3809,6 +3814,7 @@ mod tests {
                 assert_eq!(wire["agent"]["agent"]["id"], id);
                 let items = wire["work_items"].as_array().unwrap();
                 assert_eq!(items.len(), STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
+                assert_eq!(wire["active_work_item_count"], 200);
                 let mut seen = std::collections::BTreeSet::new();
                 for item in items {
                     let item_id = item["id"].as_str().unwrap();

@@ -19,6 +19,55 @@ describe("live WorkItem detail selection", () => {
       { workItem: { ...fallback, revision: 2, objective: "Newer detail" }, dataRequestId: 1 }, 2,
     ).objective).toBe("Newer detail");
   });
+
+  it("preserves same-version full text after a later State read without reverting live fields", () => {
+    const full = {
+      ...fallback,
+      revision: 3,
+      updatedAt: "2026-11-12T19:00:00Z",
+      objective: "Full objective. ".repeat(40),
+      blockedBy: "Full blocking reason. ".repeat(40),
+      readiness: "runnable",
+      schedulingState: "runnable",
+      planArtifact: { hash: "detail" },
+    };
+    const list = {
+      ...full,
+      objective: `${full.objective.slice(0, 160)}…`,
+      blockedBy: `${full.blockedBy.slice(0, 160)}…`,
+      current: false,
+      readiness: "blocked",
+      schedulingState: "waiting_for_operator",
+      planArtifact: { hash: "state" },
+    };
+    expect(resolveWorkItemDetail(fallback, list, { workItem: full, dataRequestId: 1 }, 2)).toMatchObject({
+      objective: full.objective,
+      blockedBy: full.blockedBy,
+      current: false,
+      readiness: list.readiness,
+      schedulingState: list.schedulingState,
+      planArtifact: list.planArtifact,
+    });
+  });
+
+  it.each([
+    { revision: 4, updatedAt: "2026-11-12T19:00:00Z" },
+    { revision: 3, updatedAt: "2026-11-12T19:01:00Z" },
+  ])("does not preserve stale full text over a newer State version %j", (version) => {
+    const full = {
+      ...fallback,
+      revision: 3,
+      updatedAt: "2026-11-12T19:00:00Z",
+      objective: "Old full objective",
+      blockedBy: "Old full blocking reason",
+    };
+    const list = { ...full, ...version, objective: "New objective", blockedBy: undefined };
+    expect(resolveWorkItemDetail(fallback, list, { workItem: full, dataRequestId: 1 }, 2)).toMatchObject({
+      objective: list.objective,
+      blockedBy: undefined,
+    });
+  });
+
   it("resolves navigation against newer detail and never reuses its old full fields", () => {
     const full = { ...fallback, objective: "Updated objective", todoList: [], workRefs: [], planArtifact: undefined };
     expect(resolveWorkItemDetail(fallback, fallback, { workItem: full, dataRequestId: 2 }, 1)).toMatchObject(full);

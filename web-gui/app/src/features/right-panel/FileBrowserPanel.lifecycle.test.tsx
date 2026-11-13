@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { ClipboardProvider } from "../../components/ClipboardProvider";
 import { useRuntimeStore } from "../../runtime/runtime-store";
+import { registerSelectedAgentRefreshContext, useSelectedAgentRefreshContext } from "../../runtime/selected-agent-refresh-context";
 import type { WorkspaceDirectoryListing, WorkspaceFileContent, WorkspaceFileLocation } from "../../runtime/types";
 import { FileBrowserPanel, type FileBrowserSnapshot, type FileRevision } from "./FileBrowserPanel";
 
@@ -13,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   read: vi.fn<(location: WorkspaceFileLocation) => Promise<WorkspaceFileContent>>(),
   fetchPath: vi.fn(),
   readImage: vi.fn(),
+  workDetail: vi.fn(),
 }));
 
 vi.mock("../../runtime/runtime-store", async () => {
@@ -23,6 +25,7 @@ vi.mock("../../runtime/runtime-store", async () => {
       browseWorkspaceDir: mocks.browse,
       readWorkspaceFile: mocks.read,
       fetchWorkspacePath: mocks.fetchPath,
+      loadAgentWorkItemDetail: mocks.workDetail,
       workspaceFileUrl: ({ workspaceId, executionRootId, path }: WorkspaceFileLocation) =>
         `/api/workspaces/${workspaceId}/file?root=${executionRootId}&path=${path}`,
     })),
@@ -75,6 +78,8 @@ describe("FileBrowserPanel explicit refresh", () => {
     mocks.read.mockReset().mockImplementation(async (target) => content(target));
     mocks.fetchPath.mockReset();
     mocks.readImage.mockReset();
+    mocks.workDetail.mockReset().mockResolvedValue(undefined);
+    useSelectedAgentRefreshContext.setState({ current: null });
     snapshot = undefined;
     props = { workspaceId: location.workspaceId, executionRootId: location.executionRootId, initialFilePath: location.path,
       fileRevisions: [revision("hash-a")], onSnapshot: (value) => { snapshot = value; } };
@@ -84,6 +89,7 @@ describe("FileBrowserPanel explicit refresh", () => {
   });
   afterEach(async () => {
     await act(async () => root.unmount());
+    useSelectedAgentRefreshContext.setState({ current: null });
     host.remove();
     vi.useRealTimers();
     vi.unstubAllGlobals();
@@ -101,6 +107,86 @@ describe("FileBrowserPanel explicit refresh", () => {
     await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="fileBrowser.fileActions"]')!.click());
     await clickButton(text);
   }
+
+  it("refreshes only the visible plan descriptor without rereading the preview", async () => {
+    registerSelectedAgentRefreshContext({
+      key: "a:1", agentId: "a", incarnation: 1, scopeKey: "scope", onAccessError: vi.fn(),
+    });
+    await render({ agentId: "a", fileRevisions: [{ ...revision("hash-a"), workItemId: "wi" }] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(1);
+    expect(mocks.workDetail).toHaveBeenLastCalledWith("a", "wi", expect.objectContaining({
+      incarnation: 1, force: true, throwOnError: true, signal: expect.any(AbortSignal),
+    }));
+    const body = host.querySelector(".file-browser-markdown");
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(2);
+    await render({ fileRevisions: [{ ...revision("hash-b"), workItemId: "wi" }] });
+    expect(host.querySelector(".file-browser-update-hint")?.textContent).toContain("File may have changed.");
+    expect(host.querySelector(".file-browser-markdown")).toBe(body);
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+    const signal = mocks.workDetail.mock.calls.at(-1)![2].signal as AbortSignal;
+    await render({ fileRevisions: [revision("hash-b")] });
+    expect(signal.aborted).toBe(true);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not refresh a plan owned by another selected agent", async () => {
+    registerSelectedAgentRefreshContext({
+      key: "other:1", agentId: "other", incarnation: 1, scopeKey: "scope", onAccessError: vi.fn(),
+    });
+    await render({ agentId: "a", fileRevisions: [{ ...revision("hash-a"), workItemId: "wi" }] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.workDetail).not.toHaveBeenCalled();
+  });
+
+  it("refreshes a plan revealed by a wide split after narrow directory browsing", async () => {
+    let resize: ResizeObserverCallback | undefined;
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: ResizeObserverCallback) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const setWidth = async (width: number) => {
+      await act(async () => {
+        resize!([{ contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver);
+        await vi.advanceTimersByTimeAsync(0);
+      });
+    };
+    registerSelectedAgentRefreshContext({
+      key: "a:1", agentId: "a", incarnation: 1, scopeKey: "scope", onAccessError: vi.fn(),
+    });
+    await render({ agentId: "a", fileRevisions: [{ ...revision("hash-a"), workItemId: "wi" }] });
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(1);
+    const initialSignal = mocks.workDetail.mock.calls.at(-1)![2].signal as AbortSignal;
+    await clickButton("fileBrowser.browseDirectory");
+    expect(initialSignal.aborted).toBe(true);
+    expect(host.querySelector(".file-browser-markdown")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(1);
+
+    await setWidth(960);
+    expect(snapshot?.viewMode).toBe("files");
+    expect(host.querySelector(".file-browser")?.getAttribute("data-split")).toBe("true");
+    const body = host.querySelector(".file-browser-markdown");
+    expect(body).not.toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(mocks.workDetail.mock.calls.length).toBeGreaterThan(1);
+    await render({ fileRevisions: [{ ...revision("hash-b"), workItemId: "wi" }] });
+    expect(host.querySelector(".file-browser-update-hint")?.textContent).toContain("File may have changed.");
+    expect(host.querySelector(".file-browser-markdown")).toBe(body);
+    expect(mocks.read).toHaveBeenCalledTimes(1);
+
+    const splitSignal = mocks.workDetail.mock.calls.at(-1)![2].signal as AbortSignal;
+    const calls = mocks.workDetail.mock.calls.length;
+    await setWidth(959);
+    expect(splitSignal.aborted).toBe(true);
+    expect(host.querySelector(".file-browser-markdown")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(mocks.workDetail).toHaveBeenCalledTimes(calls);
+  });
 
   it("does not poll or reread on checkpoint renders; revision hints preserve body, scroll, and selection", async () => {
     await render();

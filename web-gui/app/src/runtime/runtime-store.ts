@@ -193,6 +193,9 @@ export function mergeBootstrapAgentState(httpAgent: AgentSummary, cachedAgent: A
     ...httpAgent,
     currentWork: cachedAgent.workItems !== undefined ? cachedAgent.currentWork : httpAgent.currentWork,
     workItems: cachedAgent.workItems ?? httpAgent.workItems,
+    activeWorkItemCount: httpAgent.activeWorkItemCount ?? cachedAgent.activeWorkItemCount,
+    activeTimerCount: httpAgent.activeTimerCount ?? cachedAgent.activeTimerCount,
+    timers: httpAgent.timers ?? cachedAgent.timers,
     // Tasks come from the live /state endpoint, not the /agents/list bootstrap.
     // When httpAgent.tasks is empty it may mean "no tasks" (from /state) or
     // "tasks not included" (from /agents/list). Only overwrite cached tasks
@@ -398,6 +401,7 @@ export interface RuntimeStoreState {
   refreshBootstrap: (options?: BootstrapRefreshOptions) => Promise<void>;
   queryAgentRecentTasks: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<TaskSummary[]>;
   queryAgentTimers: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
+  queryAgentCompletedWorkItems: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<WorkItemSummary[]>;
   cancelAgentTimer: (agentId: string, timerId: string) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"]>;
   reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
@@ -805,7 +809,7 @@ function refreshAgentResource(
       if (!current()) throw new AgentResourceSupersededError(agentId, resource);
       const data = resource === "state"
         ? await request.client.getAgentState(agentId, request.signal)
-        : await request.client.getAgentWorkItems(agentId, { limit: 50, signal: request.signal, incarnation });
+        : await request.client.getAgentWorkItems(agentId, { limit: 50, status: "active", signal: request.signal, incarnation });
       if (!current()) throw new AgentResourceSupersededError(agentId, resource);
       if (resource === "state" && incarnation !== undefined && (data as AgentSummary).incarnation !== incarnation) {
         throw new RuntimeHttpError("GET", `/agents/${agentId}/state`, 409,
@@ -2333,10 +2337,6 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           4,
           async (agentId) => {
             await get().refreshAgentState(agentId);
-            // The resume generation bump resets the resource scope; a state
-            // read alone would render the state's work_items as the whole
-            // list. Re-hydrate the list resource this reset invalidated.
-            await get().refreshAgentWorkItems(agentId);
           },
           () => isCurrentClientGeneration(generation),
         );
@@ -3305,6 +3305,17 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
     return tasks;
   },
+  queryAgentCompletedWorkItems: async (agentId, options = {}) => {
+    const request = captureClientRequest();
+    const workItems = await request.client.getAgentWorkItems(agentId, { ...options, status: "terminal", limit: 50 });
+    const incarnation = get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation
+      ?? get().sessionsByAgentId[agentId]?.detail?.agent.incarnation;
+    if (!isCurrentClientRequest(request) || options.signal?.aborted
+      || (options.incarnation !== undefined && incarnation !== undefined && incarnation !== options.incarnation)) {
+      throw new AgentResourceSupersededError(agentId, "completedWorkItems");
+    }
+    return workItems;
+  },
   queryAgentTimers: async (agentId, options = {}) => {
     const request = captureClientRequest();
     const timers = await request.client.getAgentTimers(agentId, options);
@@ -4250,6 +4261,8 @@ function mergeAgentIntoBootstrap(bootstrap: RuntimeBootstrap, updatedAgent: Agen
 function mergeAgentWorkItemsIntoState(state: RuntimeStoreState, agentId: string, workItems: WorkItemSummary[]): Partial<RuntimeStoreState> {
   const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
   const stateOwnsFocus = session.resourceRefresh?.state?.dataRequestId !== undefined;
+  // Compatibility list reads cannot replace an authoritative active snapshot.
+  if (stateOwnsFocus) return {};
   const detail = session.detail
     ? {
         ...session.detail,
@@ -4314,13 +4327,12 @@ function mergeAgentStateIntoState(state: RuntimeStoreState, agentId: string, fre
   const session = state.sessionsByAgentId[agentId] ?? emptyAgentSession();
   const cachedDetail = session.detail;
   const cachedAgent = cachedDetail?.agent ?? state.bootstrap.agents.find((agent) => agent.id === agentId);
-  const workItems = session.workItemsSnapshot ?? freshAgent.workItems ?? [];
-  // State owns focus and active tasks; list membership belongs to /work-items,
-  // including a successful empty list. Neither may resurrect a cleared focus.
+  // State owns the active snapshot, including authoritative empty membership.
+  // A previous list response must not resurrect newly terminal active items.
   const mergedAgent = patchAgentWorkItems({
     ...freshAgent,
     lastBrief: cachedAgent?.lastBrief || freshAgent.lastBrief,
-  }, workItems, true);
+  }, freshAgent.workItems ?? [], true);
   const detail = cachedDetail ? { ...cachedDetail, agent: mergedAgent } : createLiveAgentDetail(mergedAgent);
   const agents = state.bootstrap.agents.map((agent) => (agent.id === agentId ? mergedAgent : agent));
 

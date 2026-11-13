@@ -60,6 +60,8 @@ fn state_snapshot(id: &str) -> serde_json::Value {
         waits: vec![],
         timers: vec![],
         work_items: vec![],
+        active_work_item_count: 0,
+        active_timer_count: 0,
         external_triggers: vec![],
         workspace: Default::default(),
     })

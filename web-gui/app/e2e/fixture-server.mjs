@@ -221,6 +221,9 @@ function agentState(agentId, session) {
   if (tour) return tourAgents.find((agent) => agent.id === agentId)?.state;
   const rightPanel = session?.rightPanelByAgentId.get(agentId);
   const running = Boolean(session?.currentRunIdByAgentId.get(agentId));
+  const tasks = (rightPanel?.tasks ?? []).filter((task) => ["queued", "running", "cancelling"].includes(task.status));
+  const timers = (rightPanel?.timers ?? []).filter((timer) => timer.status === "active");
+  const workItems = (rightPanel?.stateWorkItems ?? rightPanel?.workItems ?? []).filter((item) => item.state !== "completed");
   return {
     agent: {
       identity: {
@@ -239,7 +242,7 @@ function agentState(agentId, session) {
         turn_index: 0,
       },
       scheduling_posture: { posture: running ? "active-turn" : "idle", reason: running ? "model_turn" : "idle" },
-      active_task_count: 0,
+      active_task_count: tasks.length,
       lifecycle: { accepts_external_messages: true },
       model: {
         source: "runtime_default",
@@ -250,9 +253,11 @@ function agentState(agentId, session) {
       closure: { outcome: "completed", runtime_posture: "awake" },
     },
     session: { current_run_id: running ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null, pending_count: 0, last_turn: null },
-    tasks: rightPanel?.tasks ?? [],
-    timers: [],
-    work_items: rightPanel?.stateWorkItems ?? rightPanel?.workItems ?? [],
+    tasks: tasks.slice(0, 40),
+    timers: timers.slice(0, 50),
+    work_items: workItems.slice(0, 50),
+    active_work_item_count: workItems.length,
+    active_timer_count: timers.length,
     external_triggers: [],
     workspace: { workspaces: rightPanel?.activeWorkspaceEntry ? [{ ...rightPanel.activeWorkspaceEntry, is_active: true }] : [] },
   };
@@ -638,8 +643,10 @@ async function handleApi(req, res, url) {
     const agentId = decodeURIComponent(timersMatch[1]);
     const fixture = session.rightPanelByAgentId.get(agentId);
     const failure = resourceFailure(fixture, "timers");
+    const status = url.searchParams.get("status") ?? "all";
+    const timers = (fixture?.timers ?? []).filter((timer) => status === "all" || (status === "active" ? timer.status === "active" : timer.status !== "active"));
     agentResource(req, res, session, agentId,
-      failure ? { error: "right-panel timers unavailable" } : fixture?.timers ?? [], failure ?? 200);
+      failure ? { error: "right-panel timers unavailable" } : timers.slice(0, Number(url.searchParams.get("limit") ?? 50)), failure ?? 200);
     return true;
   }
   const skillsMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/skills$/);
@@ -666,8 +673,9 @@ async function handleApi(req, res, url) {
   const stateMatch = url.pathname.match(/^\/api\/agents\/([^/]+)\/state$/);
   if (stateMatch) {
     const agentId = decodeURIComponent(stateMatch[1]);
-    if (session.rightPanelByAgentId.get(agentId)?.failResources.includes("state")) {
-      json(res, { error: "right-panel state unavailable" }, 503);
+    const failure = resourceFailure(session.rightPanelByAgentId.get(agentId), "state");
+    if (failure) {
+      json(res, { error: "right-panel state unavailable" }, failure);
     } else {
       json(res, agentState(agentId, session));
     }
@@ -679,6 +687,9 @@ async function handleApi(req, res, url) {
     const fixture = session.rightPanelByAgentId.get(agentId);
     const identity = listEntry(agentId, session).identity;
     const expectedIncarnation = req.headers["x-holon-expected-incarnation"];
+    const status = url.searchParams.get("status") ?? "all";
+    const workItems = (fixture?.workItems ?? []).filter((item) => status === "all" || (status === "active" ? item.state !== "completed" : item.state === "completed"))
+      .slice(0, Number(url.searchParams.get("limit") ?? 50));
     if (expectedIncarnation !== undefined && expectedIncarnation !== String(identity.incarnation)) {
       json(res, identityChangedEnvelope(), 409);
       return true;
@@ -687,9 +698,9 @@ async function handleApi(req, res, url) {
       json(res, { error: "right-panel work items unavailable" }, 503);
     } else {
       if (fixture?.omitIdentityHeaders) {
-        json(res, fixture?.workItems ?? []);
+        json(res, workItems);
       } else {
-        json(res, fixture?.workItems ?? [], 200, {
+        json(res, workItems, 200, {
           "x-holon-agent-id": identity.agent_id,
           "x-holon-agent-incarnation": String(identity.incarnation),
         });

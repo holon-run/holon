@@ -291,6 +291,42 @@ fn projection(item: &WorkItemRecord) -> WorkItemSchedulingProjection {
 }
 
 #[test]
+fn active_state_window_excludes_history_and_prioritizes_current() -> Result<()> {
+    let mut items = (0..60)
+        .map(|_| {
+            projection(&WorkItemRecord::new(
+                "state-window",
+                "history",
+                WorkItemState::Completed,
+            ))
+        })
+        .collect::<Vec<_>>();
+    let completing = WorkItemRecord::new("state-window", "completing", WorkItemState::Completing);
+    let completing_id = completing.id.clone();
+    items.push(projection(&completing));
+    items.extend((0..60).map(|_| {
+        projection(&WorkItemRecord::new(
+            "state-window",
+            "queued",
+            WorkItemState::Open,
+        ))
+    }));
+    let current = WorkItemRecord::new("state-window", "current", WorkItemState::Open);
+    let current_id = current.id.clone();
+    let mut current = projection(&current);
+    current.is_current = true;
+    items.push(current);
+    let result = slim_state_work_items(&items)?;
+    assert_eq!(result.len(), STATE_BOOTSTRAP_WORK_ITEM_LIMIT);
+    assert_eq!(result[0].id, current_id);
+    assert!(result.iter().any(|item| item.id == completing_id));
+    assert!(result
+        .iter()
+        .all(|item| item.state != WorkItemState::Completed));
+    Ok(())
+}
+
+#[test]
 fn borrows_short_fields_and_preserves_unicode_preview() -> Result<()> {
     let scope = InputEvidenceScope {
         agent_id: "state-dto".into(),

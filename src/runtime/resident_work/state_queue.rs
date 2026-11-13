@@ -7,6 +7,7 @@ use crate::work_item_scheduling::{
 use std::{borrow::Borrow, ops::Deref};
 
 pub(crate) type StateWorkQueue = WorkQueueReadModel<StateWorkRecord>;
+pub(crate) const STATE_ACTIVE_WORK_ITEM_LIMIT: usize = 50;
 
 #[derive(Debug, Clone)]
 enum StateWorkOwner {

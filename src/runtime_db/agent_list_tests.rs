@@ -4,10 +4,179 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::*;
+use crate::runtime_db::repositories::recent_timers_for_agent;
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
     WorkItemRecord, WorkItemState,
 };
+
+#[test]
+fn zero_history_window_skips_ranking_and_preserves_live_facts() -> Result<()> {
+    use crate::types::{AgentState, QueueEntryRecord, RecordListStatus};
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+
+    let home = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        home.path().join("runtime.sqlite"),
+        home.path().join("runtime.lock"),
+    )?;
+    let agent_id = "zero-window-agent";
+    let now = chrono::Utc::now();
+    db.agent_states()
+        .upsert_for_fixture(&AgentState::new(agent_id))?;
+    db.queue_entries().upsert(&QueueEntryRecord {
+        message_id: "queued-input".into(),
+        agent_id: agent_id.into(),
+        priority: crate::types::Priority::Normal,
+        status: QueueEntryStatus::Queued,
+        created_at: now,
+        updated_at: now,
+    })?;
+    let open = WorkItemRecord::new(agent_id, "open item", WorkItemState::Open);
+    db.work_items().insert_new(&open)?;
+    db.work_items().insert_new(&WorkItemRecord::new(
+        agent_id,
+        "completed item",
+        WorkItemState::Completed,
+    ))?;
+    db.external_triggers().upsert(&ExternalTriggerRecord {
+        external_trigger_id: "active-trigger".into(),
+        target_agent_id: agent_id.into(),
+        scope: crate::types::ExternalTriggerScope::Agent,
+        delivery_mode: crate::types::CallbackDeliveryMode::WakeHint,
+        token: None,
+        token_hash: "hash".into(),
+        status: crate::types::ExternalTriggerStatus::Active,
+        created_at: now,
+        revoked_at: None,
+        last_delivered_at: None,
+        delivery_count: 0,
+    })?;
+    let agent_ids = [agent_id.to_owned()];
+    let mut connection = db.connection()?;
+    connection.authorizer(Some(|context: AuthContext<'_>| match context.action {
+        AuthAction::Function { function_name }
+            if function_name.eq_ignore_ascii_case("row_number") =>
+        {
+            Authorization::Deny
+        }
+        _ => Authorization::Allow,
+    }));
+    let tx = connection.transaction_with_behavior(TransactionBehavior::Deferred)?;
+    for status in [RecordListStatus::All, RecordListStatus::Terminal] {
+        let rows = collect_agent_list_posture_rows_filtered(&tx, &agent_ids, status, 0)?;
+        let row = &rows.rows[0];
+        assert!(row.agent_state_json.is_some());
+        assert!(row.has_queued_input);
+        let facts = row
+            .facts
+            .as_ref()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        assert!(facts.has_queued_input);
+        if status == RecordListStatus::All {
+            assert_eq!(facts.open_work_items, vec![open.clone()]);
+        } else {
+            assert!(facts.open_work_items.is_empty());
+        }
+        assert!(facts.non_open_work_items.is_empty());
+        assert_eq!(facts.external_triggers.len(), 1);
+        assert_eq!(
+            facts.external_triggers[0].external_trigger_id,
+            "active-trigger"
+        );
+        // Nonzero history must still execute ranking, proving the guard detects it.
+        let error = collect_agent_list_posture_rows_filtered(&tx, &agent_ids, status, 1)
+            .err()
+            .expect("history ranking must be denied");
+        assert!(
+            error
+                .to_string()
+                .to_ascii_lowercase()
+                .contains("row_number"),
+            "{error}"
+        );
+    }
+    let rows =
+        collect_agent_list_posture_rows_filtered(&tx, &agent_ids, RecordListStatus::Active, 1)?;
+    let facts = rows.rows[0]
+        .facts
+        .as_ref()
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert_eq!(facts.open_work_items, vec![open]);
+    assert!(facts.non_open_work_items.is_empty());
+    Ok(())
+}
+
+#[test]
+fn explicit_history_filters_before_limits_and_active_work_keeps_all_completing() -> Result<()> {
+    use crate::types::RecordListStatus;
+    let home = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate(
+        home.path().join("runtime.sqlite"),
+        home.path().join("runtime.lock"),
+    )?;
+    db.agent_identities().upsert(&AgentIdentityRecord::new(
+        "filtered-agent",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    ))?;
+    let at: chrono::DateTime<chrono::Utc> = "2026-10-01T00:00:00Z".parse()?;
+    let mut completed =
+        WorkItemRecord::new("filtered-agent", "old history", WorkItemState::Completed);
+    completed.created_at = at;
+    completed.updated_at = at;
+    db.work_items().insert_new(&completed)?;
+    for _ in 0..55 {
+        db.work_items().insert_new(&WorkItemRecord::new(
+            "filtered-agent",
+            "completing",
+            WorkItemState::Completing,
+        ))?;
+    }
+    let (_, terminal) = db
+        .agent_work_queue_snapshot_filtered(
+            "filtered-agent",
+            Some(1),
+            RecordListStatus::Terminal,
+            1,
+        )?
+        .expect("identity");
+    let terminal = terminal.facts.map_err(anyhow::Error::msg)?;
+    assert!(terminal.open_work_items.is_empty());
+    assert_eq!(terminal.non_open_work_items, vec![completed]);
+    let (_, active) = db
+        .agent_work_queue_snapshot_filtered("filtered-agent", Some(1), RecordListStatus::Active, 1)?
+        .expect("identity");
+    let active = active.facts.map_err(anyhow::Error::msg)?;
+    assert_eq!(active.open_work_items.len(), 55);
+    assert!(active.non_open_work_items.is_empty());
+    let timer: TimerRecord = serde_json::from_value(serde_json::json!({
+        "id": "old-active", "agent_id": "filtered-agent", "created_at": at,
+        "duration_ms": 1000, "repeat": false
+    }))?;
+    db.timers().upsert(&timer)?;
+    for index in 0..55 {
+        let mut history = timer.clone();
+        history.id = format!("history-{index}");
+        history.status = crate::types::TimerStatus::Cancelled;
+        history.created_at = chrono::Utc::now();
+        db.timers().upsert(&history)?;
+    }
+    let (_, active) = db
+        .agent_timers_snapshot_filtered("filtered-agent", Some(1), 1, RecordListStatus::Active)?
+        .expect("identity");
+    assert_eq!(active, vec![timer]);
+    let (_, terminal) = db
+        .agent_timers_snapshot_filtered("filtered-agent", Some(1), 1, RecordListStatus::Terminal)?
+        .expect("identity");
+    assert_eq!(terminal.len(), 1);
+    assert_eq!(terminal[0].status, crate::types::TimerStatus::Cancelled);
+    Ok(())
+}
 
 #[test]
 fn task_and_timer_incarnation_and_data_share_snapshot_during_replacement_and_deletion() -> Result<()>

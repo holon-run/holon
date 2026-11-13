@@ -168,7 +168,7 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
         timer_limit: usize,
     ) -> Result<HeldColdSchedulingRead> {
-        self.acquire_cold_scheduling_query_in(identity, timer_limit, self.runtime_db())
+        self.acquire_cold_scheduling_query_in(identity, timer_limit, self.runtime_db(), false)
             .await
     }
 
@@ -177,6 +177,7 @@ impl RuntimeHost {
         identity: &AgentIdentityRecord,
         timer_limit: usize,
         db: &RuntimeDb,
+        active_only: bool,
     ) -> Result<HeldColdSchedulingRead> {
         anyhow::ensure!(
             timer_limit <= crate::runtime::resident_scheduling::SCHEDULING_HISTORY_WINDOW,
@@ -198,6 +199,27 @@ impl RuntimeHost {
                     .context("cold Scheduling byte limit overflow")?,
             )?,
             record_limit: usize::try_from(limits.record_limit)?,
+        };
+        let project = |selected, usage, guards| {
+            if active_only {
+                crate::runtime::project_state_scheduling_records(
+                    selected,
+                    timer_limit,
+                    ledger,
+                    guards,
+                    true,
+                )
+            } else {
+                crate::runtime::project_cold_scheduling_records(
+                    selected,
+                    timer_limit,
+                    ledger,
+                    request.byte_limit,
+                    request.record_limit,
+                    usage,
+                    guards,
+                )
+            }
         };
         // Enter the allowance only for synchronous work, outside reservation awaits.
         let acquisition =
@@ -253,15 +275,7 @@ impl RuntimeHost {
                 facts.state.as_deref() == Some(root.state.as_ref()),
                 "cold State and selected Scheduling publication differs"
             );
-            let (timers, triggers, material) = crate::runtime::project_cold_scheduling_records(
-                selected,
-                timer_limit,
-                ledger,
-                request.byte_limit,
-                request.record_limit,
-                usage,
-                guards,
-            )?;
+            let (timers, triggers, material) = project(selected, usage, guards)?;
             (
                 facts
                     .identity
@@ -293,15 +307,7 @@ impl RuntimeHost {
                     let selected =
                         self.capture_cold_scheduling(identity, &resident, &request.capture)?;
                     let (timers, triggers, material) =
-                        crate::runtime::project_cold_scheduling_records(
-                            selected,
-                            timer_limit,
-                            ledger,
-                            request.byte_limit,
-                            request.record_limit,
-                            material_usage,
-                            _read_material,
-                        )?;
+                        project(selected, material_usage, _read_material)?;
                     (
                         facts
                             .identity

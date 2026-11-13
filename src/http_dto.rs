@@ -40,6 +40,12 @@ pub struct AgentStateSnapshotDto<Timer = TimerRecord, WorkItem = SlimWorkItemDto
     pub timers: Vec<Timer>,
     #[serde(default)]
     pub work_items: Vec<WorkItem>,
+    /// Total nonterminal WorkItems; `work_items` is a bounded current-first window.
+    #[serde(default)]
+    pub active_work_item_count: usize,
+    /// Total active Timers; `timers` is a bounded window.
+    #[serde(default)]
+    pub active_timer_count: usize,
     #[serde(default)]
     pub external_triggers: Vec<ExternalTriggerStateSnapshot>,
     #[serde(default)]

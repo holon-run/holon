@@ -2126,6 +2126,33 @@ Provider usage and cache placement have their own contract; deterministic
 snapshot content alone does not imply a cache hit or better task quality.
 
 
+### Active State inventory and explicit history reads
+
+The HTTP State bootstrap carries bounded active summaries, not an embedded
+history browser. Tasks use the canonical active selection (up to 40). WorkItems
+include all nonterminal categories, including completing, yielded, blocked and
+operator-waiting work (up to 50, current first). Timers include only Active
+records (up to 50). `active_work_item_count`, `active_timer_count` and the
+existing agent `active_task_count` describe the complete active sets; a count
+larger than the returned array makes truncation explicit.
+
+Filtering precedes the response limit. Terminal WorkItem and Timer list reads
+are separate identity-fenced queries with `status=terminal`; `status=active`
+selects the corresponding live set, while omitted status retains the legacy
+mixed list contract. These explicit lists may access storage. Resident terminal
+evidence needed by scheduling, closure or recovery is not removed.
+
+The Web GUI keeps active bootstrap and terminal history resources separate.
+Closed history sections issue neither history requests nor count queries;
+opening a section fetches a bounded batch. Closing it, switching agents or
+replacing an incarnation cancels its requests and stops refresh. State refreshes
+cannot overwrite history, and historical results cannot reintroduce completed
+work into the active inventory. A history entry point remains visible even
+when the bootstrap contains no terminal records.
+
+This inventory split does not yet assert memory-only State acquisition or
+remove its existing serialized-response cache.
+
 ### Accepted TaskResult reducer routing
 
 After the original EnsurePending/Admit ACK, owner-unavailable routing captures the

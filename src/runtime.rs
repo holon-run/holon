@@ -102,7 +102,9 @@ mod timer_producer_reads;
 mod trigger_decision_reads;
 #[cfg(test)]
 pub(crate) use scheduling_output::project_selected_scheduling_records;
-pub(crate) use scheduling_output::{project_cold_scheduling_records, SchedulingReadMaterial};
+pub(crate) use scheduling_output::{
+    project_cold_scheduling_records, project_state_scheduling_records, SchedulingReadMaterial,
+};
 pub(crate) use state_mutation::{derive_scheduler_read, ColdSchedulerFacts, SchedulerReadDomains};
 pub(crate) use task_reads::scheduler_task_request;
 pub(crate) mod resident_state;

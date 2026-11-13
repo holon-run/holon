@@ -382,6 +382,8 @@ export interface AgentSummary {
   lastTurnTime: string;
   pending: number;
   activeTaskCount: number;
+  activeWorkItemCount?: number;
+  activeTimerCount?: number;
   waitingCount: number;
   posture: string;
   postureReason: string;
@@ -393,6 +395,7 @@ export interface AgentSummary {
   workspaceSummary?: WorkspaceSummary;
   attachedWorkspaces?: AttachedWorkspaceEntry[];
   tasks?: TaskSummary[];
+  timers?: import("./generated/openapi").components["schemas"]["TimerRecord"][];
   waits?: WorkWaitSummary[];
   waitingReason?: string;
   workItems?: WorkItemSummary[];

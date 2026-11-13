@@ -123,10 +123,10 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("get", "/agents/{agent_id}/tool-executions/{tool_execution_id}/artifacts/{artifact_index}", "agentToolExecutionArtifact", "tools", "Tool execution artifact", "Return UTF-8 content for an artifact referenced by the selected tool execution. Artifact paths are resolved server-side and confined to the agent runtime data directory.", None, "ToolExecutionArtifactContent", AuthKind::RemoteAccess),
     route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/input", "taskInput", "control", "Task input", "Deliver text input to a managed task.", Some("TaskInputRequest"), "TaskInputResult", AuthKind::Control),
     route_with_response("post", "/control/agents/{agent_id}/tasks/{task_id}/stop", "taskStop", "control", "Task stop", "Request cancellation for a managed task.", Some("TaskStopRequest"), "TaskStopResult", AuthKind::Control),
-    route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return latest work item records for the agent. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/work-items", "agentWorkItems", "work-items", "List work items", "Return work item records for the agent. Select all, active (including completing), or terminal history before applying limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/work-items/{work_item_id}", "agentWorkItem", "work-items", "Work item detail", "Return a work item record by id.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/worktree-summary", "agentWorktreeSummary", "agents", "Worktree summary", "Return managed worktree summary for an agent.", None, AuthKind::RemoteAccess),
-    route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return recent timer records. Query parameter: limit.", None, AuthKind::RemoteAccess),
+    route("get", "/agents/{agent_id}/timers", "agentTimers", "timers", "List timers", "Return timer records. Select all, active, or terminal (completed/cancelled) history before applying limit.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/timers/{timer_id}", "agentTimer", "timers", "Timer detail", "Return a timer record by id.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills", "agentSkills", "skills", "List agent skills", "Return skills enabled/effective for an agent.", None, AuthKind::RemoteAccess),
     route("get", "/agents/{agent_id}/skills/{skill_id}", "agentSkillDetail", "skills", "Agent skill detail", "Return metadata and SKILL.md content for a skill in the target agent's effective catalog. The agent selects the active execution-root version.", None, AuthKind::RemoteAccess),
@@ -495,6 +495,24 @@ fn aide_operation(spec: &RouteSpec) -> Operation {
 
 fn operation(spec: &RouteSpec) -> Value {
     let mut parameters = path_parameters(spec.path);
+    if matches!(spec.operation_id, "agentWorkItems" | "agentTimers") {
+        parameters.extend([
+            json!({
+                "name": "status",
+                "in": "query",
+                "required": false,
+                "description": "Select all records, nonterminal active records, or terminal history before limiting.",
+                "schema": { "type": "string", "enum": ["all", "active", "terminal"], "default": "all" }
+            }),
+            json!({
+                "name": "limit",
+                "in": "query",
+                "required": false,
+                "description": "Maximum number of selected records; defaults to 50.",
+                "schema": { "type": "integer", "minimum": 0, "default": 50 }
+            }),
+        ]);
+    }
     if spec.operation_id == "agentTasks" {
         parameters.extend([
             json!({

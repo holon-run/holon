@@ -224,13 +224,13 @@ export function RightSidePanel({
             ? ((fileTitle?.viewKey === viewKey ? fileTitle.path : activeView.initialFilePath)?.split("/").pop() ?? t("rightPanel.fileBrowser"))
           : t("panel.agentOverview");
   const detailState = activeView.kind === "work_item_detail" ? workItemDetailsById[activeView.workItem.id] : undefined;
-  const listReadId = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.workItems?.dataRequestId);
+  const listReadId = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state?.dataRequestId);
   const listedWorkItem = activeView.kind === "work_item_detail"
     ? agent.workItems?.find((wi) => wi.id === activeView.workItem.id)
     : undefined;
   const detailWorkItem = activeView.kind === "work_item_detail"
     ? resolveWorkItemDetail(activeView.workItem, listedWorkItem, detailState, listReadId) : undefined;
-  // The list keeps refreshing while the file view pauses detail reads.
+  // The file view refreshes only its visible plan's descriptor.
   const planFileRevisions = activeView.kind === "file_browser"
     ? [...new Set([...Object.keys(workItemDetailsById), ...(agent.workItems ?? []).map((item) => item.id)])].flatMap((id): FileRevision[] => {
         const listed = agent.workItems?.find((item) => item.id === id);
@@ -238,7 +238,7 @@ export function RightSidePanel({
         const fallback = listed ?? detail?.workItem;
         const plan = fallback ? resolveWorkItemDetail(fallback, listed, detail, listReadId).planArtifact : undefined;
         return plan?.hash && plan.workspaceId && plan.relativePath
-          ? [{ workspaceId: plan.workspaceId, path: plan.relativePath, hash: plan.hash }]
+          ? [{ workspaceId: plan.workspaceId, path: plan.relativePath, hash: plan.hash, workItemId: id }]
           : [];
       })
     : undefined;
@@ -370,7 +370,7 @@ export function RightSidePanel({
           <FileBrowserPanel backActionRef={fileBackAction} workspaceControl={activeView.kind === "file_browser" && workspaces.length > 1 ? <select className="panel-workspace-select" aria-label={t("rightPanel.workspaces")} value={JSON.stringify([activeView.workspaceId, activeView.executionRootId ?? null])}
         onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles({ workspaceId: selected.workspaceId, path: "", executionRootId: selected.executionRootId }); }}>
         {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
-      </select> : null} key={viewKey} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
+      </select> : null} key={viewKey} agentId={agent.id} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
             snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
               if (snapshot.selectedFile?.loading || !snapshot.listing) return;
               rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path, fragment: snapshot.fragment });

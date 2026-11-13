@@ -60,18 +60,18 @@ async function render(listed: WorkItemSummary[], detailed = work) {
 
 describe("RightSidePanel plan revision dataflow", () => {
   it("forwards a newer list hash without reopening the paused WorkItem detail", async () => {
-    expect(await render([work])).toEqual([{ workspaceId: "plans", path: "plan.md", hash: "old" }]);
+    expect(await render([work])).toEqual([{ workspaceId: "plans", path: "plan.md", hash: "old", workItemId: "w" }]);
     expect(await render([{ ...work, revision: 2, planArtifact: plan("new") }]))
-      .toEqual([{ workspaceId: "plans", path: "plan.md", hash: "new" }]);
+      .toEqual([{ workspaceId: "plans", path: "plan.md", hash: "new", workItemId: "w" }]);
   });
 
   it("preserves newer detail descriptors and includes list-only plan files", async () => {
     expect(await render([work], { ...work, revision: 2, planArtifact: plan("new") }))
-      .toEqual([{ workspaceId: "plans", path: "plan.md", hash: "new" }]);
+      .toEqual([{ workspaceId: "plans", path: "plan.md", hash: "new", workItemId: "w" }]);
     expect(await render([{ ...work, id: "other", planArtifact: { ...plan("other"), relativePath: "other.md" } }]))
       .toEqual([
-        { workspaceId: "plans", path: "plan.md", hash: "old" },
-        { workspaceId: "plans", path: "other.md", hash: "other" },
+        { workspaceId: "plans", path: "plan.md", hash: "old", workItemId: "w" },
+        { workspaceId: "plans", path: "other.md", hash: "other", workItemId: "other" },
       ]);
   });
 });
