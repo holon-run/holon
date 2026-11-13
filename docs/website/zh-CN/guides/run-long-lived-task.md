@@ -1,149 +1,124 @@
 ---
-title: 运行长生命周期任务
-summary: 在关闭终端后让 Agent 继续工作，等待外部依赖并在新会话中找回同一任务结果。
+title: 运行无须值守的长周期任务与恢复
+summary: 在对话中向 Agent 交代长周期研发目标，利用持久化 WorkItem 与后台任务实现零 Token 休眠，在断开连接或跨设备时平滑恢复。
 order: 70
 ---
 
-# 运行长生命周期任务
+# 运行无须值守的长周期任务与恢复
 
-在关闭终端或断开客户端后，后台运行的守护进程仍可继续推进工作。当任务需要跨会话持续推进，或需要等待外部决策、CI 运行及其他后台任务时，请使用 WorkItem（工作项）。本指南演示如何将单一目标从规划推进至最终验收。持久化记录让 Agent 能够在跨会话重连后恢复其目标；但这并不保证底层 Shell 进程在守护进程崩溃或机器重启后仍然存活。
+当你让 AI 编程 Agent 承担复杂的工程任务时——例如重构整个认证模块、执行全量测试套件、迁移底层数据库模式或批量排版几十篇技术文档——整个流程往往需要耗费数十分钟乃至数小时。在此期间，你完全不应该被迫一直守在终端窗口前，生怕会话中断。
 
-## 开始之前
+传统的命令行 Agent 往往在此类场景下显得极其脆弱：只要关闭笔记本屏幕、断开 Wi-Fi 连接或误关了终端窗口，正在运行的子进程就会被操作系统强行掐断，大模型的上下文与执行状态也会随之丢失。
 
-确保已配置好模型、已有可用的 Agent，且该 Agent 具有目标项目的访问权限。若模型配置尚未完成，可运行 `holon config doctor` 检查。下文中的 Shell 命令由操作者在终端执行；JSON 代码块则代表 Agent 发起的工具调用。
+Holon 从运行时底层解决了这一难题，引入了长生命周期的一等公民——**WorkItem（工作项）**。你只需在 Web GUI 中用自然语言交代整体目标与验收标准，Agent 就会自动将任务拆解为持久化的检查清单，把耗时的编译与测试命令交付后台托管任务（`command_task`）运行，并在等待结果或等待人工审批期间自动进入休眠。你可以随时合上电脑、外出就餐或切换到移动设备，重新打开界面时即可看到完整的执行进展与待审阅简报。
 
-## 端到端工作流程
+本指南介绍如何启动一项长周期工作项、让其在后台无须值守运行、在断线或跨端重连后平滑恢复，以及最终验收交付产物。底层的运行时设计请参阅[工作项（WorkItems）参考](/zh-CN/reference/work-items.md)与[上下文连续性](/zh-CN/concepts/context-continuity.md)。
 
-### 1. 启动守护进程
+## 前置条件
 
-```bash
-holon daemon start
-holon daemon status
-```
+- 一个正常运行中的 Holon 实例，已打开 [Web GUI](./use-web-gui.md)（默认地址 `http://localhost:8080`），并[配置好可用的大模型](./configure-models.md)。
+- 一个现有 Agent（例如 `developer` 或 `main`）。
+- 一个已挂载的目标项目代码仓库（参阅[在项目工作区与 Git Worktree 中工作](./work-with-workspaces.md)）。
+- 无须手动配置 `tmux`、`screen` 或 `nohup`，也无须手工构造底层 JSON 工具调用：Agent 能够在对话中自主创建并维护持久化 WorkItem。
 
-待守护进程报告运行中后再继续。若启动失败，请查阅[故障排查](troubleshooting.md#daemon-问题)。
+## 操作步骤
 
-### 2. 创建专用 Agent
+### 1. 交代总体目标并启动持久化 WorkItem
 
-若已有合适 Agent，可直接复用。若需新建，可在安装好 `software-developer` 模板后执行：
+在 Web GUI 聊天界面中，向 Agent 交代任务的大目标、边界约束与审批节点：
 
-```bash
-holon agent create builder --template software-developer
-holon agent status builder
-```
+> “我们需要将用户认证模块重构为支持 OAuth2 PKCE 流程。请用一个专属 WorkItem 跟踪此任务：先全面梳理现有代码，输出包含验收检查项的实施计划；在动工修改代码前请我确认批准。暂不要执行 git push，也不要提 PR。”
 
-在授权修改文件前，确认 `builder` 已附加了预期的工作区。单纯创建 Agent 不会自动为你的任务关联代码仓库。
+**后台机制：**
+- Agent 调用 `CreateWorkItem` 工具，在本地 SQLite WAL 数据库中注册持久化工作项。
+- 自动生成 `plan.md` 计划工件，记录任务范围、架构方案与验收条件。
+- 建立结构化的待办检查清单（`todo_list`），涵盖代码审查、方案批准、编码重构、单元测试与集成测试验证等阶段性里程碑。
+- 工作项初始状态设置为 `needs_input`，提示正在等待你的方案审阅。
 
-### 快速验证：先用只读任务验证断线重连
+### 2. 审阅计划并授权进入实施阶段
 
-在授权执行代码修改之前，建议先用一项无副作用的只读任务验证后台执行与断线重连能力：
+当 Agent 完成前期的代码审查后，会在界面中汇报实施计划并请你确认。在 Web GUI 中核验无误后回复：
 
-```bash
-holon prompt --agent builder \
-  "检查当前项目的运行时环境与工具链版本。将结果记录在新的 WorkItem 中并在完成后汇报。"
-```
+> “实施计划已批准。请按计划推进重构，编写 PKCE 令牌交换的集成测试并执行验证。”
 
-记录输出中返回的 `WORK_ITEM_ID`，随后即可直接断开连接（关闭终端窗口或退出 TUI）。守护进程会在后台继续推进工作。稍后重新打开终端核验：
+**后台机制：**
+- Agent 将 WorkItem 的 `plan_status` 更新为 `ready`，并在待办清单中将“方案审批”打勾标为完成。
+- Agent 在当前工作区或独立的 Git Worktree 中执行代码修改与测试编写。
+- 若中途遇到重大设计分支（例如令牌在本地存储格式的二选一），Agent 不会盲目猜测，而是将状态切回 `needs_input`，调用 `WaitFor(wake="operator_input")` 挂起执行权等待你的决策。
 
-```bash
-holon work-item get WORK_ITEM_ID --agent builder
-holon tail --agent builder --limit 10
-```
+### 3. 后台静默执行耗时命令与零 Token 休眠
 
-核实该工作项保持了相同的目标标识，且包含了断开后新生成的工作简报。确认机制运转正常后，再继续下方的完整多会话代码修改流程。
+诸如大型 Rust 项目编译、前端全量打包依赖下载、或浏览器端端集成测试等耗时操作，不应阻塞你的交互会话。
 
-### 3. 启动由 WorkItem 支持的工作
+当 Agent 发起耗时命令时：
 
-向该 Agent 提交清晰的目标与验收边界：
+> “正在执行 `cargo test --test oauth_integration`。完整测试大约需要 15 分钟，你可以放心关闭网页或断开网络，测试会在后台正常进行。”
 
-```bash
-holon prompt --agent builder   "以 WorkItem 形式跟踪改进当前附加项目的错误处理逻辑。检查代码并编写包含验收项的计划。在编辑前请我确认批准计划。不要执行 git push，也不要提 PR。"
-```
+**后台机制：**
+- **命令后台化（`command_task`）：** 任何执行时间超过几秒的非交互式命令，Holon 运行时都会自动将其提升为受监管的后台命令任务。
+- **零 Token 休眠（`WaitFor`）：** Agent 保存该任务 ID，并调用 `WaitFor(wake="task_result", resource=TASK_ID, delivery="silent")`。
+- **资源彻底节约：** 在后台编译或测试运行期间，Agent 当前轮次立即让出控制权，**完全不消耗任何大模型 Token，不占用推理带宽**，静候操作系统进程退出信号。
 
-Agent 在新建前会先检查是否已有适用工作项。它会在计划中记录范围、验收检查项与待决策事项，并在待办清单（todo_list）中记录进度。查阅运行时返回的计划保存路径，在范围完全清晰后再行批准：
+### 4. 关闭浏览器，随时从多端重新连接
 
-```bash
-holon prompt --agent builder   "计划已批准。请在当前 WorkItem 中继续推进，完成范围内的代码修改并执行验收检查。"
-```
+此时你可以放心关闭浏览器标签页、合上笔记本电脑屏幕，或离开工位：
 
-Agent 会将 `plan_status` 更新为 `ready` 并继续推进该工作项。批准计划并不等同于该工作项已经完成。
+1. **守护进程持续推进：** Holon 后台守护进程独立于你的浏览器生命周期运作，后台命令在操作系统中平稳运行。
+2. **跨端恢复查阅：** 无论稍后重新打开桌面端 Web GUI，还是在手机移动端打开 Holon 客户端，系统都会实时拉取最新的持久化状态。
+3. **直观进度回放：** 在 Agent 的 WorkItem 面板中，你可以直观看到待办清单的勾选进度、后台命令的实时输出日志以及已完成的阶段性简报。
 
-### 4. 从其他会话中查看进度
+### 5. 验收最终成果与交付报告
 
-```bash
-holon agent status builder
-holon work-item list --agent builder
-holon work-item get WORK_ITEM_ID --agent builder
-holon tail --agent builder --limit 10
-```
+当所有待办事项全部打勾，且各项自动化测试顺利通过后，Agent 完成收尾交付：
 
-将 `WORK_ITEM_ID` 替换为列表命令返回的实际 ID。在发送进一步指令前，核对目标、计划与检查清单。当前工作项代表 Agent 当前的注意力焦点；它可能正处于等待中或出让给了另一个工作项。
+> “18 项 PKCE 集成测试全部通过。已生成包含完整测试日志与代码 Diff 的交付简报。”
 
-### 5. 等待外部事件
+**后台机制：**
+- Agent 运行最终的代码格式化与代码仓库卫生校验。
+- 调用 `CompleteWorkItem` 工具将工作项状态更新为 `completed`（已完成）。
+- Agent 输出一份面向操作者的非空完成报告，该报告被运行时提拔为该工作项的权威交付结果，清晰列明修改点、测试结论与后续合并建议。
 
-#### 等待命令执行完成
+## 核心机制对比
 
-耗时极短的命令通常会立即返回。当命令转为后台任务时，Agent 会保存返回的任务 ID 并调用 `WaitFor` 进行等待：
+### Holon WorkItem vs. 传统临时会话
 
-```json
-{
-  "wake": "task_result",
-  "resource": "TASK_ID_FROM_EXEC_COMMAND",
-  "reason": "等待验收测试结果",
-  "delivery": "silent"
-}
-```
+| 核心维度 | Holon 持久化 WorkItem | 传统命令行 / 易失性聊天窗口 |
+|---|---|---|
+| **状态持久化** | 存储在本地 SQLite WAL 数据库；耐受浏览器刷新与服务重启 | 仅存于易失内存或终端屏幕输出；关闭即丢失 |
+| **进度结构化** | 具备一等公民检查清单（`todo_list`），逐项打勾推进并可审计 | 混杂在长篇自由对话文本中，上下文一旦被截断极易遗忘 |
+| **等待与休眠** | 通过 `WaitFor` 实现事件驱动休眠；等待期 **零 Token 消耗** | 靠轮询循环（Busy Polling）或长时间等待超时，白白烧费 Token |
+| **跨设备恢复** | 随时在 Web GUI、CLI 或移动端调取同一工作项恢复进度 | 终端断开直接导致任务终止，必须从头再来 |
 
-Agent 会遵循返回的 `continuation`：如果结果当前已就绪，可能会在同一轮次中立即继续。任务所有权严格归属于创建它的 WorkItem；切换焦点或从其他工作项发起等待不会转移该任务的所有权。
+### 常见意外中断下的自愈表现
 
-#### 等待操作者输入
-
-当需要操作者决策时，Agent 会记录具体问题，适时将 `plan_status` 置为 `needs_input`，并调用 `WaitFor(wake=operator_input)`，注明等待原因与显式交付模式。你后续可通过 `holon prompt --agent builder` 给出回复。Agent 恢复执行时会重新核对决策并更新同一份计划。
-
-#### 等待外部触发器
-
-针对 CI 构建或 PR 审查，Agent 会记录外部对象并登记等待：
-
-```json
-{
-  "wake": "external",
-  "resource": "github:owner/repo#123",
-  "reason": "在评估改动前等待 CI 执行完毕",
-  "recheck_after_ms": 600000,
-  "delivery": "final"
-}
-```
-
-在 `delivery=final` 模式下，出让控制权需要输出非空的等待简报。`WaitFor` 不会自动配置 Webhook；请参阅[连接外部事件](connect-external-events.md)配置实际推送。被唤醒后，Agent 会主动查询 CI 的真实状态再做决策。唤醒本身不证明依赖已经通过，也不构成自动合并的授权。
-
-### 6. 处理执行中断
-
-| 中断场景 | 恢复检查动作 |
+| 中断场景 | 运行时恢复表现 |
 |---|---|
-| 终端或 TUI 断开连接 | 重新连接并检查该 Agent 及工作项。后台守护进程可能仍在正常推进。 |
-| 守护进程重启 | 在恢复工作前，读取持久化的计划、就绪状态、等待状态与任务状态。 |
-| 机器重启 | 启动守护进程，检查哪些命令需要重新执行。切勿假设之前的进程依然存活。 |
-| 回调丢失或 CI 状态陈旧 | 重新查询外部源状态；在重试前核查等待与回调配置。 |
+| **浏览器关闭 / Wi-Fi 掉线** | Holon 守护进程在后台继续运行命令；重新连接后即时同步最新进度。 |
+| **Agent 等待人类决策审批** | 工作项自动保持在 `needs_input` 挂起状态，在收到你的回复前不消耗 CPU 与 Token。 |
+| **守护进程重启** | 守护进程启动后重新读取持久化账本；工作项与任务句柄状态完整保留，无上下文漂移。 |
+| **宿主机意外重启** | 重启后检查已落盘的工作项清单；已完成的检查点无须重复，仅需从最后未完成项继续。 |
 
-切勿因为客户端断开连接就重复创建新的工作项。如果某个工作项处于 `yielded`（已出让）状态，应检查其出让的目标项；严禁为了强制恢复而手动清除阻塞标记。
+## 进阶：CLI 辅助管理命令
 
-### 7. 接收最终交付简报
+在无图形界面的服务器或自动化 CI 流程中，你也可以使用 CLI 辅助查看与管理长任务工作项：
 
-验收检查全部通过后，Agent 会调用 `CompleteWorkItem` 并提供非空的完成报告。重新拉取该工作项并确认：
+```bash
+# 列出指定 Agent 的全部活跃与历史 WorkItem
+holon work-item list --agent developer
 
-- 其状态处于 `completed`；
-- `result_brief_id` 指向对应的交付简报；
-- 报告中明确列出了修改点、验证结论以及剩余的限制说明。
+# 查看特定 WorkItem 的计划、待办清单与当前状态
+holon work-item get WORK_ITEM_ID --agent developer
 
-除了阅读报告外，务必核查实际的 Diff 或产物文件。后台命令执行成功仅仅是达成目标的一项支撑证据。
+# 检查当前正在后台运行的命令任务
+holon task list
 
-## 适用场景判断
+# 查看 Agent 最近的活动简报日志
+holon tail --agent developer --limit 15
+```
 
-在处理需要跟踪跨会话进展和等待外部依赖的任务时使用该工作流。对于能在一轮内完成的简短提问或代码排查，直接提问即可，无需创建 WorkItem。有关周期性执行的任务，请参阅[调度 Agent 工作](schedule-agent-work.md)。
+## 下一步
 
-## 另见
-
-- [工作项参考](../reference/work-items.md)
-- [观察 Agent 工作](observe-agent-work.md)
-- [委派工作](delegate-work.md)
-- [上下文连续性](../concepts/context-continuity.md)
+- [让 Agent 执行定时巡检与周期性任务](./schedule-agent-work.md) — 了解如何配置基于时间的周期性日历调度。
+- [在项目工作区与 Git Worktree 中工作](./work-with-workspaces.md) — 将耗时较长的代码开发隔离在独立的 Git 分支中。
+- [观察 Agent 工作](./observe-agent-work.md) — 实时监控 Agent 的工具调用、后台任务与输出流。
+- [工作项（WorkItems）参考](/zh-CN/reference/work-items.md) — 深入了解工作项的状态机模型与 API 字段契约。

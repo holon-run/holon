@@ -1,187 +1,124 @@
 ---
-title: Run a long-lived task
-summary: Keep an agent working after closing your terminal, wait for dependencies, and retrieve the same task result across sessions.
+title: Run unattended long-lived tasks and recover across sessions
+summary: Assign long-running coding goals in conversation, let the agent execute in background WorkItems with zero-token sleep, and resume seamlessly after disconnecting or switching devices.
 order: 70
 ---
 
-# Run a long-lived task
+# Run unattended long-lived tasks and recover across sessions
 
-Use a WorkItem when work must continue after you close your terminal or client,
-or when it needs to wait for a decision, CI run, or background task.
-This walkthrough tracks one objective from planning to
-acceptance. A durable record lets the agent recover its goal; it does not guarantee
-that a shell process survives a daemon crash or machine reboot.
+When you ask an AI coding agent to undertake a substantial project—such as refactoring an authentication system, migrating database schemas, or executing an extensive end-to-end test suite—the work can take hours. You shouldn't have to keep a terminal window open or stay glued to your screen while the agent runs.
+
+Traditional CLI tools often fail here: closing your laptop lid, disconnecting from Wi-Fi, or accidentally terminating a shell aborts the running process and discards the model's working memory.
+
+Holon solves this with first-class, long-lived **WorkItems**. You assign goals in natural language in the Web GUI, and the agent breaks down the objective into a persistent checklist, runs compilation and test commands in managed background tasks, and enters dormant, zero-token sleep while waiting for tasks or approvals. You can close your laptop, switch to your mobile device, or reopen the Web GUI hours later to find the agent's progress preserved and ready for review.
+
+This guide walks through starting a durable task, letting it run unattended in the background, recovering state after disconnecting, and accepting the final deliverables. For the underlying runtime architecture, see [Work items reference](../reference/work-items.md) and [Context continuity](../concepts/context-continuity.md).
 
 ## Before you start
 
-Have a configured model, an existing agent, and access to the project it will
-work on. Run `holon config doctor` if model setup is incomplete. The shell commands
-below are operator commands; JSON examples are tool calls made by the agent.
+- A running Holon instance with the [Web GUI](./use-web-gui.md) open (default `http://localhost:8080`) and a [configured model](./configure-models.md).
+- An existing agent (such as `developer` or `main`).
+- An attached project repository where you want the agent to work (see [Work in a project workspace or Git worktree](./work-with-workspaces.md)).
+- No need to manage background processes (`nohup`, `tmux`) or craft raw JSON tool calls: your agent creates and tracks its own WorkItems through conversational instructions.
 
-## The workflow end-to-end
+## Steps
 
-### 1. Start the daemon
+### 1. Define the objective and request a durable WorkItem
 
-```bash
-holon daemon start
-holon daemon status
-```
+In the Web GUI chat, give your agent an overarching goal along with clear scope boundaries and approval checkpoints:
 
-Continue when the daemon reports that it is running. See
-[Troubleshooting](troubleshooting.md#daemon-issues) if startup fails.
+> "I need to refactor our user authentication module to support OAuth2 PKCE. Please track this in a dedicated WorkItem: inspect the existing codebase, draft an implementation plan with acceptance criteria, and ask for my review before modifying any code. Do not push commits or open a PR yet."
 
-### 2. Create a specialized agent
+**What happens behind the scenes:**
+- The agent calls `CreateWorkItem` to establish a durable record in its local SQLite WAL database.
+- It seeds a plan artifact (`plan.md`) describing the scope, acceptance criteria, and architectural decisions.
+- It populates an initial progress checklist (`todo_list`) with structured milestones (e.g., codebase inspection, plan approval, implementation, test verification).
+- The WorkItem's status is set to `needs_input`, signaling that the agent is waiting for your review.
 
-If you already have a suitable agent, reuse it. Otherwise, with the
-`software-developer` template installed:
+### 2. Review the plan and approve implementation
 
-```bash
-holon agent create builder --template software-developer
-holon agent status builder
-```
+When the agent finishes its preliminary audit, it reports its findings and asks for approval. Review the proposed scope in the Web GUI:
 
-Confirm that `builder` has the intended workspace before authorizing edits.
-Creating an agent alone does not select a repository for your task.
+> "The plan looks solid. Please proceed with the implementation, add integration tests for PKCE token exchange, and run the test suite."
 
-### Quick check: verify reconnect on a read-only task
+**What happens behind the scenes:**
+- The agent updates the WorkItem status to `ready` and marks the first milestone complete.
+- It proceeds to edit files and write tests within its active workspace or isolated Git worktree.
+- If a subsequent decision arises (e.g. choosing between two token storage formats), the agent does not guess: it marks `plan_status="needs_input"`, registers a wait (`WaitFor(wake="operator_input")`), and yields the turn.
 
-Before authorizing code edits, confirm that background execution and reconnect
-work as expected on a harmless read-only check:
+### 3. Let background commands run while you disconnect
 
-```bash
-holon prompt --agent builder \
-  "Check the runtime environment and tool versions for this project. Save the findings in a new WorkItem and report when done."
-```
+Long-running commands—such as compiling large Rust crates, downloading npm dependencies, or executing browser test suites—should not block your interactive session.
 
-Note the returned `WORK_ITEM_ID` and disconnect (close your terminal or exit TUI).
-The daemon continues running in the background. Later, reconnect and verify:
+When the agent starts a long-running command:
 
-```bash
-holon work-item get WORK_ITEM_ID --agent builder
-holon tail --agent builder --limit 10
-```
+> "Running `cargo test --test oauth_integration`. This may take 15 minutes. You can safely close your browser or disconnect."
 
-Confirm that the item shows the same objective and new results generated after
-you disconnected. Once confirmed, proceed with full multi-session editing
-workflows below.
+**What happens behind the scenes:**
+- **Command promotion (`command_task`):** Any non-interactive command that runs beyond a few seconds is automatically promoted by Holon into a managed background command task.
+- **Zero-token sleep (`WaitFor`):** The agent records the task ID and calls `WaitFor(wake="task_result", resource=TASK_ID, delivery="silent")`.
+- **Resource conservation:** While the background process executes, the agent process yields its turn. It consumes zero LLM prompt tokens and no model inference bandwidth while waiting for the test runner to finish.
 
-### 3. Start a WorkItem-backed piece of work
+### 4. Close your browser and reconnect from another session or device
 
-Submit an explicit objective and acceptance boundary to that agent:
+You can safely close the Web GUI tab, shut your laptop lid, or leave your desk:
 
-```bash
-holon prompt --agent builder \
-  "Track one WorkItem to improve error handling in the attached project. Inspect the code and write a plan with acceptance checks. Ask me to approve the plan before editing. Do not push or open a PR."
-```
+1. **The daemon keeps working:** The Holon daemon manages the background process independently of your browser session.
+2. **Reopening the Web GUI:** When you return, open `http://localhost:8080` (or open the Holon mobile client).
+3. **Inspect the live state:** Select your agent and view the active WorkItem. The UI displays real-time checklist progress, terminal output snippets, and any completed milestones.
 
-The agent checks for an existing item before creating another. It records scope,
-acceptance checks, and unresolved decisions in the plan, and progress in the todo
-list. Review the plan location returned by the runtime. Approve it only after the
-scope is clear:
+### 5. Review final verification and accept the completion brief
 
-```bash
-holon prompt --agent builder \
-  "The plan is approved. Continue the same WorkItem, make the scoped edits, and run its acceptance checks."
-```
+Once all checklist items are completed and tests pass, the agent completes the work:
 
-The agent changes `plan_status` to `ready` and continues that item. Approving a
-plan is not completion of the objective.
+> "All 18 PKCE integration tests passed. I have generated a completion report with full test logs and a diff summary."
 
-### 4. Check progress from another session
+**What happens behind the scenes:**
+- The agent runs final lint and test checks to verify repository hygiene.
+- It calls `CompleteWorkItem`, marking the WorkItem state as `completed`.
+- The agent delivers a non-empty operator-facing completion report that is promoted as the canonical WorkItem result brief, linking changed files, test output, and next steps.
 
-```bash
-holon agent status builder
-holon work-item list --agent builder
-holon work-item get WORK_ITEM_ID --agent builder
-holon tail --agent builder --limit 10
-```
+## Key mechanisms to understand
 
-Replace `WORK_ITEM_ID` with the ID returned by the list. Match the objective,
-plan, and checklist before sending more instructions. A current item is the
-agent's focus; it may still be waiting or yielded to another item.
+### WorkItems vs. transient chat sessions
 
-### 5. Wait for external events
+| Feature | Holon WorkItems | Ordinary AI Chat / Transient CLI |
+|---|---|---|
+| **Persistence** | Stored in local SQLite WAL ledger; survives browser reloads and reboots | Kept only in browser memory or active terminal stdout |
+| **Progress tracking** | First-class checklist (`todo_list`) updated incrementally as steps finish | Unstructured conversational text; easily forgotten or truncated |
+| **Wait handling** | Event-driven sleep via `WaitFor`; zero token cost while waiting | Busy polling or prompt timeouts that burn tokens |
+| **Multi-session recovery** | Inspect and resume the exact same task from desktop Web GUI, CLI, or mobile | Disconnecting terminates the run or forces starting over |
 
-#### Waiting for commands to finish
+### How Holon handles interruptions
 
-Short commands may finish immediately. When a command becomes a background task,
-the agent saves its returned task ID and waits with `WaitFor`:
-
-```json
-{
-  "wake": "task_result",
-  "resource": "TASK_ID_FROM_EXEC_COMMAND",
-  "reason": "Wait for the acceptance test result",
-  "delivery": "silent"
-}
-```
-
-The agent follows the returned `continuation`: it may continue immediately if the
-result is already available. Task ownership stays with the WorkItem that created
-it; changing focus or waiting from another item does not move the task.
-
-#### Waiting for operator input
-
-For a decision, the agent records the question, sets `plan_status=needs_input`
-when appropriate, and calls `WaitFor(wake=operator_input)` with a reason and
-explicit delivery mode. You can reply later with `holon prompt --agent builder`.
-The agent rechecks the decision and updates the same plan before resuming.
-
-#### Waiting for external triggers
-
-For CI or a review, the agent records the outside object and registers a wait:
-
-```json
-{
-  "wake": "external",
-  "resource": "github:owner/repo#123",
-  "reason": "Wait for CI before evaluating the change",
-  "recheck_after_ms": 600000,
-  "delivery": "final"
-}
-```
-
-With `delivery=final`, a yielding path requires a non-empty waiting report.
-`WaitFor` does not install a webhook. Follow
-[Connect external events](connect-external-events.md) to configure delivery.
-After a wake, the agent reads CI's actual state before acting. A wake does not
-prove that the dependency passed or authorize a merge.
-
-### 6. Handle interruptions
-
-| Interruption | Recovery check |
+| Interruption | Recovery Behavior |
 |---|---|
-| Terminal or TUI disconnect | Reconnect and inspect the same agent and WorkItem. The daemon may continue working. |
-| Daemon restart | Read the persisted plan, readiness, waits, and task state before resuming. |
-| Machine reboot | Start the daemon, then check which commands need rerunning. Do not assume a prior process survived. |
-| Lost callback or stale CI state | Recheck the external source; inspect the wait and callback configuration before retrying. |
+| **Browser tab closed / Wi-Fi lost** | Holon daemon continues background execution; reconnect anytime to view progress. |
+| **Agent waiting for human decision** | WorkItem remains in `needs_input` state without consuming CPU or tokens until you reply. |
+| **Daemon process restarted** | On startup, Holon re-reads persisted WorkItems and task records; active tasks can be inspected or resumed without state drift. |
+| **Host machine reboot** | Daemon restarts with persisted WorkItem states; rerun any uncompleted background commands from the recorded checklist milestone. |
 
-Do not recreate the objective just because a client disconnected. If an item is
-`yielded`, inspect the item it yielded to; do not manually clear a blocker to
-force a return.
+## Optional: CLI alternatives for headless setups
 
-### 7. Receive the final brief
+If you are working on a remote server or headless box without the Web GUI, you can inspect and manage WorkItems using the CLI:
 
-After acceptance checks pass, the agent calls `CompleteWorkItem` and supplies a
-non-empty completion report. Retrieve the item again and confirm:
+```bash
+# List all active and open WorkItems for an agent
+holon work-item list --agent developer
 
-- its state is `completed`;
-- `result_brief_id` identifies its report;
-- the report names the changes, verification outcome, and any remaining limits.
+# Inspect a specific WorkItem's plan, checklist, and status
+holon work-item get WORK_ITEM_ID --agent developer
 
-Inspect the actual diff or output files as well as the report. A successful
-background command is only one piece of evidence for the objective.
+# Check running background command tasks
+holon task list
 
-## When to use durable workflows
+# Tail the agent's recent activity log
+holon tail --agent developer --limit 15
+```
 
-Use this workflow for tracked multi-session changes and external dependencies.
-For a short question or inspection that can finish in one turn, ask directly
-without creating a WorkItem. For recurring work, see
-[Schedule agent work](schedule-agent-work.md).
+## Next steps
 
-## See also
-
-- [Work items reference](../reference/work-items.md)
-- [Observe agent work](observe-agent-work.md)
-- [Delegate work](delegate-work.md)
-- [Context continuity](../concepts/context-continuity.md)
+- [Schedule recurring agent checks and timers](./schedule-agent-work.md) — set up automated recurring wakeups and cron schedules.
+- [Work in a project workspace or Git worktree](./work-with-workspaces.md) — isolate long tasks inside dedicated Git branches.
+- [Observe agent work](./observe-agent-work.md) — monitor agent tasks, tool calls, and output streams in real time.
+- [Work items reference](../reference/work-items.md) — deep dive into WorkItem lifecycle states, transitions, and API contracts.

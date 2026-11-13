@@ -1,142 +1,129 @@
 ---
-title: 调度 Agent 工作
-summary: 定时执行已授权的只读检查，验证返回的工作结果并及时取消定时器。
+title: 让 Agent 执行定时巡检与周期性任务
+summary: 在对话中让 Agent 配置持久化定时器与日历调度，设定只读巡检安全边界，跨会话查看唤醒简报并安全注销定时任务。
 order: 110
 ---
 
-# 调度 Agent 工作
+# 让 Agent 执行定时巡检与周期性任务
 
-定时器可在经过设定的延迟后或按固定周期唤醒 Agent。在创建定时器前，应先明确授权 Agent 可以执行哪些动作（如检查某次具体的 CI 构建状态），以及该调度何时应当终止。定时器的摘要说明仅用于备忘，并不会赋予额外的执行权限。
+无论你需要定时监控代码仓库的 CI 构建流水线、每日早间巡检 GitHub 未分流 Issue，还是周期性核验服务器健康指标，让 AI Agent 执行定时任务都不应当依赖脆弱易断的操作系统 crontab 脚本或外部调度服务。
+
+Holon 将基于时间的事件驱动能力作为一等运行时资源提供：你只需在 Web GUI 中用自然语言向 Agent 下达巡检指令，Agent 即可在本地 SQLite 事件账本中注册持久化定时器，在等待期间进入零 Token 消耗的休眠，并在约定时间自动唤醒执行检查，将结构化简报记录入工作台。
+
+本指南介绍如何通过自然语言对话配置单次延迟与周期性日历调度、设定严格的只读安全权限边界、在 Web GUI 中跨会话查看唤醒简报，以及安全取消不再需要的定时任务。底层的契约与详细参数请参阅[事件与定时器参考](/zh-CN/reference/events-and-timers.md)。
 
 ## 前置条件
 
-使用一个运行中的守护进程以及具备正常模型连接的现有 Agent（本示例使用 `builder`）。先与 Agent 达成一项无害的第一步行动约定，例如读取某次已知 CI 构建的状态并输出汇报，严禁私自修改或提交代码：
+- 一个正常运行中的 Holon 实例，已打开 [Web GUI](./use-web-gui.md)（默认地址 `http://localhost:8080`），并[配置好可用的大模型](./configure-models.md)。
+- 一个现有 Agent（例如 `developer`、`community-steward` 或 `main`）。
+- 若巡检涉及远程服务或代码仓库（如 GitHub Actions、Issue 列表或服务监控），确保 Agent 具备只读访问权限（例如预设的环境变量 Token 或已挂载的工作区）。
+- 无须手动编写复杂的 crontab 规则或手工拼接底层 JSON 工具调用：Agent 能够在对话中自主完成定时器的注册与安全生命周期管理。
 
-```bash
-holon agent status builder
-holon prompt --agent builder \
-  "跟踪已约定的 CI 检查。当定时器触发时，读取该次构建的当前状态并进行汇报。不要推送代码、不要合并 PR，也不要启动新的构建。"
-```
+## 操作步骤
 
-在配置调度前，先明确以下约定输入：
+### 1. 自然语言下达定时巡检指令
 
-| 输入项 | 示例 | 说明 |
-|---|---|---|
-| 目标数据源 | 具体的 CI URL 或 run ID | 必须可在不额外申请鉴权的情况下只读访问 |
-| 只读访问方式 | 已预设的 Token 或公开接口 | 严禁在提示词明文中粘贴机密 |
-| 允许执行动作 | 读取状态并生成简要报告 | 不可修改代码、推送、合并或重启构建 |
-| 停止触发条件 | 构建进入终态（如 `passed` 或 `failed`） | 达到最大检查次数或超时时也应停止 |
-| 汇报交付位置 | 当前 WorkItem 的完成简报 | 便于跨会话查看追踪 |
+在 Web GUI 聊天窗口中，直接告诉 Agent 你需要它按什么周期执行哪项巡检，并明确权限边界：
 
-等待 Agent 确认数据源与工作范围后，再配置定时调度。下方的 CLI 命令由操作者在终端执行；对应的 Agent 工具调用方式在后文单独说明。
+> “每个工作日早晨 8:00，帮我巡检仓库中未关闭的 GitHub Issue。重点排查是否有未经分类的 Bug 或超过 7 天无响应的问题，并在专属 WorkItem 中生成整理简报。本次巡检严格只读：严禁修改代码、严禁推送提交、严禁擅自关闭任何 Issue。”
 
-## 1. 配置单次检查
+如果你只需要在某项耗时操作后执行一次性延迟检查（例如 10 分钟后核验 CI 构建是否完成）：
 
-```bash
-holon timer create --agent builder --after-ms 60000 \
-  --summary "单次检查约定的 CI 构建状态"
-holon timer list --agent builder
-```
+> “10 分钟后检查 CI 构建 #12845。当定时器唤醒你时，读取该构建的最终状态并告诉我是否通过。不要重新触发构建，也不要修改代码。”
 
-保存返回的定时器 ID（`timer_id`）。核对列表中显示的归属 Agent、触发时间与摘要信息。创建定时器本身不会暂停 Agent 当前的对话轮次。
+**后台机制：**
+- 对于日历规则调度，Agent 会调用内置的 `CreateTimer` 工具，传入标准五段式 cron 表达式与 IANA 时区（例如 `calendar_expression: "0 8 * * 1-5"`, `timezone: "Asia/Shanghai"`）。
+- 对于单次延迟检查，Agent 会传入 `duration_ms`（例如 10 分钟对应的 `600000`）；若需固定频率轮询，还可传入 `interval_ms`。
+- 运行时将定时器安全落盘至 SQLite WAL 数据库中。定时器的摘要说明（summary）仅用于审计备忘，不会为 Agent 凭空赋予新的系统权限。
 
-若 Agent 自身需要等待该定时器到期，它会调用 `CreateTimer` 工具：
+### 2. 确认安全边界与零 Token 休眠
 
-```json
-{ "duration_ms": 60000, "summary": "单次检查约定的 CI 构建状态" }
-```
+在 Agent 回复已创建定时器后，建议让它核实安全边界并进入低开销等待：
 
-随后将**返回的**实际 `timer_id` 传递给 `WaitFor` 工具：
+> “确认你已将上述只读限制记录在 AGENTS.md 或当前工作项中，并告诉我当前定时器的详情。”
 
-```json
-{
-  "wake": "timer",
-  "resource": "TIMER_ID_FROM_CREATE_TIMER",
-  "reason": "等待定时器到期以检查约定的 CI 状态",
-  "delivery": "silent"
-}
-```
+**后台机制：**
+- **零 Token 休眠：** 单纯创建定时器并不会阻塞 Agent 的当前轮次。为了进入等待状态，Agent 会调用 `WaitFor(wake="timer", resource="TIMER_ID", delivery="silent")`。此时 Agent 会立即让出执行权进入休眠，在等待到达触发时间的几个小时或几天内，**完全不消耗任何模型 Token，后台也仅占用极低系统内存**。
+- **权限自律固化：** 规范的 Agent 会将操作边界（如只读查询、禁止写操作、最大重试次数）追加至自身的 `AGENTS.md` 或当前 WorkItem 计划中，确保后续轮次唤醒时严格遵守。
+- **定时器隔离性：** 定时器严格归属于创建它的 Agent。不同 Agent 之间无法跨身份操纵或窥探彼此的定时器。
 
-诸如 `"一分钟后"` 之类的自然语言描述不能作为 `resource`。Agent 定时器工具仅允许操作归属于该 Agent 自身的定时器。
+### 3. 查看唤醒简报与巡检历史
 
-## 2. 核对检查结果
+当预定的时间到达时，Holon 守护进程会自动唤醒 Agent。Agent 调取最新数据执行巡检，输出结构化报告并优雅结束当前轮次：
 
-定时器到期后：
+1. 随时打开 **Web GUI**，在左侧切换到该 Agent。
+2. 在 **WorkItems（工作项）** 视图或对话记录中，查看由定时唤醒生成的最新巡检报告。
+3. 核验 Agent 是否确实从权威数据源（如 GitHub API 或 CI 终端）拉取了原始状态，且结论符合预期。
 
-```bash
-holon timer list --agent builder
-holon tail --agent builder --limit 10
-holon work-item list --agent builder
-```
+单纯定时器按时触发并不代表任务业务一定成功，应在简报中核实以下核心证据：
 
-同时核对定时器状态与产生的执行报告。核验成功代表 Agent 确实检查了约定源并输出了汇报。单纯定时器被触发并不代表模型调用一定成功，也不代表 CI 构建本身已经通过。
-
-对照已约定的输入表核验以下结果项：
-
-| 核验项 | 预期证据 |
+| 审查项 | 核验重点 |
 |---|---|
-| 来源与构建 ID | 与预先约定的目标构建完全一致 |
-| 检查发生时间 | 发生在定时器计划到期时间点或紧随其后 |
-| 观察到的状态 | 来自数据源的原始状态（如 `success`、`in_progress`） |
-| 定时器状态 | 匹配保存的 ID，状态为已完成或显示下一次触发时间 |
-| WorkItem 记录 | 已通过 `holon work-item get` 更新至 WorkItem 简报中 |
+| **真实证据源** | 简报中包含了具体的 Issue 编号、提交 Hash 或 CI 构建编号。 |
+| **执行时间戳** | 触发时间与预定的日历时刻吻合（允许秒级正常调度偏差）。 |
+| **行为合规性** | 确认执行过程为只读，未产生未经授权的分支提交或文件更改。 |
+| **下一次触发时间** | 对于周期性定时器，定时器台账中已自动更新下一次预计触发时刻。 |
 
-## 3. 仅在必要时重复
+### 4. 安全调整或注销定时任务
 
-若已获授权每 10 分钟执行一次周期性巡检：
+当项目阶段性收尾或不再需要定时监控时，在对话中直接要求 Agent 取消即可：
+
+> “当前版本已经发布，请取消工作日早间 8:00 的 Issue 巡检定时器，并确认已无活跃的定时调度。”
+
+**后台机制：**
+- Agent 针对当前定时器调用 `CancelTimer` 工具。
+- 依赖该定时器且尚未被唤醒的等待状态会被原子性终止，终止原因标记为 `timer_cancelled`。
+- 先前巡检产生的所有历史 WorkItem 简报与日志完整保留，方便审计追踪，但后续不会再发生任何无谓唤醒。
+
+## 核心机制对比
+
+### Holon 原生定时器 vs. 系统 Crontab 脚本
+
+| 维度 | Holon 原生持久化定时器 | 系统级 Crontab 调度脚本 |
+|---|---|---|
+| **上下文连续性** | 唤醒后完整保留 Agent 记忆、关联工作项与历史巡检上下文 | 每次以全新无状态进程启动，丢失历史对话与阶段进展 |
+| **生命周期管理** | 由 Holon 守护进程原生托管，支持断线与重启自愈 | 依赖系统管理员配置 OS 进程看护与重试逻辑 |
+| **资源开销** | 等待期间通过 `WaitFor` 彻底休眠，**零 Token 消耗** | 常需循环轮询进程，容易空转占用 CPU 或重复消耗 Prompt Token |
+| **安全控制** | 严格受限于 Agent 的工作区挂载与 `AGENTS.md` 权限边界 | 默认继承系统用户的 Shell 完整权限，潜在风险高 |
+
+### 周期性间隔 vs. 日历规则调度
+
+- **周期性间隔（`duration_ms` / `interval_ms`）：** 适合固定频率的短周期轮询，例如每隔 5 分钟检查一次编译是否完成（`interval_ms: 300000`）。
+- **日历规则调度（`calendar_expression` + `timezone`）：** 采用五段式 cron 表达式结合 IANA 时区（如 `0 8 * * 1-5` + `Asia/Shanghai`），非常适合贴合作息的工作日早报、每日站会提炼或每周卫生巡检。
+
+### 静默唤醒（Silent）vs. 最终汇报（Final）
+
+- **`delivery: "silent"`（静默模式）：** 适用于常规例行自检；若检查一切正常无需惊扰用户，Agent 仅静默更新内部记录后再次沉睡。
+- **`delivery: "final"`（汇报模式）：** 适用于每次唤醒都需要在界面中向用户输出一份明确完成简报的场景。
+
+## 常见问题排查
+
+### 定时器到期未触发或跳过了检查
+- **检查守护进程状态：** 定时器依赖 Holon 守护进程持续运行。若宿主机发生重启，启动守护进程后，持久化的定时器会根据当前物理时间自动校准并继续调度。
+- **核验定时器归属：** Agent 仅能等待自身拥有的定时器。若销毁后重建了同名 Agent，需重新让新 Agent 创建定时器。
+- **排查业务阻塞标记：** 定时器唤醒能够恢复 Agent 的执行轮次，但若该 Agent 当前被另一个工作项的未决决策（如等待人工审批）显式阻塞，则可能仍处于暂停状态，直至该阻塞被人工解除。
+
+## 进阶：CLI 自动化辅助命令
+
+在无图形界面的服务器或 CI 脚本中，你也可以使用 CLI 辅助查看与管理定时器：
 
 ```bash
-holon timer create --agent builder --after-ms 600000 --every-ms 600000 \
-  --summary "持续复核约定的 CI 构建状态直至完成"
+# 列出指定 Agent 的全部活跃与历史定时器
+holon timer list --agent developer
+
+# 通过命令行直接创建单次定时器（60 秒后触发）
+holon timer create --agent developer --after-ms 60000   --summary "单次 CI 状态核验"
+
+# 创建工作日早间周期性日历定时器
+holon timer create --agent developer   --calendar-expression "0 8 * * 1-5"   --timezone "Asia/Shanghai"   --summary "工作日早间 Issue 巡检"
+
+# 根据 ID 取消指定定时器
+holon timer cancel TIMER_ID --agent developer
 ```
 
-Agent 工具调用对应的参数为 `interval_ms`，而非 CLI 的 `every_ms`：
+## 下一步
 
-```json
-{
-  "duration_ms": 600000,
-  "interval_ms": 600000,
-  "summary": "持续复核约定的 CI 构建状态直至完成"
-}
-```
-
-将定时器 ID 与停止条件记录在 WorkItem 中。通知 Agent 当该构建达到终态时主动取消定时器。对于事件驱动的更新，优先采用外部回调；若要在外部等待中设置一次性兜底超时，请使用 `WaitFor(recheck_after_ms=...)`，无需另起定时调度。
-
-### 基于日历规则的调度
-
-若巡检需要按照日历作息而非固定间隔触发，使用标准五段式 cron 表达式与 IANA 时区：
-
-```bash
-holon timer create --agent builder \
-  --calendar-expression "0 9 * * 1-5" \
-  --timezone "Asia/Tokyo" \
-  --summary "工作日早间代码健康巡检"
-```
-
-对应的 Agent 工具调用：
-
-```json
-{ "calendar_expression": "0 9 * * 1-5", "timezone": "Asia/Tokyo", "summary": "工作日早间代码健康巡检" }
-```
-
-## 4. 取消并确认
-
-```bash
-holon timer cancel TIMER_ID --agent builder
-holon timer list --agent builder
-```
-
-将 `TIMER_ID` 替换为先前保存的实际 ID。对应的 Agent 工具为 `CancelTimer({"timer_id":"..."})`。确认定时器已被标记为已取消，并核实后续不再产生新的周期触发。取消操作不会撤销先前触发已经开始执行的工作。
-
-## 检查迟到或未触发时的排查
-
-- 在创建替代定时器前，先检查守护进程与 Agent 状态。
-- 核对定时器 ID、归属者以及已取消或已完成状态。切勿在 `WaitFor` 中引用属于其他 Agent 的定时器。
-- 检查 WorkItem 和最近简报，排查模型 Provider 故障或未决决策。定时器唤醒不会自动清除业务阻塞。
-- 服务重启后，检查持久化的定时器与任务状态。不可假设精确的物理时钟对齐，也不可假设被中断的外部命令能够自动存活。
-
-## 另见
-
-- [运行长生命周期任务](run-long-lived-task.md) — 跨会话跟踪目标
-- [事件与定时器参考](/zh-CN/reference/events-and-timers.md)
-- [连接外部事件](connect-external-events.md) — 通过 Webhook 唤醒 Agent
+- [运行长生命周期任务](run-long-lived-task.md) — 了解如何管理跨终端会话的长任务与持久化检查清单。
+- [连接外部事件](connect-external-events.md) — 配置 Webhook 实现外部系统（如 GitHub / CI）的主动事件唤醒。
+- [事件与定时器参考](/zh-CN/reference/events-and-timers.md) — 查阅完整的底层 API 结构体与参数类型规范。
+- [工作项（WorkItems）参考](/zh-CN/reference/work-items.md) — 深入了解多会话任务的状态模型与完成简报交付机制。
