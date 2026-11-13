@@ -21,6 +21,56 @@ fn host() -> Result<(tempfile::TempDir, RuntimeHost)> {
 }
 
 #[tokio::test]
+async fn loaded_state_rename_ack_and_recovery_need_no_observer_preparation() -> Result<()> {
+    for outcome in ["normal", "known_install_failure", "lost_ack"] {
+        let (_home, host) = host()?;
+        let id = "loaded-state-rename";
+        host.create_named_agent(id, None).await?;
+        let runtime = host.get_public_agent(id).await?;
+        runtime.await_initial_resources_for_test().await;
+        let _refresh = runtime.hold_resource_refresh_for_test().await?;
+        if outcome == "lost_ack" {
+            let before = Arc::new(host.agent_identity_record(id)?.unwrap());
+            let operation = ids::audit_event_id();
+            let mut reservations = host.reserve_agent_mutations(&[id.into()]).await?;
+            reservations[0].begin_identity_rename(operation.clone(), before.clone())?;
+            // Keep the real receipt but lose the original ACK before recording it.
+            drop(
+                host.runtime_db()
+                    .agent_identities()
+                    .rename(&before, outcome, "test", &operation)?,
+            );
+            drop(reservations);
+        } else {
+            if outcome == "known_install_failure" {
+                host.fail_next_external_mutation_publication();
+            }
+            let result = host.rename_public_agent(id, outcome, "test").await;
+            assert_eq!(result.is_err(), outcome == "known_install_failure");
+        }
+        // A writer/recovery boundary, never the following State read, publishes.
+        drop(host.reserve_agent_mutations(&[id.into()]).await?);
+        let db = host.runtime_db();
+        let reads = db.reader_pool_stats_for_tests().checkout_attempts;
+        let preparations = db.preparation_pool_stats_for_tests().checkout_attempts;
+        let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+        let writes = writer.write_channel_admissions_for_tests()?;
+        let projection = runtime.operator_state_read_projection(10, 10).await?;
+        assert_eq!(projection.agent.identity.name.as_deref(), Some(outcome));
+        assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
+        assert_eq!(
+            db.preparation_pool_stats_for_tests().checkout_attempts,
+            preparations
+        );
+        assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+        drop(projection);
+        drop(_refresh);
+        host.shutdown().await?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn full_fleet_summary_refuses_unproved_no_state_without_partial_return_or_activation(
 ) -> Result<()> {
     let (_home, host) = host()?;

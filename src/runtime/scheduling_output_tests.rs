@@ -189,9 +189,12 @@ async fn loaded_host_scheduling_dto_keeps_material_until_synchronous_wire_build(
 }
 
 #[tokio::test]
-async fn loaded_host_state_query_reconciles_original_timer_cancel_ack_before_its_read_token(
+async fn loaded_host_state_query_requires_original_timer_cancel_ack_recovery_before_its_read_token(
 ) -> Result<()> {
     let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.wait_for_bootstrap().await?;
+    let run_loop = runtime.pause_run_loop_for_monitor_test().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
     let timer = runtime
         .schedule_timer(3_600_000, None, Some("Known Timer cancellation".into()))
         .await?;
@@ -232,6 +235,28 @@ async fn loaded_host_state_query_reconciles_original_timer_cancel_ack_before_its
     };
     let before = sql_snapshot()?;
     assert_eq!(before.0, "cancelled");
+    let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+    let error = host
+        .operator_agent_state_projection(runtime.instance_agent_id(), 40, 50)
+        .await
+        .err()
+        .context("State must not reconcile the original cancellation ACK")?;
+    match error {
+        crate::host::PublicAgentError::Runtime(error) => assert!(
+            error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+            "{error:#}"
+        ),
+        other => anyhow::bail!("unexpected State error: {other:?}"),
+    }
+    assert_eq!(denied.attempts(), 0);
+    drop(denied);
+    assert!(matches!(
+        runtime.inner.mutation_owner.capture(),
+        Err(crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(_))
+    ));
+    assert_eq!(sql_snapshot()?, before);
+    // The Scheduling owner, not State GET, recovers the original ACK.
+    drop(runtime.acquire_scheduling_records_read(50).await?);
     let projection = host
         .operator_agent_state_projection(runtime.instance_agent_id(), 40, 50)
         .await
@@ -267,6 +292,8 @@ async fn loaded_host_state_query_reconciles_original_timer_cancel_ack_before_its
         "state query must not rerun original Timer cancellation"
     );
     drop((root, projection));
+    drop(refresh);
+    drop(run_loop);
     host.shutdown().await?;
     Ok(())
 }

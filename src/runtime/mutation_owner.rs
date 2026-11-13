@@ -39,6 +39,14 @@ pub(crate) struct PublicationToken {
 
 pub(crate) type PostureObservation = super::resident_state::AgentSnapshot;
 
+/// Scalar observer facts acknowledged in the same cut as the known commit.
+/// Missing facts remain unprepared, independently of CurrentQuery coverage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct StateReadFacts {
+    pub queue_posture: Option<crate::queue::QueuePostureFacts>,
+    pub scheduler_events: Option<crate::runtime_db::current_query::SchedulerEventFacts>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RecoveryPhase {
     Committing,
@@ -1031,6 +1039,16 @@ impl MutationReservation {
         reservations: &mut [Self],
         known: Vec<KnownCommit>,
     ) -> Result<(), MutationOwnerError> {
+        Self::committed_all_with_read_facts(
+            reservations,
+            known.into_iter().map(|known| (known, None)).collect(),
+        )
+    }
+
+    pub(crate) fn committed_all_with_read_facts(
+        reservations: &mut [Self],
+        known: Vec<(KnownCommit, Option<StateReadFacts>)>,
+    ) -> Result<(), MutationOwnerError> {
         if reservations.len() != known.len() {
             return Err(MutationOwnerError::TicketMismatch);
         }
@@ -1046,26 +1064,30 @@ impl MutationReservation {
             })
             .collect::<Vec<_>>();
         Self::validate_complete_groups(reservations, &publications)?;
-        for ((reservation, publication), facts) in
+        for ((reservation, publication), (facts, read_facts)) in
             reservations.iter().zip(&publications).zip(&known)
         {
             reservation.check_ticket(publication)?;
             reservation.validate_known(facts)?;
-            if publication
-                .recovery
-                .as_ref()
-                .and_then(|r| r.known.as_ref())
-                .is_some_and(|saved| !saved.same_facts(facts))
-            {
+            if publication.recovery.as_ref().is_some_and(|recovery| {
+                recovery.known.as_ref().is_some_and(|saved| {
+                    !saved.same_facts(facts)
+                        || read_facts.is_some_and(|facts| {
+                            recovery.prepared_queue_posture != facts.queue_posture
+                                || recovery.prepared_scheduler_events != facts.scheduler_events
+                        })
+                })
+            }) {
                 return Err(MutationOwnerError::TicketMismatch);
             }
         }
-        for (publication, facts) in publications.iter_mut().zip(known) {
-            publication
-                .recovery
-                .as_mut()
-                .expect("checked ticket")
-                .set_known(facts);
+        for (publication, (facts, read_facts)) in publications.iter_mut().zip(known) {
+            let recovery = publication.recovery.as_mut().expect("checked ticket");
+            if let Some(facts) = read_facts {
+                recovery.prepared_queue_posture = facts.queue_posture;
+                recovery.prepared_scheduler_events = facts.scheduler_events;
+            }
+            recovery.set_known(facts);
         }
         Ok(())
     }
@@ -1080,6 +1102,7 @@ impl MutationReservation {
         key: &RecoveryKey,
         witness: &MutationWitness,
         committed: Option<KnownCommit>,
+        read_facts: Option<StateReadFacts>,
     ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
         Self::resolve_witness_unknown(
             reservations,
@@ -1087,6 +1110,7 @@ impl MutationReservation {
             witness,
             MutationWitnessKind::EpisodeMemory,
             committed,
+            read_facts,
         )
     }
 
@@ -1102,6 +1126,7 @@ impl MutationReservation {
             witness,
             MutationWitnessKind::Control,
             committed,
+            None,
         )
     }
 
@@ -1502,6 +1527,7 @@ impl MutationReservation {
         witness: &MutationWitness,
         expected_family: MutationWitnessKind,
         committed: Option<KnownCommit>,
+        read_facts: Option<StateReadFacts>,
     ) -> Result<WitnessUnknownResolution, MutationOwnerError> {
         Self::validate_order(reservations)?;
         let mut publications = reservations
@@ -1546,6 +1572,10 @@ impl MutationReservation {
             ) => {
                 reservations[0].validate_known(&known)?;
                 let recovery = publications[0].recovery.as_mut().expect("checked recovery");
+                if let Some(facts) = read_facts {
+                    recovery.prepared_queue_posture = facts.queue_posture;
+                    recovery.prepared_scheduler_events = facts.scheduler_events;
+                }
                 recovery.set_known(known);
                 recovery.phase = RecoveryPhase::NeedsReconcile;
                 Ok(WitnessUnknownResolution::Known)
@@ -1850,10 +1880,11 @@ impl MutationReservation {
         }
         if let Some(facts) = facts {
             let known = KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
-                identity: facts.identity.map(Arc::new),
-                state: facts.state,
+                identity: facts.scope.identity.map(Arc::new),
+                state: facts.scope.state,
             }));
             self.validate_known(&known)?;
+            saved.prepared_scheduler_events = Some(facts.scheduler_events);
             saved.set_known(known);
         } else {
             publication.recovery = None;
@@ -2193,7 +2224,9 @@ impl MutationReservation {
             KnownCommit::State { runtime, .. } => runtime
                 .as_ref()
                 .map_or(recovery.prepared_queue_posture, |facts| facts.queue_posture),
-            KnownCommit::Metadata(_) => rename_root.and_then(|root| root.queue_posture),
+            KnownCommit::Metadata(_) => recovery
+                .prepared_queue_posture
+                .or_else(|| rename_root.and_then(|root| root.queue_posture)),
         };
         let scheduler_events = match &known {
             KnownCommit::State { runtime, .. } => runtime
@@ -2201,8 +2234,7 @@ impl MutationReservation {
                 .map_or(recovery.prepared_scheduler_events, |facts| {
                     facts.scheduler_events
                 }),
-            // Even a rename appends an Event which can evict an older error.
-            KnownCommit::Metadata(_) => None,
+            KnownCommit::Metadata(_) => recovery.prepared_scheduler_events,
         };
         let (episodes, input_evidence, work, tasks, scheduling, current) = match &known {
             KnownCommit::State {

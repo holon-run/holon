@@ -1014,6 +1014,11 @@ impl ExecutionRootEntryRepository<'_> {
     }
 }
 
+pub(crate) struct IdentityRenameFacts {
+    pub scope: ContextScopeFacts,
+    pub scheduler_events: super::current_query::SchedulerEventFacts,
+}
+
 impl AgentIdentityRepository<'_> {
     pub fn upsert(&self, record: &AgentIdentityRecord) -> Result<()> {
         self.db
@@ -1430,7 +1435,7 @@ impl AgentIdentityRepository<'_> {
         requested_name: &str,
         actor: &str,
         operation_id: &str,
-    ) -> Result<ContextScopeFacts> {
+    ) -> Result<IdentityRenameFacts> {
         let name = normalize_agent_name(requested_name)?;
         let name_key = agent_name_key(&name);
         self.db.transaction(|tx| {
@@ -1479,7 +1484,10 @@ impl AgentIdentityRepository<'_> {
                 facts.identity.as_ref() == Some(&identity),
                 "rename readback differs from the written identity"
             );
-            Ok(facts)
+            Ok(IdentityRenameFacts {
+                scope: facts,
+                scheduler_events: super::current_query::SchedulerEventFacts::read(tx, agent_id)?,
+            })
         })
     }
 
@@ -1487,7 +1495,7 @@ impl AgentIdentityRepository<'_> {
         &self,
         before: &AgentIdentityRecord,
         operation_id: &str,
-    ) -> Result<Option<ContextScopeFacts>> {
+    ) -> Result<Option<IdentityRenameFacts>> {
         self.db.read_for_preparation(|tx| {
             let receipt = audit_event_by_id_tx(tx, Some(&before.agent_id), operation_id)?;
             let facts = ContextDurableRead::new(tx, &before.agent_id).scope_facts()?;
@@ -1504,7 +1512,13 @@ impl AgentIdentityRepository<'_> {
                             && current.revision == before.revision.saturating_add(1),
                         "rename receipt differs from the original identity"
                     );
-                    Ok(Some(facts))
+                    Ok(Some(IdentityRenameFacts {
+                        scope: facts,
+                        scheduler_events: super::current_query::SchedulerEventFacts::read(
+                            tx,
+                            &before.agent_id,
+                        )?,
+                    }))
                 }
                 None => {
                     anyhow::ensure!(
