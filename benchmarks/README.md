@@ -159,6 +159,10 @@ See the [stage 1 child-state results](child-state-stage1.md) for the bounded
 See the [preflight admission queue results](projection-preflight-queue-3745-3800.md)
 for the shared-gate #3745/#3800 acceptance cells and their uncovered matrix.
 
+The opt-in [State HTTP retention comparison](state-http.md) adds loaded/cold
+agents, shared-gate clients, Work queues and continuous writer updates. It uses
+saved original/candidate executables and preserves per-cell failures.
+
 The memory suite isolates every sample in a child process, grows a session with
 1,000 events and 100 briefs, repeatedly reads bounded history windows, and
 records current/peak RSS plus SQLite directory growth before and after dropping

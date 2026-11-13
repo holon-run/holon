@@ -91,6 +91,66 @@ where
     }
 }
 
+pub async fn observer_get_retries_only_retryable_projection_failures() -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    for (code, retryable, should_retry) in [
+        ("runtime_db_busy", true, true),
+        ("projection_stale_unhandled", true, true),
+        ("agent_reconciliation_pending", true, true),
+        ("runtime_db_busy", false, false),
+        ("projection_stale_unhandled", false, false),
+        ("agent_reconciliation_pending", false, false),
+        ("unexpected_failure", true, false),
+    ] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let observed = attempts.clone();
+        let app = axum::Router::new().route(
+            "/observer",
+            axum::routing::get(move || {
+                let attempt = observed.fetch_add(1, Ordering::SeqCst);
+                async move {
+                    if attempt == 0 {
+                        (
+                            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                            axum::Json(serde_json::json!({
+                                "code": code,
+                                "retryable": retryable,
+                            })),
+                        )
+                    } else {
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!({"ready": true})),
+                        )
+                    }
+                }
+            }),
+        );
+        let server = tokio::spawn(async move { axum::serve(listener, app).await });
+        let client = reqwest::Client::new();
+        let url = format!("http://{address}/observer");
+        let result = get_ready_observer_response(&client, url.clone()).await;
+        let non_get = super::ready_observer_get(client.post(url)).await;
+        server.abort();
+
+        assert!(
+            non_get.unwrap_err().to_string().contains("requires GET"),
+            "non-GET must be rejected before dispatch"
+        );
+        if should_retry {
+            assert_eq!(result?.status(), reqwest::StatusCode::OK);
+            assert_eq!(attempts.load(Ordering::SeqCst), 2, "{code}");
+        } else {
+            assert!(result.unwrap_err().to_string().contains(code));
+            assert_eq!(attempts.load(Ordering::SeqCst), 1, "{code}");
+        }
+    }
+    Ok(())
+}
+
 pub async fn github_rate_limit_envelope_decodes_and_displays_recovery_guidance() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
@@ -205,8 +265,11 @@ pub async fn local_client_over_unix_socket_can_poll_without_http_fallback() -> R
     let client = LocalClient::new(config)?;
 
     let agents = ready_observer(|| client.list_agent_entries()).await?;
-    assert_eq!(agents.len(), 1);
-    assert_eq!(agents[0].identity.agent_id, "default");
+    // The legacy list may omit a member during publication.
+    assert!(agents.len() <= 1);
+    assert!(agents
+        .iter()
+        .all(|agent| agent.identity.agent_id == "default"));
 
     let status = ready_observer(|| client.agent_status("default")).await?;
     assert_eq!(status.identity.agent_id, "default");

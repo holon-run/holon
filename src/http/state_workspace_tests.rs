@@ -18,10 +18,9 @@ async fn uncached_state(
     runtime: &RuntimeHandle,
     probe: &mut IoProbe,
 ) -> anyhow::Result<Value> {
-    let mut state = base.clone();
-    // A new gate guarantees no fresh or stale bytes from an earlier request.
-    state.projection_gate = Arc::new(ProjectionGate::new(4, Duration::ZERO));
-    let app = router(state);
+    // Reuse the gate across writes: every completed State request must
+    // rebuild from publications rather than reuse earlier response bytes.
+    let app = router(base.clone());
     probe.reset();
     let response = app
         .oneshot(
@@ -146,7 +145,8 @@ async fn loaded_state_http_workspace_lifecycle_is_storage_free() -> anyhow::Resu
     let peer_loop = peer.pause_run_loop_for_monitor_test().await;
     let refresh = runtime.hold_resource_refresh_for_test().await?;
     let peer_refresh = peer.hold_resource_refresh_for_test().await?;
-    let base = AppState::for_unix(host.clone());
+    let mut base = AppState::for_unix(host.clone());
+    base.projection_gate = Arc::new(ProjectionGate::new(4, Duration::from_secs(60)));
 
     // Even the first loaded State request must not warm a durable read path.
     uncached_state(&base, &runtime, &mut probe).await?;
