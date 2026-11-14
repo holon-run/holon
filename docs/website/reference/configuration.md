@@ -77,6 +77,26 @@ Commands: `holon config get <key>`, `set <key> <value>`, `unset <key>`, and
 `list`. List/object values use JSON. Follow the
 [model guide](/guides/configure-models.md) to choose available routes.
 
+#### Provider request headers
+
+`providers.<id>.headers` and `providers.<id>.endpoints.<endpoint_id>.headers`
+are optional objects of non-sensitive, literal HTTP header values. Names are
+lowercased; endpoint keys override provider keys, and an empty endpoint object
+inherits the provider headers. Empty maps are omitted when saving.
+
+Use `holon config providers headers set <provider> --header NAME=VALUE`
+and `holon config providers headers unset <provider> --name NAME`, optionally
+with `--endpoint <id>`, to change only the selected header map. Repeated flags
+are supported; duplicate case-insensitive names and invalid batches fail without
+writing. Authentication/protocol/session headers are reserved, and budgets apply
+to each layer and the merged result (32 entries, 4096 bytes per value, 16384
+bytes total). See the [model guide](/guides/configure-models.md) for inheritance,
+security boundaries, and OpenCode Go's runtime-owned session.
+
+Header values remain plaintext in the local configuration and command-line
+arguments. Safe provider views show only header names; raw configuration access
+is not a redaction or encryption boundary.
+
 ### Per-Model Policy
 
 The `models.catalog` key lets you override runtime metadata for specific provider/model refs. Keys under `model.unknown_fallback.*` control policy for models without built-in metadata.

@@ -185,6 +185,7 @@ fn make_token(payload: serde_json::Value) -> String {
 
 fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig {
     ProviderRuntimeConfig {
+        headers: Default::default(),
         id: ProviderId::openai_codex(),
         route_provider: ProviderId::openai_codex(),
         route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -210,6 +211,7 @@ fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig
 fn test_xai_oauth_config(credential: String) -> ProviderRuntimeConfig {
     let xai = ProviderId::parse("xai").unwrap();
     ProviderRuntimeConfig {
+        headers: Default::default(),
         id: xai.clone(),
         route_provider: xai,
         route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -446,7 +448,7 @@ async fn openai_provider_uses_xai_oauth_profile_as_bearer_token() {
     let provider =
         OpenAiProvider::from_runtime_config(&config, "grok-test", 1024, home.path()).unwrap();
 
-    let headers = provider.resolve_auth_headers().await.unwrap();
+    let headers = provider.resolve_auth_headers(None).await.unwrap();
 
     assert_eq!(
         headers,

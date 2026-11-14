@@ -1733,15 +1733,21 @@ impl RuntimeDb {
     /// restarts and ordinary reopens; a replaced or rebuilt database mints a
     /// new one. Not a secret.
     pub fn runtime_id(&self) -> Result<String> {
-        self.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT value FROM runtime_metadata WHERE key = 'runtime_id'",
-                    [],
-                    |row| row.get(0),
-                )
-                .context("runtime installation id is missing")
-        })
+        self.with_read(|connection| Self::runtime_id_on(connection))
+    }
+
+    pub(crate) fn runtime_id_for_preparation(&self) -> Result<String> {
+        self.read_for_preparation(|tx| Self::runtime_id_on(tx))
+    }
+
+    fn runtime_id_on(connection: &Connection) -> Result<String> {
+        connection
+            .query_row(
+                "SELECT value FROM runtime_metadata WHERE key = 'runtime_id'",
+                [],
+                |row| row.get(0),
+            )
+            .context("runtime installation id is missing")
     }
 
     /// Monotone visibility policy generation. Bumping it rotates every

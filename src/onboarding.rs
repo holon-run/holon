@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 use crate::{
     auth::load_codex_cli_credential,
     config::{
-        built_in_provider_default_config, credential_store_path, load_persisted_config_at,
-        save_persisted_config_at, set_credential_profile_at, validate_provider_config, AppConfig,
-        CredentialKind, CredentialSource, ModelRef, ModelRouteRef, ProviderAuthConfig,
-        ProviderConfigFile, ProviderId, ProviderRuntimeConfig,
+        built_in_provider_default_config, credential_store_path, set_credential_profile_at,
+        validate_provider_config, AppConfig, CredentialKind, CredentialSource, ModelRef,
+        ModelRouteRef, PersistedConfigTransaction, ProviderAuthConfig, ProviderConfigFile,
+        ProviderId, ProviderRuntimeConfig,
     },
     model_catalog::BuiltInModelCatalog,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
@@ -497,7 +497,8 @@ pub fn apply_onboarding_wizard_draft(
     draft: &OnboardingWizardDraft,
     credential_material: Option<String>,
 ) -> Result<OnboardingApplySummary> {
-    let mut persisted = load_persisted_config_at(&config.config_file_path)?;
+    let transaction = PersistedConfigTransaction::begin(&config.config_file_path)?;
+    let mut persisted = transaction.load()?;
     let mut provider_config = persisted
         .providers
         .remove(&draft.provider)
@@ -561,7 +562,7 @@ pub fn apply_onboarding_wizard_draft(
             persisted.web.search.providers = vec![DUCKDUCKGO_SEARCH_PROVIDER_ID.into()];
         }
     }
-    save_persisted_config_at(&config.config_file_path, &persisted)?;
+    transaction.save(&persisted)?;
 
     Ok(OnboardingApplySummary {
         applied_via: "offline_store".into(),
@@ -576,6 +577,7 @@ pub fn apply_onboarding_wizard_draft(
 
 fn provider_config_file_from_runtime(provider: &ProviderRuntimeConfig) -> ProviderConfigFile {
     ProviderConfigFile {
+        headers: provider.headers.clone(),
         transport: provider.transport,
         base_url: provider.base_url.clone(),
         auth: provider.auth.clone(),
@@ -1297,6 +1299,7 @@ mod tests {
         config.providers.insert(
             ollama.clone(),
             ProviderRuntimeConfig {
+                headers: Default::default(),
                 id: ollama.clone(),
                 route_provider: ollama,
                 route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1354,6 +1357,7 @@ mod tests {
         config.stored_config.providers.insert(
             ProviderId::openai(),
             ProviderConfigFile {
+                headers: Default::default(),
                 cache_capabilities: None,
                 transport: ProviderTransportKind::OpenAiResponses,
                 base_url: "https://api.openai.com/v1".into(),
@@ -1421,6 +1425,7 @@ mod tests {
         let mut config = test_config(None);
         let custom_provider = ProviderId::parse("custom-openai").unwrap();
         let custom_provider_config = ProviderRuntimeConfig {
+            headers: Default::default(),
             id: custom_provider.clone(),
             route_provider: custom_provider.clone(),
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1447,6 +1452,7 @@ mod tests {
         config.stored_config.providers.insert(
             custom_provider.clone(),
             ProviderConfigFile {
+                headers: Default::default(),
                 cache_capabilities: None,
                 transport: custom_provider_config.transport,
                 base_url: custom_provider_config.base_url.clone(),
@@ -1459,6 +1465,7 @@ mod tests {
         );
         let deepseek = ProviderId::parse("deepseek").unwrap();
         let deepseek_config = ProviderRuntimeConfig {
+            headers: Default::default(),
             id: deepseek.clone(),
             route_provider: deepseek.clone(),
             route_endpoint: ProviderEndpointId::default_endpoint(),

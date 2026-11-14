@@ -119,6 +119,57 @@ holon config providers set my-proxy \
 
 替换端点并在守护进程环境中配置凭据。在正式选用前先执行 `holon config models list` 检查。端点、计划与模型元数据字段详见[配置参考](/zh-CN/reference/configuration.md)。
 
+### 非敏感静态请求头
+
+专用命令只修改目标层的 headers，不替换凭据、base URL、缓存设置、计划或其他端点：
+
+```bash
+holon config providers headers set my-proxy \
+  --header 'X-Project=example' --header 'User-Agent=my-client'
+holon config providers headers set my-proxy --endpoint coding \
+  --header 'X-Project=coding'
+holon config providers headers unset my-proxy --endpoint coding --name X-Project
+```
+
+`--header` 和 `--name` 可以重复。`set` 按键 upsert，仅首个 `=` 分隔名称和值，
+允许空值；名称统一转为小写，同一命令或 map 中的大小写重复名称会报错。
+端点必须已配置或由提供商注册。尚无覆盖配置的内置提供商会保留默认鉴权；
+不存在的自定义提供商不会被隐式创建。
+
+端点继承提供商的 headers，并逐键覆盖同名项。删除端点显式项会恢复继承；
+空 map 表示继承而非清空。仅对应推理路由使用这些头，不发送给模型发现、
+OAuth 刷新、下载或其他提供商。
+
+每层及合并后最多 32 项；每个值最多 4096 字节；名称和值总计最多 16384 字节。
+非法 HTTP 名称/值、CR/LF、鉴权、Cookie、协议协商、逐跳头及适配器自有
+session/routing 头均被拒绝。普通 `User-Agent` 可以覆盖；API key 仍应使用凭据机制。
+
+**只用于非敏感值。** 值明文存入 `config.json`，命令参数也可能进入 shell 历史
+与进程列表；不提供 secret store 或环境变量插值。提供商检查和 header 命令
+只显示名称，不代表原始配置文件或通用配置读取已经脱敏或加密。
+命令输出 `offline_store` 表示仅持久化本地配置，不承诺热更新运行中的守护进程。
+
+### OpenCode Go 会话
+
+标准引用 `opencode-go/<model>` 统一使用 Messages，不按模型原生协议自动选择。
+显式 `opencode-go@default/<model>` 保留旧 Chat；Go 不内置 Responses 端点或别名。
+已存储的 canonical 路由不会迁移。这不代表所有模型的转换协议能力
+均已验证，也不会在失败后自动切换协议。
+
+内置 `opencode-go` 使用 `OPENCODE_GO_API_KEY`。其 `default`、`messages`
+端点及 legacy `opencode-go-messages` 别名自动获得 runtime 生成的不透明
+`x-opencode-session`，默认 `User-Agent` 为 `holon/<version>`。
+
+会话绑定 Holon 安装和 agent incarnation，而非单次请求或 WorkItem；
+跨轮次、重试、工具往返、回退、压缩及守护进程重启保持一致，与 prompt cache 无关。
+不同安装或删除重建的 agent 会获得不同会话。Go 不允许手动配置该头；
+缺少可信 runtime session context 的调用会在 HTTP 前报错，而不是发送空值。
+其他自定义提供商仍可将同名头用于普通静态配置。
+
+先用 `holon config models list` 选择可用的
+`opencode-go@<endpoint>/<model>` 路由。普通静态 `User-Agent` 可覆盖；
+静态头和 session 标识都不能替代鉴权。
+
 ## 单独配置图像工具
 
 挑选支持对应能力且守护进程已具备访问凭据的路由。例如，在配置好对应提供商后：

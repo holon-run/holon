@@ -350,7 +350,8 @@ pub(super) fn change(
             "Tailscale Serve requires a bound loopback HTTP listener"
         ));
     }
-    let mut stored = load_persisted_config_at(&config.config_file_path)?;
+    let transaction = PersistedConfigTransaction::begin(&config.config_file_path)?;
+    let mut stored = transaction.load()?;
     let target = target(state)?;
     let before = inspect(
         runner,
@@ -379,7 +380,7 @@ pub(super) fn change(
         runner.command(&["serve", "--https=443", "--set-path=/", "off"])?;
     }
     stored.tailscale_serve_desired_enabled = Some(enabled);
-    save_persisted_config_at(&config.config_file_path, &stored)?;
+    transaction.save(&stored)?;
     read(state, runner)
 }
 

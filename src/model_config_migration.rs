@@ -1,6 +1,5 @@
 use std::{
     fs::{self, OpenOptions},
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -11,7 +10,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    config::{load_persisted_config_at, HolonConfigFile, ModelRouteRef},
+    config::{
+        load_persisted_config_at, HolonConfigFile, ModelRouteRef, PersistedConfigTransaction,
+    },
     runtime_db::{RuntimeDb, RuntimeStateTransitionConflict},
     types::AgentState,
 };
@@ -64,6 +65,7 @@ pub struct ModelConfigMigrationReport {
 
 #[derive(Debug)]
 struct ConfigInspection {
+    original: Value,
     config: HolonConfigFile,
     report: ModelConfigMigrationStoreReport,
 }
@@ -116,8 +118,13 @@ impl PreparedModelConfigMigration {
 
     pub(crate) fn write_config(&mut self) -> Result<()> {
         if self.ok() && self.config.report.changed {
+            let transaction = PersistedConfigTransaction::begin(&self.config_file_path)?;
+            anyhow::ensure!(
+                serde_json::to_value(transaction.load()?)? == self.config.original,
+                "config changed while preparing model migration; inspect and retry"
+            );
             let backup_path = backup_config_once(&self.config_file_path)?;
-            write_config_atomically(&self.config_file_path, &self.config.config)?;
+            transaction.save(&self.config.config)?;
             self.config.report.backup_path = backup_path;
         }
         Ok(())
@@ -172,6 +179,7 @@ pub fn migrate_model_config_routes(
 
 fn inspect_config(path: &Path) -> Result<ConfigInspection> {
     let mut config = load_persisted_config_at(path)?;
+    let original = serde_json::to_value(&config)?;
     let mut report = ModelConfigMigrationStoreReport::default();
 
     inspect_optional_route(
@@ -201,7 +209,11 @@ fn inspect_config(path: &Path) -> Result<ConfigInspection> {
         &mut report,
     );
 
-    Ok(ConfigInspection { config, report })
+    Ok(ConfigInspection {
+        original,
+        config,
+        report,
+    })
 }
 
 fn inspect_optional_route(
@@ -392,45 +404,6 @@ fn backup_config_once(path: &Path) -> Result<Option<PathBuf>> {
             .with_context(|| format!("failed to sync {}", backup_path.display()))?;
     }
     Ok(Some(backup_path))
-}
-
-fn write_config_atomically(path: &Path, config: &HolonConfigFile) -> Result<()> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let temp_path = path.with_extension(format!("json.migrate-{}", std::process::id()));
-    let content = serde_json::to_vec_pretty(config).context("failed to serialize config")?;
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let result = (|| {
-        let mut file = options
-            .open(&temp_path)
-            .with_context(|| format!("failed to open {}", temp_path.display()))?;
-        file.write_all(&content)
-            .with_context(|| format!("failed to write {}", temp_path.display()))?;
-        file.sync_all()
-            .with_context(|| format!("failed to sync {}", temp_path.display()))?;
-        fs::rename(&temp_path, path).with_context(|| {
-            format!(
-                "failed to replace {} with {}",
-                path.display(),
-                temp_path.display()
-            )
-        })?;
-        OpenOptions::new()
-            .read(true)
-            .open(parent)?
-            .sync_all()
-            .with_context(|| format!("failed to sync {}", parent.display()))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
 }
 
 fn write_agent_state_mutations(
@@ -642,6 +615,30 @@ mod tests {
         assert_eq!(fixture.agent_payload("agent-b")?, original_b);
         Ok(())
     }
+    #[test]
+    fn prepared_config_rejects_a_concurrent_header_update() -> Result<()> {
+        let fixture = Fixture::new(&legacy_config())?;
+        let mut prepared =
+            prepare_model_config_migration(&fixture.config_path, &fixture.runtime_db)?;
+        let transaction = PersistedConfigTransaction::begin(&fixture.config_path)?;
+        let mut newer = transaction.load()?;
+        crate::config::set_provider_headers(
+            &mut newer,
+            &crate::config::ProviderId::parse("openai")?,
+            None,
+            &["x-concurrent=preserve".into()],
+        )?;
+        transaction.save(&newer)?;
+        drop(transaction);
+        let saved = fs::read(&fixture.config_path)?;
+
+        let error = prepared.write_config().expect_err("stale config must fail");
+        assert!(error.to_string().contains("config changed"));
+        assert_eq!(fs::read(&fixture.config_path)?, saved);
+        assert!(prepared.config.report.backup_path.is_none());
+        Ok(())
+    }
+
     #[test]
     fn prepared_agent_batch_rejects_a_concurrently_changed_payload() -> Result<()> {
         let fixture = Fixture::new(&HolonConfigFile::default())?;

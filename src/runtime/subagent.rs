@@ -378,17 +378,15 @@ impl RuntimeHandle {
             prompt_metadata,
         ))
         .await?;
-        let response = self
-            .current_provider()
-            .await
-            .complete_turn(ProviderTurnRequest::plain(
-                effective_prompt.rendered_system_prompt,
-                vec![ConversationMessage::UserText(
-                    effective_prompt.rendered_context_attachment,
-                )],
-                vec![],
-            ))
-            .await?;
+        let mut request = ProviderTurnRequest::plain(
+            effective_prompt.rendered_system_prompt,
+            vec![ConversationMessage::UserText(
+                effective_prompt.rendered_context_attachment,
+            )],
+            vec![],
+        );
+        request.provider_session_id = Some(self.inner.provider_session_id.clone());
+        let response = self.current_provider().await.complete_turn(request).await?;
 
         {
             let mut guard = self.begin_mutation().await?;

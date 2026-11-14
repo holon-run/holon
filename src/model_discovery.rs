@@ -977,16 +977,18 @@ impl OpenCodeGoModel {
         let endpoint = (preferred_endpoint != "default").then(|| {
             ProviderEndpointId::parse(preferred_endpoint).expect("valid OpenCode Go endpoint id")
         });
-        let (api, legacy_provider) = match preferred_endpoint {
+        let (api, base_url_provider) = match preferred_endpoint {
             "messages" => ("messages", "opencode-go-messages"),
-            "responses" => ("responses", "opencode-go-responses"),
+            // Native metadata is independent of registered inference endpoints.
+            // Responses uses the same published base URL as legacy Chat.
+            "responses" => ("responses", "opencode-go"),
             _ => ("chat-completions", "opencode-go"),
         };
         // Global fields describe the published native API, not translated text
         // routes. Gemini's native Google API is not registered in Holon.
         let native = id != "gemini-4-argon"
             && self.api.get(api).is_some_and(|api| {
-                provider_definition(legacy_provider).is_some_and(|definition| {
+                provider_definition(base_url_provider).is_some_and(|definition| {
                     api.base_url.as_deref() == Some(definition.default_base_url)
                 })
             });
@@ -995,7 +997,7 @@ impl OpenCodeGoModel {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
             display_name: id.to_string(),
             description:
-                "Remote discovered OpenCode Go text model with its preferred registered endpoint or retained legacy mapping; translated eligibility is limited to reviewed current IDs."
+                "Remote discovered OpenCode Go text model with its published native endpoint or retained legacy mapping; translated eligibility is limited to reviewed current IDs."
                     .to_string(),
             context_window_tokens: native.then_some(self.limit.context).flatten().filter(|v| *v > 0),
             effective_context_window_percent: 95,
@@ -1735,6 +1737,7 @@ mod tests {
 
     fn arcee_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("arcee").unwrap(),
             route_provider: ProviderId::parse("arcee").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1759,6 +1762,7 @@ mod tests {
 
     fn openrouter_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("openrouter").unwrap(),
             route_provider: ProviderId::parse("openrouter").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1783,6 +1787,7 @@ mod tests {
 
     fn huggingface_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("huggingface").unwrap(),
             route_provider: ProviderId::parse("huggingface").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1807,6 +1812,7 @@ mod tests {
 
     fn vercel_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("vercel-ai-gateway").unwrap(),
             route_provider: ProviderId::parse("vercel-ai-gateway").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1831,6 +1837,7 @@ mod tests {
 
     fn kilocode_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("kilocode").unwrap(),
             route_provider: ProviderId::parse("kilocode").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1855,6 +1862,7 @@ mod tests {
 
     fn opencode_go_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("opencode-go").unwrap(),
             route_provider: ProviderId::parse("opencode-go").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1879,6 +1887,7 @@ mod tests {
 
     fn nearai_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("nearai").unwrap(),
             route_provider: ProviderId::parse("nearai").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1903,6 +1912,7 @@ mod tests {
 
     fn synthetic_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("synthetic").unwrap(),
             route_provider: ProviderId::parse("synthetic").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1927,6 +1937,7 @@ mod tests {
 
     fn venice_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("venice").unwrap(),
             route_provider: ProviderId::parse("venice").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1951,6 +1962,7 @@ mod tests {
 
     fn tencent_tokenhub_provider() -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("tencent-tokenhub").unwrap(),
             route_provider: ProviderId::parse("tencent-tokenhub").unwrap(),
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),
@@ -1975,6 +1987,7 @@ mod tests {
 
     fn custom_openai_provider(base_url: String) -> ProviderRuntimeConfig {
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("local-custom").unwrap(),
             route_provider: ProviderId::parse("local-custom").unwrap(),
             route_endpoint: ProviderEndpointId::default_endpoint(),

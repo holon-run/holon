@@ -100,6 +100,7 @@ mod tests {
             _ => ProviderId::openai(),
         };
         let config = ProviderRuntimeConfig {
+            headers: Default::default(),
             id: id.clone(),
             route_provider: id.clone(),
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -631,6 +632,7 @@ mod tests {
     fn plain_turn_request() -> ProviderTurnRequest {
         ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain("system"),
@@ -1541,6 +1543,7 @@ mod tests {
 
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(

@@ -19,46 +19,8 @@ pub struct CredentialProfileStatus {
     pub configured: bool,
 }
 
-pub fn persisted_config_path(home_dir: &Path) -> PathBuf {
-    home_dir.join("config.json")
-}
-
 pub fn credential_store_path(home_dir: &Path) -> PathBuf {
     home_dir.join("credentials.json")
-}
-
-pub fn load_persisted_config_at(path: &Path) -> Result<HolonConfigFile> {
-    if !path.exists() {
-        return Ok(HolonConfigFile::default());
-    }
-
-    let content =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-
-    serde_json::from_str(&content).with_context(|| format!("failed to parse {}", path.display()))
-}
-
-pub fn save_persisted_config_at(path: &Path, config: &HolonConfigFile) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    let content = serde_json::to_string_pretty(config).context("failed to serialize config")?;
-    let mut options = fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(path)
-        .with_context(|| format!("failed to open {}", path.display()))?;
-    file.write_all(content.as_bytes())
-        .with_context(|| format!("failed to write {}", path.display()))?;
-    file.flush()
-        .with_context(|| format!("failed to flush {}", path.display()))?;
-    Ok(())
 }
 
 pub fn load_credential_store_at(path: &Path) -> Result<CredentialStoreFile> {

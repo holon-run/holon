@@ -413,6 +413,11 @@ pub enum ConfigCommands {
 
 #[derive(Debug, Subcommand)]
 pub enum ConfigProviderCommands {
+    /// Manage non-sensitive static headers without replacing provider settings.
+    Headers {
+        #[command(subcommand)]
+        command: ConfigProviderHeaderCommands,
+    },
     Set {
         provider: String,
         #[arg(long)]
@@ -440,6 +445,55 @@ pub enum ConfigProviderCommands {
     Doctor {
         provider: String,
     },
+}
+
+#[derive(Subcommand)]
+pub enum ConfigProviderHeaderCommands {
+    Set {
+        provider: String,
+        #[arg(long)]
+        endpoint: Option<String>,
+        #[arg(
+            long = "header",
+            required = true,
+            help = "Non-sensitive NAME=VALUE (repeatable; visible in shell history/process args)"
+        )]
+        headers: Vec<String>,
+    },
+    Unset {
+        provider: String,
+        #[arg(long)]
+        endpoint: Option<String>,
+        #[arg(long = "name", required = true)]
+        names: Vec<String>,
+    },
+}
+
+impl std::fmt::Debug for ConfigProviderHeaderCommands {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Set {
+                provider,
+                endpoint,
+                headers,
+            } => f
+                .debug_struct("SetProviderHeaders")
+                .field("provider", provider)
+                .field("endpoint", endpoint)
+                .field("header_count", &headers.len())
+                .finish(),
+            Self::Unset {
+                provider,
+                endpoint,
+                names,
+            } => f
+                .debug_struct("UnsetProviderHeaders")
+                .field("provider", provider)
+                .field("endpoint", endpoint)
+                .field("header_count", &names.len())
+                .finish(),
+        }
+    }
 }
 
 #[derive(Debug, Subcommand)]
@@ -1224,6 +1278,64 @@ fn snapshot_entry_for_command(cmd: &clap::Command, path: &str) -> CommandSnapsho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_header_commands_parse_repeated_entries_and_redact_debug() {
+        let cli = Cli::try_parse_from([
+            "holon",
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "proxy",
+            "--endpoint",
+            "coding",
+            "--header",
+            "X-Example=private-payload=tail",
+            "--header",
+            "X-Empty=",
+        ])
+        .unwrap();
+        assert!(!format!("{cli:?}").contains("private-payload"));
+        let Commands::Config {
+            command:
+                ConfigCommands::Providers {
+                    command:
+                        ConfigProviderCommands::Headers {
+                            command:
+                                ConfigProviderHeaderCommands::Set {
+                                    endpoint, headers, ..
+                                },
+                        },
+                },
+        } = cli.command
+        else {
+            panic!("expected provider headers set");
+        };
+        assert_eq!(endpoint.as_deref(), Some("coding"));
+        assert_eq!(headers, ["X-Example=private-payload=tail", "X-Empty="]);
+        assert!(
+            Cli::try_parse_from(["holon", "config", "providers", "headers", "set", "proxy"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["holon", "config", "providers", "headers", "unset", "proxy"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from([
+            "holon",
+            "config",
+            "providers",
+            "headers",
+            "unset",
+            "proxy",
+            "--name",
+            "X-Example",
+            "--name",
+            "X-Other",
+        ])
+        .is_ok());
+    }
 
     #[test]
     fn work_item_source_revision_audit_accepts_optional_filters() {

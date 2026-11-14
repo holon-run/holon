@@ -127,6 +127,7 @@ async fn live_openai_codex_builtin_web_search_reports_backend() -> Result<()> {
     let output = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain(
@@ -162,6 +163,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
     let first = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: Some(scope.clone()),
             prompt_frame: frame.clone(),
@@ -182,6 +184,7 @@ async fn live_openai_codex_replays_provider_window_after_append_match() -> Resul
     let second = provider
         .complete_turn(ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: Some(scope),
             prompt_frame: frame,

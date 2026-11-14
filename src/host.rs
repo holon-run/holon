@@ -3135,7 +3135,12 @@ impl RuntimeHost {
             // File effects are outside the SQL publication gate. A file write
             // failure leaves the state command unattempted and owners ready.
             let _writer = host.context_resources().begin_write()?;
-            prepared.write_config()?;
+            prepared = tokio::task::spawn_blocking(move || {
+                prepared.write_config()?;
+                Ok::<_, anyhow::Error>(prepared)
+            })
+            .await
+            .context("model migration config write task failed")??;
             host.commit_external_agent_states(
                 &mut reservations,
                 candidates,

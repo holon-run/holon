@@ -85,6 +85,7 @@ pub struct ProviderRuntimeConfig {
     pub transport: ProviderTransportKind,
     pub base_url: String,
     pub auth: ProviderAuthConfig,
+    pub headers: ProviderHeaders,
     pub credential: Option<String>,
     pub credential_store_path: Option<PathBuf>,
     pub codex_home: Option<PathBuf>,
@@ -223,6 +224,8 @@ pub struct ProviderConfigView {
     pub auth: ProviderAuthView,
     pub credential_configured: bool,
     pub configured_in_config: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header_names: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

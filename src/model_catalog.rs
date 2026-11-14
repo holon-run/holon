@@ -911,10 +911,23 @@ impl BuiltInModelCatalog {
     }
 
     pub fn preferred_route_for_provider(&self, provider: &ProviderId) -> Option<ModelRouteRef> {
-        self.preferred_routes.get(provider).cloned()
+        let route = self.preferred_routes.get(provider)?.clone();
+        if provider.as_str() == "opencode-go" {
+            return self.preferred_route_for_model(&route.model_ref());
+        }
+        Some(route)
     }
 
     pub fn preferred_route_for_model(&self, model_ref: &ModelRef) -> Option<ModelRouteRef> {
+        // Standard Go references use one protocol; native route metadata remains
+        // evidence for explicit routes, not an automatic protocol selector.
+        if model_ref.provider.as_str() == "opencode-go" {
+            return Some(ModelRouteRef::new(
+                model_ref.provider.clone(),
+                ProviderEndpointId::parse("messages").expect("valid Go endpoint"),
+                model_ref.model.clone(),
+            ));
+        }
         self.preferred_routes_by_model.get(model_ref).cloned()
     }
 
@@ -5493,8 +5506,9 @@ mod tests {
                 catalog
                     .preferred_route_for_model(&model_ref)
                     .unwrap()
-                    .endpoint,
-                ProviderEndpointId::default_endpoint()
+                    .endpoint
+                    .as_str(),
+                "messages"
             );
             for endpoint in ["messages", "responses"] {
                 assert!(catalog
@@ -5521,6 +5535,16 @@ mod tests {
 
         assert_eq!(models.len(), 45);
         for model in &models {
+            assert_eq!(
+                catalog
+                    .preferred_route_for_model(&model.model_ref)
+                    .unwrap()
+                    .endpoint
+                    .as_str(),
+                "messages",
+                "{}",
+                model.model_ref.as_string()
+            );
             assert_eq!(
                 model.capabilities.supports_reasoning,
                 !matches!(model.model_ref.model.as_str(), "gemini-4-argon")
@@ -5567,10 +5591,12 @@ mod tests {
         ] {
             assert_eq!(
                 catalog
-                    .preferred_route_for_model(&ModelRef::new(provider.clone(), model))
+                    .preferred_routes_by_model
+                    .get(&ModelRef::new(provider.clone(), model))
                     .unwrap()
-                    .endpoint,
-                ProviderEndpointId::default_endpoint(),
+                    .endpoint
+                    .as_str(),
+                "default",
                 "{model}"
             );
         }
@@ -5587,7 +5613,8 @@ mod tests {
         ] {
             assert_eq!(
                 catalog
-                    .preferred_route_for_model(&ModelRef::new(provider.clone(), model))
+                    .preferred_routes_by_model
+                    .get(&ModelRef::new(provider.clone(), model))
                     .unwrap()
                     .endpoint
                     .as_str(),
@@ -5604,7 +5631,8 @@ mod tests {
         ] {
             assert_eq!(
                 catalog
-                    .preferred_route_for_model(&ModelRef::new(provider.clone(), model))
+                    .preferred_routes_by_model
+                    .get(&ModelRef::new(provider.clone(), model))
                     .unwrap()
                     .endpoint
                     .as_str(),
@@ -5732,12 +5760,12 @@ mod tests {
                     | "qwen3.7-plus" => "messages",
                     _ => "default",
                 };
-                assert_eq!(preferred.endpoint.as_str(), native, "{id}");
+                assert_eq!(preferred.endpoint.as_str(), "messages", "{id}");
                 for endpoint in ["default", "messages", "responses"] {
                     let route =
                         ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap();
                     let route_entry = catalog.get_route(&route).expect("reviewed Go text route");
-                    if route == preferred {
+                    if endpoint == native {
                         continue;
                     }
                     assert_eq!(route_entry.context_window_tokens, Some(None));

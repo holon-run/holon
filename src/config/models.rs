@@ -186,7 +186,9 @@ impl ModelRouteRef {
     }
 
     pub fn as_compact_display(&self) -> String {
-        if self.endpoint == ProviderEndpointId::default_endpoint() {
+        if self.endpoint == ProviderEndpointId::default_endpoint()
+            && self.provider.as_str() != "opencode-go"
+        {
             return self.model_ref().as_string();
         }
         self.as_string()
@@ -612,7 +614,12 @@ impl RuntimeModelCatalog {
             endpoint.provider.as_str() == "deepseek"
                 && endpoint.endpoint == ProviderEndpointId::default_endpoint()
         }) {
-            let runtime_config = deepseek_responses_runtime_config(&default.runtime_config);
+            let mut runtime_config = deepseek_responses_runtime_config(&default.runtime_config);
+            if let Some(stored) = config.stored_config.providers.get(&default.provider) {
+                runtime_config.headers =
+                    effective_provider_headers(stored, &runtime_config.route_endpoint)
+                        .expect("provider header budgets were validated during config load");
+            }
             provider_endpoints.push(ResolvedProviderEndpointConfig {
                 provider: default.provider.clone(),
                 endpoint: runtime_config.route_endpoint.clone(),
@@ -1322,6 +1329,7 @@ fn deepseek_responses_runtime_config(default: &ProviderRuntimeConfig) -> Provide
         .then(|| default.builtin_web_search.clone())
         .flatten();
     ProviderRuntimeConfig {
+        headers: Default::default(),
         id: default.id.clone(),
         route_provider: default.route_provider.clone(),
         route_endpoint: ProviderEndpointId::parse("responses").expect("valid built-in endpoint"),
@@ -1978,6 +1986,41 @@ mod tests {
         assert_eq!(route_ref.provider.as_str(), "openrouter");
         assert_eq!(route_ref.endpoint.as_str(), "default");
         assert_eq!(route_ref.model, "anthropic/claude-3.5-sonnet");
+    }
+
+    #[test]
+    fn opencode_go_standard_refs_use_messages_and_preserve_explicit_routes() {
+        for model in ["glm-5.3-flash", "minimax-m3", "gpt-6-luna", "future-model"] {
+            let standard =
+                ModelRouteRef::parse_compatible(&format!("opencode-go/{model}")).unwrap();
+            assert_eq!(standard.endpoint.as_str(), "messages");
+            for endpoint in ["default", "messages", "responses"] {
+                let explicit = format!("opencode-go@{endpoint}/{model}");
+                let route = ModelRouteRef::parse_compatible(&explicit).unwrap();
+                assert_eq!(route.as_string(), explicit);
+                assert_eq!(
+                    ModelRouteRef::parse_compatible(&route.as_compact_display()).unwrap(),
+                    route
+                );
+                let json = serde_json::to_string(&route).unwrap();
+                assert_eq!(serde_json::from_str::<ModelRouteRef>(&json).unwrap(), route);
+            }
+        }
+        for (legacy, endpoint) in [("opencode-go-messages", "messages")] {
+            let route =
+                ModelRouteRef::parse_compatible(&format!("{legacy}/glm-5.3-flash")).unwrap();
+            assert_eq!(route.provider.as_str(), "opencode-go");
+            assert_eq!(route.endpoint.as_str(), endpoint);
+        }
+        let catalog = BuiltInModelCatalog::default();
+        assert_eq!(
+            catalog
+                .preferred_route_for_provider(&ProviderId::parse("opencode-go").unwrap())
+                .unwrap()
+                .endpoint
+                .as_str(),
+            "messages"
+        );
     }
 
     #[test]

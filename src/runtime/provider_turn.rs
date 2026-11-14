@@ -88,6 +88,7 @@ pub fn build_provider_turn_request(
         continuation_scope_id: ContinuationScopeId::new(
             effective_prompt.cache_identity.agent_id.clone(),
         ),
+        provider_session_id: None,
         prompt_frame: ProviderPromptFrame::structured(
             effective_prompt.rendered_system_prompt.clone(),
             system_blocks,
@@ -123,6 +124,7 @@ pub(crate) fn build_initial_provider_turn_request_with_material(
     available_tools: Vec<ToolSpec>,
     native_web_search: Option<ProviderNativeWebSearchRequest>,
     material: &ResourceReadMaterial,
+    provider_session_id: Option<crate::provider::ProviderSessionId>,
 ) -> anyhow::Result<ProviderTurnRequest> {
     anyhow::ensure!(
         material.matches_identity(
@@ -151,6 +153,7 @@ pub(crate) fn build_initial_provider_turn_request_with_material(
         }
         request.material =
             crate::provider::ProviderRequestMaterial::from_images(&request.conversation)?;
+        request.provider_session_id = provider_session_id;
         Ok(request)
     })
 }
@@ -171,6 +174,7 @@ pub(crate) fn append_inference_time(conversation: &mut Vec<ConversationMessage>,
 /// we need to pass the full conversation history to the provider.
 pub fn build_continuation_request(
     continuation_scope_id: Option<ContinuationScopeId>,
+    provider_session_id: Option<crate::provider::ProviderSessionId>,
     prompt_frame: ProviderPromptFrame,
     conversation: Vec<ConversationMessage>,
     available_tools: Vec<ToolSpec>,
@@ -180,6 +184,7 @@ pub fn build_continuation_request(
         dispatch_guard: None,
         material: Default::default(),
         continuation_scope_id,
+        provider_session_id,
         prompt_frame,
         conversation,
         tools: available_tools,
@@ -781,6 +786,7 @@ mod tests {
             assert_eq!(request.conversation.len(), 2);
             let continuation = build_continuation_request(
                 request.continuation_scope_id,
+                request.provider_session_id,
                 request.prompt_frame,
                 request.conversation.clone(),
                 Vec::new(),
@@ -924,6 +930,7 @@ mod tests {
                 vec![],
                 None,
                 &material,
+                None,
             );
             if optional_history {
                 let request = result.unwrap();
@@ -1481,6 +1488,9 @@ mod tests {
 
         let request = build_continuation_request(
             ContinuationScopeId::new("default"),
+            Some(crate::provider::ProviderSessionId::from_runtime_identity(
+                "runtime", "default", 1,
+            )),
             prompt_frame,
             conversation,
             tools,
@@ -1488,6 +1498,12 @@ mod tests {
         );
 
         assert_eq!(request.prompt_frame.system_prompt, "system");
+        assert_eq!(
+            request.provider_session_id,
+            Some(crate::provider::ProviderSessionId::from_runtime_identity(
+                "runtime", "default", 1
+            ))
+        );
         assert_eq!(
             request
                 .continuation_scope_id
@@ -1515,6 +1531,7 @@ mod tests {
     #[test]
     fn build_continuation_request_accepts_missing_scope() {
         let request = build_continuation_request(
+            None,
             None,
             ProviderPromptFrame::plain("system"),
             vec![],

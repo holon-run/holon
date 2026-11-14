@@ -67,6 +67,74 @@ environment configuration must be checked separately from source verification.
 Provider OAuth refresh clients preserve their prior optional legacy total cap
 without inheriting the new inference connection timeout.
 
+## Inference Request Headers And Session Identity
+
+Provider definitions and endpoint overrides accept a `headers` object of
+**non-sensitive literal strings**. There is no environment expansion, template
+evaluation, or second credential mechanism. The local configuration file retains
+the literal values; request traces, `Debug`, and provider inspection redact them.
+Raw configuration access is not a redacted provider inspection surface.
+
+Names are normalized to lowercase and validated as HTTP header names. Duplicate
+names within one layer, ignoring case, are errors. Endpoint entries override
+provider entries by name; an empty object inherits, and removing an endpoint
+entry reveals the provider value. Each layer and the merged result allow at most
+32 entries, 4 KiB per value, and 16 KiB of combined name/value bytes. Invalid
+values, including CR/LF, fail before persistence or HTTP dispatch without echoing
+their contents.
+
+Authentication, protocol, hop-by-hop, and adapter-owned routing/session headers
+are reserved. Their centralized validation rejects conflicts rather than silently
+overwriting them. User-Agent is an ordinary overridable header. Headers apply
+only to the selected inference route, including its supported retries,
+compaction, and image paths; they are never HTTP-client defaults and do not reach
+credential refresh, model discovery, downloads, or unrelated routes. Existing
+redirect, retry, deadline, cancellation, and dispatch-guard rules remain intact.
+
+`ProviderSessionId` is separate from continuation and prompt-cache identity. The
+runtime derives it once, using domain-separated, length-delimited SHA-256 over
+the persistent installation `runtime_id` and trusted agent id/incarnation (see
+[Conversation Read Model](conversation-read-model.md)). It is opaque,
+versioned, fixed-length, HTTP-safe, and not an authentication credential. Turns,
+tool round trips, fallback, retries, compaction, and daemon restarts retain it;
+another installation or a recreated agent does not. Cloning an installation
+database also clones its installation identity. Adapters do not access storage
+to derive this context and do not infer it from prompts or cache state.
+
+All canonical `opencode-go` inference routes, including legacy aliases, require
+this explicit session context before sending HTTP. They send it as
+`x-opencode-session`, with default User-Agent `holon/<version>` unless an
+ordinary User-Agent override is configured. Go reserves its session header from
+static configuration. Session affinity assists upstream routing/caching; it
+does not replace sending conversation history or guarantee cache hits. A
+session-bound auxiliary call inherits the context; a standalone probe must not
+invent an agent session.
+
+`config providers headers set/unset` changes only the selected layer's map,
+atomically, preserving all other provider fields. It accepts only known
+providers/endpoints and materializes built-in overrides with their existing auth
+defaults. Configuration writers serialize the full read/modify/save transaction
+with a stable sidecar file lock; saves atomically replace the config file.
+Prepared model migrations reject stale snapshots under the same lock instead of
+overwriting concurrent updates. Output contains names, not values. Command-line
+literals may be visible in shell history/process arguments; this interface is not for secrets and adds
+no hot reload or automatic daemon restart.
+
+The standard Go entry `opencode-go/<model>` resolves to
+`opencode-go@messages/<model>`, including discovery-only and unknown model ids.
+A bounded DeepSeek comparison passed all 15 conversations per protocol with similar
+latency. Messages streamed; Responses used JSON and replayed history after all 25
+continuation attempts rejected `previous_response_id`. Both reported cache hits;
+cache warmth and billing were not controlled. This supports the operator's Messages
+preference when results are comparable, not a universal protocol ranking or evidence
+that every Go model supports translated Messages. Native capability evidence and route-specific
+restrictions remain unchanged. Explicit `@default` Chat, `@messages`,
+and the legacy Messages alias remain compatible; Go has no built-in Responses
+endpoint or alias. Persisted canonical routes are not
+rewritten. Explicit Go Chat references retain `@default` in compact display to
+avoid changing their meaning when reparsed. There is no protocol discovery,
+per-model automatic routing, or failure-triggered protocol switching.
+
 ## Route-Aware Model Selection Amendment
 
 Model metadata identity and executable route identity are distinct:

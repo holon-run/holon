@@ -35,9 +35,13 @@ mod gemini_generate_content;
 #[cfg(holon_lib_test_shard = "c")]
 mod http_timeouts;
 #[cfg(holon_lib_test_shard = "c")]
+mod live_go_comparison;
+#[cfg(holon_lib_test_shard = "c")]
 mod openai_chat_completions;
 #[cfg(holon_lib_test_shard = "c")]
 mod openai_responses;
+#[cfg(holon_lib_test_shard = "c")]
+mod request_headers;
 #[cfg(holon_lib_test_shard = "c")]
 mod routing_auth_doctor;
 mod support;

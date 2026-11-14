@@ -150,6 +150,72 @@ Inspect `holon config models list` before selecting it. Endpoint, plan, and
 model-metadata fields are in the
 [Configuration reference](/reference/configuration.md).
 
+### Non-sensitive static request headers
+
+Use the header-only commands to preserve an existing provider's credentials,
+base URL, cache settings, plans, and other endpoints:
+
+```bash
+holon config providers headers set my-proxy \
+  --header 'X-Project=example' --header 'User-Agent=my-client'
+holon config providers headers set my-proxy --endpoint coding \
+  --header 'X-Project=coding'
+holon config providers headers unset my-proxy --endpoint coding --name X-Project
+```
+
+`--header` and `--name` are repeatable. `set` upserts keys; the first `=` separates
+the name from its literal value, and an empty value is valid. Names are normalized
+to lowercase; duplicate names within one command or map are rejected regardless
+of case. The endpoint must already be configured or registered by the provider.
+An unconfigured built-in provider keeps its built-in authentication defaults;
+an unknown custom provider is an error.
+
+Provider headers are inherited by each endpoint. Endpoint entries override
+matching provider entries, and removing an endpoint entry restores inheritance.
+An empty endpoint map inherits rather than clearing the provider map. Headers
+apply only to that inference route, not discovery, OAuth refresh, downloads, or
+other providers.
+
+Each layer and the merged result allow at most 32 headers, 4096 bytes per value,
+and 16384 bytes total across names and values. Invalid HTTP names/values and
+CR/LF are rejected. Authentication, cookies, protocol negotiation, hop-by-hop,
+and adapter-owned session/routing headers are reserved; use credential settings
+for API keys instead. Ordinary headers such as `User-Agent` are configurable.
+
+**Use only non-sensitive values.** Values are stored literally in `config.json`,
+and command arguments may appear in shell history and process listings. There is
+no secret-store or environment-variable interpolation for these headers.
+Provider inspection and header-command output show names, not values; this does
+not make the raw configuration file or general-purpose configuration reads a
+redacted view. These commands persist changes to the local configuration store;
+they do not claim to hot-reload a running daemon.
+
+### OpenCode Go sessions
+
+The standard `opencode-go/<model>` reference uses Messages, not native-model
+protocol selection. Explicit `opencode-go@default/<model>` retains legacy Chat;
+Go has no built-in Responses endpoint or alias. Existing canonical routes
+are not migrated. This preference neither certifies translated capabilities
+for every model nor switches protocol after a failure.
+
+The built-in `opencode-go` provider uses `OPENCODE_GO_API_KEY`. Its `default`
+and `messages` endpoints automatically receive a runtime-owned,
+opaque `x-opencode-session` and a default `User-Agent: holon/<version>`.
+Legacy `opencode-go-messages` references use the same
+session rules.
+
+The session identifies the Holon installation and agent incarnation, not a
+single request or WorkItem. It stays stable through turns, retries, tools,
+fallbacks, compaction, and daemon restarts, and changes for another installation
+or a deleted-and-recreated agent. It is independent of prompt caching.
+Do not configure `x-opencode-session` manually for Go: that is rejected, and
+calls without trusted runtime session context fail locally before HTTP.
+An unrelated custom provider may use that header name as a normal static header.
+
+Use `holon config models list` to choose an available
+`opencode-go@<endpoint>/<model>` route. A static ordinary `User-Agent` override is
+allowed; neither a static header nor a session identifier replaces authentication.
+
 ## Configure image tools separately
 
 Choose routes that support the operation and whose credentials are available

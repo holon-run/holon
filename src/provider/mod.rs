@@ -24,11 +24,14 @@ mod material;
 pub mod media;
 mod quota;
 mod registry;
+mod request_headers;
 mod retry;
 pub mod test_support;
 mod tool_schema;
 mod transports;
 mod wire_fingerprint;
+
+pub use request_headers::ProviderSessionId;
 
 pub(crate) use catalog::{
     build_candidate_from_model_route, build_candidate_with_catalog,
@@ -114,6 +117,7 @@ pub struct ProviderTurnRequest {
     pub dispatch_guard: Option<std::sync::Arc<dyn ProviderDispatchGuard>>,
     pub material: ProviderRequestMaterial,
     pub continuation_scope_id: Option<ContinuationScopeId>,
+    pub provider_session_id: Option<ProviderSessionId>,
     pub prompt_frame: ProviderPromptFrame,
     pub conversation: Vec<ConversationMessage>,
     pub tools: Vec<ToolSpec>,
@@ -131,6 +135,7 @@ impl ProviderTurnRequest {
             dispatch_guard: None,
             material: Default::default(),
             continuation_scope_id: None,
+            provider_session_id: None,
             prompt_frame: ProviderPromptFrame::plain(system_prompt),
             conversation,
             tools,
@@ -742,6 +747,7 @@ pub(crate) fn builtin_web_search_probe_turn_request(
         dispatch_guard: None,
         material: Default::default(),
         continuation_scope_id: None,
+        provider_session_id: None,
         prompt_frame: ProviderPromptFrame::plain("Reply with exactly OK."),
         conversation: vec![ConversationMessage::UserText(
             "Reply with exactly OK.".into(),

@@ -245,6 +245,7 @@ mod tests {
         let xai = ProviderId::parse("xai").unwrap();
         XSearchRuntimeConfig {
             provider: ProviderRuntimeConfig {
+                headers: Default::default(),
                 id: xai.clone(),
                 route_provider: xai,
                 route_endpoint: ProviderEndpointId::default_endpoint(),

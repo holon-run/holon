@@ -221,6 +221,7 @@ impl OpenAiCodexProvider {
         Ok(Self {
             client,
             oauth_client: build_oauth_http_client()?,
+            request_headers: super::ProviderRequestHeaders::new(provider_config),
             provider_id: provider_config.id.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             credential_profile: provider_config.auth.profile.clone(),

@@ -795,6 +795,7 @@ pub struct RuntimeHandle {
 
 struct RuntimeInner {
     identity_incarnation: u64,
+    provider_session_id: crate::provider::ProviderSessionId,
     mutation_owner: mutation_owner::MutationOwner,
     input_evidence_budget: input_evidence_budget::InputEvidenceBudgetLedger,
     standalone_related_mutation_owners: mutation_owner::MutationOwnerRegistry,
