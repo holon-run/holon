@@ -606,6 +606,8 @@ pub async fn list_agent_entries(
     // The projection cache key must distinguish parent filters; otherwise a
     // cached list built for one query would be served for every other query.
     let host = state.host.clone();
+    let request_span = Span::current();
+    let request_dispatch = tracing::dispatcher::get_default(Clone::clone);
     let result = state
         .projection_gate
         .run_owned(
@@ -616,30 +618,34 @@ pub async fn list_agent_entries(
                 let runtime = tokio::runtime::Handle::current();
                 context
                     .blocking(move |scope| {
-                        let db = host.runtime_db().with_read_scope(scope.clone());
-                        // Keep list assembly and serialization under the same
-                        // cancellation, protection and material checks.
-                        crate::runtime_db::read_block::with_scope(scope, || {
-                            let projection_started = std::time::Instant::now();
-                            let agents =
-                                runtime
+                        tracing::dispatcher::with_default(&request_dispatch, || {
+                            let _request_span = request_span.enter();
+                            let db = host.runtime_db().with_read_scope(scope.clone());
+                            // Keep list assembly and serialization under the same
+                            // cancellation, protection and material checks.
+                            crate::runtime_db::read_block::with_scope(scope, || {
+                                let projection_started = std::time::Instant::now();
+                                let agents = runtime
                                     .block_on(host.list_agent_entries_for_parent_in(
                                         query.parent.as_deref(),
                                         &db,
                                     ))
-                                    .map_err(error_response)
+                                    .map_err(|error| list_build_error_response("members", error))
                                     .map_err(ProjectionFailure::from)?;
-                            crate::diagnostics::record_projection_agents_list(
-                                projection_started.elapsed(),
-                            );
-                            let bytes = agents
-                                .into_json_bytes()
-                                .map_err(error_response)
-                                .map_err(ProjectionFailure::from)?;
-                            db.check_read_scope()
-                                .map_err(error_response)
-                                .map_err(ProjectionFailure::from)?;
-                            Ok(bytes)
+                                crate::diagnostics::record_projection_agents_list(
+                                    projection_started.elapsed(),
+                                );
+                                let bytes = agents
+                                    .into_json_bytes()
+                                    .map_err(|error| {
+                                        list_build_error_response("serialization", error)
+                                    })
+                                    .map_err(ProjectionFailure::from)?;
+                                db.check_read_scope()
+                                    .map_err(|error| list_build_error_response("read_scope", error))
+                                    .map_err(ProjectionFailure::from)?;
+                                Ok(bytes)
+                            })
                         })
                     })
                     .await?
@@ -652,6 +658,25 @@ pub async fn list_agent_entries(
     }
 }
 
+fn list_build_error_response(
+    stage: &'static str,
+    error: anyhow::Error,
+) -> (StatusCode, Json<Value>) {
+    // Descriptors intentionally exclude database paths and private evidence.
+    let descriptor = describe_runtime_error(&error);
+    let causes = crate::runtime_error::collect_runtime_error_source_chain(&error);
+    warn!(
+        route = "/agents/list",
+        stage,
+        code = %descriptor.code,
+        retryable = descriptor.retryable,
+        context = ?descriptor.safe_context,
+        causes = ?causes,
+        "Agent list build failed"
+    );
+    error_response(error)
+}
+
 #[derive(Debug, Default, Deserialize, JsonSchema)]
 pub struct AgentListQuery {
     /// Exact direct parent filter. The endpoint still returns only the
@@ -659,6 +684,10 @@ pub struct AgentListQuery {
     /// the caller's AgentSummary.active_children projection.
     pub parent: Option<String>,
 }
+
+#[cfg(all(test, holon_lib_test_shard = "d"))]
+#[path = "agent_list_tests.rs"]
+mod list_tests;
 
 #[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]

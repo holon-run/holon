@@ -33,7 +33,7 @@ use crate::{
 
 pub(super) const PUBLICATION_OPERATION: &str = "observer publication";
 
-/// A single member's unavailable observation never invalidates fleet discovery.
+/// A listed member must be readable before a complete list can be returned.
 #[derive(Debug, Clone, Copy, thiserror::Error)]
 pub(crate) enum AgentListUnavailable {
     #[error("identity changed")]
@@ -50,6 +50,21 @@ pub(crate) enum AgentListUnavailable {
     RepairPending,
     #[error("publication unlisted")]
     Unlisted,
+}
+
+pub(super) fn trace_preparation_failure(identity: &AgentIdentityRecord, error: &anyhow::Error) {
+    let descriptor = crate::runtime_error::describe_runtime_error(error);
+    let causes = crate::runtime_error::collect_runtime_error_source_chain(error);
+    tracing::warn!(
+        agent_id = %identity.agent_id,
+        incarnation = identity.incarnation,
+        identity_revision = identity.revision,
+        code = %descriptor.code,
+        retryable = descriptor.retryable,
+        context = ?descriptor.safe_context,
+        causes = ?causes,
+        "could not prepare Agent list publication"
+    );
 }
 
 pub(crate) fn is_listed(identity: &AgentIdentityRecord) -> bool {

@@ -82,11 +82,13 @@ prepare cold members without activating them. The original mutation publication
 updates the list projection for both loaded and cold Agents. The projection
 outlives unloading and retains only list fields and their model inputs, scoped
 to the identity incarnation and revision. A pending, missing or repairing
-publication excludes only that member from the legacy list response. An identity
-or owner mismatch also excludes that member; it never supplies an invented
-status or a projection from another identity. Structured debug logs identify the
-skipped Agent, incarnation and reason. This endpoint is a best-effort status list,
-not membership/removal authority: clients needing complete discovery use the
+publication fails the complete list with a retryable 503, as does an identity
+or owner mismatch. An unreadable member is never silently omitted or supplied
+with an invented status or another identity's projection. Structured warning
+logs identify the unavailable Agent, incarnation, identity revision and reason.
+List build failures also log their stage and safe error descriptor under the
+originating HTTP request span; internal error details are not added to the wire.
+Clients needing authoritative discovery and observer-sync anchors use the
 independent `/api/agents/snapshot` contract. Database protection, read-scope and
 resource admission failures still fail the request. The list does not reserve an
 execution owner, read SQLite, or prepare missing domains on demand.
