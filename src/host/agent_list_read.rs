@@ -176,38 +176,43 @@ impl RuntimeHost {
         let mut entries = Vec::new();
         for (identity, material) in identities {
             db.check_read_scope()?;
-            let (projection, runtime) = {
-                let registry = db.wait_for_memory_lock(self.inner.runtimes.read()).await?;
-                let runtime = registry
-                    .agents
-                    .get(&identity.agent_id)
-                    .filter(|entry| !entry.task.is_finished())
-                    .map(|entry| &entry.runtime);
-                if !self.inner.registry.matches_agent_identity(&identity)
-                    || runtime.is_some_and(|runtime| {
-                        runtime.instance_incarnation() != identity.incarnation
-                    })
+            let (projection, runtime) =
                 {
-                    trace_unavailable_member(&identity, AgentListUnavailable::IdentityChanged);
-                    continue;
-                }
-                let projection = match self.inner.mutation_owners.agent_list_projection(
-                    &identity,
-                    runtime.map(|runtime| runtime.instance_owner_epoch()),
-                    db,
-                ) {
-                    Ok(projection) => projection,
-                    Err(error) => {
-                        db.check_read_scope()?;
-                        let Some(reason) = error.downcast_ref::<AgentListUnavailable>() else {
-                            return Err(error);
-                        };
-                        trace_unavailable_member(&identity, *reason);
-                        continue;
+                    let registry = db.wait_for_memory_lock(self.inner.runtimes.read()).await?;
+                    let runtime = registry
+                        .agents
+                        .get(&identity.agent_id)
+                        .filter(|entry| !entry.task.is_finished())
+                        .map(|entry| &entry.runtime);
+                    if !self.inner.registry.matches_agent_identity(&identity)
+                        || runtime.is_some_and(|runtime| {
+                            runtime.instance_incarnation() != identity.incarnation
+                        })
+                    {
+                        trace_unavailable_member(&identity, AgentListUnavailable::IdentityChanged);
+                        return Err(anyhow::Error::new(AgentListUnavailable::IdentityChanged)
+                            .context(crate::runtime_db::RuntimeDbRetryableError::new(
+                                "observer publication",
+                                db.path(),
+                                "Agent list identity changed",
+                            )));
                     }
+                    let projection = match self.inner.mutation_owners.agent_list_projection(
+                        &identity,
+                        runtime.map(|runtime| runtime.instance_owner_epoch()),
+                        db,
+                    ) {
+                        Ok(projection) => projection,
+                        Err(error) => {
+                            db.check_read_scope()?;
+                            if let Some(reason) = error.downcast_ref::<AgentListUnavailable>() {
+                                trace_unavailable_member(&identity, *reason);
+                            }
+                            return Err(error);
+                        }
+                    };
+                    (projection, runtime.cloned())
                 };
-                (projection, runtime.cloned())
-            };
             let entry = material.read(|| {
                 if let Some(runtime) = runtime {
                     runtime.agent_list_entry_from_projection(&identity, &projection)
@@ -237,11 +242,13 @@ impl RuntimeHost {
 }
 
 fn trace_unavailable_member(identity: &AgentIdentityRecord, reason: AgentListUnavailable) {
-    tracing::debug!(
+    tracing::warn!(
+        route = "/agents/list",
         agent_id = %identity.agent_id,
         incarnation = identity.incarnation,
+        identity_revision = identity.revision,
         reason = %reason,
-        "skipping unavailable Agent list member"
+        "Agent list member unavailable; refusing an incomplete list"
     );
 }
 

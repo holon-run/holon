@@ -1409,7 +1409,6 @@ async fn summary_re_prepares_after_the_published_source_moves_during_a_refresh()
     // The typed failure stays typed, so the summary re-prepares instead of
     // failing with an opaque refresh error.
     let summary = runtime.agent_summary().await?;
-    let (summary, _material) = summary.into_parts();
     assert_eq!(summary.identity.agent_id, runtime.agent_id().await?);
     host.shutdown().await?;
     Ok(())

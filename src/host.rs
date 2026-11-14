@@ -4739,7 +4739,7 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> std::result::Result<LightweightAgentStateProjection, PublicAgentError> {
-        self.active_agent_identity(agent_id)?;
+        let identity = self.active_agent_identity(agent_id)?;
         if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
             return runtime
                 .lightweight_agent_state_projection()
@@ -4747,7 +4747,6 @@ impl RuntimeHost {
                 .map_err(PublicAgentError::Runtime);
         }
 
-        let identity = self.active_agent_identity(agent_id)?;
         let storage = self
             .agent_storage_read_only(agent_id)
             .map_err(PublicAgentError::Runtime)?;
@@ -4811,10 +4810,6 @@ impl RuntimeHost {
             observation.check().map_err(PublicAgentError::Runtime)?;
         }
         drop(reservations);
-        let active_children = self
-            .child_agent_summaries(agent_id)
-            .await
-            .map_err(PublicAgentError::Runtime)?;
         Ok(LightweightAgentStateProjection {
             identity: AgentIdentityView::from_owned_record(
                 identity,
@@ -4826,9 +4821,7 @@ impl RuntimeHost {
             agent,
             model,
             closure,
-            active_children,
             work_queue,
-            _work_budget: None,
             _scheduling_material: Some(scheduling_material),
         })
     }
@@ -5418,9 +5411,7 @@ impl RuntimeHost {
             agent: agent_state,
             scheduling_posture,
             closure,
-            active_children: Vec::new(),
             work_queue,
-            _work_budget: None,
             _scheduling_material: None,
         };
         let active_work_item_count = agent.work_queue.items.len();
@@ -11766,6 +11757,19 @@ impl RuntimeHostBridge {
         Ok(summary.agent.turn_index)
     }
 
+    pub(crate) async fn agent_status_projection_for(
+        &self,
+        agent_id: &str,
+    ) -> Result<LightweightAgentStateProjection> {
+        self.host()?
+            .local_agent_lightweight_projection(agent_id)
+            .await
+            .map_err(|error| match error {
+                PublicAgentError::Runtime(error) => error,
+                error => error.into(),
+            })
+    }
+
     pub(crate) async fn child_observability(
         &self,
         target: &crate::types::TaskTargetRef,
@@ -17779,8 +17783,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(receipt.task_handle.task_kind, AGENT_MESSAGE_WAIT_TASK_KIND);
-        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        let mut terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
         assert_eq!(terminal.status, TaskStatus::Completed);
+        // The reply's delivery linkage can land in the terminal task detail
+        // after the record first reaches its terminal state (#4121), so
+        // re-read the settled record before asserting on the linkage. A
+        // timeout falls through to the diagnostic assert below instead of
+        // failing with a bare null mismatch.
+        for _ in 0..100 {
+            if terminal
+                .detail
+                .as_ref()
+                .is_some_and(|detail| !detail["response_delivery_id"].is_null())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            terminal = parent
+                .storage()
+                .latest_task_record(&receipt.task_handle.task_id)
+                .unwrap()
+                .expect("task should remain persisted");
+        }
         let detail = terminal.detail.as_ref().unwrap();
         let request_delivery_id = detail["request_delivery_id"].as_str().unwrap();
         let request_record = host
@@ -17836,7 +17860,15 @@ mod tests {
             .is_none());
         assert!(response_rowid > request_rowid);
         assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
-        assert_eq!(detail["response_delivery_id"], response.delivery_id);
+        // Distinguish "linkage never became visible" from "wrong delivery".
+        assert_eq!(
+            detail["response_delivery_id"],
+            response.delivery_id,
+            "terminal detail response_delivery_id mismatch for task {} (reply_content_source={:?}, message_wait_satisfied={:?})",
+            receipt.task_handle.task_id,
+            detail["reply_content_source"].as_str(),
+            detail["message_wait_satisfied"],
+        );
         assert_eq!(detail["message_wait_satisfied"], true);
     }
 
@@ -26411,6 +26443,23 @@ mod tests {
         assert_eq!(
             ready_observer(|| parent.subagent_cleanup_candidates()).await[0].agent_id,
             child.agent_id
+        );
+        let cleanup = crate::tool::tools::execute_builtin_tool(
+            &parent,
+            parent.instance_agent_id(),
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "list-cleanup".into(),
+                name: "ListSubagentCleanup".into(),
+                input: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+        let candidates = ready_observer(|| parent.subagent_cleanup_candidates()).await;
+        assert_eq!(
+            cleanup.envelope.result.unwrap()["subagent_cleanup"],
+            json!(candidates)
         );
         assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
         let again = db

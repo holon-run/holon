@@ -74,7 +74,7 @@ def run_case(harness: Any, case: dict[str, Any]) -> None:
             f"Reply exactly {marker} after the requested tools. "
             "Do not create files, WorkItems, timers, or other tools. "
             "For spawn invoke a new supervised child with workspace_mode=inherit, "
-            "then GetAgent(detail=full) using its actual id. "
+            "then GetAgent with its actual id. "
             "For delete/stale call DeleteAgent with the supplied captured identity. "
             "A stale rejection is expected; report the marker without retrying."
         )

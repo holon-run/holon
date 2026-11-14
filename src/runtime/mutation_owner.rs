@@ -354,10 +354,15 @@ impl MutationOwnerRegistry {
             let entry = match entries.next() {
                 Some(Ok(entry)) => Some(Arc::new(entry)),
                 Some(Err(error)) => {
-                    tracing::warn!(agent_id = %identity.agent_id, %error, "could not prepare Agent list publication");
+                    super::agent_list_projection::trace_preparation_failure(identity, &error);
                     None
                 }
-                None => None,
+                None => {
+                    if let Some(error) = &read_error {
+                        super::agent_list_projection::trace_preparation_failure(identity, error);
+                    }
+                    None
+                }
             };
             let mut publication = slot.publication.lock().expect("publication poisoned");
             if publication.epoch == epoch
@@ -2191,7 +2196,7 @@ impl MutationReservation {
         match prepared {
             Ok(entry) => PreparedAgentList::Ready(Arc::new(entry)),
             Err(error) => {
-                tracing::warn!(agent_id = %self.agent_id(), %error, "could not prepare Agent list publication");
+                super::agent_list_projection::trace_preparation_failure(&identity, &error);
                 PreparedAgentList::Repair(identity.revision)
             }
         }

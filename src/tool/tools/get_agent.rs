@@ -4,10 +4,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
-    http_dto::SlimAgentDto,
-    runtime::RuntimeHandle,
-    tool::spec::typed_spec,
-    types::{AgentSummary, AuthorityClass, ToolCapabilityFamily},
+    http_dto::SlimAgentDto, runtime::RuntimeHandle, tool::spec::typed_spec,
+    types::ToolCapabilityFamily,
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -15,55 +13,16 @@ use crate::tool::helpers::parse_tool_args;
 
 pub(crate) const NAME: &str = crate::tool::names::GET_AGENT;
 
-#[derive(Serialize, Deserialize, JsonSchema)]
+#[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct GetAgentArgs {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
     pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<GetAgentDetail>,
-}
-
-#[derive(Serialize, Deserialize, JsonSchema, Default)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum GetAgentDetail {
-    #[default]
-    Compact,
-    Full,
-}
-
-/// Bounded, read-only lifecycle responsibility; never a deletion decision.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct SubagentCleanupCandidate {
-    pub agent_id: String,
-    pub incarnation: u64,
-    pub blocker: Option<String>,
-    pub observed_since: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetAgentResult {
-    pub agent: AgentSummary,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
-}
-
-/// Compact projection returned by the default `GetAgent` tool response.
-///
-/// `GetAgentResult` remains the stable full-detail result type; the tool
-/// contract explicitly distinguishes this compact result from it.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct GetAgentCompactResult {
-    pub agent: crate::http_dto::SlimAgentDto,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum GetAgentResponse {
-    Compact(GetAgentCompactResult),
-    Full(GetAgentResult),
+    pub agent: SlimAgentDto,
 }
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
@@ -75,28 +34,14 @@ pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
 
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
-    _agent_id: &str,
-    _authority_class: &AuthorityClass,
     input: &Value,
 ) -> Result<crate::tool::ToolResult> {
     let args: GetAgentArgs = parse_tool_args(NAME, input)?;
-    let show_cleanup = args.agent_id.as_deref().is_none_or(|id| id == _agent_id);
     let retry_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
-    let (summary, subagent_cleanup) = loop {
-        let read: Result<_> = async {
-            let cleanup = if show_cleanup {
-                runtime.subagent_cleanup_candidates().await?
-            } else {
-                Vec::new()
-            };
-            let summary = match args.agent_id.as_deref() {
-                None => runtime.agent_summary().await?,
-                // Canonical inspection does not start an unloaded target runtime.
-                Some(requested_id) => runtime.agent_summary_for(requested_id).await?,
-            };
-            Ok((summary, cleanup))
-        }
-        .await;
+    let projection = loop {
+        let read = runtime
+            .agent_status_projection_for(args.agent_id.as_deref())
+            .await;
         match read {
             Ok(summary) => break summary,
             Err(error)
@@ -121,18 +66,10 @@ pub(crate) async fn execute(
             Err(error) => return Err(error),
         }
     };
-    let (summary, _material) = summary.into_parts();
-    let response = match args.detail.unwrap_or_default() {
-        GetAgentDetail::Compact => GetAgentResponse::Compact(GetAgentCompactResult {
-            agent: SlimAgentDto::from(&summary),
-            subagent_cleanup,
-        }),
-        GetAgentDetail::Full => GetAgentResponse::Full(GetAgentResult {
-            agent: summary,
-            subagent_cleanup,
-        }),
-    };
-    let serialized = serialize_success(NAME, &response);
-    drop(_material);
-    serialized
+    serialize_success(
+        NAME,
+        &GetAgentResult {
+            agent: SlimAgentDto::from(&projection),
+        },
+    )
 }

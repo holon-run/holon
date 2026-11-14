@@ -38,7 +38,7 @@ schema/分发对齐，以及结果信封约定。
 | `LocalEnvironment` | `ExecCommand`、`ExecCommandBatch`、`ApplyPatch`、`ViewImage`、`GenerateImage`、`GetWorkspaceState`、`SwitchWorkspace`、`CreateWorktree` | 所有 profile |
 | `AuthorityExpanding` | `AttachWorkspace`、`DetachWorkspace`、`RemoveWorktree` | 公有具名 Agent |
 | `Web` | `WebFetch`、`WebSearch`、`XSearch` | 所有 profile |
-| `AgentCreation` | `CreateAgent`、`InvokeAgent` | 公有具名 Agent |
+| `AgentCreation` | `CreateAgent`、`InvokeAgent`、`DeleteAgent`、`ListSubagentCleanup` | 公有具名 Agent |
 | `ExternalTrigger` | `CreateExternalTrigger`、`CancelExternalTrigger` | 所有 profile |
 
 操作者通知记录、投递回调和 UI 渲染仍是运行时拥有的能力。它们不属于面向模型的
@@ -82,7 +82,8 @@ schema/分发对齐，以及结果信封约定。
 
 | 工具 | 用途 |
 |------|---------|
-| `GetAgent` | 读取当前 Agent 平面摘要 |
+| `GetAgent` | 读取单个 Agent 的轻量状态 |
+| `ListSubagentCleanup` | 查看调用方负责清理的临时子 Agent 及阻塞原因 |
 | `WaitFor` | 记录显式等待状态后发出轮次结束信号 |
 | `Enqueue` | 安排自我后续消息 |
 | `CreateAgent` | 创建一个长期、可寻址的 Agent |

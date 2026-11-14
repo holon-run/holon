@@ -232,7 +232,7 @@ class SharedCredentialDeletionTests(unittest.TestCase):
             }, call_id=invoke["call_id"]))
             get_agent = value["output"][0]
             self.assertEqual(json.loads(get_agent["arguments"]), {
-                "agent_id": f"actual-{role}", "detail": "full",
+                "agent_id": f"actual-{role}",
             })
             status, value = scenario.consume(request(
                 output={"agent": {"identity": {"agent_id": f"actual-{role}", "incarnation": 7}}},

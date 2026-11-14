@@ -96,7 +96,7 @@ async function startDelegationProvider(existingAgentId?: string) {
       if (role === "delete" && childTarget) {
         if (!inspectedForDeletion) {
           inspectedForDeletion = true;
-          output = tool("GetAgent", { agent_id: childTarget.agentId, detail: "full" });
+          output = tool("GetAgent", { agent_id: childTarget.agentId });
         } else if (!deleted) {
           deleted = true;
           output = tool("DeleteAgent", {

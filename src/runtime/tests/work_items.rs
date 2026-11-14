@@ -2345,22 +2345,10 @@ async fn work_item_query_tools_return_current_open_done_views() {
     );
 
     runtime.refresh_context_resources().await.unwrap();
-    let (agent_result, _) = registry
-        .execute(
-            &runtime,
-            "default",
-            &AuthorityClass::OperatorInstruction,
-            &crate::tool::ToolCall {
-                id: "agent-get".into(),
-                name: "GetAgent".into(),
-                input: serde_json::json!({"detail": "full"}),
-            },
-        )
-        .await
-        .unwrap();
-    let agent_payload = agent_result.envelope.result.unwrap();
-    let agent_wait = &agent_payload["agent"]["active_wait_conditions"][0];
-    assert_eq!(agent_wait["id"].as_str(), Some("weak-external-wait"));
+    let summary = runtime.agent_summary().await.unwrap();
+    let agent_wait = &summary.active_wait_conditions[0];
+    assert_eq!(agent_wait.id, "weak-external-wait");
+    let agent_wait = serde_json::to_value(agent_wait).unwrap();
     assert_eq!(agent_wait["external_recoverability"].as_str(), Some("weak"));
 
     let (list_result, _) = registry

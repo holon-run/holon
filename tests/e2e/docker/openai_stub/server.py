@@ -1243,7 +1243,7 @@ class Scenario:
                     return 409, {"error": {"type": "missing_invoke_identity"}}
                 operation["stage"] = 2
                 return self.shared_delete_call(
-                    key, "GetAgent", {"agent_id": output["agent_id"], "detail": "full"},
+                    key, "GetAgent", {"agent_id": output["agent_id"]},
                 )
             if operation["operation"] == "stale" and "agent_cleanup_stale_incarnation" not in json.dumps(output):
                 return 409, {"error": {"type": "missing_stale_rejection"}}

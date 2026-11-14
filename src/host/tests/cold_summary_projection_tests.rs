@@ -53,7 +53,7 @@ async fn get_agent_reads_unloaded_peer_with_task_result_settlement() -> Result<(
     let call = crate::tool::ToolCall {
         id: "get-cold-peer".into(),
         name: "GetAgent".into(),
-        input: json!({"agent_id": agent_id, "detail": "full"}),
+        input: json!({"agent_id": agent_id}),
     };
     let registry = crate::tool::ToolRegistry::new(caller.workspace_root());
     let (result, _) = registry

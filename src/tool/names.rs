@@ -32,6 +32,7 @@ pub mod tool_names {
     pub const INVOKE_AGENT: &str = "InvokeAgent";
     pub const LIST_MODEL_PROVIDERS: &str = "ListModelProviders";
     pub const LIST_PROVIDER_MODELS: &str = "ListProviderModels";
+    pub const LIST_SUBAGENT_CLEANUP: &str = "ListSubagentCleanup";
     pub const LIST_TASKS: &str = "ListTasks";
     pub const LIST_TIMERS: &str = "ListTimers";
     pub const LIST_WORK_ITEMS: &str = "ListWorkItems";
@@ -84,6 +85,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     INVOKE_AGENT,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
+    LIST_SUBAGENT_CLEANUP,
     LIST_TASKS,
     LIST_TIMERS,
     LIST_WORK_ITEMS,
@@ -152,6 +154,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     INVOKE_AGENT,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
+    LIST_SUBAGENT_CLEANUP,
     LIST_TASKS,
     LIST_TIMERS,
     LIST_WORK_ITEMS,

@@ -96,7 +96,7 @@ fn tool_stability_level(name: &str) -> &'static str {
 
 fn tool_success_result_contract(name: &str) -> &'static str {
     match name {
-        tn::GET_AGENT => "GetAgentResult (full) or GetAgentCompactResult (compact)",
+        tn::GET_AGENT => "GetAgentResult",
         tn::APPLY_PATCH => "ApplyPatchResult",
         tn::ATTACH_WORKSPACE => "AttachWorkspaceResult",
         tn::COMPLETE_WORK_ITEM | tn::CREATE_WORK_ITEM | tn::UPDATE_WORK_ITEM => {
@@ -123,6 +123,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::WAIT_FOR => "WaitForResult",
         tn::CREATE_AGENT => "AgentCreateResult",
         tn::DELETE_AGENT => "DeleteAgentResult",
+        tn::LIST_SUBAGENT_CLEANUP => "ListSubagentCleanupResult",
         tn::INVOKE_AGENT => "AgentInvocationReceipt",
         tn::SEND_AGENT_MESSAGE => "AgentMessageDeliveryReceipt",
         tn::TASK_INPUT => "TaskInputResult",
@@ -148,6 +149,9 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
         tn::LIST_TIMERS => schema::tool_result_schema::<tools::timer::ListTimersResult>()?,
         tn::LIST_TASKS => schema::tool_result_schema::<tools::task_list::ListTasksResult>()?,
         tn::CREATE_AGENT => schema::tool_result_schema::<crate::types::AgentCreateResult>()?,
+        tn::LIST_SUBAGENT_CLEANUP => {
+            schema::tool_result_schema::<tools::list_subagent_cleanup::ListSubagentCleanupResult>()?
+        }
         tn::DELETE_AGENT => schema::tool_result_schema::<tools::delete_agent::DeleteAgentResult>()?,
         tn::INVOKE_AGENT => schema::tool_result_schema::<crate::types::AgentInvocationReceipt>()?,
         tn::SEND_AGENT_MESSAGE => {

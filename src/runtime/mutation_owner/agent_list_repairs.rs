@@ -186,13 +186,18 @@ impl AgentListPublisher {
             .db
             .with_read_scope(RuntimeDbReadScope::new(Instant::now() + READ_BUDGET));
         // Keep background repair out of the pool used by mutation preparation.
-        let Ok(entry) = db.with_read(|connection| {
+        let entry = db.with_read(|connection| {
             let tx = connection.transaction()?;
             let entry = self.source.read(&tx, &identity, None)?;
             tx.commit()?;
             Ok(entry)
-        }) else {
-            return true;
+        });
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                crate::runtime::agent_list_projection::trace_preparation_failure(&identity, &error);
+                return true;
+            }
         };
         if self.closing.is_cancelled() {
             return false;

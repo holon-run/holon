@@ -7,9 +7,8 @@ pub use crate::runtime::agent_observation::{
     AgentLineageChildrenSnapshot, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot,
     ChildAgentPhase,
 };
-pub use crate::tool::tools::get_agent::{
-    GetAgentCompactResult, GetAgentResult, SubagentCleanupCandidate,
-};
+pub use crate::tool::tools::get_agent::GetAgentResult;
+pub use crate::tool::tools::list_subagent_cleanup::SubagentCleanupCandidate;
 
 mod agent;
 mod audit;

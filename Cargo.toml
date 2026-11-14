@@ -163,3 +163,7 @@ harness = false
 [[bench]]
 name = "state_http"
 harness = false
+
+[[bench]]
+name = "task_history_scale"
+harness = false

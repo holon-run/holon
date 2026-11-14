@@ -148,6 +148,16 @@ class DriverTests(unittest.TestCase):
             run.cases("full"), run.cases("idle") + run.cases("mutations")
         )
 
+    def test_scale_holds_agents_fixed_and_crosses_the_wire_window(self):
+        cells = run.cases("scale")
+        self.assertEqual(len(cells), 12)
+        self.assertEqual(len({cell[0] for cell in cells}), 12)
+        self.assertEqual({cell[2] for cell in cells}, {1})
+        self.assertEqual({cell[4] for cell in cells}, {0, 200, 2000})
+        self.assertEqual({cell[1] for cell in cells}, {"loaded", "cold"})
+        self.assertEqual({cell[3] for cell in cells}, {1, 10})
+        self.assertTrue(all(cell[-1] == 0 for cell in cells))
+
     def test_failure_stops_by_default(self):
         status, calls, manifest = self.invoke(
             [], lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1)
@@ -170,7 +180,8 @@ class DriverTests(unittest.TestCase):
         status, calls, manifest = self.invoke(
             ["--keep-going"], subprocess.TimeoutExpired("fixture", 1)
         )
-        self.assertEqual((status, calls), (1, 1))
+        self.assertEqual((status, calls), (124, 1))
+        self.assertEqual(manifest["failure_kind"], "timeout")
         self.assertIn("cleanup not guaranteed", manifest["runs"][0]["failure"])
 
 

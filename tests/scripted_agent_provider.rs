@@ -410,7 +410,7 @@ async fn scripted_agent_provider_drives_tool_loop_and_captures_requests() -> Res
                 && get_agent_content
                     .get("output_ref")
                     .is_some_and(|value| value.is_string())),
-        "GetAgent tool result should preserve either the full result or its canonical truncation receipt"
+        "GetAgent tool result should preserve either the compact result or its canonical truncation receipt"
     );
 
     let state = runtime.agent_state().await?;

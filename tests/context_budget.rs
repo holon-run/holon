@@ -93,7 +93,7 @@ async fn exercise_budget_lifecycle() -> Result<()> {
                                 "type": "function",
                                 "function": {
                                     "name": "GetAgent",
-                                    "arguments": "{\"detail\":\"full\"}"
+                                    "arguments": "{}"
                                 }
                             }]
                         }),
@@ -254,9 +254,10 @@ async fn exercise_budget_lifecycle() -> Result<()> {
         .context("real GetAgent tool result in continuation")?;
     assert_eq!(tool_result["tool_call_id"], "budget-get-agent");
     let tool_result: Value = serde_json::from_str(tool_result["content"].as_str().unwrap())?;
+    assert_eq!(tool_result["status"], "success", "{tool_result}");
     assert_eq!(
-        tool_result.pointer("/result/agent/model/resolved_policy/prompt_budget_estimated_tokens"),
-        Some(&json!(128_000)),
+        tool_result.pointer("/result/agent/model/effective_model"),
+        Some(&json!(ModelRouteRef::parse(PARTIAL_MODEL)?)),
     );
 
     host.shutdown().await?;

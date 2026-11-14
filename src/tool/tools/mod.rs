@@ -32,6 +32,7 @@ pub(crate) mod get_workspace_state;
 pub(crate) mod invoke_agent;
 pub(crate) mod list_model_providers;
 pub(crate) mod list_provider_models;
+pub(crate) mod list_subagent_cleanup;
 pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
@@ -78,6 +79,7 @@ pub(crate) fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         timer::cancel_definition()?,
         get_agent::definition()?,
         delete_agent::definition()?,
+        list_subagent_cleanup::definition()?,
         enqueue::definition()?,
         create_agent::definition()?,
         send_agent_message::definition()?,
@@ -196,12 +198,10 @@ fn execute_builtin_tool_inner<'a>(
         timer::GET_NAME => Box::pin(timer::get(runtime, &call.input)),
         timer::CANCEL_NAME => Box::pin(timer::cancel(runtime, &call.input)),
         delete_agent::NAME => Box::pin(delete_agent::execute(runtime, &call.input)),
-        get_agent::NAME => Box::pin(get_agent::execute(
-            runtime,
-            agent_id,
-            authority_class,
-            &call.input,
-        )),
+        get_agent::NAME => Box::pin(get_agent::execute(runtime, &call.input)),
+        list_subagent_cleanup::NAME => {
+            Box::pin(list_subagent_cleanup::execute(runtime, &call.input))
+        }
         enqueue::NAME => Box::pin(enqueue::execute(
             runtime,
             agent_id,
@@ -620,6 +620,7 @@ mod tests {
             "CreateWorktree" => "src/tool/tool_descriptions/create_worktree.md",
             "DetachWorkspace" => "src/tool/tool_descriptions/detach_workspace.md",
             "DeleteAgent" => "src/tool/tool_descriptions/delete_agent.md",
+            "ListSubagentCleanup" => "src/tool/tool_descriptions/list_subagent_cleanup.md",
             "Enqueue" => "src/tool/tool_descriptions/enqueue.md",
             "ExecCommand" => "src/tool/tool_descriptions/exec_command.md",
             "ExecCommandBatch" => "src/tool/tool_descriptions/exec_command_batch.md",

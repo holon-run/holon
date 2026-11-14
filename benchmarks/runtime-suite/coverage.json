@@ -1,0 +1,64 @@
+{
+  "schema": "holon.runtime-benchmark-coverage.v1",
+  "execution": "opt-in; no pull_request gate or scheduled task is installed",
+  "families": [
+    {
+      "id": "B1",
+      "path": "State loaded/cold, serial/concurrent, idle/mutating",
+      "runner": "benchmarks/state-http/run.py",
+      "dimensions": "original full 28 cells; additional scale 12 cells with 0/200/2000 Work and fixed one-Agent population",
+      "metrics": ["HTTP statuses", "batch p50/p95", "CPU/request", "allocations/request", "response bytes", "committed mutations"],
+      "verdict": "required complete successful samples; latency reported_only",
+      "limitations": ["in-process transport", "Work populations are non-runnable, not completed Task history"]
+    },
+    {
+      "id": "B2",
+      "path": "normal Input Admission, Context, scripted provider construction",
+      "runner": "benchmarks/agent-state/run.py",
+      "dimensions": "unmodified D0 normal 8/4 and pressure 32/16; 100000 messages and 64 linked turns per Agent",
+      "metrics": ["Ready/fallback", "actual SQL", "context preparation to request p95", "publication p95", "constructed requests/second"],
+      "verdict": "full fixture, >=100 actual context samples, Ready with no reservation/SQL; time reported_only without comparison",
+      "limitations": ["Stopped discard admission is not an actively running enqueue-to-Brief latency"]
+    },
+    {
+      "id": "B3",
+      "path": "Task-result evidence by ID, supervised invocation source lookup, Task record point read",
+      "runner": "benches/task_history_scale.rs",
+      "dimensions": "0/2000/20000/100000 extra Message rows; 4 Tasks, 2 active Tasks and selected result cardinality held constant",
+      "metrics": ["validated result", "per-operation latency samples"],
+      "verdict": "exact fixture and sample integrity; time reported_only",
+      "coverage_status": "partial",
+      "limitations": [
+        "not RuntimeHandle::task_output or output-head preparation; no #4105 regression coverage",
+        "Task table cardinality is fixed; record point read is a control, not a Task-table scale test"
+      ],
+      "not_measured": ["task.output.head", "task.output.selected"],
+      "positive_control_backlog": ["#4105 real historical before/after", "#4095 foreground vs Defer writer fairness"]
+    },
+    {
+      "id": "B4",
+      "path": "State readers with real Work mutations",
+      "runner": "benchmarks/state-http/run.py --matrix mutations --keep-going",
+      "dimensions": "1/8 Agents x 1/10 clients, mutations every 50ms after commit",
+      "verdict": "non-200 fails cell, preserve censored artifact; never infer a steady-state error rate",
+      "limitations": ["not a full B2/B3 foreground-plus-observer mixed load"]
+    },
+    {
+      "id": "B5",
+      "path": "idle daemon maintenance and historical residue",
+      "status": "not_measured",
+      "reason": "no idle CPU/SQL/WAL soak adapter yet; unit scheduling assertions are not performance samples"
+    },
+    {
+      "id": "B6",
+      "path": "real socket transport and client request amplification",
+      "status": "not_measured",
+      "reason": "Router::oneshot cannot establish socket/client polling performance; no real client soak adapter yet"
+    }
+  ],
+  "positive_controls": [
+    {"issue": "#4105", "status": "not_measured", "required": "same harness on frozen historical before/after"},
+    {"issue": "#4095", "status": "not_measured", "required": "foreground and Defer competition sensitivity"},
+    {"issue": "#4059", "status": "not_measured", "required": "historical fallback detected by D0 Ready contract"}
+  ]
+}

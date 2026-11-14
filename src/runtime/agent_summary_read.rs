@@ -127,11 +127,6 @@ impl OwnedAgentSummaryRead {
             _material: self.material,
         }))
     }
-
-    // The caller keeps `material` through the synchronous DTO serialization.
-    pub(crate) fn into_parts(self) -> (AgentSummary, AgentSummaryReadMaterial) {
-        (self.summary, self.material)
-    }
 }
 impl Deref for OwnedAgentSummaryRead {
     type Target = AgentSummary;

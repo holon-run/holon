@@ -4,8 +4,8 @@
 
 Keep `src/types.rs` as the public import surface. Type definitions under
 `src/types/` are grouped by responsibility. Runtime observations that carry
-budget guards live in `src/runtime/agent_observation.rs`. Both `GetAgent`
-responses live with the tool that serializes them. The compatibility module
+budget guards live in `src/runtime/agent_observation.rs`. The `GetAgent` response and
+`ListSubagentCleanup` candidate live with their respective tools. The compatibility module
 re-exports those definitions and the existing domain types.
 
 Keep `src/runtime_db/transitions.rs` as the
