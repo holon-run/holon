@@ -10,7 +10,7 @@
         "asleep",
         "stopped"
       ],
-      "source": "src/types.rs"
+      "source": "src/types/agent.rs"
     },
     {
       "name": "WorkItemState",
@@ -53,7 +53,7 @@
         "cancelled",
         "interrupted"
       ],
-      "source": "src/types.rs"
+      "source": "src/types/task.rs"
     },
     {
       "name": "WaitConditionStatus",
@@ -64,7 +64,7 @@
         "cancelled",
         "expired"
       ],
-      "source": "src/types.rs"
+      "source": "src/types/wake.rs"
     },
     {
       "name": "TimerStatus",
@@ -73,7 +73,7 @@
         "completed",
         "cancelled"
       ],
-      "source": "src/types.rs"
+      "source": "src/types/wake.rs"
     },
     {
       "name": "QueueEntryStatus",
@@ -87,7 +87,7 @@
         "quarantined",
         "interrupted"
       ],
-      "source": "src/types.rs"
+      "source": "src/types/message.rs"
     },
     {
       "name": "ToolResultStatus",

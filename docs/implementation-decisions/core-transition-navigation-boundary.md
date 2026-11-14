@@ -2,20 +2,15 @@
 
 ## Choice
 
-Keep `src/types.rs` and `src/runtime_db/transitions.rs` as deliberately broad
-shared seams, and record their navigation map here instead of splitting either
-file in this change.
+Keep `src/types.rs` as the public import surface. Type definitions under
+`src/types/` are grouped by responsibility. Runtime observations that carry
+budget guards live in `src/runtime/agent_observation.rs`. Both `GetAgent`
+responses live with the tool that serializes them. The compatibility module
+re-exports those definitions and the existing domain types.
 
-- `src/types.rs` stays the shared runtime type surface. It is imported
-  throughout `src/` (154 files at the time of writing) and re-exports
-  `crate::domain::{agent, work_item}`; both aggregates are intentional.
-- `src/runtime_db/transitions.rs` stays the single
-  `RuntimeTransitionRepository` commit seam. Its execution-protocol
-  sub-boundary already lives next to it in `src/runtime_db/transitions/`, so
-  transition code is not confined to one file.
-
-This note is a navigation aid. It names the entry families, their invariants,
-and the suites that exercise them. It does not authorize a structural change.
+Keep `src/runtime_db/transitions.rs` as the
+`RuntimeTransitionRepository` commit seam. Its execution-protocol code
+lives in the adjacent `src/runtime_db/transitions/` directory.
 
 ## Navigation map
 
@@ -67,24 +62,17 @@ behavior can be covered in more than one file.
 
 ## Reason
 
-`src/types.rs` is the shared vocabulary for the whole crate and re-exports the
-agent and work-item domain modules. Splitting it by file size would reshape the
-type surface that wire contracts and nearly every module depend on.
-`src/runtime_db/transitions.rs` is the one place that makes a transition
-atomic, and its `commit_*` families are already grouped by responsibility;
-spreading them across files would distribute the single-transaction invariant
-without reducing coupling.
+The shared import path lets callers and concurrent changes keep using the
+same API while type definitions acquire specific owners. The module boundaries
+make cross-crate dependencies visible before extraction. Wire compatibility
+tests retain their `types::tests` paths and compile group. The runtime
+status inventory links to the files that define its enums.
 
-The measured cost here is navigation, not correctness: the atomicity, CAS, and
-post-commit rules live in one place and are covered by the contract suites
-above. A navigation map removes that cost without risking the wire contract or
-the commit semantics.
+A crate extraction follows the dependencies of a type family and its methods.
+For example, Turn records carry durable error descriptors, whereas error
+classification needs the provider and database. An agent observation retains
+its original budget guard through cloning and serialization. These dependencies
+determine where each type belongs.
 
-## Preserved boundary and stop conditions
-
-- No file split, module rename, or public API change accompanies this note.
-- A future structural split needs a dependency and change-cooccurrence matrix
-  that shows real coupling, plus a verification plan for transaction atomicity,
-  rollback, and failure visibility.
-- If that matrix does not show a benefit larger than the coupling and
-  regression risk, keep the current shape and extend this note instead.
+Transition code continues to use the transaction and publication invariants
+listed above.

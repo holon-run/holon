@@ -7,7 +7,7 @@ use crate::{
     http_dto::SlimAgentDto,
     runtime::RuntimeHandle,
     tool::spec::typed_spec,
-    types::{AuthorityClass, GetAgentCompactResult, GetAgentResult, ToolCapabilityFamily},
+    types::{AgentSummary, AuthorityClass, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -30,6 +30,33 @@ pub(crate) enum GetAgentDetail {
     #[default]
     Compact,
     Full,
+}
+
+/// Bounded, read-only lifecycle responsibility; never a deletion decision.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SubagentCleanupCandidate {
+    pub agent_id: String,
+    pub incarnation: u64,
+    pub blocker: Option<String>,
+    pub observed_since: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GetAgentResult {
+    pub agent: AgentSummary,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
+}
+
+/// Compact projection returned by the default `GetAgent` tool response.
+///
+/// `GetAgentResult` remains the stable full-detail result type; the tool
+/// contract explicitly distinguishes this compact result from it.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct GetAgentCompactResult {
+    pub agent: crate::http_dto::SlimAgentDto,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
 }
 
 #[derive(Serialize)]

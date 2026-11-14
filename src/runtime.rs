@@ -50,6 +50,7 @@ mod control_task_generation_tests;
 pub(crate) mod task_generation;
 pub(crate) use control_cancellation::RetiredProducerExit;
 pub(crate) mod agent_list_projection;
+pub(crate) mod agent_observation;
 mod agent_summary_read;
 mod control_entry;
 pub(crate) mod control_reconcile;
