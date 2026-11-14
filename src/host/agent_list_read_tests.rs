@@ -127,10 +127,11 @@ fn register(host: &RuntimeHost, id: &str, parent: &str) -> Result<AgentIdentityR
 }
 
 #[tokio::test]
-async fn fleet_list_isolates_pending_members_without_database_admission() -> Result<()> {
+async fn fleet_list_refuses_pending_members_without_database_admission() -> Result<()> {
     let (_home, host) = host()?;
-    let pending = register(&host, "a-pending", "isolation-parent")?;
-    register(&host, "z-healthy", "isolation-parent")?;
+    // Visit a healthy member first: a later failure must discard partial work.
+    let pending = register(&host, "z-pending", "isolation-parent")?;
+    register(&host, "a-healthy", "isolation-parent")?;
     host.refresh_agent_list()?;
     let mut reservations = host
         .reserve_agent_mutations(&[pending.agent_id.clone()])
@@ -142,19 +143,13 @@ async fn fleet_list_isolates_pending_members_without_database_admission() -> Res
     let reads = db.reader_pool_stats_for_tests().checkout_attempts;
     let preparations = db.preparation_pool_stats_for_tests().checkout_attempts;
     let writes = writer.write_channel_admissions_for_tests()?;
-    let entries = tokio::time::timeout(
+    let error = tokio::time::timeout(
         Duration::from_millis(250),
         host.list_agent_entries_for_parent(Some("isolation-parent")),
     )
-    .await??;
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].identity.agent_id, "z-healthy");
-    let bytes = entries.into_json_bytes()?;
-    assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&bytes)?[0]["identity"]["agent_id"],
-        "z-healthy"
-    );
-    drop(bytes);
+    .await?
+    .unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::ReconciliationPending);
     assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
     assert_eq!(
         db.preparation_pool_stats_for_tests().checkout_attempts,
@@ -173,7 +168,7 @@ async fn fleet_list_isolates_pending_members_without_database_admission() -> Res
             .iter()
             .map(|entry| entry.identity.agent_id.as_str())
             .collect::<Vec<_>>(),
-        ["a-pending", "z-healthy"]
+        ["a-healthy", "z-pending"]
     );
     drop(entries);
     assert_eq!(host.inner.input_evidence_budget.report()?.observed_bytes, 0);
@@ -182,41 +177,49 @@ async fn fleet_list_isolates_pending_members_without_database_admission() -> Res
 }
 
 #[tokio::test]
-async fn fleet_list_isolates_unlisted_and_changed_identity_publications() -> Result<()> {
+async fn fleet_list_refuses_missing_unlisted_and_changed_publications() -> Result<()> {
     let (_home, host) = host()?;
-    let unavailable = register(&host, "a-unavailable", "isolation-parent")?;
+    // Model inventory discovery before its initial projection is prepared.
+    let unavailable = AgentIdentityRecord::new(
+        "a-unavailable",
+        AgentKind::Named,
+        AgentVisibility::Public,
+        AgentOwnership::SelfOwned,
+        AgentProfilePreset::PublicNamed,
+        None,
+        None,
+    )
+    .with_lineage_parent_agent_id(Some("isolation-parent".into()));
+    host.inner.registry.append_agent_identity(&unavailable)?;
+    host.runtime_db().agent_identities().upsert(&unavailable)?;
     register(&host, "z-healthy", "isolation-parent")?;
+    let error = host.list_agent_entries().await.unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::Missing);
     host.refresh_agent_list()?;
     // The canonical identity changes before its replacement projection is ready.
     let mut changed = unavailable.clone();
     changed.revision += 1;
     host.inner.registry.append_agent_identity(&changed)?;
-    let entries = host.list_agent_entries().await?;
-    assert!(entries
-        .iter()
-        .any(|entry| entry.identity.agent_id == "z-healthy"));
-    assert!(!entries
-        .iter()
-        .any(|entry| entry.identity.agent_id == changed.agent_id));
-    drop(entries);
+    let error = host.list_agent_entries().await.unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::RevisionChanged);
 
     host.inner
         .mutation_owners
         .forget_agent_list(&changed.agent_id, changed.incarnation);
-    let entries = host
+    let error = host
         .list_agent_entries_for_parent(Some("isolation-parent"))
-        .await?;
-    assert_eq!(entries.len(), 1);
-    assert_eq!(entries[0].identity.agent_id, "z-healthy");
-    drop(entries);
+        .await
+        .unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::Unlisted);
     let healthy = host.agent_identity_record("z-healthy")?.unwrap();
     host.inner
         .mutation_owners
         .forget_agent_list(&healthy.agent_id, healthy.incarnation);
-    let empty = host
+    let error = host
         .list_agent_entries_for_parent(Some("isolation-parent"))
-        .await?;
-    assert_eq!(empty.into_json_bytes()?.as_ref(), b"[]");
+        .await
+        .unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::Unlisted);
     assert!(host
         .list_agent_entries_for_parent(Some("other-parent"))
         .await?
@@ -224,6 +227,21 @@ async fn fleet_list_isolates_unlisted_and_changed_identity_publications() -> Res
     assert_eq!(host.inner.input_evidence_budget.report()?.observed_bytes, 0);
     host.shutdown().await?;
     Ok(())
+}
+
+fn assert_unavailable(error: &anyhow::Error, reason: AgentListUnavailable) {
+    assert!(
+        error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
+        "{error:#}"
+    );
+    assert_eq!(
+        error
+            .downcast_ref::<AgentListUnavailable>()
+            .unwrap()
+            .to_string(),
+        reason.to_string(),
+        "{error:#}"
+    );
 }
 
 #[tokio::test]
@@ -583,15 +601,9 @@ async fn cold_roster_repairs_a_failed_publication_without_a_new_mutation() -> Re
         .unwrap_err()
         .is::<crate::runtime_db::RuntimeDbRetryableError>());
 
-    // This repair obligation belongs to one Agent, not to the fleet response.
-    let entries = host.list_agent_entries().await?;
-    assert!(!entries
-        .iter()
-        .any(|entry| entry.identity.agent_id == latest.agent_id));
-    assert!(entries
-        .iter()
-        .any(|entry| entry.identity.agent_id == host.config().default_agent_id));
-    drop(entries);
+    // A repair obligation must not look like removal from a successful list.
+    let error = host.list_agent_entries().await.unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::RepairPending);
 
     db.transaction(|tx| {
         tx.execute_batch("ALTER TABLE unavailable_list_work RENAME TO work_items")?;
