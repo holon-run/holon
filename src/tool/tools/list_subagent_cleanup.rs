@@ -7,7 +7,7 @@ use super::{serialize_success, BuiltinToolDefinition};
 use crate::{
     runtime::RuntimeHandle,
     tool::{helpers::parse_tool_args, spec::typed_spec},
-    types::ToolCapabilityFamily,
+    types::{SubagentCleanupCandidate, ToolCapabilityFamily},
 };
 
 pub(crate) const NAME: &str = crate::tool::names::LIST_SUBAGENT_CLEANUP;
@@ -15,8 +15,6 @@ pub(crate) const NAME: &str = crate::tool::names::LIST_SUBAGENT_CLEANUP;
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ListSubagentCleanupArgs {}
-
-use crate::types::SubagentCleanupCandidate;
 
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ListSubagentCleanupResult {

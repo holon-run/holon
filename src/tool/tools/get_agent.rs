@@ -4,8 +4,10 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
-    http_dto::SlimAgentDto, runtime::RuntimeHandle, tool::spec::typed_spec,
-    types::ToolCapabilityFamily,
+    http_dto::SlimAgentDto,
+    runtime::RuntimeHandle,
+    tool::spec::typed_spec,
+    types::{GetAgentResult, ToolCapabilityFamily},
 };
 
 use super::{serialize_success, BuiltinToolDefinition};
@@ -19,8 +21,6 @@ pub(crate) struct GetAgentArgs {
     #[serde(default)]
     pub agent_id: Option<String>,
 }
-
-use crate::types::GetAgentResult;
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {
