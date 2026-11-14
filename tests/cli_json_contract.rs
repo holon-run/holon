@@ -532,6 +532,112 @@ fn config_provider_headers_updates_preserve_provider_fields_and_redact_values() 
 }
 
 #[test]
+fn config_provider_headers_serialize_with_other_config_writers() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.json");
+    let provider = json!({
+        "transport":"openai_chat_completions",
+        "base_url":"https://proxy.example.invalid/v1",
+        "auth":{"source":"none","kind":"none"},
+        "headers":{"x-remove":"old"},
+        "endpoints":{"coding":{"base_url":"https://coding.example.invalid/v1"}}
+    });
+    std::fs::write(
+        &path,
+        json!({"providers":{"alpha":provider,"beta":provider,"obsolete":provider}}).to_string(),
+    )
+    .unwrap();
+    let transaction = holon::config::PersistedConfigTransaction::begin(&path).unwrap();
+    let commands: &[&[&str]] = &[
+        &[
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "alpha",
+            "--header",
+            "X-First=one",
+        ],
+        &[
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "beta",
+            "--header",
+            "X-Second=two",
+        ],
+        &[
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "alpha",
+            "--endpoint",
+            "coding",
+            "--header",
+            "X-Endpoint=three",
+        ],
+        &[
+            "config",
+            "providers",
+            "headers",
+            "unset",
+            "alpha",
+            "--name",
+            "X-Remove",
+        ],
+        &["config", "set", "web.fetch.enabled", "false"],
+        &["config", "providers", "remove", "obsolete"],
+    ];
+    let mut children = commands
+        .iter()
+        .map(|args| {
+            isolated_holon_command(&home)
+                .args(*args)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap()
+        })
+        .collect::<Vec<_>>();
+    thread::sleep(Duration::from_millis(200));
+    let completed_before_unlock = children
+        .iter_mut()
+        .any(|child| child.try_wait().unwrap().is_some());
+    let mut config = transaction.load().unwrap();
+    config.vision.default = Some("openai/gpt-5.4".into());
+    transaction.save(&config).unwrap();
+    drop(transaction);
+    for child in children {
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<Value>(&output.stdout).unwrap();
+    }
+    assert!(
+        !completed_before_unlock,
+        "config writers must wait for the transaction"
+    );
+    let stored: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    assert_eq!(stored["providers"]["alpha"]["headers"]["x-first"], "one");
+    assert!(stored["providers"]["alpha"]["headers"]
+        .get("x-remove")
+        .is_none());
+    assert_eq!(stored["providers"]["beta"]["headers"]["x-second"], "two");
+    assert_eq!(
+        stored["providers"]["alpha"]["endpoints"]["coding"]["headers"]["x-endpoint"],
+        "three"
+    );
+    assert_eq!(stored["web"]["fetch"]["enabled"], false);
+    assert_eq!(stored["vision"]["default"], "openai/gpt-5.4");
+    assert!(stored["providers"].get("obsolete").is_none());
+}
+
+#[test]
 fn config_provider_headers_reject_invalid_batches_without_writing() {
     let home = tempfile::tempdir().unwrap();
     run_json(

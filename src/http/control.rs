@@ -116,6 +116,55 @@ mod setup_tests {
         (status, body)
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn config_lock_contention_keeps_async_executor_responsive() {
+        let (_home, host) = host();
+        let transaction =
+            crate::config::PersistedConfigTransaction::begin(&host.config().config_file_path)
+                .unwrap();
+        let (release, wait) = std::sync::mpsc::channel();
+        // A watchdog releases the lock even if a regression blocks this executor.
+        let holder = std::thread::spawn(move || {
+            let released = wait.recv_timeout(std::time::Duration::from_secs(5)).is_ok();
+            drop(transaction);
+            released
+        });
+        let update = request(
+            &host,
+            "PATCH",
+            json!({"updates": [
+                {"key":"runtime.db_readers.ordinary_max_connections","value":8}
+            ]}),
+        );
+        tokio::pin!(update);
+        tokio::select! {
+            biased;
+            response = &mut update => panic!("config update finished before lock release: {response:?}"),
+            _ = tokio::time::sleep(std::time::Duration::from_millis(50)) => {}
+        }
+        let signaled = release.send(()).is_ok();
+        let released = holder.join().unwrap();
+        assert!(
+            signaled && released,
+            "config lock blocked the async executor"
+        );
+        let (status, payload) = tokio::time::timeout(std::time::Duration::from_secs(5), update)
+            .await
+            .expect("config update after lock release");
+        assert_eq!(status, StatusCode::OK, "{payload}");
+        assert_eq!(payload["changed"], true, "{payload}");
+        assert_eq!(
+            crate::config::load_persisted_config_at(&host.config().config_file_path)
+                .unwrap()
+                .runtime
+                .db_readers
+                .resolve()
+                .unwrap()
+                .ordinary_max_connections(),
+            8
+        );
+    }
+
     #[tokio::test]
     async fn reader_limits_api_persists_for_restart_and_keeps_effective_pools() {
         let (_home, host) = host();
@@ -854,8 +903,19 @@ pub async fn runtime_config_update(
     ApiJson(request): ApiJson<RuntimeConfigUpdateRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    tokio::task::spawn_blocking(move || runtime_config_update_blocking(state, request))
+        .await
+        .map_err(|error| error_response(anyhow!("config update task failed: {error}")))?
+}
+
+fn runtime_config_update_blocking(
+    state: Arc<AppState>,
+    request: RuntimeConfigUpdateRequest,
+) -> Result<Json<RuntimeConfigUpdateResponse>, (StatusCode, Json<Value>)> {
     let config = state.host.config();
-    let stored = load_persisted_config_at(&config.config_file_path).map_err(error_response)?;
+    let transaction =
+        PersistedConfigTransaction::begin(&config.config_file_path).map_err(error_response)?;
+    let stored = transaction.load().map_err(error_response)?;
     let mut candidate = stored.clone();
     let mut reader_limits = candidate.runtime.db_readers.clone();
     let mut results = Vec::new();
@@ -939,7 +999,7 @@ pub async fn runtime_config_update(
             .context_resources()
             .begin_write()
             .map_err(error_response)?;
-        save_persisted_config_at(&config.config_file_path, &candidate).map_err(error_response)?;
+        transaction.save(&candidate).map_err(error_response)?;
         let generation = state
             .host
             .schedule_config_reload()

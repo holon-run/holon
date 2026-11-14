@@ -63,10 +63,10 @@ pub(crate) use tower::ServiceExt;
 pub(crate) use crate::{
     config::{
         credential_store_path, list_credential_profiles_at, load_credential_store_at,
-        load_persisted_config_at, remove_credential_profile_at, save_persisted_config_at,
-        set_config_key, set_credential_profile_at, unset_config_key, ApiCorsConfigFile,
-        ControlTransportKind, CredentialKind, CredentialProfileStatus, HolonConfigFile,
-        ModelRouteRef,
+        load_persisted_config_at, remove_credential_profile_at, set_config_key,
+        set_credential_profile_at, unset_config_key, ApiCorsConfigFile, ControlTransportKind,
+        CredentialKind, CredentialProfileStatus, HolonConfigFile, ModelRouteRef,
+        PersistedConfigTransaction,
     },
     daemon::{graceful_runtime_shutdown, RuntimeConfigSurface, RuntimeServiceHandle},
     diagnostics,

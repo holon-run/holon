@@ -113,8 +113,11 @@ invent an agent session.
 `config providers headers set/unset` changes only the selected layer's map,
 atomically, preserving all other provider fields. It accepts only known
 providers/endpoints and materializes built-in overrides with their existing auth
-defaults. Output contains names, not values. Command-line literals may be visible
-in shell history/process arguments; this interface is not for secrets and adds
+defaults. Configuration writers serialize the full read/modify/save transaction
+with a stable sidecar file lock; saves atomically replace the config file.
+Prepared model migrations reject stale snapshots under the same lock instead of
+overwriting concurrent updates. Output contains names, not values. Command-line
+literals may be visible in shell history/process arguments; this interface is not for secrets and adds
 no hot reload or automatic daemon restart.
 
 The standard Go entry `opencode-go/<model>` resolves to

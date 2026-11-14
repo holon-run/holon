@@ -7,10 +7,10 @@ use serde_json::{json, Value};
 use crate::{
     auth::load_codex_cli_credential,
     config::{
-        built_in_provider_default_config, credential_store_path, load_persisted_config_at,
-        save_persisted_config_at, set_credential_profile_at, validate_provider_config, AppConfig,
-        CredentialKind, CredentialSource, ModelRef, ModelRouteRef, ProviderAuthConfig,
-        ProviderConfigFile, ProviderId, ProviderRuntimeConfig,
+        built_in_provider_default_config, credential_store_path, set_credential_profile_at,
+        validate_provider_config, AppConfig, CredentialKind, CredentialSource, ModelRef,
+        ModelRouteRef, PersistedConfigTransaction, ProviderAuthConfig, ProviderConfigFile,
+        ProviderId, ProviderRuntimeConfig,
     },
     model_catalog::BuiltInModelCatalog,
     web::{WebProviderAuthClass, WebProviderSupportStatus},
@@ -497,7 +497,8 @@ pub fn apply_onboarding_wizard_draft(
     draft: &OnboardingWizardDraft,
     credential_material: Option<String>,
 ) -> Result<OnboardingApplySummary> {
-    let mut persisted = load_persisted_config_at(&config.config_file_path)?;
+    let transaction = PersistedConfigTransaction::begin(&config.config_file_path)?;
+    let mut persisted = transaction.load()?;
     let mut provider_config = persisted
         .providers
         .remove(&draft.provider)
@@ -561,7 +562,7 @@ pub fn apply_onboarding_wizard_draft(
             persisted.web.search.providers = vec![DUCKDUCKGO_SEARCH_PROVIDER_ID.into()];
         }
     }
-    save_persisted_config_at(&config.config_file_path, &persisted)?;
+    transaction.save(&persisted)?;
 
     Ok(OnboardingApplySummary {
         applied_via: "offline_store".into(),

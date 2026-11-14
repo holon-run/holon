@@ -17,11 +17,11 @@ use holon::{
         built_in_provider_default_config, config_schema, credential_store_path, default_holon_home,
         get_config_key, list_credential_profiles_at, load_credential_store_at,
         load_persisted_config_at, persisted_config_path, provider_config_view,
-        provider_config_views, remove_credential_profile_at, save_persisted_config_at,
-        set_config_key, set_credential_profile_at, set_provider_headers, unset_config_key,
-        unset_provider_headers, validate_provider_config, AppConfig, ControlAuthMode,
-        CredentialKind, CredentialSource, ProviderAuthConfig, ProviderConfigFile,
-        ProviderEndpointId, ProviderId, ProviderTransportKind,
+        provider_config_views, remove_credential_profile_at, set_config_key,
+        set_credential_profile_at, set_provider_headers, unset_config_key, unset_provider_headers,
+        validate_provider_config, AppConfig, ControlAuthMode, CredentialKind, CredentialSource,
+        PersistedConfigTransaction, ProviderAuthConfig, ProviderConfigFile, ProviderEndpointId,
+        ProviderId, ProviderTransportKind,
     },
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
@@ -7571,9 +7571,10 @@ async fn config_set_command(key: String, value: String) -> Result<()> {
     }
 
     let path = config_file_path();
-    let mut config = load_persisted_config_at(&path)?;
+    let transaction = PersistedConfigTransaction::begin(&path)?;
+    let mut config = transaction.load()?;
     set_config_key(&mut config, &key, &value)?;
-    save_persisted_config_at(&path, &config)?;
+    transaction.save(&config)?;
     print_config_applied_via(ConfigAppliedVia::OfflineStore);
     print_json(&get_config_key(&config, &key)?)
 }
@@ -7597,9 +7598,10 @@ async fn config_unset_command(key: String) -> Result<()> {
     }
 
     let path = config_file_path();
-    let mut config = load_persisted_config_at(&path)?;
+    let transaction = PersistedConfigTransaction::begin(&path)?;
+    let mut config = transaction.load()?;
     unset_config_key(&mut config, &key)?;
-    save_persisted_config_at(&path, &config)?;
+    transaction.save(&config)?;
     print_config_applied_via(ConfigAppliedVia::OfflineStore);
     print_json(&serde_json::json!({
         "key": key,
@@ -7799,22 +7801,14 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                 })
                 .transpose()?;
             let path = config_file_path();
-            let mut config = load_persisted_config_at(&path)?;
+            let transaction = PersistedConfigTransaction::begin(&path)?;
+            let mut config = transaction.load()?;
             let names = if unset {
                 unset_provider_headers(&mut config, &provider, endpoint.as_ref(), &entries)?
             } else {
                 set_provider_headers(&mut config, &provider, endpoint.as_ref(), &entries)?
             };
-            // Stage beside the destination so failed writes never truncate config.
-            let content = serde_json::to_vec_pretty(&config)?;
-            let parent = path.parent().context("config path requires a parent")?;
-            fs::create_dir_all(parent)?;
-            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-            temporary.write_all(&content)?;
-            temporary.as_file().sync_all()?;
-            temporary
-                .persist(&path)
-                .map_err(|error| anyhow!("failed to save provider headers: {}", error.error))?;
+            transaction.save(&config)?;
             print_json(&serde_json::json!({
                 "applied_via": "offline_store",
                 "provider": provider.as_str(),
@@ -7890,9 +7884,10 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
             validate_provider_config(&id, &provider_config)?;
 
             let path = config_file_path();
-            let mut config = load_persisted_config_at(&path)?;
+            let transaction = PersistedConfigTransaction::begin(&path)?;
+            let mut config = transaction.load()?;
             config.providers.insert(id.clone(), provider_config);
-            save_persisted_config_at(&path, &config)?;
+            transaction.save(&config)?;
 
             let effective = AppConfig::load_for_config_inspection()?;
             let provider = effective.providers.get(&id).with_context(|| {
@@ -7921,9 +7916,10 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
         ConfigProviderCommands::Remove { provider } => {
             let id = ProviderId::parse(&provider)?;
             let path = config_file_path();
-            let mut config = load_persisted_config_at(&path)?;
+            let transaction = PersistedConfigTransaction::begin(&path)?;
+            let mut config = transaction.load()?;
             let removed = config.providers.remove(&id).is_some();
-            save_persisted_config_at(&path, &config)?;
+            transaction.save(&config)?;
             print_json(&serde_json::json!({
                 "applied_via": "offline_store",
                 "provider": id.as_str(),
