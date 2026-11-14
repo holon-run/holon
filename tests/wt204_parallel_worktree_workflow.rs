@@ -153,6 +153,16 @@ fn expected_worktree_path(workspace: &Path, task_id: &str) -> PathBuf {
     ))
 }
 
+fn is_terminal_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Completed
+            | TaskStatus::Failed
+            | TaskStatus::Cancelled
+            | TaskStatus::Interrupted
+    )
+}
+
 async fn wait_for_worktree(
     runtime: &holon::runtime::RuntimeHandle,
     task: &TaskRecord,
@@ -247,18 +257,43 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
         worktree_paths.insert(task.id.clone(), worktree_path);
     }
 
-    let deadline = Instant::now() + Duration::from_secs(30);
-    loop {
-        let records = runtime.latest_task_records().await?;
-        let all_completed = tasks.iter().all(|task| {
+    let all_tasks_completed = |records: &[TaskRecord]| {
+        tasks.iter().all(|task| {
             records
                 .iter()
                 .any(|record| record.id == task.id && record.status == TaskStatus::Completed)
-        });
-        if all_completed {
+        })
+    };
+    let all_tasks_terminal = |records: &[TaskRecord]| {
+        tasks.iter().all(|task| {
+            records
+                .iter()
+                .any(|record| record.id == task.id && is_terminal_task_status(&record.status))
+        })
+    };
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut records = runtime.latest_task_records().await?;
+    loop {
+        if all_tasks_completed(&records) {
             break;
         }
         if Instant::now() >= deadline {
+            // A finished task's terminal record can land only after the
+            // completion wait times out (#4122): poll the records once more
+            // over a bounded settle window so the observation race heals
+            // itself. Stop early once every task reached a terminal state so
+            // genuine failures are reported without extra delay.
+            let settle_deadline = Instant::now() + Duration::from_secs(5);
+            while !all_tasks_completed(&records) {
+                if all_tasks_terminal(&records) || Instant::now() >= settle_deadline {
+                    break;
+                }
+                sleep(Duration::from_millis(100)).await;
+                records = runtime.latest_task_records().await?;
+            }
+            if all_tasks_completed(&records) {
+                break;
+            }
             let task_states = tasks
                 .iter()
                 .map(|task| {
@@ -266,7 +301,9 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
                         .iter()
                         .find(|record| record.id == task.id)
                         .map(|record| format!("{:?}, detail={:?}", record.status, record.detail))
-                        .unwrap_or_else(|| "missing".into());
+                        // Distinguish "terminal record not visible" from a
+                        // task that reached a non-completed terminal state.
+                        .unwrap_or_else(|| "no terminal record".into());
                     format!("{}={}", task.id, status)
                 })
                 .collect::<Vec<_>>()
@@ -304,6 +341,7 @@ async fn wt204_parallel_worktree_workflow_demo_is_reviewable_end_to_end() -> Res
             ));
         }
         sleep(Duration::from_millis(100)).await;
+        records = runtime.latest_task_records().await?;
     }
 
     let summary = runtime.summarize_worktree_tasks().await?;
