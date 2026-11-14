@@ -1537,6 +1537,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "holon-domain",
  "holon-model-client",
  "hyper",
  "hyper-util",
@@ -1578,6 +1579,14 @@ dependencies = [
  "uuid",
  "wreq",
  "wreq-util",
+]
+
+[[package]]
+name = "holon-domain"
+version = "0.1.0"
+dependencies = [
+ "schemars",
+ "serde",
 ]
 
 [[package]]
