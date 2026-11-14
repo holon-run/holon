@@ -424,6 +424,28 @@
   },
   {
     "method": "get",
+    "path": "/api/agents/{agent_id}/model",
+    "handler": "agent_model",
+    "operation_id": "agentModel",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/agents/{agent_id}/projection-snapshot",
     "handler": "agent_projection_snapshot",
     "operation_id": "agentProjectionSnapshot",

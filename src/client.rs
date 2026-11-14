@@ -26,11 +26,11 @@ use crate::{
     runtime_error::{RuntimeErrorContext, RuntimeErrorDomain},
     system::ExecutionSnapshot,
     types::{
-        AgentDetail, AgentListEntry, AgentSummary, AgentTreeProjection, AuthorityClass,
-        BriefRecord, ExternalTriggerStateSnapshot, MessageEnvelope, OperatorNotificationRecord,
-        ResolvedModelAvailability, TaskInputResult, TaskOutputResult, TaskRecord,
-        TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, TranscriptEntry,
-        TurnTerminalRecord, WorkItemRecord,
+        AgentDetail, AgentListEntry, AgentModelState, AgentSummary, AgentTreeProjection,
+        AuthorityClass, BriefRecord, ExternalTriggerStateSnapshot, MessageEnvelope,
+        OperatorNotificationRecord, ResolvedModelAvailability, TaskInputResult, TaskOutputResult,
+        TaskRecord, TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord,
+        TranscriptEntry, TurnTerminalRecord, WorkItemRecord,
     },
     work_item_scheduling::WorkItemSchedulingProjection,
 };
@@ -547,6 +547,10 @@ impl LocalClient {
     pub async fn agent_status(&self, agent_id: &str) -> Result<AgentSummary> {
         self.get_json(&format!("/agents/{agent_id}/status?detail=full"))
             .await
+    }
+
+    pub async fn agent_model(&self, agent_id: &str) -> Result<AgentModelState> {
+        self.get_json(&format!("/agents/{agent_id}/model")).await
     }
 
     pub async fn agent_status_compact(&self, agent_id: &str) -> Result<SlimAgentDto> {

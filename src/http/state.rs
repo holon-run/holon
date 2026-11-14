@@ -318,6 +318,24 @@ pub async fn status(
     .await
 }
 
+/// `GET /agents/{agent_id}/model`: the model-only read. Returns the same
+/// `AgentModelState` object the full summary exposes as `.model`, without
+/// building a full or compact agent summary.
+pub async fn agent_model(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    let started_at = std::time::Instant::now();
+    authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
+    let model = state
+        .host
+        .local_agent_model(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    Ok(traced_json("/agents/{agent_id}/model", started_at, model))
+}
+
 pub async fn get_agent(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,

@@ -49,6 +49,8 @@ static HTTP_AGENT_STATUS: MetricAccumulator =
     MetricAccumulator::new("http.json./agents/{agent_id}/status");
 static HTTP_AGENT_STATE: MetricAccumulator =
     MetricAccumulator::new("http.json./agents/{agent_id}/state");
+static HTTP_AGENT_MODEL: MetricAccumulator =
+    MetricAccumulator::new("http.json./agents/{agent_id}/model");
 static HTTP_OTHER: MetricAccumulator = MetricAccumulator::new("http.json.other");
 
 static PROJECTION_AGENT_SUMMARY: MetricAccumulator =
@@ -938,6 +940,7 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             HTTP_AGENTS_LIST.snapshot(true),
             HTTP_AGENT_STATUS.snapshot(true),
             HTTP_AGENT_STATE.snapshot(true),
+            HTTP_AGENT_MODEL.snapshot(true),
             HTTP_OTHER.snapshot(true),
         ],
         projections: vec![
@@ -1142,6 +1145,7 @@ fn http_route_accumulator(route: &'static str) -> &'static MetricAccumulator {
         "/agents/list" => &HTTP_AGENTS_LIST,
         "/agents/{agent_id}/status" => &HTTP_AGENT_STATUS,
         "/agents/{agent_id}/state" => &HTTP_AGENT_STATE,
+        "/agents/{agent_id}/model" => &HTTP_AGENT_MODEL,
         _ => &HTTP_OTHER,
     }
 }

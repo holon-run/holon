@@ -22662,6 +22662,66 @@
         ]
       }
     },
+    "/api/agents/{agent_id}/model": {
+      "get": {
+        "description": "Return the agent model read state (source, runtime default, effective/requested/active routes, fallback chain, overrides, service tier, and resolved policy) exactly as the full summary .model object, without building a full or compact agent summary. Loaded agents are served from in-memory state; unloaded agents read only persisted model material without activating a runtime.",
+        "operationId": "agentModel",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "style": "simple"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Agent model",
+        "tags": [
+          "agents"
+        ],
+        "x-holon-openapi-source": "aide::axum::ApiRouter::api_route_docs"
+      }
+    },
     "/api/agents/{agent_id}/projection-snapshot": {
       "get": {
         "description": "Per-Agent canonical projection snapshot (RFC: observer sync): compact current state plus revision anchors at one committed consistency boundary. snapshot_through_seq equals the committed per-Agent event head of the same view; clients replay only event_seq greater than it. Served only while the agents.projection-snapshot.v1 capability is advertised; route registration alone is never sufficient.",

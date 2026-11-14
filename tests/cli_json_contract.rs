@@ -1170,3 +1170,99 @@ fn agent_rename_reports_detail_json_and_readable_errors() {
         json!("Default Renamed")
     );
 }
+
+#[test]
+fn agent_model_get_uses_the_dedicated_model_endpoint() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [("HOLON_HTTP_ADDR", addr.as_str())];
+
+    // The configured default agent and a named agent both exist.
+    run_json_with_env(&home, &["agent", "create", "main"], &envs);
+    let created = run_json_with_env(&home, &["agent", "create", "model-cli"], &envs);
+    assert_eq!(created["receipt"]["created"], json!(true));
+
+    let metrics = || {
+        reqwest::blocking::Client::new()
+            .get(format!("http://{addr}/api/control/runtime/metrics"))
+            .send()
+            .expect("fetch runtime metrics")
+            .text()
+            .expect("read runtime metrics")
+    };
+    let counter = |body: &str, name: &str| -> u64 {
+        body.lines()
+            .find(|line| line.starts_with(name) && !line.starts_with(&format!("# {name}")))
+            .expect(&format!("metric {name} should be rendered"))
+            .rsplit(' ')
+            .next()
+            .expect("metric value")
+            .parse()
+            .expect("metric value should be numeric")
+    };
+    const MODEL_ROUTE: &str = "holon_http_json_agents_agent_id_model_count_total";
+    const STATUS_ROUTE: &str = "holon_http_json_agents_agent_id_status_count_total";
+
+    let before = metrics();
+    let status_before = counter(&before, STATUS_ROUTE);
+
+    // Real CLI reads: default agent selection and an explicit target.
+    let default_model = run_json_with_env(&home, &["agent", "model", "get"], &envs);
+    let named_model = run_json_with_env(&home, &["agent", "model", "get", "model-cli"], &envs);
+
+    let after = metrics();
+    assert_eq!(
+        counter(&after, MODEL_ROUTE),
+        counter(&before, MODEL_ROUTE) + 2,
+        "both CLI reads should hit the dedicated model endpoint"
+    );
+    assert_eq!(
+        counter(&after, STATUS_ROUTE),
+        status_before,
+        "model get must not request any full or compact status endpoint"
+    );
+
+    // Output stays deep-equal to the full summary `.model` object.
+    assert!(default_model["effective_model"].is_string());
+    assert!(default_model["resolved_policy"].is_object());
+    assert_eq!(
+        default_model, named_model,
+        "both agents share the runtime default model"
+    );
+    let summary: Value = reqwest::blocking::Client::new()
+        .get(format!("http://{addr}/api/agents/main/status?detail=full"))
+        .send()
+        .expect("fetch full agent status")
+        .json()
+        .expect("decode full agent status");
+    assert_eq!(default_model, summary["model"]);
+
+    // Durable set/clear through the real write surface reads back through the
+    // dedicated endpoint.
+    let set = run_json_with_env(
+        &home,
+        &[
+            "agent",
+            "model",
+            "set",
+            "openai@default/gpt-5.4",
+            "model-cli",
+        ],
+        &envs,
+    );
+    assert_eq!(set["ok"], json!(true));
+    let overridden = run_json_with_env(&home, &["agent", "model", "get", "model-cli"], &envs);
+    assert_eq!(overridden["source"], json!("agent_override"));
+    assert_eq!(
+        overridden["override_model"],
+        json!("openai@default/gpt-5.4")
+    );
+    let cleared = run_json_with_env(&home, &["agent", "model", "clear", "model-cli"], &envs);
+    assert_eq!(cleared["ok"], json!(true));
+    let restored = run_json_with_env(&home, &["agent", "model", "get", "model-cli"], &envs);
+    assert_eq!(restored["source"], json!("runtime_default"));
+    assert!(restored.get("override_model").is_none());
+}
