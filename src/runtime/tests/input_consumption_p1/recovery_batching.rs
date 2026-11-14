@@ -147,32 +147,58 @@ async fn assert_pre_cutoff_batches(kind: TaskKind, count: usize, path: EntryPath
     if let Some(message) = busy_message {
         // Fresh queued notifications have no recovery deadline. Seed due
         // obligations so this scan actually exercises the occupied lane.
-        for (source, _) in sources.values() {
+        for (index, (source, _)) in sources.values().enumerate() {
+            let at = runtime.now();
+            let deadline =
+                at + chrono::Duration::seconds(30) + chrono::Duration::milliseconds(index as i64);
             runtime
-                .apply_task_result_operation((source, runtime.now()), || {
+                .apply_task_result_operation((source, at), || {
                     crate::runtime_db::transitions::TaskResultOperation::Defer {
                         message_id: source.clone(),
                         reason: "awaiting_canonical_admission".into(),
-                        at: runtime.now(),
-                        deadline: runtime.now() + chrono::Duration::seconds(30),
+                        at,
+                        deadline,
                     }
                 })
                 .await
                 .unwrap();
         }
         harness.advance(std::time::Duration::from_secs(31)).await;
-        let due_sources: BTreeSet<_> = runtime
+        let due_records = runtime
             .runtime_db()
             .task_result_settlements()
-            .due_deferred("default", runtime.now(), 8)
-            .unwrap()
-            .into_iter()
-            .map(|record| record.message_id)
-            .collect();
-        assert_eq!(due_sources.len(), count.min(8));
+            .due_deferred("default", runtime.now(), count)
+            .unwrap();
+        assert_eq!(due_records.len(), count);
         assert!(!Box::pin(runtime.emit_due_task_result_recovery())
             .await
             .unwrap());
+        let tasks = {
+            let mutation = Box::pin(runtime.begin_mutation()).await.unwrap();
+            mutation
+                .capture_tasks(&crate::runtime::resident_task::TaskCaptureRequest {
+                    include_active: false,
+                    include_unsettled: true,
+                    terminal_limit: 0,
+                    required_keys: Default::default(),
+                    recovery_source_ids: Default::default(),
+                })
+                .unwrap()
+        };
+        // The ninth result is still due after the first eight probes back off.
+        let ninth_deadline = due_records.last().unwrap().next_recheck_at.unwrap();
+        assert_eq!(
+            runtime
+                .next_task_result_probe(&tasks)
+                .unwrap()
+                .unwrap()
+                .timestamp_millis(),
+            ninth_deadline.timestamp_millis()
+        );
+        assert!(!Box::pin(runtime.emit_due_task_result_recovery())
+            .await
+            .unwrap());
+        assert!(runtime.next_task_result_probe(&tasks).unwrap().unwrap() > runtime.now());
         let queued = runtime.inner.agent.lock().await.queue.input_snapshot(64);
         assert_eq!(
             queued
@@ -181,27 +207,18 @@ async fn assert_pre_cutoff_batches(kind: TaskKind, count: usize, path: EntryPath
                 .collect::<BTreeSet<_>>(),
             sources.values().map(|(source, _)| source).collect()
         );
-        for (source, _) in sources.values() {
+        // Eligibility probes leave the durable reason, deadline and admission
+        // budget as they were before the scan.
+        for before in due_records {
             let record = runtime
                 .runtime_db()
                 .task_result_settlements()
-                .latest_for_message(source)
+                .latest_for_message(&before.message_id)
                 .unwrap()
                 .unwrap();
+            assert_eq!(record, before);
             assert_eq!(record.state, TaskResultSettlementState::PersistedPending);
             assert!(record.activation_id.is_none());
-            assert!(record.deferred_at.is_some());
-            let next_recheck = record.next_recheck_at.unwrap();
-            if due_sources.contains(source) {
-                assert_eq!(
-                    record.deferred_reason.as_deref(),
-                    Some("execution_lane_busy")
-                );
-                assert!(next_recheck > runtime.now());
-            } else {
-                // The ninth result is beyond this scan's eight-row limit.
-                assert!(next_recheck <= runtime.now());
-            }
             assert_eq!(record.recovery_attempts, 0);
         }
         // No provider runs while the lane is occupied. Once it closes, use the
