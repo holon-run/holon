@@ -93,6 +93,8 @@ pub(crate) use crate::{
         WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
+#[cfg(test)]
+mod agent_model_tests;
 mod agents;
 mod apps;
 mod auth;
@@ -165,9 +167,9 @@ pub use skills::{
 };
 pub(crate) use state::validate_invocation_context;
 pub use state::{
-    agent_state, brief, briefs, briefs_batch_get, briefs_default, enqueue, enqueue_default,
-    state_default, status, status_default, transcript, transcript_batch_get, transcript_default,
-    transcript_entry, worktree_summary, worktree_summary_default,
+    agent_model, agent_state, brief, briefs, briefs_batch_get, briefs_default, enqueue,
+    enqueue_default, state_default, status, status_default, transcript, transcript_batch_get,
+    transcript_default, transcript_entry, worktree_summary, worktree_summary_default,
 };
 pub use tasks::{
     cancel_timer, complete_work_item, create_command_task, create_timer, create_work_item,
@@ -572,6 +574,7 @@ pub fn router(state: AppState) -> Router {
         .route("/agents/{agent_id}/enqueue", post(state::enqueue))
         .route("/agents/{agent_id}", get(state::get_agent))
         .route("/agents/{agent_id}/status", get(state::status))
+        .route("/agents/{agent_id}/model", get(state::agent_model))
         .route("/agents/{agent_id}/briefs", get(state::briefs))
         .route(
             "/agents/{agent_id}/briefs:batchGet",

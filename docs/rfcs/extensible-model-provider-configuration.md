@@ -740,6 +740,35 @@ The first-pass rule remains:
 Holon should not store provider endpoint settings or auth choices in agent state
 unless a later RFC defines a per-agent provider profile model.
 
+### Dedicated Model Read Endpoint
+
+`GET /api/agents/{agent_id}/model` returns the agent's model read state
+directly: the same `AgentModelState` object the full summary exposes as
+`.model`, with no `model` or `agent` wrapper. It exists so single-purpose
+consumers such as `holon agent model get` do not have to request, build, or
+transport a full `AgentSummary`.
+
+Contract:
+
+- Field set and optional-field omission are identical to the full summary's
+  `.model`, including `resolved_policy`. There is exactly one model resolution
+  semantics; the endpoint reuses the shared resolver instead of maintaining a
+  second interpretation.
+- Authentication, visibility scope, and error mapping match the other
+  per-agent read routes (`/status`, `/state`). The route is read-only and is
+  not a variant of the `/control/agents/{agent_id}/model` write surface.
+- For a loaded agent the read borrows the in-memory agent state and the
+  configuration/model catalog snapshot. It does not build a full or compact
+  summary, does not clone the whole `AgentState`, and performs no agent
+  storage I/O in steady state.
+- For an unloaded agent the read validates the identity, reads only the
+  persisted model material, and does not activate a runtime, schedule
+  anything, or write. Stopped or unloaded agents must not fabricate a running
+  active attempt; the reported state follows the same persisted
+  requested/active facts as the cold summary.
+- The read never triggers provider network probing, remote model discovery, or
+  credential refresh.
+
 ## Resolved Runtime Object
 
 The runtime should be able to report a resolved object with:

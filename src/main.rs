@@ -7034,8 +7034,8 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
             match command {
                 AgentModelCommands::Get { agent_id } => {
                     let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
-                    let summary = client.agent_status(&agent).await?;
-                    print_json(&serde_json::to_value(summary.model)?)
+                    let model = client.agent_model(&agent).await?;
+                    print_json(&serde_json::to_value(&model)?)
                 }
                 AgentModelCommands::Set { model, agent_id } => {
                     let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
