@@ -201,7 +201,7 @@ buffering the file in memory:
 ## Path Security
 
 All requested paths are resolved against the workspace's execution root using
-the existing `normalize_path` function from `src/system/workspace.rs`. The
+the `normalize_path` function in `crates/holon-system/src/workspace.rs`. The
 normalized path must start with the execution root prefix. Any path that
 escapes the execution root returns `403 Forbidden`.
 

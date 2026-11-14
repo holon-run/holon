@@ -1,0 +1,28 @@
+[package]
+name = "holon-system"
+version = "0.1.0"
+edition = "2021"
+description = "Host filesystem, workspace, and process interfaces for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+fs2 = "0.4"
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+percent-encoding = "2.3"
+portable-pty = "0.9"
+schemars = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["fs", "io-util", "process", "rt", "sync", "time"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.14"
+tokio = { version = "1.43", features = ["macros"] }

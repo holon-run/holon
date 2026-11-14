@@ -1539,6 +1539,7 @@ dependencies = [
  "futures-util",
  "holon-domain",
  "holon-model-client",
+ "holon-system",
  "hyper",
  "hyper-util",
  "image",
@@ -1546,7 +1547,6 @@ dependencies = [
  "libc",
  "mime_guess",
  "percent-encoding",
- "portable-pty",
  "proptest",
  "pulldown-cmark",
  "r2d2",
@@ -1608,6 +1608,24 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "holon-system"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "fs2",
+ "holon-domain",
+ "libc",
+ "percent-encoding",
+ "portable-pty",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
 ]
 
 [[package]]

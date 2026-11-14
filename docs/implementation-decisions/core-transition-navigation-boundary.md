@@ -7,6 +7,10 @@ wire contracts live in `holon-domain`, including agent observation snapshots
 and the GetAgent result. The main crate supplies the ledger-backed observation
 guard, builds tool responses, and classifies provider and database errors.
 
+`holon-system` owns host file, process, PTY, and workspace operations and uses
+the shared execution types from `holon-domain`. The `holon::system` import
+path re-exports the same APIs. Host unit tests run with the system crate.
+
 Keep `src/runtime_db/transitions.rs` as the
 `RuntimeTransitionRepository` commit seam. Its execution-protocol code
 lives in the adjacent `src/runtime_db/transitions/` directory.
