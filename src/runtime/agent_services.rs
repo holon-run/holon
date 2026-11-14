@@ -30,7 +30,10 @@ impl RuntimeHandle {
     pub(crate) async fn subagent_cleanup_candidates(
         &self,
     ) -> Result<Vec<crate::types::SubagentCleanupCandidate>> {
-        drop(self.observer_ready_root(&self.inner.runtime_db)?);
+        drop(
+            self.observer_ready_root_bounded(&self.inner.runtime_db)
+                .await?,
+        );
         self.inner
             .runtime_db
             .subagent_cleanup_candidates(self.inner.mutation_owner.agent_id(), 16)

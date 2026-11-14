@@ -50,7 +50,7 @@ impl AgentProvider for ColdDispatchProvider {
             response.blocks = vec![ModelBlock::ToolUse {
                 id: format!("cold-get-agent-{call}"),
                 name: "GetAgent".into(),
-                input: json!({"detail": "compact"}),
+                input: json!({}),
                 kind: ModelToolCallKind::Function,
                 provider_data: None,
             }];

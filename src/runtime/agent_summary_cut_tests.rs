@@ -2,6 +2,39 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
+async fn list_subagent_cleanup_waits_for_supervisor_publication() -> Result<()> {
+    let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
+    runtime.await_initial_resources().await;
+    let refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut owner = runtime.inner.mutation_owner.reserve().await?;
+    owner.begin("pending-cleanup-inspection".into())?;
+    let call = crate::tool::ToolCall {
+        id: "pending-cleanup".into(),
+        name: crate::tool::names::LIST_SUBAGENT_CLEANUP.into(),
+        input: serde_json::json!({}),
+    };
+    let mut read = crate::tool::tools::execute_builtin_tool(
+        &runtime,
+        runtime.instance_agent_id(),
+        &AuthorityClass::OperatorInstruction,
+        &call,
+    );
+    assert!(futures_util::poll!(read.as_mut()).is_pending());
+    assert!(runtime.inner.mutation_owner.capture().is_err());
+
+    owner.definitely_not_committed()?;
+    drop(owner);
+    let result = tokio::time::timeout(Duration::from_secs(1), read).await??;
+    assert_eq!(
+        result.envelope.result.context("cleanup result")?["subagent_cleanup"],
+        serde_json::json!([])
+    );
+    drop(refresh);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn default_get_agent_does_not_read_mutable_state_for_cleanup_identity() -> Result<()> {
     let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
     runtime.await_initial_resources().await;
