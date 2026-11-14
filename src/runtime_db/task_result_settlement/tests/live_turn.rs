@@ -11,6 +11,9 @@ use crate::types::{
 #[path = "source_predicate.rs"]
 mod source_predicate;
 
+#[path = "replay_clock.rs"]
+mod replay_clock;
+
 #[test]
 fn exact_wait_continuation_uses_canonical_columns_with_or_without_wait_ref() {
     let (_dir, db) = runtime_db();
@@ -559,8 +562,14 @@ fn paused_recovery_observation_keeps_the_canonical_interrupted_anchor() -> Resul
         )?;
         let observed = observe_recovery_source_tx(tx, &source, &[&paused], Utc::now())?;
         let replay = &observed.paused_replays[&paused.result_identity];
+        assert!(observed.time_independent);
         assert!(replay.root_is_charged);
         assert_eq!(replay.interrupted_anchor.as_deref(), Some("live-anchor"));
+        assert!(replay.interrupted_anchor_not_before.is_some());
+        assert_eq!(
+            observe_recovery_source_tx(tx, &source, &[&paused], Utc::now() + Duration::days(1))?,
+            observed
+        );
         assert_eq!(latest_for_message_tx(tx, &record.message_id)?, Some(paused));
         Ok(())
     })

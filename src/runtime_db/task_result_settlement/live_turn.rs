@@ -246,7 +246,7 @@ pub(crate) fn admit_live_task_results_tx(
                 agent_id,
                 turn_id,
                 Some(activation_id),
-                cutoff,
+                SourceTime::At(cutoff),
                 None,
             )?
         {
@@ -369,7 +369,7 @@ pub(crate) fn recover_live_task_results_tx(
                         .parent_turn_id()
                         .context("same-Turn result has no parent Turn")?,
                     Some(predecessor_activation_id),
-                    now,
+                    SourceTime::At(now),
                     Some(&recovery),
                 )?
         } else {
@@ -378,7 +378,7 @@ pub(crate) fn recover_live_task_results_tx(
                 record,
                 &current,
                 predecessor_activation_id,
-                now,
+                SourceTime::At(now),
                 &recovery,
             )?
         };
@@ -395,7 +395,7 @@ pub(crate) fn recover_live_task_results_tx(
                 &record,
                 &current,
                 activation_id,
-                now,
+                SourceTime::At(now),
                 &recovery,
             )?
         {
@@ -632,13 +632,33 @@ fn turn_matches_attempt_source(
     turn.effective_owner() == owner
 }
 
+/// Only dynamic source cutoffs use this clock. Historical admission cutoffs
+/// remain ordinary comparisons, even while observing a future replay.
+#[derive(Clone, Copy)]
+enum SourceTime<'a> {
+    At(DateTime<Utc>),
+    Observe(&'a std::cell::Cell<DateTime<Utc>>),
+}
+
+impl SourceTime<'_> {
+    fn includes(self, at: DateTime<Utc>) -> bool {
+        match self {
+            Self::At(cutoff) => at <= cutoff,
+            Self::Observe(not_before) => {
+                not_before.set(not_before.get().max(at));
+                true
+            }
+        }
+    }
+}
+
 fn source_is_live_tx(
     tx: &Transaction<'_>,
     record: &TaskResultSettlementRecord,
     agent_id: &str,
     turn_id: &str,
     activation_id: Option<&str>,
-    cutoff: DateTime<Utc>,
+    cutoff: SourceTime<'_>,
     recovery: Option<&RecoverySources>,
 ) -> Result<bool> {
     if !result_source_matches_tx(
@@ -695,7 +715,7 @@ fn result_source_matches_tx(
     agent_id: &str,
     turn_id: &str,
     activation_id: Option<&str>,
-    cutoff: DateTime<Utc>,
+    cutoff: SourceTime<'_>,
     recovering: bool,
 ) -> Result<bool> {
     result_typed_source_matches_tx(
@@ -717,7 +737,7 @@ fn result_typed_source_matches_tx(
     agent_id: &str,
     source: &TaskRejoinSource,
     activation_id: Option<&str>,
-    cutoff: DateTime<Utc>,
+    cutoff: SourceTime<'_>,
     recovering: bool,
 ) -> Result<bool> {
     let (expected_state, expected_activation) = if recovering {
@@ -727,11 +747,13 @@ fn result_typed_source_matches_tx(
     };
     if record.agent_id != agent_id
         || &record.source != source
-        || record.created_at > cutoff
+        || !cutoff.includes(record.created_at)
         || record.state != expected_state
         || record.activation_id.as_deref() != expected_activation
         || if recovering {
-            record.admitted_at.is_none_or(|admitted| admitted > cutoff)
+            record
+                .admitted_at
+                .is_none_or(|admitted| !cutoff.includes(admitted))
         } else {
             record.admitted_at.is_some()
         }
@@ -796,9 +818,9 @@ fn result_typed_source_matches_tx(
         || expected.task_status != record.task_status
         || expected.work_item_id != record.work_item_id
         || task.parent_message_id.as_deref() != Some(record.message_id.as_str())
-        || task.created_at > cutoff
-        || task.updated_at > cutoff
-        || message.created_at > cutoff
+        || !cutoff.includes(task.created_at)
+        || !cutoff.includes(task.updated_at)
+        || !cutoff.includes(message.created_at)
         || message.kind != MessageKind::TaskResult
         || message.task_id.as_deref() != Some(task.id.as_str())
         || !matches!(&message.origin, MessageOrigin::Task { task_id } if task_id == &task.id)
@@ -831,7 +853,7 @@ fn initial_source_is_recoverable_tx(
     record: &TaskResultSettlementRecord,
     current: &crate::domain::execution_protocol::ExecutionAttempt,
     predecessor_activation_id: &str,
-    now: DateTime<Utc>,
+    now: SourceTime<'_>,
     recovery: &RecoverySources,
 ) -> Result<bool> {
     use crate::domain::execution_protocol::ExecutionBinding;
@@ -991,7 +1013,7 @@ fn reply_is_live_tx(
     message: &MessageEnvelope,
     turn_id: &str,
     activation_id: Option<&str>,
-    cutoff: DateTime<Utc>,
+    cutoff: SourceTime<'_>,
     recovery: Option<&RecoverySources>,
     allow_consumed_owner: bool,
 ) -> Result<bool> {
@@ -1029,7 +1051,7 @@ fn reply_is_live_tx(
         allow_consumed_owner && consumed_reply_owner_matches_tx(tx, task, reply_id, &response)?;
     if reply.id != reply_id
         || reply.agent_id != task.agent_id
-        || reply.created_at > cutoff
+        || !cutoff.includes(reply.created_at)
         || !crate::wake_contract::is_agent_message(&reply)
         || reply.origin != response.caller.origin
         || reply.authority_class != response.caller.authority_class
@@ -1045,7 +1067,9 @@ fn reply_is_live_tx(
         || request.caller.caller_agent_id.as_deref() != Some(task.agent_id.as_str())
         || request.delivery_id != *request_delivery_id
         || request.outcome != AgentMessageDeliveryOutcome::Accepted
-        || request.accepted_at.is_none_or(|accepted| accepted > cutoff)
+        || request
+            .accepted_at
+            .is_none_or(|accepted| !cutoff.includes(accepted))
         || response_rowid <= *boundary
         || response.delivery_id != response_id
         || response.target_agent_id != task.agent_id
@@ -1055,7 +1079,7 @@ fn reply_is_live_tx(
         || response.outcome != AgentMessageDeliveryOutcome::Accepted
         || response
             .accepted_at
-            .is_none_or(|accepted| accepted > cutoff)
+            .is_none_or(|accepted| !cutoff.includes(accepted))
         || !matches!(
             response.state,
             AgentMessageDeliveryState::Queued
@@ -1644,6 +1668,32 @@ pub(crate) fn interrupted_admitted_result_anchor_tx(
     message_id: &str,
     now: DateTime<Utc>,
 ) -> Result<Option<String>> {
+    interrupted_result_anchor_at_tx(tx, agent_id, message_id, SourceTime::At(now))
+}
+
+pub(super) fn observe_interrupted_result_anchor_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+) -> Result<Option<(String, DateTime<Utc>)>> {
+    let not_before = std::cell::Cell::new(DateTime::<Utc>::MIN_UTC);
+    Ok(
+        interrupted_result_anchor_at_tx(
+            tx,
+            agent_id,
+            message_id,
+            SourceTime::Observe(&not_before),
+        )?
+        .map(|anchor| (anchor, not_before.get())),
+    )
+}
+
+fn interrupted_result_anchor_at_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    message_id: &str,
+    now: SourceTime<'_>,
+) -> Result<Option<String>> {
     let Some(record) = super::latest_for_message_tx(tx, message_id)? else {
         return Ok(None);
     };
@@ -1743,7 +1793,15 @@ pub(crate) fn same_turn_candidate_is_live_tx(
     turn_id: &str,
     cutoff: DateTime<Utc>,
 ) -> Result<bool> {
-    source_is_live_tx(tx, record, agent_id, turn_id, None, cutoff, None)
+    source_is_live_tx(
+        tx,
+        record,
+        agent_id,
+        turn_id,
+        None,
+        SourceTime::At(cutoff),
+        None,
+    )
 }
 
 #[cfg(test)]
@@ -1770,7 +1828,15 @@ pub(crate) fn same_turn_candidates_tx(
     )?;
     let mut candidates = Vec::new();
     for record in records {
-        if source_is_live_tx(tx, &record, agent_id, turn_id, None, cutoff, None)? {
+        if source_is_live_tx(
+            tx,
+            &record,
+            agent_id,
+            turn_id,
+            None,
+            SourceTime::At(cutoff),
+            None,
+        )? {
             candidates.push(record);
         }
     }

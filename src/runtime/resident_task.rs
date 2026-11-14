@@ -250,7 +250,8 @@ pub(crate) struct TaskCoverage {
     pub running: TaskRunningSourceCoverage,
     #[serde(default)]
     pub recovery_sources: BTreeMap<String, TaskRecoverySourceObservation>,
-    /// All recovery predicates in this coverage were observed at this time.
+    /// Legacy observation clock; owned scheduler captures freeze their consumer
+    /// clock here without changing the resident publication.
     #[serde(default)]
     pub recovery_at: Option<DateTime<Utc>>,
     pub active_complete: bool,
@@ -280,6 +281,31 @@ impl TaskCoverage {
     pub(crate) fn owned_metadata_record_count(&self) -> Result<usize> {
         coverage_record_count(self)
     }
+
+    pub(crate) fn recovery_sources_prepared_at(
+        &self,
+        source_ids: &BTreeSet<String>,
+        at: Option<DateTime<Utc>>,
+    ) -> Result<()> {
+        for id in source_ids {
+            let observed = self
+                .recovery_sources
+                .get(id)
+                .ok_or_else(|| TaskReadError::IncompleteRecoverySource(id.clone()))?;
+            if at.is_none()
+                || (!observed.time_independent && self.recovery_at != at)
+                || (observed.time_independent
+                    && observed.paused_replays.values().any(|replay| {
+                        replay.interrupted_anchor.is_some()
+                            && replay.interrupted_anchor_not_before.is_none()
+                    }))
+            {
+                return Err(TaskReadError::RecoveryTimeNotPrepared(id.clone()).into());
+            }
+        }
+        Ok(())
+    }
+
     fn clone_without_stops(&self) -> Self {
         Self {
             revision: self.revision,
@@ -363,11 +389,7 @@ impl TaskCoverage {
         if request.terminal_limit > self.terminal.limit && !self.terminal.is_exhaustive {
             return Err(TaskReadError::WindowExpansion.into());
         }
-        for id in &request.recovery_source_ids {
-            if !self.recovery_sources.contains_key(id) {
-                return Err(TaskReadError::IncompleteRecoverySource(id.clone()).into());
-            }
-        }
+        self.recovery_sources_prepared_at(&request.recovery_source_ids, self.recovery_at)?;
         let mut keys = request.required_keys.clone();
         if request.include_active {
             keys.extend(
@@ -454,6 +476,8 @@ pub(crate) enum TaskReadError {
     IncompleteResults,
     #[error("Task recovery source observation is not prepared: {0}")]
     IncompleteRecoverySource(String),
+    #[error("Task recovery source observation is not prepared for this clock: {0}")]
+    RecoveryTimeNotPrepared(String),
     #[error("Task Stop responsibility/head metadata is not complete")]
     IncompleteStops,
     #[error("Task query relation metadata is not prepared")]
@@ -520,6 +544,7 @@ impl ResidentTaskDomain {
         record_limit: usize,
         byte_limit: usize,
     ) -> Result<Self> {
+        let _stage = crate::diagnostics::attribution::TASK_DOMAIN_REBUILD.start();
         ensure!(
             !scope.agent_id.is_empty() && scope.identity_incarnation > 0 && coverage.revision > 0,
             "invalid Task domain bootstrap"
