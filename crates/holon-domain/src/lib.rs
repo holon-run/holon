@@ -5,6 +5,19 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+mod input;
+mod message;
+mod runtime_error;
+mod turn;
+
+pub use input::{IdleInputBatchItem, IdleInputBatchRecord};
+pub use message::{BriefAttachment, MessageBody, MessageOrigin, Priority};
+pub use runtime_error::{RuntimeErrorContext, RuntimeErrorDescriptor, RuntimeErrorDomain};
+pub use turn::{
+    TurnNoBriefReason, TurnOwner, TurnReplayProvenance, TurnTerminalCheckpointRecord,
+    TurnTerminalRecord, TurnTerminalSummary,
+};
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub struct TurnKey {
     pub turn_index: u64,

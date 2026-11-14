@@ -1585,8 +1585,10 @@ dependencies = [
 name = "holon-domain"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "schemars",
  "serde",
+ "serde_json",
 ]
 
 [[package]]
