@@ -6,8 +6,8 @@ Decision:
   `CARGO_INCREMENTAL=0`, `CARGO_BUILD_JOBS=2`, and
   `CARGO_PROFILE_{DEV,TEST}_DEBUG=line-tables-only` with
   `CARGO_PROFILE_{DEV,TEST,RELEASE}_CODEGEN_UNITS=1`.
-- The `lib-b` matrix job overrides test codegen units to 16 after the
-  source-level test split described below; other jobs retain one unit.
+- The `lib-a` and `lib-b` matrix jobs override test codegen units to 16 after
+  the source-level test split described below; other jobs retain one unit.
 - Test jobs additionally keep `CARGO_PROFILE_{DEV,TEST}_DEBUG_ASSERTIONS=true`,
   so the reduced debuginfo does not weaken test semantics.
 - macOS and release jobs are outside this Linux regression experiment.
@@ -113,5 +113,10 @@ Subsequent CI configuration:
   measurement of aggregate cgroup memory and does not establish the cause of
   earlier runner shutdowns. CI records `free -h` and `/usr/bin/time -v` output
   to distinguish subsequent compile, runner, and test failures.
+- With one codegen unit, a passing `lib-a` run (`464c5e49`) reported a
+  maximum child RSS of 15620972 KiB. Several later
+  `lib-a` runners shut down while compiling group `a`, before running any
+  tests. Apply the `lib-b` setting to the runtime libtest as well, within the
+  same runner and timeout budgets.
 - Test debug assertions, warning checks, and the existing job timeouts remain
   enabled. Successful compilation alone does not certify the full test gate.
