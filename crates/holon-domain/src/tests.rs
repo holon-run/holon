@@ -1,8 +1,7 @@
 use super::*;
-use crate::config::ModelRouteRef;
-use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
-use crate::observability::TraceContext;
-use crate::system::{WorkspaceAccessMode, WorkspaceProjectionKind};
+use crate::execution_types::{WorkspaceAccessMode, WorkspaceProjectionKind};
+use crate::model_values::ModelRouteRef;
+use crate::scheduler::{ScenarioMode, SchedulerScenarioClass};
 use chrono::Utc;
 use std::path::PathBuf;
 
@@ -573,7 +572,7 @@ fn legacy_agent_model_state_deserializes_without_resolved_policy_fields() {
     );
     assert_eq!(
         model.resolved_policy.source,
-        crate::model_catalog::ModelMetadataSource::UnknownFallback
+        crate::model_values::ModelMetadataSource::UnknownFallback
     );
 }
 
@@ -768,7 +767,7 @@ fn legacy_command_continue_on_result_recovery_is_terminal_reentry_not_blocking()
 #[test]
 fn task_status_snapshot_includes_command_identity_fields() {
     let cmd = "git status --short";
-    let digest = crate::tool::helpers::command_digest(cmd);
+    let digest = crate::task::command_digest(cmd);
     let task = TaskRecord {
         id: "task-command".into(),
         agent_id: "default".into(),
@@ -859,10 +858,7 @@ fn command_snapshot_falls_back_to_recovery_identity() {
     let command = snapshot.command.expect("command task snapshot");
 
     assert_eq!(command.cmd.as_deref(), Some(cmd));
-    assert_eq!(
-        command.cmd_digest,
-        Some(crate::tool::helpers::command_digest(cmd))
-    );
+    assert_eq!(command.cmd_digest, Some(crate::task::command_digest(cmd)));
     assert_eq!(command.workdir.as_deref(), Some("/tmp/repo"));
     assert_eq!(command.shell.as_deref(), Some("/bin/zsh"));
     assert_eq!(command.login, Some(false));
@@ -875,7 +871,7 @@ fn command_snapshot_falls_back_to_recovery_identity() {
     assert_eq!(list_command.cmd.as_deref(), Some(cmd));
     assert_eq!(
         list_command.cmd_digest,
-        Some(crate::tool::helpers::command_digest(cmd))
+        Some(crate::task::command_digest(cmd))
     );
     assert_eq!(list_command.promoted_from_exec_command, Some(true));
     assert_eq!(list_command.result_summary, None);

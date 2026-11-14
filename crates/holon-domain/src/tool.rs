@@ -4,7 +4,7 @@ use super::task::{CommandTaskStatusSnapshot, TaskHandle, TaskStatusSnapshot};
 use super::workspace::{
     ActiveWorkspaceEntry, ExecutionRootEntry, WorkspaceEntry, WorkspaceOccupancyRecord,
 };
-use crate::system::{WorkspaceAccessMode, WorkspaceProjectionKind};
+use crate::execution_types::{WorkspaceAccessMode, WorkspaceProjectionKind};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -357,9 +357,9 @@ pub struct GenerateImageResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub generation_succeeded: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub requested_parameters: Option<crate::provider::image_generation::ImageGenerationParameters>,
+    pub requested_parameters: Option<crate::image_contract::ImageGenerationParameters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_parameters: Option<crate::provider::image_generation::ImageGenerationParameters>,
+    pub provider_parameters: Option<crate::image_contract::ImageGenerationParameters>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider_effective_parameters: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -367,11 +367,11 @@ pub struct GenerateImageResult {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parameter_mapping: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contract: Option<crate::provider::image_generation::ImageGenerationContract>,
+    pub contract: Option<crate::image_contract::ImageGenerationContract>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub source_images: Vec<GeneratedImageSourceReference>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub conversion: Vec<crate::provider::image_delivery::ImageConversionMetadata>,
+    pub conversion: Vec<crate::image_contract::ImageConversionMetadata>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary_text: Option<String>,
 }

@@ -3,8 +3,8 @@ use super::message::AuthorityClass;
 use super::model::AgentModelResolution;
 use super::state::{AgentTokenUsageSummary, FailureArtifact};
 use super::tool::ToolArtifactRef;
-use crate::domain::work_item::WorkItemDelegationRecord;
-use crate::runtime::agent_observation::ChildAgentObservabilitySnapshot;
+use crate::agent_observation::ChildAgentObservabilitySnapshot;
+use crate::work_item::WorkItemDelegationRecord;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -192,7 +192,7 @@ impl TaskRecord {
 
     pub fn rejoin_fence(
         &self,
-    ) -> std::result::Result<crate::domain::execution_protocol::RejoinFence, String> {
+    ) -> std::result::Result<crate::execution_protocol::RejoinFence, String> {
         let detail = self
             .detail
             .as_ref()
@@ -211,7 +211,7 @@ impl TaskRecord {
             .and_then(serde_json::Value::as_u64)
             .filter(|generation| *generation > 0)
             .ok_or_else(|| "task rejoin contract is missing generation".to_string())?;
-        use crate::domain::execution_protocol::TaskRejoinSource;
+        use crate::execution_protocol::TaskRejoinSource;
         let source = match (
             detail.get("parent_turn_id"),
             detail.get("command_creation_id"),
@@ -238,7 +238,7 @@ impl TaskRecord {
             }
             _ => return Err("task rejoin contract requires exactly one creation source".into()),
         };
-        Ok(crate::domain::execution_protocol::RejoinFence {
+        Ok(crate::execution_protocol::RejoinFence {
             obligation_id: obligation_id.to_string(),
             generation,
             source,
@@ -423,11 +423,11 @@ pub struct CommandTaskStatusSnapshot {
 }
 
 impl CommandTaskStatusSnapshot {
-    pub(crate) fn from_task_record(task: &TaskRecord) -> Option<Self> {
+    pub fn from_task_record(task: &TaskRecord) -> Option<Self> {
         Self::from_task_record_with_runtime_fields(task, true)
     }
 
-    pub(crate) fn identity_from_task_record(task: &TaskRecord) -> Option<Self> {
+    pub fn identity_from_task_record(task: &TaskRecord) -> Option<Self> {
         Self::from_task_record_with_runtime_fields(task, false)
     }
 
@@ -450,10 +450,8 @@ impl CommandTaskStatusSnapshot {
 
         let cmd = task_detail_string(&task.detail, "cmd")
             .or_else(|| recovery_command.map(|(spec, _)| spec.cmd.clone()));
-        let cmd_digest = task_detail_string(&task.detail, "cmd_digest").or_else(|| {
-            cmd.as_ref()
-                .map(|cmd| crate::tool::helpers::command_digest(cmd))
-        });
+        let cmd_digest = task_detail_string(&task.detail, "cmd_digest")
+            .or_else(|| cmd.as_ref().map(|cmd| command_digest(cmd)));
         let workdir = task_detail_string(&task.detail, "workdir").or_else(|| {
             recovery_command.and_then(|(spec, _)| spec.workdir.as_ref().map(ToString::to_string))
         });
@@ -894,4 +892,10 @@ pub struct CommandTaskSpec {
     pub accepts_input: bool,
     #[serde(default, alias = "continue_on_result")]
     pub terminal_reentry: bool,
+}
+
+pub fn command_digest(cmd: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(cmd.as_bytes());
+    format!("{digest:x}")
 }

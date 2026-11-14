@@ -5,18 +5,79 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-mod input;
-mod message;
-mod runtime_error;
-mod turn;
+pub mod calendar;
+pub mod decision_telemetry;
+pub mod execution_protocol;
+pub mod execution_types;
+pub mod ids;
+pub mod model_values;
+pub mod runtime_event;
+pub mod scheduler;
+pub mod timezone;
 
-pub use input::{IdleInputBatchItem, IdleInputBatchRecord};
-pub use message::{BriefAttachment, MessageBody, MessageOrigin, Priority};
-pub use runtime_error::{RuntimeErrorContext, RuntimeErrorDescriptor, RuntimeErrorDomain};
-pub use turn::{
-    TurnNoBriefReason, TurnOwner, TurnReplayProvenance, TurnTerminalCheckpointRecord,
-    TurnTerminalRecord, TurnTerminalSummary,
+mod agent;
+mod agent_observation;
+pub mod agent_records;
+mod audit;
+mod brief;
+mod image_contract;
+mod input;
+mod instructions;
+mod media;
+mod memory;
+mod message;
+mod model;
+mod operator;
+mod runtime_error;
+mod serde_helpers;
+mod skills;
+mod state;
+mod task;
+mod templates;
+mod tool;
+mod tool_error;
+mod trace;
+mod transcript;
+mod turn;
+mod wake;
+mod wire;
+pub mod work_item;
+mod workspace;
+mod workspace_identity;
+
+pub use agent::*;
+pub use agent_observation::*;
+pub use agent_records::*;
+pub use audit::*;
+pub use brief::*;
+pub use input::*;
+pub use instructions::*;
+pub use memory::*;
+pub use message::*;
+pub use model::*;
+pub use operator::*;
+pub use runtime_error::*;
+pub use skills::*;
+pub use state::*;
+pub use task::*;
+pub use templates::*;
+pub use tool::*;
+pub use transcript::*;
+pub use turn::*;
+pub use wake::*;
+pub use work_item::*;
+pub use workspace::*;
+pub use workspace_identity::*;
+
+pub use image_contract::{
+    parse_image_dimensions, ImageConversionMetadata, ImageGenerationApi, ImageGenerationContract,
+    ImageGenerationParameterError, ImageGenerationParameters, ImageParameterContract,
+    ImageParameterSupport, ImageSizeConstraints, ResolvedImageGenerationParameters,
 };
+pub use media::*;
+pub use tool_error::ToolError;
+pub use trace::{TraceContext, TraceContextError};
+pub use wire::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
 pub struct TurnKey {
@@ -74,3 +135,6 @@ impl TurnTerminalKind {
         !matches!(self, Self::Completed)
     }
 }
+
+#[cfg(test)]
+mod tests;

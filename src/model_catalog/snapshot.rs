@@ -8,7 +8,7 @@ use super::{
 };
 
 const SCHEMA_VERSION: u32 = 1;
-const BUILT_IN_SNAPSHOT: &str = include_str!("builtin_snapshot_v1.json");
+use holon_domain::model_values::BUILT_IN_SNAPSHOT;
 /// Checked-in `models.dev` supplemental catalog. Drafted by
 /// `holon models-dev refresh` for allowlisted providers and admitted through
 /// PR review; the runtime merges it into the built-in catalog.
@@ -403,7 +403,7 @@ mod tests {
         std::fs::write(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/src/model_catalog/builtin_snapshot_v1.json"
+                "/crates/holon-domain/src/builtin_snapshot_v1.json"
             ),
             format!("{json}\n"),
         )

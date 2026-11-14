@@ -258,7 +258,8 @@ fn apply_patch_sync<W>(
             if detected != PatchFormat::Unknown && detected != expected_format {
                 match parse_patch_for_format(input, detected) {
                     Ok(patches) => {
-                        let strict_failure_kind = ToolError::from_anyhow(&strict_error).kind;
+                        let strict_failure_kind =
+                            crate::tool::tool_error_from_anyhow(&strict_error).kind;
                         (
                             patches,
                             Some(PatchCompatibility::CrossFormat {
@@ -274,7 +275,8 @@ fn apply_patch_sync<W>(
             {
                 match parse_unified_diff_with_trailing_sentinel(input)? {
                     Some(patches) => {
-                        let strict_failure_kind = ToolError::from_anyhow(&strict_error).kind;
+                        let strict_failure_kind =
+                            crate::tool::tool_error_from_anyhow(&strict_error).kind;
                         (
                             patches,
                             Some(PatchCompatibility::TrailingSentinel {
@@ -2544,7 +2546,7 @@ mod tests {
             tokio::fs::write(&file, "old\n").await.unwrap();
 
             let error = apply_patch(dir.path(), patch).await.unwrap_err();
-            let tool_error = ToolError::from_anyhow(&error);
+            let tool_error = crate::tool::tool_error_from_anyhow(&error);
             assert_eq!(tool_error.kind, "invalid_patch_syntax");
             assert_eq!(
                 tool_error.details.as_ref().unwrap()["rule"],
@@ -2581,7 +2583,7 @@ mod tests {
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_patch_syntax");
         assert_eq!(
             tool_error.details.as_ref().unwrap()["rule"],
@@ -2625,7 +2627,7 @@ mod tests {
     fn parse_unified_diff_wrong_format_error_does_not_echo_competing_markers() {
         let malformed = "*** Begin Patch\nnot a complete patch\n";
         let error = parse_patch(malformed).unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_patch_syntax");
         assert_eq!(
@@ -2924,7 +2926,7 @@ mod tests {
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "existing_file");
         assert_eq!(
             tokio::fs::read_to_string(&existing).await.unwrap(),
@@ -3252,7 +3254,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         let details = tool_error.details.as_ref().unwrap();
         assert!(details["nearby_lines"]
@@ -3338,7 +3340,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["suspected_issue"], "markdown_list_diff_prefix");
@@ -3442,7 +3444,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "ambiguous_context");
     }
 
@@ -3456,7 +3458,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "path_escape");
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["requested_path"], "../escape.txt");
@@ -3568,7 +3570,7 @@ foo
         );
 
         let error = apply_patch(dir.path(), &patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         let details = tool_error.details.as_ref().unwrap();
         let nearby_lines = details["nearby_lines"].as_array().unwrap();
@@ -3593,7 +3595,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["nearby_range"]["start"], 0);
         assert_eq!(details["nearby_range"]["end"], 0);
@@ -3627,7 +3629,7 @@ foo
         );
 
         let error = apply_patch(dir.path(), &patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         let details = tool_error.details.as_ref().unwrap();
         let divergence = &details["first_divergence"];
@@ -3663,7 +3665,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         let details = tool_error.details.as_ref().unwrap();
         let divergence = &details["first_divergence"];
@@ -3700,7 +3702,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["candidate_search"], "none");
@@ -3727,7 +3729,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         assert_eq!(
             tokio::fs::read_to_string(dir.path().join("sample.txt"))
@@ -3748,7 +3750,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "missing_file");
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["requested_path"], "missing.txt");
@@ -3800,7 +3802,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "missing_file");
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["action"], "update");
@@ -3823,7 +3825,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "missing_file");
         assert!(!dir.path().join("missing.txt").try_exists().unwrap());
     }
@@ -3841,7 +3843,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "missing_file");
         assert!(!dir.path().join("missing.txt").try_exists().unwrap());
     }
@@ -3922,7 +3924,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "context_not_found");
         assert_eq!(
             tokio::fs::read_to_string(&file).await.unwrap(),
@@ -3946,7 +3948,7 @@ foo
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "existing_file");
         assert!(!tokio::fs::try_exists(&file).await.unwrap());
     }
@@ -3982,7 +3984,7 @@ diff --git a/new.txt b/new.txt
     #[test]
     fn parse_patch_rejects_legacy_dsl() {
         let error = parse_patch("*** Begin Patch\n*** End Patch\n").unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_patch_syntax");
         assert_eq!(
             tool_error.details.as_ref().unwrap()["rule"],
@@ -3993,7 +3995,7 @@ diff --git a/new.txt b/new.txt
     #[test]
     fn parse_patch_rejects_invalid_hunk_empty_line_with_position() {
         let error = parse_patch("--- a/file.txt\n+++ b/file.txt\n@@ -1,1 +1,1 @@\n\n").unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_patch_syntax");
         let details = tool_error.details.as_ref().unwrap();
         assert_eq!(details["line"], 4);
@@ -4006,7 +4008,7 @@ diff --git a/new.txt b/new.txt
             "diff --git a/image.png b/image.png\nBinary files a/image.png and b/image.png differ\n",
         )
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "unsupported_git_patch_feature");
     }
 
@@ -4017,7 +4019,7 @@ diff --git a/new.txt b/new.txt
             "diff --git a/sub b/sub\nSubproject commit abc123\n",
         ] {
             let error = parse_patch(patch).unwrap_err();
-            let tool_error = ToolError::from_anyhow(&error);
+            let tool_error = crate::tool::tool_error_from_anyhow(&error);
             assert_eq!(tool_error.kind, "unsupported_git_patch_feature");
         }
     }
@@ -4028,7 +4030,7 @@ diff --git a/new.txt b/new.txt
             "diff --git a/old.txt b/new.txt\nrename from other.txt\nrename to new.txt\n",
         )
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "rename_path_mismatch");
     }
 
@@ -4038,7 +4040,7 @@ diff --git a/new.txt b/new.txt
             "rename from old.txt\nrename to new.txt\n--- a/old.txt\n+++ b/new.txt\n@@ -1,1 +1,1 @@\n-old\n+new\n",
         )
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "missing_git_header");
     }
 
@@ -4097,7 +4099,7 @@ diff --git a/new.txt b/new.txt
                 let error = runtime()
                     .block_on(apply_patch(dir.path(), &patch))
                     .unwrap_err();
-                let tool_error = ToolError::from_anyhow(&error);
+                let tool_error = crate::tool::tool_error_from_anyhow(&error);
                 prop_assert_eq!(tool_error.kind, "path_escape");
             }
 
@@ -4263,7 +4265,7 @@ diff --git a/new.txt b/new.txt
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "ambiguous_context");
 
         // candidates must exist and have correct count ("same" occurs 4 times)
@@ -4318,7 +4320,7 @@ diff --git a/new.txt b/new.txt
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "ambiguous_context");
     }
 
@@ -4338,7 +4340,7 @@ diff --git a/new.txt b/new.txt
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "ambiguous_context");
 
         // "repeat" occurs 3 times in the file
@@ -4372,7 +4374,7 @@ diff --git a/new.txt b/new.txt
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "ambiguous_context");
 
         // "pattern" occurs 2 times in the file
@@ -4422,7 +4424,7 @@ diff --git a/new.txt b/new.txt
 "#;
 
         let error = apply_patch(dir.path(), patch).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         // Verify the syntax error category and specific rule
         assert_eq!(tool_error.kind, "invalid_patch_syntax");

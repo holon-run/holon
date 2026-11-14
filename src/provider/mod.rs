@@ -51,10 +51,8 @@ pub use material::ProviderRequestMaterial;
 #[cfg(test)]
 pub(crate) use registry::ProviderCatalogRegistration;
 pub(crate) use registry::{
-    build_provider_for_route, provider_definition, provider_definitions,
-    provider_transport_definition, provider_transport_definition_by_wire_name,
-    provider_transport_definitions, ModelDiscoveryAuth, ModelDiscoveryDecoder,
-    ModelDiscoveryDefinition, ModelDiscoveryRoute, ProviderCatalogPolicy,
+    build_provider_for_route, provider_definition, provider_definitions, ModelDiscoveryAuth,
+    ModelDiscoveryDecoder, ModelDiscoveryDefinition, ModelDiscoveryRoute, ProviderCatalogPolicy,
     ProviderContextManagement, ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 pub(crate) use retry::{sanitize_transport_url, sanitized_provider_error};

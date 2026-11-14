@@ -647,7 +647,6 @@ impl From<WaitForWakeArg> for WaitForWakeKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::ToolError;
     use serde_json::json;
 
     #[test]
@@ -658,7 +657,7 @@ mod tests {
             "summary": "not allowed",
         }))
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert!(tool_error
@@ -673,7 +672,7 @@ mod tests {
     fn wait_for_requires_resource_for_task_and_timer_waits() {
         for wake in [WaitForWakeArg::TaskResult, WaitForWakeArg::Timer] {
             let error = validate_resource_for_wake(wake, None).unwrap_err();
-            let tool_error = ToolError::from_anyhow(&error);
+            let tool_error = crate::tool::tool_error_from_anyhow(&error);
             assert_eq!(tool_error.kind, "invalid_tool_input");
             assert_eq!(
                 tool_error
@@ -698,7 +697,7 @@ mod tests {
         };
 
         let error = validate_wait_for_args(&args).unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert_eq!(

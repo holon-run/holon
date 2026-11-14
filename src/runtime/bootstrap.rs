@@ -3209,7 +3209,7 @@ mod view_image_route_tests {
         host::RuntimeHost,
         model_catalog::{ModelCapabilityOverride, ModelRuntimeOverride},
         runtime::tests::support::StubProvider,
-        tool::{tools::view_image, ToolError},
+        tool::tools::view_image,
         types::{AuthorityClass, ViewImageResult},
     };
     use axum::{http::StatusCode, routing::post, Json, Router};
@@ -3555,7 +3555,7 @@ mod view_image_route_tests {
             .await
             .unwrap_err();
         assert_eq!(
-            ToolError::from_anyhow(&error).kind,
+            crate::tool::tool_error_from_anyhow(&error).kind,
             "media_capability_mismatch"
         );
         assert_eq!(server.count(), 2);
@@ -3750,7 +3750,7 @@ mod view_image_route_tests {
                 ("ollama@default/text-only", "media_capability_mismatch"),
             ] {
                 let error = observe(&runtime, &home, Some(model)).await.unwrap_err();
-                let error = ToolError::from_anyhow(&error);
+                let error = crate::tool::tool_error_from_anyhow(&error);
                 assert_eq!(error.kind, kind, "{model}");
                 if kind != "invalid_tool_input" {
                     let details = error.details.unwrap();
@@ -3791,7 +3791,7 @@ mod view_image_route_tests {
             .await
             .unwrap_err();
         assert_eq!(
-            ToolError::from_anyhow(&error).kind,
+            crate::tool::tool_error_from_anyhow(&error).kind,
             "media_capability_mismatch"
         );
         update_snapshot(&runtime, |snapshot| {
@@ -3804,11 +3804,11 @@ mod view_image_route_tests {
         let error = observe(&runtime, &home, Some("ollama/vision-a"))
             .await
             .unwrap_err();
-        let error = ToolError::from_anyhow(&error);
+        let error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(error.kind, "model_route_unavailable");
         assert_eq!(error.details.unwrap()["reason"], "credentials_unavailable");
         let error = observe(&runtime, &home, None).await.unwrap_err();
-        let error = ToolError::from_anyhow(&error);
+        let error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(error.kind, "vision_adapter_unavailable");
         let details = error.details.unwrap();
         assert_eq!(details["reason"], "credentials_unavailable");
@@ -3844,7 +3844,7 @@ mod view_image_route_tests {
         let error = observe(&runtime, &home, Some("ollama@rejected/vision-b"))
             .await
             .unwrap_err();
-        let error = ToolError::from_anyhow(&error);
+        let error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(error.kind, "vision_observation_failed");
         let details = error.details.unwrap();
         assert_eq!(
@@ -3881,7 +3881,7 @@ mod view_image_route_tests {
             });
             for count in 1..=2 {
                 let error = observe(&runtime, &home, None).await.unwrap_err();
-                let error = ToolError::from_anyhow(&error);
+                let error = crate::tool::tool_error_from_anyhow(&error);
                 let rendered = error.render();
                 assert!(!rendered.contains("sk-review-canary"));
                 assert!(!rendered.contains("sk-quoted-canary"));
@@ -3930,7 +3930,7 @@ mod view_image_route_tests {
                 .await
                 .unwrap_err();
             assert_eq!(
-                ToolError::from_anyhow(&error).kind,
+                crate::tool::tool_error_from_anyhow(&error).kind,
                 "vision_observation_failed"
             );
         }
@@ -3938,7 +3938,7 @@ mod view_image_route_tests {
             .await
             .unwrap_err();
         assert_eq!(
-            ToolError::from_anyhow(&error).details.unwrap()["reason"],
+            crate::tool::tool_error_from_anyhow(&error).details.unwrap()["reason"],
             "selected_route_cooling"
         );
         assert_eq!(server.count(), 2);
@@ -4042,7 +4042,7 @@ mod view_image_route_tests {
         let error = observe(&runtime, &home, Some("ollama/vision-a"))
             .await
             .unwrap_err();
-        let error = ToolError::from_anyhow(&error);
+        let error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(error.details.unwrap()["reason"], "selected_route_cooling");
         assert_eq!(server.count(), 1);
         assert!(observe(&runtime, &home, None).await.unwrap().cache_hit);
@@ -4067,7 +4067,7 @@ mod view_image_route_tests {
             .await
             .unwrap_err();
         assert_eq!(
-            ToolError::from_anyhow(&error).details.unwrap()["reason"],
+            crate::tool::tool_error_from_anyhow(&error).details.unwrap()["reason"],
             "selected_route_cooling",
             "an explicit request cannot bypass an existing automatic-route cooldown",
         );

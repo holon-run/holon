@@ -157,7 +157,7 @@ impl WaitConditionRecord {
         self.no_fallback_reason_ref().map(ToString::to_string)
     }
 
-    pub(crate) fn no_fallback_reason_ref(&self) -> Option<&str> {
+    pub fn no_fallback_reason_ref(&self) -> Option<&str> {
         explicit_no_fallback_reason(self.continuation.as_ref())
     }
 }

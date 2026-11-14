@@ -2,11 +2,10 @@
 
 ## Choice
 
-Keep `src/types.rs` as the public import surface. Type definitions under
-`src/types/` are grouped by responsibility. Runtime observations that carry
-budget guards live in `src/runtime/agent_observation.rs`. The `GetAgent` response and
-`ListSubagentCleanup` candidate live with their respective tools. The compatibility module
-re-exports those definitions and the existing domain types.
+Keep `src/types.rs` as the public import surface. The definitions and their
+wire contracts live in `holon-domain`, including agent observation snapshots
+and the GetAgent result. The main crate supplies the ledger-backed observation
+guard, builds tool responses, and classifies provider and database errors.
 
 Keep `src/runtime_db/transitions.rs` as the
 `RuntimeTransitionRepository` commit seam. Its execution-protocol code
@@ -62,17 +61,15 @@ behavior can be covered in more than one file.
 
 ## Reason
 
-The shared import path lets callers and concurrent changes keep using the
-same API while type definitions acquire specific owners. The module boundaries
-make cross-crate dependencies visible before extraction. Wire compatibility
-tests retain their `types::tests` paths and compile group. The runtime
-status inventory links to the files that define its enums.
+The shared import path lets callers and concurrent changes keep the same type
+paths. The type compatibility suite runs independently with
+`cargo test --manifest-path crates/holon-domain/Cargo.toml`. The runtime status inventory links to the files that define its enums.
 
-A crate extraction follows the dependencies of a type family and its methods.
-For example, Turn records carry durable error descriptors, whereas error
-classification needs the provider and database. An agent observation retains
-its original budget guard through cloning and serialization. These dependencies
-determine where each type belongs.
+Model route normalization uses the checked-in provider identity and model alias
+tables, including preferred endpoints for legacy references. The runtime still
+selects and constructs provider clients. An observation snapshot carries the
+runtime's ledger handle in a serde-skipped field and forks its reservation when
+cloned. The runtime retains the original handle for borrowed serialization.
 
 Transition code continues to use the transaction and publication invariants
 listed above.

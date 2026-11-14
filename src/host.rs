@@ -7546,7 +7546,10 @@ impl RuntimeHost {
         crate::diagnostics::resource_io::admit_cloned_value(identity)?;
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, &self.config().default_agent_id),
-            lifecycle: AgentLifecycleHint::try_from_status(&agent.id, agent.status.clone())?,
+            lifecycle: crate::runtime::agent_observation::read_lifecycle_hint(
+                &agent.id,
+                agent.status.clone(),
+            )?,
             status: agent.status,
             scheduling_posture,
             pending: agent.pending,
@@ -7902,7 +7905,10 @@ impl RuntimeHost {
                 identity,
                 &self.config().default_agent_id,
             ),
-            lifecycle: AgentLifecycleHint::try_from_status(&agent.id, agent.status.clone())?,
+            lifecycle: crate::runtime::agent_observation::read_lifecycle_hint(
+                &agent.id,
+                agent.status.clone(),
+            )?,
             status: agent.status,
             scheduling_posture,
             pending: agent.pending,
@@ -8180,7 +8186,8 @@ impl RuntimeHost {
         {
             if let Some(runtime) = self.try_get_loaded_runtime(&identity.agent_id).await {
                 let mut read = runtime.child_agent_summary_observation().await?;
-                read.observability._source_material = Some(material.guard()?);
+                read.observability._source_material =
+                    Some(holon_domain::ObservationMaterial::new(material.guard()?));
                 read.acquisition.read(|| {
                     crate::diagnostics::resource_io::admit_cloned_value(
                         &read.state.current_run_id,
@@ -8204,7 +8211,8 @@ impl RuntimeHost {
             let cold = self.acquire_cold_summary(&identity).await?;
             let active_task_count = cold.projection().active_tasks.len();
             let mut observability = cold.observability()?;
-            observability._source_material = Some(material.guard()?);
+            observability._source_material =
+                Some(holon_domain::ObservationMaterial::new(material.guard()?));
             cold.acquisition.read(|| {
                 crate::runtime_db::repositories::reserve_source_vec_slot(&mut children)?;
                 children.push(ChildAgentSummary {
@@ -11228,7 +11236,7 @@ impl RuntimeHost {
                 .find(|brief| brief.kind == crate::types::BriefKind::Ack)
                 .map(|brief| brief.text.clone()),
             last_result_brief: Some(evidence.text.clone()),
-            _read_material: crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?,
+            _read_material: crate::runtime::agent_observation::active_observation_material()?,
             _source_material: None,
         };
         let mut metadata = json!({
@@ -15282,7 +15290,7 @@ mod tests {
             .create_public_named_agent("receipt-bot", None, None, None)
             .await
             .expect_err("duplicate public named creation must fail closed");
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "already_exists");
         assert_eq!(
             tool_error.domain,
@@ -15304,7 +15312,7 @@ mod tests {
         let successes = usize::from(left.is_ok()) + usize::from(right.is_ok());
         assert_eq!(successes, 1);
         let error = left.err().or_else(|| right.err()).unwrap();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "already_exists");
         assert_eq!(
             tool_error.domain,
@@ -15515,7 +15523,7 @@ mod tests {
             after.agent.model_override.is_none(),
             "existing public named agent should keep its own runtime state"
         );
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "already_exists");
         assert_eq!(
             tool_error.details,
@@ -15575,7 +15583,7 @@ mod tests {
 
         let after = agent_summary_settled(&parent).await;
         assert!(after.agent.model_override.is_none());
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "already_exists");
         assert_eq!(
             tool_error.details,
@@ -19401,7 +19409,7 @@ mod tests {
             )
             .await
             .expect_err("archive admission failure must not return a successful TaskHandle");
-            let tool_error = crate::tool::ToolError::from_anyhow(&error);
+            let tool_error = crate::tool::tool_error_from_anyhow(&error);
             assert_eq!(tool_error.kind, "agent_invocation_failed");
             assert_eq!(
                 tool_error.domain,
@@ -19506,7 +19514,7 @@ mod tests {
         )
         .await
         .expect_err("invalid template selector should fail after task creation");
-        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "agent_invocation_failed");
         assert_eq!(

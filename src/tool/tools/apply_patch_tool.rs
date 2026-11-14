@@ -122,7 +122,7 @@ pub(crate) async fn execute(
     let mut outcome = outcome.map_err(|error| {
         if contains_replacement_character {
             anyhow::Error::new(add_replacement_character_recovery_hint(
-                ToolError::from_anyhow(&error),
+                crate::tool::tool_error_from_anyhow(&error),
             ))
         } else {
             error
@@ -614,7 +614,7 @@ mod tests {
             ApplyPatchSurface::UnifiedDiffJson,
         )
         .unwrap_err();
-        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert!(tool_error
             .recovery_hint
@@ -630,7 +630,7 @@ mod tests {
             ApplyPatchSurface::CodexDslFreeform,
         )
         .unwrap_err();
-        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert_eq!(tool_error.details.as_ref().unwrap()["field"], "input");
         assert!(!tool_error.message.contains("`patch`"));
@@ -664,7 +664,7 @@ mod tests {
         let error = apply_patch::apply_patch(dir.path(), patch, ApplyPatchSurface::UnifiedDiffJson)
             .await
             .unwrap_err();
-        let result = ToolResult::error(NAME, ToolError::from_anyhow(&error));
+        let result = ToolResult::error(NAME, crate::tool::tool_error_from_anyhow(&error));
         let rendered = render_for_model(&result).unwrap();
 
         assert!(rendered.contains("- kind: invalid_patch_syntax"));

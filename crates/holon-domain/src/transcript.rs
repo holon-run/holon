@@ -1,5 +1,5 @@
 use crate::ids;
-use crate::tool::ToolError;
+use crate::tool_error::ToolError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

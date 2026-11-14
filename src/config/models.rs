@@ -20,11 +20,9 @@ pub(crate) struct ResolvedViewImageVisionSelection {
     pub(crate) primary_route: ModelRouteRef,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModelRef {
-    pub provider: ProviderId,
-    pub model: String,
-}
+pub use holon_domain::model_values::{
+    ModelRef, ModelRouteCapability, ModelRouteRef, ProviderEndpointId, ResolvedModelCapabilities,
+};
 
 pub(crate) fn authenticated_model_route_candidates(
     providers: &ProviderRegistry,
@@ -42,244 +40,25 @@ pub(crate) fn authenticated_model_route_candidates(
         .collect()
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProviderEndpointId(String);
-
-impl ProviderEndpointId {
-    pub const DEFAULT: &'static str = "default";
-
-    pub fn default_endpoint() -> Self {
-        Self(Self::DEFAULT.to_string())
-    }
-
-    pub(crate) fn parse(value: &str) -> Result<Self> {
-        let normalized = value.trim().to_ascii_lowercase();
-        if normalized.is_empty() {
-            return Err(anyhow!("provider endpoint id must not be empty"));
-        }
-        if !normalized
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-' || ch == '_')
-        {
-            return Err(anyhow!(
-                "invalid provider endpoint id {normalized}; expected lowercase ascii, digits, '-' or '_'"
-            ));
-        }
-        Ok(Self(normalized))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl Serialize for ProviderEndpointId {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
-impl<'de> Deserialize<'de> for ProviderEndpointId {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        ProviderEndpointId::parse(&raw).map_err(D::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct ModelRouteRef {
-    pub provider: ProviderId,
-    pub endpoint: ProviderEndpointId,
-    pub model: String,
-}
-
-impl ModelRouteRef {
-    pub fn new(
-        provider: ProviderId,
-        endpoint: ProviderEndpointId,
-        model: impl Into<String>,
-    ) -> Self {
-        Self {
-            provider,
-            endpoint,
-            model: model.into(),
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(anyhow!("model route ref must not be empty"));
-        }
-        let (route, model) = trimmed.split_once('/').ok_or_else(|| {
-            anyhow!("invalid model route ref {trimmed}; expected provider@endpoint/model")
-        })?;
-        let (provider, endpoint) = route.split_once('@').ok_or_else(|| {
-            anyhow!("invalid model route ref {trimmed}; expected provider@endpoint/model")
-        })?;
-        let provider = ProviderId::parse(provider)?;
-        let endpoint = ProviderEndpointId::parse(endpoint)?;
-        let model = model.trim();
-        if model.is_empty() {
-            return Err(anyhow!(
-                "invalid model route ref {trimmed}; model part must not be empty"
-            ));
-        }
-        Ok(Self::new(provider, endpoint, model))
-    }
-
-    pub fn parse_compatible(value: &str) -> Result<Self> {
-        let trimmed = value.trim();
-        let accepted_formats = || {
-            format!("invalid model reference {trimmed}; expected provider@endpoint/model or legacy provider/model")
-        };
-        if trimmed
-            .split_once('/')
-            .is_some_and(|(route, _)| route.contains('@'))
-        {
-            return Self::parse(trimmed).with_context(accepted_formats);
-        }
-        let model_ref = ModelRef::parse(trimmed).with_context(accepted_formats)?;
-        Ok(Self::from_legacy_model_ref(&model_ref))
-    }
-
-    pub fn from_legacy_model_ref(model_ref: &ModelRef) -> Self {
-        let (route_provider, route_endpoint) =
-            built_in_provider_endpoint_identity(&model_ref.provider).unwrap_or_else(|_| {
-                (
-                    model_ref.provider.clone(),
-                    ProviderEndpointId::default_endpoint(),
-                )
-            });
-        let catalog = BuiltInModelCatalog::default();
-        let model_ref = catalog.canonicalize_model_ref(model_ref);
-        let endpoint = if route_provider != model_ref.provider
-            || route_endpoint != ProviderEndpointId::default_endpoint()
-        {
-            route_endpoint
-        } else {
-            catalog
-                .preferred_route_for_model(&model_ref)
-                .map(|route| route.endpoint)
-                .unwrap_or(route_endpoint)
-        };
-        Self::new(route_provider, endpoint, model_ref.model)
-    }
-
-    pub fn model_ref(&self) -> ModelRef {
-        ModelRef::new(self.provider.clone(), self.model.clone())
-    }
-
-    pub fn as_string(&self) -> String {
-        format!(
-            "{}@{}/{}",
-            self.provider.as_str(),
-            self.endpoint.as_str(),
-            self.model
-        )
-    }
-
-    pub fn as_compact_display(&self) -> String {
-        if self.endpoint == ProviderEndpointId::default_endpoint()
-            && self.provider.as_str() != "opencode-go"
-        {
-            return self.model_ref().as_string();
-        }
-        self.as_string()
-    }
-}
-
-impl Serialize for ModelRouteRef {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.as_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for ModelRouteRef {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        ModelRouteRef::parse_compatible(&raw).map_err(D::Error::custom)
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelRouteCapability {
-    Turn,
-    Decision,
-    VisionObservation,
-    ImageGeneration,
-}
-
-impl ModelRouteCapability {
-    pub fn model_supports(self, policy: &ResolvedRuntimeModelPolicy) -> bool {
-        match self {
-            Self::Turn => policy.agent_turn,
-            Self::Decision => policy.decision_capable,
-            Self::VisionObservation => policy.capabilities.image_input,
-            Self::ImageGeneration => policy.capabilities.image_generation,
-        }
-    }
-
-    pub fn transport_supports(self, transport: ProviderTransportKind) -> bool {
-        match self {
-            Self::Turn => true,
-            Self::Decision => true,
-            Self::VisionObservation => transport.supports_view_image_observation_generation(),
-            Self::ImageGeneration => transport.supports_image_generation(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResolvedModelCapabilities {
-    pub intrinsic: crate::model_catalog::ModelIntrinsicCapabilities,
-    pub endpoint: crate::model_catalog::EndpointModelPolicy,
-    pub transport: TransportCapabilities,
-    pub agent_turn: bool,
-    pub decision_capable: bool,
-    pub image_input: bool,
-    pub image_output: bool,
-}
-
-impl ResolvedModelCapabilities {
-    fn resolve(policy: &mut ResolvedRuntimeModelPolicy, transport: ProviderTransportKind) -> Self {
-        let intrinsic = policy.capabilities.intrinsic();
-        let endpoint = crate::model_catalog::EndpointModelPolicy {
-            accepted_parameters: resolved_parameter_contracts(policy),
-            anthropic_cache: None,
-        };
-        let (image_input, image_output) = apply_policy_transport_constraints(policy, transport);
-        let transport = transport.capabilities();
-        Self {
-            agent_turn: policy.agent_turn,
-            decision_capable: policy.decision_capable,
-            image_input,
-            image_output,
-            intrinsic,
-            endpoint,
-            transport,
-        }
-    }
-
-    pub fn supports(&self, capability: ModelRouteCapability) -> bool {
-        match capability {
-            ModelRouteCapability::Turn => self.agent_turn,
-            ModelRouteCapability::Decision => self.decision_capable,
-            ModelRouteCapability::VisionObservation => self.image_input,
-            ModelRouteCapability::ImageGeneration => self.image_output,
-        }
+fn resolve_model_capabilities(
+    policy: &mut ResolvedRuntimeModelPolicy,
+    transport: ProviderTransportKind,
+) -> ResolvedModelCapabilities {
+    let intrinsic = policy.capabilities.intrinsic();
+    let endpoint = crate::model_catalog::EndpointModelPolicy {
+        accepted_parameters: resolved_parameter_contracts(policy),
+        anthropic_cache: None,
+    };
+    let (image_input, image_output) = apply_policy_transport_constraints(policy, transport);
+    let transport = transport.capabilities();
+    ResolvedModelCapabilities {
+        agent_turn: policy.agent_turn,
+        decision_capable: policy.decision_capable,
+        image_input,
+        image_output,
+        intrinsic,
+        endpoint,
+        transport,
     }
 }
 
@@ -716,7 +495,7 @@ impl RuntimeModelCatalog {
         let mut policy =
             self.resolved_model_policy_for_route(base_context_config, &canonical_route_ref);
         let mut capabilities =
-            ResolvedModelCapabilities::resolve(&mut policy, endpoint.runtime_config.transport);
+            resolve_model_capabilities(&mut policy, endpoint.runtime_config.transport);
         if endpoint.runtime_config.transport == ProviderTransportKind::AnthropicMessages {
             capabilities.endpoint.anthropic_cache = Some(
                 self.resolve_anthropic_cache_policy(&canonical_route_ref, &endpoint.runtime_config),
@@ -1381,59 +1160,6 @@ impl Default for RuntimeModelCatalog {
     }
 }
 
-impl ModelRef {
-    pub fn new(provider: ProviderId, model: impl Into<String>) -> Self {
-        Self {
-            provider,
-            model: model.into(),
-        }
-    }
-
-    pub fn parse(value: &str) -> Result<Self> {
-        let trimmed = value.trim();
-        if trimmed.is_empty() {
-            return Err(anyhow!("model ref must not be empty"));
-        }
-        let (provider, model) = trimmed
-            .split_once('/')
-            .ok_or_else(|| anyhow!("invalid model ref {trimmed}; expected provider/model"))?;
-        let provider = ProviderId::parse(provider)?;
-        let model = model.trim();
-        if model.is_empty() {
-            return Err(anyhow!(
-                "invalid model ref {trimmed}; model part must not be empty"
-            ));
-        }
-        Ok(Self {
-            provider,
-            model: model.to_string(),
-        })
-    }
-
-    pub fn as_string(&self) -> String {
-        format!("{}/{}", self.provider.as_str(), self.model)
-    }
-}
-
-impl Serialize for ModelRef {
-    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
-    where
-        S: Serializer,
-    {
-        serializer.serialize_str(&self.as_string())
-    }
-}
-
-impl<'de> Deserialize<'de> for ModelRef {
-    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
-    where
-        D: Deserializer<'de>,
-    {
-        let raw = String::deserialize(deserializer)?;
-        ModelRef::parse(&raw).map_err(D::Error::custom)
-    }
-}
-
 pub(crate) fn resolve_model_catalog(
     stored_config: &HolonConfigFile,
 ) -> Result<HashMap<ModelRef, ModelRuntimeOverride>> {
@@ -1780,6 +1506,57 @@ mod tests {
     use super::*;
 
     #[test]
+    fn legacy_model_route_normalization_matches_the_runtime_catalog() {
+        let catalog = BuiltInModelCatalog::default();
+        let references = catalog
+            .list()
+            .into_iter()
+            .map(|model| model.model_ref)
+            .chain(
+                catalog
+                    .list_routes()
+                    .into_iter()
+                    .map(|route| route.model_ref()),
+            )
+            .chain(
+                crate::provider::provider_definitions()
+                    .iter()
+                    .map(|definition| {
+                        ModelRef::new(
+                            ProviderId::parse(definition.legacy_provider).unwrap(),
+                            "unknown",
+                        )
+                    }),
+            )
+            .chain([
+                ModelRef::parse("dashscope-token-plan/qwen-3.7").unwrap(),
+                ModelRef::parse("volcengine-image-openai/doubao-seedream-5.0-lite").unwrap(),
+                ModelRef::parse("mistral/devstral-medium-latest").unwrap(),
+            ]);
+        for legacy in references {
+            let (provider, endpoint) =
+                built_in_provider_endpoint_identity(&legacy.provider).unwrap();
+            let canonical = catalog.canonicalize_model_ref(&legacy);
+            let endpoint = if provider == canonical.provider
+                && endpoint == ProviderEndpointId::default_endpoint()
+            {
+                catalog
+                    .preferred_route_for_model(&canonical)
+                    .map(|route| route.endpoint)
+                    .unwrap_or(endpoint)
+            } else {
+                endpoint
+            };
+            assert_eq!(
+                ModelRouteRef::parse_compatible(&legacy.as_string()).unwrap(),
+                ModelRouteRef::new(provider, endpoint, canonical.model),
+                "{}",
+                legacy.as_string()
+            );
+        }
+    }
+
+    #[test]
     fn model_policy_preserves_exact_route_metadata_without_a_configured_endpoint() {
         let catalog = RuntimeModelCatalog::default();
         let route_ref = ModelRouteRef::parse("volcengine@plan/glm-5.2").unwrap();
@@ -1805,10 +1582,8 @@ mod tests {
             ..Default::default()
         };
 
-        let capabilities = ResolvedModelCapabilities::resolve(
-            &mut policy,
-            ProviderTransportKind::AnthropicMessages,
-        );
+        let capabilities =
+            resolve_model_capabilities(&mut policy, ProviderTransportKind::AnthropicMessages);
 
         assert!(capabilities
             .intrinsic
@@ -1841,10 +1616,8 @@ mod tests {
         };
 
         for _ in 0..2 {
-            let capabilities = ResolvedModelCapabilities::resolve(
-                &mut policy,
-                ProviderTransportKind::AiEvaluationModel,
-            );
+            let capabilities =
+                resolve_model_capabilities(&mut policy, ProviderTransportKind::AiEvaluationModel);
             assert!(!capabilities.image_input);
             assert!(!capabilities.image_output);
         }
@@ -1874,10 +1647,8 @@ mod tests {
     fn resolved_capabilities_do_not_record_inactive_transport_constraints() {
         let mut policy = ResolvedRuntimeModelPolicy::default();
 
-        let capabilities = ResolvedModelCapabilities::resolve(
-            &mut policy,
-            ProviderTransportKind::GeminiGenerateContent,
-        );
+        let capabilities =
+            resolve_model_capabilities(&mut policy, ProviderTransportKind::GeminiGenerateContent);
 
         assert!(!capabilities.image_input);
         assert!(!capabilities.image_output);
@@ -1900,10 +1671,8 @@ mod tests {
         assert!(policy.capabilities.supports_reasoning);
         assert!(policy.reasoning_effort_options.is_empty());
 
-        let capabilities = ResolvedModelCapabilities::resolve(
-            &mut policy,
-            ProviderTransportKind::GeminiGenerateContent,
-        );
+        let capabilities =
+            resolve_model_capabilities(&mut policy, ProviderTransportKind::GeminiGenerateContent);
         assert!(capabilities.transport.image_input);
         assert!(capabilities.image_input);
         assert!(capabilities.supports(ModelRouteCapability::VisionObservation));
@@ -1922,7 +1691,7 @@ mod tests {
         };
 
         let capabilities =
-            ResolvedModelCapabilities::resolve(&mut policy, ProviderTransportKind::OpenAiResponses);
+            resolve_model_capabilities(&mut policy, ProviderTransportKind::OpenAiResponses);
 
         assert_eq!(
             capabilities.endpoint.accepted_parameters,

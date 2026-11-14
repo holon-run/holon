@@ -16,14 +16,7 @@ pub(crate) const NAME: &str = crate::tool::names::LIST_SUBAGENT_CLEANUP;
 #[serde(deny_unknown_fields)]
 struct ListSubagentCleanupArgs {}
 
-/// Bounded, read-only lifecycle responsibility; never a deletion decision.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct SubagentCleanupCandidate {
-    pub agent_id: String,
-    pub incarnation: u64,
-    pub blocker: Option<String>,
-    pub observed_since: Option<String>,
-}
+use crate::types::SubagentCleanupCandidate;
 
 #[derive(Serialize, JsonSchema)]
 pub(crate) struct ListSubagentCleanupResult {

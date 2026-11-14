@@ -10,13 +10,11 @@ use super::state::{
 use super::task::{ChildAgentWorkspaceMode, TaskHandle};
 use super::wake::{ExternalTriggerSummary, WaitConditionSummary};
 use super::workspace::{ActiveWorkspaceEntry, WorkspaceOccupancyRecord};
-use crate::config::ModelRouteRef;
-use crate::domain::agent::{AgentCanonicalRelationsProjection, AgentCapabilityFamily};
-use crate::model_catalog::ResolvedRuntimeModelPolicy;
-use crate::runtime::agent_observation::{
-    AgentLineageChildrenSnapshot, ChildAgentObservabilitySnapshot,
-};
-use crate::system::{ExecutionProfile, ExecutionSnapshot};
+use crate::agent_observation::{AgentLineageChildrenSnapshot, ChildAgentObservabilitySnapshot};
+use crate::agent_records::{AgentCanonicalRelationsProjection, AgentCapabilityFamily};
+use crate::execution_types::{ExecutionProfile, ExecutionSnapshot};
+use crate::model_values::ModelRouteRef;
+use crate::model_values::ResolvedRuntimeModelPolicy;
 use chrono::{DateTime, Utc};
 use clap::ValueEnum;
 use schemars::JsonSchema;
@@ -85,7 +83,7 @@ pub enum AgentProfilePreset {
     PublicNamed,
 }
 
-pub(crate) type ToolCapabilityFamily = AgentCapabilityFamily;
+pub type ToolCapabilityFamily = AgentCapabilityFamily;
 
 impl AgentProfilePreset {
     pub fn label(self) -> &'static str {
@@ -106,8 +104,7 @@ impl AgentProfilePreset {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn allows_tool_capability_family(self, family: ToolCapabilityFamily) -> bool {
+    pub fn allows_tool_capability_family(self, family: ToolCapabilityFamily) -> bool {
         match self {
             Self::PrivateChild => matches!(
                 family,
@@ -269,7 +266,7 @@ pub struct AgentBootstrapWorkspaceState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub inherited_model_override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inherited_model_override_service_tier: Option<crate::config::ServiceTier>,
+    pub inherited_model_override_service_tier: Option<crate::model_values::ServiceTier>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -811,7 +808,7 @@ fn default_agent_profile_preset() -> AgentProfilePreset {
 
 impl AgentIdentityView {
     /// Consume an already-owned identity without duplicating its text fields.
-    pub(crate) fn from_owned_record(record: AgentIdentityRecord, default_agent_id: &str) -> Self {
+    pub fn from_owned_record(record: AgentIdentityRecord, default_agent_id: &str) -> Self {
         let ownership = record.ownership();
         let profile_preset = record.profile_preset();
         let is_default_agent = record.agent_id == default_agent_id;
@@ -962,18 +959,8 @@ impl Default for AgentLifecycleHint {
 }
 
 impl AgentLifecycleHint {
-    const STOPPED_OPERATOR_HINT: &str =
+    pub const STOPPED_OPERATOR_HINT: &str =
         "agent is administratively stopped; start before new prompts or wakes";
-
-    pub(crate) fn try_from_status(agent_id: &str, status: AgentStatus) -> std::io::Result<Self> {
-        if status == AgentStatus::Stopped {
-            crate::diagnostics::resource_io::charge_owned_metadata(
-                (Self::STOPPED_OPERATOR_HINT.len() + std::mem::size_of::<String>()) as u64,
-                1,
-            )?;
-        }
-        Ok(Self::from_status(agent_id, status))
-    }
 
     #[allow(unused_variables)]
     pub fn from_status(agent_id: &str, status: AgentStatus) -> Self {
@@ -1044,9 +1031,9 @@ pub struct AgentListModelSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_service_tier: Option<crate::config::ServiceTier>,
+    pub override_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_service_tier: Option<crate::config::ServiceTier>,
+    pub effective_service_tier: Option<crate::model_values::ServiceTier>,
 }
 
 impl From<&AgentModelState> for AgentListModelSummary {

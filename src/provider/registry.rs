@@ -2,7 +2,7 @@ use std::{path::Path, sync::Arc};
 
 use anyhow::Result;
 
-use crate::config::{ProviderTransportKind, ResolvedModelRoute, TransportCapabilities};
+use crate::config::{ProviderTransportKind, ResolvedModelRoute};
 
 use super::{
     transports::{
@@ -26,87 +26,48 @@ type ProviderBuilder = fn(&Path, &ResolvedModelRoute) -> Result<Arc<dyn AgentPro
 
 pub(crate) struct ProviderTransportDefinition {
     pub(crate) kind: ProviderTransportKind,
-    pub(crate) wire_name: &'static str,
-    pub(crate) capabilities: TransportCapabilities,
     builder: ProviderBuilder,
 }
 
 const TRANSPORT_DEFINITIONS: &[ProviderTransportDefinition] = &[
     ProviderTransportDefinition {
         kind: ProviderTransportKind::OpenAiCodexResponses,
-        wire_name: "openai_codex_responses",
-        capabilities: TransportCapabilities {
-            image_input: true,
-            image_output: true,
-        },
         builder: build_openai_codex_provider,
     },
     ProviderTransportDefinition {
         kind: ProviderTransportKind::OpenAiResponses,
-        wire_name: "openai_responses",
-        capabilities: TransportCapabilities {
-            image_input: true,
-            image_output: true,
-        },
         builder: build_openai_provider,
     },
     ProviderTransportDefinition {
         kind: ProviderTransportKind::OpenAiChatCompletions,
-        wire_name: "openai_chat_completions",
-        capabilities: TransportCapabilities {
-            image_input: true,
-            image_output: true,
-        },
         builder: build_openai_chat_completions_provider,
     },
     ProviderTransportDefinition {
         kind: ProviderTransportKind::AnthropicMessages,
-        wire_name: "anthropic_messages",
-        capabilities: TransportCapabilities {
-            image_input: true,
-            image_output: false,
-        },
         builder: build_anthropic_provider,
     },
     ProviderTransportDefinition {
         kind: ProviderTransportKind::GeminiGenerateContent,
-        wire_name: "gemini_generate_content",
-        capabilities: TransportCapabilities {
-            image_input: true,
-            image_output: false,
-        },
         builder: build_gemini_provider,
     },
     ProviderTransportDefinition {
         kind: ProviderTransportKind::AiEvaluationModel,
-        wire_name: "ai_evaluation_model",
-        capabilities: TransportCapabilities {
-            image_input: false,
-            image_output: false,
-        },
         builder: build_ai_evaluation_model_provider,
     },
 ];
 
-pub(crate) fn provider_transport_definitions() -> &'static [ProviderTransportDefinition] {
+#[cfg(test)]
+fn provider_transport_definitions() -> &'static [ProviderTransportDefinition] {
     TRANSPORT_DEFINITIONS
 }
 
-pub(crate) fn provider_transport_definition(
+fn provider_transport_definition(
     kind: ProviderTransportKind,
 ) -> &'static ProviderTransportDefinition {
     TRANSPORT_DEFINITIONS
         .iter()
         .find(|definition| definition.kind == kind)
         .expect("every provider transport kind must have one definition")
-}
-
-pub(crate) fn provider_transport_definition_by_wire_name(
-    wire_name: &str,
-) -> Option<&'static ProviderTransportDefinition> {
-    TRANSPORT_DEFINITIONS
-        .iter()
-        .find(|definition| definition.wire_name == wire_name)
 }
 
 pub(crate) fn build_provider_for_route(
@@ -252,8 +213,8 @@ mod tests {
         for definition in definitions {
             assert!(!kinds.contains(&definition.kind));
             kinds.push(definition.kind);
-            assert!(wire_names.insert(definition.wire_name));
-            assert!(!definition.wire_name.is_empty());
+            assert!(wire_names.insert(definition.kind.as_str()));
+            assert!(!definition.kind.as_str().is_empty());
         }
         for kind in expected {
             assert_eq!(provider_transport_definition(kind).kind, kind);

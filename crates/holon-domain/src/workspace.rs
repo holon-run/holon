@@ -1,4 +1,4 @@
-use crate::system::{WorkspaceAccessMode, WorkspaceProjectionKind};
+use crate::execution_types::{WorkspaceAccessMode, WorkspaceProjectionKind};
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

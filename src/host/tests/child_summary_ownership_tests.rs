@@ -147,7 +147,7 @@ async fn full_cold_summary_wire_preserves_children_without_starting_runtimes() -
     ]
     .into_iter()
     .flatten()
-    .map(Arc::downgrade)
+    .map(|material| Arc::downgrade(material.guard()))
     .collect::<Vec<_>>();
     assert!(!guards.is_empty());
     let expected = serde_json::to_value(&*summary)?;
@@ -375,7 +375,7 @@ async fn cold_child_source_acquisition_latches_and_follows_the_returned_snapshot
     let summaries = host.child_agent_summaries(&parent).await?;
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     let material = summaries[0].observability._read_material.as_ref().unwrap();
-    let weak = Arc::downgrade(material);
+    let weak = Arc::downgrade(material.guard());
     let clone = summaries[0].observability.clone();
     let wire = serde_json::to_value(&clone)?;
     assert!(wire.get("_read_material").is_none());
@@ -451,11 +451,11 @@ async fn cold_source_guard_survives_a_loaded_observability_handoff() -> Result<(
     let snapshot = host
         .child_agent_observability_snapshot(&identity.agent_id, &storage, &state, &material)
         .await?;
-    assert!(Arc::ptr_eq(
+    assert!(crate::runtime::agent_observation::same_observation_guard(
         snapshot._source_material.as_ref().unwrap(),
         &source
     ));
-    assert!(!Arc::ptr_eq(
+    assert!(!crate::runtime::agent_observation::same_observation_guard(
         snapshot._read_material.as_ref().unwrap(),
         &source
     ));

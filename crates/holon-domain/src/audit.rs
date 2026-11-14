@@ -6,15 +6,13 @@ use super::message::{
 use super::model::{AgentModelSource, AgentModelState};
 use super::task::{TaskKind, TaskRecord, TaskStatus};
 use super::tool::ToolExecutionStatus;
-use crate::config::ModelRouteRef;
-use crate::domain::agent::AgentMessageRoutingContext;
-use crate::domain::work_item::{
-    WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState,
-};
+use crate::agent_records::AgentMessageRoutingContext;
 use crate::ids;
-use crate::tool::ToolError;
+use crate::model_values::ModelRouteRef;
+use crate::tool_error::ToolError;
+use crate::work_item::{WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemState};
+use crate::{ContinuationTriggerKind, MessageKind};
 use chrono::{DateTime, Utc};
-use holon_domain::{ContinuationTriggerKind, MessageKind};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -293,9 +291,9 @@ pub struct AgentModelOverrideAuditEvent {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_service_tier: Option<crate::config::ServiceTier>,
+    pub override_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_service_tier: Option<crate::config::ServiceTier>,
+    pub effective_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default)]
     pub fallback_active: bool,
     #[serde(default)]
@@ -361,7 +359,7 @@ fn detail_i64(detail: Option<&Value>, field: &str) -> Option<i64> {
         .and_then(Value::as_i64)
 }
 
-pub(crate) fn truncate_audit_preview(value: &str, max_chars: usize) -> String {
+pub fn truncate_audit_preview(value: &str, max_chars: usize) -> String {
     if value.chars().count() <= max_chars {
         return value.to_string();
     }

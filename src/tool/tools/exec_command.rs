@@ -201,7 +201,6 @@ pub(crate) fn render_for_model(result: &ToolResult) -> Result<String> {
 mod tests {
     use super::*;
     use crate::tool::tools::serialize_success;
-    use crate::tool::ToolError;
     use serde_json::json;
 
     #[test]
@@ -287,7 +286,7 @@ mod tests {
             }),
         )
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| hint
@@ -314,7 +313,7 @@ mod tests {
             }),
         )
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert!(tool_error

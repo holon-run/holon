@@ -4449,7 +4449,7 @@ impl RuntimeHandle {
                                 "external command result is unavailable after attempt submission",
                             ));
                         }
-                        let error = ToolError::from_anyhow(&err);
+                        let error = crate::tool::tool_error_from_anyhow(&err);
                         let audit_error = error.render();
                         let result = crate::tool::ToolResult::error(&tool_name, error.clone());
                         let result_content =

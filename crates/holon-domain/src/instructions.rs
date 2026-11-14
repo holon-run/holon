@@ -178,3 +178,16 @@ pub struct LoadedAgentMemoryView {
     #[serde(default)]
     pub budget_chars: usize,
 }
+
+impl From<&LoadedAgentMemory> for LoadedAgentMemoryView {
+    fn from(value: &LoadedAgentMemory) -> Self {
+        Self {
+            operator_source: value
+                .operator_source
+                .as_ref()
+                .map(AgentMemorySourceView::from),
+            self_source: value.self_source.as_ref().map(AgentMemorySourceView::from),
+            budget_chars: value.budget_chars,
+        }
+    }
+}

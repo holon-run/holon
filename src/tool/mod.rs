@@ -28,7 +28,7 @@ pub(crate) use schema_support as schema;
 // Re-export the key types that are used throughout the codebase
 pub use apply_patch::ApplyPatchSurface;
 pub use dispatch::ToolRegistry;
-pub use error::ToolError;
+pub use error::{tool_error_from_anyhow, ToolError};
 pub use spec::{ToolCall, ToolResult, ToolSpec};
 
 /// Generate the checked-in model-facing built-in tool schema inventory.

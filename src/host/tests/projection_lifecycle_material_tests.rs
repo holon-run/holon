@@ -51,7 +51,7 @@ fn checked_lifecycle_matches_all_statuses_and_wire_without_active_phase() -> Res
     assert!(ResourceReadMaterial::active_guard()?.is_none());
     for status in statuses() {
         let expected = AgentLifecycleHint::from_status("web", status.clone());
-        let actual = AgentLifecycleHint::try_from_status("web", status.clone())?;
+        let actual = crate::runtime::agent_observation::read_lifecycle_hint("web", status.clone())?;
         assert_eq!(actual, expected);
         assert_eq!(
             serde_json::to_value(&actual)?,
@@ -90,7 +90,7 @@ fn lifecycle_exact_cost_and_allocation_free_statuses_use_original_phase() -> Res
                 &ResourceReadMaterial::active_guard()?.unwrap(),
                 &holder
             ));
-            AgentLifecycleHint::try_from_status("web", status.clone())?
+            crate::runtime::agent_observation::read_lifecycle_hint("web", status.clone())?
         };
         assert_eq!(phase.finish()?, expected);
         assert_eq!(lifecycle, AgentLifecycleHint::from_status("web", status));
@@ -120,8 +120,11 @@ fn lifecycle_bytes_and_records_reject_before_hint_and_latch_same_phase() -> Resu
                 &holder
             ));
             for _ in 0..2 {
-                let error =
-                    AgentLifecycleHint::try_from_status("web", AgentStatus::Stopped).unwrap_err();
+                let error = crate::runtime::agent_observation::read_lifecycle_hint(
+                    "web",
+                    AgentStatus::Stopped,
+                )
+                .unwrap_err();
                 assert!(
                     error.to_string().contains("context resource read material"),
                     "{error}"

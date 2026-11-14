@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use axum::http::{HeaderName, HeaderValue, Method};
-use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize, Serializer};
+use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 
 use crate::{

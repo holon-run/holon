@@ -1,13 +1,6 @@
 use super::*;
 
-/// User preference; adapters own wire values such as Codex's `priority`.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ServiceTier {
-    Default,
-    #[serde(alias = "priority")]
-    Fast,
-}
+pub use holon_domain::model_values::ServiceTier;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]

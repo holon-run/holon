@@ -186,7 +186,7 @@ impl AgentCanonicalRelationRepository<'_> {
             children.sort_unstable_by(|left, right| left.child_agent_id.cmp(&right.child_agent_id));
             Ok(AgentLineageChildrenSnapshot {
                 records: children,
-                _material: crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?,
+                _material: crate::runtime::agent_observation::active_observation_material()?,
             })
         })
     }

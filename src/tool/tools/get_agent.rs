@@ -1,6 +1,6 @@
 use anyhow::Result;
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::{
@@ -20,10 +20,7 @@ pub(crate) struct GetAgentArgs {
     pub agent_id: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct GetAgentResult {
-    pub agent: SlimAgentDto,
-}
+use crate::types::GetAgentResult;
 
 pub(crate) fn definition() -> Result<BuiltinToolDefinition> {
     Ok(BuiltinToolDefinition {

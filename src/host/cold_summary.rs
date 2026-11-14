@@ -152,7 +152,8 @@ impl RuntimeHost {
     ) -> Result<crate::types::ChildAgentObservabilitySnapshot> {
         if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
             let mut snapshot = runtime.child_agent_observability().await?;
-            snapshot._source_material = Some(material.guard()?);
+            snapshot._source_material =
+                Some(holon_domain::ObservationMaterial::new(material.guard()?));
             return Ok(snapshot);
         }
         RuntimeHandle::child_agent_observability_from_storage(storage, state, material)

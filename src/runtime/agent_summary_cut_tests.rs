@@ -47,7 +47,7 @@ async fn default_get_agent_does_not_read_mutable_state_for_cleanup_identity() ->
         .err()
         .context("pending tree summary must remain typed")?;
     assert!(tree_error.is::<crate::runtime_db::RuntimeDbRetryableError>());
-    assert!(crate::tool::ToolError::from_anyhow(&tree_error).retryable);
+    assert!(crate::tool::tool_error_from_anyhow(&tree_error).retryable);
     let list_error = tokio::time::timeout(Duration::from_secs(1), host.list_agents())
         .await?
         .err()
@@ -162,7 +162,7 @@ async fn get_agent_retries_a_pending_target_without_reconciling_its_owner() -> R
         .err()
         .context("a pending target must not return a summary")?;
     assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
-    let wire = crate::tool::ToolError::from_anyhow(&error);
+    let wire = crate::tool::tool_error_from_anyhow(&error);
     assert_eq!(wire.kind, "runtime_db_busy");
     assert!(wire.retryable);
     let call = crate::tool::ToolCall {
@@ -204,7 +204,7 @@ async fn get_agent_retries_a_pending_target_without_reconciling_its_owner() -> R
     .err()
     .context("pending target must exhaust the retry budget")?;
     assert!(error.is::<crate::runtime_db::RuntimeDbRetryableError>());
-    assert!(crate::tool::ToolError::from_anyhow(&error).retryable);
+    assert!(crate::tool::tool_error_from_anyhow(&error).retryable);
     assert!(target.inner.mutation_owner.capture().is_err());
     owner.definitely_not_committed()?;
     drop(owner);

@@ -1,6 +1,8 @@
 # holon-domain
 
-Shared domain values for Holon. Includes conversation ordering keys,
-message payload and provenance values, continuation classifications, turn ownership and terminal records,
-idle-input evidence, and durable runtime error descriptors. This crate has no
-dependencies on other Holon crates.
+Shared runtime values and serialization contracts for Holon, including agents,
+messages, Turns, tasks, WorkItems, workspace projections, audit events, and
+tool results. The main crate re-exports its existing public type paths.
+
+This crate depends on no other Holon crates. Provider clients, database
+transactions, runtime admission, and budget ledgers live in the main crate.

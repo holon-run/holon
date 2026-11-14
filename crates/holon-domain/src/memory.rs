@@ -1,7 +1,7 @@
 use super::serde_helpers::default_agent_home_workspace_id;
 use super::state::AgentState;
-use crate::domain::work_item::TodoItem;
 use crate::ids;
+use crate::work_item::TodoItem;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;

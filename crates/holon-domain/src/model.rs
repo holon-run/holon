@@ -1,5 +1,5 @@
-use crate::config::ModelRouteRef;
-use crate::model_catalog::ResolvedRuntimeModelPolicy;
+use crate::model_values::ModelRouteRef;
+use crate::model_values::ResolvedRuntimeModelPolicy;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -66,9 +66,9 @@ pub struct AgentModelState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub override_service_tier: Option<crate::config::ServiceTier>,
+    pub override_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub effective_service_tier: Option<crate::config::ServiceTier>,
+    pub effective_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default)]
     pub resolved_policy: ResolvedRuntimeModelPolicy,
 }
@@ -101,9 +101,9 @@ pub struct ResolvedModelAvailability {
     pub failure_disposition: Option<String>,
     pub policy: ResolvedRuntimeModelPolicy,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub resolved_capabilities: Option<crate::config::ResolvedModelCapabilities>,
+    pub resolved_capabilities: Option<crate::model_values::ResolvedModelCapabilities>,
     #[serde(default)]
-    pub media: crate::provider::media::MediaModelCapabilities,
+    pub media: crate::media::MediaModelCapabilities,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -145,7 +145,7 @@ pub struct ModelProviderEntry {
     pub model_count: usize,
     pub discovered_model_count: usize,
     #[serde(default)]
-    pub media: crate::provider::media::MediaProviderCapabilities,
+    pub media: crate::media::MediaProviderCapabilities,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_notes: Vec<String>,
 }
@@ -166,11 +166,11 @@ pub struct ProviderModelEntry {
     pub metadata_source: String,
     pub policy: ResolvedRuntimeModelPolicy,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub parameter_contracts: Vec<crate::model_catalog::ModelParameterSupport>,
+    pub parameter_contracts: Vec<crate::model_values::ModelParameterSupport>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub supported_parameters: Vec<String>,
     #[serde(default)]
-    pub media: crate::provider::media::MediaModelCapabilities,
+    pub media: crate::media::MediaModelCapabilities,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub policy_notes: Vec<String>,
 }

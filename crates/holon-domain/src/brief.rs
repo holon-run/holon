@@ -1,7 +1,7 @@
 use super::message::BriefAttachment;
 use super::serde_helpers::default_agent_home_workspace_id;
-use crate::domain::agent_home_workspace_id;
 use crate::ids;
+use crate::workspace_identity::agent_home_workspace_id;
 use chrono::{DateTime, Utc};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

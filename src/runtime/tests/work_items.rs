@@ -3369,7 +3369,7 @@ async fn work_item_read_tools_reject_legacy_include_plan_argument() {
             )
             .await
             .unwrap_err();
-        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
         let parse_error = tool_error
             .details
@@ -3525,7 +3525,7 @@ async fn pick_work_item_clear_blocker_requires_reason() {
         )
         .await
         .unwrap_err();
-    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    let tool_error = crate::tool::tool_error_from_anyhow(&error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
     assert!(tool_error.message.contains("clear_blocker"));
     assert!(tool_error.message.contains("reason"));
@@ -3572,7 +3572,7 @@ async fn update_work_item_rejects_empty_objective() {
         )
         .await
         .unwrap_err();
-    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    let tool_error = crate::tool::tool_error_from_anyhow(&error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
     assert!(tool_error.message.contains("objective"));
 }
@@ -3611,7 +3611,7 @@ async fn update_work_item_old_plan_shape_returns_state_example_hint() {
         )
         .await
         .unwrap_err();
-    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    let tool_error = crate::tool::tool_error_from_anyhow(&error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
     let parse_error = tool_error
         .details
@@ -3660,7 +3660,7 @@ async fn update_work_item_missing_id_returns_top_level_field_hint() {
         )
         .await
         .unwrap_err();
-    let tool_error = crate::tool::ToolError::from_anyhow(&error);
+    let tool_error = crate::tool::tool_error_from_anyhow(&error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
     let recovery_hint = tool_error.recovery_hint.as_deref().unwrap_or_default();
     assert!(recovery_hint.contains("UpdateWorkItem schema"));

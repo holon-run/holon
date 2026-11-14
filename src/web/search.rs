@@ -470,7 +470,7 @@ fn failed_attempt(
     kind: Option<WebProviderKind>,
     error: &anyhow::Error,
 ) -> WebSearchProviderAttempt {
-    let tool_error = ToolError::from_anyhow(error);
+    let tool_error = crate::tool::tool_error_from_anyhow(error);
     WebSearchProviderAttempt {
         provider: provider.to_string(),
         status: WebSearchProviderAttemptStatus::Error,
@@ -503,7 +503,7 @@ fn single_provider_error(
     error: anyhow::Error,
 ) -> anyhow::Error {
     let attempt = failed_attempt(provider, kind, &error);
-    let original = ToolError::from_anyhow(&error);
+    let original = crate::tool::tool_error_from_anyhow(&error);
     let mut tool_error = ToolError::new(original.kind, original.message)
         .with_details(single_provider_error_details(original.details, attempt))
         .with_retryable(original.retryable);
@@ -2424,7 +2424,7 @@ fn command_parse_error_with_attempt(
     error: anyhow::Error,
     command: WebSearchCommandAttempt,
 ) -> anyhow::Error {
-    let original = ToolError::from_anyhow(&error);
+    let original = crate::tool::tool_error_from_anyhow(&error);
     let mut details = original
         .details
         .unwrap_or_else(|| json!({}))
@@ -2487,7 +2487,7 @@ mod tests {
     #[test]
     fn max_results_zero_is_invalid() {
         let error = normalize_max_results(Some(0), 5).unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
     }
 
@@ -2727,7 +2727,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert_eq!(tool_error.message, "SearXNG provider requires base_url");
         let details = tool_error.details.as_ref().unwrap();
@@ -2855,7 +2855,7 @@ mod tests {
         let err = command_search("holon", 3, "cmd", &provider)
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
 
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert!(!tool_error.retryable);
@@ -2876,7 +2876,7 @@ mod tests {
         let err = command_search("holon", 3, "cmd", &provider)
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
 
         assert_eq!(tool_error.kind, "parse_failed");
         let details = tool_error.details.as_ref().unwrap();
@@ -2895,7 +2895,7 @@ mod tests {
         let err = command_search("holon", 3, "cmd", &provider)
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
 
         assert_eq!(tool_error.kind, "parse_failed");
         let details = tool_error.details.as_ref().unwrap();
@@ -2915,7 +2915,7 @@ mod tests {
         let err = command_search("holon", 3, "cmd", &provider)
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
 
         assert_eq!(tool_error.kind, "parse_failed");
         let details = tool_error.details.as_ref().unwrap();
@@ -3264,7 +3264,7 @@ mod tests {
         let error = read_search_response(response, "gzip_test")
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "response_too_large");
     }
 
@@ -3427,7 +3427,10 @@ mod tests {
                 deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
                     .await
                     .unwrap_err();
-            assert_eq!(ToolError::from_anyhow(&error).kind, expected_kind);
+            assert_eq!(
+                crate::tool::tool_error_from_anyhow(&error).kind,
+                expected_kind
+            );
             let diagnostic = format!("{error:?}");
             assert!(!diagnostic.contains("test-key-123"));
             assert!(!diagnostic.contains("response-secret"));
@@ -3452,7 +3455,10 @@ mod tests {
                 deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
                     .await
                     .unwrap_err();
-            assert_eq!(ToolError::from_anyhow(&error).kind, "parse_failed");
+            assert_eq!(
+                crate::tool::tool_error_from_anyhow(&error).kind,
+                "parse_failed"
+            );
             let diagnostic = format!("{error:?}");
             assert!(!diagnostic.contains("response-secret"));
             assert!(!diagnostic.contains("test-key-123"));
@@ -3466,7 +3472,10 @@ mod tests {
         let error = deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        assert_eq!(ToolError::from_anyhow(&error).kind, "provider_unavailable");
+        assert_eq!(
+            crate::tool::tool_error_from_anyhow(&error).kind,
+            "provider_unavailable"
+        );
         assert!(error.to_string().contains("requires an API key"));
     }
 
@@ -3501,7 +3510,10 @@ mod tests {
                 deepseek_search(&query, 1, "deepseek_test", &provider, &test_fetch_config())
                     .await
                     .unwrap_err();
-            assert_eq!(ToolError::from_anyhow(&error).kind, "invalid_request");
+            assert_eq!(
+                crate::tool::tool_error_from_anyhow(&error).kind,
+                "invalid_request"
+            );
         }
     }
 
@@ -3511,7 +3523,10 @@ mod tests {
         let error = deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        assert_eq!(ToolError::from_anyhow(&error).kind, "provider_unavailable");
+        assert_eq!(
+            crate::tool::tool_error_from_anyhow(&error).kind,
+            "provider_unavailable"
+        );
         assert!(!format!("{error:?}").contains("secret-base-url"));
     }
 
@@ -3526,7 +3541,10 @@ mod tests {
         let error = deepseek_search("test", 5, "deepseek_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        assert_eq!(ToolError::from_anyhow(&error).kind, "response_too_large");
+        assert_eq!(
+            crate::tool::tool_error_from_anyhow(&error).kind,
+            "response_too_large"
+        );
     }
 
     #[tokio::test]
@@ -3793,7 +3811,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "rate_limited");
     }
 
@@ -3817,7 +3835,7 @@ mod tests {
         )
         .await
         .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert!(err.to_string().contains("API key"));
     }
@@ -3897,7 +3915,7 @@ mod tests {
         let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "rate_limited");
     }
 
@@ -3915,7 +3933,7 @@ mod tests {
         let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert!(err.to_string().contains("API key"));
     }
@@ -3983,7 +4001,7 @@ mod tests {
         let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "rate_limited");
     }
 
@@ -4000,7 +4018,7 @@ mod tests {
         let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert!(
             format!("{err}").contains("API key"),
@@ -4111,7 +4129,7 @@ mod tests {
             tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
                 .await
                 .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "rate_limited");
     }
 
@@ -4129,7 +4147,7 @@ mod tests {
             tencent_cloud_wsa_search("test", 5, "tencent_test", &provider, &test_fetch_config())
                 .await
                 .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert!(
             format!("{err}").contains("API key"),
@@ -4226,7 +4244,7 @@ mod tests {
         let err = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "rate_limited");
     }
 
@@ -4243,7 +4261,7 @@ mod tests {
         let err = bocha_search("test", 5, "bocha_test", &provider, &test_fetch_config())
             .await
             .unwrap_err();
-        let tool_error = ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "provider_unavailable");
         assert!(
             format!("{err}").contains("API key"),

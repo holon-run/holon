@@ -106,7 +106,8 @@ async fn cold_summary_selected_domains_remain_pure_after_storage_is_denied() -> 
         observation
             ._read_material
             .as_ref()
-            .context("child material")?,
+            .context("child material")?
+            .guard(),
     );
     drop(read);
     assert!(guard.upgrade().is_some());

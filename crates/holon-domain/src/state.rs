@@ -7,13 +7,13 @@ use super::tool::ToolLatencyMetrics;
 use super::turn::{TurnOwner, TurnTerminalRecord, TurnTerminalSummary};
 use super::wake::ExternalTriggerScope;
 use super::workspace::{ActiveWorkspaceEntry, WorktreeSession};
-use crate::config::ModelRouteRef;
-use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
-use crate::domain::work_item::WorkItemState;
+use crate::execution_types::ExecutionProfile;
+use crate::model_values::ModelRouteRef;
 use crate::runtime_error::{RuntimeErrorContext, RuntimeErrorDomain};
-use crate::system::ExecutionProfile;
+use crate::scheduler::{ScenarioMode, SchedulerScenarioClass};
+use crate::work_item::WorkItemState;
+use crate::ContinuationTriggerKind;
 use chrono::{DateTime, Utc};
-use holon_domain::ContinuationTriggerKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -200,7 +200,7 @@ pub struct AgentState {
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::prompt::time::deserialize_optional_timezone"
+        deserialize_with = "crate::timezone::deserialize_optional_timezone"
     )]
     pub timezone_override: Option<String>,
     pub id: String,
@@ -257,7 +257,7 @@ pub struct AgentState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model_override_reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub model_override_service_tier: Option<crate::config::ServiceTier>,
+    pub model_override_service_tier: Option<crate::model_values::ServiceTier>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_fallback_model: Option<ModelRouteRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,7 +476,7 @@ pub struct AgentTokenUsageSummary {
 impl AgentState {
     pub fn set_timezone(&mut self, timezone: Option<&str>) -> anyhow::Result<()> {
         if let Some(timezone) = timezone {
-            crate::prompt::time::parse_timezone(timezone)?;
+            crate::timezone::parse_timezone(timezone)?;
         }
         self.timezone_override = timezone.map(str::to_owned);
         Ok(())
