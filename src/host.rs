@@ -15899,27 +15899,52 @@ mod tests {
     }
 
     #[cfg(holon_lib_test_shard = "d")]
-    #[tokio::test]
-    async fn supervised_invocation_settles_after_same_turn_command_consumption() {
-        assert_supervised_command_consumption(false, false, false).await;
+    #[test]
+    fn supervised_invocation_settles_after_same_turn_command_consumption() {
+        run_supervised_command_consumption(false, false, false);
     }
 
     #[cfg(holon_lib_test_shard = "d")]
-    #[tokio::test]
-    async fn supervised_invocation_settles_after_late_command_wait() {
-        assert_supervised_command_consumption(true, false, false).await;
+    #[test]
+    fn supervised_invocation_settles_after_late_command_wait() {
+        run_supervised_command_consumption(true, false, false);
     }
 
     #[cfg(holon_lib_test_shard = "d")]
-    #[tokio::test]
-    async fn supervised_invocation_settles_after_late_command_wait_final_report() {
-        assert_supervised_command_consumption(true, true, false).await;
+    #[test]
+    fn supervised_invocation_settles_after_late_command_wait_final_report() {
+        run_supervised_command_consumption(true, true, false);
     }
 
     #[cfg(holon_lib_test_shard = "d")]
-    #[tokio::test]
-    async fn supervised_invocation_legacy_late_wait_survives_provider_recovery() {
-        assert_supervised_command_consumption(true, false, true).await;
+    #[test]
+    fn supervised_invocation_legacy_late_wait_survives_provider_recovery() {
+        run_supervised_command_consumption(true, false, true);
+    }
+
+    fn run_supervised_command_consumption(
+        late_wait: bool,
+        final_report: bool,
+        provider_fallback: bool,
+    ) {
+        // The current-thread runtime polls the nested InvokeAgent and its
+        // synchronous queue transaction on the same stack as the test.
+        std::thread::Builder::new()
+            .stack_size(4 * 1024 * 1024)
+            .spawn(move || {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .unwrap()
+                    .block_on(assert_supervised_command_consumption(
+                        late_wait,
+                        final_report,
+                        provider_fallback,
+                    ));
+            })
+            .unwrap()
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
     }
 
     async fn assert_supervised_command_consumption(
