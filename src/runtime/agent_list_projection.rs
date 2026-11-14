@@ -24,9 +24,9 @@ use crate::{
     runtime_db::{context_inputs::ContextDurableRead, current_query::queue_posture_tx, RuntimeDb},
     storage::derive_agent_posture_from_state,
     types::{
-        ActiveWorkspaceEntry, AgentIdentityRecord, AgentIdentityView, AgentLifecycleHint,
-        AgentListEntry, AgentPostureProjection, AgentRegistryStatus, AgentState, AgentStatus,
-        AgentVisibility, WaitingReason,
+        ActiveWorkspaceEntry, AgentIdentityRecord, AgentIdentityView, AgentListEntry,
+        AgentPostureProjection, AgentRegistryStatus, AgentState, AgentStatus, AgentVisibility,
+        WaitingReason,
     },
     work_item_scheduling::{compare_queue_work_rank, queue_work_rank, QueueWorkRank},
 };
@@ -169,7 +169,7 @@ impl AgentListProjection {
         )?;
         Ok(AgentListEntry {
             identity: AgentIdentityView::from_record(identity, default_agent_id),
-            lifecycle: AgentLifecycleHint::try_from_status(
+            lifecycle: crate::runtime::agent_observation::read_lifecycle_hint(
                 &identity.agent_id,
                 self.status.clone(),
             )?,

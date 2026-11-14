@@ -685,7 +685,7 @@ pub struct AgentListQuery {
     pub parent: Option<String>,
 }
 
-#[cfg(all(test, holon_lib_test_shard = "d"))]
+#[cfg(all(test, holon_lib_test_shard = "c"))]
 #[path = "agent_list_tests.rs"]
 mod list_tests;
 

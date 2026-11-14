@@ -1,35 +1,19 @@
 //! Runtime-owned clock sample, independent of message and report timestamps.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use chrono::{DateTime, SecondsFormat, Utc};
 use chrono_tz::Tz;
-use serde::{Deserialize, Deserializer};
 
 /// Fixed initial-context reservation; time values never affect stable layout.
 pub const RUNTIME_TIME_RESERVED_TOKENS: usize = 128;
 
-pub fn parse_timezone(value: &str) -> Result<Tz> {
-    value
-        .parse()
-        .map_err(|_| anyhow!("invalid IANA timezone: {value:?}"))
-}
+pub use holon_domain::timezone::{deserialize_optional_timezone, parse_timezone};
 
 pub fn resolve_timezone(agent: Option<&str>, runtime: Option<&str>) -> Result<Tz> {
     // Validate every explicit setting, even when another setting takes precedence.
     let agent = agent.map(parse_timezone).transpose()?;
     let runtime = runtime.map(parse_timezone).transpose()?;
     Ok(agent.or(runtime).unwrap_or(chrono_tz::UTC))
-}
-
-pub fn deserialize_optional_timezone<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = Option::<String>::deserialize(deserializer)?;
-    if let Some(value) = &value {
-        parse_timezone(value).map_err(serde::de::Error::custom)?;
-    }
-    Ok(value)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

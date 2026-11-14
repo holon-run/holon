@@ -240,7 +240,7 @@ mod tests {
         let config = WebFetchConfig::default();
         let url = Url::parse("http://127.0.0.1:3000/").unwrap();
         let error = validate_fetch_url(&url, &config).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "network_denied");
     }
 
@@ -268,7 +268,7 @@ mod tests {
         config.allowed_hosts = vec!["169.254.169.254".into()];
         let url = Url::parse("http://169.254.169.254/latest/meta-data").unwrap();
         let error = validate_fetch_url(&url, &config).await.unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "network_denied");
         assert!(tool_error.message.contains("metadata"));
     }

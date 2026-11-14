@@ -118,7 +118,7 @@ applies, and unknown transaction outcomes retain priority.
 
 `ToolError` retains `kind`, `message`, `details`, `recovery_hint`, and
 `retryable`. Additive `domain` and `source_chain` fields carry taxonomy data.
-`ToolError::from_anyhow` preserves an existing nested `ToolError`; otherwise it
+`holon::tool::tool_error_from_anyhow` preserves an existing nested `ToolError`; otherwise it
 projects the shared descriptor.
 
 Canonical tool failure output and audit events retain the structured

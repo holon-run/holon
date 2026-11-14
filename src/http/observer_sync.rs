@@ -1437,7 +1437,7 @@ mod tests {
                 host.operator_agent_detail("web").unwrap()
             };
             assert_eq!(detail, baseline);
-            assert!(Arc::ptr_eq(
+            assert!(crate::runtime::agent_observation::same_observation_guard(
                 detail.lineage_children._material.as_ref().unwrap(),
                 &holder
             ));

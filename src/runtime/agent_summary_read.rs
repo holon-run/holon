@@ -60,7 +60,9 @@ impl OwnedAgentSummaryRead {
                     crate::runtime_db::repositories::reserve_source_vec_slot(
                         &mut self.material._owned,
                     )?;
-                    self.material._owned.push(guard.clone());
+                    self.material
+                        ._owned
+                        .push(super::agent_observation::retain_observation_guard(guard));
                 }
             }
             Ok(())
@@ -325,7 +327,7 @@ impl RuntimeHandle {
             ))?;
             Ok(crate::types::AgentListEntry {
                 identity: AgentIdentityView::from_record(identity, &self.inner.default_agent_id),
-                lifecycle: crate::types::AgentLifecycleHint::try_from_status(
+                lifecycle: crate::runtime::agent_observation::read_lifecycle_hint(
                     &agent.id,
                     agent.status.clone(),
                 )?,

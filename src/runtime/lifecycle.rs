@@ -2638,7 +2638,7 @@ pub(crate) fn build_child_agent_observability_with_active_tasks<'a>(
             .clone(),
         last_progress_brief: progress.map(|brief| brief.text.clone()),
         last_result_brief: result.map(|brief| brief.text.clone()),
-        _read_material: crate::diagnostics::resource_io::ResourceReadMaterial::active_guard()?,
+        _read_material: crate::runtime::agent_observation::active_observation_material()?,
         _source_material: None,
     })
 }

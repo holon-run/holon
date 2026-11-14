@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 use serde::{Deserialize, Serialize};
@@ -8,7 +8,7 @@ use crate::config::built_in_provider_endpoint_identity;
 use crate::config::{ModelRef, ModelRouteRef, ProviderEndpointId, ProviderId};
 use crate::context::{
     default_compaction_keep_recent_estimated_tokens, default_compaction_trigger_estimated_tokens,
-    ContextConfig, DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
+    ContextConfig,
 };
 #[cfg(test)]
 use crate::provider::provider_definitions;
@@ -21,213 +21,14 @@ use metadata_selection::{
     ModelMetadataSelection, SelectedConstraint, SelectedEvidence, SelectedReasoningOptions,
 };
 
-const DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT: u8 = 95;
-const DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS: usize = 2_500;
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelMetadataSource {
-    BuiltInCatalog,
-    ConservativeBuiltin,
-    ConfigOverride,
-    RemoteDiscovered,
-    /// Checked-in `models.dev/supplemental_catalog.json` entry, drafted by
-    /// `holon models-dev refresh` for already-supported providers and
-    /// admitted through PR review.
-    ModelsDevSupplement,
-    UnknownFallback,
-}
-
-impl Default for ModelMetadataSource {
-    fn default() -> Self {
-        Self::UnknownFallback
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelMetadataOrigin {
-    ExplicitOverride,
-    EnvironmentOverride,
-    RemoteDiscovered,
-    RouteBuiltin,
-    ModelBuiltin,
-    UnknownFallback,
-    RuntimeDefault,
-    Derived,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelMetadataField {
-    DisplayName,
-    Description,
-    ContextWindowTokens,
-    EffectiveContextWindowPercent,
-    AutoCompactTokenLimit,
-    PromptBudgetEstimatedTokens,
-    CompactionTriggerEstimatedTokens,
-    CompactionKeepRecentEstimatedTokens,
-    RuntimeMaxOutputTokens,
-    Verbosity,
-    ToolOutputTruncationEstimatedTokens,
-    MaxOutputTokensUpperLimit,
-    AgentTurn,
-    ParallelToolCalls,
-    ImageInput,
-    ImageGeneration,
-    SupportsReasoning,
-    InteractiveExec,
-    ReasoningEffortOptions,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelMetadataConstraintKind {
-    Clamped,
-    Disabled,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelMetadataConstraintSource {
-    ModelUpperLimit,
-    RuntimeBudget,
-    EndpointPolicy,
-    TransportCapability,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelMetadataConstraint {
-    pub field: ModelMetadataField,
-    pub kind: ModelMetadataConstraintKind,
-    pub source: ModelMetadataConstraintSource,
-    pub requested: String,
-    pub effective: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct ModelMetadataEvidence {
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub fields: BTreeMap<ModelMetadataField, ModelMetadataOrigin>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub constraints: Vec<ModelMetadataConstraint>,
-}
-
-impl ModelMetadataEvidence {
-    pub fn source_for(&self, field: ModelMetadataField) -> Option<ModelMetadataOrigin> {
-        self.fields.get(&field).copied()
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelCapabilityFlags {
-    #[serde(default = "default_agent_turn_capability")]
-    pub agent_turn: bool,
-    #[serde(default)]
-    pub parallel_tool_calls: bool,
-    #[serde(default)]
-    pub image_input: bool,
-    #[serde(default)]
-    pub image_generation: bool,
-    #[serde(default)]
-    pub supports_reasoning: bool,
-    #[serde(default)]
-    pub interactive_exec: bool,
-}
-
-impl Default for ModelCapabilityFlags {
-    fn default() -> Self {
-        Self {
-            agent_turn: default_agent_turn_capability(),
-            parallel_tool_calls: false,
-            image_input: false,
-            image_generation: false,
-            supports_reasoning: false,
-            interactive_exec: false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelModality {
-    Text,
-    Image,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelReasoningCapability {
-    None,
-    Fixed,
-    Effort,
-    Budget,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelIntrinsicCapabilities {
-    pub input_modalities: Vec<ModelModality>,
-    pub output_modalities: Vec<ModelModality>,
-    pub reasoning: ModelReasoningCapability,
-    pub parallel_tool_calls: bool,
-    pub interactive_exec: bool,
-}
-
-impl ModelCapabilityFlags {
-    pub fn intrinsic(&self) -> ModelIntrinsicCapabilities {
-        let mut input_modalities = vec![ModelModality::Text];
-        if self.image_input {
-            input_modalities.push(ModelModality::Image);
-        }
-        let mut output_modalities = vec![ModelModality::Text];
-        if self.image_generation {
-            output_modalities.push(ModelModality::Image);
-        }
-        ModelIntrinsicCapabilities {
-            input_modalities,
-            output_modalities,
-            reasoning: if self.supports_reasoning {
-                ModelReasoningCapability::Fixed
-            } else {
-                ModelReasoningCapability::None
-            },
-            parallel_tool_calls: self.parallel_tool_calls,
-            interactive_exec: self.interactive_exec,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ModelParameterSupport {
-    pub name: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub allowed_values: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
-pub struct EndpointModelPolicy {
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub accepted_parameters: Vec<ModelParameterSupport>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub anthropic_cache: Option<ResolvedAnthropicCachePolicy>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum AnthropicCacheControlSource {
-    RouteOverride,
-    ProviderOverride,
-    RouteBuiltin,
-    EndpointBuiltin,
-    CompatibilityDefault,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResolvedAnthropicCachePolicy {
-    pub cache_control: bool,
-    pub source: AnthropicCacheControlSource,
-}
+use holon_domain::model_values::default_agent_turn_capability;
+pub use holon_domain::model_values::{
+    AnthropicCacheControlSource, DecisionProtocol, EndpointModelPolicy, ModelCapabilityFlags,
+    ModelIntrinsicCapabilities, ModelMetadataConstraint, ModelMetadataConstraintKind,
+    ModelMetadataConstraintSource, ModelMetadataEvidence, ModelMetadataField, ModelMetadataOrigin,
+    ModelMetadataSource, ModelModality, ModelParameterSupport, ModelReasoningCapability,
+    ModelVerbosity, ResolvedAnthropicCachePolicy, ResolvedRuntimeModelPolicy,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(deny_unknown_fields)]
@@ -557,151 +358,10 @@ impl ModelRuntimeOverride {
     }
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DecisionProtocol {
-    OpenAiCompatible,
-    OpenAiDecisions,
-    CloudflareClef,
-    Jev,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelVerbosity {
-    Low,
-    Medium,
-    High,
-}
-
-impl ModelVerbosity {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ResolvedRuntimeModelPolicy {
-    pub model_ref: ModelRef,
-    pub display_name: String,
-    pub description: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_window_tokens: Option<usize>,
-    pub effective_context_window_percent: u8,
-    pub prompt_budget_estimated_tokens: usize,
-    pub compaction_trigger_estimated_tokens: usize,
-    pub compaction_keep_recent_estimated_tokens: usize,
-    pub runtime_max_output_tokens: u32,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verbosity: Option<ModelVerbosity>,
-    pub tool_output_truncation_estimated_tokens: usize,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_output_tokens_upper_limit: Option<u32>,
-    #[serde(default)]
-    pub capabilities: ModelCapabilityFlags,
-    #[serde(default = "default_agent_turn_capability")]
-    pub agent_turn: bool,
-    #[serde(default)]
-    pub decision_capable: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub decision_protocol: Option<DecisionProtocol>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reasoning_effort_options: Vec<String>,
-    pub source: ModelMetadataSource,
-    #[serde(default)]
-    pub evidence: ModelMetadataEvidence,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReasoningEffortValidationError {
-    message: String,
-}
-
-impl ReasoningEffortValidationError {
-    pub(crate) fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
-impl std::fmt::Display for ReasoningEffortValidationError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(&self.message)
-    }
-}
-
-impl std::error::Error for ReasoningEffortValidationError {}
-
-impl Default for ResolvedRuntimeModelPolicy {
-    fn default() -> Self {
-        Self {
-            model_ref: ModelRef::new(ProviderId::openai(), "unknown"),
-            display_name: "Unknown model".into(),
-            description: "Legacy model state without resolved runtime policy.".into(),
-            context_window_tokens: None,
-            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
-            prompt_budget_estimated_tokens: DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
-            compaction_trigger_estimated_tokens: default_compaction_trigger_estimated_tokens(
-                DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
-            ),
-            compaction_keep_recent_estimated_tokens:
-                default_compaction_keep_recent_estimated_tokens(
-                    default_compaction_trigger_estimated_tokens(
-                        DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
-                    ),
-                ),
-            runtime_max_output_tokens: 8192,
-            verbosity: None,
-            tool_output_truncation_estimated_tokens:
-                DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
-            max_output_tokens_upper_limit: None,
-            capabilities: ModelCapabilityFlags::default(),
-            agent_turn: default_agent_turn_capability(),
-            decision_capable: false,
-            decision_protocol: None,
-            reasoning_effort_options: Vec::new(),
-            source: ModelMetadataSource::UnknownFallback,
-            evidence: ModelMetadataEvidence::default(),
-        }
-    }
-}
-
-impl ResolvedRuntimeModelPolicy {
-    pub fn validate_reasoning_effort(
-        &self,
-        value: &str,
-    ) -> Result<(), ReasoningEffortValidationError> {
-        if self
-            .reasoning_effort_options
-            .iter()
-            .any(|option| option == value)
-        {
-            return Ok(());
-        }
-
-        let model = self.model_ref.as_string();
-        if value == "ultra" && self.model_ref.provider == ProviderId::openai_codex() {
-            return Err(ReasoningEffortValidationError::new(format!(
-                "reasoning_effort 'ultra' is unavailable for model {model}; \
-                 Holon does not yet implement the required orchestration semantics"
-            )));
-        }
-        if self.reasoning_effort_options.is_empty() {
-            return Err(ReasoningEffortValidationError::new(format!(
-                "model {model} does not support configurable reasoning_effort"
-            )));
-        }
-        Err(ReasoningEffortValidationError::new(format!(
-            "reasoning_effort '{value}' is not supported by model {model}; supported values: {}",
-            self.reasoning_effort_options.join(", ")
-        )))
-    }
-}
+pub use holon_domain::model_values::ReasoningEffortValidationError;
+use holon_domain::model_values::{
+    DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT, DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BuiltInModelCatalog {
@@ -1898,10 +1558,6 @@ fn apply_route_capability_constraint(
 
 fn default_effective_context_window_percent() -> u8 {
     DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT
-}
-
-fn default_agent_turn_capability() -> bool {
-    true
 }
 
 fn validated_percent(percent: u8) -> u8 {

@@ -2,9 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use crate::types::{
-    AgentMemorySource, AgentMemorySourceView, LoadedAgentMemory, LoadedAgentMemoryView,
-};
+use crate::types::{AgentMemorySource, LoadedAgentMemory};
 
 /// Default per-file character budget for the auto-loaded slice of
 /// `agent_home/memory/{operator,self}.md`. Keeps the prompt injection bounded
@@ -69,25 +67,13 @@ fn load_source(path: PathBuf, budget_chars: usize) -> Result<Option<AgentMemoryS
     }))
 }
 
-impl From<&LoadedAgentMemory> for LoadedAgentMemoryView {
-    fn from(value: &LoadedAgentMemory) -> Self {
-        Self {
-            operator_source: value
-                .operator_source
-                .as_ref()
-                .map(AgentMemorySourceView::from),
-            self_source: value.self_source.as_ref().map(AgentMemorySourceView::from),
-            budget_chars: value.budget_chars,
-        }
-    }
-}
-
 #[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use crate::types::LoadedAgentMemoryView;
 
     fn write(dir: &Path, name: &str, body: &str) -> PathBuf {
         let path = dir.join(name);

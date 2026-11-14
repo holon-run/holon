@@ -299,7 +299,7 @@ The relevant existing layers are:
 
 | Layer | Current responsibility |
 | --- | --- |
-| `src/types.rs` | Native turn, terminal, brief, and message identities and records |
+| `crates/holon-domain/src/{turn,brief,message}.rs` via `src/types.rs` | Native turn, terminal, brief, and message identities and records |
 | `src/storage/mod.rs`, `src/runtime_db/repositories.rs` | Persistent record queries |
 | `src/http/events.rs`, `src/http/briefs.rs` | Raw event history/stream and brief reads |
 | `web-gui/app/src/runtime/runtime-store.ts`, `agent-session-repository.ts` in the same directory | History loading, stream recovery, and client state |

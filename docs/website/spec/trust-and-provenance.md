@@ -10,7 +10,7 @@ This page defines the current contract for how Holon classifies message
 provenance, admission/authentication, instruction authority, and execution
 policy — and how those labels flow through the runtime.
 
-> **Last verified:** 2026-09-13 against `src/types.rs` `MessageEnvelope`,
+> **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
 > `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
@@ -225,7 +225,7 @@ Holon's provenance contract:
 
 Validated implementation points:
 
-- `src/types.rs` defines the canonical envelope fields and legacy alias
+- `crates/holon-domain/src/message.rs` defines the canonical envelope fields and legacy alias
   compatibility.
 - `src/policy.rs` defines default authority by origin and kind/origin admission
   checks.

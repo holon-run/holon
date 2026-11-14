@@ -9,7 +9,7 @@ order: 80
 本页定义 Holon 如何对消息来源、准入/认证、指令权威和执行策略进行分类，
 以及这些标签如何流经运行时的当前契约。
 
-> **Last verified:** 2026-09-13 against `src/types.rs` `MessageEnvelope`,
+> **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
 > `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
@@ -199,7 +199,7 @@ Holon 的来源契约：
 
 已验证的实现要点：
 
-- `src/types.rs` 定义规范的信封字段和旧版别名兼容。
+- `crates/holon-domain/src/message.rs` 定义规范的信封字段和旧版别名兼容。
 - `src/policy.rs` 定义按 origin 的默认权威以及 kind/origin 准入检查。
 - [`src/http/state.rs`](../../../src/http/state.rs) 阻止公共 enqueue 使用运行时拥有的
   kind、`Interject` 优先级、特权 origin 或权威覆盖。

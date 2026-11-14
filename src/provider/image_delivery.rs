@@ -2,8 +2,7 @@
 use std::io::{self, Cursor, Seek, SeekFrom, Write};
 
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, Limits};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
 use crate::diagnostics::resource_io;
 
@@ -39,20 +38,7 @@ fn failure(code: &'static str, message: impl Into<String>) -> ImageDeliveryError
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ImageConversionMetadata {
-    pub source_format: String,
-    pub source_mime: String,
-    pub source_width: u32,
-    pub source_height: u32,
-    pub delivered_format: String,
-    pub delivered_mime: String,
-    pub converted: bool,
-    pub orientation_applied: bool,
-    pub encoding_policy: String,
-    pub width: u32,
-    pub height: u32,
-}
+pub use holon_domain::ImageConversionMetadata;
 
 #[derive(Debug)]
 pub struct DeliveredImage {

@@ -5,7 +5,6 @@
 use anyhow::Result;
 use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
-use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::future::Future;
 use std::path::{Path, PathBuf};
@@ -526,10 +525,7 @@ pub(crate) fn command_display(cmd: &str) -> String {
     redacted
 }
 
-pub(crate) fn command_digest(cmd: &str) -> String {
-    let digest = Sha256::digest(cmd.as_bytes());
-    format!("{digest:x}")
-}
+pub(crate) use holon_domain::command_digest;
 
 pub(crate) fn command_receipt_source_ref(
     tool_execution_id: &str,

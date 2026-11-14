@@ -75,15 +75,10 @@ const ACTIVE_TASKS_CONTEXT_LIMIT: usize = 5;
 const ACTIVE_TASK_SUMMARY_CHAR_BUDGET: usize = 240;
 const ACTIVE_TASK_CMD_PREVIEW_CHAR_BUDGET: usize = 240;
 
-pub(crate) const DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS: usize = 128_000;
-
-pub(crate) fn default_compaction_trigger_estimated_tokens(prompt_budget: usize) -> usize {
-    prompt_budget.saturating_mul(90) / 100
-}
-
-pub(crate) fn default_compaction_keep_recent_estimated_tokens(trigger_budget: usize) -> usize {
-    trigger_budget.saturating_mul(38) / 100
-}
+pub(crate) use holon_domain::model_values::{
+    default_compaction_keep_recent_estimated_tokens, default_compaction_trigger_estimated_tokens,
+    DEFAULT_PROMPT_BUDGET_ESTIMATED_TOKENS,
+};
 
 /// Explicit environment policy, captured at config load rather than during resolution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

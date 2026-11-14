@@ -10,7 +10,7 @@ use crate::{
     tool::{
         helpers::{command_preview, invalid_tool_input, parse_tool_args_with_recovery_hint},
         spec::{ToolExecutionContext, ToolResultStatus},
-        ToolError, ToolResult,
+        ToolResult,
     },
     types::{
         AuthorityClass, CommandTaskSpec, ExecCommandBatchItemResult, ExecCommandBatchItemStatus,
@@ -313,7 +313,7 @@ async fn execute_batch_item(
                 return Err(error);
             }
             Err(error) => {
-                let tool_error = ToolError::from_anyhow(&error);
+                let tool_error = crate::tool::tool_error_from_anyhow(&error);
                 ExecCommandBatchItemResult {
                     index,
                     cmd,
@@ -428,7 +428,6 @@ fn render_exec_item(lines: &mut Vec<String>, result: Option<&ExecCommandResult>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tool::ToolError;
 
     #[test]
     fn rejects_top_level_cmd_with_exec_command_hint() {
@@ -437,7 +436,7 @@ mod tests {
             "max_output_tokens": 1000
         });
         let error = parse_batch_args(&input).unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert!(tool_error
@@ -526,7 +525,7 @@ mod tests {
             }]
         });
         let error = parse_batch_args(&input).unwrap_err();
-        let tool_error = ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
 
         assert_eq!(tool_error.kind, "invalid_tool_input");
         assert!(tool_error

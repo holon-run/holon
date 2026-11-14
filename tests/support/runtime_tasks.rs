@@ -1549,7 +1549,7 @@ pub async fn exec_command_spawn_failure_returns_shell_recovery_hint() -> Result<
         )
         .await
         .unwrap_err();
-    let tool_error = ToolError::from_anyhow(&error);
+    let tool_error = holon::tool::tool_error_from_anyhow(&error);
 
     assert_eq!(tool_error.kind, "command_spawn_failed");
     assert!(tool_error

@@ -305,7 +305,7 @@ fn assert_invalid_workspace_path_error(
     expected_validation_error: &str,
     expected_path: &std::path::Path,
 ) {
-    let tool_error = crate::tool::ToolError::from_anyhow(error);
+    let tool_error = crate::tool::tool_error_from_anyhow(error);
     assert_eq!(tool_error.kind, "invalid_tool_input");
     let details = tool_error.details.as_ref().unwrap().as_object().unwrap();
     assert_eq!(details["field"].as_str(), Some("path"));

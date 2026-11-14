@@ -137,7 +137,10 @@ async fn detail_keeps_canonical_failure_and_original_lineage_holder() -> Result<
         host.agent_detail_from_identity(source)?
     };
     let lineage_holder = detail.lineage_children._material.as_ref().unwrap();
-    assert!(Arc::ptr_eq(lineage_holder, &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        lineage_holder,
+        &holder
+    ));
     assert_eq!(Arc::strong_count(&holder), before + 1);
     let cost = phase.finish()?;
     assert!(cost.0 > 0 && cost.1 > 0);
@@ -370,7 +373,7 @@ async fn detail_bootstrap_move_preserves_failure_order_and_lineage_holder() -> R
         host.agent_detail_from_identity(source)?
     };
     assert_eq!(detail, expected);
-    assert!(Arc::ptr_eq(
+    assert!(crate::runtime::agent_observation::same_observation_guard(
         detail.lineage_children._material.as_ref().unwrap(),
         &holder
     ));

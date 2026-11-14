@@ -8,7 +8,6 @@ use crate::{
     },
     types::AgentVisibility,
 };
-use std::sync::Arc;
 
 const PARENT: &str = "parent-汉字";
 const CANONICAL: &str = "a-canonical\0\"\\\n";
@@ -140,7 +139,10 @@ fn lineage_children_exact_cost_precedes_every_allocation_and_last_holder_drop() 
         db.agent_canonical_relations().lineage_children(PARENT)?
     };
     assert_eq!(phase.finish()?, expected);
-    assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        snapshot._material.as_ref().unwrap(),
+        &holder
+    ));
     assert_eq!(snapshot.len(), 2);
     assert_eq!(snapshot[0].child_agent_id, CANONICAL);
     assert_eq!(snapshot[0].revision, 7, "canonical wins over legacy");
@@ -151,7 +153,10 @@ fn lineage_children_exact_cost_precedes_every_allocation_and_last_holder_drop() 
     );
     let cloned = snapshot.clone();
     assert_eq!(snapshot, cloned);
-    assert!(!Arc::ptr_eq(cloned._material.as_ref().unwrap(), &holder));
+    assert!(!crate::runtime::agent_observation::same_observation_guard(
+        cloned._material.as_ref().unwrap(),
+        &holder
+    ));
     assert_eq!(ledger.report()?.observed_bytes, expected.0 * 2);
     drop((phase, holder, snapshot));
     assert_eq!(ledger.report()?.observed_bytes, expected.0);
@@ -258,7 +263,10 @@ fn lineage_children_sql_and_json_errors_retry_on_original_phase() -> Result<()> 
             db.agent_canonical_relations().lineage_children(PARENT)?
         };
         assert_eq!(snapshot, baseline);
-        assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+        assert!(crate::runtime::agent_observation::same_observation_guard(
+            snapshot._material.as_ref().unwrap(),
+            &holder
+        ));
         assert_eq!(
             phase.finish()?,
             (
@@ -327,7 +335,10 @@ fn lineage_children_empty_snapshot_keeps_array_schema_and_original_holder() -> R
         db.agent_canonical_relations().lineage_children(PARENT)?
     };
     assert!(snapshot.is_empty());
-    assert!(Arc::ptr_eq(snapshot._material.as_ref().unwrap(), &holder));
+    assert!(crate::runtime::agent_observation::same_observation_guard(
+        snapshot._material.as_ref().unwrap(),
+        &holder
+    ));
     assert_eq!(phase.finish()?, header());
     let wire = serde_json::to_string(&snapshot)?;
     assert_eq!(wire, "[]");

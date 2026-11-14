@@ -258,7 +258,7 @@ mod tests {
             Ok(())
         })
         .unwrap_err();
-        let tool_error = crate::tool::ToolError::from_anyhow(&error);
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
     }
 

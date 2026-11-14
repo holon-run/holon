@@ -4212,7 +4212,7 @@ mod tests {
             "resolving a command task with a nonexistent workdir should fail"
         );
         let err = result.unwrap_err();
-        let tool_error = crate::tool::ToolError::from_anyhow(&err);
+        let tool_error = crate::tool::tool_error_from_anyhow(&err);
         assert_eq!(tool_error.kind, "workdir_not_found");
         assert!(
             tool_error

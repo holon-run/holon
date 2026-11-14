@@ -1270,13 +1270,14 @@ mod tests {
         );
         assert_eq!(error.to_string(), "provider unavailable on retry");
 
-        let tool_error = ToolError::from_anyhow(&vision_observation_failed_after_validation_retry(
-            &test_vision_selection(),
-            &anyhow!("initial response was invalid"),
-            "not valid visual observation",
-            anyhow!("provider unavailable on retry"),
-            None,
-        ));
+        let tool_error =
+            crate::tool::tool_error_from_anyhow(&vision_observation_failed_after_validation_retry(
+                &test_vision_selection(),
+                &anyhow!("initial response was invalid"),
+                "not valid visual observation",
+                anyhow!("provider unavailable on retry"),
+                None,
+            ));
         assert_eq!(tool_error.kind, "vision_observation_failed");
         assert_eq!(
             tool_error.details.as_ref().unwrap()["failure_stage"],
@@ -1424,7 +1425,7 @@ mod tests {
                 } else {
                     vision_observation_failed(&test_vision_selection(), error, None)
                 };
-                let error = ToolError::from_anyhow(&error);
+                let error = crate::tool::tool_error_from_anyhow(&error);
                 assert!(!error.render().contains("private-endpoint"));
                 assert!(!error.render().contains("token=secret"));
                 assert_eq!(error.retryable, disposition == RetryDisposition::Retryable);
@@ -1516,7 +1517,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let path = dir.path().join("missing.png");
 
-        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
+        let error = crate::tool::tool_error_from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("readable local image file"));
@@ -1528,7 +1529,7 @@ mod tests {
         let path = dir.path().join("not-image.txt");
         fs::write(&path, b"hello").unwrap();
 
-        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
+        let error = crate::tool::tool_error_from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("supported image file"));
@@ -1541,7 +1542,7 @@ mod tests {
         let file = File::create(&path).unwrap();
         file.set_len(MAX_IMAGE_BYTES + 1).unwrap();
 
-        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
+        let error = crate::tool::tool_error_from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("file size"));
@@ -1553,7 +1554,7 @@ mod tests {
         let path = dir.path().join("huge.png");
         fs::write(&path, png_header_bytes(100_000, 100_000)).unwrap();
 
-        let error = ToolError::from_anyhow(&read_visual_reference(&path).unwrap_err());
+        let error = crate::tool::tool_error_from_anyhow(&read_visual_reference(&path).unwrap_err());
 
         assert_eq!(error.kind, "invalid_tool_input");
         assert!(error.message.contains("pixel count"));
@@ -1628,7 +1629,7 @@ mod tests {
             } else {
                 vision_observation_failed(&selection, anyhow!(raw.clone()), None)
             };
-            let error = ToolError::from_anyhow(&error);
+            let error = crate::tool::tool_error_from_anyhow(&error);
             let rendered = error.render();
             for secret in [
                 "private-endpoint",

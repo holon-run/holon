@@ -176,24 +176,22 @@ pub(crate) fn execution_root_entry_from_active(
     }
 }
 
-impl ActiveWorkspaceEntry {
-    /// Convert the active entry into an immutable `WorkspaceView`.
-    /// Centralizes the field mapping that was previously duplicated across
-    /// `workspace_view_from_state` and other call sites.
-    pub(crate) fn to_workspace_view(&self) -> Result<WorkspaceView> {
-        let worktree_root = (self.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
-            .then(|| self.execution_root.clone());
-        WorkspaceView::new(
-            Some(self.workspace_id.clone()),
-            self.workspace_anchor.clone(),
-            self.execution_root.clone(),
-            self.cwd.clone(),
-            Some(self.execution_root_id.clone()),
-            Some(self.access_mode),
-            self.projection_kind,
-            worktree_root,
-        )
-    }
+/// Convert the active entry into an immutable `WorkspaceView`.
+/// Centralizes the field mapping that was previously duplicated across
+/// `workspace_view_from_state` and other call sites.
+fn active_entry_workspace_view(entry: &ActiveWorkspaceEntry) -> Result<WorkspaceView> {
+    let worktree_root = (entry.projection_kind == WorkspaceProjectionKind::GitWorktreeRoot)
+        .then(|| entry.execution_root.clone());
+    WorkspaceView::new(
+        Some(entry.workspace_id.clone()),
+        entry.workspace_anchor.clone(),
+        entry.execution_root.clone(),
+        entry.cwd.clone(),
+        Some(entry.execution_root_id.clone()),
+        Some(entry.access_mode),
+        entry.projection_kind,
+        worktree_root,
+    )
 }
 
 pub(crate) fn workspace_view_from_state(
@@ -201,7 +199,7 @@ pub(crate) fn workspace_view_from_state(
     detached_execution_root: PathBuf,
 ) -> Result<WorkspaceView> {
     if let Some(entry) = state.active_workspace_entry.as_ref() {
-        return entry.to_workspace_view();
+        return active_entry_workspace_view(entry);
     }
 
     let execution_root = detached_execution_root;

@@ -10,7 +10,7 @@
         "asleep",
         "stopped"
       ],
-      "source": "src/types.rs"
+      "source": "crates/holon-domain/src/agent.rs"
     },
     {
       "name": "WorkItemState",
@@ -19,7 +19,7 @@
         "completing",
         "completed"
       ],
-      "source": "src/domain/work_item.rs"
+      "source": "crates/holon-domain/src/work_item.rs"
     },
     {
       "name": "WorkItemPlanStatus",
@@ -28,7 +28,7 @@
         "ready",
         "needs_input"
       ],
-      "source": "src/domain/work_item.rs"
+      "source": "crates/holon-domain/src/work_item.rs"
     },
     {
       "name": "WorkItemReadiness",
@@ -40,7 +40,7 @@
         "completing",
         "completed"
       ],
-      "source": "src/domain/work_item.rs"
+      "source": "crates/holon-domain/src/work_item.rs"
     },
     {
       "name": "TaskStatus",
@@ -53,7 +53,7 @@
         "cancelled",
         "interrupted"
       ],
-      "source": "src/types.rs"
+      "source": "crates/holon-domain/src/task.rs"
     },
     {
       "name": "WaitConditionStatus",
@@ -64,7 +64,7 @@
         "cancelled",
         "expired"
       ],
-      "source": "src/types.rs"
+      "source": "crates/holon-domain/src/wake.rs"
     },
     {
       "name": "TimerStatus",
@@ -73,7 +73,7 @@
         "completed",
         "cancelled"
       ],
-      "source": "src/types.rs"
+      "source": "crates/holon-domain/src/wake.rs"
     },
     {
       "name": "QueueEntryStatus",
@@ -87,7 +87,7 @@
         "quarantined",
         "interrupted"
       ],
-      "source": "src/types.rs"
+      "source": "crates/holon-domain/src/message.rs"
     },
     {
       "name": "ToolResultStatus",

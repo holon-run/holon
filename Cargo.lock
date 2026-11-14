@@ -1585,8 +1585,18 @@ dependencies = [
 name = "holon-domain"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "cron",
  "schemars",
  "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "unicode-casefold",
+ "uuid",
 ]
 
 [[package]]

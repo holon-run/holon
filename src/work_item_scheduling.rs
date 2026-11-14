@@ -15,8 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{
     TodoItem, TodoItemState, WaitConditionKind, WaitConditionRecord, WaitConditionSummary,
-    WakeSource, WorkItemPlanStatus, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState,
-    WorkItemState,
+    WakeSource, WorkItemReadiness, WorkItemRecord, WorkItemSchedulingState, WorkItemState,
 };
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
@@ -188,20 +187,6 @@ impl<W> WorkItemSchedulingProjection<W> {
             reason_code: self.reason_code,
             diagnostics: self.diagnostics,
         })
-    }
-}
-
-impl WorkItemRecord {
-    pub fn readiness(&self) -> WorkItemReadiness {
-        record_only_readiness(self)
-    }
-
-    pub fn is_runnable(&self) -> bool {
-        self.readiness() == WorkItemReadiness::Runnable
-    }
-
-    pub fn is_waiting_for_operator(&self) -> bool {
-        self.readiness() == WorkItemReadiness::WaitingForOperator
     }
 }
 
@@ -612,21 +597,16 @@ fn scheduling_header(
             _ => unreachable!("active waits only project waiting states"),
         };
         (wait_state, reason)
-    } else if work_item.blocked_by.is_some() {
-        (
-            WorkItemSchedulingState::Blocked,
-            WorkItemSchedulingReasonCode::ManualBlocker,
-        )
-    } else if work_item.plan_status == WorkItemPlanStatus::NeedsInput {
-        (
-            WorkItemSchedulingState::WaitingOperator,
-            WorkItemSchedulingReasonCode::PlanNeedsInput,
-        )
     } else {
-        (
-            WorkItemSchedulingState::Runnable,
-            WorkItemSchedulingReasonCode::Runnable,
-        )
+        let state = work_item.record_scheduling_state();
+        let reason = match state {
+            WorkItemSchedulingState::Blocked => WorkItemSchedulingReasonCode::ManualBlocker,
+            WorkItemSchedulingState::WaitingOperator => {
+                WorkItemSchedulingReasonCode::PlanNeedsInput
+            }
+            _ => WorkItemSchedulingReasonCode::Runnable,
+        };
+        (state, reason)
     };
     let readiness = readiness_for_scheduling_state(scheduling_state);
     let is_current = is_current && work_item.state == WorkItemState::Open;
@@ -674,14 +654,7 @@ fn scheduling_header(
 }
 
 pub fn record_only_readiness(record: &WorkItemRecord) -> WorkItemReadiness {
-    derive_work_item_scheduling(WorkItemSchedulingFacts {
-        work_item: record,
-        is_current: false,
-        is_yielded: false,
-        active_wait_conditions: &[],
-        trigger_delivery_by_id: &BTreeMap::new(),
-    })
-    .readiness
+    record.readiness()
 }
 
 /// Derive readiness from the facts available to a transition or audit path.
@@ -703,20 +676,7 @@ pub fn readiness_from_facts(
     .readiness
 }
 
-pub fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkItemReadiness {
-    match state {
-        WorkItemSchedulingState::Runnable => WorkItemReadiness::Runnable,
-        WorkItemSchedulingState::YieldedToWorkItem => WorkItemReadiness::Yielded,
-        WorkItemSchedulingState::WaitingOperator => WorkItemReadiness::WaitingForOperator,
-        WorkItemSchedulingState::WaitingTask
-        | WorkItemSchedulingState::WaitingExternal
-        | WorkItemSchedulingState::WaitingTimer
-        | WorkItemSchedulingState::WaitingSystem
-        | WorkItemSchedulingState::Blocked => WorkItemReadiness::Blocked,
-        WorkItemSchedulingState::Completing => WorkItemReadiness::Completing,
-        WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
-    }
-}
+pub use holon_domain::work_item::readiness_for_scheduling_state;
 
 pub fn compare_scheduling_projection_order<W: Borrow<WorkItemRecord>>(
     left: &WorkItemSchedulingProjection<W>,
@@ -856,7 +816,7 @@ fn current_todo_ref(record: &WorkItemRecord) -> Option<&TodoItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::{WaitConditionStatus, WakeSource};
+    use crate::types::{WaitConditionStatus, WakeSource, WorkItemPlanStatus};
 
     fn wait(record: &WorkItemRecord, kind: WaitConditionKind) -> WaitConditionRecord {
         let now = Utc::now();
