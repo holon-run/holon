@@ -17783,8 +17783,28 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(receipt.task_handle.task_kind, AGENT_MESSAGE_WAIT_TASK_KIND);
-        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        let mut terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
         assert_eq!(terminal.status, TaskStatus::Completed);
+        // The reply's delivery linkage can land in the terminal task detail
+        // after the record first reaches its terminal state (#4121), so
+        // re-read the settled record before asserting on the linkage. A
+        // timeout falls through to the diagnostic assert below instead of
+        // failing with a bare null mismatch.
+        for _ in 0..100 {
+            if terminal
+                .detail
+                .as_ref()
+                .is_some_and(|detail| !detail["response_delivery_id"].is_null())
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            terminal = parent
+                .storage()
+                .latest_task_record(&receipt.task_handle.task_id)
+                .unwrap()
+                .expect("task should remain persisted");
+        }
         let detail = terminal.detail.as_ref().unwrap();
         let request_delivery_id = detail["request_delivery_id"].as_str().unwrap();
         let request_record = host
@@ -17840,7 +17860,15 @@ mod tests {
             .is_none());
         assert!(response_rowid > request_rowid);
         assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
-        assert_eq!(detail["response_delivery_id"], response.delivery_id);
+        // Distinguish "linkage never became visible" from "wrong delivery".
+        assert_eq!(
+            detail["response_delivery_id"],
+            response.delivery_id,
+            "terminal detail response_delivery_id mismatch for task {} (reply_content_source={:?}, message_wait_satisfied={:?})",
+            receipt.task_handle.task_id,
+            detail["reply_content_source"].as_str(),
+            detail["message_wait_satisfied"],
+        );
         assert_eq!(detail["message_wait_satisfied"], true);
     }
 
