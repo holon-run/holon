@@ -1057,6 +1057,20 @@ impl RuntimeHandle {
         )
     }
 
+    /// Model-only read: borrows the live in-memory state under the agent lock
+    /// and the shared model resolver. No `AgentState` clone, no storage I/O,
+    /// and no full/compact summary construction.
+    pub(crate) async fn agent_model_state(&self) -> Result<crate::types::AgentModelState> {
+        // load_full keeps the future Send: an arc_swap Guard is not.
+        let snap = self.inner.config_snapshot.load_full();
+        let agent = self.inner.agent.lock().await;
+        super::try_agent_model_state_for_catalog(
+            &snap.model_catalog,
+            &snap.base_context_config,
+            &agent.state,
+        )
+    }
+
     pub(crate) fn model_state_for_turn(
         &self,
         state: &AgentState,

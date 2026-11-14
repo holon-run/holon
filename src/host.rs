@@ -4826,6 +4826,36 @@ impl RuntimeHost {
         })
     }
 
+    /// Model-only read: never builds a full/compact summary, never activates a
+    /// runtime, and for unloaded agents reads only the persisted model
+    /// material through the same shared resolver as the cold summary path.
+    pub(crate) async fn local_agent_model(
+        &self,
+        agent_id: &str,
+    ) -> std::result::Result<crate::types::AgentModelState, PublicAgentError> {
+        self.active_agent_identity(agent_id)?;
+        if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
+            return runtime
+                .agent_model_state()
+                .await
+                .map_err(PublicAgentError::Runtime);
+        }
+
+        let identity = self.active_agent_identity(agent_id)?;
+        let state = self
+            .runtime_db()
+            .agent_states()
+            .latest_for_incarnation(agent_id, identity.incarnation)
+            .map_err(PublicAgentError::Runtime)?
+            .unwrap_or_else(|| stopped_unloaded_agent(agent_id));
+        crate::runtime::try_agent_model_state_for_catalog(
+            &self.inner.registry.model_catalog(),
+            &self.runtime_context_config(),
+            &state,
+        )
+        .map_err(PublicAgentError::Runtime)
+    }
+
     pub async fn get_public_agent(
         &self,
         agent_id: &str,
