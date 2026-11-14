@@ -1,0 +1,12 @@
+[package]
+name = "holon-domain"
+version = "0.1.0"
+edition = "2021"
+description = "Shared domain types for the Holon runtime"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+readme = "README.md"
+
+[dependencies]
+schemars = "0.9"
+serde = { version = "1.0", features = ["derive"] }

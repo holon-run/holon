@@ -7,6 +7,8 @@ use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+pub use holon_domain::{ActivityKey, TurnKey};
+
 use crate::types::{
     ContinuationTriggerKind, MessageKind, TurnNoBriefReason, TurnTerminalKind, TurnTriggerSummary,
 };
@@ -407,18 +409,6 @@ pub enum ConversationChange {
         turn_id: String,
         detail_revision: u64,
     },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
-pub struct TurnKey {
-    pub turn_index: u64,
-    pub turn_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, JsonSchema)]
-pub struct ActivityKey {
-    pub event_seq: u64,
-    pub activity_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

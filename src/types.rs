@@ -7,6 +7,8 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 use unicode_casefold::UnicodeCaseFold;
 
+pub use holon_domain::{ContinuationTriggerKind, MessageKind, TurnTerminalKind};
+
 use crate::calendar::CalendarSchedule;
 use crate::config::ModelRouteRef;
 use crate::domain::scheduler::{ScenarioMode, SchedulerScenarioClass};
@@ -1577,17 +1579,6 @@ pub enum RuntimePosture {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ContinuationTriggerKind {
-    OperatorInput,
-    TaskResult,
-    ExternalEvent,
-    TimerFire,
-    InternalFollowup,
-    SystemTick,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
 pub enum TaskResultOutcome {
     Succeeded,
     Failed,
@@ -1873,23 +1864,6 @@ pub struct SkillOperationResponse {
     pub skill_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageKind {
-    OperatorPrompt,
-    ChannelEvent,
-    WebhookEvent,
-    CallbackEvent,
-    TimerTick,
-    SystemTick,
-    TaskResult,
-    TaskStatus,
-    Control,
-    BriefAck,
-    BriefResult,
-    InternalFollowup,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, PartialOrd, Ord)]
@@ -2412,23 +2386,6 @@ pub struct RuntimeFailureSummary {
     pub detail_hint: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_artifact: Option<FailureArtifact>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TurnTerminalKind {
-    Completed,
-    Aborted,
-    Interrupted,
-    BaselineOverBudget,
-    DeferredToFallback,
-    ProviderFailedNeedsRecovery,
-}
-
-impl TurnTerminalKind {
-    pub fn is_failure(self) -> bool {
-        !matches!(self, Self::Completed)
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]

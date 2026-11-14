@@ -826,8 +826,9 @@ jobs:
       - name: Check formatting
         run: make fmt-check
 
-      - name: Check decision crate formatting
+      - name: Check independent crate formatting
         run: |
+          cargo fmt --manifest-path crates/holon-domain/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-core/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-jev/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-openai/Cargo.toml -- --check
@@ -903,6 +904,7 @@ jobs:
           cargo test --manifest-path crates/decision-openai/Cargo.toml --locked
           cargo test --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
           cargo test --manifest-path crates/holon-model-client/Cargo.toml --locked
+          cargo test --manifest-path crates/holon-domain/Cargo.toml --locked
 
       - name: Package check
         run: |
