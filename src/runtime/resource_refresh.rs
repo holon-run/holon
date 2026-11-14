@@ -40,8 +40,6 @@ pub(super) struct RuntimeResources {
     #[cfg(test)]
     reads: AtomicUsize,
     #[cfg(test)]
-    inventory_waits: AtomicUsize,
-    #[cfg(test)]
     flight_waits: AtomicUsize,
 }
 
@@ -208,8 +206,6 @@ impl RuntimeResources {
             attempts: AtomicUsize::new(0),
             #[cfg(test)]
             reads: AtomicUsize::new(0),
-            #[cfg(test)]
-            inventory_waits: AtomicUsize::new(0),
             #[cfg(test)]
             flight_waits: AtomicUsize::new(0),
         })
@@ -645,7 +641,21 @@ impl RuntimeHandle {
     }
 
     pub(super) async fn ensure_context_resources(&self) -> Result<Arc<ResourceObservation>> {
+        self.prepare_context_resources(true).await
+    }
+
+    pub(super) async fn ensure_context_resources_for_claim(
+        &self,
+    ) -> Result<Arc<ResourceObservation>> {
+        self.prepare_context_resources(false).await
+    }
+
+    async fn prepare_context_resources(
+        &self,
+        wait_for_inventory: bool,
+    ) -> Result<Arc<ResourceObservation>> {
         let mut source_changes = 0usize;
+        let mut inventory_retry_delay = CONTEXT_RESOURCE_RETRY_MIN;
         loop {
             {
                 let _owner = self.reserve_resource_source().await?;
@@ -664,6 +674,26 @@ impl RuntimeHandle {
                 }
             }
             let result = self.run_context_resource_refresh(false).await;
+            if matches!(
+                result.as_ref().err().and_then(|error| error.downcast_ref()),
+                Some(ResourceObservationError::InventoryContended)
+            ) {
+                if !wait_for_inventory {
+                    return result;
+                }
+                // The refresh has released its owner and inventory guards.
+                // An observer or an admitted Turn can wait between flights.
+                tokio::select! {
+                    _ = tokio::time::sleep(inventory_retry_delay) => {},
+                    _ = self.inner.resources.closed() => {
+                        return Err(ResourceObservationError::NotReady(
+                            super::resource_observation::ResourceFreshness::Closed
+                        ).into());
+                    }
+                }
+                inventory_retry_delay = (inventory_retry_delay * 2).min(CONTEXT_RESOURCE_RETRY_MAX);
+                continue;
+            }
             if result.as_ref().err().is_some_and(|error| {
                 error
                     .downcast_ref::<crate::host::context_resources::ContextResourceWritersActive>()
@@ -868,27 +898,8 @@ impl RuntimeHandle {
                 .and_then(|error| error.downcast_ref::<ResourceObservationError>())
             {
                 Some(ResourceObservationError::InventoryContended) => {
-                    let inventory = match self.inner.host_bridge.as_ref() {
-                        Some(bridge) => bridge.skills_registry()?,
-                        None => self.inner.resources.standalone_skills.clone(),
-                    };
-                    // The physical worker has released owner, publication fence
-                    // and inventory guards before this actual availability wait.
-                    self.trace_resource_refresh("inventory_wait_start");
-                    #[cfg(test)]
-                    self.inner
-                        .resources
-                        .inventory_waits
-                        .fetch_add(1, Ordering::AcqRel);
-                    tokio::select! {
-                        available = inventory.write() => drop(available),
-                        _ = self.inner.resources.closed() => {
-                            break Err(ResourceObservationError::NotReady(
-                                super::resource_observation::ResourceFreshness::Closed
-                            ).into());
-                        }
-                    }
-                    self.trace_resource_refresh("inventory_wait_done");
+                    self.trace_resource_refresh("inventory_contended");
+                    return result;
                 }
                 Some(ResourceObservationError::InventorySnapshotChanged) if !reordered => {
                     reordered = true;
@@ -1678,7 +1689,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn resource_revision_inventory_write_lock_release_wakes_observation() -> Result<()> {
+    async fn resource_revision_observer_retries_after_inventory_write_lock_release() -> Result<()> {
         let (_home, host, first, _second) = shared_inventory_runtimes().await?;
         let inventory = host.skills_registry();
         let held = inventory.write().await;
@@ -1706,7 +1717,7 @@ mod tests {
     }
 
     #[test]
-    fn inventory_writers_can_keep_scheduler_poll_before_claim() -> Result<()> {
+    fn scheduler_defers_unclaimed_prompt_during_inventory_contention() -> Result<()> {
         use super::super::scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor};
 
         let home = tempdir()?;
@@ -1739,8 +1750,6 @@ mod tests {
                     )
                     .await?;
                 let inventory = runtime.inner.resources.standalone_skills.clone();
-                let mut writer = inventory.write().await;
-                let original_inventory = writer.clone();
                 let resources = &runtime.inner.resources;
                 let attempts = resources.attempts.load(Ordering::Acquire);
                 let reads = resources.reads.load(Ordering::Acquire);
@@ -1748,26 +1757,25 @@ mod tests {
                     .registry
                     .invalidate(ResourceInvalidation::ExplicitRefresh)?;
 
-                let poll = tokio::spawn({
-                    let runtime = runtime.clone();
-                    async move { SchedulerDecisionExecutor::new(&runtime).poll().await }
-                });
-                for attempt in 1..=4 {
-                    // This runtime has one async executor thread. The refresh
-                    // queues its fallback write before yielding back to this test.
-                    tokio::time::timeout(STEP_TIMEOUT, async {
-                        while resources.inventory_waits.load(Ordering::Acquire) < attempt {
-                            tokio::task::yield_now().await;
-                        }
-                    })
-                    .await
-                    .with_context(|| format!("inventory wait {attempt} was not reached"))?;
-                    assert!(writer.same_snapshot(&original_inventory));
-                    assert_eq!(
-                        resources.attempts.load(Ordering::Acquire),
-                        attempts + attempt
-                    );
-                    assert_eq!(resources.reads.load(Ordering::Acquire), reads);
+                let executor = SchedulerDecisionExecutor::new(&runtime);
+                // A writer prevents the snapshot read. A reader permits the
+                // scan but prevents publication. Both must let the poll return
+                // before the holder releases the inventory.
+                for reading in [false, true] {
+                    let writer = if reading {
+                        None
+                    } else {
+                        Some(inventory.write().await)
+                    };
+                    let reader = if reading {
+                        Some(inventory.read().await)
+                    } else {
+                        None
+                    };
+                    let poll = tokio::time::timeout(STEP_TIMEOUT, executor.poll())
+                        .await
+                        .context("scheduler waited on the Skills inventory before Claim")??;
+                    assert!(matches!(poll, RunLoopPoll::ContextResourcesPending));
                     assert_eq!(
                         runtime
                             .runtime_db()
@@ -1778,25 +1786,25 @@ mod tests {
                         QueueEntryStatus::Queued
                     );
                     assert!(runtime.agent_state().await?.current_run_id.is_none());
-                    assert!(!poll.is_finished());
-
-                    // The refresh is first in line. Its fallback acquires the
-                    // guard and drops it unused, handing it to the next writer.
-                    let next_writer = inventory.write();
-                    tokio::pin!(next_writer);
-                    assert!(futures_util::poll!(next_writer.as_mut()).is_pending());
+                    assert!(!resources.refresh_in_flight.load(Ordering::Acquire));
+                    assert_eq!(
+                        resources.attempts.load(Ordering::Acquire),
+                        attempts + 1 + usize::from(reading)
+                    );
+                    assert_eq!(
+                        resources.reads.load(Ordering::Acquire),
+                        reads + usize::from(reading)
+                    );
                     drop(writer);
-                    writer = tokio::time::timeout(STEP_TIMEOUT, next_writer).await?;
+                    drop(reader);
                 }
 
-                drop(writer);
                 let RunLoopPoll::Message(scheduled) =
-                    tokio::time::timeout(STEP_TIMEOUT, poll).await???
+                    tokio::time::timeout(STEP_TIMEOUT, executor.poll()).await??
                 else {
                     panic!("the original prompt should be claimed when contention stops");
                 };
                 assert_eq!(scheduled.message.id, message.id);
-                assert_eq!(resources.reads.load(Ordering::Acquire), reads + 1);
                 assert_eq!(
                     runtime
                         .runtime_db()
@@ -1924,7 +1932,7 @@ mod tests {
     }
 
     #[test]
-    fn resource_revision_close_unblocks_inventory_wait_without_unlock_or_business_event(
+    fn resource_revision_close_unblocks_inventory_retry_without_unlock_or_business_event(
     ) -> Result<()> {
         let home = tempdir()?;
         let runtime = synchronous_runtime("resource-close-inventory", home.path())?;

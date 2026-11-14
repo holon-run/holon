@@ -102,6 +102,7 @@ impl ResourceObservationError {
             self,
             Self::SourceChanged
                 | Self::ObsoleteRefresh
+                | Self::InventoryContended
                 | Self::InventorySnapshotChanged
                 | Self::NotReady(
                     ResourceFreshness::Unobserved
