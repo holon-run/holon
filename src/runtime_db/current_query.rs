@@ -519,6 +519,7 @@ fn prepare_inner(
     limits: (usize, usize),
     scope_read: Option<&super::context_inputs::ContextScopeRead<'_>>,
 ) -> Result<Arc<CurrentQuery>> {
+    let mut timer = crate::diagnostics::attribution::CURRENT_QUERY_PREPARE.start();
     let mut material = InputReadMaterial::new(scope, ledger, limits, None)?;
     let active = tx.query_row(
         "SELECT status='active' AND json_extract(payload_json,'$.agent_id')=?1 AND CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1 WHEN json_type(payload_json,'$.incarnation')='integer' THEN json_extract(payload_json,'$.incarnation') END=?2 AND json_extract(payload_json,'$.status')=status FROM agent_identities WHERE agent_id=?1",
@@ -572,6 +573,7 @@ fn prepare_inner(
         .checked_add(selection.queue_ids.len())
         .and_then(|n| n.checked_add(8))
         .context("Current source nodes overflow")?;
+    timer.rows(nodes - 8);
     let selected_bytes = usize::try_from(crate::runtime::input_evidence_budget::serialized_bytes(
         selection,
     )?)?;

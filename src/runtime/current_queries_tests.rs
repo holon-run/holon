@@ -5,6 +5,176 @@ use crate::{
 };
 
 #[tokio::test]
+async fn input_preparation_keeps_only_live_queue_roles() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let mut messages = Vec::new();
+    for _ in 0..2 {
+        let message = crate::types::MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            crate::types::MessageBody::Text {
+                text: "Current Queue fixture".into(),
+            },
+        )
+        .with_admission(
+            crate::types::MessageDeliverySurface::HttpControlPrompt,
+            crate::types::AdmissionContext::ControlAuthenticated,
+        );
+        messages.push(runtime.enqueue(message).await?);
+    }
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let scope = super::resident_input_evidence::InputEvidenceScope {
+        agent_id: root.state.id.clone(),
+        identity_incarnation: runtime.inner.identity_incarnation,
+    };
+    let epoch = root.token.owner_epoch;
+    drop(root);
+    let old = CurrentSelection {
+        queue_ids: [messages[0].id.clone()].into(),
+        ..Default::default()
+    };
+    let live = CurrentSelection {
+        queue_ids: [messages[1].id.clone()].into(),
+        ..Default::default()
+    };
+    let exited = runtime.inner.current_queries.register(
+        &scope,
+        epoch,
+        old,
+        &runtime.inner.input_evidence_budget,
+    )?;
+    let _live = runtime.inner.current_queries.register(
+        &scope,
+        epoch,
+        live.clone(),
+        &runtime.inner.input_evidence_budget,
+    )?;
+    let mut mutation = runtime.begin_mutation().await?;
+    mutation.prepare_current_query(None).await?;
+    drop(mutation);
+    drop(exited);
+    let mut mutation = runtime.begin_mutation().await?;
+    let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy()?;
+    let input = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+        query: Some(super::resident_input_evidence::InputQueryRead {
+            selection: Default::default(),
+            ledger: runtime.inner.input_evidence_budget.clone(),
+        }),
+        windows: vec![
+            crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
+                selector: super::resident_input_evidence::InputWindowSelector::RecentTranscript,
+                limit: 1,
+            },
+        ],
+        mandatory_roots: Default::default(),
+        interrupted_sources: Default::default(),
+        selected_completion_brief_ids: Default::default(),
+        record_limit,
+        byte_limit,
+    };
+    mutation.prepare_owner_input_request(&input, 0).await?;
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let query = root
+        .current
+        .as_ref()
+        .and_then(|current| current.query.as_ref())
+        .context("Current query")?;
+    assert_eq!(query.selection.queue_ids, live.queue_ids);
+    assert!(query.queue_record(&messages[1].id)?.is_some());
+    assert!(query.queue_record(&messages[0].id).is_err());
+    Ok(())
+}
+
+#[tokio::test]
+async fn input_preparation_releases_exited_current_event_interval() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let (_, session) = runtime.begin_task_birth_session().await?;
+    for _ in 0..128 {
+        runtime
+            .append_original_audit_event(AuditEvent::legacy(
+                "history",
+                serde_json::json!({"data":"x".repeat(1024)}),
+            ))
+            .await?;
+    }
+    let retained = runtime.capture_run_once(&session)?;
+    assert_eq!(retained.events().count(), 128);
+    let body = retained.current.events[0].weak_material();
+    drop(session);
+    let mut mutation = runtime.begin_mutation().await?;
+    let (_, record_limit, byte_limit) = mutation.context_input_evidence_policy()?;
+    let input = crate::runtime_db::input_evidence_snapshot::InputEvidenceLoadRequest {
+        query: Some(super::resident_input_evidence::InputQueryRead {
+            selection: Default::default(),
+            ledger: runtime.inner.input_evidence_budget.clone(),
+        }),
+        windows: vec![
+            crate::runtime_db::input_evidence_snapshot::InputWindowRequest {
+                selector: super::resident_input_evidence::InputWindowSelector::RecentTranscript,
+                limit: 1,
+            },
+        ],
+        mandatory_roots: Default::default(),
+        interrupted_sources: Default::default(),
+        selected_completion_brief_ids: Default::default(),
+        record_limit,
+        byte_limit,
+    };
+    let start = std::time::Instant::now();
+    mutation.prepare_owner_input_request(&input, 0).await?;
+    drop(mutation);
+    let root = runtime.inner.mutation_owner.capture()?.unwrap();
+    let query = root
+        .current
+        .as_ref()
+        .and_then(|current| current.query.as_ref())
+        .context("prepared Current query")?;
+    eprintln!(
+        "exited Current interval: preparation_ms={} events={}",
+        start.elapsed().as_millis(),
+        query
+            .capture(&query.selection, &runtime.inner.input_evidence_budget)?
+            .events
+            .len()
+    );
+    assert_eq!(
+        query.selection.events_after,
+        Some(query.event_cursor),
+        "Input preparation kept an exited event frontier"
+    );
+    assert!(
+        query
+            .capture(&query.selection, &runtime.inner.input_evidence_budget)?
+            .events
+            .is_empty(),
+        "Input preparation reloaded exited history"
+    );
+    assert!(
+        body.upgrade().is_some(),
+        "old capture still owns its exact bodies"
+    );
+    assert_eq!(retained.events().count(), 128);
+    drop(retained);
+    assert!(
+        body.upgrade().is_none(),
+        "prepared root retained an exited capture"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn qualified_stream_loaded_install_preserves_single_record_notification_without_root(
 ) -> Result<()> {
     let harness = LifecycleHarness::new();

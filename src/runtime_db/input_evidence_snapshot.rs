@@ -1719,6 +1719,7 @@ fn prepare_input_records_tx(
     scope_read: Option<&ContextScopeRead<'_>>,
     include_live_protocol: bool,
 ) -> Result<ResidentInputEvidence> {
+    let mut timer = crate::diagnostics::attribution::INPUT_PREPARE_RECORDS.start();
     let binding = binding_on(tx, scope)?;
     let query = request
         .query
@@ -2256,6 +2257,7 @@ fn prepare_input_records_tx(
             provider_replay::validate(&records, &execution_coverage, source, turn, assigned)?;
         }
     }
+    timer.rows(records.len());
     InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
     let (query, query_guards) = query
         .map(|query| (Some(query.coverage), query.guards))
