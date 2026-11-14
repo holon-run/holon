@@ -779,7 +779,10 @@ impl RuntimeDb {
         )>,
         recovered_at: Option<chrono::DateTime<Utc>>,
     ) -> Result<StartupInputRecoveryCommit> {
-        self.transaction(|tx| {
+        self.transaction_with_context(
+            super::RuntimeDbWriteContext::sync("startup_runtime_recovery", "runtime_state"),
+            |tx| {
+            let started = std::time::Instant::now();
             let mut input_facts=BTreeMap::<String,Vec<super::input_evidence_snapshot::CanonicalInputEvidence>>::new();
             let mut input_deltas = Vec::new();
             let mut input_commands=BTreeMap::<String,Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>>::new();
@@ -859,6 +862,8 @@ impl RuntimeDb {
             }
             let recovered_at = recovered_at.unwrap_or_else(Utc::now);
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
+            let preflight = started.elapsed();
+            let phase = std::time::Instant::now();
             let terminal_sources = {
                 // Interrupted history is recovery lineage, not evidence that
                 // the input was consumed by a completed execution.
@@ -866,6 +871,8 @@ impl RuntimeDb {
                 let sources = statement.query_map([], |row| Ok(((row.get::<_, String>(0)?, row.get::<_, String>(1)?), if row.get::<_, String>(2)? == "completed" { QueueEntryStatus::Processed } else { QueueEntryStatus::Aborted })))?.collect::<std::result::Result<BTreeMap<_, _>, _>>()?;
                 sources
             };
+            let terminal_lookup = phase.elapsed();
+            let phase = std::time::Instant::now();
             let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
             tx.execute(
                 "UPDATE destructive_operations
@@ -873,6 +880,8 @@ impl RuntimeDb {
                  WHERE phase = 'scheduled' AND recovery_policy = 'verify_only'",
                 [recovered_at.to_rfc3339()],
             )?;
+            let queue_recovery_time = phase.elapsed();
+            let phase = std::time::Instant::now();
             let mut active_turns = {
                 let mut statement = tx.prepare(
                     "SELECT payload_json
@@ -1121,6 +1130,8 @@ impl RuntimeDb {
                 }
                 report.interrupted_turns += 1;
             }
+            let active_turn_recovery = phase.elapsed();
+            let phase = std::time::Instant::now();
             // Startup owns every open attempt, including retained dequeued claims.
             let open_attempts: Vec<(String, String)> = {
                 let mut statement = tx.prepare(
@@ -1236,9 +1247,13 @@ impl RuntimeDb {
                     }
                 }
             }
+            let open_attempt_recovery = phase.elapsed();
+            let phase = std::time::Instant::now();
             // Repair pairs left inconsistent by a crash between the runtime
             // abort write and its attempt settlement (#3607).
             let finalized = finalize_interrupted_replay_sources_at_startup_tx(tx, recovered_at, &mut report, task_metadata.as_mut())?;
+            let interrupted_finalization = phase.elapsed();
+            let phase = std::time::Instant::now();
             if input_scopes.is_some() {
                 for (agent, facts) in finalized.input_facts {
                     input_facts.entry(agent).or_default().extend(facts);
@@ -1332,6 +1347,20 @@ impl RuntimeDb {
             inject_fault(fault, TransitionFaultPoint::AfterCanonicalWrites)?;
             inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;
             inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
+            tracing::info!(
+                preflight_us = preflight.as_micros(),
+                terminal_lookup_us = terminal_lookup.as_micros(),
+                queue_recovery_us = queue_recovery_time.as_micros(),
+                active_turn_recovery_us = active_turn_recovery.as_micros(),
+                open_attempt_recovery_us = open_attempt_recovery.as_micros(),
+                interrupted_finalization_us = interrupted_finalization.as_micros(),
+                publication_us = phase.elapsed().as_micros(),
+                terminal_source_count = terminal_sources.len(),
+                active_turns_recovered = report.interrupted_turns,
+                open_attempts_recovered = report.interrupted_execution_attempts,
+                interrupted_attempts_finalized = report.interrupted_attempts_finalized,
+                "startup runtime recovery transaction phases"
+            );
             Ok(StartupInputRecoveryCommit {report,input_deltas,_current_writes:current_writes})
         })
     }
@@ -9845,6 +9874,161 @@ mod tests {
             duration_ms: 5,
         });
         turn
+    }
+
+    /// Run with HOLON_LIB_TEST_SHARD=b cargo test --lib startup_recovery_history_cost
+    /// -- --ignored --nocapture. Counts SQLite work in the actual recovery transaction.
+    #[test]
+    #[ignore = "synthetic startup recovery baseline"]
+    fn startup_recovery_history_cost() -> Result<()> {
+        let subscriber = tracing_subscriber::fmt()
+            .without_time()
+            .with_ansi(false)
+            .with_test_writer()
+            .finish();
+        let dispatch = tracing::Dispatch::new(subscriber);
+        tracing::dispatcher::with_default(&dispatch, || {
+            for candidates in [0, 3] {
+                for (turns, interrupted) in [(256, 8), (16_384, 8), (16_384, 128)] {
+                    let (_dir, db) = runtime_db()?;
+                    seed_startup_recovery_history(&db, turns, interrupted, candidates)?;
+                    let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+                    db.writer.state.connection.lock().unwrap().progress_handler(
+                        100,
+                        Some({
+                            let ticks = ticks.clone();
+                            move || {
+                                ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                false
+                            }
+                        }),
+                    );
+                    let result = db.recover_interrupted_runtime_state_at_startup();
+                    db.writer
+                        .state
+                        .connection
+                        .lock()
+                        .unwrap()
+                        .progress_handler(0, None::<fn() -> bool>);
+                    let report = result?;
+                    assert_eq!(report.interrupted_attempts_finalized, candidates);
+                    assert_eq!(report.queue_entries_changed, candidates);
+                    assert_eq!(
+                        report.interrupted_execution_attempts,
+                        usize::from(candidates > 0)
+                    );
+                    let vm_steps = ticks.load(std::sync::atomic::Ordering::Relaxed) * 100;
+                    println!(
+                        "startup_recovery_history turns={turns} interrupted={interrupted} \
+                         candidates={candidates} vm_steps_rounded_down={vm_steps}"
+                    );
+                    let repeated = db.recover_interrupted_runtime_state_at_startup()?;
+                    assert_eq!(repeated.interrupted_attempts_finalized, 0);
+                    assert_eq!(repeated.queue_entries_changed, 0);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    fn seed_startup_recovery_history(
+        db: &RuntimeDb,
+        turns: usize,
+        interrupted: usize,
+        candidates: usize,
+    ) -> Result<()> {
+        db.agent_identities().upsert(&active_agent("agent-a"))?;
+        db.transaction(|tx| {
+            let now = Utc::now();
+            let mut unrelated = poisoned_replay_turn("unrelated-turn", TurnTerminalKind::Completed);
+            unrelated.live_input_batches[0].activation_id = "unrelated-activation".into();
+            for index in 0..turns {
+                unrelated.turn_id = format!("history-{index}");
+                unrelated.turn_index = index as u64 + 1;
+                unrelated.trigger.as_mut().unwrap().message_id = Some(format!("older-{index}"));
+                upsert_turn_record_tx(tx, &unrelated)?;
+            }
+
+            let mut state = ExecutionProtocolState::empty("agent-a");
+            for index in 0..(interrupted + candidates) {
+                let id = format!("attempt-{index:05}");
+                let message = format!("source-{index:05}");
+                let mut admission = execution_admission(&message, &id, "work-execution");
+                let ExecutionProtocolCommand::Admit(admit) = admission.commands.remove(0) else {
+                    unreachable!()
+                };
+                let mut attempt = admit.attempt;
+                let needs_repair = index >= interrupted;
+                let is_open = needs_repair && index + 1 == interrupted + candidates;
+                let mut turn = poisoned_replay_turn(
+                    &format!("attached-{index:05}"),
+                    if needs_repair {
+                        TurnTerminalKind::Aborted
+                    } else {
+                        TurnTerminalKind::Interrupted
+                    },
+                );
+                turn.turn_index = (turns + index + 1) as u64;
+                turn.trigger.as_mut().unwrap().message_id = Some(message.clone());
+                turn.input_message_ids = vec![message.clone()];
+                let batch = &mut turn.live_input_batches[0];
+                batch.activation_id = id.clone();
+                batch.safe_point = crate::types::LiveInputSafePoint::new(&id, 1);
+                batch.items[0].message_id = message.clone();
+                batch.items[0].source_ref = format!("message:{message}");
+                upsert_turn_record_tx(tx, &turn)?;
+                if is_open {
+                    state.work_items.insert(
+                        "work-execution".into(),
+                        WorkItemExecutionRecord {
+                            source_revision: 1,
+                            state: WorkItemExecutionState::InFlight {
+                                generation: 1,
+                                attempt_id: id.clone(),
+                            },
+                        },
+                    );
+                } else {
+                    let outcome_id = format!("outcome-{id}");
+                    let timestamp = now.to_rfc3339();
+                    attempt.state = ExecutionAttemptState::Interrupted;
+                    attempt.terminal_at = Some(timestamp.clone());
+                    attempt.terminal_outcome_id = Some(outcome_id.clone());
+                    state.outcomes.insert(
+                        outcome_id.clone(),
+                        ExecutionOutcomeRecord {
+                            outcome_id,
+                            attempt_id: id.clone(),
+                            outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
+                                reason: "historical interruption".into(),
+                            }),
+                            created_at: timestamp,
+                        },
+                    );
+                }
+                state.attempts.insert(id, attempt);
+                if needs_repair {
+                    upsert_queue_entry_tx(
+                        tx,
+                        &QueueEntryRecord {
+                            agent_id: "agent-a".into(),
+                            message_id: message,
+                            priority: Priority::Normal,
+                            status: if is_open {
+                                QueueEntryStatus::Dequeued
+                            } else {
+                                QueueEntryStatus::Interrupted
+                            },
+                            created_at: now,
+                            updated_at: now,
+                        },
+                    )?;
+                }
+            }
+            crate::domain::execution_protocol::assert_invariants(&state)
+                .map_err(|error| anyhow!(error))?;
+            persist_state_tx(tx, &state)
+        })
     }
 
     fn insert_admitted_replay_settlement(db: &RuntimeDb, now: chrono::DateTime<Utc>) -> Result<()> {
