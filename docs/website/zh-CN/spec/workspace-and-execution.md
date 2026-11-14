@@ -10,7 +10,8 @@ order: 70
 
 > **Last verified:** 2026-09-13 against `src/types.rs`
 > `ActiveWorkspaceEntry`, `WorkspaceOccupancyRecord`, `WorktreeSession`,
-> `src/system/types.rs` `ExecutionSnapshot`, and `src/runtime/workspace.rs`.
+> `ExecutionSnapshot`（`crates/holon-domain/src/execution_types.rs`），以及
+> `src/runtime/workspace.rs`。
 
 ## 源 RFC
 

@@ -806,14 +806,13 @@ fn pipe_process_output(reader: Box<dyn std::io::Read + Send>) -> Box<dyn Process
     Box::new(reader_stream)
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use tempfile::{tempdir, TempDir};
     use tokio::io::AsyncReadExt;
 
     use super::*;
-    use crate::system::{CaptureSpec, ExecutionProfile, ExecutionScopeKind, ProcessPurpose};
+    use crate::{CaptureSpec, ExecutionProfile, ExecutionScopeKind, ProcessPurpose};
 
     fn effective_execution() -> (TempDir, EffectiveExecution) {
         let dir = tempdir().unwrap();
@@ -825,7 +824,7 @@ mod tests {
             dir.path().join("workspace"),
             None,
             None,
-            crate::system::WorkspaceProjectionKind::CanonicalRoot,
+            crate::WorkspaceProjectionKind::CanonicalRoot,
             None,
         )
         .unwrap();
@@ -1082,11 +1081,10 @@ mod tests {
     }
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(all(test, unix))]
 mod registered_process_group_tests {
     use super::*;
-    use crate::system::process::RegisteredProcessGroupQuiescence as Q;
+    use crate::process::RegisteredProcessGroupQuiescence as Q;
     fn execution() -> (tempfile::TempDir, EffectiveExecution) {
         let dir = tempfile::tempdir().unwrap();
         let view = WorkspaceView::new(
@@ -1163,7 +1161,7 @@ mod registered_process_group_tests {
     }
     #[test]
     fn invalid_or_unknown_frozen_group_grants_no_empty_proof() {
-        use crate::system::process::RegisteredProcessGroupProbe;
+        use crate::process::RegisteredProcessGroupProbe;
         assert_eq!(
             LocalRegisteredProcessGroupProbe { frozen_pgid: 0 }.observe(),
             Q::Unknown

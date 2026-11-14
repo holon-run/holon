@@ -10,7 +10,8 @@ use super::{
 /// The requested command did not start. Errors after spawn carry no such proof.
 #[derive(Debug, thiserror::Error)]
 #[error("command process did not start")]
-pub(crate) struct ProcessNotStarted;
+#[doc(hidden)]
+pub struct ProcessNotStarted;
 
 pub trait ProcessOutput: AsyncRead + Unpin + Send {}
 
