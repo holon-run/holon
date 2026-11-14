@@ -94,7 +94,7 @@ impl Settings {
             cold: mode == "cold",
             agents: setting("HOLON_STATE_AGENTS", 1, 1, 16)?,
             clients: setting("HOLON_STATE_CLIENTS", 1, 1, 10)?,
-            work_items: setting("HOLON_STATE_WORK_ITEMS", 0, 0, 200)?,
+            work_items: setting("HOLON_STATE_WORK_ITEMS", 0, 0, 2_000)?,
             requests: setting("HOLON_STATE_REQUESTS", 100, 1, 10_000)?,
             batches: setting("HOLON_STATE_BATCHES", 3, 1, 10)?,
             pause_ms: setting("HOLON_STATE_PAUSE_MS", 10, 0, 1_000)?,

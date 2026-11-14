@@ -41,8 +41,17 @@ python3 benchmarks/state-http/run.py \
 
 `full` has 24 idle cells and four loaded-mutation cells. Its synthetic homes are
 under the output directory; the driver refuses to overwrite an existing output.
+`--matrix scale` is an additional population matrix, not a change to `full`:
+loaded/cold × 1/10 clients × 0/200/2000 synthetic Work items with one observed
+Agent. It tests assembly costs beyond the bounded State wire window; it is not
+Task history or a real client/socket benchmark. The opt-in
+[runtime suite](runtime-suite/README.md) indexes both matrices and D0 without
+adding a pull-request gate.
 An outer process timeout is a failed/censored cell, not a request percentile or
 successful fixture cleanup. Preserve its remaining home for diagnosis.
+Timeout stops the driver even with `--keep-going` and returns reserved exit
+code `124`, allowing an enclosing suite to terminate the invocation's process
+group. Ordinary unsuccessful cells return `1`.
 
 `--matrix idle` and `--matrix mutations` select these groups independently.
 For availability diagnosis, `--keep-going` continues with other independent

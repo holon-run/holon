@@ -211,9 +211,13 @@ def run(args) -> int:
             except (subprocess.TimeoutExpired, RuntimeError, ValueError, KeyError) as error:
                 entry.update({"status": "failed", "error": str(error)})
                 failed = True
+                if isinstance(error, subprocess.TimeoutExpired):
+                    manifest["failure_kind"] = "timeout"
             entry["wall_seconds_including_setup"] = time.monotonic() - started
             manifest["runs"].append(entry)
             write_json(manifest_path, manifest)
+            if manifest.get("failure_kind") == "timeout":
+                return 124  # Let the enclosing suite clean the process group and stop.
     return 1 if failed else 0
 
 

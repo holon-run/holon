@@ -15,6 +15,15 @@ import sys
 def cases(matrix):
     if matrix == "pilot":
         return [("loaded-a1-c1-w50-idle", "loaded", 1, 1, 50, 0)]
+    if matrix == "scale":
+        # Hold the observed Agent set fixed; grow the resident Work population
+        # beyond the bounded State wire window, with both serial and shared reads.
+        return [
+            (f"{mode}-a1-c{clients}-w{work}-idle", mode, 1, clients, work, 0)
+            for mode in ("loaded", "cold")
+            for clients in (1, 10)
+            for work in (0, 200, 2000)
+        ]
     cells = []
     for mode in ("loaded", "cold"):
         for agents in (1, 8):
@@ -63,6 +72,7 @@ def summary(artifact, expected_settings):
         ),
         "committed_work_mutations": sum(batch["committed_work_mutations"] for batch in batches),
         "source_sha256": artifact["source_sha256"],
+        "warmup_retries": artifact.get("warmup_retries"),
     }
     if len(batches) >= 3 and all(batch["http_p99_ns"] is not None for batch in batches):
         result["p99_ns_batch_median"] = statistics.median(
@@ -80,7 +90,9 @@ def main():
     parser.add_argument("--binary-a", type=Path, required=True)
     parser.add_argument("--binary-b", type=Path)
     parser.add_argument("--order", choices=("AA", "ABBA"), default="AA")
-    parser.add_argument("--matrix", choices=("pilot", "idle", "mutations", "full"), default="pilot")
+    parser.add_argument(
+        "--matrix", choices=("pilot", "idle", "mutations", "full", "scale"), default="pilot"
+    )
     parser.add_argument(
         "--keep-going", action="store_true",
         help="diagnose other cells after a process failure; still exit unsuccessfully",
@@ -154,6 +166,7 @@ def main():
                         record["exit_status"] = result.returncode
                     except subprocess.TimeoutExpired:
                         record["failure"] = "outer harness timeout; fixture cleanup not guaranteed"
+                        manifest["failure_kind"] = "timeout"
                         raise
                 if result.returncode:
                     record["failure"] = f"{label} failed; inspect preserved stdout/stderr"
@@ -182,7 +195,7 @@ def main():
         (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     if failed:
         print(manifest["failure"], file=sys.stderr)
-        return 1
+        return 124 if manifest.get("failure_kind") == "timeout" else 1
     print(output / "manifest.json")
     return 0
 
