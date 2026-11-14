@@ -49,6 +49,7 @@ futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
 holon-model-client = { version = "0.1.0", path = "crates/holon-model-client" }
+holon-system = { version = "0.1.0", path = "crates/holon-system" }
 encoding_rs = "0.8"
 flate2 = "1.0"
 fs2 = "0.4"
@@ -64,7 +65,6 @@ r2d2 = "0.8.10"
 rust-embed = "8.11"
 rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
 pulldown-cmark = "0.13"
-portable-pty = "0.9"
 percent-encoding = "2.3"
 mime_guess = "2.0"
 schemars = { version = "0.9", features = ["chrono04"] }

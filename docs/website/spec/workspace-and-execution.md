@@ -11,7 +11,8 @@ roots, worktree isolation, and host-local execution policy.
 
 > **Last verified:** 2026-09-13 against `src/types.rs`
 > `ActiveWorkspaceEntry`, `WorkspaceOccupancyRecord`, `WorktreeSession`,
-> `src/system/types.rs` `ExecutionSnapshot`, and `src/runtime/workspace.rs`.
+> `ExecutionSnapshot` in `crates/holon-domain/src/execution_types.rs`, and
+> `src/runtime/workspace.rs`.
 
 ## Source RFCs
 
