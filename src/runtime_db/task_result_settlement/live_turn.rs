@@ -487,6 +487,55 @@ pub(crate) fn attached_turn_for_activation_tx(
     .transpose()
 }
 
+/// Enumerate raw attachment edges once per recovery Agent. Uniqueness is
+/// checked across all Turns, including open and Interrupted Turns, before any
+/// terminal-state or ownership check. Multiple batches on one Turn count once.
+pub(in crate::runtime_db) fn unique_interrupted_turn_attachments_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Vec<(String, String)>> {
+    let mut statement = tx.prepare(
+        "WITH attachments AS (
+            SELECT a.attempt_id, t.turn_id
+            FROM turn_records t
+            CROSS JOIN json_each(t.payload_json, '$.live_input_batches') batch
+            CROSS JOIN execution_protocol_attempts a
+              ON a.agent_id = t.agent_id
+             AND a.attempt_id = json_extract(batch.value, '$.activation_id')
+            WHERE t.agent_id = ?1 AND json_extract(a.payload_json, '$.state') = 'interrupted'
+            UNION ALL
+            SELECT a.attempt_id, t.turn_id
+            FROM turn_records t
+            CROSS JOIN execution_protocol_attempts a
+              ON a.agent_id = t.agent_id
+             AND a.attempt_id = json_extract(t.payload_json, '$.idle_input_batch.activation_id')
+            WHERE t.agent_id = ?1 AND json_extract(a.payload_json, '$.state') = 'interrupted'
+         )
+         SELECT attempt_id, MIN(turn_id) FROM attachments
+         GROUP BY attempt_id HAVING MIN(turn_id) = MAX(turn_id)
+         ORDER BY attempt_id",
+    )?;
+    let rows = statement
+        .query_map([agent_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    Ok(rows)
+}
+
+pub(in crate::runtime_db) fn attached_turn_by_id_tx(
+    tx: &Transaction<'_>,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    turn_id: &str,
+) -> Result<Option<TurnRecord>> {
+    read_attached_turn(
+        &TaskResultSourceRead::new(tx, &attempt.agent_id),
+        attempt,
+        turn_id,
+        true,
+    )?
+    .map(SourceBody::into_owned)
+    .transpose()
+}
+
 fn attached_turn_for_activation_read(
     read: &TaskResultSourceRead<'_, '_>,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
@@ -510,7 +559,16 @@ fn attached_turn_for_activation_read(
     if rows.next()?.is_some() {
         return Ok(None);
     }
-    let Some(turn) = read.turn(&turn_id)? else {
+    read_attached_turn(read, attempt, &turn_id, include_idle)
+}
+
+fn read_attached_turn(
+    read: &TaskResultSourceRead<'_, '_>,
+    attempt: &crate::domain::execution_protocol::ExecutionAttempt,
+    turn_id: &str,
+    include_idle: bool,
+) -> Result<Option<SourceBody<TurnRecord>>> {
+    let Some(turn) = read.turn(turn_id)? else {
         return Ok(None);
     };
     let live_witness = turn

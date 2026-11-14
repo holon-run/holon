@@ -4428,6 +4428,11 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_agent_task_identity
   ON task_result_settlements(agent_id, task_id, result_identity);
 "#,
     },
+    Migration {
+        version: 109,
+        name: "index_startup_recovery_sources",
+        sql: "",
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4881,6 +4886,9 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
     if migration.name == "index_recent_transcript_window" {
         migrate_recent_transcript_window_index(transaction)?;
     }
+    if migration.name == "index_startup_recovery_sources" {
+        migrate_startup_recovery_indexes(transaction)?;
+    }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
         (
@@ -4889,6 +4897,26 @@ fn apply_migration_transaction(transaction: &Transaction<'_>, migration: &Migrat
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
+    Ok(())
+}
+
+fn migrate_startup_recovery_indexes(transaction: &Transaction<'_>) -> Result<()> {
+    // Sparse historical schemas can legitimately omit either source table.
+    if table_exists_tx(transaction, "turn_records")? {
+        transaction.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_turn_records_startup_terminal_source
+             ON turn_records(agent_id, trigger_message_id, completed_at)
+             WHERE trigger_message_id IS NOT NULL AND terminal_kind IS NOT NULL
+               AND terminal_kind <> 'interrupted';",
+        )?;
+    }
+    if table_exists_tx(transaction, "execution_protocol_attempts")? {
+        transaction.execute_batch(
+            "CREATE INDEX IF NOT EXISTS idx_execution_protocol_interrupted_agents
+             ON execution_protocol_attempts(agent_id)
+             WHERE lifecycle_state = 'interrupted';",
+        )?;
+    }
     Ok(())
 }
 
