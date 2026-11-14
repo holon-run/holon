@@ -22,6 +22,64 @@ fn fixture() -> (tempfile::TempDir, RuntimeHandle) {
     (home, runtime)
 }
 
+#[tokio::test]
+async fn scheduler_reuses_stable_recovery_facts_and_freezes_only_the_capture_clock() -> Result<()> {
+    let (_home, runtime) = fixture();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let source = runtime
+        .enqueue(MessageEnvelope::new(
+            "scheduler-resident",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "clock-reuse-test".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "unchanged scheduler source".into(),
+            },
+        ))
+        .await?;
+    let mut mutation = runtime.begin_mutation().await?;
+    let at = runtime.now();
+    let read = mutation
+        .prepare_scheduler_read(Some(&source), Default::default(), Default::default(), at)
+        .await?;
+    assert!(read.tasks.coverage.recovery_sources[&source.id].time_independent);
+    let coverage = read.tasks.coverage.clone();
+    drop(read);
+    let root = mutation.capture_published_root()?;
+    runtime.inner.runtime_db.transaction(|tx| {
+        tx.execute_batch("ALTER TABLE tasks RENAME TO tasks_capture_forbidden")?;
+        Ok(())
+    })?;
+    for later in [
+        at + chrono::Duration::milliseconds(1),
+        at + chrono::Duration::days(1),
+        at - chrono::Duration::days(1),
+    ] {
+        let read = mutation
+            .prepare_scheduler_read(Some(&source), Default::default(), Default::default(), later)
+            .await?;
+        assert_eq!(read.tasks.coverage.recovery_at, Some(later));
+        let mut normalized = read.tasks.coverage.clone();
+        normalized.recovery_at = Some(at);
+        assert_eq!(normalized, coverage);
+        let reused = mutation.capture_published_root()?;
+        assert_eq!(reused.token, root.token);
+        assert!(Arc::ptr_eq(
+            reused.tasks.as_ref().unwrap(),
+            root.tasks.as_ref().unwrap()
+        ));
+        assert_eq!(
+            reused.tasks.as_ref().unwrap().coverage().recovery_at,
+            Some(at)
+        );
+    }
+    Ok(())
+}
+
 fn assert_input_ready_scheduler_domains_unprepared(runtime: &RuntimeHandle) -> Result<()> {
     let root = runtime
         .inner

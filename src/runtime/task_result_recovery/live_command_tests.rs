@@ -897,6 +897,72 @@ async fn assert_fifth_root_startup_replay(retain_provider_handoff: bool) {
             before.last_recovery_root_attempt_id.as_deref().unwrap(),
         )
         .unwrap());
+    // Real paused anchor: the scheduler capture freezes the consumer clock and
+    // delivery classification follows it (before/equal/after/rollback).
+    {
+        let mut mutation = runtime.begin_mutation().await.unwrap();
+        let read = mutation
+            .prepare_scheduler_read(
+                Some(&source),
+                Default::default(),
+                Default::default(),
+                runtime.now(),
+            )
+            .await
+            .unwrap();
+        let replay = &read.tasks.coverage.recovery_sources[&source.id].paused_replays
+            [&interrupted.result_identity];
+        assert!(replay.root_is_charged);
+        assert_eq!(
+            replay.interrupted_anchor.as_deref(),
+            Some(source.id.as_str())
+        );
+        let not_before = replay
+            .interrupted_anchor_not_before
+            .expect("interrupted anchor carries its stable not-before gate");
+        for (label, clock, expect_rejected) in [
+            (
+                "before",
+                not_before - chrono::Duration::milliseconds(1),
+                true,
+            ),
+            ("equal", not_before, false),
+            ("after", not_before + chrono::Duration::seconds(1), false),
+            ("rollback", not_before - chrono::Duration::hours(1), true),
+        ] {
+            let read = mutation
+                .prepare_scheduler_read(
+                    Some(&source),
+                    Default::default(),
+                    Default::default(),
+                    clock,
+                )
+                .await
+                .unwrap();
+            assert_eq!(read.tasks.coverage.recovery_at, Some(clock), "{label}");
+            let delivery = crate::runtime::task_reads::task_result_recovery_delivery(
+                &source,
+                &read.tasks,
+                &read.work,
+                &read.recovered_replies,
+            )
+            .unwrap();
+            let rejected = matches!(
+                delivery,
+                crate::runtime::task_reads::TaskResultRecoveryDelivery::BudgetRejected(_)
+            );
+            assert_eq!(rejected, expect_rejected, "{label}");
+            if !expect_rejected {
+                assert!(
+                    matches!(
+                        delivery,
+                        crate::runtime::task_reads::TaskResultRecoveryDelivery::Deliverable
+                    ),
+                    "{label}"
+                );
+            }
+        }
+    }
     let scheduled = Box::pin(claim_model(runtime)).await;
     assert_eq!(scheduled.message.id, source.id);
     assert_eq!(

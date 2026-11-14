@@ -41,8 +41,29 @@ impl tracing::field::Visit for WriterEvent {
     }
 }
 
+#[derive(Default)]
+struct PreparationEvent {
+    caller: String,
+    outcome: String,
+    miss: String,
+}
+impl tracing::field::Visit for PreparationEvent {
+    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+        match field.name() {
+            "caller" => value.clone_into(&mut self.caller),
+            "outcome" => value.clone_into(&mut self.outcome),
+            "miss" => value.clone_into(&mut self.miss),
+            _ => {}
+        }
+    }
+}
+
 #[derive(Clone, Default)]
-struct WriterTrace(Arc<Mutex<Vec<WriterEvent>>>);
+struct WriterTrace(
+    Arc<Mutex<Vec<WriterEvent>>>,
+    Arc<Mutex<std::collections::BTreeMap<String, u64>>>,
+);
 impl<S> tracing_subscriber::Layer<S> for WriterTrace
 where
     S: tracing::Subscriber + for<'lookup> tracing_subscriber::registry::LookupSpan<'lookup>,
@@ -52,6 +73,27 @@ where
         event: &tracing::Event<'_>,
         context: tracing_subscriber::layer::Context<'_, S>,
     ) {
+        if event.metadata().target() == "holon::performance"
+            && event.metadata().fields().field("caller").is_some()
+            && event.metadata().fields().field("outcome").is_some()
+        {
+            let mut fields = PreparationEvent::default();
+            event.record(&mut fields);
+            let scope = if context
+                .event_scope(event)
+                .is_some_and(|mut scope| scope.any(|span| span.name() == "fixture_recovery_scan"))
+            {
+                "recovery"
+            } else {
+                "foreground"
+            };
+            let key = format!(
+                "{scope}/{}/{}/{}",
+                fields.caller, fields.outcome, fields.miss
+            );
+            *self.1.lock().unwrap().entry(key).or_default() += 1;
+            return;
+        }
         if event.metadata().target() != "holon::runtime_db::connection"
             || event
                 .metadata()
@@ -76,10 +118,14 @@ const RESULTS: usize = 64;
 const TRIALS: usize = 18;
 const REPLY: &str = "task-result writer contention fixture reply";
 
-fn defer_totals() -> Vec<crate::diagnostics::attribution::StageSnapshot> {
+fn recheck_stage_totals() -> Vec<crate::diagnostics::attribution::StageSnapshot> {
     crate::diagnostics::attribution::snapshot()
         .into_iter()
-        .filter(|sample| sample.name.contains(".task_result.defer."))
+        .filter(|sample| {
+            sample.name.contains(".task_result.defer.")
+                || sample.name.starts_with("runtime.task.")
+                || sample.name.starts_with("db.task.domain_")
+        })
         .collect()
 }
 
@@ -302,7 +348,8 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
         let mut saw_convergence_write = false;
         for trial in 0..TRIALS {
             writer.0.lock().unwrap().clear();
-            let before = defer_totals();
+            writer.1.lock().unwrap().clear();
+            let before = recheck_stage_totals();
             let scan = tokio::spawn({
                 let runtime = background.clone();
                 async move {
@@ -315,7 +362,7 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
             let (provider_us, delivery_us) = deliver_prompt(&foreground, "foreground").await?;
             let (admitted, scan_us) = scan.await??;
             assert!(!admitted);
-            let stages = defer_totals()
+            let stages = recheck_stage_totals()
                 .into_iter()
                 .zip(before)
                 .map(|(after, before)| {
@@ -330,6 +377,14 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
                 })
                 .collect::<std::collections::BTreeMap<_, _>>();
             let writes = std::mem::take(&mut *writer.0.lock().unwrap());
+            let preparations = std::mem::take(&mut *writer.1.lock().unwrap());
+            assert_eq!(
+                preparations.values().sum::<u64>(),
+                stages["runtime.task.prepare.attempt"]["count"]
+                    .as_u64()
+                    .context("Task preparation attempt count missing")?,
+                "caller/outcome trace must account for each preparation attempt"
+            );
             let prompt_queue_ms = writes
                 .iter()
                 .find(|write| {
@@ -414,6 +469,7 @@ async fn task_result_recheck_writer_contention() -> anyhow::Result<()> {
                     "recovery_writer_us": recovery_writer_us,
                     "provider_us": provider_us,
                     "delivery_us": delivery_us,
+                    "preparations": preparations,
                     "stages": stages,
                 })
             );

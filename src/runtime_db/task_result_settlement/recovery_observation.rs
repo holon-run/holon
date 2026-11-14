@@ -23,7 +23,7 @@ pub(in crate::runtime_db) fn observe_recovery_source_tx(
     tx: &Transaction<'_>,
     source: &MessageEnvelope,
     paused: &[&TaskResultSettlementRecord],
-    now: DateTime<Utc>,
+    _now: DateTime<Utc>,
 ) -> Result<TaskRecoverySourceObservation> {
     let candidate = obligation::exact_waiter_recovery_source_tx(tx, source, None)?;
     let wait = if candidate.is_some() {
@@ -59,12 +59,11 @@ pub(in crate::runtime_db) fn observe_recovery_source_tx(
             "recovery observation crosses Task owner"
         );
         let root_is_charged = paused_replay_root_is_charged_tx(tx, source, record)?;
-        let interrupted_anchor = if root_is_charged {
-            live_turn::interrupted_admitted_result_anchor_tx(
+        let anchor = if root_is_charged {
+            live_turn::observe_interrupted_result_anchor_tx(
                 tx,
                 &source.agent_id,
                 &record.message_id,
-                now,
             )?
         } else {
             None
@@ -74,11 +73,13 @@ pub(in crate::runtime_db) fn observe_recovery_source_tx(
             TaskRecoveryReplayObservation {
                 recovery_epoch: record.recovery_epoch,
                 root_is_charged,
-                interrupted_anchor,
+                interrupted_anchor: anchor.as_ref().map(|(id, _)| id.clone()),
+                interrupted_anchor_not_before: anchor.map(|(_, not_before)| not_before),
             },
         );
     }
     Ok(TaskRecoverySourceObservation {
+        time_independent: true,
         exact_source_digest: Some(exact_recovery_source_digest(source)?),
         durable_source_digest: Some(durable_recovery_source_digest(source)?),
         candidate: candidate.map(|record| TaskRecoveryCandidate {

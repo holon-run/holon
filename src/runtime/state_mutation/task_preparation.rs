@@ -169,7 +169,8 @@ impl RuntimeMutation {
             self.reservations[self.primary_index].owner_epoch(),
         )?;
         let (load, _material) = self.owner_task_load_request()?;
-        self.prepare_owner_task_domain_request(&load).await
+        self.prepare_owner_task_domain_request_inner(&load, "query")
+            .await
     }
 
     pub(super) fn install_committed_task_delta(
@@ -243,7 +244,8 @@ impl RuntimeMutation {
             record_limit,
             byte_limit,
         };
-        self.prepare_owner_task_domain_request(&load).await
+        self.prepare_owner_task_domain_request_inner(&load, "owner")
+            .await
     }
 
     #[inline(never)]
@@ -290,7 +292,8 @@ impl RuntimeMutation {
             .required_keys
             .extend(request.required_keys.iter().cloned());
         let _stage = crate::diagnostics::attribution::TASK_RESULT_RECOVERY_TASK_PREPARE.start();
-        self.prepare_owner_task_domain_request(&load).await
+        self.prepare_owner_task_domain_request_inner(&load, "recovery")
+            .await
     }
 
     #[inline(never)]
@@ -315,7 +318,8 @@ impl RuntimeMutation {
                     .as_ref()
                     .map_or(0, |tasks| tasks.coverage().terminal.limit),
             );
-            self.prepare_owner_task_domain_request(&load).await
+            self.prepare_owner_task_domain_request_inner(&load, "dispatch")
+                .await
         })
     }
 
@@ -324,13 +328,17 @@ impl RuntimeMutation {
         &'a mut self,
         load: &'a TaskDomainLoadRequest,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prepare_owner_task_domain_request_inner(load))
+        Box::pin(self.prepare_owner_task_domain_request_inner(load, "explicit"))
     }
 
     async fn prepare_owner_task_domain_request_inner(
         &mut self,
         load: &TaskDomainLoadRequest,
+        caller: &'static str,
     ) -> Result<()> {
+        use crate::diagnostics::attribution;
+
+        let _attempt = attribution::TASK_PREPARE_ATTEMPT.start();
         let root = self.capture_published_root()?;
         let scope = self.input_evidence_scope();
         let (_, _record_limit, _byte_limit) = self.context_input_evidence_policy()?;
@@ -339,21 +347,39 @@ impl RuntimeMutation {
             load.capture.recovery_source_ids.is_empty() || load.recovery_at.is_some(),
             "Task recovery selectors require a frozen recovery_at"
         );
+        let mut miss = "domain";
         if let Some(tasks) = &root.tasks {
             anyhow::ensure!(tasks.scope() == &scope, "published Task scope differs");
-            if load.capture.recovery_source_ids.is_empty()
-                || tasks.coverage().recovery_at == load.recovery_at
+            match tasks
+                .coverage()
+                .recovery_sources_prepared_at(&load.capture.recovery_source_ids, load.recovery_at)
+                .and_then(|_| tasks.capture_query(&load.query))
+                .and_then(|_| tasks.capture(&load.capture))
             {
-                match tasks
-                    .capture_query(&load.query)
-                    .and_then(|_| tasks.capture(&load.capture))
-                {
-                    Ok(_) => return Ok(()),
-                    Err(error) if error.downcast_ref::<TaskReadError>().is_some() => {}
-                    Err(error) => return Err(error),
+                Ok(_) => {
+                    let _reuse = attribution::TASK_PREPARE_REUSE.start();
+                    tracing::trace!(target: "holon::performance", caller, outcome = "reuse",
+                        "Task preparation");
+                    return Ok(());
                 }
+                Err(error) => match error.downcast_ref::<TaskReadError>() {
+                    Some(TaskReadError::RecoveryTimeNotPrepared(_)) => {
+                        miss = "recovery_time";
+                    }
+                    Some(_) => {
+                        miss = "coverage";
+                    }
+                    None => return Err(error),
+                },
             }
         }
+        let _miss = match miss {
+            "domain" => attribution::TASK_PREPARE_MISS_DOMAIN.start(),
+            "coverage" => attribution::TASK_PREPARE_MISS_COVERAGE.start(),
+            _ => attribution::TASK_PREPARE_MISS_RECOVERY_TIME.start(),
+        };
+        tracing::trace!(target: "holon::performance", caller, miss, outcome = "load",
+            "Task preparation");
         let tasks = self.runtime.inner.runtime_db.transaction(|tx| {
             let _span = tracing::trace_span!(
                 "task_domain_prepare",
@@ -451,6 +477,113 @@ mod tests {
         resident_task::{TaskFamily, TaskKey},
         tests::support::{context_config, tempdir, StubProvider},
     };
+
+    #[tokio::test]
+    async fn dispatch_reuses_recovery_sources_after_clock_advance_without_loading_tasks(
+    ) -> Result<()> {
+        let home = tempdir()?;
+        let runtime = RuntimeHandle::new(
+            "clock-task-owner",
+            home.path().into(),
+            None::<crate::types::WorkspaceEntry>,
+            String::new(),
+            Arc::new(StubProvider::new("unused")),
+            "clock-task-owner".into(),
+            context_config(),
+        )?;
+        let source = runtime
+            .enqueue(MessageEnvelope::new(
+                "clock-task-owner",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "unchanged recovery source".into(),
+                },
+            ))
+            .await?;
+        let mut mutation = runtime.begin_mutation().await?;
+        let request = TaskCaptureRequest {
+            recovery_source_ids: std::collections::BTreeSet::from([source.id]),
+            ..TaskCaptureRequest::current()
+        };
+        let at = runtime.now();
+        mutation.prepare_dispatch_tasks(&request, Some(at)).await?;
+        let prepared = mutation.capture_published_root()?;
+        let coverage = prepared.tasks.as_ref().unwrap().coverage();
+        let observation = &coverage.recovery_sources[request.recovery_source_ids.first().unwrap()];
+        assert!(observation.time_independent);
+        let mut mixed = coverage.clone();
+        for anchor in [serde_json::Value::Null, serde_json::json!("legacy-anchor")] {
+            let mut legacy = serde_json::to_value(observation)?;
+            legacy.as_object_mut().unwrap().remove("time_independent");
+            legacy["paused_replays"] = serde_json::json!({
+                "legacy-result": {
+                    "recovery_epoch": 1, "root_is_charged": true,
+                    "interrupted_anchor": anchor
+                }
+            });
+            mixed
+                .recovery_sources
+                .insert("legacy".into(), serde_json::from_value(legacy)?);
+            let sources = mixed.recovery_sources.keys().cloned().collect();
+            mixed.recovery_sources_prepared_at(&sources, Some(at))?;
+            let error = mixed
+                .recovery_sources_prepared_at(&sources, Some(at + chrono::Duration::seconds(1)))
+                .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<TaskReadError>(),
+                Some(TaskReadError::RecoveryTimeNotPrepared(_))
+            ));
+        }
+        let mut malformed = mixed.recovery_sources["legacy"].clone();
+        malformed.time_independent = true;
+        mixed.recovery_sources.insert("legacy".into(), malformed);
+        assert!(mixed
+            .recovery_sources_prepared_at(
+                &std::collections::BTreeSet::from(["legacy".into()]),
+                Some(at)
+            )
+            .is_err());
+        let error = coverage
+            .recovery_sources_prepared_at(
+                &std::collections::BTreeSet::from(["missing".into()]),
+                Some(at),
+            )
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<TaskReadError>(),
+            Some(TaskReadError::IncompleteRecoverySource(id)) if id == "missing"
+        ));
+        runtime.inner.runtime_db.transaction(|tx| {
+            tx.execute_batch("ALTER TABLE tasks RENAME TO tasks_capture_forbidden")?;
+            Ok(())
+        })?;
+        for later in [
+            at + chrono::Duration::milliseconds(1),
+            at + chrono::Duration::days(1),
+        ] {
+            mutation
+                .prepare_dispatch_tasks(&request, Some(later))
+                .await?;
+            let reused = mutation.capture_published_root()?;
+            assert_eq!(prepared.token, reused.token);
+            assert_eq!(
+                reused.tasks.as_ref().unwrap().coverage().recovery_at,
+                Some(at)
+            );
+            assert!(Arc::ptr_eq(
+                prepared.tasks.as_ref().unwrap(),
+                reused.tasks.as_ref().unwrap()
+            ));
+            mutation.capture_tasks(&request)?;
+        }
+        Ok(())
+    }
 
     #[tokio::test]
     async fn named_task_prepare_publishes_once_and_pure_capture_never_queries_tasks() -> Result<()>

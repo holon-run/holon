@@ -675,25 +675,26 @@ impl RuntimeHandle {
                 records,
                 bytes,
             )?;
-        if let Some(source) = task_request.recovery_source_ids.iter().next() {
+        if !task_request.recovery_source_ids.is_empty() {
             let tasks = root
                 .tasks
                 .as_ref()
                 .ok_or(super::super::resident_task::TaskReadError::IncompleteActive)?;
-            anyhow::ensure!(
-                tasks.coverage().recovery_at == Some(now),
-                super::super::resident_task::TaskReadError::IncompleteRecoverySource(
-                    source.clone()
-                )
-            );
+            tasks
+                .coverage()
+                .recovery_sources_prepared_at(&task_request.recovery_source_ids, Some(now))?;
         }
-        let (state, work, inputs, tasks) = root.capture_scheduler_task_domains(
+        let (state, work, inputs, mut tasks) = root.capture_scheduler_task_domains(
             &scope,
             request,
             input_request,
             &task_request,
             material,
         )?;
+        // Freeze the consumer's clock in this owned view, not the resident root.
+        if !task_request.recovery_source_ids.is_empty() {
+            tasks.coverage.recovery_at = Some(now);
+        }
         anyhow::ensure!(
             work.scope == scope && inputs.scope == scope && tasks.scope == scope,
             "scheduler domains differ"
