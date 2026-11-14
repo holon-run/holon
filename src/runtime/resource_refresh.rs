@@ -40,6 +40,8 @@ pub(super) struct RuntimeResources {
     #[cfg(test)]
     reads: AtomicUsize,
     #[cfg(test)]
+    inventory_waits: AtomicUsize,
+    #[cfg(test)]
     flight_waits: AtomicUsize,
 }
 
@@ -206,6 +208,8 @@ impl RuntimeResources {
             attempts: AtomicUsize::new(0),
             #[cfg(test)]
             reads: AtomicUsize::new(0),
+            #[cfg(test)]
+            inventory_waits: AtomicUsize::new(0),
             #[cfg(test)]
             flight_waits: AtomicUsize::new(0),
         })
@@ -871,6 +875,11 @@ impl RuntimeHandle {
                     // The physical worker has released owner, publication fence
                     // and inventory guards before this actual availability wait.
                     self.trace_resource_refresh("inventory_wait_start");
+                    #[cfg(test)]
+                    self.inner
+                        .resources
+                        .inventory_waits
+                        .fetch_add(1, Ordering::AcqRel);
                     tokio::select! {
                         available = inventory.write() => drop(available),
                         _ = self.inner.resources.closed() => {
@@ -1694,6 +1703,111 @@ mod tests {
         drop(held);
         wait_ready(&first).await?;
         host.shutdown().await
+    }
+
+    #[test]
+    fn inventory_writers_can_keep_scheduler_poll_before_claim() -> Result<()> {
+        use super::super::scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor};
+
+        let home = tempdir()?;
+        let runtime = synchronous_runtime("inventory-contention", home.path())?;
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?
+            .block_on(async {
+                const STEP_TIMEOUT: Duration = Duration::from_secs(5);
+                runtime.ensure_context_resources().await?;
+                let message = runtime
+                    .enqueue(
+                        MessageEnvelope::new(
+                            runtime.instance_agent_id(),
+                            MessageKind::OperatorPrompt,
+                            MessageOrigin::Operator {
+                                actor_id: Some("control".into()),
+                                actor_display_name: None,
+                            },
+                            AuthorityClass::OperatorInstruction,
+                            Priority::Normal,
+                            MessageBody::Text {
+                                text: "claim this".into(),
+                            },
+                        )
+                        .with_admission(
+                            MessageDeliverySurface::HttpControlPrompt,
+                            AdmissionContext::ControlAuthenticated,
+                        ),
+                    )
+                    .await?;
+                let inventory = runtime.inner.resources.standalone_skills.clone();
+                let mut writer = inventory.write().await;
+                let original_inventory = writer.clone();
+                let resources = &runtime.inner.resources;
+                let attempts = resources.attempts.load(Ordering::Acquire);
+                let reads = resources.reads.load(Ordering::Acquire);
+                resources
+                    .registry
+                    .invalidate(ResourceInvalidation::ExplicitRefresh)?;
+
+                let poll = tokio::spawn({
+                    let runtime = runtime.clone();
+                    async move { SchedulerDecisionExecutor::new(&runtime).poll().await }
+                });
+                for attempt in 1..=4 {
+                    // This runtime has one async executor thread. The refresh
+                    // queues its fallback write before yielding back to this test.
+                    tokio::time::timeout(STEP_TIMEOUT, async {
+                        while resources.inventory_waits.load(Ordering::Acquire) < attempt {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .with_context(|| format!("inventory wait {attempt} was not reached"))?;
+                    assert!(writer.same_snapshot(&original_inventory));
+                    assert_eq!(
+                        resources.attempts.load(Ordering::Acquire),
+                        attempts + attempt
+                    );
+                    assert_eq!(resources.reads.load(Ordering::Acquire), reads);
+                    assert_eq!(
+                        runtime
+                            .runtime_db()
+                            .queue_entries()
+                            .latest(&message.id)?
+                            .unwrap()
+                            .status,
+                        QueueEntryStatus::Queued
+                    );
+                    assert!(runtime.agent_state().await?.current_run_id.is_none());
+                    assert!(!poll.is_finished());
+
+                    // The refresh is first in line. Its fallback acquires the
+                    // guard and drops it unused, handing it to the next writer.
+                    let next_writer = inventory.write();
+                    tokio::pin!(next_writer);
+                    assert!(futures_util::poll!(next_writer.as_mut()).is_pending());
+                    drop(writer);
+                    writer = tokio::time::timeout(STEP_TIMEOUT, next_writer).await?;
+                }
+
+                drop(writer);
+                let RunLoopPoll::Message(scheduled) =
+                    tokio::time::timeout(STEP_TIMEOUT, poll).await???
+                else {
+                    panic!("the original prompt should be claimed when contention stops");
+                };
+                assert_eq!(scheduled.message.id, message.id);
+                assert_eq!(resources.reads.load(Ordering::Acquire), reads + 1);
+                assert_eq!(
+                    runtime
+                        .runtime_db()
+                        .queue_entries()
+                        .latest(&message.id)?
+                        .unwrap()
+                        .status,
+                    QueueEntryStatus::Dequeued
+                );
+                Ok(())
+            })
     }
 
     #[tokio::test]
