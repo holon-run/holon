@@ -524,6 +524,68 @@
     "aliases": []
   },
   {
+    "path": "config.providers.headers",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.headers.set",
+    "positionals": [
+      {
+        "name": "provider",
+        "value_name": "PROVIDER",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "endpoint",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "header",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      }
+    ],
+    "aliases": []
+  },
+  {
+    "path": "config.providers.headers.unset",
+    "positionals": [
+      {
+        "name": "provider",
+        "value_name": "PROVIDER",
+        "index": null,
+        "required": true
+      }
+    ],
+    "flags": [
+      {
+        "long": "endpoint",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "name",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": true
+      }
+    ],
+    "aliases": []
+  },
+  {
     "path": "config.providers.list",
     "positionals": [],
     "flags": [],

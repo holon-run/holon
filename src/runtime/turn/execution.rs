@@ -5035,6 +5035,7 @@ impl<'a> TurnExecution<'a> {
                                 available_tools.clone(),
                                 native_web_search.clone(),
                                 &image_material,
+                                Some(runtime.inner.provider_session_id.clone()),
                             )?;
                             append_inference_time(&mut request.conversation, &inference_time);
                             crate::diagnostics::io_probe::context_request_prepared(agent_id);
@@ -5506,6 +5507,7 @@ impl<'a> TurnExecution<'a> {
                             )?;
                         let mut request = build_continuation_request(
                             crate::provider::ContinuationScopeId::new(agent_id),
+                            Some(runtime.inner.provider_session_id.clone()),
                             prompt_frame,
                             projection.conversation,
                             request_tools.clone(),

@@ -32,6 +32,7 @@ use crate::types::TokenUsage;
 #[derive(Clone)]
 pub struct GeminiProvider {
     client: Client,
+    request_headers: crate::provider::request_headers::ProviderRequestHeaders,
     base_url: String,
     api_key: String,
     quota_identity: Option<crate::provider::ProviderQuotaIdentity>,
@@ -185,6 +186,9 @@ impl GeminiProvider {
         Ok(Self {
             client,
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
+            request_headers: crate::provider::request_headers::ProviderRequestHeaders::new(
+                provider_config,
+            ),
             api_key,
             quota_identity: crate::provider::ProviderQuotaIdentity::for_api_credential(
                 provider_config,
@@ -210,6 +214,8 @@ impl AgentProvider for GeminiProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.request_headers
+            .require_session(request.provider_session_id.as_ref())?;
         let material = request.material.clone();
         material.validate_images(&request.conversation)?;
         material
@@ -277,10 +283,10 @@ impl AgentProvider for GeminiProvider {
                         Some(budget),
                     ));
                 }
-                let headers = vec![
+                let headers = self.request_headers.compose(vec![
                     ("content-type", "application/json".to_string()),
-                    ("x-goog-api-key", "[redacted]".to_string()),
-                ];
+                    ("x-goog-api-key", self.api_key.clone()),
+                ], request.provider_session_id.as_ref())?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
                 let request_trace = trace.and_then(|trace| {
                     trace.begin_request(
@@ -298,12 +304,13 @@ impl AgentProvider for GeminiProvider {
                     )
                 });
                 let request_started_at = chrono::Utc::now();
-                let request_builder = self
+                let mut request_builder = self
                     .client
                     .post(&url)
-                    .header("content-type", "application/json")
-                    .header("x-goog-api-key", &self.api_key)
                     .body(material.json_bytes(&request_payload)?);
+                for (name, value) in &headers {
+                    request_builder = request_builder.header(*name, value);
+                }
                 let response = send_provider_request(
                     request_builder,
                     "Gemini request failed",

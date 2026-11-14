@@ -719,6 +719,7 @@ mod tests {
         };
         let default = ModelRouteRef::parse("openai@default/gpt-image-2").unwrap();
         let runtime = ProviderRuntimeConfig {
+            headers: Default::default(),
             id: default.provider.clone(),
             route_provider: default.provider.clone(),
             route_endpoint: default.endpoint.clone(),
@@ -763,6 +764,7 @@ mod tests {
     fn image_contract_endpoint_and_transport_intersection() {
         let route = ModelRouteRef::parse("openai@default/gpt-image-2").unwrap();
         let mut runtime = ProviderRuntimeConfig {
+            headers: Default::default(),
             id: route.provider.clone(),
             route_provider: route.provider.clone(),
             route_endpoint: route.endpoint.clone(),

@@ -25,6 +25,7 @@ async fn generated_image_public_error_keeps_material_and_typed_classification() 
     let home = tempfile::tempdir()?;
     let provider = OpenAiChatCompletionsProvider {
         client: Client::new(),
+        request_headers: Default::default(),
         provider_id: "openai".into(),
         route_provider: "openai".into(),
         base_url: url,

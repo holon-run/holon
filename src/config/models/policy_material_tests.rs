@@ -40,6 +40,7 @@ fn catalog() -> RuntimeModelCatalog {
             provider: provider.clone(),
             endpoint: ProviderEndpointId::default_endpoint(),
             runtime_config: ProviderRuntimeConfig {
+                headers: Default::default(),
                 id: provider.clone(),
                 route_provider: provider,
                 route_endpoint: ProviderEndpointId::default_endpoint(),

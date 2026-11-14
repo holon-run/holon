@@ -1667,6 +1667,7 @@ fn build_provider_from_config_uses_custom_openai_responses_provider() {
     fixture.config.providers.insert(
         provider_id.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: provider_id.clone(),
             route_provider: provider_id,
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1714,6 +1715,7 @@ fn build_candidate_accepts_openai_responses_without_auth() {
     fixture.config.providers.insert(
         provider_id.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: provider_id.clone(),
             route_provider: provider_id,
             route_endpoint: ProviderEndpointId::default_endpoint(),

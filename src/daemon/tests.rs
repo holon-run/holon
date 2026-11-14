@@ -1402,6 +1402,7 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
     config.providers.insert(
         ollama_id.clone(),
         crate::config::ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ollama_id.clone(),
             route_provider: ollama_id,
             route_endpoint: crate::config::ProviderEndpointId::default_endpoint(),

@@ -18,9 +18,10 @@ use holon::{
         get_config_key, list_credential_profiles_at, load_credential_store_at,
         load_persisted_config_at, persisted_config_path, provider_config_view,
         provider_config_views, remove_credential_profile_at, save_persisted_config_at,
-        set_config_key, set_credential_profile_at, unset_config_key, validate_provider_config,
-        AppConfig, ControlAuthMode, CredentialKind, CredentialSource, ProviderAuthConfig,
-        ProviderConfigFile, ProviderId, ProviderTransportKind,
+        set_config_key, set_credential_profile_at, set_provider_headers, unset_config_key,
+        unset_provider_headers, validate_provider_config, AppConfig, ControlAuthMode,
+        CredentialKind, CredentialSource, ProviderAuthConfig, ProviderConfigFile,
+        ProviderEndpointId, ProviderId, ProviderTransportKind,
     },
     config::{AgentTemplateRemoteSourceConfigFile, AgentTemplatesConfigFile},
     daemon::{
@@ -68,10 +69,11 @@ use tracing_subscriber::EnvFilter;
 
 use holon::cli::{
     AgentCommands, AgentDetailArg, AgentModelCommands, Cli, Commands, ConfigCommands,
-    ConfigCredentialCommands, ConfigModelCommands, ConfigProviderCommands, ControlCommandAction,
-    DaemonCommands, DebugCommands, EventsCommands, MemoryIndexCommands, ModelsDevCommands,
-    ServeAccess, ServeOptions, SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs,
-    WorkItemCommands, WorkspaceCommands,
+    ConfigCredentialCommands, ConfigModelCommands, ConfigProviderCommands,
+    ConfigProviderHeaderCommands, ControlCommandAction, DaemonCommands, DebugCommands,
+    EventsCommands, MemoryIndexCommands, ModelsDevCommands, ServeAccess, ServeOptions,
+    SkillsCommands, TaskCommands, TimerCommands, TimerCreateArgs, WorkItemCommands,
+    WorkspaceCommands,
 };
 
 // Linux daemons swap in jemalloc so freed pages are purged back to the OS
@@ -7775,6 +7777,52 @@ async fn handle_config_models_command(command: ConfigModelCommands) -> Result<()
 
 async fn handle_config_providers_command(command: ConfigProviderCommands) -> Result<()> {
     match command {
+        ConfigProviderCommands::Headers { command } => {
+            let (provider, endpoint, entries, unset) = match command {
+                ConfigProviderHeaderCommands::Set {
+                    provider,
+                    endpoint,
+                    headers,
+                } => (provider, endpoint, headers, false),
+                ConfigProviderHeaderCommands::Unset {
+                    provider,
+                    endpoint,
+                    names,
+                } => (provider, endpoint, names, true),
+            };
+            let provider = ProviderId::parse(&provider)?;
+            let endpoint = endpoint
+                .map(|endpoint| {
+                    serde_json::from_value::<ProviderEndpointId>(serde_json::Value::String(
+                        endpoint,
+                    ))
+                })
+                .transpose()?;
+            let path = config_file_path();
+            let mut config = load_persisted_config_at(&path)?;
+            let names = if unset {
+                unset_provider_headers(&mut config, &provider, endpoint.as_ref(), &entries)?
+            } else {
+                set_provider_headers(&mut config, &provider, endpoint.as_ref(), &entries)?
+            };
+            // Stage beside the destination so failed writes never truncate config.
+            let content = serde_json::to_vec_pretty(&config)?;
+            let parent = path.parent().context("config path requires a parent")?;
+            fs::create_dir_all(parent)?;
+            let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+            temporary.write_all(&content)?;
+            temporary.as_file().sync_all()?;
+            temporary
+                .persist(&path)
+                .map_err(|error| anyhow!("failed to save provider headers: {}", error.error))?;
+            print_json(&serde_json::json!({
+                "applied_via": "offline_store",
+                "provider": provider.as_str(),
+                "endpoint": endpoint.as_ref().map(ProviderEndpointId::as_str),
+                "header_names": names,
+                "status": if unset { "unset" } else { "set" },
+            }))
+        }
         ConfigProviderCommands::Set {
             provider,
             transport,
@@ -7823,6 +7871,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                 }
             };
             let provider_config = ProviderConfigFile {
+                headers: Default::default(),
                 cache_capabilities: None,
                 transport,
                 base_url,

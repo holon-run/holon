@@ -2320,33 +2320,39 @@ async fn openai_responses_compacts_safe_prefix_without_item_count_gate() {
         Router::new()
             .route(
                 "/responses",
-                post(move |Json(body): Json<Value>| {
-                    let captured = response_bodies_for_server.clone();
-                    let attempts = attempts_for_server.clone();
-                    async move {
-                        captured.lock().unwrap().push(body);
-                        let attempt = attempts.fetch_add(1, Ordering::SeqCst);
-                        let response = match attempt {
-                            0 => openai_tool_call_response("resp_1"),
-                            _ => openai_text_response("resp_2", "done"),
-                        };
-                        Json(response)
-                    }
-                }),
+                post(
+                    move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                        let captured = response_bodies_for_server.clone();
+                        let attempts = attempts_for_server.clone();
+                        async move {
+                            assert_eq!(headers["x-compaction-route"], "same-route-value");
+                            captured.lock().unwrap().push(body);
+                            let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                            let response = match attempt {
+                                0 => openai_tool_call_response("resp_1"),
+                                _ => openai_text_response("resp_2", "done"),
+                            };
+                            Json(response)
+                        }
+                    },
+                ),
             )
             .route(
                 "/responses/compact",
-                post(move |Json(body): Json<Value>| {
-                    let captured = compact_bodies_for_server.clone();
-                    async move {
-                        captured.lock().unwrap().push(body);
-                        Json(json!({
-                            "output": [
-                                { "type": "compaction", "encrypted_content": "opaque" }
-                            ]
-                        }))
-                    }
-                }),
+                post(
+                    move |headers: axum::http::HeaderMap, Json(body): Json<Value>| {
+                        let captured = compact_bodies_for_server.clone();
+                        async move {
+                            assert_eq!(headers["x-compaction-route"], "same-route-value");
+                            captured.lock().unwrap().push(body);
+                            Json(json!({
+                                "output": [
+                                    { "type": "compaction", "encrypted_content": "opaque" }
+                                ]
+                            }))
+                        }
+                    },
+                ),
             ),
     )
     .await;
@@ -2358,6 +2364,13 @@ async fn openai_responses_compacts_safe_prefix_without_item_count_gate() {
         .unwrap()
         .base_url = base_url;
     set_remote_compaction_trigger(&mut fixture.config, "openai/gpt-5.4");
+    fixture
+        .config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .headers =
+        serde_json::from_value(json!({"x-compaction-route":"same-route-value"})).unwrap();
     let provider = OpenAiProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
 
     let response = provider

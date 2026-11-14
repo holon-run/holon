@@ -524,7 +524,7 @@ mod tests {
                 catalog
                     .preferred_route_for_model(&route.model_ref())
                     .unwrap(),
-                route
+                ModelRouteRef::parse("opencode-go@messages/longcat-2.5-free").unwrap()
             );
             for endpoint in ["messages", "responses"] {
                 let route =

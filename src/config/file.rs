@@ -376,6 +376,8 @@ pub struct ProviderConfigFile {
     pub transport: ProviderTransportKind,
     pub base_url: String,
     pub auth: ProviderAuthConfig,
+    #[serde(default, skip_serializing_if = "ProviderHeaders::is_empty")]
+    pub headers: ProviderHeaders,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reasoning_effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -399,6 +401,8 @@ pub struct ProviderEndpointConfigFile {
     pub base_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth: Option<ProviderAuthConfig>,
+    #[serde(default, skip_serializing_if = "ProviderHeaders::is_empty")]
+    pub headers: ProviderHeaders,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

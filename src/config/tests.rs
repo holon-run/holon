@@ -553,7 +553,7 @@ fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
 }
 
 #[test]
-fn opencode_go_registers_chat_messages_and_responses_endpoints() {
+fn opencode_go_registers_messages_and_legacy_chat_but_not_responses() {
     let entries = built_in_provider_doc_entries().unwrap();
     let mut endpoints = entries
         .into_iter()
@@ -583,12 +583,6 @@ fn opencode_go_registers_chat_messages_and_responses_endpoints() {
                 "opencode-go-messages".to_string(),
                 ProviderTransportKind::AnthropicMessages,
                 "https://opencode.ai/inference/go/anthropic/v1".to_string(),
-            ),
-            (
-                "responses".to_string(),
-                "opencode-go-responses".to_string(),
-                ProviderTransportKind::OpenAiResponses,
-                "https://opencode.ai/inference/go/openai/v1".to_string(),
             ),
         ]
     );
@@ -694,6 +688,7 @@ fn app_config_applies_provider_overrides_before_materializing_openai_codex_profi
             providers: BTreeMap::from([(
                 ProviderId::openai_codex(),
                 ProviderConfigFile {
+                    headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiCodexResponses,
                     base_url: "https://chatgpt.com/backend-api/codex".into(),
@@ -1551,6 +1546,7 @@ fn custom_provider_auth_requires_explicit_contract() {
 fn provider_builtin_web_search_rejects_empty_tool_metadata() {
     let id = ProviderId::parse("custom-anthropic").unwrap();
     let config = ProviderConfigFile {
+        headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::AnthropicMessages,
         base_url: "https://api.example.com".into(),
@@ -1581,6 +1577,7 @@ fn provider_builtin_web_search_rejects_empty_tool_metadata() {
 fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
     let id = ProviderId::parse("custom-openai").unwrap();
     let config = ProviderConfigFile {
+        headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiResponses,
         base_url: "https://api.example.com".into(),
@@ -1610,6 +1607,7 @@ fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
 fn provider_builtin_web_search_rejects_wrong_tool_type() {
     let id = ProviderId::parse("custom-openai").unwrap();
     let config = ProviderConfigFile {
+        headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiResponses,
         base_url: "https://api.example.com".into(),
@@ -1639,6 +1637,7 @@ fn provider_builtin_web_search_rejects_wrong_tool_type() {
 fn provider_builtin_web_search_accepts_codex_tool_type() {
     let id = ProviderId::openai_codex();
     let config = ProviderConfigFile {
+        headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiCodexResponses,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
@@ -1667,6 +1666,7 @@ fn provider_builtin_web_search_accepts_codex_tool_type() {
 fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
     let id = ProviderId::openai_codex();
     let config = ProviderConfigFile {
+        headers: Default::default(),
         cache_capabilities: None,
         transport: ProviderTransportKind::OpenAiCodexResponses,
         base_url: "https://chatgpt.com/backend-api/codex".into(),
@@ -1704,6 +1704,7 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://chatgpt.com/backend-api/codex".into(),
@@ -1765,6 +1766,7 @@ fn provider_config_file_overrides_cache_capabilities() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            headers: Default::default(),
             cache_capabilities: Some(AnthropicCacheCapabilities {
                 cache_control: true,
             }),
@@ -1829,6 +1831,7 @@ fn materialize_provider_config_resolves_env_credentials_from_settings() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
@@ -1920,6 +1923,7 @@ fn materialize_provider_config_resolves_credential_profile() {
     let runtime = super::materialize_provider_config(
         id.clone(),
         ProviderConfigFile {
+            headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
@@ -1979,6 +1983,7 @@ fn app_config_rejects_bad_credential_store_permissions_when_store_exists() {
     config.providers.insert(
         ProviderId::parse("openrouter").unwrap(),
         ProviderConfigFile {
+            headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiResponses,
             base_url: "https://openrouter.example/v1".into(),
@@ -2365,6 +2370,7 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
     let runtime = super::materialize_provider_config(
         id,
         ProviderConfigFile {
+            headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiCodexResponses,
             base_url: "https://codex.example/backend-api".into(),
@@ -2610,6 +2616,7 @@ fn config_inspection_loads_provider_state_without_resolved_model() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiChatCompletions,
                     base_url: "https://custom.example/v1".into(),
@@ -2654,6 +2661,7 @@ fn model_selection_derives_custom_provider_from_catalog_override() {
     providers.insert(
         id.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: id.clone(),
             route_provider: id.clone(),
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -3720,6 +3728,7 @@ fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiResponses,
                     base_url: "https://legacy.example/v1".into(),
@@ -3729,6 +3738,7 @@ fn load_persisted_config_uses_default_endpoint_override_for_runtime_provider() {
                     endpoints: BTreeMap::from([(
                         ProviderEndpointId::default_endpoint(),
                         ProviderEndpointConfigFile {
+                            headers: Default::default(),
                             transport: Some(ProviderTransportKind::OpenAiChatCompletions),
                             base_url: Some("https://endpoint.example/v1".into()),
                             auth: Some(ProviderAuthConfig {
@@ -3772,6 +3782,7 @@ fn load_persisted_config_materializes_plan_endpoint_alias() {
             providers: BTreeMap::from([(
                 provider_id.clone(),
                 ProviderConfigFile {
+                    headers: Default::default(),
                     cache_capabilities: None,
                     transport: ProviderTransportKind::OpenAiResponses,
                     base_url: "https://default.example/v1".into(),
@@ -3781,6 +3792,7 @@ fn load_persisted_config_materializes_plan_endpoint_alias() {
                     endpoints: BTreeMap::from([(
                         endpoint_id.clone(),
                         ProviderEndpointConfigFile {
+                            headers: Default::default(),
                             transport: Some(ProviderTransportKind::OpenAiChatCompletions),
                             base_url: Some("https://coding.example/v1".into()),
                             auth: Some(ProviderAuthConfig {
@@ -3978,6 +3990,7 @@ fn view_image_vision_selection_uses_configured_custom_auto_discovery_capabilitie
     fixture.config.providers.insert(
         custom_model.provider.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: custom_model.provider.clone(),
             route_provider: custom_model.provider.clone(),
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -4601,14 +4614,10 @@ fn runtime_model_catalog_derives_deepseek_responses_from_an_explicit_allowlist()
 }
 
 #[test]
-fn runtime_model_catalog_preserves_discovery_only_endpoints() {
+fn runtime_model_catalog_opencode_go_standard_route_does_not_follow_discovery_protocol() {
     let mut fixture = test_app_config("opencode-go/kimi-k2.7-code", &[]);
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
-    for legacy_provider in [
-        "opencode-go",
-        "opencode-go-messages",
-        "opencode-go-responses",
-    ] {
+    for legacy_provider in ["opencode-go", "opencode-go-messages"] {
         let provider = ProviderId::parse(legacy_provider).unwrap();
         fixture
             .config
@@ -4645,12 +4654,10 @@ fn runtime_model_catalog_preserves_discovery_only_endpoints() {
         catalog
             .discovered_models
             .insert(model_ref.clone(), metadata);
-        let expected_route = route_ref(&format!("opencode-go@{endpoint}/{model}"));
+        let expected_route = route_ref(&format!("opencode-go@messages/{model}"));
         let routes = catalog.available_model_routes();
         assert!(routes.contains(&expected_route));
-        if endpoint != "default" {
-            assert!(!routes.contains(&route_ref(&format!("opencode-go@default/{model}"))));
-        }
+        assert!(!routes.contains(&route_ref(&format!("opencode-go@default/{model}"))));
         let resolved = catalog
             .resolve_model_route(
                 &ContextConfig::default(),
@@ -4659,7 +4666,23 @@ fn runtime_model_catalog_preserves_discovery_only_endpoints() {
             )
             .unwrap();
         assert_eq!(resolved.route_ref, expected_route);
-        assert_eq!(resolved.endpoint.runtime_config.transport, transport);
+        assert_eq!(
+            resolved.endpoint.runtime_config.transport,
+            ProviderTransportKind::AnthropicMessages
+        );
+        let explicit = catalog.resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref(&format!("opencode-go@{endpoint}/{model}")),
+            ModelRouteCapability::Turn,
+        );
+        if endpoint == "responses" {
+            assert!(explicit.is_none());
+        } else {
+            assert_eq!(
+                explicit.unwrap().endpoint.runtime_config.transport,
+                transport
+            );
+        }
     }
 
     // Discovery must not replace an explicitly reviewed built-in route.
@@ -4675,21 +4698,17 @@ fn runtime_model_catalog_preserves_discovery_only_endpoints() {
             ModelRouteCapability::Turn,
         )
         .unwrap();
-    assert_eq!(resolved.endpoint.endpoint.as_str(), "default");
+    assert_eq!(resolved.endpoint.endpoint.as_str(), "messages");
     assert!(catalog
         .available_model_routes()
         .contains(&route_ref("opencode-go@default/kimi-k2.7-code")));
 }
 
 #[test]
-fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
+fn runtime_model_catalog_opencode_go_uses_messages_without_a_responses_endpoint() {
     let mut fixture = test_app_config("opencode-go/minimax-m3", &[]);
     let built_ins = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
-    for legacy_provider in [
-        "opencode-go",
-        "opencode-go-messages",
-        "opencode-go-responses",
-    ] {
+    for legacy_provider in ["opencode-go", "opencode-go-messages"] {
         let provider = ProviderId::parse(legacy_provider).unwrap();
         fixture
             .config
@@ -4698,10 +4717,18 @@ fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
     }
     let catalog = RuntimeModelCatalog::from_config(&fixture.config);
 
-    let messages = catalog
-        .resolve_model_route(
+    assert!(catalog
+        .resolve_explicit_model_route(
             &ContextConfig::default(),
-            &ModelRef::parse("opencode-go/minimax-m3").unwrap(),
+            &route_ref("opencode-go@responses/minimax-m3"),
+            ModelRouteCapability::Turn,
+        )
+        .is_none());
+
+    let messages = catalog
+        .resolve_explicit_model_route(
+            &ContextConfig::default(),
+            &route_ref("opencode-go@messages/minimax-m3"),
             ModelRouteCapability::Turn,
         )
         .unwrap();
@@ -4717,9 +4744,9 @@ fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
     );
 
     let chat = catalog
-        .resolve_model_route(
+        .resolve_explicit_model_route(
             &ContextConfig::default(),
-            &ModelRef::parse("opencode-go/kimi-k2.7-code").unwrap(),
+            &route_ref("opencode-go@default/kimi-k2.7-code"),
             ModelRouteCapability::Turn,
         )
         .unwrap();
@@ -4735,28 +4762,32 @@ fn runtime_model_catalog_routes_opencode_go_models_by_published_transport() {
     );
 
     for model in [
+        "minimax-m3",
+        "kimi-k2.7-code",
+        "glm-5.3-flash",
+        "future-model",
         "grok-4.7",
         "gpt-6-luna",
         "gpt-5.6-luna",
         "muse-spark-1.3-contributor",
         "muse-spark-1.2-contributor",
     ] {
-        let responses = catalog
+        let resolved = catalog
             .resolve_model_route(
                 &ContextConfig::default(),
                 &ModelRef::parse(&format!("opencode-go/{model}")).unwrap(),
                 ModelRouteCapability::Turn,
             )
             .unwrap();
-        assert_eq!(responses.endpoint.provider.as_str(), "opencode-go");
-        assert_eq!(responses.endpoint.endpoint.as_str(), "responses");
+        assert_eq!(resolved.endpoint.provider.as_str(), "opencode-go");
+        assert_eq!(resolved.endpoint.endpoint.as_str(), "messages");
         assert_eq!(
-            responses.endpoint.runtime_config.transport,
-            ProviderTransportKind::OpenAiResponses
+            resolved.endpoint.runtime_config.transport,
+            ProviderTransportKind::AnthropicMessages
         );
         assert_eq!(
-            responses.endpoint.runtime_config.base_url,
-            "https://opencode.ai/inference/go/openai/v1"
+            resolved.endpoint.runtime_config.base_url,
+            "https://opencode.ai/inference/go/anthropic/v1"
         );
     }
 }
@@ -4960,6 +4991,7 @@ fn generate_image_selection_accepts_volcengine_image_openai_seedream() {
     fixture.config.providers.insert(
         ProviderId::parse("volcengine-image-openai").unwrap(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: ProviderId::parse("volcengine-image-openai").unwrap(),
             route_provider: ProviderId::parse("volcengine").unwrap(),
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -5244,6 +5276,7 @@ fn default_provider_ready_matches_the_selected_endpoint() {
     fixture.config.providers.insert(
         coding_alias.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: coding_alias,
             route_provider: openai,
             route_endpoint: ProviderEndpointId::parse("coding").unwrap(),
@@ -5280,6 +5313,7 @@ fn default_provider_ready_for_credential_source_none() {
     fixture.config.providers.insert(
         vllm.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: vllm.clone(),
             route_provider: vllm.clone(),
             route_endpoint: ProviderEndpointId::default_endpoint(),

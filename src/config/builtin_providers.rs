@@ -8,6 +8,7 @@ pub fn validate_provider_config(
     provider_id: &ProviderId,
     provider_config: &ProviderConfigFile,
 ) -> Result<()> {
+    validate_provider_headers(provider_id, provider_config)?;
     let effective = provider_config_for_default_endpoint(provider_config);
     parse_url_value("providers.<id>.base_url", &effective.base_url)?;
     validate_provider_auth(provider_id, &effective.auth)?;
@@ -602,6 +603,7 @@ pub(crate) fn built_in_provider_default_config_with_settings(
             transport: provider.transport,
             base_url: provider.base_url.clone(),
             auth: ProviderAuthConfig::default(),
+            headers: ProviderHeaders::default(),
             reasoning_effort: None,
             builtin_web_search: None,
             cache_capabilities: None,
@@ -654,6 +656,7 @@ pub fn provider_config_view(
         credential_configured: provider.has_configured_credential()
             || matches!(provider.auth.source, CredentialSource::None),
         configured_in_config: config.stored_config.providers.contains_key(&provider.id),
+        header_names: provider.headers.names(),
     }
 }
 
@@ -709,6 +712,16 @@ pub(crate) fn resolve_provider_registry(
         }
     }
     for provider in registry.values_mut() {
+        if let Some(config) = stored_config
+            .providers
+            .get(&provider.id)
+            .or_else(|| stored_config.providers.get(&provider.route_provider))
+        {
+            provider.headers = effective_provider_headers(config, &provider.route_endpoint)?;
+            provider
+                .headers
+                .validate_for_provider(&provider.route_provider)?;
+        }
         if provider.credential.is_none() {
             provider.credential =
                 resolve_provider_credential(&provider.auth, settings_env, credential_store)?;
@@ -735,6 +748,7 @@ fn materialize_provider_endpoint_config(
     settings_env: &HashMap<String, String>,
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRuntimeConfig> {
+    runtime.headers = effective_provider_headers(provider_config, endpoint_id)?;
     if let Some(endpoint_config) = provider_config.endpoints.get(endpoint_id) {
         if let Some(transport) = endpoint_config.transport {
             runtime.transport = transport;
@@ -932,6 +946,7 @@ fn insert_openai_codex_provider(
         catalog,
         definition,
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id,
             route_provider: ProviderId::parse(definition.route_provider)?,
             route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
@@ -969,6 +984,7 @@ fn insert_openai_provider(
         catalog,
         definition,
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id,
             route_provider: ProviderId::parse(definition.route_provider)?,
             route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
@@ -1005,6 +1021,7 @@ fn insert_anthropic_provider(
         catalog,
         definition,
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id,
             route_provider: ProviderId::parse(definition.route_provider)?,
             route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
@@ -1039,6 +1056,7 @@ fn insert_gemini_provider(
         catalog,
         definition,
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id,
             route_provider: ProviderId::parse(definition.route_provider)?,
             route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
@@ -1147,6 +1165,7 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
         catalog,
         definition,
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id,
             route_provider: ProviderId::parse(definition.route_provider)?,
             route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
@@ -1203,6 +1222,7 @@ fn insert_builtin_http_provider_with_context_management(
         endpoint_id.clone(),
         id.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: id.clone(),
             route_provider: provider_id,
             route_endpoint: endpoint_id,
@@ -1321,6 +1341,7 @@ pub(crate) fn materialize_provider_config(
     credential_store: &CredentialStoreFile,
     built_in: Option<ProviderRuntimeConfig>,
 ) -> Result<ProviderRuntimeConfig> {
+    validate_provider_headers(&id, &provider_config)?;
     let effective_provider_config = provider_config_for_default_endpoint(&provider_config);
     validate_provider_auth(&id, &effective_provider_config.auth)?;
     let credential = resolve_provider_credential(
@@ -1329,6 +1350,7 @@ pub(crate) fn materialize_provider_config(
         credential_store,
     )?;
     let mut runtime = built_in.unwrap_or_else(|| ProviderRuntimeConfig {
+        headers: Default::default(),
         id: id.clone(),
         route_provider: id.clone(),
         route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1356,6 +1378,8 @@ pub(crate) fn materialize_provider_config(
     runtime.transport = effective_provider_config.transport;
     runtime.base_url = effective_provider_config.base_url;
     runtime.auth = effective_provider_config.auth;
+    runtime.headers =
+        effective_provider_headers(&provider_config, &ProviderEndpointId::default_endpoint())?;
     runtime.credential = credential;
     if provider_config.reasoning_effort.is_some() {
         runtime.reasoning_effort = provider_config.reasoning_effort;
@@ -1674,6 +1698,7 @@ pub fn provider_registry_for_tests(
     registry.insert(
         openai_codex.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: openai_codex.clone(),
             route_provider: openai_codex,
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1699,6 +1724,7 @@ pub fn provider_registry_for_tests(
     registry.insert(
         openai.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: openai.clone(),
             route_provider: openai,
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1724,6 +1750,7 @@ pub fn provider_registry_for_tests(
     registry.insert(
         anthropic.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: anthropic.clone(),
             route_provider: anthropic,
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1749,6 +1776,7 @@ pub fn provider_registry_for_tests(
     registry.insert(
         gemini.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: gemini.clone(),
             route_provider: gemini,
             route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1774,6 +1802,7 @@ pub fn provider_registry_for_tests(
     registry.insert(
         typesafe.clone(),
         ProviderRuntimeConfig {
+            headers: Default::default(),
             id: typesafe.clone(),
             route_provider: typesafe,
             route_endpoint: ProviderEndpointId::default_endpoint(),

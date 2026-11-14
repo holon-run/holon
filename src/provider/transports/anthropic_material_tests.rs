@@ -55,6 +55,7 @@ async fn anthropic_json_and_sse_keep_image_acquisition_through_last_result() -> 
         let home = tempfile::tempdir()?;
         let provider = AnthropicProvider {
             client: Client::new(),
+            request_headers: Default::default(),
             route_provider: "anthropic".into(),
             route_endpoint: "default".into(),
             base_url: url,
@@ -74,6 +75,7 @@ async fn anthropic_json_and_sse_keep_image_acquisition_through_last_result() -> 
         };
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: material.clone(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::plain("test"),

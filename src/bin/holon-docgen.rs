@@ -75,6 +75,12 @@ Note: subscription-scoped providers such as `dashscope-token-plan` and
 `dashscope-coding-plan` are intended for interactive AI coding/agent tool usage
 under the upstream service terms, not backend automation or generic scripts.
 
+OpenCode Go's standard `opencode-go/<model>` reference selects the `messages`
+endpoint. Explicit `opencode-go@default/<model>` retains legacy Chat;
+Go does not include a built-in Responses endpoint or alias.
+This preference does not certify translated model capabilities or trigger
+automatic protocol switching. Go inference requires a trusted runtime session.
+
 ## Provider Setup
 
 Each provider account endpoint requires an API key or credential to use. Set the listed

@@ -38,6 +38,7 @@ async fn anthropic_compatible_endpoint_can_send_without_authentication() {
     ))
     .await;
     let provider_config = ProviderRuntimeConfig {
+        headers: Default::default(),
         id: ProviderId::parse("ollama").unwrap(),
         route_provider: ProviderId::parse("ollama").unwrap(),
         route_endpoint: ProviderEndpointId::default_endpoint(),
@@ -1207,6 +1208,7 @@ async fn assert_ollama_tool_result_tail_has_placeholder(include_earlier_user_tex
     ))
     .await;
     let provider_config = ProviderRuntimeConfig {
+        headers: Default::default(),
         id: ProviderId::parse("ollama").unwrap(),
         route_provider: ProviderId::parse("ollama").unwrap(),
         route_endpoint: ProviderEndpointId::default_endpoint(),

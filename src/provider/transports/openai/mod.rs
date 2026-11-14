@@ -62,6 +62,8 @@ mod http;
 mod images;
 mod responses;
 
+use crate::provider::request_headers::ProviderRequestHeaders;
+
 #[cfg(test)]
 use auth::{
     choose_openai_codex_credential, resolve_openai_codex_credential, CredentialStoreRefreshLock,
@@ -130,6 +132,7 @@ use http::{
 #[derive(Clone)]
 pub struct OpenAiProvider {
     client: Client,
+    request_headers: ProviderRequestHeaders,
     provider_id: String,
     route_provider: String,
     route_endpoint: String,
@@ -161,6 +164,7 @@ pub(crate) struct OpenAiBearerAuth {
 #[derive(Clone)]
 pub struct OpenAiCodexProvider {
     client: Client,
+    request_headers: ProviderRequestHeaders,
     oauth_client: Client,
     provider_id: String,
     base_url: String,
@@ -187,6 +191,7 @@ pub struct OpenAiCodexProvider {
 #[derive(Clone)]
 pub struct OpenAiChatCompletionsProvider {
     client: Client,
+    request_headers: ProviderRequestHeaders,
     provider_id: String,
     route_provider: String,
     base_url: String,
@@ -418,6 +423,7 @@ impl OpenAiProvider {
             provider_id: provider_config.id.as_str().to_string(),
             route_provider: provider_config.route_provider.as_str().to_string(),
             route_endpoint: provider_config.route_endpoint.as_str().to_string(),
+            request_headers: ProviderRequestHeaders::new(provider_config),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             auth,
             quota_identity: ProviderQuotaIdentity::for_api_credential(provider_config),
@@ -463,18 +469,27 @@ impl OpenAiProvider {
         })
     }
 
-    async fn resolve_auth_headers(&self) -> Result<Vec<(&'static str, String)>> {
-        self.auth.resolve_auth_headers().await
+    async fn resolve_auth_headers(
+        &self,
+        session: Option<&crate::provider::ProviderSessionId>,
+    ) -> Result<Vec<(&str, String)>> {
+        self.request_headers
+            .compose(self.auth.resolve_auth_headers().await?, session)
     }
 
     async fn refresh_auth_headers_after_failure(
         &self,
         error: &anyhow::Error,
-    ) -> Result<Option<Vec<(&'static str, String)>>> {
+        session: Option<&crate::provider::ProviderSessionId>,
+    ) -> Result<Option<Vec<(&str, String)>>> {
         if !is_openai_codex_auth_status_error(error) {
             return Ok(None);
         }
-        self.auth.refresh_auth_headers().await
+        self.auth
+            .refresh_auth_headers()
+            .await?
+            .map(|headers| self.request_headers.compose(headers, session))
+            .transpose()
     }
 }
 
@@ -543,6 +558,7 @@ impl OpenAiChatCompletionsProvider {
             provider_id: provider_config.id.as_str().to_string(),
             route_provider: provider_config.route_provider.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
+            request_headers: ProviderRequestHeaders::new(provider_config),
             api_key,
             quota_identity: ProviderQuotaIdentity::for_api_credential(provider_config),
             model: model.to_string(),
@@ -574,6 +590,8 @@ impl AgentProvider for OpenAiProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.request_headers
+            .require_session(request.provider_session_id.as_ref())?;
         let material = request.material.clone();
         material.validate_images(&request.conversation)?;
         material
@@ -621,7 +639,9 @@ impl AgentProvider for OpenAiProvider {
                 sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
                 let plan_scope = plan.scope.clone();
                 let plan_request_shape = material.cloned(&plan.request_shape)?;
-                let mut headers = self.resolve_auth_headers().await?;
+                let mut headers = self
+                    .resolve_auth_headers(request.provider_session_id.as_ref())
+                    .await?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
                 if self.endpoint_contract.remote_compaction
                     == OpenAiResponsesRemoteCompactionContract::Supported
@@ -695,8 +715,12 @@ impl AgentProvider for OpenAiProvider {
                 {
                     Ok(parsed) => parsed,
                     Err(error) => {
-                        let retried = if let Some(refreshed_headers) =
-                            self.refresh_auth_headers_after_failure(&error).await?
+                        let retried = if let Some(refreshed_headers) = self
+                            .refresh_auth_headers_after_failure(
+                                &error,
+                                request.provider_session_id.as_ref(),
+                            )
+                            .await?
                         {
                             headers = refreshed_headers;
                             send_openai_responses_for_contract(
@@ -820,12 +844,13 @@ impl AgentProvider for OpenAiProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
+        self.request_headers.require_session(None)?;
         let material = request.material.clone();
         material
             .complete_image(async {
                 let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
                 let body = build_images_request(dialect, &self.model, &request)?;
-                let mut headers = self.resolve_auth_headers().await?;
+                let mut headers = self.resolve_auth_headers(None).await?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
                 let images = match send_openai_images_request(
                     &self.client,
@@ -841,8 +866,9 @@ impl AgentProvider for OpenAiProvider {
                 {
                     Ok(images) => images,
                     Err(error) => {
-                        let Some(refreshed_headers) =
-                            self.refresh_auth_headers_after_failure(&error).await?
+                        let Some(refreshed_headers) = self
+                            .refresh_auth_headers_after_failure(&error, None)
+                            .await?
                         else {
                             return Err(error);
                         };
@@ -906,6 +932,7 @@ impl AgentProvider for OpenAiProvider {
         &self,
         request: ProviderNativeWebSearchRequest,
     ) -> Result<()> {
+        self.request_headers.require_session(None)?;
         let probe_request = builtin_web_search_probe_turn_request(request);
         let body = build_openai_responses_request(
             &self.model,
@@ -916,7 +943,7 @@ impl AgentProvider for OpenAiProvider {
             self.reasoning_effort.as_deref(),
             None,
         )?;
-        let mut headers = self.resolve_auth_headers().await?;
+        let mut headers = self.resolve_auth_headers(None).await?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let model_ref = format!(
             "{}@{}/{}",
@@ -937,8 +964,9 @@ impl AgentProvider for OpenAiProvider {
         {
             Ok(_) => {}
             Err(error) => {
-                let Some(refreshed_headers) =
-                    self.refresh_auth_headers_after_failure(&error).await?
+                let Some(refreshed_headers) = self
+                    .refresh_auth_headers_after_failure(&error, None)
+                    .await?
                 else {
                     return Err(error);
                 };
@@ -968,6 +996,8 @@ impl AgentProvider for OpenAiCodexProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.request_headers
+            .require_session(request.provider_session_id.as_ref())?;
         let material = request.material.clone();
         material.validate_images(&request.conversation)?;
         material.complete_turn(async {
@@ -1030,12 +1060,12 @@ impl AgentProvider for OpenAiCodexProvider {
         let mut quota_identity =
             ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
                 .unwrap_or_else(|| self.quota_identity.clone());
-        let mut headers = openai_codex_conversation_headers(
+        let mut headers = self.request_headers.compose(openai_codex_conversation_headers(
             &credential,
             &self.originator,
             request_agent_id(&request),
             plan_scope.as_ref(),
-        );
+        ), request.provider_session_id.as_ref())?;
         headers.extend(openai_codex_routing_hint(&self.model, self.service_tier));
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         if let Some(remote_compaction) = maybe_compact_openai_request_plan(
@@ -1091,12 +1121,12 @@ impl AgentProvider for OpenAiCodexProvider {
                         quota_identity =
                             ProviderQuotaIdentity::exact("codex-account", &credential.account_id)
                                 .unwrap_or_else(|| self.quota_identity.clone());
-                        headers = openai_codex_conversation_headers(
+                        headers = self.request_headers.compose(openai_codex_conversation_headers(
                             &credential,
                             &self.originator,
                             request_agent_id(&request),
                             plan_scope.as_ref(),
-                        );
+                        ), request.provider_session_id.as_ref())?;
                         headers.extend(openai_codex_routing_hint(&self.model, self.service_tier));
                         match send_openai_responses_streaming_request_with_material(
                             &self.client,
@@ -1188,6 +1218,7 @@ impl AgentProvider for OpenAiCodexProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
+        self.request_headers.require_session(None)?;
         let material = request.material.clone();
         material.complete_image(async {
         let model_ref = format!("{}/{}", self.provider_id, self.model);
@@ -1222,7 +1253,7 @@ impl AgentProvider for OpenAiCodexProvider {
         let body = build_openai_codex_image_generation_request(&self.model, &request);
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let mut credential = credential;
-        let mut headers = openai_codex_headers(&credential, &self.originator);
+        let mut headers = self.request_headers.compose(openai_codex_headers(&credential, &self.originator), None)?;
         let images = match send_openai_codex_image_generation_request(
             &self.client,
             openai_codex_responses_url(&self.base_url),
@@ -1242,7 +1273,7 @@ impl AgentProvider for OpenAiCodexProvider {
                             .context("OpenAI Codex image generation authentication failed and Holon-managed OAuth refresh did not recover it")
                     })? {
                         credential = refreshed;
-                        headers = openai_codex_headers(&credential, &self.originator);
+                        headers = self.request_headers.compose(openai_codex_headers(&credential, &self.originator), None)?;
                         send_openai_codex_image_generation_request(
                             &self.client,
                             openai_codex_responses_url(&self.base_url),
@@ -1307,6 +1338,7 @@ impl AgentProvider for OpenAiCodexProvider {
         &self,
         request: ProviderNativeWebSearchRequest,
     ) -> Result<()> {
+        self.request_headers.require_session(None)?;
         let credential = self.resolve_fresh_credential().await?;
         let probe_request = builtin_web_search_probe_turn_request(request);
         let body = build_openai_responses_request(
@@ -1322,7 +1354,9 @@ impl AgentProvider for OpenAiCodexProvider {
             },
             self.verbosity,
         )?;
-        let headers = openai_codex_headers(&credential, &self.originator);
+        let headers = self
+            .request_headers
+            .compose(openai_codex_headers(&credential, &self.originator), None)?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let model_ref = format!("openai-codex@default/{}", self.model);
         send_openai_responses_streaming_request(
@@ -1348,6 +1382,8 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
     }
 
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        self.request_headers
+            .require_session(request.provider_session_id.as_ref())?;
         let material = request.material.clone();
         material.validate_images(&request.conversation)?;
         material
@@ -1381,6 +1417,9 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
                     .as_ref()
                     .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
                     .unwrap_or_default();
+                let headers = self
+                    .request_headers
+                    .compose(headers, request.provider_session_id.as_ref())?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
 
                 // Send to /v1/chat/completions endpoint
@@ -1438,6 +1477,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         &self,
         request: ProviderGenerateImageRequest,
     ) -> Result<ProviderGenerateImageResponse> {
+        self.request_headers.require_session(None)?;
         let material = request.material.clone();
         material
             .complete_image(async {
@@ -1448,6 +1488,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
                     .as_ref()
                     .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
                     .unwrap_or_default();
+                let headers = self.request_headers.compose(headers, None)?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
                 let images = send_openai_images_request(
                     &self.client,

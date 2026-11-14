@@ -535,9 +535,16 @@ fn redact_header_map(headers: &reqwest::header::HeaderMap) -> Value {
 
 fn redact_header_value(name: &str, value: &str) -> String {
     let lowered = name.to_ascii_lowercase();
-    if matches!(
+    // Unknown headers may carry operator-configured values, regardless of name.
+    // Only transport-owned protocol controls are safe to display.
+    if !matches!(
         lowered.as_str(),
-        "authorization" | "proxy-authorization" | "cookie" | "set-cookie" | "x-api-key"
+        "content-type"
+            | "content-length"
+            | "accept"
+            | "anthropic-version"
+            | "anthropic-beta"
+            | "openai-beta"
     ) {
         "[REDACTED]".into()
     } else {
@@ -835,9 +842,16 @@ mod tests {
         let headers = redact_headers(&[
             ("authorization", "Bearer secret".into()),
             ("openai-beta", "responses=experimental".into()),
+            ("user-agent", "private-custom-value".into()),
+            ("x-ordinary-routing", "arbitrary-secret-like-value".into()),
+            ("x-goog-api-key", "gemini-secret".into()),
+            ("x-opencode-session", "opaque-session".into()),
         ]);
         assert_eq!(headers[0]["value"], "[REDACTED]");
         assert_eq!(headers[1]["value"], "responses=experimental");
+        for header in headers.as_array().unwrap().iter().skip(2) {
+            assert_eq!(header["value"], "[REDACTED]");
+        }
 
         assert_eq!(
             redact_url("https://user:pass@example.com/v1/responses?api_key=secret&debug=1"),

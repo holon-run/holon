@@ -438,6 +438,208 @@ fn config_schema_json_entries_keep_stable_shape() {
 }
 
 #[test]
+fn config_provider_headers_updates_preserve_provider_fields_and_redact_values() {
+    let home = tempfile::tempdir().unwrap();
+    let path = home.path().join("config.json");
+    let provider = json!({
+        "transport": "openai_responses",
+        "base_url": "https://proxy.example.invalid/v1",
+        "auth": {"source":"env", "kind":"api_key", "env":"PROXY_API_KEY"},
+        "reasoning_effort": "medium",
+        "cache_capabilities": {"cache_control":false},
+        "headers": {"x-existing":"keep"},
+        "endpoints": {
+            "coding": {
+                "transport":"openai_chat_completions",
+                "base_url":"https://coding.example.invalid/v1",
+                "auth":{"source":"none", "kind":"none"},
+                "headers":{"x-existing":"endpoint"}
+            },
+            "other": {"base_url":"https://other.example.invalid/v1"}
+        },
+        "plans": {"coding":{"endpoint":"coding"}}
+    });
+    let unrelated = json!({
+        "transport":"anthropic_messages",
+        "base_url":"https://unrelated.example.invalid",
+        "auth":{"source":"none","kind":"none"},
+        "headers":{"x-unrelated":"do-not-forward"}
+    });
+    std::fs::write(
+        &path,
+        json!({"providers":{"proxy":provider.clone(), "unrelated":unrelated.clone()}}).to_string(),
+    )
+    .unwrap();
+    let secret = "random-secret-like-cli-header-value";
+    let assignment = format!("X-Trace={secret}=suffix");
+    let (output, stderr) = run_json_with_stderr(
+        &home,
+        &[
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "proxy",
+            "--header",
+            &assignment,
+            "--header",
+            "X-Empty=",
+        ],
+    );
+    assert_eq!(
+        output,
+        json!({
+            "applied_via":"offline_store",
+            "provider":"proxy",
+            "endpoint":null,
+            "header_names":["x-empty","x-trace"],
+            "status":"set"
+        })
+    );
+    assert!(!output.to_string().contains(secret));
+    assert!(!stderr.contains(secret));
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored["providers"]["unrelated"], unrelated);
+    assert_eq!(
+        stored["providers"]["proxy"]["headers"]["x-trace"],
+        format!("{secret}=suffix")
+    );
+    assert_eq!(stored["providers"]["proxy"]["headers"]["x-empty"], "");
+    let mut retained = stored["providers"]["proxy"].clone();
+    retained["headers"] = provider["headers"].clone();
+    assert_eq!(retained, provider);
+
+    run_json(
+        &home,
+        &[
+            "config",
+            "providers",
+            "headers",
+            "unset",
+            "proxy",
+            "--endpoint",
+            "coding",
+            "--name",
+            "X-Existing",
+        ],
+    );
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    let mut retained = stored["providers"]["proxy"].clone();
+    assert!(retained["endpoints"]["coding"].get("headers").is_none());
+    retained["headers"] = provider["headers"].clone();
+    retained["endpoints"]["coding"]["headers"] = provider["endpoints"]["coding"]["headers"].clone();
+    assert_eq!(retained, provider);
+}
+
+#[test]
+fn config_provider_headers_reject_invalid_batches_without_writing() {
+    let home = tempfile::tempdir().unwrap();
+    run_json(
+        &home,
+        &[
+            "config",
+            "providers",
+            "set",
+            "proxy",
+            "--transport",
+            "openai_responses",
+            "--base-url",
+            "https://proxy.example.invalid/v1",
+        ],
+    );
+    let path = home.path().join("config.json");
+    let before = std::fs::read(&path).unwrap();
+    let secret = "random-secret-like-rejected-header-value";
+    let reserved = format!("Authorization={secret}");
+    let injected = format!("X-Injected={secret}\r\nother: injected");
+    let too_large = format!("X-Large={secret}{}", "v".repeat(4097));
+    for extra in [
+        vec!["--header", "x-valid=valid", "--header", reserved.as_str()],
+        vec!["--header", "X-Duplicate=one", "--header", "x-duplicate=two"],
+        vec!["--header", injected.as_str()],
+        vec!["--header", too_large.as_str()],
+        vec!["--header", "missing-delimiter"],
+        vec!["--endpoint", "missing", "--header", "x-valid=valid"],
+        vec![
+            "--endpoint",
+            "invalid@endpoint",
+            "--header",
+            "x-valid=valid",
+        ],
+    ] {
+        let mut args = vec!["config", "providers", "headers", "set", "proxy"];
+        args.extend(extra);
+        let (stdout, stderr) = run_failure_with_env(&home, &args, &[]);
+        assert!(stdout.is_empty());
+        assert!(!stderr.contains(secret));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+    for args in [
+        vec![
+            "config",
+            "providers",
+            "headers",
+            "unset",
+            "proxy",
+            "--name",
+            "X-One",
+            "--name",
+            "x-one",
+        ],
+        vec![
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "missing",
+            "--header",
+            "x-one=value",
+        ],
+        vec![
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "opencode-go",
+            "--header",
+            "x-opencode-session=not-allowed",
+        ],
+    ] {
+        let (stdout, _) = run_failure_with_env(&home, &args, &[]);
+        assert!(stdout.is_empty());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+}
+
+#[test]
+fn config_provider_headers_materialize_builtin_auth_and_only_return_names() {
+    let home = tempfile::tempdir().unwrap();
+    run_json(
+        &home,
+        &[
+            "config",
+            "providers",
+            "headers",
+            "set",
+            "openai",
+            "--header",
+            "User-Agent=non-sensitive-custom-client",
+        ],
+    );
+    let path = home.path().join("config.json");
+    let stored: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(stored["providers"]["openai"]["auth"]["source"], "env");
+    assert_eq!(stored["providers"]["openai"]["auth"]["kind"], "api_key");
+    assert_eq!(
+        stored["providers"]["openai"]["auth"]["env"],
+        "OPENAI_API_KEY"
+    );
+    let view = run_json(&home, &["config", "providers", "get", "openai"]);
+    assert_eq!(view["header_names"], json!(["user-agent"]));
+    assert!(!view.to_string().contains("non-sensitive-custom-client"));
+}
+
+#[test]
 fn config_provider_remove_json_contract_is_stable() {
     let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
 

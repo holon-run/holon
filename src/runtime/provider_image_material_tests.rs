@@ -43,7 +43,16 @@ fn markdown_image_request_carries_source_through_last_request_clone() -> anyhow:
         Vec::new(),
         None,
         &material,
+        Some(crate::provider::ProviderSessionId::from_runtime_identity(
+            "runtime", "default", 1,
+        )),
     )?;
+    assert_eq!(
+        request.provider_session_id,
+        Some(crate::provider::ProviderSessionId::from_runtime_identity(
+            "runtime", "default", 1
+        ))
+    );
     let ConversationMessage::UserImage { data_base64, .. } = &request.conversation[1] else {
         anyhow::bail!("missing admitted image")
     };
@@ -88,6 +97,9 @@ fn markdown_image_growth_is_a_latched_failure_not_an_omitted_attachment() -> any
         Vec::new(),
         None,
         &material,
+        Some(crate::provider::ProviderSessionId::from_runtime_identity(
+            "runtime", "default", 1,
+        )),
     );
     assert!(
         result.is_err(),
@@ -112,6 +124,9 @@ fn markdown_image_refuses_foreign_material_and_preserves_path_filtering() -> any
         Vec::new(),
         None,
         &material,
+        Some(crate::provider::ProviderSessionId::from_runtime_identity(
+            "runtime", "default", 1
+        )),
     )
     .is_err());
     drop(material);
@@ -125,6 +140,9 @@ fn markdown_image_refuses_foreign_material_and_preserves_path_filtering() -> any
         Vec::new(),
         None,
         &material,
+        Some(crate::provider::ProviderSessionId::from_runtime_identity(
+            "runtime", "default", 1,
+        )),
     )?;
     assert_eq!(request.conversation.len(), 1);
     drop((request, material));

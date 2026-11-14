@@ -55,6 +55,7 @@ mod material_tests;
 #[derive(Clone)]
 pub struct AnthropicProvider {
     client: Client,
+    request_headers: crate::provider::request_headers::ProviderRequestHeaders,
     route_provider: String,
     route_endpoint: String,
     base_url: String,
@@ -248,6 +249,9 @@ impl AnthropicProvider {
         Ok(Self {
             client,
             route_provider: provider_config.route_provider.as_str().to_string(),
+            request_headers: crate::provider::request_headers::ProviderRequestHeaders::new(
+                provider_config,
+            ),
             route_endpoint: provider_config.route_endpoint.as_str().to_string(),
             base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             auth_token,
@@ -618,6 +622,8 @@ impl AgentProvider for AnthropicProvider {
         &self,
         mut request: ProviderTurnRequest,
     ) -> Result<ProviderTurnResponse> {
+        self.request_headers
+            .require_session(request.provider_session_id.as_ref())?;
         let material = request.material.clone();
         material.validate_images(&request.conversation)?;
         material
@@ -673,7 +679,13 @@ impl AgentProvider for AnthropicProvider {
                         .filter(|budget| budget.overflow_tokens() > 0);
                     }
                 }
-                let url = format!("{}/v1/messages", self.base_url);
+                // Accept both origin-style bases and version-prefix bases from
+                // persisted compatible-provider configurations.
+                let url = if self.base_url.ends_with("/v1") {
+                    format!("{}/messages", self.base_url)
+                } else {
+                    format!("{}/v1/messages", self.base_url)
+                };
                 let model_ref = self.model_route.clone();
                 if let Some(budget) = overflow {
                     return Err(context_budget_overflow_error(
@@ -703,6 +715,7 @@ impl AgentProvider for AnthropicProvider {
                         "context-management-2025-06-27".to_string(),
                     ));
                 }
+                let headers = self.request_headers.compose(headers, request.provider_session_id.as_ref())?;
                 #[cfg(test)]
                 let trace = self
                     .http_trace_override
@@ -3763,6 +3776,7 @@ mod tests {
     fn claude_code_prompt_cache_keeps_turn_scoped_context_out_of_system_prefix() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
@@ -3866,6 +3880,7 @@ mod tests {
         ];
         ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
@@ -4685,6 +4700,7 @@ mod tests {
     fn anthropic_request_payload_for_fingerprints_is_wire_object() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
@@ -4724,6 +4740,7 @@ mod tests {
     fn test_collect_anthropic_cache_diagnostics_initial_request() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
@@ -4821,6 +4838,7 @@ mod tests {
     fn test_collect_anthropic_cache_diagnostics_continuation_with_breakpoints() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
@@ -5343,6 +5361,7 @@ mod tests {
     fn test_estimate_token_distribution() {
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {
@@ -5404,6 +5423,7 @@ mod tests {
 
         let request = ProviderTurnRequest {
             dispatch_guard: None,
+            provider_session_id: None,
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame {

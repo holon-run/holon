@@ -324,11 +324,6 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         Generic, AnthropicCompatible, None, None, None, StaticOnly
     ),
     provider!(
-        "opencode-go-responses" => "opencode-go" @ "responses",
-        OpenAiResponses, "https://opencode.ai/inference/go/openai/v1", ["OPENCODE_GO_API_KEY"],
-        Generic, Default, None, None, None, StaticOnly
-    ),
-    provider!(
         "openrouter" => "openrouter" @ "default",
         OpenAiChatCompletions, "https://openrouter.ai/api/v1", ["OPENROUTER_API_KEY"],
         Generic, Default, None, None,

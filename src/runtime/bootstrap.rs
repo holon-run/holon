@@ -909,9 +909,15 @@ impl RuntimeHandle {
         };
         let base_provider = provider.clone();
 
+        let provider_session_id = crate::provider::ProviderSessionId::from_runtime_identity(
+            &runtime_db.runtime_id_for_preparation()?,
+            &agent_id,
+            identity_incarnation,
+        );
         let runtime = Self {
             inner: Arc::new(RuntimeInner {
                 identity_incarnation,
+                provider_session_id,
                 scheduler_audit_frontier,
                 context_tool_policy: ArcSwapOption::empty(),
                 mutation_owner: mutation_owner.clone(),
@@ -1703,6 +1709,7 @@ impl RuntimeHandle {
             }],
             Vec::new(),
         );
+        request.provider_session_id = Some(self.inner.provider_session_id.clone());
         request.response_format = prepared.response_format.clone();
         let response = prepared.provider.complete_turn(request).await?;
         let text = response
@@ -3201,6 +3208,7 @@ mod view_image_route_tests {
         },
         host::RuntimeHost,
         model_catalog::{ModelCapabilityOverride, ModelRuntimeOverride},
+        runtime::tests::support::StubProvider,
         tool::{tools::view_image, ToolError},
         types::{AuthorityClass, ViewImageResult},
     };
@@ -3473,6 +3481,47 @@ mod view_image_route_tests {
         )
         .await?;
         Ok(serde_json::from_value(result.envelope.result.unwrap())?)
+    }
+
+    #[tokio::test]
+    async fn auxiliary_inference_inherits_the_runtime_provider_session() {
+        struct SessionCheckingProvider(crate::provider::ProviderSessionId);
+        #[async_trait::async_trait]
+        impl AgentProvider for SessionCheckingProvider {
+            async fn complete_turn(
+                &self,
+                request: ProviderTurnRequest,
+            ) -> Result<crate::provider::ProviderTurnResponse> {
+                assert_eq!(request.provider_session_id.as_ref(), Some(&self.0));
+                StubProvider::new("session checked")
+                    .complete_turn(request)
+                    .await
+            }
+        }
+
+        let server = VisionServer::new("unused", StatusCode::OK).await;
+        let (_home, _host, runtime) = vision_runtime(&server).await;
+        let provider: Arc<dyn AgentProvider> = Arc::new(SessionCheckingProvider(
+            runtime.inner.provider_session_id.clone(),
+        ));
+        let mut prepared = runtime.prepare_view_image_observation(None).await.unwrap();
+        prepared.provider = provider.clone();
+        let text = runtime
+            .generate_view_image_observation(&prepared, "Inspect", "image/png", b"synthetic image")
+            .await
+            .unwrap();
+        assert_eq!(text, "session checked");
+        *runtime.inner.provider.write().await = provider;
+        let text = runtime
+            .run_subagent_prompt(
+                "default",
+                "Reply briefly",
+                &AuthorityClass::OperatorInstruction,
+            )
+            .await
+            .unwrap();
+        assert_eq!(text, "session checked");
+        assert_eq!(server.count(), 0);
     }
 
     #[tokio::test]

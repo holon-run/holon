@@ -11,7 +11,7 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 # Supported Models
 
 Holon includes built-in configuration for **36 provider accounts**
-across **50 endpoints** and **420 models**.
+across **49 endpoints** and **423 models**.
 
 This page is auto-generated from the Holon source code
 ([`src/model_catalog.rs`](../../../src/model_catalog.rs) and
@@ -21,6 +21,12 @@ Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` 
 Note: subscription-scoped providers such as `dashscope-token-plan` and
 `dashscope-coding-plan` are intended for interactive AI coding/agent tool usage
 under the upstream service terms, not backend automation or generic scripts.
+
+OpenCode Go's standard `opencode-go/<model>` reference selects the `messages`
+endpoint. Explicit `opencode-go@default/<model>` retains legacy Chat;
+Go does not include a built-in Responses endpoint or alias.
+This preference does not certify translated model capabilities or trigger
+automatic protocol switching. Go inference requires a trusted runtime session.
 
 ## Provider Setup
 
@@ -59,7 +65,6 @@ used in existing `provider/model` refs and config shortcuts.
 | `openai-codex` | `default` | `openai-codex` | OpenAI Codex | `https://chatgpt.com/backend-api/codex` | `—` |
 | `opencode-go` | `default` | `opencode-go` | OpenAI Chat Completions | `https://opencode.ai/inference/go/openai/v1` | `OPENCODE_GO_API_KEY` |
 | `opencode-go` | `messages` | `opencode-go-messages` | Anthropic Messages | `https://opencode.ai/inference/go/anthropic/v1` | `OPENCODE_GO_API_KEY` |
-| `opencode-go` | `responses` | `opencode-go-responses` | OpenAI Responses | `https://opencode.ai/inference/go/openai/v1` | `OPENCODE_GO_API_KEY` |
 | `openrouter` | `default` | `openrouter` | OpenAI Chat Completions | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `qianfan` | `default` | `qianfan` | OpenAI Chat Completions | `https://qianfan.baidubce.com/v2` | `QIANFAN_API_KEY` |
 | `stepfun` | `default` | `stepfun` | OpenAI Chat Completions | `https://api.stepfun.com/v1` | `STEPFUN_API_KEY` |
@@ -90,6 +95,7 @@ and capabilities.
 |----------|-------|-------|----------------|------------|-----------|-------|
 | `anthropic` | `claude-fable-5` | `anthropic/claude-fable-5` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-fable-5-1` | `anthropic/claude-fable-5-1` | 1000000 | 128000 | ✅ | ✅ |
+| `anthropic` | `claude-fable-5-2` | `anthropic/claude-fable-5-2` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-haiku-4-5` | `anthropic/claude-haiku-4-5` | 200000 | 64000 | ✅ | ✅ |
 | `anthropic` | `claude-haiku-5-5` | `anthropic/claude-haiku-5-5` | 1000000 | 128000 | ✅ | ✅ |
 | `anthropic` | `claude-opus-4-8` | `anthropic/claude-opus-4-8` | 1000000 | 128000 | ✅ | ✅ |
@@ -207,11 +213,9 @@ and capabilities.
 | `fireworks` | `accounts/fireworks/models/deepseek-v4-flash` | `fireworks/accounts/fireworks/models/deepseek-v4-flash` | 1048576 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/deepseek-v4-pro` | `fireworks/accounts/fireworks/models/deepseek-v4-pro` | 1048576 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/glm-5p1` | `fireworks/accounts/fireworks/models/glm-5p1` | 202752 | — | ✅ | — |
-| `fireworks` | `accounts/fireworks/models/gpt-oss-120b` | `fireworks/accounts/fireworks/models/gpt-oss-120b` | 131072 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/kimi-k3p1-pro` | `fireworks/accounts/fireworks/models/kimi-k3p1-pro` | 1048576 | — | — | ✅ |
 | `fireworks` | `accounts/fireworks/models/minimax-m2p7` | `fireworks/accounts/fireworks/models/minimax-m2p7` | 196608 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/minimax-m3` | `fireworks/accounts/fireworks/models/minimax-m3` | 512000 | — | ✅ | ✅ |
-| `fireworks` | `accounts/fireworks/models/nemotron-3-ultra-nvfp4` | `fireworks/accounts/fireworks/models/nemotron-3-ultra-nvfp4` | 262144 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/qwen3p6-plus` | `fireworks/accounts/fireworks/models/qwen3p6-plus` | — | — | ✅ | ✅ |
 | `fireworks` | `accounts/fireworks/models/qwen3p7-plus` | `fireworks/accounts/fireworks/models/qwen3p7-plus` | 262144 | — | ✅ | ✅ |
 | `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1048576 | 65536 | ✅ | ✅ |
@@ -229,6 +233,8 @@ and capabilities.
 | `gemini` | `gemini-3.7-flash` | `gemini/gemini-3.7-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.8-flash` | `gemini/gemini-3.8-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-4-argon` | `gemini/gemini-4-argon` | 1048576 | 32768 | ✅ | ✅ |
+| `gemini` | `gemini-4-carbon` | `gemini/gemini-4-carbon` | 1048576 | 32768 | ✅ | ✅ |
+| `gemini` | `gemini-4-hydrogen` | `gemini/gemini-4-hydrogen` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-flash-latest` | `gemini/gemini-flash-latest` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-flash-lite-latest` | `gemini/gemini-flash-lite-latest` | 1048576 | 65536 | ✅ | ✅ |
 | `huggingface` | `openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | 131072 | — | ✅ | — |
@@ -303,6 +309,7 @@ and capabilities.
 | `opencode-go` | `beam-free` | `opencode-go/beam-free` | 1048576 | 131072 | ✅ | — |
 | `opencode-go` | `cat-jam-free` | `opencode-go/cat-jam-free` | 262144 | 131072 | ✅ | — |
 | `opencode-go` | `claude-haiku-5-5` | `opencode-go/claude-haiku-5-5` | 1000000 | 128000 | ✅ | ✅ |
+| `opencode-go` | `crouton-alpha-free` | `opencode-go/crouton-alpha-free` | 1048576 | — | ✅ | ✅ |
 | `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` | 1000000 | 384000 | ✅ | ✅ |
@@ -323,6 +330,7 @@ and capabilities.
 | `opencode-go` | `kimi-k3` | `opencode-go/kimi-k3` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `kimi-k3.1-pro` | `opencode-go/kimi-k3.1-pro` | 1048576 | — | ✅ | ✅ |
 | `opencode-go` | `longcat-2.0` | `opencode-go/longcat-2.0` | 1000000 | 131072 | ✅ | — |
+| `opencode-go` | `longcat-2.5-free` | `opencode-go/longcat-2.5-free` | 1000000 | — | ✅ | ✅ |
 | `opencode-go` | `longcat-2.5-preview-free` | `opencode-go/longcat-2.5-preview-free` | 1000000 | 131072 | ✅ | ✅ |
 | `opencode-go` | `mimo-v2.5` | `opencode-go/mimo-v2.5` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `mimo-v2.5-pro` | `opencode-go/mimo-v2.5-pro` | 1048576 | 131072 | ✅ | — |
@@ -440,9 +448,9 @@ and capabilities.
 | `volcengine` | `ark-code-latest` | `volcengine/ark-code-latest` | 256000 | 65536 | ✅ | — |
 | `volcengine` | `deepseek-latest` | `volcengine/deepseek-latest` | — | — | — | — |
 | `volcengine` | `deepseek-v3-2-251201` | `volcengine/deepseek-v3-2-251201` | 128000 | 4096 | — | — |
-| `volcengine` | `deepseek-v4-1-flash-260910` | `volcengine/deepseek-v4-1-flash-260910` | — | — | ✅ | ✅ |
-| `volcengine` | `deepseek-v4-1-flash-261017` | `volcengine/deepseek-v4-1-flash-261017` | — | — | ✅ | ✅ |
-| `volcengine` | `deepseek-v4-1-flash-economy-261017` | `volcengine/deepseek-v4-1-flash-economy-261017` | — | — | ✅ | ✅ |
+| `volcengine` | `deepseek-v4-1-flash-260910` | `volcengine/deepseek-v4-1-flash-260910` | — | 131072 | ✅ | ✅ |
+| `volcengine` | `deepseek-v4-1-flash-261017` | `volcengine/deepseek-v4-1-flash-261017` | — | 131072 | ✅ | ✅ |
+| `volcengine` | `deepseek-v4-1-flash-economy-261017` | `volcengine/deepseek-v4-1-flash-economy-261017` | — | 131072 | ✅ | ✅ |
 | `volcengine` | `deepseek-v4-flash` | `volcengine/deepseek-v4-flash` | 1000000 | 8192 | ✅ | — |
 | `volcengine` | `deepseek-v4-flash-ga-260731` | `volcengine/deepseek-v4-flash-ga-260731` | 1000000 | 384000 | ✅ | — |
 | `volcengine` | `deepseek-v4-pro` | `volcengine/deepseek-v4-pro` | 1000000 | 8192 | ✅ | — |
