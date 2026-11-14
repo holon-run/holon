@@ -863,15 +863,7 @@ impl RuntimeDb {
             let recovered_at = recovered_at.unwrap_or_else(Utc::now);
             inject_fault(fault, TransitionFaultPoint::AfterValidation)?;
             let preflight = started.elapsed();
-            let phase = std::time::Instant::now();
-            let terminal_sources = {
-                // Interrupted history is recovery lineage, not evidence that
-                // the input was consumed by a completed execution.
-                let mut statement = tx.prepare("SELECT agent_id, trigger_message_id, terminal_kind FROM turn_records WHERE terminal_kind IS NOT NULL AND terminal_kind != 'interrupted' AND trigger_message_id IS NOT NULL ORDER BY completed_at")?;
-                let sources = statement.query_map([], |row| Ok(((row.get::<_, String>(0)?, row.get::<_, String>(1)?), if row.get::<_, String>(2)? == "completed" { QueueEntryStatus::Processed } else { QueueEntryStatus::Aborted })))?.collect::<std::result::Result<BTreeMap<_, _>, _>>()?;
-                sources
-            };
-            let terminal_lookup = phase.elapsed();
+            let mut terminal_sources = StartupTerminalLookups::default();
             let phase = std::time::Instant::now();
             let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
             tx.execute(
@@ -983,7 +975,7 @@ impl RuntimeDb {
                 let unknown_external_outcome = turn.external_side_effect_possible || pending_call_id.is_some();
                 let operator_dispatch_uncertain = !superseded
                     && !unknown_external_outcome
-                    && startup_operator_dispatch_uncertain_tx(tx, &turn, &terminal_sources)?;
+                    && startup_operator_dispatch_uncertain_tx(tx, &turn, &mut terminal_sources)?;
                 let (reason, reason_class) = if superseded {
                     report.superseded_turns += 1;
                     (
@@ -1130,7 +1122,8 @@ impl RuntimeDb {
                 }
                 report.interrupted_turns += 1;
             }
-            let active_turn_recovery = phase.elapsed();
+            let active_turn_recovery = phase.elapsed().saturating_sub(terminal_sources.elapsed);
+            let operator_terminal_lookup = terminal_sources.elapsed;
             let phase = std::time::Instant::now();
             // Startup owns every open attempt, including retained dequeued claims.
             let open_attempts: Vec<(String, String)> = {
@@ -1149,7 +1142,7 @@ impl RuntimeDb {
             };
             for (agent_id, attempt_id) in open_attempts {
                 let (recovery_command, queue_change) =
-                    startup_claim_recovery_tx(tx, &agent_id, &attempt_id, recovered_at, &terminal_sources)
+                    startup_claim_recovery_tx(tx, &agent_id, &attempt_id, recovered_at, &mut terminal_sources)
                         .with_context(|| format!("startup recovery could not classify open execution attempt {attempt_id} for agent {agent_id}"))?;
                 let command = recovery_command.unwrap_or_else(|| {
                     crate::domain::execution_protocol::ExecutionProtocolCommand::Interrupt(
@@ -1247,7 +1240,7 @@ impl RuntimeDb {
                     }
                 }
             }
-            let open_attempt_recovery = phase.elapsed();
+            let open_attempt_recovery = phase.elapsed().saturating_sub(terminal_sources.elapsed - operator_terminal_lookup);
             let phase = std::time::Instant::now();
             // Repair pairs left inconsistent by a crash between the runtime
             // abort write and its attempt settlement (#3607).
@@ -1349,13 +1342,13 @@ impl RuntimeDb {
             inject_fault(fault, TransitionFaultPoint::BeforeCommit)?;
             tracing::info!(
                 preflight_us = preflight.as_micros(),
-                terminal_lookup_us = terminal_lookup.as_micros(),
+                terminal_lookup_us = terminal_sources.elapsed.as_micros(),
                 queue_recovery_us = queue_recovery_time.as_micros(),
                 active_turn_recovery_us = active_turn_recovery.as_micros(),
                 open_attempt_recovery_us = open_attempt_recovery.as_micros(),
                 interrupted_finalization_us = interrupted_finalization.as_micros(),
                 publication_us = phase.elapsed().as_micros(),
-                terminal_source_count = terminal_sources.len(),
+                terminal_lookup_count = terminal_sources.count,
                 active_turns_recovered = report.interrupted_turns,
                 open_attempts_recovered = report.interrupted_execution_attempts,
                 interrupted_attempts_finalized = report.interrupted_attempts_finalized,
@@ -1391,7 +1384,9 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
     use crate::domain::execution_protocol::{
         ExecutionAttemptState, ExecutionProtocolCommand, FinalizeInterruptedExecution,
     };
-    use crate::runtime_db::task_result_settlement::live_turn::attached_turn_for_activation_tx;
+    use crate::runtime_db::task_result_settlement::live_turn::{
+        attached_turn_by_id_tx, unique_interrupted_turn_attachments_tx,
+    };
     use crate::runtime_db::task_result_settlement::{
         settle_activation_tx, TaskResultSettlementDisposition,
     };
@@ -1409,11 +1404,15 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
     };
     for agent_id in interrupted_agents {
         let state = execution_protocol_repository::load_state_tx(tx, &agent_id)?;
-        for attempt in state.attempts.values() {
-            if attempt.state != ExecutionAttemptState::Interrupted {
+        for (attempt_id, turn_id) in unique_interrupted_turn_attachments_tx(tx, &agent_id)? {
+            let Some(attempt) = state
+                .attempts
+                .get(&attempt_id)
+                .filter(|attempt| attempt.state == ExecutionAttemptState::Interrupted)
+            else {
                 continue;
-            }
-            let Some(turn) = attached_turn_for_activation_tx(tx, attempt, true)? else {
+            };
+            let Some(turn) = attached_turn_by_id_tx(tx, attempt, &turn_id)? else {
                 continue;
             };
             let Some(terminal) = turn.terminal.as_ref() else {
@@ -1578,12 +1577,50 @@ fn finalize_interrupted_replay_sources_at_startup_tx(
     Ok(writes)
 }
 
+#[derive(Default)]
+struct StartupTerminalLookups {
+    elapsed: std::time::Duration,
+    count: usize,
+}
+
+impl StartupTerminalLookups {
+    // Descending rowid retains the old table-scan order for equal times.
+    const SQL: &str = "SELECT terminal_kind FROM turn_records
+                 WHERE agent_id = ?1 AND trigger_message_id = ?2
+                   AND terminal_kind IS NOT NULL AND terminal_kind <> 'interrupted'
+                 ORDER BY completed_at DESC, rowid DESC LIMIT 1";
+
+    fn lookup(
+        &mut self,
+        tx: &Transaction<'_>,
+        agent_id: &str,
+        message_id: &str,
+    ) -> Result<Option<QueueEntryStatus>> {
+        let started = std::time::Instant::now();
+        // Startup writes Interrupted Turns before both consumers finish. Those
+        // writes are recovery lineage and cannot add terminal source evidence.
+        let kind = tx
+            .prepare_cached(Self::SQL)?
+            .query_row([agent_id, message_id], |row| row.get::<_, String>(0))
+            .optional()?;
+        self.elapsed += started.elapsed();
+        self.count += 1;
+        Ok(kind.map(|kind| {
+            if kind == "completed" {
+                QueueEntryStatus::Processed
+            } else {
+                QueueEntryStatus::Aborted
+            }
+        }))
+    }
+}
+
 /// A cold boot also owns the original dispatch. Check before the open-attempt
 /// recovery can make its Dequeued source runnable.
 fn startup_operator_dispatch_uncertain_tx(
     tx: &Transaction<'_>,
     turn: &TurnRecord,
-    terminal_sources: &BTreeMap<(String, String), QueueEntryStatus>,
+    terminal_sources: &mut StartupTerminalLookups,
 ) -> Result<bool> {
     let Some(source) = turn
         .trigger
@@ -1602,7 +1639,9 @@ fn startup_operator_dispatch_uncertain_tx(
         )?;
     if !actual_dispatch
         || super::dispatch_memory::operator_dispatch_can_replay_tx(tx, turn)?
-        || terminal_sources.contains_key(&(turn.agent_id.clone(), source.to_owned()))
+        || terminal_sources
+            .lookup(tx, &turn.agent_id, source)?
+            .is_some()
     {
         return Ok(false);
     }
@@ -1620,7 +1659,7 @@ fn startup_claim_recovery_tx(
     agent_id: &str,
     attempt_id: &str,
     recovered_at: chrono::DateTime<Utc>,
-    terminal_sources: &BTreeMap<(String, String), QueueEntryStatus>,
+    terminal_sources: &mut StartupTerminalLookups,
 ) -> Result<(
     Option<crate::domain::execution_protocol::ExecutionProtocolCommand>,
     Option<(QueueEntryRecord, QueueEntryRecord)>,
@@ -1671,16 +1710,14 @@ fn startup_claim_recovery_tx(
         .map(|payload| serde_json::from_str::<MessageEnvelope>(&payload))
         .transpose()?;
     let delivery = delivery_by_message_id_tx(tx, message_id)?;
-    let terminal = terminal_sources.contains_key(&(agent_id.to_string(), message_id.to_string()))
+    let terminal_status = terminal_sources.lookup(tx, agent_id, message_id)?;
+    let terminal = terminal_status.is_some()
         || state.outcomes.values().any(|outcome| outcome.attempt_id == attempt_id)
         || delivery.as_ref().is_some_and(|delivery| delivery.state == AgentMessageDeliveryState::Consumed)
         || tx.query_row("SELECT EXISTS(SELECT 1 FROM briefs WHERE agent_id = ?1 AND message_id = ?2 AND kind IN ('result', 'failure'))", [agent_id, message_id], |row| row.get::<_, bool>(0))?;
     let mut command = None;
     let status = if terminal {
-        terminal_sources
-            .get(&(agent_id.to_string(), message_id.to_string()))
-            .cloned()
-            .unwrap_or(QueueEntryStatus::Processed)
+        terminal_status.unwrap_or(QueueEntryStatus::Processed)
     } else if attempt.source_message_id.as_deref() != Some(message_id) {
         QueueEntryStatus::Quarantined
     } else if attempt.recovery_of_attempt_id.is_some()
@@ -9918,6 +9955,13 @@ mod tests {
                         usize::from(candidates > 0)
                     );
                     let vm_steps = ticks.load(std::sync::atomic::Ordering::Relaxed) * 100;
+                    // At most two Turn walks per affected Agent, even with
+                    // many interrupted attempts. Keep the bound independent of wall time.
+                    let step_bound = 32_000 + turns * 80 + (interrupted + candidates) * 1_000;
+                    assert!(
+                        vm_steps < step_bound,
+                        "{vm_steps} steps exceeds {step_bound}"
+                    );
                     println!(
                         "startup_recovery_history turns={turns} interrupted={interrupted} \
                          candidates={candidates} vm_steps_rounded_down={vm_steps}"
@@ -9929,6 +9973,127 @@ mod tests {
             }
             Ok(())
         })
+    }
+
+    #[test]
+    fn startup_terminal_lookup_uses_trigger_index_and_excludes_interrupted() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        db.transaction(|tx| {
+            let now = Utc::now();
+            for (agent, id, kind, offset, trigger) in [
+                ("agent-a", "t-z", TurnTerminalKind::Aborted, 0, "source"),
+                ("agent-a", "t-a", TurnTerminalKind::Completed, 0, "source"),
+                (
+                    "agent-a",
+                    "t-mid",
+                    TurnTerminalKind::Interrupted,
+                    1,
+                    "source",
+                ),
+                (
+                    "agent-b",
+                    "t-other-agent",
+                    TurnTerminalKind::Aborted,
+                    2,
+                    "source",
+                ),
+                (
+                    "agent-a",
+                    "t-other-trigger",
+                    TurnTerminalKind::Aborted,
+                    2,
+                    "different",
+                ),
+            ] {
+                let mut turn = active_turn(agent, id, 1, Some(trigger), now);
+                turn.terminal = Some(TurnTerminalSummary {
+                    kind,
+                    reason: None,
+                    no_brief_reason: None,
+                    completed_at: now + chrono::Duration::seconds(offset),
+                    duration_ms: 1,
+                });
+                upsert_turn_record_tx(tx, &turn)?;
+            }
+            let mut lookups = StartupTerminalLookups::default();
+            assert_eq!(
+                lookups.lookup(tx, "agent-a", "source")?,
+                Some(QueueEntryStatus::Processed)
+            );
+            assert_eq!(
+                lookups.lookup(tx, "agent-b", "source")?,
+                Some(QueueEntryStatus::Aborted)
+            );
+            assert_eq!(lookups.lookup(tx, "agent-a", "missing")?, None);
+            let plan = tx.query_row(
+                &format!("EXPLAIN QUERY PLAN {}", StartupTerminalLookups::SQL),
+                ["agent-a", "source"],
+                |row| row.get::<_, String>(3),
+            )?;
+            assert!(
+                plan.contains("idx_turn_records_startup_terminal_source"),
+                "{plan}"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn startup_recovery_requires_unique_attachment_before_checking_terminal() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_startup_recovery_history(&db, 0, 0, 3)?;
+        db.transaction(|tx| {
+            // Even a second Turn with a different source and an Interrupted
+            // terminal makes the raw attachment ambiguous.
+            let mut duplicate = poisoned_replay_turn("duplicate", TurnTerminalKind::Interrupted);
+            duplicate.live_input_batches[0].activation_id = "attempt-00000".into();
+            upsert_turn_record_tx(tx, &duplicate)?;
+
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM turn_records WHERE turn_id = 'attached-00001'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut idle: TurnRecord = serde_json::from_str(&payload)?;
+            let batch = idle.live_input_batches.remove(0);
+            idle.idle_input_batch = Some(crate::types::IdleInputBatchRecord {
+                activation_id: Some(batch.activation_id),
+                anchor_message_id: batch.items[0].message_id.clone(),
+                sender_agent_id: "sender".into(),
+                cutoff: batch.cutoff,
+                max_items: batch.max_items,
+                max_bytes: batch.max_bytes,
+                rendered_bytes: batch.rendered_bytes,
+                items: batch.items,
+            });
+            upsert_turn_record_tx(tx, &idle)?;
+            Ok(())
+        })?;
+
+        let report = db.recover_interrupted_runtime_state_at_startup()?;
+        assert_eq!(report.interrupted_attempts_finalized, 2);
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("agent-a")?
+            .expect("recovered partition");
+        assert_eq!(
+            state.attempts["attempt-00000"].state,
+            ExecutionAttemptState::Interrupted
+        );
+        assert_eq!(
+            state.attempts["attempt-00001"].state,
+            ExecutionAttemptState::Settled
+        );
+        assert_eq!(
+            state.attempts["attempt-00002"].state,
+            ExecutionAttemptState::Settled
+        );
+        assert_eq!(
+            db.recover_interrupted_runtime_state_at_startup()?
+                .interrupted_attempts_finalized,
+            0
+        );
+        Ok(())
     }
 
     fn seed_startup_recovery_history(
