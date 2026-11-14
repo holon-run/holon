@@ -230,7 +230,11 @@ impl RuntimeHandle {
         mut retries: ContextPreparationRetries,
     ) -> Result<PreparedLoadedContext> {
         loop {
-            self.ensure_context_resources().await?;
+            if admission.is_some() {
+                self.ensure_context_resources_for_claim().await?;
+            } else {
+                self.ensure_context_resources().await?;
+            }
             match self
                 .build_loaded_context_snapshot(
                     message,

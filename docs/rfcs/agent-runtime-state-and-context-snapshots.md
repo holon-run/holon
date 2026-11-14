@@ -1686,18 +1686,21 @@ root, active-skills selector and monotonic configuration generation, then holds
 a short scoped-active-writer/Closing fence through registry install.
 The lock order is owner, resource-writer readiness, registry; no inventory or owner lock
 crosses I/O or await. Owner Busy retains the existing Ready/Dirty posture and
-uses the original owner-release wake. Inventory contention is a separate,
-non-failure result: after releasing publication guards the finite refresh
-waits for actual inventory availability or close. A superseded inventory
-snapshot permits one fresh-base acquisition and source revalidation per
-event; another conflict fails explicitly, without polling or a per-turn scan.
+uses the original owner-release wake. Inventory lock contention ends the finite
+refresh without publishing or marking the observation failed. Pre-Claim
+preparation returns `context_resources_pending`. The resource observer and
+already-admitted Context preparation retry outside the refresh flight with a
+delay starting at 50 ms, capped at one second, and interrupted by Closing.
+A superseded inventory snapshot permits one fresh-base acquisition and source
+revalidation per event; another conflict fails explicitly, without polling or a
+per-turn scan.
 
 The permanent event observer has an idempotent start/join lifecycle separate
 from finite owned refresh work. Public synchronous construction needs no Tokio
 context; the first async Context starts observation when necessary. Close
-latches initial completion and wakes all initial and inventory waiters. A
-cancelled request or observer does not detach finite physical I/O or its
-budget: its owned refresh remains responsible until the worker exits.
+latches initial completion, wakes initial waiters and interrupts inventory
+retries. A cancelled request or observer does not detach finite physical I/O
+or its budget: its owned refresh remains responsible until the worker exits.
 Cleanup first quiesces refresh admission, then evaluates its original
 admission checks. Each finite refresh reserves shared admission before its
 supervisor is spawned and retains it across single-flight and owner waits,
