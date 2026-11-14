@@ -9,8 +9,8 @@ use crate::storage::AppStorage;
 use crate::types::{
     AgentLifecycleHint, AgentListEntry, AgentModelState, AgentPostureProjection,
     AgentTokenUsageSummary, BriefKind, ChildAgentBlockedReason, ChildAgentObservabilitySnapshot,
-    ChildAgentPhase, ChildAgentSummary, CompletionReportState, ExecutionRootEntry, TaskRecord,
-    TaskStatus, TokenUsage, WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
+    ChildAgentPhase, CompletionReportState, ExecutionRootEntry, TaskRecord, TaskStatus, TokenUsage,
+    WaitingReason, WorkItemRecord, WorkItemState, WorkspaceOccupancyRecord,
     WorkspaceProjectionMetadata, WorktreeSession,
 };
 
@@ -22,9 +22,7 @@ pub(crate) struct LightweightAgentStateProjection {
     pub(crate) lifecycle: AgentLifecycleHint,
     pub(crate) model: AgentModelState,
     pub(crate) closure: ClosureDecision,
-    pub(crate) active_children: Vec<ChildAgentSummary>,
     pub(crate) work_queue: StateWorkQueue,
-    pub(crate) _work_budget: Option<Arc<super::input_evidence_budget::BudgetViewGuard>>,
     pub(crate) _scheduling_material: Option<super::SchedulingReadMaterial>,
 }
 
@@ -757,11 +755,12 @@ impl RuntimeHandle {
         let root = self
             .capture_observer_root_async(&self.inner.runtime_db)
             .await?;
-        let (mut read, identity, _) = self.roster_scheduler_from_root(&root)?;
+        let (read, identity, _) = self.roster_scheduler_from_root(&root)?;
         drop(root);
-        let (work_queue, work_budget) =
-            read.full_state_work_queue(&self.inner.input_evidence_budget)?;
-        let mut agent = read.state.as_ref().clone();
+        let mut agent = read.acquisition.read(|| {
+            crate::diagnostics::resource_io::admit_cloned_value(&read.state.as_ref())?;
+            Ok(read.state.as_ref().clone())
+        })?;
         self.project_provider_cooldown_wait(&mut agent);
         let posture_timer = attribution::POSTURE.start();
         let scheduling_posture = read.scheduling_posture.clone();
@@ -774,14 +773,10 @@ impl RuntimeHandle {
             &read.acquisition,
         )?;
         drop(closure_timer);
-        let scheduling_material = self.scheduling_observation_material(read.scheduling)?;
-        let children_timer = attribution::CHILDREN.start();
-        let active_children = if let Some(bridge) = self.inner.host_bridge.as_ref() {
-            bridge.child_summaries(&agent.id).await?
-        } else {
-            Vec::new()
-        };
-        drop(children_timer);
+        let model = read.acquisition.read(|| self.try_model_state_for(&agent))?;
+        let scheduling_material = self
+            .scheduling_observation_material(read.scheduling)?
+            .with_acquisition_material(read.acquisition.guard()?)?;
         let tasks_timer = attribution::ACTIVE_TASKS.start();
         let active_task_count = read.projection.active_tasks.len();
         drop(tasks_timer);
@@ -792,15 +787,30 @@ impl RuntimeHandle {
                 &agent.id,
                 agent.status.clone(),
             ),
-            model: self.model_state_for(&agent),
+            model,
             agent,
             scheduling_posture,
             closure,
-            active_children,
-            work_queue,
-            _work_budget: Some(work_budget),
+            work_queue: StateWorkQueue::default(),
             _scheduling_material: Some(scheduling_material),
         })
+    }
+
+    pub(crate) async fn agent_status_projection_for(
+        &self,
+        target: Option<&str>,
+    ) -> Result<LightweightAgentStateProjection> {
+        match target {
+            Some(id) if id != self.instance_agent_id() => {
+                self.inner
+                    .host_bridge
+                    .as_ref()
+                    .context("agent status query has no host bridge")?
+                    .agent_status_projection_for(id)
+                    .await
+            }
+            _ => self.lightweight_agent_state_projection().await,
+        }
     }
 
     /// Get a full AgentSummary for a different agent through the host bridge

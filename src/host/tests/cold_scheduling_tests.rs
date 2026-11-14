@@ -237,9 +237,10 @@ async fn cold_lightweight_owned_state_keeps_rich_fields_and_original_holder() ->
             AgentLifecycleHint::from_status(&identity.agent_id, status)
         );
         assert!(projection._scheduling_material.is_some());
-        assert!(projection._work_budget.is_none());
         assert_eq!(projection.active_task_count, 0);
-        assert!(projection.active_children.is_empty());
+        assert!(crate::http_dto::SlimAgentDto::from(&projection)
+            .active_children
+            .is_empty());
         let held = host.inner.input_evidence_budget.report()?.observed_bytes;
         assert!(held > baseline);
         let first = Arc::new(projection);

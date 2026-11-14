@@ -208,7 +208,6 @@ fn snapshot_tx(
             .resident
             .capture(&SchedulingCaptureRequest::current())?,
         task_selector_budget,
-        include_state_queue: false,
     };
     Ok(ColdSummaryRead {
         identity: facts

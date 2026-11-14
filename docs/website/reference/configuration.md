@@ -680,7 +680,7 @@ bypass execution gates, or alter lifecycle state.
 
 The daemon's existing deletion coordinator also observes retained private
 subagents. Parent agents can call `DeleteAgent` directly; creating a child needs
-no retention duration. `GetAgent` on the current parent includes a bounded
+no retention duration. `ListSubagentCleanup` includes a bounded
 `subagent_cleanup` responsibility list without activating any child.
 
 | Key | Type | Default | Description |

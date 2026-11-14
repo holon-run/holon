@@ -37,7 +37,7 @@ Agent 状态**派生**自权威运行时记录，而不是存成单个不透明�
 | **调度姿态** | `AgentSchedulingPosture` — 由队列、WorkItem、任务和等待状态派生 | 调度器 `derive_posture` 投影 |
 | **运行时姿态** | `RuntimePosture` — Awake 或 Sleeping | 轮次结束时的 closure 决策 |
 | **延续** | `ContinuationResolution` — Agent 如何被重新激活 | 轮次开始时的 ingress/dispatch |
-| **面向用户的摘要** | `AgentSummary` — 供 API/UI/模型展示的稳定投影 | `GetAgent` 工具 + HTTP `/agents/{agent_id}` |
+| **面向用户的摘要** | 轻量状态 / `AgentSummary` | `GetAgent` 和默认 HTTP 状态查询 / HTTP `detail=full` |
 
 `AgentSummary` 是**展示投影**，不是调度决策的事实来源。调度器必须从队列、
 WorkItem、任务和等待状态派生姿态，而不能读取摘要字段。
@@ -47,7 +47,7 @@ WorkItem、任务和等待状态派生姿态，而不能读取摘要字段。
 - `RuntimeHandle::agent_summary` 在读取时，从当前 `AgentState`、身份视图、
   模型状态、执行快照、活跃等待、子 Agent、外部触发器和
   `AppStorage::agent_posture_projection` 组装出 `AgentSummary`。
-- `GetAgent` 直接返回组装好的 `AgentSummary`；它不写入生命周期、调度或等待状态。
+- `GetAgent` 返回单个 Agent 的轻量状态，不写入生命周期、调度或等待状态。
 - `/agents/list` 和 `/agents/{agent_id}` 走同一条运行时摘要/列表投影路径。
   `AgentListEntry` 是紧凑的列表投影，不是调度器输入。
 - `AppStorage::agent_posture_projection` 从持久化/运行时记录派生出对外暴露的
@@ -171,7 +171,7 @@ Closure 推导与展示姿态相互独立。它使用调度器投影事实和当
 
 ## 面向用户的投影（`AgentSummary`）
 
-`AgentSummary` 是由 `GetAgent` 和 `GET /api/agents/{agent_id}` 返回的稳定投影。
+`AgentSummary` 由显式 HTTP `detail=full` 查询返回。HTTP 默认状态查询和 `GetAgent` 返回单个 Agent 的轻量状态。
 它包含：
 
 - `identity` — Agent 身份徽标和 profile
@@ -190,7 +190,7 @@ Closure 推导与展示姿态相互独立。它使用调度器投影事实和当
 
 - `AgentSummary` 在读取时从权威记录组装。
 - 新增字段保持保守；不要把 `AgentSummary` 当作内部状态的堆放处。
-- 模型通过 `GetAgent` 收到 `AgentSummary` 作为展示信息，而不是调度指令。
+- 模型通过 `GetAgent` 查询轻量状态作为展示信息。
 - API 使用者不得依赖摘要字段顺序或默认/空字段是否出现。
 
 ### v0.38.0 身份迁移遗留

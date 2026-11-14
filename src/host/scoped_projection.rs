@@ -122,9 +122,7 @@ impl RuntimeHost {
             agent: agent_state,
             scheduling_posture,
             closure,
-            active_children: Vec::new(),
             work_queue,
-            _work_budget: None,
             _scheduling_material: None,
         };
         let active_work_item_count = agent.work_queue.items.len();

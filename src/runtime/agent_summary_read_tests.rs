@@ -202,20 +202,12 @@ async fn summary_and_get_agent_wire_hold_original_material_without_scheduling_bo
         runtime.inner.input_evidence_budget.report()?.observed_bytes,
         baseline
     );
-    for detail in ["compact", "full"] {
-        let wire = crate::tool::tools::get_agent::execute(
-            &runtime,
-            runtime.instance_agent_id(),
-            &AuthorityClass::RuntimeInstruction,
-            &serde_json::json!({"detail": detail}),
-        )
-        .await?;
-        assert!(wire.envelope.result.as_ref().unwrap()["agent"].is_object());
-        assert_eq!(
-            runtime.inner.input_evidence_budget.report()?.observed_bytes,
-            baseline
-        );
-    }
+    let wire = crate::tool::tools::get_agent::execute(&runtime, &serde_json::json!({})).await?;
+    assert!(wire.envelope.result.as_ref().unwrap()["agent"].is_object());
+    assert_eq!(
+        runtime.inner.input_evidence_budget.report()?.observed_bytes,
+        baseline
+    );
     runtime.runtime_db().transaction(|tx| {
         tx.execute_batch("ALTER TABLE summary_wakes_forbidden RENAME TO timer_wakes; ALTER TABLE summary_timers_forbidden RENAME TO timers; ALTER TABLE summary_triggers_forbidden RENAME TO external_triggers")?;
         Ok(())

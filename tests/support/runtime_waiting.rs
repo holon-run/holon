@@ -1781,6 +1781,7 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
     );
     let summary_json = serde_json::to_string(&summary)?;
     assert!(!summary_json.contains(callback_token));
+    assert!(!summary_json.contains(trigger_url));
 
     let (state_result, _) = registry
         .execute(
@@ -1790,13 +1791,13 @@ pub async fn default_external_ingress_register_and_revoke_state() -> Result<()> 
             &ToolCall {
                 id: "tool-get-state".into(),
                 name: "GetAgent".into(),
-                input: json!({"detail": "full"}),
+                input: json!({}),
             },
         )
         .await?;
     let state_text = state_result.content_text()?;
-    assert!(state_text.contains("active_external_triggers"));
-    assert!(state_text.contains("external_trigger_id"));
+    assert!(!state_text.contains("active_external_triggers"));
+    assert!(state_result.envelope.result.as_ref().unwrap()["agent"]["identity"].is_object());
     assert!(!state_text.contains(callback_token));
     assert!(!state_text.contains(trigger_url));
 

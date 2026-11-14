@@ -39,7 +39,7 @@ Tools are grouped by capability family for authority gating:
 | `LocalEnvironment` | `ExecCommand`, `ExecCommandBatch`, `ApplyPatch`, `ViewImage`, `GenerateImage`, `GetWorkspaceState`, `SwitchWorkspace`, `CreateWorktree` | All profiles |
 | `AuthorityExpanding` | `AttachWorkspace`, `DetachWorkspace`, `RemoveWorktree` | Public named agents |
 | `Web` | `WebFetch`, `WebSearch`, `XSearch` | All profiles |
-| `AgentCreation` | `CreateAgent`, `InvokeAgent` | Public named agents |
+| `AgentCreation` | `CreateAgent`, `InvokeAgent`, `DeleteAgent`, `ListSubagentCleanup` | Public named agents |
 | `ExternalTrigger` | `CreateExternalTrigger`, `CancelExternalTrigger` | All profiles |
 
 Operator notification records, delivery callbacks, and UI rendering remain
@@ -87,7 +87,8 @@ runtime result/capture services remain. See [Tasks](tasks.md).
 
 | Tool | Purpose |
 |------|---------|
-| `GetAgent` | Read current agent-plane summary |
+| `GetAgent` | Read one agent’s compact status |
+| `ListSubagentCleanup` | List the caller’s supervised ephemeral children and cleanup blockers |
 | `WaitFor` | Signal turn-end after recording explicit wait state |
 | `Enqueue` | Schedule self-follow-up message |
 | `CreateAgent` | Create a long-lived, addressable agent |

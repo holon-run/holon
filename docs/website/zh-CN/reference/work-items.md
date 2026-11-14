@@ -207,7 +207,7 @@ order: 38
 
 任务状态还提供受支持的后续交互信息。命令任务输入需要确认支持交互输入；受监督子 Agent 后续跟进需依据 `child_supervision.followup_target`。终态句柄无法通过 `TaskInput` 重启。
 
-子 Agent 在调用完成后会保留下来供后续复用。父 Agent 负责子 Agent 的生命周期清理，在删除前必须核查其当前的代次（incarnation）与阻塞原因。父 Agent 的 `GetAgent` 摘要最多暴露 16 个 `subagent_cleanup` 条目。活跃的执行状态、未清理的后代以及脏的或共享的 worktree 都会阻止删除。如果父 Agent 已经判定相关记录不再需要，未关闭的工作项或已结束的任务本身不会阻止清理。可选的 `reminders_enabled` 提醒机制与 `idle_retirement_enabled` 运行时退役机制不会删除持久化的子 Agent 身份。
+子 Agent 在调用完成后会保留下来供后续复用。父 Agent 负责子 Agent 的生命周期清理，在删除前必须核查其当前的代次（incarnation）与阻塞原因。父 Agent 调用 `ListSubagentCleanup` 可查询最多 16 个清理责任条目。活跃的执行状态、未清理的后代以及脏的或共享的 worktree 都会阻止删除。如果父 Agent 已经判定相关记录不再需要，未关闭的工作项或已结束的任务本身不会阻止清理。可选的 `reminders_enabled` 提醒机制与 `idle_retirement_enabled` 运行时退役机制不会删除持久化的子 Agent 身份。
 
 ## 与 Agent 的关系
 

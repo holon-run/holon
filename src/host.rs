@@ -4739,7 +4739,7 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> std::result::Result<LightweightAgentStateProjection, PublicAgentError> {
-        self.active_agent_identity(agent_id)?;
+        let identity = self.active_agent_identity(agent_id)?;
         if let Some(runtime) = self.try_get_loaded_runtime(agent_id).await {
             return runtime
                 .lightweight_agent_state_projection()
@@ -4747,7 +4747,6 @@ impl RuntimeHost {
                 .map_err(PublicAgentError::Runtime);
         }
 
-        let identity = self.active_agent_identity(agent_id)?;
         let storage = self
             .agent_storage_read_only(agent_id)
             .map_err(PublicAgentError::Runtime)?;
@@ -4811,10 +4810,6 @@ impl RuntimeHost {
             observation.check().map_err(PublicAgentError::Runtime)?;
         }
         drop(reservations);
-        let active_children = self
-            .child_agent_summaries(agent_id)
-            .await
-            .map_err(PublicAgentError::Runtime)?;
         Ok(LightweightAgentStateProjection {
             identity: AgentIdentityView::from_owned_record(
                 identity,
@@ -4826,9 +4821,7 @@ impl RuntimeHost {
             agent,
             model,
             closure,
-            active_children,
             work_queue,
-            _work_budget: None,
             _scheduling_material: Some(scheduling_material),
         })
     }
@@ -5418,9 +5411,7 @@ impl RuntimeHost {
             agent: agent_state,
             scheduling_posture,
             closure,
-            active_children: Vec::new(),
             work_queue,
-            _work_budget: None,
             _scheduling_material: None,
         };
         let active_work_item_count = agent.work_queue.items.len();
@@ -11764,6 +11755,19 @@ impl RuntimeHostBridge {
     pub(crate) async fn child_turn_index(&self, agent_id: &str) -> Result<u64> {
         let summary = self.agent_summary_for(agent_id).await?;
         Ok(summary.agent.turn_index)
+    }
+
+    pub(crate) async fn agent_status_projection_for(
+        &self,
+        agent_id: &str,
+    ) -> Result<LightweightAgentStateProjection> {
+        self.host()?
+            .local_agent_lightweight_projection(agent_id)
+            .await
+            .map_err(|error| match error {
+                PublicAgentError::Runtime(error) => error,
+                error => error.into(),
+            })
     }
 
     pub(crate) async fn child_observability(
@@ -26411,6 +26415,23 @@ mod tests {
         assert_eq!(
             ready_observer(|| parent.subagent_cleanup_candidates()).await[0].agent_id,
             child.agent_id
+        );
+        let cleanup = crate::tool::tools::execute_builtin_tool(
+            &parent,
+            parent.instance_agent_id(),
+            &AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "list-cleanup".into(),
+                name: "ListSubagentCleanup".into(),
+                input: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+        let candidates = ready_observer(|| parent.subagent_cleanup_candidates()).await;
+        assert_eq!(
+            cleanup.envelope.result.unwrap()["subagent_cleanup"],
+            json!(candidates)
         );
         assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
         let again = db

@@ -233,16 +233,15 @@ This should be the only public way to create another reasoning context.
 The central inspection primitive should be:
 
 - `GetAgent`
-  - Returns a `GetAgentCompactResult` envelope by default.
-  - Accepts `{"detail":"full"}` to return the stable `GetAgentResult`
-    envelope carrying the complete `AgentSummary`.
+  - Returns one compact `GetAgentResult` for the requested agent, defaulting to self.
+  - `ListSubagentCleanup` lists the caller’s supervised ephemeral children and their current cleanup blockers.
 
 `GetAgent` should read agent-plane state for the context-owning agent:
 
 - identity and visibility
 - lifecycle / closure posture
 - active work focus and waiting state
-- visible child-agent lineage where policy allows
+- the target’s own parent and lineage references where present
 
 `GetAgent` is distinct from task-plane inspection. `TaskStatus` should inspect a
 managed execution handle, while `GetAgent` should inspect the agent that owns

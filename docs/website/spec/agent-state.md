@@ -39,7 +39,7 @@ single opaque status field. The key distinction is:
 | **Scheduling posture** | `AgentSchedulingPosture` — derived from queue, WorkItems, tasks, wait state | Scheduler `derive_posture` projection |
 | **Runtime posture** | `RuntimePosture` — Awake or Sleeping | Closure decision at turn end |
 | **Continuation** | `ContinuationResolution` — how the agent was reactivated | Ingress/dispatch at turn start |
-| **User-facing summary** | `AgentSummary` — stable projection for API/UI/model display | `GetAgent` tool + HTTP `/agents/{agent_id}` |
+| **User-facing summary** | Compact status / `AgentSummary` | `GetAgent` and default HTTP status / HTTP `detail=full` |
 
 `AgentSummary` is a **display projection**, not the source of truth for
 scheduling decisions. The scheduler must derive posture from queue, WorkItem,
@@ -50,7 +50,7 @@ Current implementation anchors:
 - `RuntimeHandle::agent_summary` assembles `AgentSummary` on read from the
   current `AgentState`, identity view, model state, execution snapshot, active
   waits, children, external triggers, and `AppStorage::agent_posture_projection`.
-- `GetAgent` returns that assembled `AgentSummary` directly; it does not write
+- `GetAgent` returns one compact status and does not write
   lifecycle, scheduling, or wait state.
 - `/agents/list` and `/agents/{agent_id}` use the same runtime summary/list
   projection path. `AgentListEntry` is a compact list projection and is not a
@@ -192,8 +192,8 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 
 ## User-facing projection (`AgentSummary`)
 
-`AgentSummary` is the stable projection returned by `GetAgent` and
-`GET /api/agents/{agent_id}`. It includes:
+`AgentSummary` is returned by explicit HTTP `detail=full` queries. The default HTTP
+status and `GetAgent` return a compact status for one agent. It includes:
 
 - `identity` — agent identity badge and profile
 - `agent` — core `AgentState` including status, pending count, turn index
@@ -212,7 +212,7 @@ projection facts and current turn facts to choose a `ClosureOutcome`,
 - `AgentSummary` is assembled on read from authoritative records.
 - Fields are added conservatively; do not use `AgentSummary` as a dumping
   ground for internal state.
-- The model receives `AgentSummary` (via `GetAgent`) as display information,
+- The model receives compact status via `GetAgent` as display information,
   not as a scheduling instruction.
 - API consumers must not depend on summary field ordering or presence of
   default/empty fields.

@@ -640,7 +640,7 @@ Decision 子系统在 Agent 面临高歧义选择时提供非权威的咨询性�
 
 ## 受监督子 Agent 维护
 
-守护进程的清理协调器负责观察被保留的私有子 Agent。父级 Agent 可以直接调用 `DeleteAgent` 发起清理，创建子 Agent 时无需指定保留时长。父级调用 `GetAgent` 时会包含受控的 `subagent_cleanup` 责任列表，无需提前拉起子 Agent。
+守护进程的清理协调器负责观察被保留的私有子 Agent。父级 Agent 可以直接调用 `DeleteAgent` 发起清理，创建子 Agent 时无需指定保留时长。父级调用 `ListSubagentCleanup` 时会包含受控的 `subagent_cleanup` 责任列表，无需提前拉起子 Agent。
 
 | 配置键 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |

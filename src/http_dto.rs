@@ -351,7 +351,7 @@ impl From<&crate::runtime::LightweightAgentStateProjection> for SlimAgentDto {
             lifecycle: projection.lifecycle.clone(),
             model: (&projection.model).into(),
             closure: (&projection.closure).into(),
-            active_children: projection.active_children.iter().map(Into::into).collect(),
+            active_children: Vec::new(),
         }
     }
 }

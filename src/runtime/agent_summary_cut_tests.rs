@@ -135,7 +135,7 @@ async fn get_agent_retries_a_pending_target_without_reconciling_its_owner() -> R
     let call = crate::tool::ToolCall {
         id: "pending-target".into(),
         name: "GetAgent".into(),
-        input: serde_json::json!({"agent_id":"summary-target", "detail":"full"}),
+        input: serde_json::json!({"agent_id":"summary-target"}),
     };
     let mut read = Box::pin(crate::tool::tools::execute_builtin_tool(
         &parent,

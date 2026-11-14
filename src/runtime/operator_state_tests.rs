@@ -196,50 +196,15 @@ async fn loaded_state_surfaces_keep_full_queue_beyond_scheduler_candidates() -> 
     assert_eq!(full.items.len(), 9);
     let expected = queue_wire(&full)?;
     let lightweight = runtime.lightweight_agent_state_projection().await?;
-    assert_eq!(queue_wire(&lightweight.work_queue)?, expected);
-    assert!(lightweight._work_budget.is_some());
+    assert!(lightweight.work_queue.items.is_empty());
     let operator = runtime.operator_state_read_projection(10, 10).await?;
     assert_eq!(queue_wire(&operator.agent.work_queue)?, expected);
     assert!(operator.material._work.is_some());
 
-    // The full-inventory adapter keeps its independent Current preparation.
-    // State above already used only the minimal published root.
-    let root = runtime
-        .capture_observer_root_async(runtime.runtime_db())
-        .await?;
-    let mut read = runtime.capture_operator_scheduler_from_root(&root, runtime.now())?;
-    let usage = read.acquisition.finish()?;
-    let (queue, budget) = read.full_state_work_queue(&runtime.inner.input_evidence_budget)?;
-    assert_eq!(queue_wire(&queue)?, expected);
     assert_eq!(
-        read.acquisition.finish()?,
-        usage,
-        "moving the operator inventory must not allocate or rank it again"
+        lightweight.scheduling_posture,
+        operator.agent.scheduling_posture
     );
-    drop((read, queue, budget));
-
-    let ledger = &runtime.inner.input_evidence_budget;
-    let scope = root.work.as_ref().unwrap().scope();
-    for (bytes, records, succeeds) in [
-        (usage.0, usage.1, true),
-        (usage.0 - 1, usage.1, false),
-        (usage.0, usage.1 - 1, false),
-    ] {
-        let phase =
-            resource_io::ResourceReadMaterial::with_test_limits(ledger, scope, bytes, records)?;
-        let result =
-            phase.read(|| runtime.capture_operator_scheduler_from_root(&root, runtime.now()));
-        if succeeds {
-            let mut read = result?;
-            assert!(phase.shares_allowance(&read.acquisition));
-            let (queue, _budget) = read.full_state_work_queue(ledger)?;
-            assert_eq!(queue_wire(&queue)?, expected);
-            assert_eq!(phase.finish()?, usage);
-        } else {
-            resource_io::assert_retryable_resource_error(&result.err().unwrap());
-            assert!(phase.finish().is_err());
-        }
-    }
     Ok(())
 }
 

@@ -9,8 +9,15 @@ async fn compact_parent_summary_child_history_cost() -> Result<()> {
         BriefKind, BriefRecord, MessageBody, MessageEnvelope, MessageKind, MessageOrigin,
         ToolExecutionRecord, ToolExecutionStatus, TurnRecord,
     };
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
 
     let mut probe = IoProbe::start();
+    let mut expected_reads = None;
+    let isolated = std::env::var_os("HOLON_4123_ISOLATED_MEASUREMENT").is_some();
     for children in [1, 10, 20] {
         for tools_per_turn in [0, 32] {
             let (_home, host) = test_host();
@@ -84,8 +91,30 @@ async fn compact_parent_summary_child_history_cost() -> Result<()> {
                 .map_err(anyhow::Error::new)?;
             let elapsed_ms = start.elapsed().as_secs_f64() * 1000.0;
             let counts = probe.snapshot().counters;
-            eprintln!("children={children} tools_per_turn={tools_per_turn} projected_children={} sql_reads={} sql_writes={} elapsed_ms={elapsed_ms:.2}", summary.active_children.len(), counts.sql_read_statements, counts.sql_write_statements);
+            eprintln!(
+                "children={children} tools_per_turn={tools_per_turn} sql_reads={} sql_writes={} elapsed_ms={elapsed_ms:.2}",
+                counts.sql_read_statements, counts.sql_write_statements
+            );
             assert_eq!(summary.identity.agent_id, parent.agent_id);
+            let wire = serde_json::to_value(crate::http_dto::SlimAgentDto::from(&summary))?;
+            assert!(wire.get("active_children").is_none());
+            if isolated {
+                assert_eq!(counts.sql_write_statements, 0);
+                let expected = expected_reads.get_or_insert(counts.sql_read_statements);
+                assert_eq!(counts.sql_read_statements, *expected);
+            }
+            assert!(host.inner.runtimes.read().await.agents.is_empty());
+            let response = crate::http::router(crate::http::AppState::for_unix(host.clone()))
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/agents/{}/status", parent.agent_id))
+                        .body(Body::empty())?,
+                )
+                .await?;
+            assert_eq!(response.status(), StatusCode::OK);
+            let body: serde_json::Value =
+                serde_json::from_slice(&to_bytes(response.into_body(), 1024 * 1024).await?)?;
+            assert_eq!(body, wire);
             assert!(host.inner.runtimes.read().await.agents.is_empty());
             host.shutdown().await?;
         }
@@ -218,7 +247,6 @@ async fn state_wire_omits_children_for_loaded_and_cold_parents_and_children() ->
                 .operator_agent_state_projection(&parent, 10, 10)
                 .await
                 .map_err(|error| anyhow!("{error}"))?;
-            assert!(agent.active_children.is_empty());
             let dto = crate::http_dto::SlimAgentDto::from(&agent);
             let expected = serde_json::to_vec(&dto)?;
             assert!(serde_json::to_value(&dto)?.get("active_children").is_none());

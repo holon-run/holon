@@ -153,7 +153,7 @@ For follow-up input, inspect task status first and use `TaskInput` only when sup
 Newly invoked subagents are private, reusable instances retained after their tasks complete. They do not expire automatically by age:
 
 - **Parent ownership:** Only the supervising parent can delete a retained child. The runtime validates canonical supervision and agent incarnations.
-- **Cleanup inspection:** Calling `GetAgent` on the parent surfaces a bounded `subagent_cleanup` list (up to 16 supervised children) with any blockers.
+- **Cleanup inspection:** Calling `ListSubagentCleanup` surfaces a bounded `subagent_cleanup` list (up to 16 supervised children) with any blockers.
 - **Blocker checks:** Active execution, unresolved descendant responsibilities, and dirty or shared worktrees block cleanup until settled. Open work items or completed tasks do not block cleanup if the parent decides they are no longer needed.
 - **Delete when done:** Call `DeleteAgent(agent_id, incarnation)` once child artifacts are incorporated and blockers cleared.
 - **Background reminders and retirement:** Optional settings can remind parents about lingering children (`reminders_enabled`) and let fully idle child runtimes exit memory (`idle_retirement_enabled`) while preserving their identity and history on disk.
