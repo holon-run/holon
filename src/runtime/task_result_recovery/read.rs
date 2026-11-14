@@ -26,9 +26,6 @@ use crate::types::AgentRegistryStatus;
 use rusqlite::{params, OptionalExtension, Transaction};
 use std::collections::BTreeSet;
 
-const ACTIVE_QUEUE_PREDICATE: &str =
-    "m.agent_id=?1 AND q.status NOT IN ('processed','aborted','dropped','quarantined')";
-
 /// Fixed-size borrowed selection preserves the original SQL LIMIT without an
 /// all-unsettled temporary allocation. The metadata namespace remains complete.
 pub(super) fn due_results<'a>(
@@ -100,9 +97,13 @@ fn queue_observation_tx(
     work_revision: Option<u64>,
     task_revision: Option<u64>,
 ) -> Result<QueueObservation> {
-    let (count, id_bytes): (usize, u64) = tx.query_row(
-        &format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(m.message_id AS BLOB))),0) FROM messages m JOIN queue_entries q ON q.message_id=m.message_id WHERE {ACTIVE_QUEUE_PREDICATE}"),
-        [&scope.agent_id], |r| Ok((r.get(0)?,r.get(1)?)))?;
+    let _span = tracing::info_span!("task_result_recovery_queue_read", agent_id=%scope.agent_id,
+        identity_incarnation=scope.identity_incarnation)
+    .entered();
+    let mut timer = crate::diagnostics::attribution::TASK_RESULT_RECOVERY_QUEUE.start();
+    let (count, id_bytes) =
+        crate::runtime_db::task_result_queue::address_footprint(tx, &scope.agent_id)?;
+    timer.rows(count);
     let scope_bytes: u64 = tx.query_row(
         "SELECT COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_states WHERE agent_id=?1),0)+COALESCE((SELECT length(CAST(payload_json AS BLOB)) FROM agent_identities WHERE agent_id=?1),0)",
         [&scope.agent_id], |r| r.get(0))?;
@@ -156,22 +157,7 @@ fn queue_observation_tx(
             &scope_read,
         )?;
     }
-    let corrupt:bool=tx.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM messages m JOIN queue_entries q ON q.message_id=m.message_id WHERE {ACTIVE_QUEUE_PREDICATE} AND CASE WHEN json_valid(q.payload_json) THEN json_extract(q.payload_json,'$.message_id') IS NOT q.message_id OR json_extract(q.payload_json,'$.agent_id') IS NOT q.agent_id OR json_extract(q.payload_json,'$.status') IS NOT q.status ELSE 1 END)"),
-        [&scope.agent_id],|r|r.get(0))?;
-    anyhow::ensure!(
-        !corrupt,
-        "recovery Queue normalized observation differs from payload"
-    );
-    let foreign: bool = tx.query_row(
-        &format!("SELECT EXISTS(SELECT 1 FROM messages m JOIN queue_entries q ON q.message_id=m.message_id WHERE {ACTIVE_QUEUE_PREDICATE} AND q.agent_id<>?1)"),
-        [&scope.agent_id], |r| r.get(0))?;
-    anyhow::ensure!(!foreign, "recovery Queue address belongs to another agent");
-    let mut query = tx.prepare(&format!(
-        "SELECT m.message_id FROM messages m JOIN queue_entries q ON q.message_id=m.message_id WHERE {ACTIVE_QUEUE_PREDICATE} ORDER BY m.message_seq IS NULL ASC,m.message_seq DESC,m.created_at DESC,m.message_id DESC"))?;
-    let ids = query
-        .query_map([&scope.agent_id], |r| r.get::<_, String>(0))?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
+    let ids = crate::runtime_db::task_result_queue::addresses(tx, &scope.agent_id)?;
     anyhow::ensure!(
         ids.len() == count
             && ids.iter().all(|id| !id.is_empty())

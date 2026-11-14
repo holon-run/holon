@@ -4433,6 +4433,15 @@ CREATE INDEX IF NOT EXISTS idx_task_result_settlements_agent_task_identity
         name: "index_startup_recovery_sources",
         sql: "",
     },
+    Migration {
+        version: 110,
+        name: "index_active_recovery_queue",
+        sql: r#"
+CREATE INDEX IF NOT EXISTS idx_queue_entries_active_recovery
+  ON queue_entries(message_id, agent_id, status)
+  WHERE status NOT IN ('processed','aborted','dropped','quarantined');
+"#,
+    },
 ];
 
 pub(crate) fn ensure_migration_table(connection: &Connection) -> Result<()> {

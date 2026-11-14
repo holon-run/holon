@@ -1,5 +1,6 @@
 //! Explicit owner-held preparation, never a context reader fallback.
 
+use crate::diagnostics::attribution;
 use anyhow::{ensure, Result};
 use rusqlite::Transaction;
 
@@ -460,6 +461,7 @@ fn prepare_input_domains_inner_tx(
     )?;
     // Count and conservative encoded bytes reject before Episode or input body
     // materialization. The later queue read is from this same SQL snapshot.
+    let queue_timer = attribution::INPUT_PREPARE_QUEUE.start();
     let pending_read = prepare_pending_queue_read_tx(tx, scope, budget)?;
     ensure!(
         pending_read.count == published_state.pending,
@@ -467,10 +469,12 @@ fn prepare_input_domains_inner_tx(
         pending_read.count,
         published_state.pending
     );
+    drop(queue_timer);
     let episode_scope = EpisodeMemoryLoadScope {
         agent_id: scope.agent_id.clone(),
         identity_incarnation: scope.identity_incarnation,
     };
+    let episode_timer = attribution::INPUT_PREPARE_EPISODES.start();
     let current = if original_recovery {
         super::episode_snapshot::load_episode_memory_for_input_recovery_in(
             tx,
@@ -481,6 +485,7 @@ fn prepare_input_domains_inner_tx(
         load_episode_memory_snapshot_in(tx, &episode_scope, recent_episode_limit, None)?
     }
     .require_current()?;
+    drop(episode_timer);
     let queue_posture = pending_read.posture;
     let pending = pending_read.read_messages()?;
     let mut request = request.borrowed();
@@ -598,6 +603,7 @@ fn prepare_input_domains_inner_tx(
     } else {
         None
     };
+    let scheduling_timer = attribution::INPUT_PREPARE_SCHEDULING.start();
     let scheduling = (if prepare {
         super::scheduling_snapshot::prepare_scheduling_with_context_scope_tx
     } else {
@@ -621,6 +627,7 @@ fn prepare_input_domains_inner_tx(
         request.insert_admitted_root(key.family, &key.id)?;
     }
     let scheduling = std::sync::Arc::new(scheduling.resident);
+    drop(scheduling_timer);
     let prepared = (if prepare {
         prepare_input_evidence_with_scope_read_tx
     } else {

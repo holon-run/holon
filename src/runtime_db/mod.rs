@@ -60,6 +60,7 @@ pub mod retention;
 pub mod retired_scheduler_cleanup;
 pub(crate) mod startup_ended_memory;
 pub mod storage_domain;
+pub(crate) mod task_result_queue;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
 pub mod turn_settlement_repair;

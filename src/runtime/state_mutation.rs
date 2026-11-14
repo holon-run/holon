@@ -869,13 +869,20 @@ impl RuntimeMutation {
             })
         };
         let default_scheduling = super::resident_scheduling::SchedulingCaptureRequest::current();
+        // A published query is a cache, not a live consumer. Keep its latest
+        // frontier; only registered roles may retain older Events or Queue IDs.
+        let current_frontier = self
+            .current
+            .as_ref()
+            .and_then(|writes| writes.query.as_ref())
+            .map(|query| crate::runtime_db::current_query::CurrentSelection {
+                events_after: Some(query.event_cursor),
+                ..Default::default()
+            });
         let current_roles = self.runtime.inner.current_queries.snapshot(
             &scope,
             self.reservations[self.primary_index].owner_epoch(),
-            self.current
-                .as_ref()
-                .and_then(|writes| writes.query.as_ref())
-                .map(|query| &query.selection),
+            current_frontier.as_ref(),
             &self.runtime.inner.input_evidence_budget,
         )?;
         let prepare_current = current_roles.has_live_roles()

@@ -192,6 +192,7 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
     let current_query = |tx: &rusqlite::Transaction<'_>| {
         current
             .map(|roles| {
+                let _timer = crate::diagnostics::attribution::INPUT_PREPARE_CURRENT.start();
                 let query = crate::runtime_db::current_query::prepare(
                     tx,
                     &scope,
@@ -209,6 +210,9 @@ pub(crate) fn prepare_reserved_input_domains_with_scheduling(
     };
     let original_recovery = cause == InputPreparationCause::ExistingAdmissionCleanup;
     let read = || {
+        let _span = tracing::info_span!("input_preparation_read", agent_id=%scope.agent_id,
+            identity_incarnation=scope.identity_incarnation, ?cause)
+        .entered();
         let started = std::time::Instant::now();
         let result = db.read_for_preparation(|tx| {
             let prepared = crate::runtime_db::input_preparation::load_input_with_scheduling_tx(
