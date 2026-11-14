@@ -3293,6 +3293,11 @@ Wait/Task bodies or counting them independently. NoState display requires
 empty-domain continuity and metadata-only rejection of mixed-domain bodies.
 Body eligibility is still granted only by each original domain's proofs.
 
+The default HTTP status and GetAgent select the requested Agent only. Child
+inventory and execution evidence are acquired by explicit detail consumers.
+GetAgent exposes one compact result. ListSubagentCleanup reads only the caller’s
+bounded supervision and blocker information.
+
 Operator tree entries reuse explicit inventory acquisition and preserve
 canonical relation filtering and cycle handling. Observer roster/projection
 snapshots retain their original single committed SQL view and independent

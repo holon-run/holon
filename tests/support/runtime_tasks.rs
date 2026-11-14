@@ -960,13 +960,7 @@ pub async fn tool_use_round_trip_executes_and_returns_result() -> Result<()> {
         .expect("GetAgent output should contain envelope.result");
     let captured_summary: holon::types::GetAgentResult = serde_json::from_value(payload)?;
     assert_eq!(
-        captured_summary
-            .agent
-            .agent
-            .working_memory
-            .current_working_memory
-            .current_work_item_id,
-        None,
+        captured_summary.agent.agent.current_work_item_id, None,
         "GetAgent should not invent WorkItem focus mid-tool-loop"
     );
 

@@ -376,7 +376,6 @@ mod tests {
             "lifecycle": agent.lifecycle,
             "model": agent.model,
             "closure": agent.closure,
-            "children": agent.active_children,
             "queue": {
                 "current": agent.work_queue.current,
                 "queued_blocked": agent.work_queue.queued_blocked,
@@ -790,7 +789,6 @@ mod tests {
             .external_triggers
             .iter()
             .all(|record| record.external_trigger_id != trigger.external_trigger_id));
-        assert!(scoped.agent.active_children.is_empty());
         let ordinary = host
             .operator_agent_state_projection(&agent_id, 10, 10)
             .await
@@ -853,7 +851,6 @@ mod tests {
                 crate::host::AgentStateProjectionSource::Loaded
             );
             assert_eq!(projection.agent.agent.id, agent_id);
-            assert!(projection.agent.active_children.is_empty());
             let after = runtime.inner.mutation_owner.capture().unwrap().unwrap();
             let child_after = child.inner.mutation_owner.capture().unwrap().unwrap();
             for (reader, original, current, event_cursor) in [

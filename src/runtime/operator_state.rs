@@ -161,9 +161,7 @@ impl RuntimeHandle {
                 lifecycle,
                 model,
                 closure,
-                active_children: Vec::new(),
                 work_queue,
-                _work_budget: None,
                 _scheduling_material: None,
             };
             let material = StateProjectionMaterial {

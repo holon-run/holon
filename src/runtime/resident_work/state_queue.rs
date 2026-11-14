@@ -88,6 +88,7 @@ fn clone_projection(
 }
 
 impl CapturedWork {
+    #[cfg(all(test, holon_lib_test_shard = "a"))]
     pub(crate) fn state_work_queue_with_material(
         &self,
         state: &AgentState,

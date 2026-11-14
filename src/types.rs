@@ -4608,20 +4608,7 @@ pub struct SubagentCleanupCandidate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GetAgentResult {
-    pub agent: AgentSummary,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
-}
-
-/// Compact projection returned by the default `GetAgent` tool response.
-///
-/// `GetAgentResult` remains the stable full-detail result type; the tool
-/// contract explicitly distinguishes this compact result from it.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-pub struct GetAgentCompactResult {
     pub agent: crate::http_dto::SlimAgentDto,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub subagent_cleanup: Vec<SubagentCleanupCandidate>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

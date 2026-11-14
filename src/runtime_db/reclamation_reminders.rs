@@ -218,7 +218,7 @@ impl RuntimeDb {
                         subsystem: "subagent_reclamation".into()
                     }, AuthorityClass::RuntimeInstruction, Priority::Background, MessageBody::Text {
                         text: format!("Retained subagents still under your supervision have been idle: {list}. \
-                            Review whether they are still needed. You own cleanup: use GetAgent to \
+                            Review whether they are still needed. You own cleanup: use ListSubagentCleanup to \
                             inspect current identity and blockers, and DeleteAgent when safe and no \
                             longer needed. Idle state such as an open work item or timer is a hint, \
                             not a deletion requirement. Keep any needed agent. No special reply \

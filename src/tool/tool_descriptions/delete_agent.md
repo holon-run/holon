@@ -1,5 +1,6 @@
 Request durable deletion of an ephemeral child currently supervised by you.
-Supply `agent_id` and `incarnation` from `GetAgent.identity`. Caller identity
+Supply `agent_id` and `incarnation` from `GetAgent` identity or
+`ListSubagentCleanup`. Caller identity
 comes from your runtime and cannot be supplied. No reminder or special reply is
 required. You may delete a retained child once it is no longer useful.
 
