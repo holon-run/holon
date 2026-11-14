@@ -93,6 +93,7 @@ pub(crate) use crate::{
         WorkItemPlanStatus, WorkItemRecord, WorkItemState,
     },
 };
+#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod agent_model_tests;
 mod agents;
