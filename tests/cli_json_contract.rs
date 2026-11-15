@@ -84,6 +84,48 @@ fn forward_serve_stdout(reader: impl BufRead, line_tx: mpsc::Sender<std::io::Res
     }
 }
 
+/// Fetch `GET /agents/{agent_id}/status?detail=full` from a spawned serve.
+///
+/// The full-status read can transiently answer a retryable 503 (for example
+/// storage busy while the serve runtime settles) even though narrower read
+/// paths already succeed. Retry that bounded window and assert the response
+/// shape so an error envelope is never compared as a `.model`-carrying
+/// summary.
+fn fetch_full_agent_status_with_retry(addr: &str, agent_id: &str) -> Value {
+    let url = format!("http://{addr}/api/agents/{agent_id}/status?detail=full");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut last_transient_body = String::from("none");
+    loop {
+        let response = reqwest::blocking::Client::new()
+            .get(&url)
+            .send()
+            .expect("fetch full agent status");
+        let status = response.status();
+        let body = response.text().expect("read full agent status body");
+        if status.as_u16() == 503 {
+            assert!(
+                Instant::now() < deadline,
+                "full agent status stayed transiently unavailable until the deadline; \
+                 last 503 body: {last_transient_body}"
+            );
+            last_transient_body = body;
+            thread::sleep(Duration::from_millis(200));
+            continue;
+        }
+        assert_eq!(
+            status,
+            reqwest::StatusCode::OK,
+            "full agent status should be 200, body: {body}"
+        );
+        let summary: Value = serde_json::from_str(&body).expect("decode full agent status");
+        assert!(
+            summary["identity"]["agent_id"].is_string(),
+            "full agent status should carry identity.agent_id, got: {summary}"
+        );
+        return summary;
+    }
+}
+
 #[test]
 fn serve_stdout_reader_drains_after_startup_receiver_is_dropped() {
     let output = b"Holon listening on 127.0.0.1:1234\nlocal listener\nUnix socket\n";
@@ -1232,12 +1274,7 @@ fn agent_model_get_uses_the_dedicated_model_endpoint() {
         default_model, named_model,
         "both agents share the runtime default model"
     );
-    let summary: Value = reqwest::blocking::Client::new()
-        .get(format!("http://{addr}/api/agents/main/status?detail=full"))
-        .send()
-        .expect("fetch full agent status")
-        .json()
-        .expect("decode full agent status");
+    let summary = fetch_full_agent_status_with_retry(&addr, "main");
     assert_eq!(default_model, summary["model"]);
 
     // Durable set/clear through the real write surface reads back through the
