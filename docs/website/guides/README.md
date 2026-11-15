@@ -48,8 +48,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Keep an agent working after closing your terminal, wait for dependencies, and retrieve the same task result across sessions.
   <!-- mdorigin:index kind=article -->
 
-- [Delegate work to another agent](./delegate-work.md)
-  Choose a child or peer, hand off committed revisions for review, verify results, and clean up owned children.
+- [Delegate Complex Tasks to Subagents Safely and Verify Deliverables](./delegate-work.md)
+  Instruct your primary agent in plain language to delegate deep audits, isolated test runs, or refactors to scoped subagents with strict read-only or worktree boundaries, then verify deliverables and clean up instances safely.
   <!-- mdorigin:index kind=article -->
 
 - [Build an AI Agent ecosystem researcher for multi-repo research](./build-agent-ecosystem-researcher.md)
@@ -84,8 +84,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Authenticate, submit one tracked objective, follow its state, and retrieve its completion report.
   <!-- mdorigin:index kind=article -->
 
-- [Configure models, credentials, and fallbacks](./configure-models.md)
-  Authenticate a provider, select global or per-agent routes, and verify the route used for a test turn.
+- [Configure and Switch Models: From Local Ollama to Multi-Cloud Failover](./configure-models.md)
+  Run agents offline with zero-token-cost local Ollama models, connect cloud providers via interactive onboarding, inspect active models conversationally, and configure resilient multi-cloud failover chains.
   <!-- mdorigin:index kind=article -->
 
 - [Configure advisory decisions](./configure-decision-subsystem.md)

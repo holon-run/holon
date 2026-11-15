@@ -50,8 +50,8 @@ order: 30
   在关闭终端后让 Agent 继续工作，等待外部依赖并在新会话中找回同一任务结果。
   <!-- mdorigin:index kind=article -->
 
-- [将工作委派给另一个 Agent](./delegate-work.md)
-  挑选子 Agent 或对等 Agent、交接已提交版本做只读审查、验证工作结果并安全清理下属实例。
+- [将复杂任务安全委派给子 Agent 并验收交付](./delegate-work.md)
+  在自然语言对话中让主 Agent 将耗时审计、独立测试或试验性重构委派给隔离的子 Agent，配置严格的只读或独立 Worktree 分支边界，并在验收产物后安全清理实例。
   <!-- mdorigin:index kind=article -->
 
 - [搭建 AI Agent 生态研究员：跨多开源项目的持续深度调研](./build-agent-ecosystem-researcher.md)
@@ -86,8 +86,8 @@ order: 30
   鉴权接入、提交单一跟踪目标、跟进执行状态并获取完成报告。
   <!-- mdorigin:index kind=article -->
 
-- [配置模型、凭据与回退](./configure-models.md)
-  配置服务商凭据、指定全局或 Agent 级路由，并验证单次交互中使用的实际路由。
+- [配置与切换大模型：从本地 Ollama 到多云灾备](./configure-models.md)
+  从本地零成本离线运行 Ollama 到云端主流模型接入，在对话中随时自检生效模型，并配置自动多云灾备回退链保障高可用。
   <!-- mdorigin:index kind=article -->
 
 - [配置咨询决策子系统](./configure-decision-subsystem.md)
