@@ -52,6 +52,8 @@ const en = {
   agentAccess: {
     loading: "Loading agent…",
     refreshDelayed: "Agent status refresh is delayed — retrying in the background.",
+    historyOnly: "Read-only history — agent state reconciliation is pending. Live execution is unconfirmed; sending and controls are unavailable.",
+    attachFiles: "Attach files",
     available: "Agent conversation",
     unauthorized: "Authentication required to open this agent",
     missing: "Agent not found",
@@ -639,6 +641,7 @@ const en = {
     turnElapsed: "Took {{duration}}",
     conversationSyncing: "Checking the latest conversation state…",
     turnTimingStatus: {
+      unconfirmed: "Execution unconfirmed",
       syncing: "Syncing",
       running: "Working",
       completed: "Turn ended",

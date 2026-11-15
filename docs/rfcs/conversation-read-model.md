@@ -985,6 +985,23 @@ Read-only previews may restore persisted brief bodies through a cache-only
 controller path. Cache misses and storage failures leave online loading available,
 without issuing requests before read admission or accepting revoked/foreign data.
 
+Cold routes have a separate online history-only admission when the authenticated
+subject is known, online identity confirms the requested active agent and pinned
+incarnation, and State returns exactly `503 agent_reconciliation_pending`.
+This is not normal agent admission: no synthetic AgentSummary or State is created,
+and cached-preview `readOnly` alone still forbids networking. An explicit history
+read grant permits only the independent Conversation API (including pagination,
+briefs, detail and stream), retaining acquired history through stream failures
+without falling back to raw Events. A dedicated shell has no mutation callbacks;
+send, attachments, stop, model controls and read-marker writes remain disabled.
+Source location (a read-only POST), target expansion, bidirectional pagination and
+return-to-latest remain available under this same read grant.
+Persisted active turns are labelled execution-unconfirmed, not running.
+Identity/access rejection, deletion and remote/subject/incarnation changes revoke
+this grant and fence late responses under the existing scope lifecycle. State
+recovery restores normal admission without replaying input. This cold-route grant
+does not alter the explicit expected-incarnation sends from warm previews above.
+
 ## 10. Acceptance evidence required for implementation
 
 1. Initial/older requests contain no historical verbose/transcript/tool output.
