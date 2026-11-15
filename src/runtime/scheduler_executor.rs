@@ -1515,7 +1515,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .as_ref()
             .is_some_and(|entry| entry.status == QueueEntryStatus::Interrupted);
         let replay_source_turn_id = if canonical_task_replay || interrupted_queue_entry {
-            if interrupted_queue_entry
+            let attached_turn = if interrupted_queue_entry
                 && self
                     .runtime
                     .inner
@@ -1523,38 +1523,19 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .operator_aborted_input(&persisted_message.agent_id, &persisted_message.id)?
             {
                 // An operator-aborted input is a durable negative replay
-                // decision, not recoverable crash evidence. Settle it as
-                // queue-head no-progress instead of failing the loop.
-                let invalid =
+                // decision, handled by the same quarantine path as other
+                // invalid interrupted sources below.
+                Err(
                     crate::runtime_db::task_result_settlement::live_turn::InterruptedReplaySourceInvalid {
                         violation: "operator_aborted",
                         agent_id: persisted_message.agent_id.clone(),
                         activation_id: prior_id.unwrap_or_default().to_string(),
                         turn_id: None,
                         terminal_kind: None,
-                    };
-                drop(planning_guard.take());
-                if let Some(event) = scheduler::pending_interrupted_replay_source_advisory(
-                    &self.runtime.inner.storage,
-                    &persisted_message,
-                    &invalid,
-                )? {
-                    self.runtime.append_original_audit_event(event).await?;
-                }
+                    }.into(),
+                )
+            } else if let Some(prior_id) = prior_id {
                 self.runtime
-                    .append_prepared_scheduling_advisories(&read.advisories)
-                    .await?;
-                return Ok(PrepareMessageOutcome::Poll(
-                    self.defer_or_quarantine_queue_head(
-                        &candidate,
-                        QueueHeadNoProgressCause::InterruptedReplaySourceInvalid,
-                    )
-                    .await?,
-                ));
-            }
-            let attached_turn_id = if let Some(prior_id) = prior_id {
-                match self
-                    .runtime
                     .inner
                     .runtime_db
                     .task_result_settlements()
@@ -1562,40 +1543,41 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         &persisted_message.agent_id,
                         prior_id,
                         &persisted_message.id,
-                    ) {
-                    Ok(turn_id) => turn_id,
-                    Err(error) => {
-                        // A poisoned (interrupted attempt, terminal turn)
-                        // pair is deterministic local state: quarantine
-                        // the queue head instead of failing the loop
-                        // (#3607).
-                        let Some(invalid) = error
+                    )
+            } else {
+                Ok(None)
+            };
+            let attached_turn_id = match attached_turn {
+                Ok(turn_id) => turn_id,
+                Err(error) => {
+                    // A poisoned (interrupted attempt, terminal turn)
+                    // pair is deterministic local state: quarantine
+                    // the queue head instead of failing the loop
+                    // (#3607).
+                    let Some(invalid) = error
                                 .downcast_ref::<crate::runtime_db::task_result_settlement::live_turn::InterruptedReplaySourceInvalid>()
                             else {
                                 return Err(error);
                             };
-                        drop(planning_guard.take());
-                        if let Some(event) = scheduler::pending_interrupted_replay_source_advisory(
-                            &self.runtime.inner.storage,
-                            &persisted_message,
-                            invalid,
-                        )? {
-                            self.runtime.append_original_audit_event(event).await?;
-                        }
-                        self.runtime
-                            .append_prepared_scheduling_advisories(&read.advisories)
-                            .await?;
-                        return Ok(PrepareMessageOutcome::Poll(
-                            self.defer_or_quarantine_queue_head(
-                                &candidate,
-                                QueueHeadNoProgressCause::InterruptedReplaySourceInvalid,
-                            )
-                            .await?,
-                        ));
+                    drop(planning_guard.take());
+                    if let Some(event) = scheduler::pending_interrupted_replay_source_advisory(
+                        &self.runtime.inner.storage,
+                        &persisted_message,
+                        invalid,
+                    )? {
+                        self.runtime.append_original_audit_event(event).await?;
                     }
+                    self.runtime
+                        .append_prepared_scheduling_advisories(&read.advisories)
+                        .await?;
+                    return Ok(PrepareMessageOutcome::Poll(
+                        self.defer_or_quarantine_queue_head(
+                            &candidate,
+                            QueueHeadNoProgressCause::InterruptedReplaySourceInvalid,
+                        )
+                        .await?,
+                    ));
                 }
-            } else {
-                None
             };
             attached_turn_id.or_else(|| persisted_message.turn_id.clone())
         } else {

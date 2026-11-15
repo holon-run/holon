@@ -1200,12 +1200,12 @@ impl RuntimeMutation {
         Box::pin(self.persist_state_inner(Some(turn), Some(start), original_claim, None)).await
     }
 
-    pub(super) async fn persist_current_run_abort(
-        &mut self,
+    #[inline(never)]
+    pub(super) fn persist_current_run_abort<'a>(
+        &'a mut self,
         intent: crate::runtime_db::current_run_abort::CurrentRunAbortIntent,
-    ) -> Result<()> {
-        self.persist_state_inner(None, None, None, Some(intent))
-            .await
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.persist_state_inner(None, None, None, Some(intent)))
     }
 
     async fn persist_state_inner(
