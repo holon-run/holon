@@ -1,0 +1,588 @@
+use super::*;
+
+impl OpenAiBearerAuth {
+    pub fn from_runtime_config(
+        provider_config: &ProviderRuntimeConfig,
+        client: Client,
+    ) -> Result<Self> {
+        let oauth_profile = matches!(
+            (provider_config.auth.source, provider_config.auth.kind),
+            (CredentialSource::AuthProfile, CredentialKind::OAuth)
+        );
+        let api_key = match (provider_config.auth.source, provider_config.auth.kind) {
+            (CredentialSource::AuthProfile, CredentialKind::OAuth) => None,
+            (CredentialSource::None, CredentialKind::None) => None,
+            _ => Some(
+                provider_config
+                    .credential
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        let credential_name = provider_config
+                            .auth
+                            .env
+                            .as_deref()
+                            .or(provider_config.auth.profile.as_deref())
+                            .or(provider_config.auth.external.as_deref())
+                            .unwrap_or("configured credential");
+                        anyhow::anyhow!("missing {credential_name}")
+                    })?,
+            ),
+        };
+        Ok(Self {
+            client,
+            provider_id: provider_config.id.as_str().to_string(),
+            api_key,
+            credential_profile: oauth_profile.then(|| {
+                provider_config
+                    .auth
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| provider_config.id.as_str().to_string())
+            }),
+            credential_material: oauth_profile
+                .then(|| provider_config.credential.clone())
+                .flatten(),
+            credential_store_path: provider_config.credential_store_path.clone(),
+        })
+    }
+
+    fn resolve_oauth_credential(&self) -> Result<Option<OAuthCredential>> {
+        let Some(profile) = self.credential_profile.as_deref() else {
+            return Ok(None);
+        };
+        let material = self
+            .credential_material
+            .as_deref()
+            .filter(|material| !material.trim().is_empty())
+            .ok_or_else(|| anyhow::anyhow!("missing OAuth credential profile {profile}"))?;
+        load_oauth_profile_credential(material, profile).map(Some)
+    }
+
+    pub async fn resolve_authorization_header(&self) -> Result<Option<String>> {
+        if let Some(api_key) = self.api_key.as_ref() {
+            return Ok(Some(format!("Bearer {api_key}")));
+        }
+        let Some(credential) = self.resolve_oauth_credential()? else {
+            return Ok(None);
+        };
+        let credential = if credential
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= Utc::now() + chrono::Duration::hours(1))
+        {
+            self.refresh_oauth_profile(false).await?
+        } else {
+            credential
+        };
+        Ok(Some(format!("Bearer {}", credential.access_token)))
+    }
+
+    pub(super) async fn resolve_auth_headers(&self) -> Result<Vec<(&'static str, String)>> {
+        Ok(self
+            .resolve_authorization_header()
+            .await?
+            .into_iter()
+            .map(|value| ("authorization", value))
+            .collect())
+    }
+
+    async fn refresh_oauth_profile(&self, force: bool) -> Result<OAuthCredential> {
+        let profile = self
+            .credential_profile
+            .as_deref()
+            .context("provider does not use an OAuth credential profile")?;
+        let config = oauth_provider_config(&self.provider_id).ok_or_else(|| {
+            anyhow::anyhow!("provider {} has no OAuth configuration", self.provider_id)
+        })?;
+        let store_path = self.credential_store_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Holon-managed OAuth profile {profile} cannot refresh because the credential store path is unavailable"
+            )
+        })?;
+        let lock_path = store_path.with_extension("json.lock");
+        let _lock =
+            CredentialStoreRefreshLock::acquire_for(&lock_path, &self.provider_id, profile)?;
+        let mut store = load_credential_store_at(store_path)?;
+        let entry = store.profiles.get(profile).cloned().ok_or_else(|| {
+            anyhow::anyhow!("Holon credential profile {profile} disappeared before refresh")
+        })?;
+        if entry.kind != CredentialKind::OAuth {
+            anyhow::bail!(
+                "Holon credential profile {profile} has kind {}, but OAuth refresh requires oauth",
+                entry.kind.as_str()
+            );
+        }
+        let current = load_oauth_profile_credential(&entry.material, profile)?;
+        if !force
+            && !current
+                .expires_at
+                .is_some_and(|expires_at| expires_at <= Utc::now() + chrono::Duration::hours(1))
+        {
+            return Ok(current);
+        }
+        let refreshed =
+            refresh_oauth_profile_material(&self.client, &config, &entry.material, profile)
+                .await
+                .map_err(|failure| codex_refresh_error(&self.provider_id, profile, failure))?;
+        store.profiles.insert(
+            profile.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: refreshed.material,
+            },
+        );
+        save_credential_store_at(store_path, &store)?;
+        Ok(refreshed.credential)
+    }
+
+    /// Whether a failed authenticated dispatch can be corrected in-turn by
+    /// forcing an OAuth credential refresh and resending: mirrors the
+    /// `None` branch of `refresh_authorization_header`.
+    pub(super) fn can_refresh_auth_headers(&self) -> bool {
+        self.credential_profile.is_some()
+    }
+
+    pub async fn refresh_authorization_header(&self) -> Result<Option<String>> {
+        if self.credential_profile.is_none() {
+            return Ok(None);
+        }
+        let credential = self.refresh_oauth_profile(true).await?;
+        Ok(Some(format!("Bearer {}", credential.access_token)))
+    }
+
+    pub(super) async fn refresh_auth_headers(&self) -> Result<Option<Vec<(&'static str, String)>>> {
+        Ok(self
+            .refresh_authorization_header()
+            .await?
+            .map(|value| vec![("authorization", value)]))
+    }
+}
+
+impl OpenAiCodexProvider {
+    pub fn from_runtime_config_with_compaction_policy_and_context_window(
+        provider_config: &ProviderRuntimeConfig,
+        model: &str,
+        max_output_tokens: u32,
+        context_window_tokens: Option<usize>,
+        trace_home_dir: &Path,
+        compaction_policy: OpenAiCompactionPolicy,
+        verbosity: Option<ModelVerbosity>,
+        supports_reasoning: bool,
+        holon_version: &'static str,
+    ) -> Result<Self> {
+        let client = build_http_client()?;
+        let codex_home = provider_config
+            .codex_home
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("missing codex_home for OpenAI Codex provider"))?;
+        resolve_openai_codex_credential(provider_config, &codex_home)?;
+        Ok(Self {
+            client,
+            oauth_client: build_oauth_http_client()?,
+            request_headers: super::ProviderRequestHeaders::new(provider_config, holon_version),
+            provider_id: provider_config.id.as_str().to_string(),
+            base_url: provider_config.base_url.trim_end_matches('/').to_string(),
+            credential_profile: provider_config.auth.profile.clone(),
+            credential_material: provider_config.credential.clone(),
+            credential_external: provider_config.auth.external.clone(),
+            credential_store_path: provider_config.credential_store_path.clone(),
+            quota_identity: super::openai_codex_coarse_quota_identity(provider_config),
+            codex_home,
+            originator: provider_config
+                .originator
+                .clone()
+                .unwrap_or_else(|| "codex_cli_rs".into()),
+            model: model.to_string(),
+            max_output_tokens,
+            context_window_tokens,
+            reasoning_effort: provider_config.reasoning_effort.clone(),
+            service_tier: None,
+            supports_reasoning,
+            verbosity,
+            builtin_web_search: provider_config.builtin_web_search.clone(),
+            compaction_policy,
+            trace_home_dir: trace_home_dir.to_path_buf(),
+            continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
+        })
+    }
+
+    fn resolve_credentials(
+        &self,
+    ) -> Result<(Option<CodexCliCredential>, Option<CodexCliCredential>)> {
+        let profile = self
+            .credential_material
+            .as_deref()
+            .filter(|material| !material.trim().is_empty())
+            .map(|material| {
+                load_codex_oauth_profile_credential(
+                    material,
+                    self.credential_profile.as_deref().unwrap_or("openai-codex"),
+                )
+            })
+            .transpose()?;
+        let cli = if self.credential_external.as_deref() == Some("codex_cli") || profile.is_none() {
+            load_codex_cli_credential(&self.codex_home).ok()
+        } else {
+            None
+        };
+        Ok((profile, cli))
+    }
+
+    pub async fn resolve_fresh_credential(&self) -> Result<CodexCliCredential> {
+        let (profile, cli) = self.resolve_credentials()?;
+        let Some(profile) = profile else {
+            return cli.ok_or_else(|| {
+                anyhow::anyhow!(
+                    "no Holon openai-codex credential profile or usable Codex CLI credentials are available"
+                )
+            });
+        };
+        if !credential_needs_refresh(&profile) {
+            return Ok(profile);
+        }
+        match self.refresh_holon_oauth_profile(false).await {
+            Ok(refreshed) => Ok(refreshed),
+            Err(error) if cli.is_some() => {
+                tracing::warn!(
+                    %error,
+                    credential_profile = self
+                        .credential_profile
+                        .as_deref()
+                        .unwrap_or("openai-codex"),
+                    "OpenAI Codex profile refresh failed; falling back to Codex CLI credential"
+                );
+                Ok(cli.expect("CLI fallback was checked above"))
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    async fn refresh_holon_oauth_profile(&self, force: bool) -> Result<CodexCliCredential> {
+        let profile = self.credential_profile.as_deref().unwrap_or("openai-codex");
+        let store_path = self.credential_store_path.as_ref().ok_or_else(|| {
+            anyhow::anyhow!(
+                "OpenAI Codex Holon-managed OAuth profile {profile} cannot refresh because the credential store path is unavailable"
+            )
+        })?;
+        let lock_path = store_path.with_extension("json.lock");
+        let _lock =
+            CredentialStoreRefreshLock::acquire_for(&lock_path, &self.provider_id, profile)?;
+        let mut store = load_credential_store_at(store_path)?;
+        let entry = store.profiles.get(profile).cloned().ok_or_else(|| {
+            anyhow::anyhow!("Holon credential profile {profile} disappeared before refresh")
+        })?;
+        if entry.kind != CredentialKind::OAuth {
+            anyhow::bail!(
+                "Holon credential profile {profile} has kind {}, but OpenAI Codex refresh requires oauth",
+                entry.kind.as_str()
+            );
+        }
+        let current = load_codex_oauth_profile_credential(&entry.material, profile)?;
+        if !force && !credential_needs_refresh(&current) {
+            return Ok(current);
+        }
+        let refreshed =
+            refresh_codex_oauth_profile_material(&self.oauth_client, &entry.material, profile)
+                .await
+                .map_err(|failure| codex_refresh_error(&self.provider_id, profile, failure))?;
+        store.profiles.insert(
+            profile.to_string(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: refreshed.material,
+            },
+        );
+        save_credential_store_at(store_path, &store)?;
+        Ok(refreshed.credential)
+    }
+
+    pub(super) async fn refresh_after_auth_failure(
+        &self,
+        credential: &CodexCliCredential,
+    ) -> Result<Option<CodexCliCredential>> {
+        if !credential.source.starts_with("credential_profile:") {
+            return Ok(None);
+        }
+        self.refresh_holon_oauth_profile(true).await.map(Some)
+    }
+}
+
+pub(super) struct CredentialStoreRefreshLock {
+    path: PathBuf,
+}
+
+impl CredentialStoreRefreshLock {
+    pub(super) fn acquire_for(path: &Path, provider: &str, profile: &str) -> Result<Self> {
+        match Self::try_acquire(path) {
+            Ok(lock) => return Ok(lock),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to create credential refresh lock {}",
+                        path.display()
+                    )
+                });
+            }
+        }
+        if Self::is_stale(path)? {
+            std::fs::remove_file(path).with_context(|| {
+                format!(
+                    "failed to remove stale credential refresh lock {}",
+                    path.display()
+                )
+            })?;
+            return Self::try_acquire(path)
+                .map_err(|error| Self::acquire_error(path, provider, profile, error));
+        }
+        Self::try_acquire(path).map_err(|error| Self::acquire_error(path, provider, profile, error))
+    }
+
+    fn try_acquire(path: &Path) -> std::io::Result<Self> {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(path).map(|_| Self {
+            path: path.to_path_buf(),
+        })
+    }
+
+    fn acquire_error(
+        path: &Path,
+        provider: &str,
+        profile: &str,
+        error: std::io::Error,
+    ) -> anyhow::Error {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            crate::provider::retry::provider_transport_error(
+                crate::provider::retry::ProviderFailureClassification {
+                    kind: crate::provider::retry::ProviderFailureKind::CredentialRefreshBusy,
+                    disposition: crate::provider::retry::RetryDisposition::Retryable,
+                },
+                None,
+                None,
+                format!(
+                    "OAuth credential refresh is already in progress for provider {provider}/profile {profile}; retry shortly"
+                ),
+            )
+        } else {
+            anyhow::Error::new(error).context(format!(
+                "failed to create credential refresh lock {}",
+                path.display()
+            ))
+        }
+    }
+
+    fn is_stale(path: &Path) -> Result<bool> {
+        const STALE_LOCK_AFTER: Duration = Duration::from_secs(10 * 60);
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .open(path)
+            .and_then(|file| file.metadata())
+        {
+            Ok(metadata) => Ok(metadata
+                .modified()
+                .ok()
+                .and_then(|modified| modified.elapsed().ok())
+                .map(|elapsed| elapsed >= STALE_LOCK_AFTER)
+                .unwrap_or(false)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "failed to inspect credential refresh lock {}",
+                    path.display()
+                )
+            }),
+        }
+    }
+}
+
+impl Drop for CredentialStoreRefreshLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+fn credential_needs_refresh(credential: &CodexCliCredential) -> bool {
+    credential
+        .expires_at
+        .map(|expires_at| expires_at <= Utc::now() + chrono::Duration::minutes(5))
+        .unwrap_or(false)
+}
+
+pub(super) fn choose_openai_codex_credential(
+    profile: Option<CodexCliCredential>,
+    cli: Option<CodexCliCredential>,
+) -> Option<CodexCliCredential> {
+    profile.or(cli)
+}
+
+/// Codex CLI release whose wire behavior this transport aligns to. Sent as the
+/// client version in the User-Agent so the chatgpt.com Codex backend sees
+/// Holon traffic as an up-to-date first-party CLI client.
+const CODEX_CLI_WIRE_VERSION: &str = "0.160.0";
+
+pub(super) fn openai_codex_user_agent(originator: &str, holon_version: &str) -> String {
+    format!(
+        "{originator}/{CODEX_CLI_WIRE_VERSION} ({}; {}) holon/{}",
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+        holon_version,
+    )
+}
+
+pub(super) fn openai_codex_headers(
+    credential: &CodexCliCredential,
+    originator: &str,
+    holon_version: &str,
+) -> Vec<(&'static str, String)> {
+    vec![
+        (
+            "authorization",
+            format!("Bearer {}", credential.access_token),
+        ),
+        ("chatgpt-account-id", credential.account_id.clone()),
+        ("originator", originator.to_string()),
+        (
+            "user-agent",
+            openai_codex_user_agent(originator, holon_version),
+        ),
+    ]
+}
+
+/// Conversation-scoped headers the Codex CLI attaches to `/responses` turns:
+/// `session-id` identifies the client session, `thread-id` the conversation
+/// thread, and `x-client-request-id` mirrors the thread id for request
+/// correlation. Holon maps the long-lived agent to the session and the
+/// provider continuation scope to the conversation thread.
+pub(super) fn openai_codex_session_headers(
+    agent_id: Option<&str>,
+    scope: Option<&ContinuationScopeId>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    if let Some(agent_id) = agent_id.filter(|id| is_valid_header_value(id)) {
+        headers.push(("session-id", agent_id.to_string()));
+    }
+    if let Some(scope) = scope
+        .map(ContinuationScopeId::as_str)
+        .filter(|id| is_valid_header_value(id))
+    {
+        headers.push(("thread-id", scope.to_string()));
+        headers.push(("x-client-request-id", scope.to_string()));
+    }
+    headers
+}
+
+/// Headers for Codex `/responses` conversation traffic: the shared Codex
+/// client headers plus the session/thread correlation headers.
+pub(super) fn openai_codex_conversation_headers(
+    credential: &CodexCliCredential,
+    originator: &str,
+    holon_version: &str,
+    agent_id: Option<&str>,
+    scope: Option<&ContinuationScopeId>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = openai_codex_headers(credential, originator, holon_version);
+    headers.extend(openai_codex_session_headers(agent_id, scope));
+    headers
+}
+
+pub(super) fn openai_codex_routing_hint(
+    model: &str,
+    tier: Option<crate::config::ServiceTier>,
+) -> Option<(&'static str, String)> {
+    let value = match tier? {
+        crate::config::ServiceTier::Fast => format!("model={model};tier=priority"),
+        crate::config::ServiceTier::Default => format!("model={model}"),
+    };
+    is_valid_header_value(&value).then_some(("x-codex-routing-hint", value))
+}
+
+fn is_valid_header_value(value: &str) -> bool {
+    reqwest::header::HeaderValue::from_str(value).is_ok()
+}
+
+pub(super) fn is_openai_codex_auth_status_error(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<ProviderTransportError>()
+        .is_some_and(|error| {
+            error.classification.kind == ProviderFailureKind::AuthError
+                && matches!(error.status, Some(401 | 403))
+        })
+}
+
+fn codex_refresh_error(
+    provider: &str,
+    profile: &str,
+    failure: CodexOAuthRefreshFailure,
+) -> anyhow::Error {
+    let kind = if failure.credentials_rejected() {
+        ProviderFailureKind::AuthError
+    } else {
+        ProviderFailureKind::Unknown
+    };
+    crate::provider::provider_transport_error_with_code(
+        ProviderFailureClassification {
+            kind,
+            disposition: RetryDisposition::FailFast,
+        },
+        None,
+        failure.status,
+        Some(ProviderTransportDiagnostics {
+            stage: "oauth_refresh".into(),
+            streaming: None,
+            provider: Some(provider.into()),
+            model_ref: None,
+            url: None,
+            status: failure.status,
+            reqwest: None,
+            context_budget: None,
+            http_trace: None,
+            quota_identity: None,
+            retry_after_not_before: None,
+            throttle: None,
+            source_chain: vec![failure.safe_summary()],
+        }),
+        format!(
+            "{provider} OAuth refresh failed for Holon credential profile {profile}: {} ({})",
+            failure.message,
+            failure.kind.as_str()
+        ),
+    )
+}
+
+pub(super) fn resolve_openai_codex_credential(
+    provider_config: &ProviderRuntimeConfig,
+    codex_home: &Path,
+) -> Result<CodexCliCredential> {
+    let profile = provider_config
+        .credential
+        .as_deref()
+        .filter(|material| !material.trim().is_empty())
+        .map(|material| {
+            load_codex_oauth_profile_credential(
+                material,
+                provider_config
+                    .auth
+                    .profile
+                    .as_deref()
+                    .unwrap_or("openai-codex"),
+            )
+        })
+        .transpose()?;
+    let cli = if provider_config.auth.external.as_deref() == Some("codex_cli") || profile.is_none()
+    {
+        load_codex_cli_credential(codex_home).ok()
+    } else {
+        None
+    };
+    choose_openai_codex_credential(profile, cli).ok_or_else(|| {
+        anyhow::anyhow!(
+            "no Holon openai-codex credential profile or usable Codex CLI credentials are available"
+        )
+    })
+}

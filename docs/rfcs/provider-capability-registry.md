@@ -61,6 +61,28 @@ one of the closed transport families through persisted config. Custom providers
 do not acquire discovery, catalog, or capability support merely because their
 id resembles a built-in provider.
 
+## Provider crate boundary
+
+The application resolves `AppConfig` and the model catalog into endpoint,
+model, and request settings. `holon-provider` owns the turn and image adapters
+for OpenAI Chat Completions, OpenAI Responses, Codex Responses, Anthropic
+Messages, and Gemini GenerateContent. It also owns credential refresh, wire
+continuation, transport diagnostics, retry policy, the process-local quota
+coordinator, and model discovery HTTP, decoders, and cache I/O. The public `holon-model-client` crate supplies reusable
+protocol clients. Provider identifiers and static registration data live in
+`holon-domain`.
+
+The application supplies the dispatch guard and resource acquisition. The
+dispatch guard remains the gate for each HTTP send, including transport
+replays, and the runtime retains durable admission, cooldown, and recovery
+state. Provider buffers retain the supplied acquisition through the last
+owner, and `holon-system` exposes the synchronous accounting scope shared
+by the provider and the runtime.
+
+Protocol tests run directly in `holon-provider`. Tests that exercise
+application configuration, runtime ownership, or durable admission run in
+`holon` against the same adapters.
+
 ## Model discovery
 
 A discovery definition is complete and typed. It contains:

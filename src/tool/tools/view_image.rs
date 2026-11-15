@@ -31,7 +31,7 @@ const VISUAL_OBSERVATION_SCHEMA: &str = "visual_observation.v1";
 const VIEW_IMAGE_OBSERVATION_GENERATION_POLICY: &str = "openai-compatible-image-input.v1";
 const VIEW_IMAGE_VALIDATION_RETRY_PROMPT: &str = "The previous vision adapter response failed local validation. Return exactly one JSON object with type \"visual_observation\", a non-empty string summary, an optional uncertainties array of strings, and optional ocr, elements, relations, issues, and external_sources arrays. Do not include markdown or prose.";
 const VIEW_IMAGE_RESPONSE_PREVIEW_MAX_CHARS: usize = 512;
-pub(crate) const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+pub(crate) use holon_provider::provider::image_delivery::MAX_VIEW_IMAGE_BYTES as MAX_IMAGE_BYTES;
 const MAX_IMAGE_PIXELS: u64 = 50_000_000;
 
 #[derive(Serialize, Deserialize, JsonSchema)]

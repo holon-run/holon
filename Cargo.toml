@@ -48,11 +48,9 @@ decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-
 futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
-holon-model-client = { version = "0.1.1", path = "crates/holon-model-client" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
-encoding_rs = "0.8"
 flate2 = "1.0"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
@@ -88,7 +86,6 @@ unicode-width = "0.2"
 unicode-casefold = "0.2"
 url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4"] }
-twox-hash = { version = "2.1.2", features = ["std"] }
 aide = { version = "0.15.1", features = ["axum"] }
 wreq = { version = "=6.0.0-rc.31", features = ["gzip", "stream"] }
 wreq-util = { version = "=3.0.0-rc.14" }
@@ -99,6 +96,7 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
+holon-provider = { version = "0.1.0", path = "crates/holon-provider", features = ["runtime-tests"] }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage", features = ["test-support"] }
 proptest = "1.6"
 rusqlite = { version = "0.31", features = ["hooks", "trace"] }

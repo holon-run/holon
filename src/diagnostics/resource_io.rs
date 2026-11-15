@@ -7,6 +7,8 @@ pub(crate) use structured::{
     json_payload_material,
 };
 
+use holon_system::resource_material::{ResourceObserver, ResourceObserverScope};
+
 use crate::runtime::{
     input_evidence_budget::{
         BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory, OwnedBytesEstimate,
@@ -18,9 +20,7 @@ use std::{
     cell::RefCell,
     fs::{DirEntry, File, ReadDir},
     io::{self, Read},
-    marker::PhantomData,
     path::Path,
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -85,7 +85,7 @@ impl std::fmt::Debug for ResourceReadMaterial {
 }
 pub(crate) struct ResourceReadBudget {
     previous: Option<Arc<Mutex<ReadMaterial>>>,
-    _thread: PhantomData<Rc<()>>,
+    _observer: ResourceObserverScope,
 }
 impl ResourceReadMaterial {
     pub(crate) fn current() -> anyhow::Result<Option<Self>> {
@@ -249,14 +249,18 @@ impl ResourceReadMaterial {
         let previous = ACTIVE.with(|slot| slot.replace(Some(self.active.clone())));
         ResourceReadBudget {
             previous,
-            _thread: PhantomData,
+            _observer: ResourceObserverScope::enter(Some(ResourceObserver {
+                payload: charge_owned_payload,
+                buffer: charge_owned_buffer,
+                metadata: charge_owned_metadata,
+            })),
         }
     }
     /// Prepare independently owned material outside the caller's observation.
     pub(crate) fn without_current<T>(operation: impl FnOnce() -> T) -> T {
         let _entry = ResourceReadBudget {
             previous: ACTIVE.with(|slot| slot.replace(None)),
-            _thread: PhantomData,
+            _observer: ResourceObserverScope::enter(None),
         };
         operation()
     }

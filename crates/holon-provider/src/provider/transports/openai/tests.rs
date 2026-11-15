@@ -1,0 +1,1760 @@
+#[path = "oauth_timeout_tests.rs"]
+mod oauth_timeout_tests;
+
+use super::{
+    build_images_request, build_openai_codex_image_generation_request,
+    build_openai_responses_request, choose_openai_codex_credential, consume_openai_sse_event,
+    incremental_diagnostics, latest_openai_compaction_index, native_web_search_diagnostics,
+    openai_codex_coarse_quota_identity, openai_codex_conversation_headers, openai_codex_headers,
+    openai_codex_session_headers, openai_codex_user_agent,
+    openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
+    openai_images_dialect, openai_provider_window_compaction_candidate,
+    parse_openai_codex_image_generation_response_items, parse_openai_images_response,
+    plan_openai_responses_request, resolve_openai_codex_credential, CredentialStoreRefreshLock,
+    OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
+    OpenAiContinuationState, OpenAiImagesDialect, OpenAiProvider, OpenAiProviderWindow,
+    OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesContinuationContract,
+    OpenAiResponsesTransportContract, ToolSchemaContract,
+};
+use crate::auth::CodexCliCredential;
+use crate::config::{
+    load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
+    CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderEndpointId, ProviderId,
+    ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
+};
+use crate::provider::budget::effective_output_tokens;
+use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
+use crate::provider::retry::{
+    provider_transport_error, ProviderFailureClassification, ProviderTransportError,
+};
+use crate::provider::{
+    ConversationMessage, ProviderGenerateImageRequest, ProviderJsonSchemaResponseFormat,
+    ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest, ProviderResponseFormatRequest,
+    ProviderTurnRequest,
+};
+use base64::prelude::BASE64_STANDARD;
+use base64::Engine;
+use chrono::Utc;
+use serde_json::json;
+use std::collections::BTreeMap;
+use std::ffi::{OsStr, OsString};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+static CODEX_REFRESH_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+#[test]
+fn inference_time_remains_after_input_for_chat_and_responses() {
+    use crate::provider::{PromptContentBlock, ProviderPromptCache};
+    use holon_domain::PromptStability;
+
+    let mut request = ProviderTurnRequest::plain(
+        "stable system",
+        vec![ConversationMessage::UserText("current input".into())],
+        vec![],
+    );
+    request.prompt_frame.cache = Some(ProviderPromptCache {
+        agent_id: "test".into(),
+        prompt_cache_key: "stable-cache-key".into(),
+        context_fingerprint: "stable-fingerprint".into(),
+        compression_epoch: 0,
+    });
+    for time in [
+        "current_time: 2026-10-08T23:59:59+08:00\ntimezone: Asia/Shanghai",
+        "current_time: 2026-10-09T00:00:01+08:00\ntimezone: Asia/Shanghai",
+    ] {
+        let mut sampled = request.clone();
+        sampled
+            .conversation
+            .push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
+                text: time.into(),
+                stability: PromptStability::TurnScoped,
+                cache_breakpoint: false,
+            }]));
+        let chat = super::build_chat_completion_request(
+            "gpt-test",
+            1024,
+            &sampled,
+            ToolSchemaContract::Strict,
+            false,
+            None,
+            "max_tokens",
+        )
+        .unwrap();
+        assert_eq!(chat["messages"][0]["content"], "stable system");
+        assert_eq!(chat["messages"][1]["content"], "current input");
+        assert!(chat["messages"][2]["content"]
+            .to_string()
+            .contains(time.split('\n').next().unwrap()));
+        assert_eq!(chat["prompt_cache_key"], "stable-cache-key");
+
+        for contract in [
+            OpenAiResponsesTransportContract::StandardJson,
+            OpenAiResponsesTransportContract::CodexStreaming,
+        ] {
+            let responses = build_openai_responses_request(
+                "gpt-test",
+                1024,
+                &sampled,
+                contract,
+                ToolSchemaContract::Strict,
+                None,
+                None,
+            )
+            .unwrap();
+            assert_eq!(responses["instructions"], "stable system");
+            assert!(responses["input"][0].to_string().contains("current input"));
+            assert!(responses["input"][1]
+                .to_string()
+                .contains(time.split('\n').next().unwrap()));
+            assert_eq!(responses["prompt_cache_key"], "stable-cache-key");
+        }
+    }
+}
+
+#[test]
+fn codex_credential_resolution_preserves_typed_transport_errors() {
+    let error = provider_transport_error(
+        ProviderFailureClassification {
+            kind: ProviderFailureKind::CredentialRefreshBusy,
+            disposition: RetryDisposition::Retryable,
+        },
+        None,
+        None,
+        "credential refresh lock is already held",
+    );
+
+    let preserved =
+        super::openai_codex_credential_resolution_error(error, "openai-codex/gpt-5", false);
+
+    let typed = preserved
+        .downcast_ref::<ProviderTransportError>()
+        .expect("typed provider transport error should be preserved");
+    let classification = classify_provider_error(&preserved);
+    assert_eq!(
+        typed.classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(
+        typed.classification.disposition,
+        RetryDisposition::Retryable
+    );
+    assert_eq!(
+        classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+struct EnvVarGuard {
+    key: &'static str,
+    previous: Option<OsString>,
+}
+
+impl EnvVarGuard {
+    fn set(key: &'static str, value: impl AsRef<OsStr>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value);
+        Self { key, previous }
+    }
+}
+
+impl Drop for EnvVarGuard {
+    fn drop(&mut self) {
+        if let Some(previous) = self.previous.as_ref() {
+            std::env::set_var(self.key, previous);
+        } else {
+            std::env::remove_var(self.key);
+        }
+    }
+}
+
+fn encode_segment(value: serde_json::Value) -> String {
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
+}
+
+fn make_token(payload: serde_json::Value) -> String {
+    format!(
+        "{}.{}.{}",
+        encode_segment(json!({"alg": "none"})),
+        encode_segment(payload),
+        encode_segment(json!("sig"))
+    )
+}
+
+fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig {
+    ProviderRuntimeConfig {
+        headers: Default::default(),
+        id: ProviderId::openai_codex(),
+        route_provider: ProviderId::openai_codex(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::OpenAiCodexResponses,
+        base_url: "https://chatgpt.com/backend-api/codex".into(),
+        auth: ProviderAuthConfig {
+            source: CredentialSource::AuthProfile,
+            kind: CredentialKind::OAuth,
+            env: None,
+            profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
+            external: Some("codex_cli".into()),
+        },
+        credential,
+        credential_store_path: None,
+        codex_home: Some(PathBuf::from("/tmp/codex-home")),
+        originator: Some("codex_cli_rs".into()),
+        reasoning_effort: Some("low".into()),
+        context_management: Default::default(),
+        builtin_web_search: None,
+    }
+}
+
+fn test_xai_oauth_config(credential: String) -> ProviderRuntimeConfig {
+    let xai = ProviderId::parse("xai").unwrap();
+    ProviderRuntimeConfig {
+        headers: Default::default(),
+        id: xai.clone(),
+        route_provider: xai,
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::OpenAiResponses,
+        base_url: "https://api.x.ai/v1".into(),
+        auth: ProviderAuthConfig {
+            source: CredentialSource::AuthProfile,
+            kind: CredentialKind::OAuth,
+            env: None,
+            profile: Some("xai".into()),
+            external: None,
+        },
+        credential: Some(credential),
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: Some("medium".into()),
+        context_management: Default::default(),
+        builtin_web_search: None,
+    }
+}
+
+#[test]
+fn codex_coarse_quota_identity_prefers_profile_then_external_then_default() {
+    let configured = test_openai_codex_config(None);
+    let configured_identity = openai_codex_coarse_quota_identity(&configured);
+
+    let mut profile_only = configured.clone();
+    profile_only.auth.external = None;
+    let profile_identity = openai_codex_coarse_quota_identity(&profile_only);
+    assert_eq!(configured_identity, profile_identity);
+
+    let mut external_only = configured.clone();
+    external_only.auth.profile = None;
+    let external_identity = openai_codex_coarse_quota_identity(&external_only);
+    assert_ne!(profile_identity, external_identity);
+
+    let mut default_scope = external_only;
+    default_scope.auth.external = None;
+    let default_identity = openai_codex_coarse_quota_identity(&default_scope);
+    assert_ne!(external_identity, default_identity);
+    assert_eq!(
+        configured_identity.confidence,
+        crate::provider::ProviderQuotaIdentityConfidence::Coarse
+    );
+
+    let mut different_route = profile_only;
+    different_route.route_provider = ProviderId::parse("openai").expect("valid provider id");
+    assert_ne!(
+        profile_identity,
+        openai_codex_coarse_quota_identity(&different_route)
+    );
+}
+
+#[test]
+fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
+    let mut config = test_openai_codex_config(Some("credential".into()));
+    config.route_provider = ProviderId::parse("volcengine").unwrap();
+    config.route_endpoint = ProviderEndpointId::parse("plan").unwrap();
+    let home = tempfile::tempdir().unwrap();
+
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "glm-5.2",
+        200_000,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        provider.transport.request_body(vec![], vec![], None)["max_tokens"],
+        200_000
+    );
+}
+
+#[tokio::test]
+async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget() {
+    use crate::provider::AgentProvider;
+    use axum::{routing::post, Json, Router};
+
+    let captured = Arc::new(Mutex::new(Vec::<serde_json::Value>::new()));
+    let requests = captured.clone();
+    let server = Router::new().route(
+        "/v1/chat/completions",
+        post(move |Json(body): Json<serde_json::Value>| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push(body);
+                Json(json!({
+                    "id": "chat-output-budget",
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}/v1", listener.local_addr().unwrap());
+    let handle = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+    let home = tempfile::tempdir().unwrap();
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("input ".repeat(300))],
+        vec![],
+    );
+
+    for (provider, endpoint, model, field) in [
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k3",
+            "max_completion_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k3.1-pro",
+            "max_completion_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k3.1-pro-highspeed",
+            "max_completion_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k2.7-code",
+            "max_tokens",
+        ),
+        (
+            "tencent-tokenhub",
+            "default",
+            "kimi-k2.8-preview",
+            "max_tokens",
+        ),
+        ("tencent-tokenhub", "default", "kimi-k3-pro", "max_tokens"),
+        ("moonshot", "default", "kimi-k3", "max_tokens"),
+        ("tencent-tokenhub", "other", "kimi-k3", "max_tokens"),
+    ] {
+        for (configured, context) in [(131_072, None), (1_024, None), (131_072, Some(8_192))] {
+            let mut config = test_openai_codex_config(Some("local-test-only".into()));
+            config.route_provider = ProviderId::parse(provider).unwrap();
+            config.route_endpoint = ProviderEndpointId::parse(endpoint).unwrap();
+            config.base_url = base_url.clone();
+            let chat =
+                OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+                    &config,
+                    model,
+                    configured,
+                    context,
+                    home.path(),
+                    env!("CARGO_PKG_VERSION"),
+                )
+                .unwrap();
+            chat.complete_turn(request.clone()).await.unwrap();
+            let body = captured.lock().unwrap().pop().unwrap();
+            let expected = effective_output_tokens(context, configured, &body, &[field]);
+            assert_eq!(body[field], expected, "{provider}@{endpoint}/{model}");
+            let other = if field == "max_tokens" {
+                "max_completion_tokens"
+            } else {
+                "max_tokens"
+            };
+            assert!(body.get(other).is_none(), "{provider}@{endpoint}/{model}");
+            if context.is_some() {
+                assert!(expected < configured);
+            } else {
+                assert_eq!(expected, configured);
+            }
+        }
+    }
+    handle.abort();
+    handle.await.unwrap_err();
+}
+
+#[tokio::test]
+async fn openai_provider_uses_xai_oauth_profile_as_bearer_token() {
+    let access_token = make_token(json!({
+        "exp": Utc::now().timestamp() + 7200
+    }));
+    let material = json!({
+        "tokens": {
+            "access_token": access_token,
+            "refresh_token": "refresh"
+        }
+    })
+    .to_string();
+    let config = test_xai_oauth_config(material);
+    let home = tempfile::tempdir().unwrap();
+    let provider = OpenAiProvider::from_runtime_config(
+        &config,
+        "grok-test",
+        1024,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let headers = provider.resolve_auth_headers(None).await.unwrap();
+
+    assert_eq!(
+        headers,
+        vec![("authorization", format!("Bearer {access_token}"))]
+    );
+}
+
+#[test]
+fn openai_codex_resolves_holon_oauth_profile_before_cli_files() {
+    let credential_material = json!({
+        "tokens": {
+            "access_token": make_token(json!({
+                "exp": 1_900_000_000,
+                "chatgpt_account_id": "acct_profile"
+            })),
+            "refresh_token": "refresh",
+            "account_id": "acct_profile"
+        }
+    })
+    .to_string();
+    let provider_config = test_openai_codex_config(Some(credential_material));
+
+    let credential = resolve_openai_codex_credential(
+        &provider_config,
+        provider_config.codex_home.as_ref().unwrap(),
+    )
+    .expect("Holon profile credential should resolve");
+
+    assert_eq!(credential.account_id, "acct_profile");
+    assert_eq!(
+        credential.source,
+        format!("credential_profile:{OPENAI_CODEX_CREDENTIAL_PROFILE}")
+    );
+}
+
+#[test]
+fn openai_codex_prefers_profile_over_fresher_cli_credential() {
+    let profile = CodexCliCredential {
+        access_token: "profile-access".into(),
+        account_id: "acct_profile".into(),
+        expires_at: chrono::DateTime::from_timestamp(1_900_000_000, 0),
+        refreshed_at: chrono::DateTime::from_timestamp(1_800_000_000, 0),
+        source: format!("credential_profile:{OPENAI_CODEX_CREDENTIAL_PROFILE}"),
+    };
+    let cli = CodexCliCredential {
+        access_token: "cli-access".into(),
+        account_id: "acct_cli".into(),
+        expires_at: chrono::DateTime::from_timestamp(1_910_000_000, 0),
+        refreshed_at: chrono::DateTime::from_timestamp(1_810_000_000, 0),
+        source: "keychain".into(),
+    };
+
+    let credential = choose_openai_codex_credential(Some(profile), Some(cli))
+        .expect("credential should resolve");
+
+    assert_eq!(credential.access_token, "profile-access");
+    assert_eq!(
+        credential.source,
+        format!("credential_profile:{OPENAI_CODEX_CREDENTIAL_PROFILE}")
+    );
+}
+
+#[tokio::test]
+async fn openai_codex_refreshes_and_persists_holon_oauth_profile() {
+    let server = axum::Router::new().route(
+        "/oauth/token",
+        axum::routing::post(|| async {
+            axum::Json(json!({
+                "access_token": make_token(json!({
+                    "exp": 1_900_000_000,
+                    "chatgpt_account_id": "acct_profile"
+                })),
+                "refresh_token": "rotated-refresh"
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        format!("http://{addr}/oauth/token"),
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let credential_store_path = home.path().join("credentials.json");
+    let expiring_material = json!({
+        "tokens": {
+            "access_token": make_token(json!({
+                "exp": Utc::now().timestamp() + 30,
+                "chatgpt_account_id": "acct_profile"
+            })),
+            "refresh_token": "old-refresh",
+            "account_id": "acct_profile"
+        }
+    })
+    .to_string();
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+        CredentialProfileFile {
+            kind: CredentialKind::OAuth,
+            material: expiring_material.clone(),
+        },
+    );
+    save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
+
+    let mut provider_config = test_openai_codex_config(Some(expiring_material));
+    provider_config.credential_store_path = Some(credential_store_path.clone());
+    let provider = OpenAiCodexProvider::from_runtime_config(
+        &provider_config,
+        "gpt-codex-test",
+        1024,
+        home.path(),
+        true,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let credential = provider.resolve_fresh_credential().await.unwrap();
+    assert_eq!(credential.account_id, "acct_profile");
+
+    let store = load_credential_store_at(&credential_store_path).unwrap();
+    let material = &store.profiles[OPENAI_CODEX_CREDENTIAL_PROFILE].material;
+    assert!(material.contains("rotated-refresh"));
+    assert!(!material.contains("old-refresh"));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn openai_codex_falls_back_to_cli_credential_when_profile_refresh_fails() {
+    let server = axum::Router::new().route(
+        "/oauth/token",
+        axum::routing::post(|| async {
+            (
+                axum::http::StatusCode::UNAUTHORIZED,
+                axum::Json(json!({
+                    "error": "invalid_grant",
+                    "error_description": "refresh token expired"
+                })),
+            )
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        format!("http://{addr}/oauth/token"),
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let codex_home = home.path().join("codex-home");
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::write(
+        codex_home.join("auth.json"),
+        json!({
+            "tokens": {
+                "access_token": make_token(json!({
+                    "exp": Utc::now().timestamp() + 3600,
+                    "chatgpt_account_id": "acct_cli"
+                })),
+                "refresh_token": "cli-refresh",
+                "account_id": "acct_cli"
+            },
+            "last_refresh": Utc::now()
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let credential_store_path = home.path().join("credentials.json");
+    let expiring_material = json!({
+        "tokens": {
+            "access_token": make_token(json!({
+                "exp": Utc::now().timestamp() + 30,
+                "chatgpt_account_id": "acct_profile"
+            })),
+            "refresh_token": "expired-refresh",
+            "account_id": "acct_profile"
+        }
+    })
+    .to_string();
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+        CredentialProfileFile {
+            kind: CredentialKind::OAuth,
+            material: expiring_material.clone(),
+        },
+    );
+    save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
+
+    let mut provider_config = test_openai_codex_config(Some(expiring_material));
+    provider_config.credential_store_path = Some(credential_store_path);
+    provider_config.codex_home = Some(codex_home);
+    let provider = OpenAiCodexProvider::from_runtime_config(
+        &provider_config,
+        "gpt-codex-test",
+        1024,
+        home.path(),
+        true,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let credential = provider.resolve_fresh_credential().await.unwrap();
+
+    assert_eq!(credential.account_id, "acct_cli");
+    assert_eq!(credential.source, "file");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn openai_codex_auth_failure_forces_profile_refresh_even_when_jwt_is_not_expiring() {
+    let server = axum::Router::new().route(
+        "/oauth/token",
+        axum::routing::post(|| async {
+            axum::Json(json!({
+                "access_token": make_token(json!({
+                    "exp": Utc::now().timestamp() + 3600,
+                    "chatgpt_account_id": "acct_profile"
+                })),
+                "refresh_token": "rotated-refresh"
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        format!("http://{addr}/oauth/token"),
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let credential_store_path = home.path().join("credentials.json");
+    let valid_but_invalidated_material = json!({
+        "tokens": {
+            "access_token": make_token(json!({
+                "exp": Utc::now().timestamp() + 3600,
+                "chatgpt_account_id": "acct_profile"
+            })),
+            "refresh_token": "old-refresh",
+            "account_id": "acct_profile"
+        }
+    })
+    .to_string();
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+        CredentialProfileFile {
+            kind: CredentialKind::OAuth,
+            material: valid_but_invalidated_material.clone(),
+        },
+    );
+    save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
+
+    let mut provider_config = test_openai_codex_config(Some(valid_but_invalidated_material));
+    provider_config.credential_store_path = Some(credential_store_path.clone());
+    let provider = OpenAiCodexProvider::from_runtime_config(
+        &provider_config,
+        "gpt-codex-test",
+        1024,
+        home.path(),
+        true,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let old_credential = provider.resolve_fresh_credential().await.unwrap();
+    assert!(old_credential.source.starts_with("credential_profile:"));
+
+    let refreshed = provider
+        .refresh_after_auth_failure(&old_credential)
+        .await
+        .unwrap()
+        .expect("profile auth failure should force refresh");
+
+    assert_eq!(refreshed.account_id, "acct_profile");
+    let store = load_credential_store_at(&credential_store_path).unwrap();
+    let material = &store.profiles[OPENAI_CODEX_CREDENTIAL_PROFILE].material;
+    assert!(material.contains("rotated-refresh"));
+    assert!(!material.contains("old-refresh"));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn openai_codex_refresh_fails_without_access_token() {
+    let server = axum::Router::new().route(
+        "/oauth/token",
+        axum::routing::post(|| async {
+            axum::Json(json!({
+                "refresh_token": "rotated-refresh"
+            }))
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let _env_lock = CODEX_REFRESH_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "CODEX_REFRESH_TOKEN_URL_OVERRIDE",
+        format!("http://{addr}/oauth/token"),
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let credential_store_path = home.path().join("credentials.json");
+    let expiring_material = json!({
+        "tokens": {
+            "access_token": make_token(json!({
+                "exp": Utc::now().timestamp() + 30,
+                "chatgpt_account_id": "acct_profile"
+            })),
+            "refresh_token": "old-refresh",
+            "account_id": "acct_profile"
+        }
+    })
+    .to_string();
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        OPENAI_CODEX_CREDENTIAL_PROFILE.to_string(),
+        CredentialProfileFile {
+            kind: CredentialKind::OAuth,
+            material: expiring_material.clone(),
+        },
+    );
+    save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
+
+    let mut provider_config = test_openai_codex_config(Some(expiring_material));
+    provider_config.credential_store_path = Some(credential_store_path.clone());
+    let provider = OpenAiCodexProvider::from_runtime_config(
+        &provider_config,
+        "gpt-codex-test",
+        1024,
+        home.path(),
+        true,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let error = provider
+        .resolve_fresh_credential()
+        .await
+        .expect_err("refresh without an access token should fail");
+    assert!(
+        error
+            .to_string()
+            .contains("refresh response did not include an access token"),
+        "{error}"
+    );
+    let store = load_credential_store_at(&credential_store_path).unwrap();
+    let material = &store.profiles[OPENAI_CODEX_CREDENTIAL_PROFILE].material;
+    assert!(material.contains("old-refresh"));
+    assert!(!material.contains("rotated-refresh"));
+    handle.abort();
+}
+
+#[test]
+fn openai_codex_refresh_lock_uses_owner_only_permissions() {
+    let home = tempfile::tempdir().unwrap();
+    let lock_path = home.path().join("credentials.json.lock");
+    let lock = CredentialStoreRefreshLock::acquire_for(&lock_path, "openai", "default").unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&lock_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600);
+    }
+
+    drop(lock);
+    assert!(!lock_path.exists());
+}
+
+#[test]
+fn oauth_refresh_lock_contention_is_typed_retryable_and_contextual() {
+    let home = tempfile::tempdir().unwrap();
+    let lock_path = home.path().join("credentials.json.lock");
+    let lock =
+        CredentialStoreRefreshLock::acquire_for(&lock_path, "xai", "operator-oauth").unwrap();
+
+    let error = match CredentialStoreRefreshLock::acquire_for(&lock_path, "xai", "operator-oauth") {
+        Ok(_) => panic!("held refresh lock should reject a concurrent acquisition"),
+        Err(error) => error,
+    };
+    let classification = classify_provider_error(&error);
+    let message = error.to_string();
+
+    assert_eq!(
+        classification.kind,
+        ProviderFailureKind::CredentialRefreshBusy
+    );
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    assert!(message.contains("provider xai/profile operator-oauth"));
+    assert!(!message.contains("OpenAI Codex"));
+
+    drop(lock);
+}
+
+#[test]
+fn openai_streaming_error_event_classifies_transient_server_codes_as_retryable() {
+    for code in [
+        "server_error",
+        "service_unavailable",
+        "server_is_overloaded",
+        "slow_down",
+    ] {
+        let mut data_lines = vec![json!({
+            "type": "error",
+            "error": {
+                "code": code,
+                "message": "temporary server failure"
+            }
+        })
+        .to_string()];
+
+        let error = match consume_openai_sse_event(&mut data_lines) {
+            Ok(_) => panic!("transient streaming error event should produce a provider error"),
+            Err(error) => error,
+        };
+        let classification = classify_provider_error(&error);
+
+        assert_eq!(classification.kind, ProviderFailureKind::ServerError);
+        assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    }
+}
+
+#[test]
+fn openai_streaming_error_event_keeps_unknown_codes_fail_fast_contract() {
+    let mut data_lines = vec![json!({
+        "type": "error",
+        "error": {
+            "code": "unexpected_protocol_state",
+            "message": "unexpected stream shape"
+        }
+    })
+    .to_string()];
+
+    let error = match consume_openai_sse_event(&mut data_lines) {
+        Ok(_) => panic!("unknown streaming error event should produce a provider error"),
+        Err(error) => error,
+    };
+    let classification = classify_provider_error(&error);
+
+    assert_eq!(classification.kind, ProviderFailureKind::ContractError);
+    assert_eq!(classification.disposition, RetryDisposition::FailFast);
+}
+
+#[test]
+fn openai_responses_request_lowers_native_web_search_tool() {
+    let mut request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("search the web".into())],
+        vec![],
+    );
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::OpenAi,
+        provider_id: "openai_native".into(),
+        provider_model_ref: "openai/gpt-test".into(),
+        advertised_tool_type: "web_search_preview".into(),
+        backend_kind: "openai_web_search".into(),
+        max_results: Some(5),
+    });
+
+    let body = build_openai_responses_request(
+        "gpt-test",
+        1024,
+        &request,
+        OpenAiResponsesTransportContract::StandardJson,
+        ToolSchemaContract::Strict,
+        None,
+        None,
+    )
+    .expect("openai responses request should build");
+
+    assert!(body["tools"]
+        .as_array()
+        .expect("tools should be an array")
+        .iter()
+        .any(|tool| tool == &json!({ "type": "web_search_preview" })));
+}
+
+#[test]
+fn openai_responses_request_does_not_add_xai_x_search_tool() {
+    let mut request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("search X and the web".into())],
+        vec![],
+    );
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::Xai,
+        provider_id: "xai".into(),
+        provider_model_ref: "xai/grok-4-fast".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "xai_web_search_x_search".into(),
+        max_results: Some(5),
+    });
+
+    let body = build_openai_responses_request(
+        "grok-4-fast",
+        1024,
+        &request,
+        OpenAiResponsesTransportContract::StandardJson,
+        ToolSchemaContract::Strict,
+        Some("medium"),
+        None,
+    )
+    .expect("xAI responses request should build");
+
+    let tools = body["tools"].as_array().expect("tools should be an array");
+    assert!(tools
+        .iter()
+        .any(|tool| tool == &json!({ "type": "web_search" })));
+    assert!(!tools
+        .iter()
+        .any(|tool| tool == &json!({ "type": "x_search" })));
+    assert_eq!(body["reasoning"]["effort"], json!("medium"));
+
+    let diagnostics = native_web_search_diagnostics(&request)
+        .expect("native web search diagnostics should be recorded");
+    assert!(diagnostics.lowered);
+    assert_eq!(diagnostics.kind, ProviderNativeWebSearchKind::Xai);
+    assert_eq!(diagnostics.fallback_reason, None);
+}
+
+#[test]
+fn openai_responses_request_lowers_json_schema_response_format() {
+    let mut request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("return json".into())],
+        vec![],
+    );
+    request.response_format = Some(ProviderResponseFormatRequest::JsonSchema(
+        ProviderJsonSchemaResponseFormat {
+            name: "answer_v1".into(),
+            strict: true,
+            schema: json!({
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["answer"],
+                "properties": {
+                    "answer": { "type": "string" }
+                }
+            }),
+        },
+    ));
+
+    let body = build_openai_responses_request(
+        "gpt-test",
+        1024,
+        &request,
+        OpenAiResponsesTransportContract::StandardJson,
+        ToolSchemaContract::Strict,
+        None,
+        None,
+    )
+    .expect("openai responses request should build");
+
+    assert!(body.get("response_format").is_none());
+    assert_eq!(body["text"]["format"]["type"], json!("json_schema"));
+    assert_eq!(body["text"]["format"]["name"], json!("answer_v1"));
+    assert_eq!(body["text"]["format"]["strict"], json!(true));
+    assert_eq!(
+        body["text"]["format"]["schema"]["properties"]["answer"]["type"],
+        json!("string")
+    );
+}
+
+#[test]
+fn openai_codex_responses_request_lowers_native_web_search_tool() {
+    let mut request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("search the web".into())],
+        vec![],
+    );
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::OpenAi,
+        provider_id: "openai_codex_native".into(),
+        provider_model_ref: "openai-codex/gpt-codex-test".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "openai_codex_web_search".into(),
+        max_results: Some(5),
+    });
+
+    let body = build_openai_responses_request(
+        "gpt-codex-test",
+        1024,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        Some("low"),
+        None,
+    )
+    .expect("openai codex responses request should build");
+
+    assert!(body["tools"]
+        .as_array()
+        .expect("tools should be an array")
+        .iter()
+        .any(|tool| tool == &json!({ "type": "web_search" })));
+    assert_eq!(body["stream"], json!(true));
+}
+
+#[test]
+fn openai_codex_image_generation_request_uses_hosted_tool() {
+    let request = ProviderGenerateImageRequest {
+        material: Default::default(),
+        prompt: "draw a small holon".into(),
+        size: Some("1024x1024".into()),
+        aspect_ratio: None,
+        resolution: None,
+        background: Some("transparent".into()),
+        output_format: Some("png".into()),
+    };
+
+    let body = build_openai_codex_image_generation_request("gpt-5.3-codex-spark", &request);
+
+    assert_eq!(body["model"], json!("gpt-5.3-codex-spark"));
+    assert_eq!(body["stream"], json!(true));
+    assert_eq!(body["store"], json!(false));
+    assert_eq!(
+        body["input"][0]["content"][0],
+        json!({
+            "type": "input_text",
+            "text": "draw a small holon",
+        })
+    );
+    assert_eq!(
+        body["tools"][0],
+        json!({
+            "type": "image_generation",
+            "output_format": "png",
+            "size": "1024x1024",
+            "background": "transparent",
+        })
+    );
+}
+
+#[test]
+fn openai_codex_image_generation_response_parses_result_items() {
+    let images = parse_openai_codex_image_generation_response_items(
+        vec![
+            json!({
+                "type": "message",
+                "content": [],
+            }),
+            json!({
+                "type": "image_generation_call",
+                "id": "ig_1",
+                "status": "completed",
+                "revised_prompt": "draw a tiny holon",
+                "result": BASE64_STANDARD.encode(b"fake_png"),
+            }),
+        ],
+        &Default::default(),
+    )
+    .expect("image_generation_call should parse");
+
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].bytes.as_ref(), b"fake_png");
+    assert_eq!(images[0].mime.as_deref(), Some("image/png"));
+}
+
+#[test]
+fn openai_codex_image_generation_response_accepts_done_item_with_generating_status() {
+    let images = parse_openai_codex_image_generation_response_items(
+        vec![json!({
+            "type": "image_generation_call",
+            "id": "ig_1",
+            "status": "generating",
+            "result": BASE64_STANDARD.encode(b"fake_png"),
+        })],
+        &Default::default(),
+    )
+    .expect("image_generation_call with a final result should parse");
+
+    assert_eq!(images.len(), 1);
+    assert_eq!(images[0].bytes.as_ref(), b"fake_png");
+}
+
+#[test]
+fn openai_images_dialect_detects_xai_by_provider_and_host() {
+    assert_eq!(
+        openai_images_dialect("xai", "https://api.x.ai/v1"),
+        OpenAiImagesDialect::Xai
+    );
+    assert_eq!(
+        openai_images_dialect("custom-xai", "https://api.x.ai/v1"),
+        OpenAiImagesDialect::Unknown
+    );
+    assert_eq!(
+        openai_images_dialect("openai", "https://api.openai.com/v1"),
+        OpenAiImagesDialect::OpenAi
+    );
+}
+
+#[test]
+fn image_dialect_uses_canonical_provider_not_endpoint_display_id() {
+    let mut runtime = test_xai_oauth_config("not-used".into());
+    runtime.id = ProviderId::parse("xai-alternate").unwrap();
+    runtime.route_endpoint = ProviderEndpointId::parse("alternate").unwrap();
+    runtime.auth = ProviderAuthConfig {
+        source: CredentialSource::None,
+        kind: CredentialKind::None,
+        ..Default::default()
+    };
+    let home = std::path::Path::new(".");
+    let responses = OpenAiProvider::from_runtime_config(
+        &runtime,
+        "grok-imagine-image",
+        1024,
+        home,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+    assert_eq!(responses.provider_id, "xai-alternate");
+    assert_eq!(
+        openai_images_dialect(&responses.route_provider, &responses.base_url),
+        OpenAiImagesDialect::Xai
+    );
+    runtime.transport = ProviderTransportKind::OpenAiChatCompletions;
+    let chat = OpenAiChatCompletionsProvider::from_runtime_config(
+        &runtime,
+        "grok-imagine-image",
+        1024,
+        home,
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+    assert_eq!(chat.provider_id, "xai-alternate");
+    assert_eq!(
+        openai_images_dialect(&chat.route_provider, chat.transport.base_url()),
+        OpenAiImagesDialect::Xai
+    );
+}
+
+#[test]
+fn openai_images_request_uses_contract_not_a_compatible_superset() {
+    let request = ProviderGenerateImageRequest {
+        material: Default::default(),
+        prompt: "draw".into(),
+        size: Some("1536x864".into()),
+        aspect_ratio: None,
+        resolution: None,
+        background: Some("transparent".into()),
+        output_format: Some("png".into()),
+    };
+    let body = build_images_request(OpenAiImagesDialect::OpenAi, "gpt-image-2", &request).unwrap();
+    assert!(body.get("response_format").is_none());
+    assert_eq!(body["size"], "1536x864");
+    assert_eq!(body["output_format"], "png");
+    assert!(build_images_request(OpenAiImagesDialect::Unknown, "gpt-image-2", &request).is_err());
+    assert!(
+        build_images_request(OpenAiImagesDialect::OpenAi, "unreviewed-model", &request).is_err()
+    );
+}
+
+#[test]
+fn xai_images_request_maps_size_and_omits_openai_fields() {
+    let request = ProviderGenerateImageRequest {
+        material: Default::default(),
+        prompt: "draw a small holon".into(),
+        size: Some("1536x1024".into()),
+        aspect_ratio: None,
+        resolution: None,
+        background: None,
+        output_format: None,
+    };
+    let body = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image-2.0", &request)
+        .expect("xai request should build");
+    assert_eq!(
+        body,
+        json!({
+            "model": "grok-imagine-image-2.0",
+            "prompt": "draw a small holon",
+            "n": 1,
+            "response_format": "b64_json",
+            "aspect_ratio": "3:2",
+            "resolution": "1k",
+        })
+    );
+    assert!(body.get("size").is_none());
+    assert!(body.get("background").is_none());
+    assert!(body.get("output_format").is_none());
+}
+
+#[test]
+fn xai_images_request_uses_provider_defaults_without_size() {
+    let request = ProviderGenerateImageRequest {
+        material: Default::default(),
+        prompt: "draw".into(),
+        size: None,
+        aspect_ratio: None,
+        resolution: None,
+        background: None,
+        output_format: None,
+    };
+    let body = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image", &request)
+        .expect("xai request should build");
+    assert!(body.get("aspect_ratio").is_none());
+    assert!(body.get("resolution").is_none());
+}
+
+#[test]
+fn xai_images_request_rejects_unsupported_openai_options() {
+    let background = ProviderGenerateImageRequest {
+        material: Default::default(),
+        prompt: "draw".into(),
+        size: None,
+        aspect_ratio: None,
+        resolution: None,
+        background: Some("transparent".into()),
+        output_format: None,
+    };
+    let error = build_images_request(OpenAiImagesDialect::Xai, "grok-imagine-image", &background)
+        .expect_err("background must be rejected");
+    assert!(error.to_string().contains("background"));
+    let output_format = ProviderGenerateImageRequest {
+        material: Default::default(),
+        prompt: "draw".into(),
+        size: None,
+        aspect_ratio: None,
+        resolution: None,
+        background: None,
+        output_format: Some("webp".into()),
+    };
+    let error = build_images_request(
+        OpenAiImagesDialect::Xai,
+        "grok-imagine-image",
+        &output_format,
+    )
+    .expect_err("output_format must be rejected");
+    assert!(error.to_string().contains("output_format"));
+}
+
+#[test]
+fn openai_images_response_reads_provider_mime_type() {
+    let images = parse_openai_images_response(json!({
+        "data": [
+            {"b64_json": BASE64_STANDARD.encode(b"fake_jpeg"), "mime_type": "image/jpeg"},
+            {"b64_json": BASE64_STANDARD.encode(b"fake_png")}
+        ]
+    }))
+    .expect("images response should parse");
+    assert_eq!(images.len(), 2);
+    assert_eq!(images[0].mime.as_deref(), Some("image/jpeg"));
+    assert_eq!(images[1].mime, None);
+}
+
+#[test]
+fn openai_responses_full_request_records_native_web_search_diagnostics() {
+    let mut request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("search the web".into())],
+        vec![],
+    );
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::OpenAi,
+        provider_id: "openai_codex_native".into(),
+        provider_model_ref: "openai-codex/gpt-codex-test".into(),
+        advertised_tool_type: "web_search".into(),
+        backend_kind: "openai_codex_web_search".into(),
+        max_results: Some(5),
+    });
+
+    let body = build_openai_responses_request(
+        "gpt-codex-test",
+        1024,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        Some("low"),
+        None,
+    )
+    .expect("openai codex responses request should build");
+    let plan = plan_openai_responses_request(
+        body,
+        &request,
+        &Arc::new(Mutex::new(OpenAiContinuationState::default())),
+        false,
+        OpenAiResponsesContinuationContract::Standard,
+    )
+    .expect("openai codex responses request should plan");
+
+    let diagnostics = plan
+        .diagnostics
+        .native_web_search
+        .expect("native web search diagnostics should be recorded");
+    assert!(diagnostics.lowered);
+    assert_eq!(diagnostics.advertised_tool_type, "web_search");
+    assert_eq!(diagnostics.backend_kind, "openai_codex_web_search");
+}
+
+#[test]
+fn openai_codex_request_omits_reasoning_when_supports_reasoning_is_false() {
+    // Negative-path guard test: when supports_reasoning=false, the provider
+    // passes reasoning_effort=None to build_openai_responses_request, which
+    // must produce a body with reasoning=null and no reasoning.effort field.
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("hello".into())],
+        vec![],
+    );
+
+    // Guard suppressed path (supports_reasoning=false → None)
+    let suppressed = build_openai_responses_request(
+        "gpt-test",
+        4096,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        None,
+        None,
+    )
+    .expect("suppressed reasoning request should build");
+    assert_eq!(suppressed["reasoning"], json!(null));
+    assert!(suppressed["reasoning"].get("effort").is_none());
+
+    // Guard enabled path (supports_reasoning=true → Some)
+    let enabled = build_openai_responses_request(
+        "gpt-test",
+        4096,
+        &request,
+        OpenAiResponsesTransportContract::CodexStreaming,
+        ToolSchemaContract::Relaxed,
+        Some("low"),
+        None,
+    )
+    .expect("enabled reasoning request should build");
+    assert_eq!(enabled["reasoning"]["effort"], json!("low"));
+}
+
+#[test]
+fn openai_provider_window_tracks_latest_compaction_item() {
+    let items = vec![
+        json!({ "type": "message", "role": "user" }),
+        json!({ "type": "compaction", "encrypted_content": "first" }),
+        json!({ "type": "message", "role": "user" }),
+        json!({ "type": "compaction", "encrypted_content": "second" }),
+    ];
+
+    assert_eq!(latest_openai_compaction_index(&items), Some(3));
+}
+
+#[tokio::test]
+async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("compaction dispatch denied")]
+    struct CompactionDenied;
+
+    #[derive(Debug, Default)]
+    struct RejectGuard(AtomicUsize);
+
+    impl crate::provider::ProviderDispatchGuard for RejectGuard {
+        fn before_dispatch(&self) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Err(CompactionDenied.into())
+        }
+    }
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!(
+        "http://{}/responses/compact",
+        listener.local_addr().unwrap()
+    );
+    let client = super::build_http_client().unwrap();
+    let scope = crate::provider::ContinuationScopeId::new("compaction-guard").unwrap();
+    let request_shape = test_request_shape();
+    let continuation = Arc::new(Mutex::new(OpenAiContinuationState::default()));
+    continuation.lock().unwrap().windows.insert(
+        scope.clone(),
+        Arc::new(OpenAiProviderWindow {
+            material: Default::default(),
+            response_id: Some("resp_1".into()),
+            request_shape: request_shape.clone(),
+            items: vec![json!({ "type": "message", "content": "complete message" })],
+            append_match_items: Vec::new(),
+            latest_compaction_index: None,
+            latest_input_tokens: 512,
+            replay_loss_reason: None,
+            generation: 1,
+        }),
+    );
+    let guard = RejectGuard::default();
+    let policy = OpenAiCompactionPolicy {
+        trigger_input_tokens: 1,
+    };
+    let error = super::maybe_compact_openai_provider_window(
+        &continuation,
+        Some(&scope),
+        &request_shape,
+        policy,
+        &client,
+        url.clone(),
+        vec![],
+        None,
+        None,
+        "openai",
+        "openai/test",
+        Some(&guard),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<CompactionDenied>());
+    assert_eq!(
+        classify_provider_error(&error).disposition,
+        RetryDisposition::FailFast
+    );
+
+    let mut plan = OpenAiRequestPlan {
+        material: Default::default(),
+        body: json!({ "model": "gpt-test", "input": [] }),
+        fallback_replay: None,
+        scope: Some(scope),
+        append_match_input: Vec::new(),
+        provider_input: vec![json!({ "type": "message", "content": "continue" })],
+        replay_loss_reason: None,
+        request_shape,
+        diagnostics: incremental_diagnostics(
+            "incremental_continuation",
+            "test",
+            None,
+            0,
+            None,
+            None,
+            None,
+            None,
+        ),
+    };
+    let error = super::maybe_compact_openai_request_plan(
+        &continuation,
+        &mut plan,
+        policy,
+        &client,
+        url,
+        vec![],
+        None,
+        None,
+        "openai",
+        "openai/test",
+        Some(&guard),
+    )
+    .await
+    .unwrap_err();
+    assert!(error.is::<CompactionDenied>());
+    assert_eq!(
+        classify_provider_error(&error).disposition,
+        RetryDisposition::FailFast
+    );
+    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
+    assert!(
+        tokio::time::timeout(std::time::Duration::from_millis(25), listener.accept())
+            .await
+            .is_err()
+    );
+}
+
+#[test]
+fn openai_compaction_trigger_skips_many_small_items_below_budget() {
+    let request_shape = test_request_shape();
+    let window = OpenAiProviderWindow {
+        material: Default::default(),
+        response_id: Some("resp_1".into()),
+        request_shape: request_shape.clone(),
+        items: (0..24)
+            .map(|index| json!({ "type": "message", "content": format!("m{index}") }))
+            .collect(),
+        append_match_items: Vec::new(),
+        latest_compaction_index: None,
+        latest_input_tokens: 0,
+        replay_loss_reason: None,
+        generation: 1,
+    };
+
+    assert!(openai_compaction_trigger_for_window(
+        &window,
+        &request_shape,
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 10_000,
+        },
+    )
+    .is_none());
+}
+
+#[test]
+fn openai_compaction_candidate_allows_single_large_item() {
+    let request_shape = test_request_shape();
+    let window = OpenAiProviderWindow {
+        material: Default::default(),
+        response_id: Some("resp_1".into()),
+        request_shape: request_shape.clone(),
+        items: vec![json!({
+            "type": "message",
+            "content": "x".repeat(4096),
+        })],
+        append_match_items: Vec::new(),
+        latest_compaction_index: None,
+        latest_input_tokens: 0,
+        replay_loss_reason: None,
+        generation: 1,
+    };
+
+    let trigger = openai_compaction_trigger_for_window(
+        &window,
+        &request_shape,
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 128,
+        },
+    )
+    .expect("large item should reach token pressure");
+    assert_eq!(trigger.reason, "estimated_window_pressure");
+
+    let candidate = openai_provider_window_compaction_candidate(&window)
+        .expect("single complete message should be compactable");
+    assert_eq!(candidate.items.len(), 1);
+}
+
+#[test]
+fn openai_compaction_trigger_prefers_provider_usage_tokens() {
+    let request_shape = test_request_shape();
+    let window = OpenAiProviderWindow {
+        material: Default::default(),
+        response_id: Some("resp_1".into()),
+        request_shape: request_shape.clone(),
+        items: vec![json!({ "type": "message", "content": "small" })],
+        append_match_items: Vec::new(),
+        latest_compaction_index: None,
+        latest_input_tokens: 512,
+        replay_loss_reason: None,
+        generation: 1,
+    };
+
+    let trigger = openai_compaction_trigger_for_window(
+        &window,
+        &request_shape,
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 128,
+        },
+    )
+    .expect("usage should reach token pressure");
+    assert_eq!(trigger.reason, "token_budget_pressure");
+    assert_eq!(trigger.estimated_input_tokens, None);
+}
+
+#[test]
+fn openai_compaction_trigger_skips_immediate_compacted_replay_before_usage() {
+    let request_shape = test_request_shape();
+    let previous = OpenAiProviderWindow {
+        material: Default::default(),
+        response_id: Some("resp_1".into()),
+        request_shape: request_shape.clone(),
+        items: vec![
+            json!({ "type": "compaction", "encrypted_content": "opaque" }),
+            json!({ "type": "message", "content": "recent" }),
+        ],
+        append_match_items: Vec::new(),
+        latest_compaction_index: Some(0),
+        latest_input_tokens: 0,
+        replay_loss_reason: None,
+        generation: 1,
+    };
+    let plan = OpenAiRequestPlan {
+        material: Default::default(),
+        body: json!({ "model": "gpt-test", "input": [] }),
+        fallback_replay: None,
+        scope: None,
+        append_match_input: Vec::new(),
+        provider_input: vec![json!({ "type": "message", "content": "continue" })],
+        replay_loss_reason: None,
+        request_shape,
+        diagnostics: incremental_diagnostics(
+            "provider_window_compacted",
+            "test",
+            None,
+            0,
+            None,
+            None,
+            None,
+            None,
+        ),
+    };
+
+    assert!(openai_compaction_trigger_for_request_plan(
+        &previous,
+        &plan,
+        OpenAiCompactionPolicy {
+            trigger_input_tokens: 1,
+        },
+    )
+    .is_none());
+}
+
+fn test_request_shape() -> OpenAiRequestShape {
+    OpenAiRequestShape {
+        wire_shape: json!({ "model": "gpt-test" }),
+        prompt_frame: crate::provider::ProviderPromptFrame::plain("system"),
+    }
+}
+
+#[test]
+fn openai_responses_request_body_clamps_max_output_tokens() {
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("context".into())],
+        vec![],
+    );
+    let mut body = build_openai_responses_request(
+        "gpt-test",
+        384_000,
+        &request,
+        OpenAiResponsesTransportContract::StandardJson,
+        ToolSchemaContract::Relaxed,
+        None,
+        None,
+    )
+    .expect("request body should build");
+
+    let effective = effective_output_tokens(Some(100_000), 384_000, &body, &["max_output_tokens"]);
+    body["max_output_tokens"] = effective.into();
+
+    assert_eq!(body["max_output_tokens"], json!(effective));
+    assert!(effective < 384_000);
+}
+
+#[test]
+fn openai_codex_headers_match_codex_cli_client_identity() {
+    let credential = CodexCliCredential {
+        access_token: "access".into(),
+        account_id: "acct".into(),
+        expires_at: None,
+        refreshed_at: None,
+        source: "keychain".into(),
+    };
+    let headers = openai_codex_headers(&credential, "codex_cli_rs", env!("CARGO_PKG_VERSION"));
+    let names: Vec<&str> = headers.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        vec![
+            "authorization",
+            "chatgpt-account-id",
+            "originator",
+            "user-agent",
+        ]
+    );
+    let (_, user_agent) = headers
+        .iter()
+        .find(|(name, _)| *name == "user-agent")
+        .expect("user-agent header should be present");
+    assert!(user_agent.starts_with("codex_cli_rs/"));
+    assert!(user_agent.contains(&format!("holon/{}", env!("CARGO_PKG_VERSION"))));
+}
+
+#[test]
+fn openai_codex_user_agent_follows_codex_cli_shape() {
+    // Codex CLI shape: {originator}/{version} ({os}; {arch}) {client surface}
+    assert_eq!(
+        openai_codex_user_agent("codex_cli_rs", env!("CARGO_PKG_VERSION")),
+        format!(
+            "codex_cli_rs/0.160.0 ({}; {}) holon/{}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
+            env!("CARGO_PKG_VERSION")
+        )
+    );
+}
+
+#[test]
+fn openai_codex_session_headers_map_agent_and_scope() {
+    let scope = crate::provider::ContinuationScopeId::new("agent-conv:abc123")
+        .expect("scope id should be valid");
+    let headers = openai_codex_session_headers(Some("holon-ops"), Some(&scope));
+    let pairs: Vec<(&str, &str)> = headers
+        .iter()
+        .map(|(name, value)| (*name, value.as_str()))
+        .collect();
+    assert_eq!(
+        pairs,
+        vec![
+            ("session-id", "holon-ops"),
+            ("thread-id", "agent-conv:abc123"),
+            ("x-client-request-id", "agent-conv:abc123"),
+        ]
+    );
+
+    assert!(openai_codex_session_headers(None, None).is_empty());
+
+    let only_agent = openai_codex_session_headers(Some("holon-ops"), None);
+    assert_eq!(only_agent.len(), 1);
+    assert_eq!(only_agent[0].0, "session-id");
+
+    // Control characters cannot form a valid header value; they are dropped
+    // instead of failing the whole request.
+    assert!(openai_codex_session_headers(Some("bad\nagent"), None).is_empty());
+}
+
+#[test]
+fn openai_codex_conversation_headers_include_session_identity() {
+    let credential = CodexCliCredential {
+        access_token: "access".into(),
+        account_id: "acct".into(),
+        expires_at: None,
+        refreshed_at: None,
+        source: "keychain".into(),
+    };
+    let scope = crate::provider::ContinuationScopeId::new("agent-conv:abc123")
+        .expect("scope id should be valid");
+    let headers = openai_codex_conversation_headers(
+        &credential,
+        "codex_cli_rs",
+        env!("CARGO_PKG_VERSION"),
+        Some("holon-ops"),
+        Some(&scope),
+    );
+    let names: Vec<&str> = headers.iter().map(|(name, _)| *name).collect();
+    assert_eq!(
+        names,
+        vec![
+            "authorization",
+            "chatgpt-account-id",
+            "originator",
+            "user-agent",
+            "session-id",
+            "thread-id",
+            "x-client-request-id",
+        ]
+    );
+}

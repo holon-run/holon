@@ -1,13 +1,6 @@
 use super::*;
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ProviderBuiltinWebSearchConfig {
-    #[serde(default = "default_true")]
-    pub enabled: bool,
-    pub kind: ProviderNativeWebSearchKind,
-    pub advertised_tool_type: String,
-    pub backend_kind: String,
-}
+pub use holon_provider::config::ProviderBuiltinWebSearchConfig;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]

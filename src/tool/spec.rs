@@ -11,21 +11,7 @@ use serde_json::Value;
 
 use super::error::ToolError;
 
-/// A tool specification describing name, description, and input schema.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ToolSpec {
-    pub name: String,
-    pub description: String,
-    pub input_schema: Value,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub freeform_grammar: Option<ToolFreeformGrammar>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct ToolFreeformGrammar {
-    pub syntax: String,
-    pub definition: String,
-}
+pub use holon_domain::{ToolFreeformGrammar, ToolSpec};
 
 /// A tool call from the model.
 #[derive(Debug, Clone, Serialize, Deserialize)]

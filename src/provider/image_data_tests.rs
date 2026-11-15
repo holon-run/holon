@@ -1,4 +1,6 @@
-use super::*;
+use std::sync::Arc;
+
+use crate::diagnostics::resource_io::ResourceReadMaterial;
 use crate::{
     config::StateMemoryLimits,
     runtime::{
@@ -23,7 +25,7 @@ fn image_encoding_admits_exact_bytes_and_records_before_allocating() -> anyhow::
             bytes - u64::from(shortage == Some(true)),
             records - usize::from(shortage == Some(false)),
         )?;
-        let result = ProviderImageData::encode(b"png", &material);
+        let result = crate::provider::encode_image(b"png", &material);
         if shortage.is_none() {
             let data = result?;
             assert_eq!(&*data, "cG5n");
@@ -44,7 +46,7 @@ fn image_encoding_admits_exact_bytes_and_records_before_allocating() -> anyhow::
         } else {
             assert!(result.is_err());
             assert!(material.finish().is_err());
-            assert!(ProviderImageData::encode(b"", &material).is_err());
+            assert!(crate::provider::encode_image(b"", &material).is_err());
             drop(material);
         }
         assert_eq!(ledger.report()?.observed_bytes, 0);

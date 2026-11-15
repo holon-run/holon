@@ -40,13 +40,7 @@ use crate::{
     },
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum PromptStability {
-    Stable,
-    AgentScoped,
-    TurnScoped,
-}
+pub use holon_domain::PromptStability;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PromptSection {

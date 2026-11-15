@@ -7,13 +7,33 @@ license = "Apache-2.0"
 repository = "https://github.com/holon-run/holon"
 readme = "README.md"
 
+[features]
+runtime-tests = []
+
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
 base64 = "0.22"
-chrono = "0.4"
+chrono = { version = "0.4", features = ["serde"] }
 holon-domain = { version = "0.1.0", path = "../holon-domain" }
 holon-model-client = { version = "0.1.1", path = "../holon-model-client" }
+holon-system = { version = "0.1.0", path = "../holon-system" }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
-reqwest = { version = "0.12", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "gzip", "json", "rustls-tls", "stream"] }
+percent-encoding = "2.3"
+serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "sync", "time"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+twox-hash = { version = "2.1.2", features = ["std"] }
+url = "2.5"
+uuid = { version = "1.11", features = ["v4"] }
+
+[dev-dependencies]
+axum = "0.8"
+tempfile = "3.14"
+tokio = { version = "1.43", features = ["test-util"] }
+tracing-subscriber = "0.3"

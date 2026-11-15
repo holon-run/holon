@@ -6,6 +6,7 @@ use crate::{
         resident_input_evidence::InputEvidenceScope,
     },
 };
+use anyhow::Result;
 use std::sync::Arc;
 
 fn scope() -> InputEvidenceScope {
@@ -75,7 +76,7 @@ async fn image_turn_result_and_error_keep_material_without_changing_classificati
 #[cfg(holon_lib_test_shard = "c")]
 #[test]
 fn image_turn_refuses_mixed_acquisitions_and_standalone_images() -> Result<()> {
-    use crate::provider::{ConversationMessage, ProviderImageData};
+    use crate::provider::ConversationMessage;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let other_ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let source = ResourceReadMaterial::new(&ledger, &scope())?;
@@ -86,7 +87,7 @@ fn image_turn_refuses_mixed_acquisitions_and_standalone_images() -> Result<()> {
         data_base64,
         optional_history: false,
     };
-    let first = image(ProviderImageData::encode(b"abc", &source)?);
+    let first = image(crate::provider::encode_image(b"abc", &source)?);
     let material = ProviderRequestMaterial::from_images(std::slice::from_ref(&first))?;
     material.validate_images(std::slice::from_ref(&first))?;
     assert!(ProviderRequestMaterial::default()
@@ -94,7 +95,7 @@ fn image_turn_refuses_mixed_acquisitions_and_standalone_images() -> Result<()> {
         .is_err());
     assert!(ProviderRequestMaterial::from_images(&[
         first.clone(),
-        image(ProviderImageData::encode(b"def", &other)?),
+        image(crate::provider::encode_image(b"def", &other)?),
     ])
     .is_err());
     assert!(ProviderRequestMaterial::from_images(&[
@@ -115,10 +116,27 @@ fn provider_material_refuses_foreign_ledger_and_incarnation() -> Result<()> {
     let foreign = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let scope = scope();
     let material = ProviderRequestMaterial::scoped(ResourceReadMaterial::new(&ledger, &scope)?);
-    assert!(material.matches_runtime(&ledger, &scope.agent_id, 1));
-    assert!(!material.matches_runtime(&foreign, &scope.agent_id, 1));
-    assert!(!material.matches_runtime(&ledger, &scope.agent_id, 2));
-    assert!(!material.matches_runtime(&ledger, "other", 1));
+    assert!(super::material_matches_runtime(
+        &material,
+        &ledger,
+        &scope.agent_id,
+        1
+    ));
+    assert!(!super::material_matches_runtime(
+        &material,
+        &foreign,
+        &scope.agent_id,
+        1
+    ));
+    assert!(!super::material_matches_runtime(
+        &material,
+        &ledger,
+        &scope.agent_id,
+        2
+    ));
+    assert!(!super::material_matches_runtime(
+        &material, &ledger, "other", 1
+    ));
     drop(material);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     assert_eq!(foreign.report()?.observed_bytes, 0);

@@ -12,13 +12,7 @@ use crate::{
 
 use super::{build_provider_for_route, AgentProvider};
 
-#[derive(Clone)]
-pub(crate) struct ProviderCandidate {
-    pub(crate) model_ref: String,
-    pub(crate) provider_name: String,
-    pub(crate) resolved_image_input: bool,
-    pub(crate) provider: Arc<dyn AgentProvider>,
-}
+pub(crate) use holon_provider::provider::fallback::ProviderCandidate;
 
 pub fn build_provider_from_config(config: &AppConfig) -> Result<Arc<dyn AgentProvider>> {
     build_provider_from_model_chain(config, &config.provider_chain())
@@ -71,7 +65,10 @@ pub(crate) fn build_provider_from_model_chain_with_override(
             "no available providers for configured model chain: {}",
             errors.join("; ")
         )),
-        _ => Ok(Arc::new(FallbackProvider { candidates })),
+        _ => Ok(Arc::new(FallbackProvider::new(
+            candidates,
+            crate::diagnostics::record_provider_retry,
+        ))),
     }
 }
 

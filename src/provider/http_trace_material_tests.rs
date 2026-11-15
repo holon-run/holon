@@ -1,4 +1,5 @@
 use super::*;
+use crate::provider::http_trace::ProviderHttpTrace;
 use crate::{
     config::StateMemoryLimits,
     diagnostics::resource_io::ResourceReadMaterial,
@@ -7,6 +8,8 @@ use crate::{
         resident_input_evidence::InputEvidenceScope,
     },
 };
+use serde_json::json;
+use std::sync::Arc;
 
 fn scope() -> InputEvidenceScope {
     InputEvidenceScope {
@@ -37,13 +40,13 @@ fn image_trace_buffers_keep_original_material_through_last_clone() -> anyhow::Re
     request.write_response_body("unpersisted response");
     source.finish()?;
     {
-        let state = request.inner.lock().unwrap();
-        assert_eq!(state.events.len(), 2);
-        assert_eq!(state.events[0]["body"]["api_key"], "[REDACTED]");
-        let wire = serde_json::to_string(&state.events)?;
+        let events = request.buffered_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["body"]["api_key"], "[REDACTED]");
+        let wire = serde_json::to_string(&events)?;
         assert!(!wire.contains("secret"));
         assert!(!wire.contains("material"));
-        assert_eq!(state.events[1]["body"], "unpersisted response");
+        assert_eq!(events[1]["body"], "unpersisted response");
     }
     let weak = Arc::downgrade(&source.guard()?);
     let last = request.clone();
