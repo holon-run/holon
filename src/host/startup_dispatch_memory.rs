@@ -1083,10 +1083,28 @@ impl RuntimeHost {
             .as_ref()
             .context("global startup recovery did not end original Turn")?;
         anyhow::ensure!(
-            terminal.kind == TurnTerminalKind::Interrupted,
-            "startup memory original Turn has no canonical interruption"
+            terminal.kind == TurnTerminalKind::Interrupted
+                || (terminal.kind == TurnTerminalKind::Aborted
+                    && terminal.reason.as_deref() == Some("operator_aborted")),
+            "startup memory original Turn has no canonical end"
         );
-        let (authorization, guard) = if terminal.reason.as_deref() == Some("agent_stopped") {
+        let (authorization, guard) = if terminal.kind == TurnTerminalKind::Aborted {
+            let (proof_bytes, _proof_records) = session.aborted_proof_material_tx(&tx, &binding)?;
+            charged = charged
+                .checked_add(
+                    proof_bytes
+                        .checked_mul(12)
+                        .context("startup abort size overflow")?,
+                )
+                .context("startup abort size overflow")?;
+            let guard = observe(
+                &self.inner.input_evidence_budget,
+                &address.scope,
+                charged,
+                InputMemoryCategory::Candidate,
+            )?;
+            (session.authorize_aborted_tx(&tx, &binding)?, guard)
+        } else if terminal.reason.as_deref() == Some("agent_stopped") {
             let (mut proof_bytes, mut proof_records) =
                 stopped_run_proof_material_tx(&tx, &address.scope, run, None)?;
             let (lineage_bytes, lineage_records) =

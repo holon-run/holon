@@ -584,6 +584,102 @@ fn exclusive_startup_interrupt_authorization_survives_posture_tx_but_not_session
     Ok(())
 }
 #[test]
+fn exclusive_startup_operator_abort_proof_is_exact_revalidated_and_session_bound() -> Result<()> {
+    let f = Fixture::new()?;
+    f.admit_original_command()?;
+    let before = f.db.agent_states().latest(&f.source.agent_id)?.unwrap();
+    let mut after = before.clone();
+    after.status = AgentStatus::Stopped;
+    after.current_run_id = None;
+    after.current_turn_id = None;
+    after.current_execution_binding = None;
+    let intent = crate::runtime_db::current_run_abort::CurrentRunAbortIntent {
+        agent_id: f.source.agent_id.clone(),
+        identity_incarnation: 1,
+        owner_epoch: 1,
+        run_id: before.current_run_id.clone().unwrap(),
+        runtime_lease_id: "original-producer-lease".into(),
+        activation_id: Some(format!("activation:message:{}", f.source.id)),
+        source_message_id: f.source.id.clone(),
+        turn_id: before.current_turn_id.clone(),
+        stop_after_abort: true,
+        requested_at: f.at,
+    };
+    let prepared = PreparedInputTransition::current_run_abort(
+        f.binding.scope(),
+        "startup-ended-abort".into(),
+        f.at,
+        AgentPostureTransitionCommand {
+            agent_id: f.source.agent_id.clone(),
+            expected_incarnation: Some(1),
+            agent_state: AgentStateMutation {
+                expected: Some(Box::new(before)),
+                record: Box::new(after),
+            },
+            audit_events: vec![],
+            fault: None,
+        },
+        intent,
+    )?;
+    f.db.transitions_in_scope(&f.binding.scope())
+        .commit_prepared_transition(&prepared)?;
+    let lease_path = f.home.path().join("maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lease_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let handoff_guard = handoff.try_lock().unwrap();
+    let capability = ExclusiveStartupInputRecovery::for_pre_activation_host(
+        &f.db,
+        &lease,
+        &lease_path,
+        &handoff_guard,
+    )?;
+    let session = StartupEndedMemorySession::new(&f.db, &capability)?;
+    assert!(f
+        .db
+        .transaction(|tx| session.authorize_aborted_tx(tx, &f.binding))
+        .is_err());
+    let scopes =
+        f.db.startup_input_recovery_scopes(&[f.source.agent_id.clone()])?;
+    f.db.recover_interrupted_runtime_state_at_startup_in_scopes(&scopes, &capability)?;
+    let sizes =
+        f.db.transaction(|tx| session.aborted_proof_material_tx(tx, &f.binding))?;
+    assert!(sizes.0 > 0 && sizes.1 >= 7);
+    let token =
+        f.db.transaction(|tx| session.authorize_aborted_tx(tx, &f.binding))?;
+    assert_eq!(f.db.transaction(|tx| token.proof_material_tx(tx))?, sizes);
+    f.db.transaction(|tx| token.validate_tx(tx, f.binding.key(), f.binding.invocation()))?;
+    for mutation in [
+        "DELETE FROM current_run_abort_intents",
+        "UPDATE current_run_abort_intents SET payload_json=json_set(payload_json,'$.source_message_id','another-source')",
+        "UPDATE current_run_abort_intents SET payload_json=json_set(payload_json,'$.runtime_lease_id','another-lease')",
+        "UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2)",
+        "UPDATE queue_entries SET status='queued',payload_json=json_set(payload_json,'$.status','queued')",
+        "UPDATE turn_records SET payload_json=replace(payload_json,'operator_aborted','runtime_interrupted')",
+        "UPDATE execution_protocol_attempts SET payload_json=json_set(payload_json,'$.source_message_id','another-source')",
+        "UPDATE execution_protocol_outcomes SET payload_json=replace(payload_json,'operator_aborted','runtime_interrupted')",
+    ] {
+        f.db.transaction(|tx| {
+            tx.execute_batch("SAVEPOINT aborted_proof_mutation")?;
+            tx.execute_batch(mutation)?;
+            assert!(
+                token.validate_tx(tx, f.binding.key(), f.binding.invocation()).is_err(),
+                "{mutation}"
+            );
+            tx.execute_batch("ROLLBACK TO aborted_proof_mutation; RELEASE aborted_proof_mutation")?;
+            Ok(())
+        })?;
+    }
+    f.db.transaction(|tx| token.validate_tx(tx, f.binding.key(), f.binding.invocation()))?;
+    drop(session);
+    assert!(f.db.transaction(|tx| token.proof_material_tx(tx)).is_err());
+    assert!(f
+        .db
+        .transaction(|tx| token.validate_tx(tx, f.binding.key(), f.binding.invocation()))
+        .is_err());
+    Ok(())
+}
+
+#[test]
 fn committed_stop_then_crash_uses_real_exclusive_startup_without_completing_os_obligation(
 ) -> Result<()> {
     let f = Fixture::new()?;

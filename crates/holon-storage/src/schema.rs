@@ -200,6 +200,10 @@ pub const TASK_DOMAIN_SCHEMA: &str = include_str!("schema/task_snapshot.sql");
 
 pub const SCHEDULING_SCHEMA: &str = include_str!("schema/scheduling_snapshot.sql");
 
+pub const CURRENT_RUN_ABORT_SCHEMA: &str = include_str!("schema/current_run_abort.sql");
+pub const CURRENT_RUN_ABORT_HISTORY_INDEX_SCHEMA: &str =
+    include_str!("schema/current_run_abort_history_index.sql");
+
 pub const INPUT_NATIVE_BIRTH_VERSION: i64 = 102;
 
 pub const INPUT_NATIVE_BIRTH_SCHEMA: &str = r#"

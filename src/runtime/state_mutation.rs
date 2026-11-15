@@ -1184,11 +1184,11 @@ impl RuntimeMutation {
         &'a mut self,
         _storage: &AppStorage,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.persist_state_inner(None, None, None))
+        Box::pin(self.persist_state_inner(None, None, None, None))
     }
 
     pub(super) async fn persist_state_with_started_turn(&mut self, turn: TurnRecord) -> Result<()> {
-        self.persist_state_inner(Some(turn), None, None).await
+        self.persist_state_inner(Some(turn), None, None, None).await
     }
 
     pub(super) async fn persist_started_dispatch(
@@ -1197,7 +1197,15 @@ impl RuntimeMutation {
         start: crate::runtime_db::dispatch_memory::DispatchMemoryStart,
         original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
     ) -> Result<()> {
-        Box::pin(self.persist_state_inner(Some(turn), Some(start), original_claim)).await
+        Box::pin(self.persist_state_inner(Some(turn), Some(start), original_claim, None)).await
+    }
+
+    #[inline(never)]
+    pub(super) fn persist_current_run_abort<'a>(
+        &'a mut self,
+        intent: crate::runtime_db::current_run_abort::CurrentRunAbortIntent,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.persist_state_inner(None, None, None, Some(intent)))
     }
 
     async fn persist_state_inner(
@@ -1205,9 +1213,13 @@ impl RuntimeMutation {
         started_turn: Option<TurnRecord>,
         dispatch_start: Option<crate::runtime_db::dispatch_memory::DispatchMemoryStart>,
         original_claim: Option<super::started_dispatch::OriginalDispatchClaim>,
+        abort_intent: Option<crate::runtime_db::current_run_abort::CurrentRunAbortIntent>,
     ) -> Result<()> {
         self.validate_candidate_identity()?;
-        if &self.candidate.state == self.committed_state() && started_turn.is_none() {
+        if &self.candidate.state == self.committed_state()
+            && started_turn.is_none()
+            && abort_intent.is_none()
+        {
             return self.install_transient().await;
         }
         let started = std::time::Instant::now();
@@ -1228,13 +1240,23 @@ impl RuntimeMutation {
             fault: self.runtime.take_transition_fault(),
         };
         let intended_state = command.agent_state.record.clone();
-        let prepared = crate::runtime_db::transitions::PreparedInputTransition::posture(
-            self.input_evidence_scope(),
-            event.id,
-            Utc::now(),
-            command,
-            started_turn,
-        )?;
+        let prepared = if let Some(intent) = abort_intent {
+            crate::runtime_db::transitions::PreparedInputTransition::current_run_abort(
+                self.input_evidence_scope(),
+                event.id,
+                Utc::now(),
+                command,
+                intent,
+            )?
+        } else {
+            crate::runtime_db::transitions::PreparedInputTransition::posture(
+                self.input_evidence_scope(),
+                event.id,
+                Utc::now(),
+                command,
+                started_turn,
+            )?
+        };
         let prepared = match dispatch_start {
             Some(start) => prepared.with_dispatch_memory(
                 crate::runtime_db::dispatch_memory::DispatchMemoryIntent::Started {

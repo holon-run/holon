@@ -571,6 +571,7 @@ pub(crate) struct StartupRuntimeRecoveryReport {
     pub recovered_execution_agent_ids: Vec<String>,
     pub queue_entries_changed: usize,
     pub interrupted_turns: usize,
+    pub operator_aborted_turns: usize,
     pub superseded_turns: usize,
     pub orphaned_claim_turns: usize,
     pub daemon_restart_turns: usize,
@@ -861,7 +862,16 @@ impl RuntimeDb {
             let preflight = started.elapsed();
             let mut terminal_sources = StartupTerminalLookups::default();
             let phase = std::time::Instant::now();
-            let queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
+            let mut queue_recovery = reconcile_orphaned_dequeued_claims_tx(tx, None, recovered_at)?;
+            let aborted_recovery =
+                converge_operator_aborted_inputs_tx(tx, recovered_at)?;
+            queue_recovery.changed += aborted_recovery.changed;
+            for agent in aborted_recovery.recovered_agents {
+                if !queue_recovery.recovered_agents.contains(&agent) {
+                    queue_recovery.recovered_agents.push(agent);
+                }
+            }
+            queue_recovery.writes.extend(aborted_recovery.writes);
             tx.execute(
                 "UPDATE destructive_operations
                  SET phase = 'daemon_interrupted', updated_at = ?1
@@ -972,7 +982,17 @@ impl RuntimeDb {
                 let operator_dispatch_uncertain = !superseded
                     && !unknown_external_outcome
                     && startup_operator_dispatch_uncertain_tx(tx, &turn, &mut terminal_sources)?;
-                let (reason, reason_class) = if superseded {
+                let operator_aborted = !superseded
+                    && super::current_run_abort::turn_abort_intent_tx(
+                        tx,
+                        &turn.agent_id,
+                        &turn.turn_id,
+                        trigger_message_id.as_deref(),
+                    )?;
+                let (reason, reason_class) = if operator_aborted {
+                    report.operator_aborted_turns += 1;
+                    ("operator_aborted", "operator_aborted")
+                } else if superseded {
                     report.superseded_turns += 1;
                     (
                         "startup_recovery/superseded_by_replay",
@@ -1039,12 +1059,20 @@ impl RuntimeDb {
                     .num_milliseconds()
                     .max(0) as u64;
                 turn.terminal = Some(TurnTerminalSummary {
-                    kind: TurnTerminalKind::Interrupted,
+                    kind: if operator_aborted {
+                        TurnTerminalKind::Aborted
+                    } else {
+                        TurnTerminalKind::Interrupted
+                    },
                     reason: Some(reason.to_string()),
                     no_brief_reason: turn
                         .produced_brief_ids
                         .is_empty()
-                        .then_some(TurnNoBriefReason::Interrupted),
+                        .then_some(if operator_aborted {
+                            TurnNoBriefReason::Aborted
+                        } else {
+                            TurnNoBriefReason::Interrupted
+                        }),
                     completed_at: recovered_at,
                     duration_ms,
                 });
@@ -1173,6 +1201,31 @@ impl RuntimeDb {
                             input_commands.entry(agent_id.clone()).or_default().push(command.clone());
                         } else {
                             execution_protocol_repository::persist_execution_commands_tx(tx,Some(prepared))?;
+                        }
+                        if matches!(&command,
+                            crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(
+                                crate::domain::execution_protocol::SettleExecution {
+                                    outcome: crate::domain::execution_protocol::ExecutionOutcomeRecord {
+                                        outcome: crate::domain::execution_protocol::ExecutionOutcome::Conversation(
+                                            crate::domain::execution_protocol::ConversationOutcome::Aborted { .. }
+                                        ) | crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+                                            crate::domain::execution_protocol::WorkItemOutcome::Aborted { .. }
+                                        ),
+                                        ..
+                                    }
+                                }
+                            )
+                        ) {
+                            let disposition = super::TaskResultSettlementDisposition::InvalidOrStale;
+                            if let Some(metadata) = task_metadata.as_mut() {
+                                metadata.settle_finalized_activation(
+                                    tx, &agent_id, &attempt_id, disposition, recovered_at,
+                                )?;
+                            } else {
+                                super::task_result_settlement::settle_activation_tx(
+                                    tx, &agent_id, &attempt_id, disposition, recovered_at,
+                                )?;
+                            }
                         }
                         if let Some((expected, recovered)) = queue_change {
                             if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
@@ -1693,6 +1746,19 @@ fn startup_claim_recovery_tx(
         .optional()?
         .map(|payload| serde_json::from_str::<QueueEntryRecord>(&payload))
         .transpose()?;
+    if queue
+        .as_ref()
+        .is_some_and(|entry| entry.status != QueueEntryStatus::Processed)
+        && super::current_run_abort::input_aborted_tx(tx, agent_id, message_id)?
+    {
+        return Ok((
+            Some(super::current_run_abort::settle_attempt(
+                attempt,
+                recovered_at,
+            )),
+            None,
+        ));
+    }
     let Some(expected) = queue.filter(|q| q.status == QueueEntryStatus::Dequeued) else {
         return Ok((None, None));
     };
@@ -1969,6 +2035,74 @@ fn startup_triggered_wait_is_exact_tx(
             && trigger_message_id == &message.id
             && exact_ref
     }))
+}
+
+fn converge_operator_aborted_inputs_tx(
+    tx: &Transaction<'_>,
+    recovered_at: chrono::DateTime<Utc>,
+) -> Result<OrphanedQueueRecovery> {
+    let mut recovery = OrphanedQueueRecovery::default();
+    let mut statement = tx.prepare(
+        "SELECT payload_json FROM queue_entries
+         WHERE status IN ('queued', 'dequeued', 'interrupted')
+           AND (EXISTS(
+             SELECT 1 FROM turn_records t
+             WHERE t.agent_id = queue_entries.agent_id
+               AND t.trigger_message_id = queue_entries.message_id
+               AND t.terminal_kind IN ('interrupted', 'aborted')
+               AND json_extract(t.payload_json, '$.terminal.reason') = 'operator_aborted')
+           OR EXISTS(
+             SELECT 1 FROM current_run_abort_intents i
+             WHERE i.agent_id = queue_entries.agent_id
+               AND i.source_message_id = queue_entries.message_id))",
+    )?;
+    let entries = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .map(|row| Ok(serde_json::from_str::<QueueEntryRecord>(&row?)?))
+        .collect::<Result<Vec<_>>>()?;
+    drop(statement);
+    for expected in entries {
+        let mut recovered = expected.clone();
+        recovered.status = QueueEntryStatus::Aborted;
+        recovered.updated_at = recovered_at;
+        if !compare_and_set_queue_entry_tx(tx, &expected, &recovered)? {
+            continue;
+        }
+        advance_delivery_state_for_message_tx(
+            tx,
+            &expected.message_id,
+            AgentMessageDeliveryState::Failed,
+            Some("startup recovery settled operator-aborted input"),
+        )?;
+        append_audit_event_tx(
+            tx,
+            Some(&expected.agent_id),
+            &AuditEvent {
+                id: format!(
+                    "audit:operator-aborted-input-settled:{}",
+                    expected.message_id
+                ),
+                event_seq: 0,
+                event_log_epoch: String::new(),
+                created_at: recovered_at,
+                kind: "operator_aborted_input_settled".into(),
+                contract_version: crate::runtime_event::LEGACY_RUNTIME_EVENT_CONTRACT_VERSION,
+                payload_schema: crate::runtime_event::LEGACY_PAYLOAD_SCHEMA.to_string(),
+                payload_schema_version: 1,
+                data: serde_json::json!({
+                    "agent_id": &expected.agent_id,
+                    "message_id": &expected.message_id,
+                    "from_status": format!("{:?}", expected.status),
+                }),
+            },
+        )?;
+        recovery.changed += 1;
+        if !recovery.recovered_agents.contains(&expected.agent_id) {
+            recovery.recovered_agents.push(expected.agent_id.clone());
+        }
+        recovery.writes.push(recovered);
+    }
+    Ok(recovery)
 }
 
 fn reconcile_orphaned_dequeued_claims_tx(
@@ -2635,6 +2769,7 @@ impl RuntimeTransitionRepository<'_> {
             &command.agent_id,
             &command.terminal_tool_executions,
         )?;
+        super::current_run_abort::validate_terminal_tx(tx, &command.turn_record)?;
         inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
 
         let agent_state_applied = apply_agent_state_mutation_tx(tx, Some(&command.agent_state))?;
@@ -3634,6 +3769,31 @@ impl RuntimeTransitionRepository<'_> {
         >,
     ) -> Result<TransitionCommit> {
         self.validate_input_scope_tx(tx, &command.agent_id)?;
+        if let Some(turn) = &command.turn_record {
+            super::current_run_abort::validate_terminal_tx(tx, turn)?;
+        }
+        if command.operation == QueueOperation::Settle {
+            let record = queue_mutation_record(&command.mutation);
+            if super::current_run_abort::input_aborted_tx(
+                tx,
+                &command.agent_id,
+                &record.message_id,
+            )? {
+                anyhow::ensure!(
+                    matches!(
+                        &command.mutation,
+                        QueueMutation::Upsert(_) | QueueMutation::CompareAndSet { .. }
+                    ) && record.status == QueueEntryStatus::Aborted
+                        && completion.is_none()
+                        && wait_registration.is_none()
+                        && wait_transition.is_none()
+                        && command.message_evidence.is_empty()
+                        && command.brief_evidence.is_empty()
+                        && command.transcript_entries.is_empty(),
+                    "operator-aborted input cannot commit producer completion or recovery"
+                );
+            }
+        }
         for record in &command.message_evidence {
             self.validate_input_key_tx(
                 tx,
@@ -3818,6 +3978,14 @@ impl RuntimeTransitionRepository<'_> {
             return Ok(TransitionCommit::default());
         }
         if let QueueMutation::Consume(record) = &command.mutation {
+            anyhow::ensure!(
+                !super::current_run_abort::input_aborted_tx(
+                    tx,
+                    &record.agent_id,
+                    &record.message_id,
+                )?,
+                "operator-aborted input cannot be claimed"
+            );
             let include_interrupted = match command.operation {
                 QueueOperation::Claim => true,
                 QueueOperation::Interject => false,
