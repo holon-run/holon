@@ -5,6 +5,8 @@ use crate::types::{
     AgentMessageCallerContext, AgentMessagePrincipalKind, AgentMessageSendRequest,
     QueueEntryRecord, TurnOwner, WorkItemPlanStatus,
 };
+#[cfg(holon_lib_test_shard = "a")]
+use crate::types::{ExecCommandOutcome, ExecCommandResult};
 
 #[cfg(holon_lib_test_shard = "a")]
 mod canonical_not_runnable;
@@ -24,6 +26,7 @@ struct GeminiRefusalFixture {
     home: TempDir,
     runtime: RuntimeHandle,
     requests: Arc<Mutex<Vec<(String, serde_json::Value)>>>,
+    refusal_gate: Arc<tokio::sync::Semaphore>,
     server: tokio::task::JoinHandle<()>,
 }
 
@@ -46,16 +49,23 @@ async fn gemini_refusal_fixture(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let requests = Arc::new(Mutex::new(Vec::new()));
     let observed = requests.clone();
+    let refusal_gate = Arc::new(tokio::sync::Semaphore::new(1));
+    let response_gate = refusal_gate.clone();
     let app = Router::new().route(
         "/{*path}",
         post(
             move |OriginalUri(uri): OriginalUri, Json(body): Json<serde_json::Value>| {
                 let observed = observed.clone();
                 let responses = responses.clone();
+                let response_gate = response_gate.clone();
                 async move {
                     let mut requests = observed.lock().await;
                     let index = requests.len().min(responses.len() - 1);
                     requests.push((uri.path().to_string(), body));
+                    drop(requests);
+                    if index > 0 {
+                        let _permit = response_gate.acquire().await.unwrap();
+                    }
                     Json(responses[index].clone())
                 }
             },
@@ -95,6 +105,7 @@ async fn gemini_refusal_fixture(
         home,
         runtime,
         requests,
+        refusal_gate,
         server,
     }
 }
@@ -143,6 +154,19 @@ async fn enqueue_gemini_refusal_prompt(runtime: &RuntimeHandle) -> String {
 
 #[cfg(holon_lib_test_shard = "a")]
 async fn assert_gemini_refusal_settlement(runtime: &RuntimeHandle, message_id: &str, reason: &str) {
+    let queue = settle_gemini_refusal(runtime, message_id, reason).await;
+    assert!(
+        queue.is_empty(),
+        "unexpected messages after refusal: {queue:?}"
+    );
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn settle_gemini_refusal(
+    runtime: &RuntimeHandle,
+    message_id: &str,
+    reason: &str,
+) -> Vec<MessageEnvelope> {
     let scheduled = claim_model_input(runtime).await;
     assert_eq!(scheduled.message.id, message_id);
     let message = scheduled.message.clone();
@@ -237,7 +261,6 @@ async fn assert_gemini_refusal_settlement(runtime: &RuntimeHandle, message_id: &
             .status,
         QueueEntryStatus::Aborted
     );
-    assert!(runtime.inner.agent.lock().await.queue.is_empty());
     let events = runtime.storage().read_recent_events(100).unwrap();
     let failure = events
         .iter()
@@ -251,6 +274,15 @@ async fn assert_gemini_refusal_settlement(runtime: &RuntimeHandle, message_id: &
         event.kind.as_str(),
         "terminal_missing_brief_settlement" | "turn_terminal_brief_settlement_failed"
     )));
+    runtime
+        .inner
+        .agent
+        .lock()
+        .await
+        .queue
+        .shared_messages()
+        .map(|message| message.as_ref().clone())
+        .collect()
 }
 
 #[cfg(holon_lib_test_shard = "a")]
@@ -371,14 +403,122 @@ async fn p1_gemini_refused_partial_text_and_tool_are_never_executed_or_published
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn p1_gemini_refusal_after_tool_execution_does_not_replay_side_effects() {
+    assert_gemini_refusal_after_command(None).await;
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_gemini_refusal_after_completed_background_command_does_not_replay_side_effects() {
+    assert_gemini_refusal_after_command(Some(true)).await;
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_gemini_refusal_before_background_command_completion_does_not_replay_side_effects() {
+    assert_gemini_refusal_after_command(Some(false)).await;
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+fn gemini_command_execution(runtime: &RuntimeHandle) -> crate::types::ToolExecutionRecord {
+    let executions = runtime.storage().read_recent_tool_executions(10).unwrap();
+    assert_eq!(executions.len(), 1, "{executions:?}");
+    let execution = executions.into_iter().next().unwrap();
+    assert_eq!(execution.tool_name, "ExecCommand");
+    assert_eq!(
+        execution.status,
+        crate::types::ToolExecutionStatus::Success,
+        "command startup failed: {execution:?}"
+    );
+    execution
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+fn gemini_command_outcome(execution: &crate::types::ToolExecutionRecord) -> ExecCommandOutcome {
+    serde_json::from_value::<ExecCommandResult>(execution.output["envelope"]["result"].clone())
+        .unwrap_or_else(|error| panic!("invalid command receipt: {error}; {execution:?}"))
+        .outcome
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+fn assert_gemini_command_results(queue: &[MessageEnvelope], task_id: &str) {
+    for message in queue {
+        assert_eq!(message.kind, MessageKind::TaskResult, "{message:?}");
+        assert_eq!(message.task_id.as_deref(), Some(task_id), "{message:?}");
+        assert_eq!(
+            message.origin,
+            MessageOrigin::Task {
+                task_id: task_id.to_owned()
+            }
+        );
+        assert_eq!(message.authority_class, AuthorityClass::RuntimeInstruction);
+        let metadata = message.metadata.as_ref().unwrap();
+        assert_eq!(metadata["task_id"], task_id);
+        assert_eq!(metadata["task_kind"], "command_task");
+        assert_eq!(metadata["task_status"], "completed");
+    }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn await_gemini_command_result(runtime: &RuntimeHandle, task_id: &str) {
+    tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let queue: Vec<_> = runtime
+                .inner
+                .agent
+                .lock()
+                .await
+                .queue
+                .shared_messages()
+                .map(|message| message.as_ref().clone())
+                .collect();
+            if !queue.is_empty() {
+                assert_eq!(queue.len(), 1, "{queue:?}");
+                assert_gemini_command_results(&queue, task_id);
+                let task = runtime.task_record(task_id).await.unwrap().unwrap();
+                assert_eq!(task.kind, TaskKind::CommandTask);
+                assert_eq!(task.status, TaskStatus::Completed, "{task:?}");
+                assert_eq!(
+                    task.parent_message_id.as_deref(),
+                    Some(queue[0].id.as_str())
+                );
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("command must publish its exact terminal task result");
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn release_gemini_command(runtime: &RuntimeHandle, task_id: &str) {
+    let input = runtime
+        .managed_tasks()
+        .task_input_with_trust(task_id, "continue\n", &AuthorityClass::OperatorInstruction)
+        .await
+        .unwrap();
+    assert!(input.accepted_input, "{input:?}");
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+async fn assert_gemini_refusal_after_command(background_before_refusal: Option<bool>) {
+    // stdin gates the side effect; zero yield forces promotion without a timing race.
+    let command = if background_before_refusal.is_some() {
+        "read release; printf once >> completed-tool"
+    } else {
+        "printf once >> completed-tool"
+    };
     let fixture = gemini_refusal_fixture(
         vec![
             serde_json::json!({
                 "candidates": [{
                     "content": {"role": "model", "parts": [{
                         "functionCall": {"name": "ExecCommand", "args": {
-                            "cmd": "printf once >> completed-tool",
-                            "yield_time_ms": 1000
+                            "cmd": command,
+                            "shell": "/bin/sh",
+                            "login": false,
+                            "accepts_input": background_before_refusal.is_some(),
+                            "yield_time_ms": if background_before_refusal.is_some() { 0 } else { 1000 }
                         }}
                     }]},
                     "finishReason": "STOP"
@@ -389,18 +529,60 @@ async fn p1_gemini_refusal_after_tool_execution_does_not_replay_side_effects() {
         true,
     )
     .await;
+    if background_before_refusal == Some(true) {
+        fixture.refusal_gate.acquire().await.unwrap().forget();
+    }
     let message_id = enqueue_gemini_refusal_prompt(&fixture.runtime).await;
-    assert_gemini_refusal_settlement(&fixture.runtime, &message_id, "RECITATION").await;
+    let settle = settle_gemini_refusal(&fixture.runtime, &message_id, "RECITATION");
+    let finish_before_refusal = async {
+        if background_before_refusal != Some(true) {
+            return;
+        }
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while fixture.requests.lock().await.len() < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("Gemini must receive the command receipt before refusing");
+        let execution = gemini_command_execution(&fixture.runtime);
+        let ExecCommandOutcome::PromotedToTask { task_handle, .. } =
+            gemini_command_outcome(&execution)
+        else {
+            panic!("zero yield must promote the command: {execution:?}");
+        };
+        release_gemini_command(&fixture.runtime, &task_handle.task_id).await;
+        await_gemini_command_result(&fixture.runtime, &task_handle.task_id).await;
+        fixture.refusal_gate.add_permits(1);
+    };
+    let (queue_at_refusal, ()) = tokio::join!(settle, finish_before_refusal);
     let requests = fixture.requests.lock().await;
     assert_eq!(requests.len(), 2);
     assert_eq!(requests[0].0, requests[1].0);
-    let executions = fixture
-        .runtime
-        .storage()
-        .read_recent_tool_executions(10)
-        .unwrap();
-    assert_eq!(executions.len(), 1);
-    assert_eq!(executions[0].tool_name, "ExecCommand");
+    drop(requests);
+    let execution = gemini_command_execution(&fixture.runtime);
+    match gemini_command_outcome(&execution) {
+        ExecCommandOutcome::Completed { exit_status, .. } => {
+            assert!(background_before_refusal.is_none());
+            assert_eq!(exit_status, Some(0), "{execution:?}");
+            assert!(queue_at_refusal.is_empty(), "{queue_at_refusal:?}");
+        }
+        ExecCommandOutcome::PromotedToTask { task_handle, .. } => {
+            assert_gemini_command_results(&queue_at_refusal, &task_handle.task_id);
+            if background_before_refusal == Some(true) {
+                // #4156: a completed command's result is not a replay of the prompt.
+                assert_eq!(queue_at_refusal.len(), 1, "{queue_at_refusal:?}");
+            } else if background_before_refusal == Some(false) {
+                assert!(queue_at_refusal.is_empty());
+                // #4138: a promoted command need not have performed its side effect yet.
+                let before = std::fs::read_to_string(fixture.home.path().join("completed-tool"));
+                assert_eq!(before.unwrap_err().kind(), std::io::ErrorKind::NotFound);
+                release_gemini_command(&fixture.runtime, &task_handle.task_id).await;
+            }
+            await_gemini_command_result(&fixture.runtime, &task_handle.task_id).await;
+        }
+        unexpected => panic!("unexpected command outcome: {unexpected:?}; {execution:?}"),
+    }
     assert_eq!(
         std::fs::read_to_string(fixture.home.path().join("completed-tool")).unwrap(),
         "once"
@@ -411,7 +593,19 @@ async fn p1_gemini_refusal_after_tool_execution_does_not_replay_side_effects() {
         .read_recent_turns(1)
         .unwrap()
         .remove(0);
-    assert_eq!(turn.tool_execution_ids, [executions[0].id.clone()]);
+    assert_eq!(turn.tool_execution_ids, [execution.id]);
+    assert_eq!(turn.input_message_ids, [message_id.clone()]);
+    assert_eq!(
+        fixture
+            .runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&message_id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Aborted
+    );
 }
 
 #[derive(Default)]
