@@ -516,15 +516,31 @@ pub(crate) fn load_dispatch_memory_binding_tx(
         let Some(turn_id) = state.current_turn_id.as_ref() else {
             return Ok(None);
         };
-        let (agent,index,terminal):(String,u64,bool)=tx.query_row(
-            "SELECT agent_id,turn_index,COALESCE(json_type(payload_json,'$.terminal')='object',0) FROM turn_records WHERE turn_id=?1",
-            [turn_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?)))?;
+        let (agent,index,terminal,turn_run):(String,u64,bool,Option<String>)=tx.query_row(
+            "SELECT agent_id,turn_index,COALESCE(json_type(payload_json,'$.terminal')='object',0),json_extract(payload_json,'$.run_id') FROM turn_records WHERE turn_id=?1",
+            [turn_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        // WorkItem completion cleanup retires the physical run and its
+        // binding, yet the historical current_turn_id pointer to the
+        // completed Turn can survive while the next dispatch's committed
+        // turn_index allocation already advanced the State index past it
+        // (#4154). The next dispatch may also already claim its own physical
+        // run before input publication, so the State run only stays
+        // inconsistent when it still belongs to the residual Turn itself. A
+        // terminal historical Turn of this agent whose run is not the live
+        // one is a completed execution, not a missing binding for the new
+        // dispatch; only a future Turn address, an unfinished Turn, or a
+        // still-owned live run stays inconsistent.
         ensure!(
             agent == state.id
-                && index == state.turn_index
+                && index <= state.turn_index
                 && terminal
-                && state.current_run_id.is_none(),
-            "actual started dispatch has no execution binding"
+                && (state.current_run_id.is_none() || state.current_run_id != turn_run),
+            "actual started dispatch has no execution binding (residual Turn {turn_id} agent-match {} index {index} vs State index {}, terminal {}, State run {:?} vs residual Turn run {:?})",
+            agent == state.id,
+            state.turn_index,
+            terminal,
+            state.current_run_id,
+            turn_run,
         );
         return Ok(None);
     };
