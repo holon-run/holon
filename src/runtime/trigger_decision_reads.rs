@@ -4,12 +4,15 @@ use super::{
         serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, InputMemoryCategory,
         OwnedBytesEstimate,
     },
-    resident_scheduling::{CapturedScheduling, SchedulingCaptureRequest},
+    resident_scheduling::{CapturedScheduling, SchedulingCaptureRequest, SchedulingReadError},
     resident_work::CapturedWork,
     timer_mutation_reads::selected_work_material,
     RuntimeHandle,
 };
-use crate::types::{AgentState, ExternalTriggerRecord, ExternalTriggerScope};
+use crate::{
+    runtime_error::{RuntimeError, RuntimeErrorDomain},
+    types::{AgentState, ExternalTriggerRecord, ExternalTriggerScope},
+};
 use anyhow::{ensure, Context, Result};
 use std::sync::Arc;
 
@@ -110,16 +113,30 @@ impl CommandTriggerRead {
     }
 }
 impl RuntimeHandle {
-    pub(in crate::runtime) async fn capture_command_trigger_read(
+    pub(in crate::runtime) async fn acquire_command_trigger_read(
         &self,
         agent_id: &str,
     ) -> Result<(Arc<AgentState>, CommandTriggerRead)> {
-        let owner = self.begin_mutation().await?;
-        let read = owner.capture_scheduling_read(&SchedulingCaptureRequest {
+        let mut owner = self.begin_mutation().await?;
+        let request = SchedulingCaptureRequest {
             include_live: true,
             history_limit: 0,
             required_keys: Default::default(),
-        })?;
+        };
+        let read = match owner.capture_scheduling_read(&request) {
+            Ok(read) => read,
+            Err(error) if command_scheduling_needs_preparation(&error) => {
+                // Preparation replaces the shared domain, including its history coverage.
+                owner
+                    .prepare_owner_scheduling_request(&SchedulingCaptureRequest::current())
+                    .await
+                    .map_err(command_scheduling_preparation_error)?;
+                owner
+                    .capture_scheduling_read(&request)
+                    .map_err(command_scheduling_preparation_error)?
+            }
+            Err(error) => return Err(error),
+        };
         ensure!(
             read.state.id == agent_id && read.scheduling.scope.agent_id == agent_id,
             "Command Trigger scope differs"
@@ -134,6 +151,41 @@ impl RuntimeHandle {
         )?;
         Ok((read.state, trigger))
     }
+}
+
+fn command_scheduling_needs_preparation(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<SchedulingReadError>(),
+        Some(
+            SchedulingReadError::IncompleteLive
+                | SchedulingReadError::NeedsPreparation(_)
+                | SchedulingReadError::NeedsHistory
+        )
+    )
+}
+
+fn command_scheduling_preparation_error(error: anyhow::Error) -> anyhow::Error {
+    use crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError;
+
+    if command_scheduling_needs_preparation(&error)
+        || matches!(
+            error.downcast_ref::<SchedulingSnapshotError>(),
+            Some(
+                SchedulingSnapshotError::NeedsPreparation(_)
+                    | SchedulingSnapshotError::CanonicalChanged(_)
+            )
+        )
+    {
+        return error.context(
+            RuntimeError::new(
+                RuntimeErrorDomain::Runtime,
+                "command_scheduling_unavailable",
+                "Scheduling could not be prepared before command start",
+            )
+            .with_safe_context("stage", "command_admission"),
+        );
+    }
+    error.context("failed to prepare Scheduling before command start")
 }
 
 #[cfg(holon_lib_test_shard = "a")]

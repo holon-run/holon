@@ -1064,7 +1064,7 @@ impl RuntimeHandle {
                 self.agent_home().to_string_lossy().into_owned(),
             ),
         ];
-        let (state, trigger) = self.capture_command_trigger_read(&agent_id).await?;
+        let (state, trigger) = self.acquire_command_trigger_read(&agent_id).await?;
         if let Some(binding) = state.current_execution_binding.as_ref() {
             env.push((HOLON_CALLER_AGENT_ID_ENV.to_string(), agent_id.clone()));
             env.push((

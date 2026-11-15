@@ -326,6 +326,157 @@ async fn publish_active_metadata_ack(runtime: &RuntimeHandle) -> Result<()> {
 }
 
 #[tokio::test]
+async fn exec_command_prepares_missing_scheduling_and_keeps_history() -> Result<()> {
+    use crate::{tool::tools::exec_command, types::ExecCommandResult};
+
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    runtime.cancel_timer(&timer.id).await?;
+    let capability = runtime
+        .default_external_trigger(crate::types::CallbackDeliveryMode::WakeHint)
+        .await?;
+    publish_active_metadata_ack(&runtime).await?;
+
+    let result = exec_command::execute(
+        &runtime,
+        "scheduling-reader",
+        &crate::types::AuthorityClass::OperatorInstruction,
+        &serde_json::json!({
+            "cmd": r#"printf '%s\n' "${HOLON_EXTERNAL_TRIGGER_URL-unset}" >> command-launches"#,
+            "workdir": home.path(),
+            "login": false
+        }),
+        &Default::default(),
+    )
+    .await?;
+    let result: ExecCommandResult = serde_json::from_value(result.envelope.result.unwrap())?;
+    assert!(matches!(
+        result.outcome,
+        crate::types::ExecCommandOutcome::Completed {
+            exit_status: Some(0),
+            ..
+        }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("command-launches"))?,
+        format!("{}\n", capability.trigger_url)
+    );
+    let scheduling = runtime
+        .capture_scheduling_read(&SchedulingCaptureRequest::current())
+        .await?;
+    assert_eq!(
+        scheduling.scheduling.timer(&timer.id)?.unwrap().status,
+        crate::types::TimerStatus::Cancelled
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn exec_command_batch_prepares_missing_scheduling_without_default_trigger() -> Result<()> {
+    use crate::{tool::tools::exec_command_batch, types::ExecCommandBatchResult};
+
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    publish_active_metadata_ack(&runtime).await?;
+
+    let result = exec_command_batch::execute(
+        &runtime,
+        "scheduling-reader",
+        &crate::types::AuthorityClass::OperatorInstruction,
+        &serde_json::json!({
+            "items": [
+                {"cmd": "printf '%s\\n' first >> command-launches"},
+                {"cmd": "printf '%s\\n' second >> command-launches"}
+            ],
+            "workdir": home.path(),
+            "login": false
+        }),
+        &Default::default(),
+    )
+    .await?;
+    let result: ExecCommandBatchResult = serde_json::from_value(result.envelope.result.unwrap())?;
+    assert_eq!(result.completed_count, 2);
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("command-launches"))?,
+        "first\nsecond\n"
+    );
+    let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
+    let (_, trigger) = runtime
+        .acquire_command_trigger_read("scheduling-reader")
+        .await?;
+    assert!(trigger.url.is_none());
+    assert_eq!(denied.attempts(), 0);
+    Ok(())
+}
+
+#[tokio::test]
+async fn exec_command_batch_preserves_prior_item_when_scheduling_preparation_fails() -> Result<()> {
+    use crate::{tool::tools::exec_command_batch, types::ExecCommandBatchResult};
+    use std::time::Duration;
+
+    let home = tempdir()?;
+    let runtime = runtime(home.path())?;
+    runtime.await_initial_resources().await;
+    let timer = runtime.schedule_timer(3_600_000, None, None).await?;
+    let input = serde_json::json!({
+        "items": [
+            {"cmd": "printf '%s\\n' first >> command-launches; while [ ! -f resume-batch ]; do sleep 0.05; done"},
+            {"cmd": "printf '%s\\n' second >> command-launches"}
+        ],
+        "workdir": home.path(),
+        "login": false,
+        "yield_time_ms": 10_000
+    });
+    let context = Default::default();
+    let execute = exec_command_batch::execute(
+        &runtime,
+        "scheduling-reader",
+        &crate::types::AuthorityClass::OperatorInstruction,
+        &input,
+        &context,
+    );
+    let invalidate = async {
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !home.path().join("command-launches").exists() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await?;
+        publish_active_metadata_ack(&runtime).await?;
+        let mut changed = timer.clone();
+        changed.summary = Some("unqualified body change".into());
+        runtime.runtime_db().transaction(|tx| {
+            tx.execute(
+                "UPDATE timers SET payload_json=?2,summary=?3 WHERE timer_id=?1",
+                rusqlite::params![timer.id, serde_json::to_string(&changed)?, changed.summary],
+            )?;
+            Ok(())
+        })?;
+        std::fs::write(home.path().join("resume-batch"), [])?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (result, invalidated) = tokio::join!(execute, invalidate);
+    invalidated?;
+    let result: ExecCommandBatchResult = serde_json::from_value(result?.envelope.result.unwrap())?;
+    assert_eq!(result.completed_count, 1);
+    assert_eq!(result.failed_count, 1);
+    assert_eq!(
+        result.items[1].error_kind.as_deref(),
+        Some("command_scheduling_unavailable"),
+        "{:?}",
+        result.items[1].error_message
+    );
+    assert_eq!(
+        std::fs::read_to_string(home.path().join("command-launches"))?,
+        "first\n"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn summary_prepares_invalidated_scheduling_after_active_metadata_ack() -> Result<()> {
     let home = tempdir()?;
     let runtime = runtime(home.path())?;
