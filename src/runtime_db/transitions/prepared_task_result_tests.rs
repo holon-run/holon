@@ -217,7 +217,7 @@ fn result_defer_records_callback_phases_and_preserves_receipt_replay() -> Result
             },
         )?;
         assert_eq!(
-            p.command.write_context().operation,
+            p.command.write_context().operation(),
             "runtime_db.prepared_input.task_result.defer"
         );
 

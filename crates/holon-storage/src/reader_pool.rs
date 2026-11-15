@@ -11,7 +11,7 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{ffi::ErrorCode, Connection};
 use tokio::sync::Semaphore;
 
-use crate::diagnostics::attribution;
+use crate::diagnostics::StorageStage;
 
 use super::write_queue::RuntimeDbWriterState;
 use super::{read_block, RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
@@ -20,7 +20,7 @@ const CHECK_INTERVAL: Duration = Duration::from_millis(100);
 const LOG_INTERVAL: Duration = Duration::from_secs(30);
 
 #[derive(Clone)]
-pub(crate) struct RuntimeDbReaderPool {
+pub struct RuntimeDbReaderPool {
     shared: Arc<ReaderPoolShared>,
     scope: Option<RuntimeDbReadScope>,
 }
@@ -41,14 +41,14 @@ struct ReaderPoolControl {
     last_timeout_warning: Mutex<Option<Instant>>,
     role: &'static str,
     holders: Mutex<Vec<Option<(read_block::ReadOrigin, Instant)>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     test_hook: Mutex<Option<Arc<ReaderTestHook>>>,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 type ReaderTestHook = dyn Fn(ReaderTestEvent, &RuntimeDbWriterState) -> Result<()> + Send + Sync;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReaderTestEvent {
     BeforeOpen,
@@ -63,23 +63,23 @@ struct Counters {
     connections_opened: AtomicU64,
     connections_dropped: AtomicU64,
     checkout_timeouts: AtomicU64,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     checkout_attempts: AtomicU64,
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Debug)]
-pub(crate) struct ReaderPoolStats {
-    pub(crate) capacity: u32,
-    pub(crate) connect_attempts: u64,
-    pub(crate) connect_failures: u64,
-    pub(crate) connections_opened: u64,
-    pub(crate) connections_dropped: u64,
-    pub(crate) checkout_timeouts: u64,
-    pub(crate) checkout_attempts: u64,
-    pub(crate) current_connections: u32,
-    pub(crate) idle_connections: u32,
-    pub(crate) available_admission: usize,
+pub struct ReaderPoolStats {
+    pub capacity: u32,
+    pub connect_attempts: u64,
+    pub connect_failures: u64,
+    pub connections_opened: u64,
+    pub connections_dropped: u64,
+    pub checkout_timeouts: u64,
+    pub checkout_attempts: u64,
+    pub current_connections: u32,
+    pub idle_connections: u32,
+    pub available_admission: usize,
 }
 
 struct ReaderManager {
@@ -96,7 +96,7 @@ struct ReaderConnection {
 impl Drop for ReaderConnection {
     fn drop(&mut self) {
         drop(self.connection.take());
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let _ = self.control.test_hook(ReaderTestEvent::Closed);
         self.control
             .stats
@@ -130,11 +130,11 @@ impl r2d2::HandleError<ConnectError> for QuietConnectErrors {
 }
 
 impl RuntimeDbReaderPool {
-    pub(crate) fn new(writer: Arc<RuntimeDbWriterState>) -> Self {
+    pub fn new(writer: Arc<RuntimeDbWriterState>) -> Self {
         Self::with_capacity(writer, super::DEFAULT_ORDINARY_MAX_CONNECTIONS, "ordinary")
     }
 
-    pub(crate) fn for_preparation(writer: Arc<RuntimeDbWriterState>) -> Self {
+    pub fn for_preparation(writer: Arc<RuntimeDbWriterState>) -> Self {
         Self::with_capacity(
             writer,
             super::DEFAULT_PREPARATION_MAX_CONNECTIONS,
@@ -142,7 +142,7 @@ impl RuntimeDbReaderPool {
         )
     }
 
-    pub(crate) fn with_capacity(
+    pub fn with_capacity(
         writer: Arc<RuntimeDbWriterState>,
         capacity: u32,
         role: &'static str,
@@ -150,12 +150,8 @@ impl RuntimeDbReaderPool {
         Self::with_role(writer, capacity, None, role)
     }
 
-    #[cfg(test)]
-    pub(crate) fn with_config(
-        writer: Arc<RuntimeDbWriterState>,
-        capacity: u32,
-        budget: Duration,
-    ) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn with_config(writer: Arc<RuntimeDbWriterState>, capacity: u32, budget: Duration) -> Self {
         Self::with_role(writer, capacity, Some(budget), "test")
     }
 
@@ -176,7 +172,7 @@ impl RuntimeDbReaderPool {
                 last_timeout_warning: Mutex::new(None),
                 role,
                 holders: Mutex::new(vec![None; capacity as usize]),
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 test_hook: Mutex::new(None),
             });
             let pool = Pool::builder()
@@ -203,7 +199,7 @@ impl RuntimeDbReaderPool {
         }
     }
 
-    pub(crate) fn with_scope(&self, scope: RuntimeDbReadScope) -> Self {
+    pub fn with_scope(&self, scope: RuntimeDbReadScope) -> Self {
         Self {
             shared: Arc::clone(&self.shared),
             scope: Some(scope),
@@ -212,7 +208,7 @@ impl RuntimeDbReaderPool {
 
     /// Fixture-only initialization: retain every checkout until all readers
     /// have actually read the database, including SQLite's lazy WAL open.
-    pub(super) fn warm_for_fixture(&self) -> Result<u32> {
+    pub fn warm_for_fixture(&self) -> Result<u32> {
         self.check_read_scope()?;
         let pool = self
             .shared
@@ -265,7 +261,7 @@ impl RuntimeDbReaderPool {
         origin: read_block::ReadOrigin,
         stage: &'static str,
     ) -> Result<PooledConnection<ReaderManager>> {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         self.shared
             .control
             .stats
@@ -320,13 +316,13 @@ impl RuntimeDbReaderPool {
         Ok(())
     }
 
-    pub(crate) fn check_read_scope(&self) -> Result<()> {
+    pub fn check_read_scope(&self) -> Result<()> {
         self.shared.control.ensure_protected()?;
         self.check_scope(&self.effective_scope())
     }
 
     /// Cheap assembly checkpoint; callers must fully check entry and success.
-    pub(crate) fn check_read_cancellation(&self) -> Result<()> {
+    pub fn check_read_cancellation(&self) -> Result<()> {
         if let Err(error) = self.check_scope(&self.effective_scope()) {
             self.shared.control.ensure_protected()?;
             return Err(error);
@@ -335,7 +331,7 @@ impl RuntimeDbReaderPool {
     }
 
     /// Await only a memory-lock acquisition, never an async SQL wrapper.
-    pub(crate) async fn wait_for_memory_lock<T>(
+    pub async fn wait_for_memory_lock<T>(
         &self,
         lock: impl std::future::Future<Output = T>,
     ) -> Result<T> {
@@ -357,13 +353,13 @@ impl RuntimeDbReaderPool {
     }
 
     #[cfg(test)]
-    pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+    fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
         self.with_read_at(read_block::ReadOrigin::UNKNOWN, f)
     }
 
     /// Only owned results may escape. Callers must not change connection hooks,
     /// authorizers or other connection-local configuration through the Rust API.
-    pub(crate) fn with_read_at<T>(
+    pub fn with_read_at<T>(
         &self,
         origin: read_block::ReadOrigin,
         f: impl FnOnce(&mut Connection) -> Result<T>,
@@ -385,7 +381,12 @@ impl RuntimeDbReaderPool {
         f: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
         let started = Instant::now();
-        let checkout = attribution::READER_CHECKOUT.start();
+        let checkout = self
+            .shared
+            .control
+            .writer
+            .diagnostics
+            .start(StorageStage::ReaderCheckout);
         let control = &self.shared.control;
         control.ensure_protected()?;
         self.check_scope(&scope)?;
@@ -400,7 +401,12 @@ impl RuntimeDbReaderPool {
         drop(checkout);
         let checkout_elapsed = started.elapsed();
         // Declare the timer first so the lease is returned before it stops.
-        let _held = attribution::READER_LEASE.start();
+        let _held = self
+            .shared
+            .control
+            .writer
+            .diagnostics
+            .start(StorageStage::ReaderLease);
         let mut lease = ReadLease {
             connection,
             progress_handler: false,
@@ -420,7 +426,12 @@ impl RuntimeDbReaderPool {
         let operation_started = Instant::now();
         let result = {
             // The closure includes row decoding and transactions, not only SQL.
-            let _operation = attribution::READER_OPERATION.start();
+            let _operation = self
+                .shared
+                .control
+                .writer
+                .diagnostics
+                .start(StorageStage::ReaderOperation);
             let _origin = read_block::ReadContextGuard::enter_origin(origin);
             f(lease.connection.connection.as_mut().expect("live reader"))
         };
@@ -462,12 +473,17 @@ impl RuntimeDbReaderPool {
         })
     }
 
-    pub(crate) async fn with_read_async_at<T: Send + 'static>(
+    pub async fn with_read_async_at<T: Send + 'static>(
         &self,
         origin: read_block::ReadOrigin,
         f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let admission = attribution::READER_ADMISSION.start();
+        let admission = self
+            .shared
+            .control
+            .writer
+            .diagnostics
+            .start(StorageStage::ReaderAdmission);
         let deadline = self.acquisition_deadline();
         // Read scopes use the real clock; Tokio's clock can have a different
         // origin (notably after a paused runtime advances). Keep one allowance.
@@ -519,7 +535,12 @@ impl RuntimeDbReaderPool {
         let task_scope = scope.clone();
         let state = Arc::new(AtomicU8::new(0));
         let task_state = Arc::clone(&state);
-        let blocking_admission = attribution::READER_BLOCKING_ADMISSION.start();
+        let blocking_admission = self
+            .shared
+            .control
+            .writer
+            .diagnostics
+            .start(StorageStage::ReaderBlockingAdmission);
         let mut task = tokio::task::spawn_blocking(move || {
             drop(blocking_admission);
             let _permit = permit;
@@ -574,8 +595,8 @@ impl RuntimeDbReaderPool {
         result
     }
 
-    #[cfg(test)]
-    pub(crate) fn stats(&self) -> ReaderPoolStats {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn stats(&self) -> ReaderPoolStats {
         let stats = &self.shared.control.stats;
         let state = self
             .shared
@@ -603,8 +624,8 @@ impl RuntimeDbReaderPool {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn writer_weak(&self) -> Weak<RuntimeDbWriterState> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn writer_weak(&self) -> Weak<RuntimeDbWriterState> {
         Arc::downgrade(&self.shared.control.writer)
     }
 }
@@ -662,7 +683,7 @@ impl Drop for ReadLease {
 }
 
 impl ReaderPoolControl {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     fn test_hook(&self, event: ReaderTestEvent) -> Result<()> {
         let hook = self
             .test_hook
@@ -770,7 +791,7 @@ impl ManageConnection for ReaderManager {
             .fetch_add(1, Ordering::Relaxed);
         let result: Result<ReaderConnection> = (|| {
             control.ensure_protected()?;
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             control.test_hook(ReaderTestEvent::BeforeOpen)?;
             let mut connection = control.writer.open_connection()?;
             // Slow statement reporting is a reader concern: every runtime DB
@@ -788,7 +809,7 @@ impl ManageConnection for ReaderManager {
             let connection = reader.connection.as_ref().expect("live reader");
             connection.pragma_update(None, "query_only", true)?;
             connection.authorizer(Some(read_authorizer));
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             control.test_hook(ReaderTestEvent::Opened)?;
             control.ensure_protected()?;
             Ok(reader)
@@ -904,22 +925,49 @@ fn should_log(last: &Mutex<Option<Instant>>) -> bool {
     true
 }
 
-#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::runtime_db::{RuntimeDb, RuntimeDbProtectionState};
+    use crate::diagnostics::NO_DIAGNOSTICS;
+    use crate::write_queue::RuntimeDbWriter;
+    use crate::RuntimeDbProtectionState;
 
-    fn fixture() -> Result<(tempfile::TempDir, RuntimeDb)> {
+    struct ReaderFixture {
+        path: std::path::PathBuf,
+        readers: RuntimeDbReaderPool,
+        writer: RuntimeDbWriter,
+    }
+
+    impl ReaderFixture {
+        fn with_read<T>(&self, read: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+            self.readers.with_read(read)
+        }
+    }
+
+    fn fixture() -> Result<(tempfile::TempDir, ReaderFixture)> {
         let directory = tempfile::tempdir()?;
-        let mut db = RuntimeDb::open_and_migrate(
-            directory.path().join("runtime.sqlite"),
-            directory.path().join("runtime.lock"),
-        )?;
-        db.configure_reader_pool_for_tests(1, Duration::from_secs(2))?;
-        Ok((directory, db))
+        let path = directory.path().join("runtime.sqlite");
+        let connection = crate::connection::open_connection(&path, &NO_DIAGNOSTICS)?;
+        crate::connection::configure_persistent_database(&connection)?;
+        // Commit once so SQLite creates the WAL and shared-memory sidecars.
+        connection.execute_batch("CREATE TABLE reader_fixture (value INTEGER)")?;
+        assert!(
+            directory.path().join("runtime.sqlite-wal").is_file(),
+            "reader fixture needs a live WAL file"
+        );
+        let writer = RuntimeDbWriter::open(path.clone(), connection)?;
+        let readers =
+            RuntimeDbReaderPool::with_config(Arc::clone(writer.state()), 1, Duration::from_secs(2));
+        Ok((
+            directory,
+            ReaderFixture {
+                path,
+                readers,
+                writer,
+            },
+        ))
     }
 
     fn install_hook(
@@ -991,7 +1039,10 @@ mod tests {
             assert_eq!(pool.stats().connections_dropped, 1);
             assert_eq!(pool.stats().idle_connections, 0);
             assert_eq!(pool.stats().current_connections, 0);
-            assert_eq!(db.connection().err().unwrap().to_string(), evidence);
+            assert_eq!(
+                db.writer.open_connection().err().unwrap().to_string(),
+                evidence
+            );
             assert_eq!(
                 pool.with_read(|_| Ok(())).unwrap_err().to_string(),
                 evidence
@@ -1037,13 +1088,14 @@ mod tests {
     fn writer_identity_binding_rejects_an_already_replaced_open_handle() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("runtime.sqlite");
-        let connection = super::super::connection::open_connection(&path)?;
+        let connection = crate::connection::open_connection(&path, &NO_DIAGNOSTICS)?;
         let replacement = directory.path().join("replacement.sqlite");
         std::fs::write(&replacement, b"replacement database evidence")?;
         std::fs::rename(&replacement, &path)?;
-        let error = super::super::write_queue::RuntimeDbWriter::open_starting(path, connection)
-            .err()
-            .expect("must bind to the existing descriptor, not just stat the new path");
+        let error =
+            crate::write_queue::RuntimeDbWriter::open_starting(path, connection, &NO_DIAGNOSTICS)
+                .err()
+                .expect("must bind to the existing descriptor, not just stat the new path");
         assert!(error.downcast_ref::<RuntimeDbProtectionError>().is_some());
         assert!(error.to_string().contains("moved=1"));
         Ok(())

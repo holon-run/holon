@@ -6,6 +6,10 @@ contract below remains unchanged. No production rollout authorization.
 
 ## Current structure and scope
 
+The reader pools, writer queue, and SQLite connection protection live in
+`holon-storage`. The runtime database facade owns schema migration and wires
+those components into the existing repository and publication contracts.
+
 `RuntimeDbWriter` already reuses its dedicated connection and serializes writes.
 The batched agent-list projection collects all roster facts in one deferred
 read transaction and now reuses a bounded reader. Before P1, most other

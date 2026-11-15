@@ -550,6 +550,7 @@ jobs:
           }
           publish_if_needed holon-domain
           publish_if_needed holon-system
+          publish_if_needed holon-storage
           publish_if_needed holon-model-client
           publish_if_needed decision-core
           publish_if_needed decision-jev

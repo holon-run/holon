@@ -9930,20 +9930,23 @@ mod tests {
                     let (_dir, db) = runtime_db()?;
                     seed_startup_recovery_history(&db, turns, interrupted, candidates)?;
                     let ticks = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-                    db.writer.state.connection.lock().unwrap().progress_handler(
-                        100,
-                        Some({
-                            let ticks = ticks.clone();
-                            move || {
-                                ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                false
-                            }
-                        }),
-                    );
+                    db.writer
+                        .connection_mutex()
+                        .lock()
+                        .unwrap()
+                        .progress_handler(
+                            100,
+                            Some({
+                                let ticks = ticks.clone();
+                                move || {
+                                    ticks.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    false
+                                }
+                            }),
+                        );
                     let result = db.recover_interrupted_runtime_state_at_startup();
                     db.writer
-                        .state
-                        .connection
+                        .connection_mutex()
                         .lock()
                         .unwrap()
                         .progress_handler(0, None::<fn() -> bool>);

@@ -114,14 +114,13 @@ fn task_result_defer_bounds_full_coverage_reads() -> Result<()> {
     db.transaction(|tx| write_task(tx, &task("running-command", TaskStatus::Running)).map(|_| ()))?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     db.writer
-        .state
-        .connection
+        .connection_mutex()
         .lock()
         .unwrap()
         .profile(Some(profile));
     SQL_PROFILE.with(|profile| profile.borrow_mut().clear());
     defer(&db, "metadata-read-bound", &ledger)?;
-    db.writer.state.connection.lock().unwrap().profile(None);
+    db.writer.connection_mutex().lock().unwrap().profile(None);
     let reads = SQL_PROFILE.with(|profile| {
         profile
             .borrow()
@@ -256,8 +255,7 @@ fn task_result_metadata_cost_profile() -> Result<()> {
         }
         let bytes = serde_json::to_vec(&coverage)?.len();
         db.writer
-            .state
-            .connection
+            .connection_mutex()
             .lock()
             .unwrap()
             .profile(Some(profile));
@@ -304,7 +302,7 @@ fn task_result_metadata_cost_profile() -> Result<()> {
                 );
             });
         }
-        db.writer.state.connection.lock().unwrap().profile(None);
+        db.writer.connection_mutex().lock().unwrap().profile(None);
     }
     Ok(())
 }

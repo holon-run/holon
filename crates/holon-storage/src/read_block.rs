@@ -37,18 +37,18 @@ static SLOW_READ_MS: AtomicU64 = AtomicU64::new(UNINITIALIZED_MS);
 /// Static call site of a pooled read. Kept cheap: every reader checkout carries
 /// one.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct ReadOrigin {
+pub struct ReadOrigin {
     file: &'static str,
     line: u32,
 }
 
 impl ReadOrigin {
-    pub(crate) const UNKNOWN: Self = Self {
+    pub const UNKNOWN: Self = Self {
         file: "unknown",
         line: 0,
     };
 
-    pub(crate) fn from_location(location: &'static Location<'static>) -> Self {
+    pub fn from_location(location: &'static Location<'static>) -> Self {
         Self {
             file: location.file(),
             line: location.line(),
@@ -74,7 +74,7 @@ pub(crate) struct ReadContextGuard {
 
 impl ReadContextGuard {
     /// Label the enclosing blocking read block, for example `http.events.page`.
-    pub(crate) fn enter_label(label: &'static str) -> Self {
+    fn enter_label(label: &'static str) -> Self {
         Self::enter(ReadContext {
             label: Some(label),
             origin: None,
@@ -115,7 +115,7 @@ impl Drop for ReadContextGuard {
 
 /// Read deadline of the enclosing blocking read block, if any. Explicitly
 /// scoped database handles take precedence over this ambient scope.
-pub(crate) fn current_scope() -> Option<RuntimeDbReadScope> {
+pub fn current_scope() -> Option<RuntimeDbReadScope> {
     READ_SCOPE.with(|slot| slot.borrow().clone())
 }
 
@@ -140,7 +140,7 @@ impl Drop for ReadScopeGuard {
 }
 
 /// Scope nested synchronous reads inside an already registered blocking worker.
-pub(crate) fn with_scope<T>(scope: RuntimeDbReadScope, work: impl FnOnce() -> T) -> T {
+pub fn with_scope<T>(scope: RuntimeDbReadScope, work: impl FnOnce() -> T) -> T {
     let _scope = ReadScopeGuard::enter(scope);
     work()
 }
@@ -153,7 +153,7 @@ fn current_context() -> Option<ReadContext> {
 /// deadline. SQL execution is cancelled at the deadline through the existing
 /// scoped-read progress hook; the block itself still finishes so its reader
 /// connection is released before the caller sees the result.
-pub(crate) async fn run_blocking<T, F>(label: &'static str, budget: Duration, work: F) -> Result<T>
+pub async fn run_blocking<T, F>(label: &'static str, budget: Duration, work: F) -> Result<T>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T> + Send + 'static,
@@ -266,9 +266,8 @@ fn parse_slow_read_ms(raw: Option<&str>) -> u64 {
         .unwrap_or(DEFAULT_SLOW_READ_MS)
 }
 
-#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
-pub(crate) mod tests {
+mod tests {
     use std::io;
     use std::sync::{Arc, Mutex, MutexGuard};
 
