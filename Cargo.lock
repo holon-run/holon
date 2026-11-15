@@ -1539,6 +1539,7 @@ dependencies = [
  "futures-util",
  "holon-domain",
  "holon-model-client",
+ "holon-provider",
  "holon-storage",
  "holon-system",
  "hyper",
@@ -1602,13 +1603,28 @@ dependencies = [
 
 [[package]]
 name = "holon-model-client"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "async-trait",
  "reqwest",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "holon-provider"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64 0.22.1",
+ "chrono",
+ "holon-domain",
+ "holon-model-client",
+ "image",
+ "reqwest",
+ "serde_json",
 ]
 
 [[package]]

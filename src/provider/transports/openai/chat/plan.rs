@@ -1,9 +1,14 @@
+#[cfg(test)]
+use holon_model_client::chat_completions::RequestBody;
+use holon_model_client::{chat_completions, Role};
+
 use super::super::continuation::{
     continuation_scope, incremental_diagnostics, lock_openai_continuation, request_shape_hash,
     response_format_diagnostics,
 };
 use super::super::*;
 
+#[cfg(test)]
 pub(crate) fn build_chat_completion_request(
     model: &str,
     max_output_tokens: u32,
@@ -13,59 +18,46 @@ pub(crate) fn build_chat_completion_request(
     reasoning_effort: Option<&str>,
     max_output_tokens_parameter: &str,
 ) -> Result<Value> {
-    // Build messages array for Chat Completions API
+    let (messages, tools) = build_chat_completion_parts(request, tool_schema_contract)?;
+    let tool_choice = (!tools.is_empty()).then_some("auto");
+    Ok(Value::Object(
+        RequestBody {
+            model,
+            messages,
+            output_limit: Some((max_output_tokens_parameter, max_output_tokens)),
+            stream,
+            tools,
+            tool_choice,
+            prompt_cache_key: request
+                .prompt_frame
+                .cache
+                .as_ref()
+                .map(|cache| cache.prompt_cache_key.as_str()),
+            reasoning_effort,
+        }
+        .encode(),
+    ))
+}
+
+pub(crate) fn build_chat_completion_parts(
+    request: &ProviderTurnRequest,
+    tool_schema_contract: ToolSchemaContract,
+) -> Result<(Vec<Value>, Vec<Value>)> {
     let messages =
         build_chat_completion_messages(&request.prompt_frame.system_prompt, &request.conversation)?;
-
-    // Build tools array in OpenAI function calling format
-    let tools = if !request.tools.is_empty() {
-        Some(
-            request
-                .tools
-                .iter()
-                .map(|tool| {
-                    Ok(json!({
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": emitted_tool_json_schema(&tool.input_schema, tool_schema_contract)?,
-                            "strict": matches!(tool_schema_contract, ToolSchemaContract::Strict),
-                        }
-                    }))
-                })
-                .collect::<Result<Vec<_>>>()?,
-        )
-    } else {
-        None
-    };
-
-    // Build Chat Completions request body
-    let mut body = json!({
-        "model": model,
-        "messages": messages,
-        (max_output_tokens_parameter): max_output_tokens,
-        "stream": stream,
-    });
-
-    // Add tools if present
-    if let Some(tools) = tools {
-        body["tools"] = Value::Array(tools);
-        body["tool_choice"] = Value::String("auto".to_string());
-    }
-
-    // Add prompt cache key if available
-    if let Some(cache) = request.prompt_frame.cache.as_ref() {
-        body["prompt_cache_key"] = Value::String(cache.prompt_cache_key.clone());
-    }
-
-    // Forward configured reasoning_effort; e.g. "none" disables thinking on
-    // local OpenAI-compatible servers such as Ollama.
-    if let Some(reasoning_effort) = reasoning_effort {
-        body["reasoning_effort"] = Value::String(reasoning_effort.to_string());
-    }
-
-    Ok(body)
+    let tools = request
+        .tools
+        .iter()
+        .map(|tool| {
+            Ok(chat_completions::function_tool(
+                &tool.name,
+                Some(&tool.description),
+                &emitted_tool_json_schema(&tool.input_schema, tool_schema_contract)?,
+                matches!(tool_schema_contract, ToolSchemaContract::Strict),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok((messages, tools))
 }
 
 pub(crate) fn plan_chat_completion_request(
@@ -244,36 +236,40 @@ pub(crate) fn build_chat_completion_messages(
     system_prompt: &str,
     conversation: &[ConversationMessage],
 ) -> Result<Vec<Value>> {
-    let mut messages = Vec::new();
+    use chat_completions::message;
 
-    // Add system prompt as first message
+    let mut messages = Vec::new();
     if !system_prompt.is_empty() {
-        messages.push(json!({
-            "role": "system",
-            "content": system_prompt,
-        }));
+        messages.push(message(
+            Role::System,
+            Value::from(system_prompt),
+            Vec::new(),
+            None,
+        ));
     }
 
-    // Process conversation messages
     for msg in conversation {
         match msg {
             ConversationMessage::UserText(text) => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": text,
-                }));
+                messages.push(message(
+                    Role::User,
+                    Value::from(text.as_str()),
+                    Vec::new(),
+                    None,
+                ));
             }
             ConversationMessage::UserBlocks(blocks) => {
-                // Concatenate all block texts
                 let content = blocks
                     .iter()
                     .map(|block| block.text.as_str())
                     .collect::<Vec<_>>()
                     .join("\n\n");
-                messages.push(json!({
-                    "role": "user",
-                    "content": content,
-                }));
+                messages.push(message(
+                    Role::User,
+                    Value::String(content),
+                    Vec::new(),
+                    None,
+                ));
             }
             ConversationMessage::UserImage {
                 prompt,
@@ -281,41 +277,25 @@ pub(crate) fn build_chat_completion_messages(
                 data_base64,
                 ..
             } => {
-                messages.push(json!({
-                    "role": "user",
-                    "content": [
-                        { "type": "text", "text": prompt },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": data_base64.data_url(media_type)?,
-                            },
-                        },
-                    ],
-                }));
+                let content = json!([
+                    { "type": "text", "text": prompt },
+                    { "type": "image_url", "image_url": { "url": data_base64.data_url(media_type)? } },
+                ]);
+                messages.push(message(Role::User, content, Vec::new(), None));
             }
             ConversationMessage::AssistantBlocks(blocks) => {
-                // Extract text content and tool calls
                 let mut text_parts = Vec::new();
                 let mut tool_calls = Vec::new();
-
                 for block in blocks {
                     match block {
-                        ModelBlock::Text { text } => {
-                            text_parts.push(text.clone());
-                        }
+                        ModelBlock::Text { text } => text_parts.push(text.as_str()),
                         ModelBlock::ToolUse {
                             id, name, input, ..
                         } => {
-                            tool_calls.push(json!({
-                                "id": id,
-                                "type": "function",
-                                "function": {
-                                    "name": name,
-                                    "arguments": serde_json::to_string(input)
-                                        .context("failed to serialize tool call arguments")?,
-                                }
-                            }));
+                            tool_calls.push(
+                                chat_completions::function_call(id, name, input)
+                                    .context("failed to serialize tool call arguments")?,
+                            );
                         }
                         ModelBlock::Thinking { .. }
                         | ModelBlock::ReasoningText { .. }
@@ -325,35 +305,21 @@ pub(crate) fn build_chat_completion_messages(
                         | ModelBlock::ProviderToolResult { .. } => {}
                     }
                 }
-
-                // Build assistant message
-                let content = text_parts.join("\n\n");
-                let mut message = json!({
-                    "role": "assistant",
-                });
-
-                // Set content field: null for tool-only messages, otherwise string content
-                if !text_parts.is_empty() {
-                    message["content"] = Value::String(content);
+                let content = if text_parts.is_empty() {
+                    Value::Null
                 } else {
-                    message["content"] = Value::Null;
-                }
-
-                // Add tool_calls if present
-                if !tool_calls.is_empty() {
-                    message["tool_calls"] = Value::Array(tool_calls);
-                }
-
-                messages.push(message);
+                    Value::String(text_parts.join("\n\n"))
+                };
+                messages.push(message(Role::Assistant, content, tool_calls, None));
             }
             ConversationMessage::UserToolResults(results) => {
-                // Each tool result becomes a separate "tool" message
                 for result in results {
-                    messages.push(json!({
-                        "role": "tool",
-                        "tool_call_id": result.tool_use_id,
-                        "content": result.content,
-                    }));
+                    messages.push(message(
+                        Role::Tool,
+                        Value::from(result.content.as_str()),
+                        Vec::new(),
+                        Some(&result.tool_use_id),
+                    ));
                 }
             }
         }

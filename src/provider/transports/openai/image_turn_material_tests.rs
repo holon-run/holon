@@ -81,7 +81,7 @@ async fn image_turn_http_body_and_response_share_explicit_acquisition() -> Resul
                 .await?
             }
             _ => {
-                send_chat_completion_request_with_material(
+                chat::send_chat_completion_request(
                     &Client::new(),
                     url,
                     request,

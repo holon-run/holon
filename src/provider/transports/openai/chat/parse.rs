@@ -1,24 +1,22 @@
 use super::super::*;
-use holon_model_client::{parse_response, ClientError, ContentPart};
+use holon_model_client::ContentPart;
+use holon_provider::openai_chat::{decode_response, ChatResponse, ChatResponseError};
 
 pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiResponse> {
-    let raw_message = response
-        .get("choices")
-        .and_then(Value::as_array)
-        .and_then(|choices| choices.first())
-        .and_then(|choice| choice.get("message"))
-        .cloned()
-        .ok_or_else(|| {
-            invalid_response_error(
-                "OpenAI Chat Completions choice did not contain message",
-                "missing message",
-            )
-        })?;
-    let served_service_tier = response
-        .get("service_tier")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let parsed = parse_response(response).map_err(map_model_client_parse_error)?;
+    let ChatResponse {
+        completion: parsed,
+        raw_message,
+        served_service_tier,
+    } = decode_response(response).map_err(|error| match error {
+        ChatResponseError::MissingMessage => invalid_response_error(
+            "OpenAI Chat Completions choice did not contain message",
+            "missing message",
+        ),
+        ChatResponseError::InvalidResponse(error) => invalid_response_error(
+            "OpenAI Chat Completions response could not be parsed",
+            error.to_string(),
+        ),
+    })?;
     let response_id = parsed.id.clone();
     let mut blocks = Vec::new();
 
@@ -63,13 +61,6 @@ pub(crate) fn parse_chat_completion_response(response: Value) -> Result<ParsedOp
         output_items: vec![raw_message],
         transport_timeline: None,
     })
-}
-
-fn map_model_client_parse_error(error: ClientError) -> anyhow::Error {
-    invalid_response_error(
-        "OpenAI Chat Completions response could not be parsed",
-        error.to_string(),
-    )
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 use crate::{
+    chat_completions::{self, RequestBody},
     CallContext, ClientError, CompletionRequest, CompletionResponse, ContentPart, Message,
     ModelClient, RequestExtensions, ResponseExtensions, ResponseFormat, Role, ToolCall, Usage,
 };
@@ -107,49 +108,32 @@ impl OpenAiCompatibleClient {
     pub fn build_request_body(request: &CompletionRequest) -> Result<Value, ClientError> {
         validate_request(request)?;
 
-        let mut body = Map::new();
-        body.insert("model".to_string(), Value::String(request.model.clone()));
-        body.insert(
-            "messages".to_string(),
-            Value::Array(
-                request
-                    .messages
-                    .iter()
-                    .map(message_to_json)
-                    .collect::<Result<Vec<_>, _>>()?,
-            ),
-        );
-        body.insert("stream".to_string(), Value::Bool(request.stream));
-
-        if let Some(max_output_tokens) = request.max_output_tokens {
-            body.insert(
-                "max_tokens".to_string(),
-                Value::Number(max_output_tokens.into()),
-            );
+        let mut body = RequestBody {
+            model: &request.model,
+            messages: request
+                .messages
+                .iter()
+                .map(message_to_json)
+                .collect::<Result<_, _>>()?,
+            output_limit: request.max_output_tokens.map(|limit| ("max_tokens", limit)),
+            stream: request.stream,
+            tools: request
+                .tools
+                .iter()
+                .map(|tool| {
+                    chat_completions::function_tool(
+                        &tool.name,
+                        tool.description.as_deref(),
+                        &tool.parameters,
+                        tool.strict,
+                    )
+                })
+                .collect(),
+            tool_choice: None,
+            prompt_cache_key: None,
+            reasoning_effort: None,
         }
-
-        if !request.tools.is_empty() {
-            body.insert(
-                "tools".to_string(),
-                Value::Array(
-                    request
-                        .tools
-                        .iter()
-                        .map(|tool| {
-                            json!({
-                                "type": "function",
-                                "function": {
-                                    "name": tool.name,
-                                    "description": tool.description,
-                                    "parameters": tool.parameters,
-                                    "strict": tool.strict,
-                                }
-                            })
-                        })
-                        .collect(),
-                ),
-            );
-        }
+        .encode();
 
         if let Some(response_format) = &request.response_format {
             body.insert(
@@ -275,52 +259,35 @@ fn validate_request(request: &CompletionRequest) -> Result<(), ClientError> {
 }
 
 fn message_to_json(message: &Message) -> Result<Value, ClientError> {
-    let mut result = Map::new();
-    result.insert(
-        "role".to_string(),
-        Value::String(role_name(message.role).to_string()),
-    );
-
     let content = match message.content.as_slice() {
         [] => Value::Null,
         [ContentPart::Text { text }] => Value::String(text.clone()),
         _ => Value::Array(message.content.iter().map(content_part_to_json).collect()),
     };
-    result.insert("content".to_string(), content);
-    if !message.tool_calls.is_empty() {
-        if message.role != Role::Assistant {
-            return Err(ClientError::InvalidRequest(
-                "tool calls require an assistant message".to_string(),
-            ));
-        }
-        let tool_calls = message
-            .tool_calls
-            .iter()
-            .map(|tool_call| {
-                let arguments = serde_json::to_string(&tool_call.arguments).map_err(|error| {
+    if !message.tool_calls.is_empty() && message.role != Role::Assistant {
+        return Err(ClientError::InvalidRequest(
+            "tool calls require an assistant message".to_string(),
+        ));
+    }
+    let tool_calls = message
+        .tool_calls
+        .iter()
+        .map(|call| {
+            chat_completions::function_call(&call.id, &call.name, &call.arguments).map_err(
+                |error| {
                     ClientError::InvalidRequest(format!(
                         "failed to serialize tool call arguments: {error}"
                     ))
-                })?;
-                Ok(json!({
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.name,
-                        "arguments": arguments,
-                    },
-                }))
-            })
-            .collect::<Result<Vec<_>, ClientError>>()?;
-        result.insert("tool_calls".to_string(), Value::Array(tool_calls));
-    }
-    if let Some(tool_call_id) = &message.tool_call_id {
-        result.insert(
-            "tool_call_id".to_string(),
-            Value::String(tool_call_id.clone()),
-        );
-    }
-    Ok(Value::Object(result))
+                },
+            )
+        })
+        .collect::<Result<_, _>>()?;
+    Ok(chat_completions::message(
+        message.role,
+        content,
+        tool_calls,
+        message.tool_call_id.as_deref(),
+    ))
 }
 
 fn content_part_to_json(part: &ContentPart) -> Value {
@@ -542,15 +509,6 @@ fn parse_usage(value: Option<&Value>) -> Option<Usage> {
             .and_then(|details| details.get("cached_tokens"))
             .and_then(Value::as_u64),
     })
-}
-
-fn role_name(role: Role) -> &'static str {
-    match role {
-        Role::System => "system",
-        Role::User => "user",
-        Role::Assistant => "assistant",
-        Role::Tool => "tool",
-    }
 }
 
 #[cfg(test)]

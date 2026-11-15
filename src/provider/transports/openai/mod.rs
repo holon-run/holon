@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use chrono::Utc;
+use holon_provider::openai_chat::{
+    has_trailing_version_segment, output_limit_parameter, ChatCompletionsConfig,
+    OpenAiChatCompletionsProvider as ChatProvider,
+};
 use reqwest::{header::HeaderMap, Client, Response};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -87,14 +91,16 @@ use images::{
 #[cfg(test)]
 use images::{parse_openai_images_response, OpenAiImagesDialect};
 
-pub(crate) use chat::build_chat_completion_request;
 #[cfg(test)]
 pub(crate) use chat::{
     accumulate_chat_completion_stream_events, build_chat_completion_messages,
-    classify_openai_chat_completion_error, parse_chat_completion_response,
-    send_chat_completion_stream_request,
+    build_chat_completion_request, classify_openai_chat_completion_error,
+    parse_chat_completion_response, send_chat_completion_stream_request,
 };
-use chat::{plan_chat_completion_request, send_chat_completion_request_with_material};
+use chat::{
+    build_chat_completion_parts, plan_chat_completion_request,
+    send_chat_completion_request_with_material,
+};
 #[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 #[path = "image_turn_material_tests.rs"]
@@ -188,21 +194,14 @@ pub struct OpenAiCodexProvider {
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
 
+/// Runtime integration for the Chat Completions adapter in holon-provider.
 #[derive(Clone)]
 pub struct OpenAiChatCompletionsProvider {
-    client: Client,
+    transport: ChatProvider,
     request_headers: ProviderRequestHeaders,
     provider_id: String,
     route_provider: String,
-    base_url: String,
-    api_key: Option<String>,
     quota_identity: Option<ProviderQuotaIdentity>,
-    model: String,
-    max_output_tokens: u32,
-    max_output_tokens_parameter: &'static str,
-    context_window_tokens: Option<usize>,
-    reasoning_effort: Option<String>,
-    service_tier: Option<crate::config::ServiceTier>,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
 }
@@ -554,31 +553,28 @@ impl OpenAiChatCompletionsProvider {
             ),
         };
         Ok(Self {
-            client,
+            transport: ChatProvider::new(
+                client,
+                ChatCompletionsConfig {
+                    base_url: provider_config.base_url.clone(),
+                    api_key,
+                    model: model.to_string(),
+                    max_output_tokens: resolved_max_output_tokens,
+                    context_window_tokens,
+                    reasoning_effort: provider_config.reasoning_effort.clone(),
+                    max_output_tokens_parameter: output_limit_parameter(
+                        provider_config.route_provider.as_str(),
+                        provider_config.route_endpoint.as_str(),
+                        model,
+                    ),
+                },
+            ),
             provider_id: provider_config.id.as_str().to_string(),
             route_provider: provider_config.route_provider.as_str().to_string(),
-            base_url: provider_config.base_url.trim_end_matches('/').to_string(),
             request_headers: ProviderRequestHeaders::new(provider_config),
-            api_key,
             quota_identity: ProviderQuotaIdentity::for_api_credential(provider_config),
-            model: model.to_string(),
-            max_output_tokens: resolved_max_output_tokens,
-            context_window_tokens,
-            reasoning_effort: provider_config.reasoning_effort.clone(),
-            service_tier: None,
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
-            max_output_tokens_parameter: if provider_config.route_provider.as_str()
-                == "tencent-tokenhub"
-                && provider_config.route_endpoint.as_str() == "default"
-                && matches!(
-                    model,
-                    "kimi-k3" | "kimi-k3.1-pro" | "kimi-k3.1-pro-highspeed"
-                ) {
-                "max_completion_tokens"
-            } else {
-                "max_tokens"
-            },
         })
     }
 }
@@ -1388,44 +1384,32 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         material.validate_images(&request.conversation)?;
         material
             .complete_turn(async {
-                // Build Chat Completions request
-                let mut full_body = build_chat_completion_request(
-                    &self.model,
-                    self.max_output_tokens,
-                    &request,
-                    ToolSchemaContract::Relaxed,
-                    false, // Streaming infrastructure exists but is not currently enabled; requests are non-streaming
-                    self.reasoning_effort.as_deref(),
-                    self.max_output_tokens_parameter,
-                )?;
-                apply_service_tier(&mut full_body, self.service_tier, false);
+                let (messages, tools) =
+                    build_chat_completion_parts(&request, ToolSchemaContract::Relaxed)?;
+                let full_body = self.transport.request_body(
+                    messages,
+                    tools,
+                    request
+                        .prompt_frame
+                        .cache
+                        .as_ref()
+                        .map(|cache| cache.prompt_cache_key.as_str()),
+                );
                 let (mut body, plan) =
                     plan_chat_completion_request(full_body, &request, &self.continuation)?;
-                let effective_output = effective_output_tokens(
-                    self.context_window_tokens,
-                    self.max_output_tokens,
-                    &body,
-                    &[self.max_output_tokens_parameter],
-                );
-                if body.get(self.max_output_tokens_parameter).is_some() {
-                    body[self.max_output_tokens_parameter] = Value::from(effective_output);
-                }
+                self.transport.apply_output_budget(&mut body);
                 let mut sent_diagnostics = plan.diagnostics.clone();
-                sent_diagnostics.reasoning_effort = self.reasoning_effort.clone();
-                let headers = self
-                    .api_key
-                    .as_ref()
-                    .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-                    .unwrap_or_default();
-                let headers = self
-                    .request_headers
-                    .compose(headers, request.provider_session_id.as_ref())?;
+                sent_diagnostics.reasoning_effort =
+                    self.transport.reasoning_effort().map(str::to_owned);
+                let headers = self.request_headers.compose(
+                    self.transport.authorization_headers(),
+                    request.provider_session_id.as_ref(),
+                )?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
 
                 // Send to /v1/chat/completions endpoint
                 let parsed = match send_chat_completion_request_with_material(
-                    &self.client,
-                    chat_completions_url(&self.base_url),
+                    &self.transport,
                     body,
                     headers,
                     trace.as_ref(),
@@ -1457,14 +1441,11 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
                     &material,
                 )?;
 
-                if self.service_tier.is_some() || parsed.served_service_tier.is_some() {
+                if self.transport.service_tier().is_some() || parsed.served_service_tier.is_some() {
                     let controls = sent_diagnostics
                         .openai_request_controls
                         .get_or_insert_with(Default::default);
-                    controls.service_tier = self.service_tier.map(|tier| match tier {
-                        crate::config::ServiceTier::Default => "default".into(),
-                        crate::config::ServiceTier::Fast => "priority".into(),
-                    });
+                    controls.service_tier = self.transport.service_tier().map(str::to_owned);
                     controls.served_service_tier = parsed.served_service_tier.clone();
                 }
                 sent_diagnostics.transport_timeline = parsed.transport_timeline.clone();
@@ -1481,18 +1462,16 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
         let material = request.material.clone();
         material
             .complete_image(async {
-                let dialect = openai_images_dialect(&self.route_provider, &self.base_url);
-                let body = build_images_request(dialect, &self.model, &request)?;
+                let dialect =
+                    openai_images_dialect(&self.route_provider, self.transport.base_url());
+                let body = build_images_request(dialect, self.transport.model(), &request)?;
                 let headers = self
-                    .api_key
-                    .as_ref()
-                    .map(|api_key| vec![("authorization", format!("Bearer {api_key}"))])
-                    .unwrap_or_default();
-                let headers = self.request_headers.compose(headers, None)?;
+                    .request_headers
+                    .compose(self.transport.authorization_headers(), None)?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
                 let images = send_openai_images_request(
-                    &self.client,
-                    openai_images_generations_url(&self.base_url),
+                    self.transport.client(),
+                    openai_images_generations_url(self.transport.base_url()),
                     &body,
                     headers,
                     &self.provider_id,
@@ -1503,10 +1482,10 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
                 .await?;
                 request
                     .material
-                    .admit_value(&(&self.provider_id, &self.model))?;
+                    .admit_value(&(&self.provider_id, self.transport.model()))?;
                 Ok(ProviderGenerateImageResponse {
                     provider: self.provider_id.clone(),
-                    model: self.model.clone(),
+                    model: self.transport.model().to_owned(),
                     images,
                 })
             })
@@ -1515,7 +1494,7 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
 
     #[cfg(test)]
     fn configured_model_refs(&self) -> Vec<String> {
-        vec![format!("openai/{}", self.model)]
+        vec![format!("openai/{}", self.transport.model())]
     }
 
     fn prompt_capabilities(&self) -> Vec<crate::provider::ProviderPromptCapability> {
@@ -1524,27 +1503,6 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
             crate::provider::ProviderPromptCapability::PromptCacheKey,
         ]
     }
-}
-
-fn chat_completions_url(base_url: &str) -> String {
-    let trimmed = base_url.trim_end_matches('/');
-    if trimmed.ends_with("/chat/completions") {
-        trimmed.to_string()
-    } else if has_trailing_version_segment(trimmed) {
-        format!("{trimmed}/chat/completions")
-    } else {
-        format!("{trimmed}/v1/chat/completions")
-    }
-}
-
-fn has_trailing_version_segment(url: &str) -> bool {
-    let Some(last_segment) = url.rsplit('/').next() else {
-        return false;
-    };
-    let Some(version_digits) = last_segment.strip_prefix('v') else {
-        return false;
-    };
-    !version_digits.is_empty() && version_digits.chars().all(|ch| ch.is_ascii_digit())
 }
 
 impl ProviderTurnResponse {
@@ -1690,7 +1648,7 @@ impl OpenAiCodexProvider {
 
 impl OpenAiChatCompletionsProvider {
     pub(crate) fn with_service_tier(mut self, tier: Option<crate::config::ServiceTier>) -> Self {
-        self.service_tier = tier;
+        self.transport = self.transport.with_service_tier(tier);
         self
     }
 }

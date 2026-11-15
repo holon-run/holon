@@ -102,6 +102,7 @@ async fn phase_timeout_openai_operations_preserve_non_text_headers_budgets() {
         let (url, server) = serve(json!({"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}), false).await;
         chat::send_chat_completion_request(
             &client, url, json!({"model":"test"}), vec![], None, None, None,
+            &Default::default(),
         ).await.expect("Chat retains its existing deadline");
         server.abort();
 

@@ -1,0 +1,19 @@
+[package]
+name = "holon-provider"
+version = "0.1.0"
+edition = "2021"
+description = "Internal Holon model provider adapters"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+readme = "README.md"
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+base64 = "0.22"
+chrono = "0.4"
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-model-client = { version = "0.1.1", path = "../holon-model-client" }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+reqwest = { version = "0.12", default-features = false }
+serde_json = "1.0"
