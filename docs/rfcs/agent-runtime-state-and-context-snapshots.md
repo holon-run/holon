@@ -3254,11 +3254,18 @@ share the finite claim-read allowance; the tuple guard remains held through ACK.
 
 Work focus and Command environment decisions use the complete active Trigger
 relation from the same publication as their Work or State observations. Work
-focus may prepare that finite relation at its accepted command boundary; an
-ordinary Command projection cannot adopt a missing or raw Trigger. Trigger
-copies and generated callback URLs are admitted before allocation, and their
-actual material guards remain with the prepared Work or Command value. These
-read projections grant no delivery, activation, reset or revocation authority.
+focus may prepare that finite relation at its accepted command boundary.
+Command admission first captures the live Scheduling view. If live coverage,
+required history metadata, or a selected record needs preparation, it prepares
+the shared current Scheduling window once under the same owner and captures
+again before registering an execution attempt or starting a process. The
+command capture selects no history, while preparation preserves the bounded
+history needed by other consumers. Only qualified facts from the resulting
+publication can supply a Trigger or establish its absence. Failed preparation
+returns a pre-launch error. Trigger copies and generated callback URLs are
+admitted before allocation, and their actual material guards remain with the
+prepared Work or Command value. These read projections grant no delivery,
+activation, reset or revocation authority.
 
 
 ### Cold Host Scheduling read scope
