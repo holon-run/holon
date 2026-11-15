@@ -14630,11 +14630,10 @@ mod tests {
             .with_read_scope(crate::runtime_db::RuntimeDbReadScope::new(
                 std::time::Instant::now() + Duration::from_secs(30),
             ));
-        assert_eq!(
-            entries,
-            host.list_agent_entries_for_parent_scoped(Some("parent-agent"), &scoped)
-                .unwrap()
-        );
+        let reference = host
+            .list_agent_entries_for_parent_scoped(Some("parent-agent"), &scoped)
+            .unwrap();
+        assert_cold_roster_matches_storage(&entries, reference.iter().map(|entry| &**entry));
         assert_eq!(
             entries
                 .iter()
@@ -14663,6 +14662,29 @@ mod tests {
     }
 
     #[cfg(holon_lib_test_shard = "d")]
+    fn assert_cold_roster_matches_storage<'a>(
+        observed: &OwnedAgentListRead,
+        reference: impl IntoIterator<Item = &'a AgentListEntry>,
+    ) {
+        use crate::types::{AgentListObservation, AgentListObservationStatus};
+
+        // These cold fixtures have no claimed owner or mutation publications.
+        let mut reference = reference.into_iter();
+        for entry in observed.iter() {
+            let mut expected = reference.next().expect("extra roster member").clone();
+            assert!(expected.observation.is_none());
+            expected.observation = Some(AgentListObservation {
+                identity_revision: 0,
+                owner_epoch: 0,
+                publication_generation: 0,
+                status: AgentListObservationStatus::Current,
+            });
+            assert_eq!(&**entry, &expected);
+        }
+        assert!(reference.next().is_none(), "missing roster member");
+    }
+
+    #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
     async fn scoped_host_snapshots_and_list_match_ordinary_reads_and_reject_cancelled_empty_reads()
     {
@@ -14687,11 +14709,11 @@ mod tests {
             host.agent_projection_snapshot_scoped("scoped-snapshot-agent", &scoped)
                 .unwrap()
         );
-        assert_eq!(
-            host.list_agent_entries().await.unwrap(),
-            host.list_agent_entries_for_parent_scoped(None, &scoped)
-                .unwrap()
-        );
+        let observed = host.list_agent_entries().await.unwrap();
+        let reference = host
+            .list_agent_entries_for_parent_scoped(None, &scoped)
+            .unwrap();
+        assert_cold_roster_matches_storage(&observed, reference.iter().map(|entry| &**entry));
         assert!(host
             .agent_projection_snapshot_scoped("missing-agent", &scoped)
             .unwrap()
@@ -14968,7 +14990,7 @@ mod tests {
             }
         }
         reference.sort_by(|left, right| left.identity.agent_id.cmp(&right.identity.agent_id));
-        assert_eq!(entries, reference);
+        assert_cold_roster_matches_storage(&entries, &reference);
     }
 
     #[cfg(holon_lib_test_shard = "d")]

@@ -593,7 +593,7 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
     prepare.prepare_current_scheduler_query(None).await?;
     drop(prepare);
     drop(runtime.agent_summary().await?);
-    let expected = runtime.agent_list_entry().await?;
+    let mut expected = runtime.agent_list_entry().await?;
     let root = runtime.inner.mutation_owner.capture()?.unwrap();
     let old_root = Arc::downgrade(&root);
     drop(root);
@@ -601,6 +601,19 @@ async fn fleet_loaded_entry_uses_one_ready_cut_without_state_lock_body_sql_or_ro
         .append_original_audit_event(AuditEvent::legacy("roster_cut", serde_json::json!({})))
         .await?;
     assert!(old_root.upgrade().is_none());
+    expected.observation = Some({
+        let root = runtime.inner.mutation_owner.capture()?.unwrap();
+        crate::types::AgentListObservation {
+            identity_revision: root
+                .identity
+                .as_ref()
+                .context("published identity")?
+                .revision,
+            owner_epoch: root.token.owner_epoch,
+            publication_generation: root.token.generation,
+            status: crate::types::AgentListObservationStatus::Current,
+        }
+    });
     runtime.runtime_db().transaction(|tx| {
         tx.execute_batch(
             "ALTER TABLE agent_states RENAME TO fleet_forbidden_states;
