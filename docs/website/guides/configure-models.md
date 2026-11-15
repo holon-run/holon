@@ -19,6 +19,7 @@ Holon uses a uniform `provider@endpoint/model` route format (such as `ollama@def
 
 ## Steps
 
+<a id="local-or-custom-endpoints"></a>
 ### Scenario 1: Zero-Config Local Inference with Ollama (Offline & Free)
 
 To run agents entirely free and offline, local Ollama is the cleanest starting point:

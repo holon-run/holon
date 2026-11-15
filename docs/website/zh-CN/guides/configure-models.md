@@ -19,6 +19,7 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
 
 ## 操作步骤
 
+<a id="local-or-custom-endpoints"></a>
 ### 场景一：零配置接入本地 Ollama（离线与免密钥）
 
 如果你希望在本地完全免费且离线运行 Agent，本地安装的 Ollama 是最简单的起点：
