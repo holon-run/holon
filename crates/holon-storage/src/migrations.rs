@@ -4446,6 +4446,11 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_active_recovery
   WHERE status NOT IN ('processed','aborted','dropped','quarantined');
 "#,
     },
+    Migration {
+        version: 111,
+        name: "current_run_abort_intents",
+        sql: schema::CURRENT_RUN_ABORT_SCHEMA,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4918,6 +4923,12 @@ fn apply_migration_transaction(
     }
     if migration.name == "index_startup_recovery_sources" {
         migrate_startup_recovery_indexes(transaction)?;
+    }
+    if migration.name == "current_run_abort_intents"
+        && table_exists_tx(transaction, "turn_records")?
+    {
+        // Keep corrupt history writable and visible to fail-closed runtime reads.
+        transaction.execute_batch(schema::CURRENT_RUN_ABORT_HISTORY_INDEX_SCHEMA)?;
     }
     transaction.execute(
         "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",

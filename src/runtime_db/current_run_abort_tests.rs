@@ -48,10 +48,14 @@ impl Fixture {
     }
 
     fn new_with_turn(qualify_turn: bool) -> Result<Self> {
+        Self::new_with_incarnation(qualify_turn, 1)
+    }
+
+    fn new_with_incarnation(qualify_turn: bool, incarnation: u64) -> Result<Self> {
         let runtime = TempRuntimeDb::new()?;
         let scope = InputEvidenceScope {
             agent_id: "abort-db".into(),
-            identity_incarnation: 1,
+            identity_incarnation: incarnation,
         };
         let at = "2026-11-15T00:00:00Z".parse()?;
         let mut original = AgentState::new(&scope.agent_id);
@@ -69,7 +73,7 @@ impl Fixture {
         };
         let intent = CurrentRunAbortIntent {
             agent_id: scope.agent_id.clone(),
-            identity_incarnation: 1,
+            identity_incarnation: incarnation,
             owner_epoch: 1,
             run_id: "original-run".into(),
             runtime_lease_id: "original-lease".into(),
@@ -88,18 +92,17 @@ impl Fixture {
             intent,
         };
         f.db().transaction(|tx| {
-            upsert_agent_identity_tx(
-                tx,
-                &AgentIdentityRecord::new(
-                    &f.scope.agent_id,
-                    AgentKind::Named,
-                    AgentVisibility::Public,
-                    AgentOwnership::SelfOwned,
-                    AgentProfilePreset::PublicNamed,
-                    None,
-                    None,
-                ),
-            )?;
+            let mut identity = AgentIdentityRecord::new(
+                &f.scope.agent_id,
+                AgentKind::Named,
+                AgentVisibility::Public,
+                AgentOwnership::SelfOwned,
+                AgentProfilePreset::PublicNamed,
+                None,
+                None,
+            );
+            identity.incarnation = incarnation;
+            upsert_agent_identity_tx(tx, &identity)?;
             upsert_agent_state_tx(tx, &f.original)?;
             upsert_queue_entry_tx(tx, &f.source)?;
             append_message_tx(tx, &f.message(&f.source.message_id))?;
@@ -167,7 +170,7 @@ impl Fixture {
             self.at,
             AgentPostureTransitionCommand {
                 agent_id: self.scope.agent_id.clone(),
-                expected_incarnation: Some(1),
+                expected_incarnation: Some(self.scope.identity_incarnation),
                 agent_state: AgentStateMutation {
                     expected: Some(Box::new(self.original.clone())),
                     record: Box::new(stopped),
@@ -330,13 +333,40 @@ fn abort_fence_defaults_only_absent_legacy_incarnation_to_one() -> Result<()> {
 }
 
 #[test]
+fn abort_fence_rejects_non_integer_incarnation_for_recreated_identity() -> Result<()> {
+    let f = Fixture::new_with_incarnation(false, 2)?;
+    f.commit(&f.prepared("recreated-identity-abort", None)?)?;
+    assert!(f
+        .db()
+        .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)?);
+    for incarnation in ["true", "false", "2.0", "null", "\"2\"", "[]", "{}"] {
+        f.db().connection()?.execute(
+            "UPDATE agent_identities
+             SET payload_json=json_set(payload_json,'$.incarnation',json(?2))
+             WHERE agent_id=?1",
+            params![f.scope.agent_id, incarnation],
+        )?;
+        assert!(
+            f.db()
+                .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)
+                .is_err(),
+            "malformed incarnation must not bypass incarnation 2: {incarnation}"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn abort_schema_replay_preserves_existing_intents_and_indexes() -> Result<()> {
     let f = Fixture::new()?;
     f.commit(&f.prepared("schema-replay-abort", None)?)?;
     for _ in 0..2 {
         f.db()
             .connection()?
-            .execute_batch(super::current_run_abort::SCHEMA)?;
+            .execute_batch(holon_storage::schema::CURRENT_RUN_ABORT_SCHEMA)?;
+        f.db()
+            .connection()?
+            .execute_batch(holon_storage::schema::CURRENT_RUN_ABORT_HISTORY_INDEX_SCHEMA)?;
     }
     assert_eq!(f.count("current_run_abort_intents")?, 1);
     assert!(f
@@ -346,7 +376,7 @@ fn abort_schema_replay_preserves_existing_intents_and_indexes() -> Result<()> {
 }
 
 #[test]
-fn historical_abort_lookup_seeks_terminal_reason_and_kind_index() -> Result<()> {
+fn historical_abort_lookup_seeks_only_indexed_candidates() -> Result<()> {
     let f = Fixture::new()?;
     let connection = f.db().connection()?;
     let plan = connection
@@ -360,10 +390,62 @@ fn historical_abort_lookup_seeks_terminal_reason_and_kind_index() -> Result<()> 
         .collect::<std::result::Result<Vec<_>, _>>()?;
     assert!(
         plan.iter().any(|detail| {
-            detail.contains("SEARCH t USING INDEX idx_turn_records_operator_abort_terminal")
-                && detail.matches("<expr>=?").count() == 2
+            detail.contains("SEARCH t USING INDEX idx_turn_records_operator_abort_candidates")
+                && detail.contains("agent_id=?")
         }),
-        "historical abort lookup must seek terminal reason and kind: {plan:?}"
+        "historical abort lookup must seek only abort/corrupt candidates: {plan:?}"
+    );
+    Ok(())
+}
+
+#[test]
+fn historical_abort_index_preserves_corrupt_history_and_fails_closed() -> Result<()> {
+    let f = Fixture::new()?;
+    let connection = f.db().connection()?;
+    connection.execute_batch("DROP INDEX idx_turn_records_operator_abort_candidates")?;
+    connection.execute(
+        "UPDATE turn_records SET payload_json='{' WHERE agent_id=?1",
+        [&f.scope.agent_id],
+    )?;
+    connection.execute_batch(holon_storage::schema::CURRENT_RUN_ABORT_HISTORY_INDEX_SCHEMA)?;
+    connection.execute(
+        "UPDATE turn_records SET payload_json=']' WHERE agent_id=?1",
+        [&f.scope.agent_id],
+    )?;
+    assert!(f
+        .db()
+        .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)
+        .is_err());
+    Ok(())
+}
+
+#[test]
+fn abort_migration_supports_sparse_history_without_turn_records() -> Result<()> {
+    let mut connection = rusqlite::Connection::open_in_memory()?;
+    super::migrations::ensure_migration_table(&connection)?;
+    connection.execute_batch(
+        "CREATE TABLE execution_protocol_attempts (agent_id TEXT NOT NULL, payload_json TEXT NOT NULL)",
+    )?;
+    let migration = super::migrations::MIGRATIONS
+        .iter()
+        .find(|migration| migration.name == "current_run_abort_intents")
+        .context("current-run abort migration")?;
+    super::migrations::apply_migration(&mut connection, migration)?;
+    assert_eq!(
+        connection.query_row(
+            "SELECT count(*) FROM current_run_abort_intents",
+            [],
+            |row| { row.get::<_, u64>(0) }
+        )?,
+        0
+    );
+    assert_eq!(
+        connection.query_row(
+            "SELECT count(*) FROM sqlite_master WHERE name='turn_records'",
+            [],
+            |row| row.get::<_, u64>(0),
+        )?,
+        0
     );
     Ok(())
 }

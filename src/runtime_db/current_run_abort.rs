@@ -9,33 +9,14 @@ use crate::{
     runtime_db::transitions::AgentStateMutation,
 };
 
-pub(crate) const SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS current_run_abort_intents (
-    agent_id TEXT NOT NULL,
-    identity_incarnation INTEGER NOT NULL,
-    run_id TEXT NOT NULL,
-    source_message_id TEXT NOT NULL,
-    payload_json TEXT NOT NULL,
-    PRIMARY KEY (agent_id, identity_incarnation, run_id)
-);
-CREATE INDEX IF NOT EXISTS idx_current_run_abort_source
-    ON current_run_abort_intents(agent_id, identity_incarnation, source_message_id);
-CREATE INDEX IF NOT EXISTS idx_execution_attempt_source_run
-    ON execution_protocol_attempts(
-        agent_id, json_extract(payload_json,'$.source_message_id'),
-        json_extract(payload_json,'$.run_id'));
-CREATE INDEX IF NOT EXISTS idx_turn_records_operator_abort_terminal
-    ON turn_records(
-        agent_id, json_extract(payload_json,'$.terminal.reason'),
-        json_extract(payload_json,'$.terminal.kind'));
-"#;
-
 pub(super) const HISTORICAL_ABORTED_TURN_SQL: &str = "
 SELECT EXISTS(
     SELECT 1 FROM turn_records t
     WHERE t.agent_id=?1
-      AND json_extract(t.payload_json,'$.terminal.reason')='operator_aborted'
-      AND json_extract(t.payload_json,'$.terminal.kind') IN ('interrupted','aborted')
+      AND CASE WHEN json_valid(t.payload_json)
+          THEN json_extract(t.payload_json,'$.terminal.reason')='operator_aborted'
+            AND json_extract(t.payload_json,'$.terminal.kind') IN ('interrupted','aborted')
+          ELSE 1 END
       AND (json_extract(t.payload_json,'$.trigger.message_id')=?2
            OR EXISTS(SELECT 1 FROM json_each(t.payload_json,'$.input_message_ids')
                      WHERE value=?2)))";
@@ -198,7 +179,8 @@ pub(crate) fn input_aborted_tx(
     let incarnation: Option<u64> = tx
         .query_row(
             "SELECT CASE WHEN json_type(payload_json,'$.incarnation') IS NULL THEN 1
-                         ELSE json_extract(payload_json,'$.incarnation') END
+                         WHEN json_type(payload_json,'$.incarnation')='integer'
+                         THEN json_extract(payload_json,'$.incarnation') END
              FROM agent_identities WHERE agent_id=?1",
             [agent_id],
             |row| row.get(0),
