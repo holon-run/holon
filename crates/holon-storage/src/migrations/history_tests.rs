@@ -1,8 +1,5 @@
 use super::*;
-use crate::runtime_db::migrations::ensure_migration_table;
-
-#[path = "migration_data_tests.rs"]
-mod data;
+use crate::migrations::ensure_migration_table;
 
 fn legacy_prefix(start: i64, count: usize) -> Result<Connection> {
     let connection = Connection::open_in_memory()?;

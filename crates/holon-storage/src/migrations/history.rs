@@ -1,10 +1,10 @@
 //! Compatibility for exact, unpublished feature lineages before integration.
-use super::migrations::MIGRATIONS;
+use super::MIGRATIONS;
 use anyhow::{ensure, Result};
 use rusqlite::Connection;
 
-const FIRST_FEATURE_VERSION: i64 = 93;
-const LAST_FEATURE_VERSION: i64 = super::command_task_creation::VERSION;
+pub const FIRST_FEATURE_VERSION: i64 = 93;
+pub const LAST_FEATURE_VERSION: i64 = crate::schema::COMMAND_TASK_CREATION_VERSION;
 
 pub(super) fn reconcile_feature_history(connection: &mut Connection) -> Result<()> {
     let transaction = connection.transaction()?;
@@ -96,7 +96,6 @@ pub(super) fn reconcile_feature_history(connection: &mut Connection) -> Result<(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
-#[path = "migration_history_tests.rs"]
+#[path = "history_tests.rs"]
 mod tests;

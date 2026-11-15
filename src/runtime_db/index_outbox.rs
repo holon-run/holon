@@ -2,91 +2,19 @@
 
 use anyhow::Result;
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension};
 
 use crate::runtime_db::evidence::insert_runtime_index_changes_tx;
 use crate::runtime_db::RuntimeDb;
-use crate::types::MessageEnvelope;
+use holon_storage::index_outbox::*;
 
 /// Runtime index outbox repository.
 pub struct RuntimeIndexOutboxRepository<'a> {
     pub(crate) db: &'a RuntimeDb,
 }
 
-/// Runtime index operation (upsert or delete).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub enum RuntimeIndexOperation {
-    Upsert,
-    Delete,
-}
-
-impl RuntimeIndexOperation {
-    pub(crate) fn as_str(self) -> &'static str {
-        match self {
-            Self::Upsert => "upsert",
-            Self::Delete => "delete",
-        }
-    }
-
-    fn parse(value: &str) -> Self {
-        match value {
-            "delete" => Self::Delete,
-            _ => Self::Upsert,
-        }
-    }
-}
-
-/// Runtime index change event.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
-pub struct RuntimeIndexChange {
-    pub agent_id: String,
-    pub source_kind: String,
-    pub source_id: String,
-    pub source_ref: String,
-    pub operation: RuntimeIndexOperation,
-    pub source_updated_at: Option<DateTime<Utc>>,
-    pub reason: String,
-}
-
-impl RuntimeIndexChange {
-    pub(crate) fn for_task(task: &crate::types::TaskRecord) -> Self {
-        Self {
-            agent_id: task.agent_id.clone(),
-            source_kind: "task".into(),
-            source_id: task.id.clone(),
-            source_ref: format!("task:{}", task.id),
-            operation: RuntimeIndexOperation::Upsert,
-            source_updated_at: Some(task.updated_at),
-            reason: "task_written".into(),
-        }
-    }
-
-    pub(crate) fn for_message(message: &MessageEnvelope) -> Self {
-        Self {
-            agent_id: message.agent_id.clone(),
-            source_kind: "message".into(),
-            source_id: message.id.clone(),
-            source_ref: format!("message:{}", message.id),
-            operation: RuntimeIndexOperation::Upsert,
-            source_updated_at: Some(message.created_at),
-            reason: "message_written".into(),
-        }
-    }
-}
-
-/// Runtime index outbox row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeIndexOutboxRow {
-    pub change_seq: i64,
-    pub agent_id: String,
-    pub source_kind: String,
-    pub source_id: String,
-    pub source_ref: String,
-    pub operation: RuntimeIndexOperation,
-    pub source_updated_at: Option<DateTime<Utc>>,
-    pub reason: Option<String>,
-    pub created_at: DateTime<Utc>,
-}
+pub use holon_storage::index_outbox::{
+    RuntimeIndexChange, RuntimeIndexOperation, RuntimeIndexOutboxRow,
+};
 
 impl RuntimeIndexOutboxRepository<'_> {
     pub fn append_changes(&self, changes: &[RuntimeIndexChange]) -> Result<()> {
@@ -100,25 +28,12 @@ impl RuntimeIndexOutboxRepository<'_> {
     /// Delete all runtime-index outbox rows for one agent while preserving its
     /// monotonic produced watermark.
     pub fn delete_all_for_agent(&self, agent_id: &str) -> Result<usize> {
-        let connection = self.db.connection()?;
-        connection
-            .execute(
-                "DELETE FROM runtime_index_outbox WHERE agent_id = ?1",
-                [agent_id],
-            )
-            .map_err(Into::into)
+        delete_all_for_agent_in(&self.db.connection()?, agent_id)
     }
 
     pub fn high_watermark(&self) -> Result<i64> {
-        self.db.with_read(|connection| {
-            connection
-                .query_row(
-                    "SELECT COALESCE(MAX(change_seq), 0) FROM runtime_index_outbox",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(Into::into)
-        })
+        self.db
+            .with_read(|connection| high_watermark_in(connection))
     }
 
     /// Return distinct agent ids that have at least one pending outbox row,
@@ -157,20 +72,8 @@ impl RuntimeIndexOutboxRepository<'_> {
     /// consumed rows are deleted. Rows appended before the watermark table
     /// existed are still covered by taking the max with the current outbox.
     pub fn produced_watermark_for_agent(&self, agent_id: &str) -> Result<i64> {
-        self.db.with_read(|connection| {
-            let stored: Option<i64> = connection
-                .query_row(
-                    "SELECT produced_change_seq
-                     FROM runtime_index_outbox_watermarks
-                     WHERE agent_id = ?1",
-                    [agent_id],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(anyhow::Error::from)?;
-            let current = high_watermark_for_agent_in(connection, agent_id)?;
-            Ok(stored.unwrap_or(0).max(current))
-        })
+        self.db
+            .with_read(|connection| produced_watermark_for_agent_in(connection, agent_id))
     }
 
     /// Exact number of pending outbox rows for the agent. Sequence distance
@@ -181,14 +84,7 @@ impl RuntimeIndexOutboxRepository<'_> {
     pub fn pending_count_for_agent(&self, agent_id: &str, after_change_seq: i64) -> Result<i64> {
         self.db.with_read(|connection| {
             let _query = crate::diagnostics::attribution::INDEX_PENDING_COUNT.start();
-            connection
-                .query_row(
-                    "SELECT COUNT(*) FROM runtime_index_outbox
-                     WHERE agent_id = ?1 AND change_seq > ?2",
-                    params![agent_id, after_change_seq],
-                    |row| row.get(0),
-                )
-                .map_err(Into::into)
+            pending_count_for_agent_in(connection, agent_id, after_change_seq)
         })
     }
 
@@ -201,27 +97,7 @@ impl RuntimeIndexOutboxRepository<'_> {
     ) -> Result<Option<DateTime<Utc>>> {
         self.db.with_read(|connection| {
             let _query = crate::diagnostics::attribution::INDEX_PENDING_OLDEST.start();
-            let created_at: Option<String> = connection
-                .query_row(
-                    "SELECT MIN(created_at) FROM runtime_index_outbox
-                     WHERE agent_id = ?1 AND change_seq > ?2",
-                    params![agent_id, after_change_seq],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(anyhow::Error::from)?
-                .flatten();
-            created_at
-                .map(|value| DateTime::parse_from_rfc3339(&value).map(|dt| dt.with_timezone(&Utc)))
-                .transpose()
-                .map_err(|error| {
-                    rusqlite::Error::FromSqlConversionFailure(
-                        0,
-                        rusqlite::types::Type::Text,
-                        Box::new(error),
-                    )
-                    .into()
-                })
+            oldest_pending_created_at_for_agent_in(connection, agent_id, after_change_seq)
         })
     }
 
@@ -235,62 +111,13 @@ impl RuntimeIndexOutboxRepository<'_> {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT change_seq, agent_id, source_kind, source_id, source_ref, operation,
-                        source_updated_at, reason, created_at
-                 FROM runtime_index_outbox
-                 WHERE agent_id = ?1 AND change_seq > ?2
-                 ORDER BY change_seq ASC
-                 LIMIT ?3",
-            )?;
-            let rows = statement.query_map(params![agent_id, after_change_seq, limit], |row| {
-                let source_updated_at: Option<String> = row.get(6)?;
-                let created_at: String = row.get(8)?;
-                Ok(RuntimeIndexOutboxRow {
-                    change_seq: row.get(0)?,
-                    agent_id: row.get(1)?,
-                    source_kind: row.get(2)?,
-                    source_id: row.get(3)?,
-                    source_ref: row.get(4)?,
-                    operation: RuntimeIndexOperation::parse(&row.get::<_, String>(5)?),
-                    source_updated_at: source_updated_at
-                        .as_deref()
-                        .map(DateTime::parse_from_rfc3339)
-                        .transpose()
-                        .map_err(|error| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                6,
-                                rusqlite::types::Type::Text,
-                                Box::new(error),
-                            )
-                        })?
-                        .map(|dt| dt.with_timezone(&Utc)),
-                    reason: row.get(7)?,
-                    created_at: DateTime::parse_from_rfc3339(&created_at)
-                        .map_err(|error| {
-                            rusqlite::Error::FromSqlConversionFailure(
-                                8,
-                                rusqlite::types::Type::Text,
-                                Box::new(error),
-                            )
-                        })?
-                        .with_timezone(&Utc),
-                })
-            })?;
-            rows.map(|row| row.map_err(Into::into)).collect()
-        })
+        self.db
+            .with_read(|connection| read_after_in(connection, agent_id, after_change_seq, limit))
     }
 
     pub fn delete_through(&self, agent_id: &str, through_change_seq: i64) -> Result<usize> {
-        self.db.transaction(|tx| {
-            tx.execute(
-                "DELETE FROM runtime_index_outbox
-                 WHERE agent_id = ?1 AND change_seq <= ?2",
-                params![agent_id, through_change_seq],
-            )
-            .map_err(Into::into)
-        })
+        self.db
+            .transaction(|tx| delete_through_in(tx, agent_id, through_change_seq))
     }
 
     /// Best-effort GC for acknowledged rows at or below `through_change_seq`.
@@ -305,51 +132,13 @@ impl RuntimeIndexOutboxRepository<'_> {
         through_change_seq: i64,
     ) -> Result<usize> {
         let has_acknowledged_rows = self.db.with_read(|connection| {
-            Ok(connection
-                .query_row(
-                    "SELECT 1 FROM runtime_index_outbox
-                     WHERE agent_id = ?1 AND change_seq <= ?2
-                     LIMIT 1",
-                    params![agent_id, through_change_seq],
-                    |_| Ok(true),
-                )
-                .optional()?
-                .unwrap_or(false))
+            has_acknowledged_rows(connection, agent_id, through_change_seq)
         })?;
         if !has_acknowledged_rows {
             return Ok(0);
         }
         self.delete_through(agent_id, through_change_seq)
     }
-}
-
-fn agent_ids_with_pending_in(connection: &mut rusqlite::Connection) -> Result<Vec<String>> {
-    let mut statement = connection
-        .prepare("SELECT DISTINCT agent_id FROM runtime_index_outbox ORDER BY agent_id ASC")?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    rows.map(|row| row.map_err(Into::into)).collect()
-}
-
-fn agent_ids_with_watermarks_in(connection: &mut rusqlite::Connection) -> Result<Vec<String>> {
-    let mut statement = connection.prepare(
-        "SELECT agent_id FROM runtime_index_outbox_watermarks
-                 UNION SELECT DISTINCT agent_id FROM runtime_index_outbox
-                 ORDER BY agent_id ASC",
-    )?;
-    let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-    rows.map(|row| row.map_err(Into::into)).collect()
-}
-
-fn high_watermark_for_agent_in(connection: &rusqlite::Connection, agent_id: &str) -> Result<i64> {
-    connection
-        .query_row(
-            "SELECT COALESCE(MAX(change_seq), 0)
-             FROM runtime_index_outbox
-             WHERE agent_id = ?1",
-            [agent_id],
-            |row| row.get(0),
-        )
-        .map_err(Into::into)
 }
 
 #[cfg(holon_lib_test_shard = "b")]

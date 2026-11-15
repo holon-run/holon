@@ -5,7 +5,7 @@ use crate::runtime::input_evidence_budget::{
 };
 use crate::runtime::resident_input_evidence::{InputQueryCoverage, OriginalInputQuerySource};
 
-pub(in crate::runtime_db) const VERSION: i64 = 102;
+pub(in crate::runtime_db) use holon_storage::schema::INPUT_NATIVE_BIRTH_VERSION as VERSION;
 /// Native material uses the original Input policy, not another domain's selector.
 pub(in crate::runtime_db) fn original_material_limits(
     ledger: &InputEvidenceBudgetLedger,
@@ -20,28 +20,6 @@ pub(in crate::runtime_db) fn original_material_limits(
         usize::try_from(limits.record_limit)?.min(MAX_RECORDS),
     ))
 }
-
-pub(in crate::runtime_db) const SCHEMA: &str = r#"
-CREATE TABLE input_query_birth_cursors (
- agent_id TEXT NOT NULL,
- identity_incarnation INTEGER NOT NULL CHECK(typeof(identity_incarnation)='integer' AND identity_incarnation>0),
- high_water INTEGER NOT NULL CHECK(typeof(high_water)='integer' AND high_water>=0),
- PRIMARY KEY(agent_id,identity_incarnation));
-CREATE TABLE input_query_birth_members (
- agent_id TEXT NOT NULL,
- identity_incarnation INTEGER NOT NULL CHECK(typeof(identity_incarnation)='integer' AND identity_incarnation>0),
- family TEXT NOT NULL CHECK(family IN ('message','turn','tool_execution','brief','transcript','attempt','outcome','work_execution')),
- record_id TEXT NOT NULL CHECK(length(CAST(record_id AS BLOB))>0),
- birth_seq INTEGER NOT NULL CHECK(typeof(birth_seq)='integer' AND birth_seq>=0),
- PRIMARY KEY(agent_id,identity_incarnation,family,record_id),
- FOREIGN KEY(agent_id,identity_incarnation) REFERENCES input_query_birth_cursors(agent_id,identity_incarnation));
-CREATE INDEX input_native_known_current ON input_evidence_current(family,record_id);
-CREATE INDEX input_native_known_fixed ON input_evidence_eligibility(family,record_id);
-CREATE INDEX input_native_known_recovery ON input_evidence_seed_recovery_current(family,record_id);
-CREATE INDEX input_native_known_birth ON input_query_birth_members(family,record_id);
-CREATE INDEX input_query_birth_frontier ON input_query_birth_members(agent_id,identity_incarnation,birth_seq,family,record_id);
-CREATE UNIQUE INDEX input_query_birth_unique ON input_query_birth_members(agent_id,identity_incarnation,birth_seq) WHERE birth_seq>0;
-"#;
 
 pub(super) fn installed(tx: &Transaction<'_>) -> Result<bool> {
     let (cursors, members, migrations): (bool, bool, bool) = tx.query_row(

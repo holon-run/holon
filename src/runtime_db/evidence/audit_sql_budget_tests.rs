@@ -1,3 +1,5 @@
+use serde::Serialize;
+
 use super::*;
 use crate::{
     config::StateMemoryLimits,

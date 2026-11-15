@@ -240,24 +240,9 @@ const TASK_INVENTORY_OWNER: &str =
     "inventory_id IN (SELECT inventory_id FROM task_query_fixed_manifests WHERE agent_id = ?1)";
 const SCHEDULING_INVENTORY_OWNER: &str =
     "inventory_id IN (SELECT inventory_id FROM scheduling_fixed_manifests WHERE agent_id = ?1)";
-// Normal single-agent receipts can be looked up without decoding the receipt
-// ledger. Other shapes still use the original membership and ownership proof.
-macro_rules! single_receipt_scope_agent {
-    () => {
-        "CASE WHEN json_valid(scopes_json)=0 THEN NULL
-          WHEN json_type(scopes_json)='array'
-          AND json_array_length(scopes_json)=1
-          AND json_type(scopes_json,'$[0]')='object'
-          THEN json_extract(scopes_json,'$[0].agent_id') END"
-    };
-}
-
-pub(super) const RECEIPT_SCOPE_INDEX_SCHEMA: &str = concat!(
-    "CREATE INDEX IF NOT EXISTS idx_input_mutation_receipt_single_agent
-     ON input_mutation_receipts ((",
-    single_receipt_scope_agent!(),
-    "));"
-);
+#[cfg(test)]
+use holon_storage::schema::RECEIPT_SCOPE_INDEX_SCHEMA;
+use holon_storage::single_receipt_scope_agent;
 
 macro_rules! receipt_member {
     () => {
@@ -1958,18 +1943,18 @@ mod tests {
         // Only the shared cut's counts/digest/observed flags are content-free;
         // its per-agent fixed rows still require private deletion selectors.
         for schema in [
-            super::super::episode_snapshot::EPISODE_CONTINUITY_SCHEMA,
-            super::super::input_evidence_snapshot::INPUT_EVIDENCE_SCHEMA,
+            holon_storage::schema::EPISODE_CONTINUITY_SCHEMA,
+            holon_storage::schema::INPUT_EVIDENCE_SCHEMA,
             super::super::work_snapshot::WORK_DOMAIN_SCHEMA,
-            super::super::task_snapshot::TASK_DOMAIN_SCHEMA,
-            super::super::scheduling_snapshot::SCHEDULING_SCHEMA,
+            holon_storage::schema::TASK_DOMAIN_SCHEMA,
+            holon_storage::schema::SCHEDULING_SCHEMA,
             super::super::dispatch_memory::DISPATCH_MEMORY_SCHEMA,
-            super::super::input_mutation_receipts::INPUT_MUTATION_RECEIPT_SCHEMA,
-            super::super::current_read_writes::SCHEMA,
-            super::super::command_task_creation::SCHEMA,
-            super::super::task_stop::TASK_STOP_SCHEMA,
-            include_str!("control_transition/schema.sql"),
-            include_str!("input_native_birth.rs"),
+            holon_storage::schema::INPUT_MUTATION_RECEIPT_SCHEMA,
+            holon_storage::schema::CURRENT_READ_WRITES_SCHEMA,
+            holon_storage::schema::COMMAND_TASK_CREATION_SCHEMA,
+            holon_storage::schema::TASK_STOP_SCHEMA,
+            holon_storage::schema::CONTROL_TRANSITION_SCHEMA,
+            holon_storage::schema::INPUT_NATIVE_BIRTH_SCHEMA,
             include_str!("episode_snapshot_task_queries.rs"),
         ] {
             for declaration in schema
