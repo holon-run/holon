@@ -14,6 +14,8 @@ export interface ParentCandidate {
 export interface AgentAccess {
   status: AgentAccessStatus;
   agent?: AgentSummary;
+  /** Online read admission only; never a substitute for State or input permission. */
+  historyRead?: { agentId: string; incarnation: number };
   error?: string;
   parent?: ParentCandidate;
   parentAgentId?: string;
@@ -40,6 +42,7 @@ export interface AccessOptions {
   identityKey: string;
   agentId: string;
   expectedIncarnation?: number;
+  verifiedSubject?: boolean;
   client: Pick<ReturnType<typeof createRuntimeClient>, "getAgentIdentity" | "getAgentState">;
   scopeKey: (incarnation: number) => string;
   cacheKey: (incarnation: number) => string | undefined;
@@ -169,8 +172,8 @@ function revoke(record: AccessRecord): void {
   if (cacheKey !== undefined) void cacheClearConversationScope(cacheKey, record.options.agentId);
 }
 
-function load(record: AccessRecord, preview: boolean): Promise<void> {
-  if (record.inFlight) return record.inFlight;
+function load(record: AccessRecord, preview: boolean, force = false): Promise<void> {
+  if (record.inFlight && !force) return record.inFlight;
   // Only a continuously mounted, online-admitted route retains permission
   // through transient background refresh failures. Cache is never admission.
   const retainAdmission = !preview && record.access.status === "available";
@@ -206,6 +209,11 @@ function load(record: AccessRecord, preview: boolean): Promise<void> {
       if (!Number.isSafeInteger(identity.incarnation) || identity.incarnation < 1) {
         throw new Error("Agent identity did not provide a valid incarnation.");
       }
+      if (identity.agent_id !== agentId) {
+        revoke(record);
+        commit(record, { status: "replaced" });
+        return;
+      }
       const relations = detail.canonical_relations;
       const supervision = relations?.resolution === "resolved" && relations.agent_id === agentId
         ? relations.supervision : undefined;
@@ -224,8 +232,18 @@ function load(record: AccessRecord, preview: boolean): Promise<void> {
         commit(record, { status: identity.status, parent });
         return;
       }
+      if (identity.status !== "active") throw new Error("Agent identity is not active.");
       const result = await stateResult;
       if (!live()) return;
+      if ("error" in result && !record.lastAgent && record.options.verifiedSubject
+        && result.error instanceof RuntimeHttpError && result.error.status === 503
+        && result.error.code === "agent_reconciliation_pending") {
+        commit(record, {
+          status: "error", historyRead: { agentId, incarnation: identity.incarnation }, parent,
+          error: result.error.message,
+        });
+        return;
+      }
       if ("error" in result) throw result.error;
       const agent = result.agent;
       if (identity.agent_id !== agentId || agent.id !== agentId || agent.incarnation !== identity.incarnation) {
@@ -280,7 +298,7 @@ async function hydratePresentation(record: AccessRecord): Promise<void> {
   if (!keys.length) return;
   const cached = (await Promise.all(keys.map(readCachedAgents))).flatMap((agents) => agents ?? []);
   if (record.users === 0 || records.get(record.key) !== record || record.generation !== generation
-    || record.lastAgent || terminal(record.access.status)) return;
+    || record.lastAgent || record.access.historyRead || terminal(record.access.status)) return;
   const agent = cached.filter((candidate) => candidate.id === record.options.agentId
     && (record.pinnedIncarnation === undefined || candidate.incarnation === record.pinnedIncarnation))
     .sort((a, b) => (b.incarnation ?? 0) - (a.incarnation ?? 0))[0];
@@ -322,7 +340,14 @@ export function retryAgentAccess(key: string): void {
   const record = records.get(key);
   if (!record || !retryable(record.access.status)) return;
   clearTimeout(record.timer);
-  void load(record, true);
+  const retry = () => {
+    if (records.get(key) === record && record.users > 0) void load(record, true, true);
+  };
+  if (record.inFlight) {
+    record.inFlight.then(retry, retry);
+  } else {
+    retry();
+  }
 }
 
 export function agentAccessRejection(error: unknown): AgentAccessStatus | undefined {

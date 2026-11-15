@@ -55,6 +55,8 @@ const zh: Record<string, any> = {
   agentAccess: {
     loading: "正在加载智能体…",
     refreshDelayed: "智能体状态刷新暂时延迟，正在后台重试。",
+    historyOnly: "只读历史：智能体状态结算未决。无法确认当前执行状态，发送与控制操作暂不可用。",
+    attachFiles: "添加附件",
     available: "智能体会话",
     unauthorized: "请先认证再打开此智能体",
     missing: "未找到智能体",
@@ -640,6 +642,7 @@ const zh: Record<string, any> = {
     turnElapsed: "耗时 {{duration}}",
     conversationSyncing: "正在核对会话的最新状态…",
     turnTimingStatus: {
+      unconfirmed: "执行状态未确认",
       syncing: "正在同步",
       running: "正在执行",
       completed: "本轮结束",

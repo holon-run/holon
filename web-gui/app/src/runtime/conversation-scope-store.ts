@@ -117,7 +117,7 @@ interface RegistryEntry {
   readonly network: ReturnType<typeof conversationNetworkGate>;
   readonly unsubscribe: () => void;
   refCount: number;
-  writableCount: number;
+  networkCount: number;
   viewport?: ConversationViewport;
 }
 
@@ -167,6 +167,8 @@ export interface AcquireConversationScopeOptions
   readonly incarnation?: number;
   /** Attach to history without starting or accepting network work. */
   readonly readOnly?: boolean;
+  /** Independently verified online history admission; never enables controls. */
+  readonly historyRead?: boolean;
   readonly remoteId?: string;
   /** Verified identity-scoped storage key; absent means memory-only. */
   readonly cacheKey?: string;
@@ -187,13 +189,14 @@ export interface AcquireConversationScopeOptions
 export function acquireConversationScope(
   options: AcquireConversationScopeOptions,
 ): ConversationScopeHandle {
+  const networkAllowed = !options.readOnly || options.historyRead === true;
   const existing = registry.get(options.key);
   if (existing !== undefined) {
-    const wasPaused = existing.writableCount === 0;
+    const wasPaused = existing.networkCount === 0;
     existing.refCount += 1;
-    if (!options.readOnly) existing.writableCount += 1;
+    if (networkAllowed) existing.networkCount += 1;
     removeFromIdleOrder(options.key);
-    if (wasPaused && existing.writableCount > 0 && isPageVisible()) {
+    if (wasPaused && existing.networkCount > 0 && isPageVisible()) {
       existing.network.resume();
       existing.controller.start();
     }
@@ -241,10 +244,10 @@ export function acquireConversationScope(
     network,
     unsubscribe,
     refCount: 1,
-    writableCount: options.readOnly ? 0 : 1,
+    networkCount: networkAllowed ? 1 : 0,
   });
   publishScopeSnapshot(options.key, controller);
-  if (!options.readOnly && isPageVisible()) {
+  if (networkAllowed && isPageVisible()) {
     network.resume();
     controller.start();
   } else if (options.readOnly) {
@@ -256,13 +259,13 @@ export function acquireConversationScope(
 }
 
 /** Drop one holder; the last release makes the scope idle but kept alive. */
-export function releaseConversationScope(key: ConversationScopeKey, readOnly = false): void {
+export function releaseConversationScope(key: ConversationScopeKey, readOnly = false, historyRead = false): void {
   const entry = registry.get(key);
   if (entry === undefined) return;
   if (entry.refCount === 0) return;
   entry.refCount -= 1;
-  if (!readOnly) entry.writableCount = Math.max(0, entry.writableCount - 1);
-  if (entry.writableCount === 0) {
+  if (!readOnly || historyRead) entry.networkCount = Math.max(0, entry.networkCount - 1);
+  if (entry.networkCount === 0) {
     entry.network.pause();
     entry.controller.pause();
   }
@@ -350,7 +353,7 @@ if (typeof document !== "undefined") {
       if (!isPageVisible()) {
         entry.network.pause();
         entry.controller.pause();
-      } else if (entry.writableCount > 0) {
+      } else if (entry.networkCount > 0) {
         entry.network.resume();
         entry.controller.start();
       }

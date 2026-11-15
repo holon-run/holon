@@ -31,7 +31,7 @@ import { RuntimeHttpError } from "./client";
 import { ConversationHttpError } from "@holon/conversation-sdk";
 import { useAgentAccess } from "./useAgentAccess";
 import { AGENT_ACCESS_KEEP_ALIVE, agentAccessRejection, agentAccessRecordCount, clearAgentAccessRecords } from "./agent-access-records";
-import { resolveConversationScopeKey, useConversationScopeStore } from "./conversation-scope-store";
+import { acquireConversationScope, disposeAllConversationScopes, resolveConversationScopeKey, useConversationScopeStore } from "./conversation-scope-store";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
@@ -101,11 +101,109 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   clearAgentAccessRecords();
+  disposeAllConversationScopes(false);
   container.remove();
   vi.useRealTimers();
 });
 
 describe("route-selected agent admission", () => {
+  const reconciliationPending = () => new RuntimeHttpError("GET", "/state", 503,
+    "Reconciliation pending", "agent_reconciliation_pending");
+
+  it("admits cold online history without inventing a summary, and recovers normal admission without input", async () => {
+    mocks.state.mockRejectedValue(reconciliationPending());
+    await render();
+    expect(current.status).toBe("error");
+    expect(current.agent).toBeUndefined();
+    expect(current.historyRead).toEqual({ agentId: "private-child", incarnation: 1 });
+    expect(mocks.persist).not.toHaveBeenCalled();
+    mocks.state.mockResolvedValue({ id: "private-child", incarnation: 1 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(current.status).toBe("available");
+    expect(current.historyRead).toBeUndefined();
+    expect(current.agent?.incarnation).toBe(1);
+  });
+
+  it.each([
+    [503, undefined], [500, "agent_reconciliation_pending"], [503, "other_failure"],
+    [401, "agent_reconciliation_pending"], [403, "agent_reconciliation_pending"], [404, "agent_reconciliation_pending"],
+  ])("does not admit cold history for State %s / %s", async (status, code) => {
+    mocks.state.mockRejectedValue(new RuntimeHttpError("GET", "/state", status, "Unavailable", code));
+    await render();
+    expect(current.historyRead).toBeUndefined();
+    expect(current.status).not.toBe("available");
+  });
+
+  it("requires a confirmed subject and completed online identity, not just State's error code", async () => {
+    const identity = deferred();
+    mocks.state.mockRejectedValue(reconciliationPending());
+    mocks.identity.mockReturnValue(identity.promise);
+    await render();
+    expect(current.historyRead).toBeUndefined();
+    await act(async () => { identity.resolve(childDetail()); });
+    expect(current.historyRead?.incarnation).toBe(1);
+    // A login context change cannot inherit the previous grant.
+    mocks.user = undefined as never;
+    withChild(childDetail());
+    await render();
+    expect(current.historyRead).toBeUndefined();
+    expect(current.agent).toBeUndefined();
+  });
+
+  it.each([
+    ["deleted", "private-child", 1], ["deleting", "private-child", 1],
+    ["inactive", "private-child", 1], ["active", "foreign-agent", 1],
+    ["active", "private-child", 2], ["active", "private-child", 0],
+  ])("rejects an ineligible history identity: %s / %s / %s", async (status, agent_id, incarnation) => {
+    mocks.state.mockRejectedValue(reconciliationPending());
+    withChild({ identity: { status, agent_id, incarnation } });
+    await render("private-child", 1);
+    expect(current.historyRead).toBeUndefined();
+  });
+
+  it.each([401, 403, 404])("revokes history on identity %s and fences a late State success", async (status) => {
+    mocks.state.mockRejectedValue(reconciliationPending());
+    await render();
+    let key!: string;
+    act(() => { key = warm(); });
+    const state = deferred();
+    mocks.state.mockReturnValue(state.promise);
+    failChildIdentity(new RuntimeHttpError("GET", "/detail", status));
+    await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+    expect(current.historyRead).toBeUndefined();
+    expect(useConversationScopeStore.getState().scopes[key]).toBeUndefined();
+    await act(async () => { state.resolve({ id: "private-child", incarnation: 1 }); });
+    expect(current.historyRead).toBeUndefined();
+    expect(current.status).not.toBe("available");
+  });
+
+  it.each(["deleted", "deleting", "replaced", "subject", "remote"] as const)(
+    "revokes a cold history grant on %s", async (change) => {
+      mocks.state.mockRejectedValue(reconciliationPending());
+      await render();
+      let key!: string;
+      act(() => {
+        key = warm();
+        acquireConversationScope({ key, agentId: "private-child", baseUrl: "http://fake.local/api", readOnly: true });
+      });
+      if (change === "subject" || change === "remote") {
+        // Hold new verification so no content can cross a context switch.
+        mocks.identity.mockReturnValue(new Promise(() => {}));
+        if (change === "subject") mocks.user = { authMethod: "token", userId: "bob" };
+        else mocks.connection = { mode: "remote", baseUrl: "https://other.test/api" };
+        await render();
+      } else {
+        const detail = childDetail();
+        detail.identity.status = change === "replaced" ? "active" : change;
+        detail.identity.incarnation = change === "replaced" ? 2 : 1;
+        withChild(detail);
+        await act(async () => { await vi.advanceTimersByTimeAsync(5000); });
+      }
+      expect(current.historyRead).toBeUndefined();
+      expect(useConversationScopeStore.getState().scopes[key]).toBeUndefined();
+    },
+  );
+
   it.each([
     [401, undefined, "unauthorized"], [403, undefined, "unauthorized"],
     [404, undefined, "missing"], [409, "agent_incarnation_mismatch", "replaced"],
@@ -662,7 +760,7 @@ describe("route-selected agent admission", () => {
   });
 
   it.each(["deleting", "deleted"] as const)("keeps %s distinct and cancels parallel state", async (status) => {
-    mocks.identity.mockResolvedValue({ identity: { status, incarnation: 1 } });
+    mocks.identity.mockResolvedValue({ identity: { agent_id: "private-child", status, incarnation: 1 } });
     await render();
     expect(current.status).toBe(status);
     expect(mocks.state).toHaveBeenCalledTimes(1);

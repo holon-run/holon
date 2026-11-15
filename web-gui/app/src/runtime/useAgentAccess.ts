@@ -27,8 +27,9 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
   const remoteKey = currentRemoteKey(connection);
   useSyncExternalStore(subscribeAgentAccess, agentAccessRevision);
   const recorded = agentAccessSnapshot(key);
-  const scopeKey = agentId && recorded.agent?.incarnation !== undefined
-    ? resolveConversationScopeKey(remoteKey, agentId, user, recorded.agent.incarnation) : "";
+  const incarnation = recorded.agent?.incarnation ?? recorded.historyRead?.incarnation;
+  const scopeKey = agentId && incarnation !== undefined
+    ? resolveConversationScopeKey(remoteKey, agentId, user, incarnation) : "";
   const mirror = useConversationScopeStore((state) => state.scopes[scopeKey]);
   const rejectedError = mirror?.status.kind === "terminal_error" || mirror?.status.kind === "recoverable_error"
     ? mirror.status.error : undefined;
@@ -36,7 +37,7 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
   // A pinned summary is enough to start read-only snapshot hydration. Waiting
   // for a warm scope here would prevent that scope from mounting after reload.
   const warm = user !== undefined && recorded.agent?.incarnation !== undefined;
-  const access = rejected ? { ...recorded, status: rejected, agent: undefined }
+  const access = rejected ? { ...recorded, status: rejected, agent: undefined, historyRead: undefined }
     : recorded.status === "available" || warm ? recorded
     : { ...recorded, status: recorded.status === "revalidating" ? "loading" as const : recorded.status, agent: undefined };
   const parent = access.parent;
@@ -51,7 +52,7 @@ export function useAgentAccess(agentId: string | undefined, expectedIncarnation?
     setAgentAccessContext(contextKey);
     if (!agentId || !userLoaded || connection.authRequired || authRejected) return;
     return acquireAgentAccess({
-      key, identityKey, agentId, expectedIncarnation, client,
+      key, identityKey, agentId, expectedIncarnation, client, verifiedSubject: user !== undefined,
       scopeKey: (incarnation) => resolveConversationScopeKey(remoteKey, agentId, user, incarnation),
       cacheKey: (incarnation) => conversationCacheKey(remoteKey, user, incarnation),
       presentationCacheKey: agentPresentationCacheKey(remoteKey, user, agentId),

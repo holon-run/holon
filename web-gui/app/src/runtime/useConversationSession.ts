@@ -63,7 +63,9 @@ export function useConversationSession(
   navigation?: ConversationNavigation,
   incarnation?: number,
   readOnly = false,
+  historyRead = false,
 ): UseConversationSessionResult {
+  const previewOnly = readOnly && !historyRead;
   const currentUser = useRuntimeStore((state) => state.currentUser);
   const currentUserLoaded = useRuntimeStore((state) => state.currentUserLoaded);
   const connection = useRuntimeStore((state) => state.bootstrap.connection);
@@ -100,15 +102,16 @@ export function useConversationSession(
       agentId,
       incarnation,
       readOnly,
+      historyRead,
       remoteId: remoteKey,
       cacheKey,
       baseUrl: apiBase ?? "",
       ...(config.token === undefined ? {} : { token: config.token }),
     });
     return () => {
-      releaseConversationScope(scopeKey, readOnly);
+      releaseConversationScope(scopeKey, readOnly, historyRead);
     };
-  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey, incarnation, readOnly]);
+  }, [scopeKey, agentId, remoteKey, apiBase, cacheKey, incarnation, readOnly, historyRead]);
 
   // Subscribe to scope snapshots so brief/detail/history request states and
   // view revisions re-render even while the controller object is stable.
@@ -143,7 +146,7 @@ export function useConversationSession(
   }, [scopeKey, navigationActive]);
 
   useEffect(() => {
-    if (!controller || readOnly) return;
+    if (!controller || previewOnly) return;
     // Preserve a released scope's historical window across A → B → A.
     if (!navigation && lastNavigation.current?.controller === controller) {
       controller.returnToLatest();
@@ -154,7 +157,7 @@ export function useConversationSession(
     boundNavigationRuntime.current = { requestId: navigation.requestId, runtimeId: snapshot.view!.scope!.runtime_id };
     lastNavigation.current = { controller, requestId: navigation.requestId };
     void controller.locateSource(navigation.sourceRef);
-  }, [controller, readOnly, navigation?.requestId, navigation?.sourceRef, bootstrapped, runtimeMismatch, snapshot.view?.scope?.runtime_id]);
+  }, [controller, previewOnly, navigation?.requestId, navigation?.sourceRef, bootstrapped, runtimeMismatch, snapshot.view?.scope?.runtime_id]);
 
   const location = useMemo<ConversationLocation | undefined>(() => {
     if (!navigation) return undefined;
@@ -202,9 +205,9 @@ export function useConversationSession(
   // SSE head updates must revalidate unread state even when visibility prevents
   // marking the conversation read and no roster refresh is requested.
   useEffect(() => {
-    if (!conversationReady || agentId === undefined) return;
+    if (!conversationReady || historyRead || agentId === undefined) return;
     void refreshBriefReadStatesInView(true);
-  }, [conversationReady, agentId, scopeKey, snapshot.view?.through_seq, snapshot.view?.scope]);
+  }, [conversationReady, historyRead, agentId, scopeKey, snapshot.view?.through_seq, snapshot.view?.scope]);
 
   // Retry when the displayed scope catches up, even if it stayed ready while
   // receiving updates. Read markers must not depend on the retired raw-event
@@ -215,10 +218,10 @@ export function useConversationSession(
     ? null
     : `${readState.event_log_epoch}:${readState.visibility_scope_id}:${readState.event_head_seq}:${readState.read_through_event_seq}`;
   useEffect(() => {
-    if (!conversationReady || agentId === undefined) return;
+    if (!conversationReady || historyRead || agentId === undefined) return;
     void retryPendingReadMarker(agentId);
   }, [conversationReady, agentId, scopeKey, snapshot.view?.through_seq,
-    snapshot.view?.scope, discoveryFreshness, readStateBoundaryKey]);
+    snapshot.view?.scope, discoveryFreshness, readStateBoundaryKey, historyRead]);
 
   const model = useMemo(() => {
     const view = snapshot.displayView;
@@ -251,7 +254,7 @@ export function useConversationSession(
       status: snapshot.status,
       view,
       locatedTurnId: location?.turnId,
-      localPendingPrompts: browse && !browse.liveConnected ? [] : pendingOperatorPrompts,
+      localPendingPrompts: historyRead || browse && !browse.liveConnected ? [] : pendingOperatorPrompts,
       historyState: controller?.historyState() ?? { kind: "idle" },
       briefs,
       briefLoadStates,
@@ -259,42 +262,42 @@ export function useConversationSession(
     });
     // `version` covers controller-side mutations; `controller` and
     // `snapshot` are stable between version bumps.
-  }, [snapshot, controller, version, pendingOperatorPrompts, browse, location?.turnId]);
+  }, [snapshot, controller, version, pendingOperatorPrompts, browse, location?.turnId, historyRead]);
 
   const loadOlderHistory = useCallback(() => {
-    if (readOnly || controller === null || controller.view().reset_reason !== null) return;
+    if (previewOnly || controller === null || controller.view().reset_reason !== null) return;
     void controller.loadOlderHistory();
-  }, [controller, readOnly]);
+  }, [controller, previewOnly]);
 
-  const loadNewerHistory = useCallback(() => { if (!readOnly) void controller?.loadNewerHistory(); }, [controller, readOnly]);
+  const loadNewerHistory = useCallback(() => { if (!previewOnly) void controller?.loadNewerHistory(); }, [controller, previewOnly]);
   const locateSource = useCallback(() => {
-    if (!readOnly && navigation?.sourceRef && controller && !runtimeMismatch) void controller.locateSource(navigation.sourceRef);
-  }, [controller, readOnly, navigation?.sourceRef, runtimeMismatch]);
-  const returnToLatest = useCallback(() => { if (!readOnly) controller?.returnToLatest(); }, [controller, readOnly]);
+    if (!previewOnly && navigation?.sourceRef && controller && !runtimeMismatch) void controller.locateSource(navigation.sourceRef);
+  }, [controller, previewOnly, navigation?.sourceRef, runtimeMismatch]);
+  const returnToLatest = useCallback(() => { if (!previewOnly) controller?.returnToLatest(); }, [controller, previewOnly]);
 
   const loadDetail = useCallback(
     (turnId: string) => {
-      if (readOnly || controller === null || controller.view().reset_reason !== null) return;
+      if (previewOnly || controller === null || controller.view().reset_reason !== null) return;
       void controller.loadDetail(turnId);
     },
-    [controller, readOnly],
+    [controller, previewOnly],
   );
 
   const loadOlderActivities = useCallback(
     (turnId: string) => {
-      if (readOnly || controller === null || controller.view().reset_reason !== null) return;
+      if (previewOnly || controller === null || controller.view().reset_reason !== null) return;
       void controller.loadOlderActivities(turnId);
     },
-    [controller, readOnly],
+    [controller, previewOnly],
   );
 
   const loadBrief = useCallback(
     (briefId: string) => {
       if (controller === null || controller.view().reset_reason !== null) return;
-      if (readOnly) void controller.restoreCachedBrief(briefId);
+      if (previewOnly) void controller.restoreCachedBrief(briefId);
       else void controller.loadBrief(briefId);
     },
-    [controller, readOnly],
+    [controller, previewOnly],
   );
 
   const briefRecord = useCallback(
@@ -319,8 +322,8 @@ export function useConversationSession(
   );
 
   const retry = useCallback(() => {
-    if (!readOnly) controller?.retry();
-  }, [controller, readOnly]);
+    if (!previewOnly) controller?.retry();
+  }, [controller, previewOnly]);
 
   return {
     model,

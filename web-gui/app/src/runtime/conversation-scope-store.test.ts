@@ -142,6 +142,34 @@ afterEach(() => {
 });
 
 describe("conversation scope store", () => {
+  it("starts a cold independently admitted history scope, then pauses it on release", async () => {
+    const { client, calls } = fakeClient();
+    const options = { key: "cold-history", agentId: "child", baseUrl: client.baseUrl,
+      clientFactory: () => client, readOnly: true, historyRead: true };
+    const history = acquireConversationScope(options);
+    await waitFor(() => calls.stream === 1);
+    expect(history.controller.view().turns).toHaveLength(1);
+    releaseConversationScope(options.key, true, true);
+    expect(history.controller.status.kind).toBe("paused");
+    const summaryCalls = calls.summary;
+    acquireConversationScope({ ...options, historyRead: false });
+    await Promise.resolve();
+    expect(calls.summary).toBe(summaryCalls);
+    expect(history.controller.status.kind).toBe("paused");
+  });
+
+  it("retains independently acquired history after stream failure without raw events", async () => {
+    const { client, calls } = fakeClient();
+    client.stream = async function* () { calls.stream += 1; throw new TypeError("Failed to fetch"); };
+    acquireConversationScope({ key: "history-stream-failure", agentId: "child",
+      baseUrl: client.baseUrl, clientFactory: () => client, readOnly: true, historyRead: true,
+      controllerOptions: { sleep, retry: { maxAttempts: 0 } } });
+    await waitFor(() => useConversationScopeStore.getState().scopes["history-stream-failure"]?.status.kind === "recoverable_error");
+    const snapshot = useConversationScopeStore.getState().scopes["history-stream-failure"];
+    expect(snapshot.displayView?.turns[0].turn_id).toBe("turn-10");
+    expect(calls.summary).toBe(1);
+  });
+
   it("reattaches warm history without restarting the same controller until verified", async () => {
     const { client, calls } = fakeClient();
     const options = { key: "warm-preview", agentId: "child", baseUrl: client.baseUrl, clientFactory: () => client };

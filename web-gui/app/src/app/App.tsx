@@ -27,6 +27,7 @@ import {
 
 import holonMarkUrl from "../assets/holon-mark.png";
 import { AgentPage } from "../features/agent/AgentPage";
+import { HistoryOnlyAgentPage } from "../features/agent/HistoryOnlyAgentPage";
 import type { ConversationNavigation } from "../features/agent/conversation-location";
 import { setConversationNavigationActive } from "../runtime/conversation-scope-store";
 import { OnboardingModal } from "../features/onboarding/OnboardingModal";
@@ -284,11 +285,13 @@ export function App() {
     loading: agentDetailLoading,
     refresh: refreshAgentDetail,
   } = useAgentDetail(activeAgentId);
+  const conversationIncarnation = agentAccess.agent?.incarnation ?? agentAccess.historyRead?.incarnation;
   const conversationSession = useConversationSession(
-    route === "agent" && agentAccess.agent?.incarnation !== undefined ? activeAgentId : undefined,
+    route === "agent" && conversationIncarnation !== undefined ? activeAgentId : undefined,
     route === "agent" && agentNavigation && agentNavigation.agentId === activeAgentId ? agentNavigation.navigation : undefined,
-    agentAccess.agent?.incarnation,
+    conversationIncarnation,
     agentAccess.status !== "available",
+    agentAccess.historyRead !== undefined,
   );
   useSelectedAgentRefresh(
     route === "agent" ? agentAccess.agent : undefined,
@@ -942,7 +945,20 @@ export function App() {
             }}
           />
         ) : null}
-        {route === "agent" && !activeAgent ? (
+        {route === "agent" && !activeAgent && agentAccess.historyRead ? (
+          <HistoryOnlyAgentPage
+            key={conversationSession.scopeKey}
+            agentId={agentAccess.historyRead.agentId}
+            session={conversationSession}
+            onRetryAccess={agentAccess.retry}
+            onReturnToLatest={() => {
+              setAgentNavigation(null);
+              conversationSession.returnToLatest();
+              replaceBrowserRoute("agent", agentAccess.historyRead!.agentId);
+            }}
+          />
+        ) : null}
+        {route === "agent" && !activeAgent && !agentAccess.historyRead ? (
           <MissingAgentPage
             agentId={selectedAgentId}
             status={agentAccess.status}

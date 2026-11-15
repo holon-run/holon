@@ -38,12 +38,12 @@ import { useConversationSession } from "./useConversationSession";
 let root: Root;
 let container: HTMLDivElement;
 let current: ReturnType<typeof useConversationSession>;
-function Probe({ id, incarnation, readOnly }: { id?: string; incarnation?: number; readOnly?: boolean }) {
-  current = useConversationSession(id, undefined, incarnation, readOnly);
+function Probe({ id, incarnation, readOnly, historyRead }: { id?: string; incarnation?: number; readOnly?: boolean; historyRead?: boolean }) {
+  current = useConversationSession(id, undefined, incarnation, readOnly, historyRead);
   return null;
 }
-async function render(id?: string, incarnation?: number, readOnly?: boolean) {
-  await act(async () => { root.render(createElement(Probe, { id, incarnation, readOnly })); });
+async function render(id?: string, incarnation?: number, readOnly?: boolean, historyRead?: boolean) {
+  await act(async () => { root.render(createElement(Probe, { id, incarnation, readOnly, historyRead })); });
 }
 beforeEach(() => {
   mocks.acquire.mockReset();
@@ -62,6 +62,37 @@ afterEach(() => {
 });
 
 describe("conversation session identity binding", () => {
+  it("permits independently admitted history reads but never read-marker writes or a control handle", async () => {
+    const actions = {
+      loadOlderHistory: vi.fn(), loadNewerHistory: vi.fn(), loadDetail: vi.fn(),
+      loadOlderActivities: vi.fn(), loadBrief: vi.fn(), retry: vi.fn(),
+    };
+    const restoreCachedBrief = vi.fn();
+    mocks.peek.mockReturnValue({
+      ...actions, restoreCachedBrief, browseState: () => null, historyState: () => ({ kind: "idle" }),
+      view: () => ({ reset_reason: null }),
+    });
+    const key = resolveConversationScopeKey("local", "child", mocks.state.currentUser, 1);
+    const view = { scope: {}, turns: [], pending_inputs: [], details: [], through_seq: 1,
+      next_before_cursor: null, has_more: false, checkpoint: null, reset_reason: null } as never;
+    useConversationScopeStore.setState({ scopes: { [key]: {
+      status: { kind: "ready" }, view, displayView: view, version: 1,
+    } } });
+    await render("child", 1, true, true);
+    expect(mocks.acquire).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true, historyRead: true }));
+    act(() => {
+      current.loadOlderHistory(); current.loadNewerHistory(); current.loadDetail("t");
+      current.loadOlderActivities("t"); current.loadBrief("b"); current.retry();
+    });
+    for (const action of Object.values(actions)) expect(action).toHaveBeenCalledTimes(1);
+    expect(restoreCachedBrief).not.toHaveBeenCalled();
+    expect(current.conversationReady).toBe(false);
+    expect(current.controller).toBeNull();
+    expect(retryPendingReadMarker).not.toHaveBeenCalled();
+    expect(refreshBriefReadStatesInView).not.toHaveBeenCalled();
+    await render(undefined);
+    expect(mocks.release).toHaveBeenCalledWith(key, true, true);
+  });
   it("blocks preview network actions and pending read-marker writes even with a ready cached view", async () => {
     const actions = {
       loadOlderHistory: vi.fn(), loadNewerHistory: vi.fn(), loadDetail: vi.fn(),
@@ -183,7 +214,7 @@ describe("conversation session identity binding", () => {
     });
     const key = current.scopeKey;
     await render("child", 1, false);
-    expect(mocks.release).toHaveBeenCalledWith(key, true);
+    expect(mocks.release).toHaveBeenCalledWith(key, true, false);
     expect(mocks.acquire).toHaveBeenLastCalledWith(expect.objectContaining({ readOnly: false, key }));
   });
 
@@ -196,7 +227,7 @@ describe("conversation session identity binding", () => {
       cacheKey: conversationCacheKey("local", mocks.state.currentUser, 1),
     }));
     await render("child", 2);
-    expect(mocks.release).toHaveBeenCalledWith(oldKey, false);
+    expect(mocks.release).toHaveBeenCalledWith(oldKey, false, false);
     expect(current.scopeKey).not.toBe(oldKey);
     expect(mocks.acquire).toHaveBeenLastCalledWith(expect.objectContaining({
       incarnation: 2,

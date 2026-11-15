@@ -47,6 +47,8 @@ import {
 } from "../../runtime/conversation-view-model";
 
 export interface ConversationTimelineActions {
+  /** Persisted execution is not proof of current execution without State. */
+  historyOnly?: boolean;
   locatedAnchor?: string;
   /** Expand the precise target before the parent attempts DOM positioning. */
   revealTarget?: { readonly anchor: string; readonly turnId?: string };
@@ -333,7 +335,7 @@ function TurnBoundaryHeader({ turn, execution, timingStatus, syncing, onInspectA
             {t(`agentPage.turnTimingStatus.${timingStatus}`)}
           </span>
         ) : null}
-        {timingStatus !== "syncing" && timingStatus !== "waiting" && timingStatus !== "waitingResult"
+        {timingStatus !== "syncing" && timingStatus !== "unconfirmed" && timingStatus !== "waiting" && timingStatus !== "waitingResult"
           ? <TurnElapsedTime turn={turn} />
           : null}
         {children}
@@ -362,7 +364,8 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     && !(execution === "waitingResult" && hasReadableBrief);
   const awaitingResult = (execution === "waitingResult" && !hasReadableBrief)
     || (turn.briefIds.length > 0 && !briefReady);
-  const timingStatus = syncing && turn.execution.kind === "active" ? "syncing"
+  const timingStatus = actions.historyOnly && turn.execution.kind === "active" ? "unconfirmed"
+    : syncing && turn.execution.kind === "active" ? "syncing"
     : execution === "waitingResult" && hasReadableBrief ? "completed"
     : execution !== "running" && turn.briefIds.length > 0 && !briefReady && turn.execution.kind === "terminal" && turn.execution.outcome === "completed"
       ? "loadingResult" : execution;
@@ -448,7 +451,7 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
     <section className={`conversation-turn is-${execution}${compact ? " is-compact" : ""}`} data-turn-id={turn.turnId}
       data-conversation-anchor={`turn:${turn.turnId}`}
       aria-label={t("agentPage.turnAria", { index: turn.turnIndex })}>
-      <TurnBoundaryHeader turn={turn} execution={execution} timingStatus={timingStatus} syncing={syncing}
+      <TurnBoundaryHeader turn={turn} execution={execution} timingStatus={timingStatus} syncing={syncing || actions.historyOnly === true}
         onInspectActivity={actions.onInspectActivity}>
         <button type="button" className={`conversation-detail-toggle ${expanded ? "is-expanded" : ""}`}
           data-conversation-anchor={`process:${turn.turnId}`} aria-expanded={expanded} aria-controls={detailId}
@@ -810,7 +813,9 @@ function ConversationDetailPanel({
         </button>
       ) : null}
       {expanded && activities.length === 0 && taskInputs.length === 0 ? (
-        <div className="conversation-detail-notice">{t(turn.execution.kind === "active" ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</div>
+        <div className="conversation-detail-notice">{t(actions.historyOnly && turn.execution.kind === "active"
+          ? "agentPage.turnTimingStatus.unconfirmed" : turn.execution.kind === "active"
+            ? "agentPage.awaitingActivity" : onlyResult ? "agentPage.resultOnlyProcess" : "agentPage.detailEmpty")}</div>
       ) : null}
       <ol className="conversation-activities">
         {taskRows}

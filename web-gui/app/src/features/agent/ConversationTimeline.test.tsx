@@ -89,6 +89,7 @@ function renderTimeline(
     brief?: BriefRecord;
     onLoadBrief?: (briefId: string) => void;
     details?: ConversationStateView["details"];
+    historyOnly?: boolean;
   } = {},
 ): string {
   const model = buildConversationSessionModel({
@@ -109,6 +110,7 @@ function renderTimeline(
         };
   return renderToStaticMarkup(
     <ConversationTimeline
+      historyOnly={options.historyOnly}
       model={withPending}
       onLoadBrief={options.onLoadBrief ?? (() => {})}
       onLoadDetail={() => {}}
@@ -124,6 +126,13 @@ function renderTimeline(
 }
 
 describe("executionProcessActivities", () => {
+  it("does not present a persisted active turn as live execution in the history-only shell", () => {
+    const html = renderTimeline([turnSummary("unconfirmed", 1)], { historyOnly: true });
+    expect(html).toContain("Execution unconfirmed");
+    expect(html.split("</header>")[0]).not.toContain("is-spinning");
+    expect(html).not.toContain("Running");
+  });
+
   const activity = (id: string, summary: string, kind: ConversationActivity["kind"] = "assistant"): ConversationActivity => ({
     id, summary, kind, revision: 1, key: { event_seq: 1, activity_id: id },
   });
