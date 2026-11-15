@@ -915,6 +915,229 @@ fn combined_memory_above_legacy_hint_commits_canonical_state_and_receipt() -> Re
     Ok(())
 }
 #[test]
+fn cleared_physical_run_keeps_current_dispatch_memory_obligation() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let before = state(&f)?;
+    let mut cleared = before.clone();
+    cleared.current_run_id = None;
+    f.db.agent_states().upsert_for_fixture(&cleared)?;
+    f.db.transaction(|tx| {
+        assert_eq!(
+            load_dispatch_memory_binding_tx(tx, &f.scope, &cleared)?,
+            Some(DispatchMemoryBinding::from_start(&f.start))
+        );
+        assert!(load_dispatch_memory_binding_tx(tx, &f.scope, &before).is_err());
+        assert!(matches!(
+            validate_new_dispatch_tx(tx, &f.scope)
+                .unwrap_err()
+                .downcast_ref::<DispatchMemoryError>(),
+            Some(DispatchMemoryError::Unfinished)
+        ));
+        Ok(())
+    })?;
+    let member = update(&f, "cleared-run-member", "retained dispatch objective")?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&member)?;
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&member)?,
+        InputMutationExecution::Replayed { .. }
+    ));
+    assert_eq!(f.read()?.unwrap().obligation().unwrap().members.len(), 1);
+    assert_eq!(state(&f)?, cleared);
+    let finish = terminal(&f, "cleared-run-terminal")?;
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&finish)?;
+    assert!(matches!(
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&finish)?,
+        InputMutationExecution::Replayed { .. }
+    ));
+    assert!(state(&f)?.current_run_id.is_none());
+    Ok(())
+}
+
+#[test]
+fn different_active_run_cannot_borrow_current_dispatch_memory() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let mut wrong = state(&f)?;
+    wrong.current_run_id = Some("run:another-physical-producer".into());
+    f.db.agent_states().upsert_for_fixture(&wrong)?;
+    f.db.transaction(|tx| {
+        assert!(load_dispatch_memory_binding_tx(tx, &f.scope, &wrong).is_err());
+        Ok(())
+    })?;
+    let before = f.read()?;
+    let receipts = receipt_count(&f)?;
+    let member = update(&f, "wrong-run-member", "must not commit")?;
+    assert!(f
+        .db
+        .transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&member)
+        .is_err());
+    assert_eq!(f.read()?, before);
+    assert_eq!(receipt_count(&f)?, receipts);
+    assert_eq!(state(&f)?, wrong);
+    Ok(())
+}
+
+#[test]
+fn cleared_physical_run_does_not_relax_dispatch_identity_or_start_proof() -> Result<()> {
+    for (case, corrupt) in [
+        (
+            "incarnation",
+            "UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2)",
+        ),
+        (
+            "turn",
+            "UPDATE turn_records SET agent_id='another-dispatch-agent'",
+        ),
+        (
+            "index",
+            "UPDATE turn_records SET turn_index=2,payload_json=json_set(payload_json,'$.turn_index',2)",
+        ),
+        (
+            "source",
+            "UPDATE turn_records SET payload_json=json_set(payload_json,'$.input_message_ids',json('[]'),'$.trigger',NULL)",
+        ),
+        ("start", "DELETE FROM dispatch_memory_checkpoints"),
+        (
+            "receipt",
+            "DELETE FROM input_mutation_receipts WHERE command_nonce=?1",
+        ),
+    ] {
+        let f = Fixture::new(true)?;
+        let mut cleared = state(&f)?;
+        cleared.current_run_id = None;
+        f.db.agent_states().upsert_for_fixture(&cleared)?;
+        let member = update(&f, case, "must not commit")?;
+        f.db.transaction(|tx| {
+            let affected = if case == "receipt" {
+                tx.execute(corrupt, [f.original_start.command_nonce()])?
+            } else {
+                tx.execute(corrupt, [])?
+            };
+            assert!(affected > 0, "{case}: fault must take effect");
+            Ok(())
+        })?;
+        f.db.transaction(|tx| {
+            assert!(
+                load_dispatch_memory_binding_tx(tx, &f.scope, &cleared).is_err(),
+                "{case}: cleared run must not grant an address"
+            );
+            Ok(())
+        })?;
+        let snapshot = || -> Result<_> {
+            let checkpoint: Option<String> = f
+                .db
+                .connection()?
+                .query_row(
+                    "SELECT payload_json FROM dispatch_memory_checkpoints",
+                    [],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            Ok((
+                state(&f)?,
+                f.db.work_items().latest("work:dispatch-memory")?,
+                checkpoint,
+                receipt_count(&f)?,
+            ))
+        };
+        let before = snapshot()?;
+        assert!(
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition(&member)
+                .is_err(),
+            "{case}: Deferred must reject the invalid proof"
+        );
+        assert_eq!(snapshot()?, before, "{case}: no partial commit");
+    }
+    Ok(())
+}
+
+#[test]
+fn cleared_physical_run_address_does_not_authorize_work_to_finish_memory() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let mut cleared = state(&f)?;
+    cleared.current_run_id = None;
+    f.db.agent_states().upsert_for_fixture(&cleared)?;
+    let binding =
+        f.db.transaction(|tx| load_dispatch_memory_binding_tx(tx, &f.scope, &cleared))?
+            .context("retained dispatch address missing")?;
+    let before = f.read()?;
+    let receipts = receipt_count(&f)?;
+    let error = prepare_update(&f, "unauthorized-finish", "must not finish", false)?
+        .with_dispatch_memory(DispatchMemoryIntent::Finish {
+            binding,
+            frozen: f.frozen("unauthorized-finish"),
+        })
+        .err()
+        .context("a Work command must not finish the retained dispatch")?;
+    assert!(error
+        .to_string()
+        .contains("dispatch memory intent differs from its typed business command"));
+    assert_eq!(f.read()?, before);
+    assert_eq!(receipt_count(&f)?, receipts);
+    assert_eq!(state(&f)?, cleared);
+    Ok(())
+}
+
+#[test]
+fn cleared_physical_run_address_does_not_replace_original_ended_capability() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let mut cleared = state(&f)?;
+    cleared.current_run_id = None;
+    f.db.agent_states().upsert_for_fixture(&cleared)?;
+    let interrupted = f.db.transaction(|tx| {
+        let mut turn = ContextDurableRead::new(tx, &f.scope.agent_id)
+            .turn_by_id(&f.start.key.actual_dispatch_turn_id)?
+            .context("original Turn missing")?;
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Interrupted,
+            reason: Some("agent_stopped".into()),
+            no_brief_reason: None,
+            completed_at: f.at,
+            duration_ms: 1,
+        });
+        upsert_turn_record_tx(tx, &turn)?;
+        assert_eq!(
+            load_dispatch_memory_binding_tx(tx, &f.scope, &cleared)?,
+            Some(DispatchMemoryBinding::from_start(&f.start))
+        );
+        Ok(turn)
+    })?;
+    let snapshot = || -> Result<_> {
+        Ok((
+            state(&f)?,
+            f.read()?,
+            f.db.work_items().latest("work:dispatch-memory")?,
+            receipt_count(&f)?,
+        ))
+    };
+    let before = snapshot()?;
+    let error =
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition(&terminal(&f, "missing-ended-capability")?)
+            .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("administratively interrupted dispatch requires original ended capability"),
+        "{error:#}"
+    );
+    assert_eq!(snapshot()?, before);
+    assert_eq!(
+        f.db.transaction(|tx| {
+            ContextDurableRead::new(tx, &f.scope.agent_id)
+                .turn_by_id(&f.start.key.actual_dispatch_turn_id)
+        })?,
+        Some(interrupted)
+    );
+    Ok(())
+}
+
+#[test]
 fn original_turn_binding_survives_cleared_current_fields_but_does_not_authorize_finish(
 ) -> Result<()> {
     let f = Fixture::new(true)?;

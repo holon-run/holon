@@ -722,15 +722,17 @@ fn validate_binding_address_tx(
     let (agent,index,run,owns_source):(String,u64,Option<String>,bool)=tx.query_row(
         "SELECT agent_id,turn_index,json_extract(payload_json,'$.run_id'),(EXISTS(SELECT 1 FROM json_each(json_extract(payload_json,'$.input_message_ids')) WHERE value=?2) OR COALESCE(json_extract(payload_json,'$.trigger.message_id')=?2,0)) FROM turn_records WHERE turn_id=?1",
         params![key.actual_dispatch_turn_id,invocation.message_id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+    // Clearing the physical run does not retire the original dispatch address.
+    let run_matches = expected_run.is_none() || &run == expected_run;
     ensure!(
         agent == key.agent_id
             && index == invocation.turn_index
-            && (completed || &run == expected_run)
+            && (completed || run_matches)
             && owns_source,
         "memory binding canonical Turn/source differs (agent={}, index={}, run={}, source={})",
         agent == key.agent_id,
         index == invocation.turn_index,
-        completed || &run == expected_run,
+        completed || run_matches,
         owns_source
     );
     Ok(())

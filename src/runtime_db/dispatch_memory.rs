@@ -464,7 +464,8 @@ pub(crate) fn prepare_detached_memory_tx<'tx, 'connection>(
     ensure!(
         state.current_turn_id.as_deref() == Some(binding.turn_id.as_str())
             && state.turn_index == actual_turn.turn_index
-            && actual_turn.run_id == state.current_run_id,
+            // Host failure cleanup may end the run while retaining this dispatch.
+            && (state.current_run_id.is_none() || actual_turn.run_id == state.current_run_id),
         "dispatch memory actual producer binding differs"
     );
     let key = EpisodeMemoryKey {
@@ -481,6 +482,13 @@ pub(crate) fn prepare_detached_memory_tx<'tx, 'connection>(
     let start = record
         .start()
         .context(DispatchMemoryError::AlreadyFinalized)?;
+    super::input_mutation_receipts::lookup_input_mutation_receipt_in(
+        tx,
+        record
+            .original_start()
+            .context("dispatch start omitted its original Posture descriptor")?,
+    )?
+    .context("dispatch start has no original whole-Posture receipt")?;
     require_identity(tx, &key, true)?;
     validate_original_dispatch(tx, start)?;
     ensure!(
