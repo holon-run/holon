@@ -37,6 +37,16 @@ impl RuntimeMutation {
             delta.scope == self.input_evidence_scope(),
             "committed Work scope differs"
         );
+        if let Some(work) = &self.work {
+            if resident_behind_committed_delta(work.coverage().revision, delta.base_revision) {
+                // A concurrent committed write advanced the Work domain past
+                // this owner's projection. SQL is already committed truth, so
+                // drop the stale resident; a named full preparation
+                // republishes at the current revision instead of failing the
+                // committed publication.
+                self.work = None;
+            }
+        }
         if requires_prepared_domain && self.work.is_none() {
             // SQL is known committed; only a named full preparation can
             // supply the missing bodies of this sparse acknowledgement.

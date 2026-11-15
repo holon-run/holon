@@ -17,6 +17,15 @@ impl RuntimeMutation {
         );
         // An ACK cannot turn an unprepared domain into a complete publication.
         if let Some(domain) = &self.scheduling {
+            if resident_behind_committed_delta(domain.coverage().revision, delta.base_revision) {
+                // A concurrent committed write advanced the Scheduling domain
+                // past this owner's projection. SQL is already committed
+                // truth, so drop the stale resident; a named full preparation
+                // republishes at the current revision instead of failing the
+                // committed publication.
+                self.scheduling = None;
+                return Ok(());
+            }
             self.scheduling = Some(Arc::new(domain.with_committed(delta)?));
         }
         Ok(())

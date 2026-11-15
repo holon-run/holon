@@ -988,3 +988,105 @@ async fn acknowledged_input_projection_error_keeps_known_state_and_original_effe
         Some(next)
     );
 }
+
+#[tokio::test]
+async fn acknowledged_work_delta_based_on_newer_revision_defers_to_named_preparation() {
+    use crate::runtime::resident_work::{CommittedWorkDelta, WorkCaptureRequest};
+    use std::collections::BTreeMap;
+
+    let (runtime, _data, _workspace) = stale_runtime().await;
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .prepare_owner_work_request(&WorkCaptureRequest::current())
+        .await
+        .unwrap();
+    let sql_revision = mutation
+        .work
+        .as_ref()
+        .expect("prepared Work domain")
+        .coverage()
+        .revision;
+    // A concurrent committed write advanced the Work domain after this owner
+    // captured its projection, so the transaction below acknowledges a delta
+    // based on revision sql_revision + 1 exactly as SQL would observe it.
+    let mut concurrent_coverage = mutation
+        .work
+        .as_ref()
+        .expect("prepared Work domain")
+        .coverage()
+        .clone();
+    concurrent_coverage.revision = sql_revision + 1;
+    let previous = mutation.committed_state().clone();
+    let mut next = previous.clone();
+    next.total_output_tokens += 11;
+    let event = AuditEvent::legacy("concurrent_work_revision", serde_json::json!({}));
+    let command = crate::runtime_db::transitions::AgentPostureTransitionCommand {
+        agent_id: next.id.clone(),
+        expected_incarnation: Some(runtime.inner.identity_incarnation),
+        agent_state: crate::runtime_db::transitions::AgentStateMutation {
+            expected: Some(Box::new(previous)),
+            record: Box::new(next.clone()),
+        },
+        audit_events: vec![event.clone()],
+        fault: None,
+    };
+    let committed = mutation
+        .commit_transition(event.id.clone(), |scope| {
+            let mut committed = runtime
+                .inner
+                .runtime_db
+                .transitions_in_scope(scope)
+                .commit_agent_posture(&command)?;
+            committed.effects.work_delta = Some(CommittedWorkDelta {
+                scope: scope.clone(),
+                base_revision: sql_revision + 1,
+                revision: sql_revision + 1,
+                records: Vec::new(),
+                removals: BTreeMap::new(),
+                coverage: concurrent_coverage.clone(),
+            });
+            committed.effects.work_delta_requires_prepared_domain = true;
+            Ok(committed)
+        })
+        .await
+        .unwrap();
+    assert!(
+        committed.effects.work_delta.is_none(),
+        "successful publication strips payload effects instead of returning the acknowledged delta"
+    );
+    assert!(
+        mutation.work.is_none(),
+        "a stale Work resident defers to a named full preparation"
+    );
+    drop(mutation);
+    let root = runtime.inner.mutation_owner.capture().unwrap().unwrap();
+    assert_eq!(root.state.as_ref(), &next);
+    assert!(
+        root.work.is_none(),
+        "the stale Work projection stays explicitly unprepared"
+    );
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .agent_states()
+            .latest("default")
+            .unwrap(),
+        Some(next.clone())
+    );
+    // The named full preparation republishes from the SQL truth at its own
+    // current revision, never from the acknowledged stale-base delta.
+    let mut reprepared = runtime.begin_mutation().await.unwrap();
+    reprepared
+        .prepare_owner_work_request(&WorkCaptureRequest::current())
+        .await
+        .unwrap();
+    assert_eq!(
+        reprepared
+            .work
+            .as_ref()
+            .expect("re-prepared Work domain")
+            .coverage()
+            .revision,
+        sql_revision
+    );
+}

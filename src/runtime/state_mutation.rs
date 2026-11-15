@@ -2663,6 +2663,21 @@ impl RuntimeMutation {
                             .as_ref();
                         let mut tasks = prior.and_then(|root| root.tasks.clone());
                         for delta in deltas {
+                            if tasks.as_ref().is_some_and(|tasks| {
+                                resident_behind_committed_delta(
+                                    tasks.coverage().revision,
+                                    delta.base_revision,
+                                )
+                            }) {
+                                // A concurrent committed write advanced this
+                                // related Task domain past the frozen
+                                // publication. SQL is already committed truth,
+                                // so drop the stale resident; the related owner
+                                // re-prepares from SQL instead of failing the
+                                // committed publication.
+                                tasks = None;
+                                continue;
+                            }
                             tasks = tasks
                                 .as_ref()
                                 .map(|tasks| tasks.with_committed(delta).map(Arc::new))
@@ -2762,6 +2777,17 @@ impl RuntimeMutation {
             plan_preparation: self.plan_preparation.clone(),
         }
     }
+}
+
+/// A committed delta's base revision was read inside the SQL transaction that
+/// just acknowledged it. A base newer than this owner's resident projection
+/// proves a concurrent committed mutation advanced the domain after the
+/// projection was captured: the delta is not stale, the resident is.
+pub(super) fn resident_behind_committed_delta(
+    resident_revision: u64,
+    delta_base_revision: u64,
+) -> bool {
+    delta_base_revision > resident_revision
 }
 
 fn runtime_input_mandatory_roots(

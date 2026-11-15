@@ -184,6 +184,15 @@ impl RuntimeMutation {
         // A delta has no authority to establish missing completeness or bodies.
         // Even a full-looking ACK needs explicit preparation when the old domain is absent.
         if let Some(tasks) = &self.tasks {
+            if resident_behind_committed_delta(tasks.coverage().revision, delta.base_revision) {
+                // A concurrent committed write advanced the Task domain past
+                // this owner's projection. SQL is already committed truth, so
+                // drop the stale resident; a named full preparation
+                // republishes at the current revision instead of failing the
+                // committed publication.
+                self.tasks = None;
+                return Ok(());
+            }
             self.tasks = Some(Arc::new(tasks.with_committed(delta)?));
         }
         Ok(())
