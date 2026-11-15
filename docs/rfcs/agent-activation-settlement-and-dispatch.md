@@ -1236,6 +1236,17 @@ quarantine for operator review. Exclusive daemon startup applies the same
 provider-entry check before making a retained claim runnable. Existing
 completed settlements are preserved.
 
+Automatic dispatch-memory lookup follows the canonical current execution
+binding and its original Turn, source, incarnation and Start receipt. A present
+`State.current_run_id` must match that Turn's physical run. Failure cleanup may
+clear the physical run while retaining an unfinished Turn and binding; this
+does not erase the dispatch-memory address or prevent an original command from
+recording a deferred obligation. Deferred revalidates the original whole-Posture
+Start receipt inside its business transaction before recording that obligation.
+Lookup and Deferred do not prove that a producer ended, authorize Finish,
+revive a physical run, or permit a new dispatch. Those transitions retain their
+own original-transaction checks.
+
 Automatic recovery and `holon debug scheduler-recovery --apply` call the same
 restricted transition implementation. The debug command without `--apply` is
 read-only and reports the same ordered recovery plan, typed evidence,

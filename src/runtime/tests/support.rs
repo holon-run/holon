@@ -39,6 +39,37 @@ pub(crate) use crate::{
 
 use super::super::*;
 
+pub(crate) struct OriginalCommandPublicationProbe(
+    Arc<OriginalCommandTaskProducer>,
+    Arc<super::super::control_cancellation::ControlJoinLease>,
+);
+
+impl OriginalCommandPublicationProbe {
+    pub(crate) async fn capture(runtime: &RuntimeHandle, task_id: &str) -> Result<Self> {
+        let handles = runtime.inner.task_handles.lock().await;
+        let lease = handles
+            .get(task_id)
+            .and_then(ManagedTaskHandle::control_lease)
+            .context("original Command control lease missing")?;
+        let source = lease
+            .original_command()?
+            .context("original Command producer missing")?;
+        Ok(Self(source, lease))
+    }
+
+    pub(crate) async fn finish(&self, runtime: &RuntimeHandle) -> Result<()> {
+        self.1.join().await?;
+        runtime
+            .continue_original_command_terminal(self.0.clone())
+            .await?;
+        anyhow::ensure!(
+            self.0.is_durable_finished(),
+            "Command publication unfinished"
+        );
+        Ok(())
+    }
+}
+
 mod lifecycle;
 pub(crate) use lifecycle::{
     advance_lifecycle_time, assert_injected_transition_fault, controlled_clock,

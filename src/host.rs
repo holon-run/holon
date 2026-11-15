@@ -12193,6 +12193,9 @@ mod tests {
     #[cfg(holon_lib_test_shard = "d")]
     #[path = "cold_work_queue_phase_tests.rs"]
     mod cold_work_queue_phase_tests;
+    #[cfg(all(holon_lib_test_shard = "d", unix))]
+    #[path = "command_source_tests.rs"]
+    mod command_source_tests;
     #[cfg(holon_lib_test_shard = "d")]
     #[path = "projection_brief_preview_tests.rs"]
     mod projection_brief_preview_tests;
