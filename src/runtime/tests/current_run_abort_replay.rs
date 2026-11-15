@@ -105,13 +105,33 @@ fn queue_status(runtime: &RuntimeHandle, source: &MessageEnvelope) -> QueueEntry
         .status
 }
 
+fn input_turn_id(runtime: &RuntimeHandle, source: &MessageEnvelope) -> String {
+    runtime
+        .inner
+        .runtime_db
+        .with_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT turn_id FROM conversation_input_assignments
+                 WHERE agent_id = ?1 AND message_id = ?2",
+                rusqlite::params![source.agent_id, source.id],
+                |row| row.get(0),
+            )?)
+        })
+        .expect("original input has a canonical turn assignment")
+}
+
 fn assert_aborted_source(runtime: &RuntimeHandle, source: &MessageEnvelope) {
     assert_eq!(queue_status(runtime, source), QueueEntryStatus::Aborted);
+    let turn_id = input_turn_id(runtime, source);
+    if let Some(ingress_turn_id) = source.turn_id.as_deref() {
+        assert_eq!(turn_id, ingress_turn_id);
+    }
     let turn = runtime
         .storage()
-        .read_turn_by_id(source.turn_id.as_deref().expect("original turn id"))
+        .read_turn_by_id(&turn_id)
         .unwrap()
         .expect("original input turn");
+    assert_eq!(turn.agent_id, source.agent_id);
     assert!(turn.input_message_ids.contains(&source.id));
     let terminal = turn.terminal.expect("original turn terminal");
     assert_eq!(terminal.kind, TurnTerminalKind::Aborted);
@@ -1516,6 +1536,33 @@ async fn provider_recovery_abort_fixture(crash_after_ack: bool) {
     assert_eq!(queue_status(&runtime, &source), QueueEntryStatus::Dequeued);
     let execution = execution_protocol(&runtime);
     let original_attempt = execution.open_attempt().unwrap().clone();
+    // Recovery ingress has no preallocated turn; the live binding owns its dispatch.
+    let binding = runtime
+        .agent_state()
+        .await
+        .unwrap()
+        .current_execution_binding
+        .expect("provider recovery has a live execution binding");
+    assert_eq!(
+        binding.activation_id.as_deref(),
+        Some(original_attempt.attempt_id.as_str())
+    );
+    assert_eq!(binding.source_message_id, source.id);
+    let original_turn_id = binding.turn_id;
+    assert_eq!(input_turn_id(&runtime, &source), original_turn_id);
+    let turn = runtime
+        .storage()
+        .read_turn_by_id(&original_turn_id)
+        .unwrap()
+        .expect("provider recovery dispatch turn is persisted");
+    assert_eq!(
+        turn.trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_deref()),
+        Some(source.id.as_str())
+    );
+    assert!(turn.input_message_ids.contains(&source.id));
+    assert!(turn.terminal.is_none());
     assert_eq!(
         original_attempt.source.identity,
         ExecutionSourceIdentity::RuntimeRecovery {
@@ -1571,6 +1618,7 @@ async fn provider_recovery_abort_fixture(crash_after_ack: bool) {
     independent.assert_unchanged(&runtime).await;
     assert_start_cannot_replay(&runtime, &source).await;
     assert_cancelled_attempt(&runtime, &source, &original_attempt, expected_outcome);
+    assert_eq!(input_turn_id(&runtime, &source), original_turn_id);
     let recovered = execution_protocol(&runtime);
     assert_eq!(recovered.attempts[&predecessor.attempt_id], predecessor);
     assert_eq!(
