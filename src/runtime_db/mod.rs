@@ -40,7 +40,8 @@ pub(crate) mod input_mutation_receipts;
 pub(crate) mod input_preparation;
 pub(crate) mod input_recovery_install;
 mod legacy_scheduler_wire;
-mod migration_history;
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+mod migration_data_tests;
 pub mod migrations;
 pub mod persistence;
 pub(crate) mod prepared_input_evidence;
@@ -173,19 +174,14 @@ use crate::runtime_db::connection::{
     unlock, LockMode,
 };
 use crate::runtime_db::migrations::{
-    apply_migration, apply_release_baseline, backfill_wait_condition_payload_columns,
-    backfill_work_item_blocker_wait_provenance, backfill_work_item_recheck_columns,
-    current_schema_version, ensure_migration_table, max_known_migration_version,
+    backfill_wait_condition_payload_columns, backfill_work_item_blocker_wait_provenance,
+    backfill_work_item_recheck_columns, current_schema_version, max_known_migration_version,
     AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
-    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION, MIGRATIONS, PUBLISHED_MIGRATION_FLOOR,
-    RELEASE_BASELINE_TARGET, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION, MIGRATIONS, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
 };
 use crate::runtime_db::storage_domain::{read_storage_domain_connection, upsert_storage_domain};
 use crate::runtime_db::write_queue::{RuntimeDbWriteContext, RuntimeDbWriter};
 
-pub(crate) const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
-pub(crate) const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
-pub(crate) const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
 pub(crate) const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 pub(crate) use holon_storage::RUNTIME_DB_BUSY_TIMEOUT;
 pub use holon_storage::{
@@ -1473,39 +1469,7 @@ impl RuntimeDb {
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
         configure_new_database_auto_vacuum(&connection)?;
         configure_persistent_database(&connection)?;
-        ensure_migration_table(&connection)?;
-        let current_version = current_schema_version(&connection)?;
-        let max_known_version = max_known_migration_version();
-        if current_version > max_known_version {
-            bail!(
-                "runtime db schema version {} is newer than this binary supports ({})",
-                current_version,
-                max_known_version
-            );
-        }
-        migration_history::reconcile_feature_history(&mut connection)?;
-        let current_version = current_schema_version(&connection)?;
-        if current_version <= PUBLISHED_MIGRATION_FLOOR
-            && max_known_version >= RELEASE_BASELINE_TARGET
-        {
-            for migration in MIGRATIONS
-                .iter()
-                .filter(|migration| migration.version <= PUBLISHED_MIGRATION_FLOOR)
-            {
-                apply_migration(&mut connection, migration)?;
-            }
-            apply_release_baseline(&mut connection)?;
-            for migration in MIGRATIONS
-                .iter()
-                .filter(|migration| migration.version > RELEASE_BASELINE_TARGET)
-            {
-                apply_migration(&mut connection, migration)?;
-            }
-        } else {
-            for migration in MIGRATIONS {
-                apply_migration(&mut connection, migration)?;
-            }
-        }
+        migrations::migrate(&mut connection)?;
         ensure_runtime_identity_metadata(&connection)?;
         backfill_wait_condition_payload_columns(&connection)?;
         backfill_work_item_recheck_columns(&connection)?;
@@ -1638,3 +1602,6 @@ impl Drop for RuntimeDbLock {
         let _ = unlock(&self.file);
     }
 }
+
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+pub(crate) use holon_storage::task::{TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT};

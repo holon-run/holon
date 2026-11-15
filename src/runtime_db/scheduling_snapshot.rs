@@ -1,4 +1,6 @@
 //! Scheduling qualification and explicit same-transaction preparation.
+use holon_storage::schema::SCHEDULING_SCHEMA;
+
 #[cfg(test)]
 use super::context_inputs::ContextDurableRead;
 use super::{context_inputs::ContextScopeFacts, repositories};
@@ -70,7 +72,7 @@ pub(crate) use writes::{
     CommittedSchedulingFacts, ExistingSchedulingMaintenanceProof, SchedulingMaintenanceAck,
     SchedulingScopeInvalidation, SchedulingWriteProof,
 };
-pub(super) const SCHEDULING_SCHEMA: &str = include_str!("scheduling_snapshot/schema.sql");
+
 const MAX_RECORDS: usize = 65_536;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]

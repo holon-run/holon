@@ -1,6 +1,9 @@
 //! D3 qualification and coherent input/evidence preparation. Every API borrows
 //! the caller's existing transaction; no connection or file fallback exists.
 
+#[cfg(test)]
+pub(super) use holon_storage::schema::INPUT_EVIDENCE_SCHEMA;
+
 use super::context_inputs::{ContextDurableRead, ContextScopeFacts, ContextScopeRead};
 use crate::{
     domain::execution_protocol::{
@@ -91,80 +94,6 @@ const MAX_RECORDS: usize = 65_536;
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 const MAX_DEPTH: usize = 64;
 const TOOL_SUMMARY_CHARS: usize = 4096;
-
-pub(super) const INPUT_EVIDENCE_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS input_evidence_captures (
- seed_id TEXT NOT NULL, capture_phase TEXT NOT NULL, policy_version INTEGER NOT NULL CHECK(policy_version=1),
- includes_tails INTEGER NOT NULL CHECK(includes_tails IN (0,1)), metadata_digest TEXT NOT NULL,
- PRIMARY KEY(seed_id,capture_phase), FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE TABLE IF NOT EXISTS input_evidence_eligibility (
- seed_id TEXT NOT NULL, capture_phase TEXT NOT NULL CHECK(capture_phase IN ('upgrade','first_import','legacy_import')),
- family TEXT NOT NULL, record_id TEXT NOT NULL, fingerprint_json TEXT NOT NULL,
- mandatory INTEGER NOT NULL CHECK(mandatory IN (0,1)),
- PRIMARY KEY(seed_id,capture_phase,family,record_id),
- FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE TABLE IF NOT EXISTS input_evidence_execution_seed_sources (
- seed_id TEXT NOT NULL, capture_phase TEXT NOT NULL, source_message_id TEXT NOT NULL,
- metadata_json TEXT NOT NULL, content_digest TEXT NOT NULL,
- PRIMARY KEY(seed_id,source_message_id), FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE TABLE IF NOT EXISTS input_evidence_execution_seed_source_recovery (
- seed_id TEXT NOT NULL, source_message_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
- metadata_json TEXT NOT NULL, content_digest TEXT NOT NULL,
- PRIMARY KEY(seed_id,source_message_id), FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE TABLE IF NOT EXISTS input_evidence_execution_current_sources (
- agent_id TEXT NOT NULL, identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
- source_message_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
- metadata_json TEXT NOT NULL, content_digest TEXT NOT NULL,
- PRIMARY KEY(agent_id,identity_incarnation,source_message_id)
-);
-CREATE TABLE IF NOT EXISTS input_evidence_execution_seed_work (
- seed_id TEXT NOT NULL REFERENCES episode_continuity_seeds(seed_id), work_item_id TEXT NOT NULL,
- capture_phase TEXT NOT NULL, presence TEXT NOT NULL CHECK(presence IN ('present','absent')),
- PRIMARY KEY(seed_id,work_item_id));
-CREATE TABLE IF NOT EXISTS input_evidence_execution_current_work (
- agent_id TEXT NOT NULL, identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0), work_item_id TEXT NOT NULL,
- revision INTEGER NOT NULL CHECK(revision>0), presence TEXT NOT NULL CHECK(presence IN ('present','absent','pruned')),
- PRIMARY KEY(agent_id,identity_incarnation,work_item_id));
-CREATE INDEX IF NOT EXISTS idx_execution_protocol_source_message
- ON execution_protocol_attempts(agent_id,json_extract(payload_json,'$.source_message_id'));
-CREATE TABLE IF NOT EXISTS input_evidence_seed_attempt_turns (
- seed_id TEXT NOT NULL, capture_phase TEXT NOT NULL, attempt_id TEXT NOT NULL,
- proof_json TEXT NOT NULL, PRIMARY KEY(seed_id,capture_phase,attempt_id),
- FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE INDEX IF NOT EXISTS idx_input_evidence_eligibility_lookup
- ON input_evidence_eligibility(seed_id,family,record_id);
-CREATE TABLE IF NOT EXISTS input_evidence_current (
- agent_id TEXT NOT NULL, identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
- family TEXT NOT NULL, record_id TEXT NOT NULL, revision INTEGER NOT NULL CHECK(revision>0),
- content_digest TEXT, fingerprint_json TEXT NOT NULL, attempt_turn_proof_json TEXT,
- availability TEXT NOT NULL CHECK(availability IN ('present','pruned')),
- qualification TEXT NOT NULL CHECK(qualification IN ('legacy_prepared','committed_writer')),
- seed_id TEXT, PRIMARY KEY(agent_id,identity_incarnation,family,record_id),
- FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE TABLE IF NOT EXISTS input_evidence_seed_recovery_current (
- seed_id TEXT NOT NULL, family TEXT NOT NULL, record_id TEXT NOT NULL,
- revision INTEGER NOT NULL CHECK(revision>0), fingerprint_json TEXT NOT NULL,
- origin_kind TEXT NOT NULL CHECK(origin_kind IN ('fixed_member','recovery_created','maintenance_created')),
- origin_attempt_id TEXT, command_kind TEXT, command_identity TEXT, command_hash TEXT, maintenance_proof_json TEXT,
- PRIMARY KEY(seed_id,family,record_id), FOREIGN KEY(seed_id) REFERENCES episode_continuity_seeds(seed_id),
- CHECK ((origin_kind='fixed_member' AND origin_attempt_id IS NULL AND command_kind IS NULL AND command_identity IS NULL AND command_hash IS NULL AND maintenance_proof_json IS NULL)
-     OR (origin_kind='recovery_created' AND origin_attempt_id IS NOT NULL AND command_kind IS NOT NULL AND command_identity IS NOT NULL AND command_hash IS NOT NULL AND maintenance_proof_json IS NULL)
-     OR (origin_kind='maintenance_created' AND origin_attempt_id IS NULL AND command_kind IS NULL AND command_identity IS NULL AND command_hash IS NULL AND maintenance_proof_json IS NOT NULL))
-);
-CREATE VIEW IF NOT EXISTS input_evidence_seed_membership AS
- SELECT e.seed_id,e.capture_phase,e.family,e.record_id,e.fingerprint_json,e.mandatory
- FROM input_evidence_eligibility e WHERE NOT EXISTS(
-   SELECT 1 FROM input_evidence_seed_recovery_current r WHERE r.seed_id=e.seed_id AND r.family=e.family AND r.record_id=e.record_id)
- UNION ALL
- SELECT r.seed_id,'startup_recovery',r.family,r.record_id,r.fingerprint_json,1
- FROM input_evidence_seed_recovery_current r;
-"#;
 
 #[path = "input_evidence_maintenance.rs"]
 pub(crate) mod maintenance;

@@ -36,7 +36,7 @@ impl Fixture {
         .unwrap();
         db.connection()
             .unwrap()
-            .execute_batch(include_str!("schema.sql"))
+            .execute_batch(holon_storage::schema::CONTROL_TRANSITION_SCHEMA)
             .unwrap();
         let time: DateTime<Utc> = "2026-10-13T00:00:00Z".parse().unwrap();
         let identity = AgentIdentityRecord::new(

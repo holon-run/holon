@@ -78,7 +78,6 @@ pub(crate) use sparse_recovery::{
     TaskStopSparseReadView, TaskStopSparseRecoveryEvidence, TaskStopSparseStatePresence,
 };
 
-pub(super) const TASK_STOP_SCHEMA: &str = include_str!("task_stop/schema.sql");
 #[cfg(test)]
 const MAX_RECORDS: usize = 65_536;
 #[cfg(test)]

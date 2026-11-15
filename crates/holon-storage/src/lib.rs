@@ -1,13 +1,30 @@
 //! SQLite infrastructure for Holon's runtime storage.
 
+pub mod agent_state;
 pub mod blocking;
+pub mod codec;
 pub mod connection;
+pub mod conversation;
 pub mod diagnostics;
+pub mod evidence;
+pub mod execution;
+pub mod index_outbox;
+#[doc(hidden)]
+pub mod legacy_scheduler_wire;
+pub mod migrations;
 pub mod persistence;
 pub mod read_block;
 mod read_scope;
 mod reader_config;
 pub mod reader_pool;
+pub mod reclamation;
+pub mod retired_scheduler_cleanup;
+pub mod schema;
+pub mod sequences;
+pub mod task;
+pub mod turn;
+pub mod wait;
+pub mod work_item;
 pub mod workspace_context;
 pub mod write_queue;
 

@@ -2,6 +2,9 @@
 //!
 //! This module is staged with the D1 schema; it is not a general history loader.
 
+#[cfg(test)]
+pub(super) use holon_storage::schema::EPISODE_CONTINUITY_SCHEMA;
+
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 
@@ -106,56 +109,6 @@ const CONTINUITY_MAX_REF_DEPTH: usize = 64;
 const UPGRADE_BOUNDARY_KEY: &str = "episode_continuity/v1/upgrade_boundary";
 
 /// Installed only by migration v82, before identity creation or runtime activation.
-pub(super) const EPISODE_CONTINUITY_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS episode_continuity_seeds (
-  seed_id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  policy_version INTEGER NOT NULL CHECK (policy_version = 1),
-  boundary_id TEXT NOT NULL,
-  identity_incarnation INTEGER CHECK (identity_incarnation IS NULL OR identity_incarnation > 0),
-  source_kind TEXT NOT NULL CHECK (source_kind IN (
-    'upgrade_identity', 'upgrade_unbound', 'legacy_identity_import', 'legacy_state_import'
-  )),
-  identity_digest TEXT,
-  roots_json TEXT NOT NULL,
-  candidate_payloads_json TEXT NOT NULL,
-  import_required INTEGER NOT NULL CHECK (import_required IN (0, 1)),
-  captured_at TEXT NOT NULL,
-  UNIQUE (agent_id, policy_version)
-);
-CREATE TABLE IF NOT EXISTS agent_episode_continuity (
-  agent_id TEXT NOT NULL,
-  identity_incarnation INTEGER NOT NULL CHECK (identity_incarnation > 0),
-  policy_version INTEGER NOT NULL CHECK (policy_version = 1),
-  mode TEXT NOT NULL CHECK (mode IN ('legacy_adopted', 'fresh_empty')),
-  seed_id TEXT,
-  bound_at TEXT NOT NULL,
-  CHECK ((mode = 'fresh_empty' AND seed_id IS NULL)
-      OR (mode = 'legacy_adopted' AND seed_id IS NOT NULL)),
-  PRIMARY KEY (agent_id, identity_incarnation, policy_version),
-  FOREIGN KEY (seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE TABLE IF NOT EXISTS episode_continuity_members (
-  seed_id TEXT NOT NULL,
-  capture_phase TEXT NOT NULL CHECK (capture_phase IN ('upgrade', 'first_import')),
-  episode_id TEXT NOT NULL,
-  content_digest TEXT NOT NULL,
-  qualification_json TEXT NOT NULL,
-  PRIMARY KEY (seed_id, capture_phase, episode_id),
-  FOREIGN KEY (seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-CREATE INDEX IF NOT EXISTS idx_episode_continuity_member_episode
-  ON episode_continuity_members(episode_id, seed_id);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_episode_continuity_seed_binding
-  ON agent_episode_continuity(seed_id) WHERE seed_id IS NOT NULL;
-CREATE TABLE IF NOT EXISTS episode_continuity_imports (
-  seed_id TEXT PRIMARY KEY,
-  checkpoint_digest TEXT NOT NULL,
-  roots_json TEXT NOT NULL,
-  captured_at TEXT NOT NULL,
-  FOREIGN KEY (seed_id) REFERENCES episode_continuity_seeds(seed_id)
-);
-"#;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EpisodeMemoryLoadScope {

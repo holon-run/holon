@@ -47,6 +47,8 @@ pub(crate) use completion_writes::{
     finish_work_completion_write_tx, prepare_work_completion_write_tx,
 };
 #[cfg(test)]
+pub(super) use holon_storage::schema::WORK_DOMAIN_SCHEMA;
+#[cfg(test)]
 pub(crate) use loader::preflight_work_domain_snapshot_tx;
 pub(crate) use loader::{
     current_recovery_owning_input_roots, load_work_domain_snapshot_tx,
@@ -71,7 +73,6 @@ pub(crate) use writes::{
     prepare_work_wait_cleanup_tx, register_work_pruned_tx, register_work_result_writes_tx,
     register_work_wait_cleanup_tx, CommittedWorkFacts,
 };
-pub(super) const WORK_DOMAIN_SCHEMA: &str = include_str!("work_snapshot/schema.sql");
 
 pub(super) fn validate_unscoped_work_item_write_tx(
     tx: &Transaction<'_>,

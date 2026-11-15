@@ -1586,6 +1586,7 @@ name = "holon-domain"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "chrono",
  "chrono-tz",
  "clap",
@@ -1615,12 +1616,15 @@ name = "holon-storage"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "holon-domain",
  "libc",
  "r2d2",
  "rusqlite",
+ "schemars",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
  "tokio-util",

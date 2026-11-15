@@ -535,11 +535,7 @@ pub(crate) struct ExecutionProtocolTransition {
     pub commands: Vec<crate::domain::execution_protocol::ExecutionProtocolCommand>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ExecutionAuthorityFences {
-    pub agent_control_revision: u64,
-    pub host_registry_revision: u64,
-}
+pub(crate) use holon_storage::execution::ExecutionAuthorityFences;
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub(crate) struct TaskTransitionCommand {

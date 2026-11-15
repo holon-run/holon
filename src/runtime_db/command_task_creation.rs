@@ -8,9 +8,6 @@ use anyhow::{ensure, Context, Result};
 use rusqlite::{params, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
-pub(super) const VERSION: i64 = 104;
-pub(super) const SCHEMA: &str = include_str!("command_task_creation/schema.sql");
-
 pub(in crate::runtime_db) fn has_result_source_column(
     connection: &rusqlite::Connection,
 ) -> Result<bool> {
