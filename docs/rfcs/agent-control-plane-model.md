@@ -258,8 +258,45 @@ It should:
 - reject an optional stale `run_id` guard if the observed run has changed;
 - record an aborted terminal turn with reason `operator_aborted`;
 - record the dequeued message outcome as aborted rather than processed;
-- pause the agent by default after the abort so it does not immediately repeat
-  the same path.
+- leave the agent `Stopped` for `StopAfterAbort`, or scheduler-owned for
+  `IdleAfterAbort`, without releasing the physical execution lane before the
+  cancelled producer exits.
+
+An accepted operator abort is a durable negative replay decision for the exact
+current input, not an ordinary recoverable interruption. Before acknowledging
+the request or cancelling its future, commit the abort intent and Stop/Idle
+projection atomically. The intent records the agent incarnation, owner epoch,
+original cancellation lease, run, attempt, exact source message, and Turn.
+Failed persistence must not cancel the producer or acknowledge the abort.
+
+The producer's terminal settlement records `Aborted` with `operator_aborted`
+for the Turn and queue claim, and settles its admitted source consumption and
+execution attempt through the existing fenced settlement transaction. A late
+completion cannot replace an already committed terminal decision. This does
+not undo tool side effects, close the WorkItem, or cancel independent tasks,
+waits, timers, or business blockers.
+
+The attempt becomes `Settled`, with an owner-specific `Aborted` outcome rather
+than a recoverable `Interrupted` attempt. WorkItem cancellation leaves the
+WorkItem runnable without an input recovery anchor; admitted task-result
+consumption settles `InvalidOrStale`. Terminal submission rechecks the durable
+abort fence in its transaction, including precomputed completion and provider
+recovery. A supervised invocation reports this terminal outcome as cancelled.
+
+Exclusive startup may finish an unfinished dispatch-memory checkpoint for an
+aborted producer only with its exact persisted abort intent, original
+source/Turn/run, terminal queue claim, and settled attempt/outcome. Its
+session-bound proof is budgeted before decoding and revalidated at Finish;
+an abort is not converted into a recoverable startup interruption.
+
+Online admission, bootstrap, exact task/wait reentry, and debug recovery must
+all reject the cancelled source and its attached replay lineage. A new explicit
+submission has a new message identity and remains eligible. Historical
+`Interrupted` inputs with an exactly attached `operator_aborted` Turn converge
+idempotently to `Aborted` before admission; already `Processed` entries retain
+their recorded fact. Ambiguous associations fail closed rather than matching
+prompt text, timestamps, or WorkItem identity. Ordinary crash, interjection,
+provider recovery, and explicit task retry retain their existing policies.
 
 For bounded parent-supervised delegation, `SpawnAgent` should always return the
 new `agent_id` and return a task-plane handle when the parent keeps a

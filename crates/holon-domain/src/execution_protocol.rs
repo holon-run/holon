@@ -577,6 +577,9 @@ pub enum ConversationOutcome {
     Interrupted {
         reason: String,
     },
+    Aborted {
+        reason: String,
+    },
     Failed {
         policy: String,
     },
@@ -592,6 +595,7 @@ pub enum WorkItemOutcome {
     Yield { target_work_item_id: String },
     Failed { policy: String },
     Interrupted { reason: String },
+    Aborted { reason: String },
     NeedsRepair { repair_id: String },
 }
 
@@ -1628,10 +1632,12 @@ fn plan_work_item_outcome(
         .checked_add(1)
         .ok_or_else(|| "WorkItem scheduling generation overflow".to_string())?;
     match outcome {
-        WorkItemOutcome::Continue => Ok(WorkItemExecutionState::Runnable {
-            generation: next_generation,
-            recovery_ref: None,
-        }),
+        WorkItemOutcome::Continue | WorkItemOutcome::Aborted { .. } => {
+            Ok(WorkItemExecutionState::Runnable {
+                generation: next_generation,
+                recovery_ref: None,
+            })
+        }
         WorkItemOutcome::Interrupted { .. } => Ok(WorkItemExecutionState::Runnable {
             generation: next_generation,
             recovery_ref: Some("interrupted".into()),
@@ -1770,4 +1776,39 @@ pub fn validate_outcome_invariants(
         return Err("outcome lacks reciprocal terminal attempt".into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod abort_tests {
+    use super::*;
+
+    #[test]
+    fn aborted_work_preserves_runnable_work_without_an_input_replay_anchor() {
+        let outcome = WorkItemOutcome::Aborted {
+            reason: "operator_aborted".into(),
+        };
+        assert_eq!(
+            plan_work_item_outcome(7, &outcome).unwrap(),
+            WorkItemExecutionState::Runnable {
+                generation: 8,
+                recovery_ref: None
+            },
+        );
+        let wire = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(wire["kind"], "aborted");
+        assert_eq!(
+            serde_json::from_value::<WorkItemOutcome>(wire).unwrap(),
+            outcome
+        );
+        let conversation = ConversationOutcome::Aborted {
+            reason: "operator_aborted".into(),
+        };
+        assert_eq!(
+            serde_json::from_value::<ConversationOutcome>(
+                serde_json::to_value(&conversation).unwrap(),
+            )
+            .unwrap(),
+            conversation,
+        );
+    }
 }

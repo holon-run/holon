@@ -15068,7 +15068,7 @@ async fn successful_turn_terminal_fault_is_fenced_and_aborted_without_losing_ear
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim() {
+async fn operator_aborted_terminal_fault_retries_confirmed_rollback_and_closes_claim() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let started = Arc::new(tokio::sync::Notify::new());
@@ -15139,7 +15139,7 @@ async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim(
 
     tokio::time::timeout(std::time::Duration::from_secs(2), runner)
         .await
-        .expect("runtime should stop after committing the interrupted settlement")
+        .expect("runtime should stop after committing the aborted settlement")
         .unwrap()
         .unwrap();
     let settled_execution = runtime
@@ -15167,17 +15167,18 @@ async fn interrupted_terminal_fault_retries_confirmed_rollback_and_closes_claim(
             .into_iter()
             .find(|entry| entry.message_id == message.id)
             .map(|entry| entry.status),
-        Some(QueueEntryStatus::Interrupted)
+        Some(QueueEntryStatus::Aborted)
     );
     let retained_turn = runtime
         .storage()
         .read_turn_by_id(&turn_id)
         .unwrap()
-        .expect("interrupted terminal Turn remains durable");
+        .expect("aborted terminal Turn remains durable");
     assert!(retained_turn
         .terminal
         .as_ref()
-        .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Interrupted));
+        .is_some_and(|terminal| terminal.kind == TurnTerminalKind::Aborted
+            && terminal.reason.as_deref() == Some("operator_aborted")));
     assert!(runtime
         .storage()
         .read_recent_events(128)
@@ -20786,7 +20787,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
             .last_turn_terminal
             .as_ref()
             .map(|terminal| terminal.kind),
-        Some(TurnTerminalKind::Interrupted)
+        Some(TurnTerminalKind::Aborted)
     );
     assert_eq!(
         state
@@ -20798,7 +20799,7 @@ async fn abort_current_run_aborts_provider_turn_and_stops_agent() {
     let queue_entries = runtime.storage().latest_queue_entries().unwrap();
     assert!(queue_entries
         .iter()
-        .any(|entry| entry.status == QueueEntryStatus::Interrupted));
+        .any(|entry| entry.status == QueueEntryStatus::Aborted));
     let events = runtime.all_events().unwrap();
     assert!(events
         .iter()
@@ -20906,7 +20907,7 @@ async fn abort_current_run_idle_after_abort_keeps_agent_awake_and_accepts_next_p
     let queue_entries = runtime.storage().latest_queue_entries().unwrap();
     assert!(queue_entries
         .iter()
-        .any(|entry| entry.status == QueueEntryStatus::Interrupted));
+        .any(|entry| entry.status == QueueEntryStatus::Aborted));
 
     // The turn-scoped abort must not require a lifecycle start: the next
     // operator prompt is admitted and starts a fresh provider turn.

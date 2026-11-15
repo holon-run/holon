@@ -95,6 +95,12 @@ pub(crate) fn validate_execution_commands_tx(
             continue;
         }
         if let ExecutionProtocolCommand::Admit(command) = command {
+            if let Some(source) = &command.attempt.source_message_id {
+                anyhow::ensure!(
+                    !crate::runtime_db::current_run_abort::input_aborted_tx(tx, agent_id, source)?,
+                    "operator-aborted input cannot be admitted"
+                );
+            }
             validate_admission_authority_tx(tx, agent_id, &command.attempt.admitted_fences)?;
             validate_wait_ingress_tx(tx, agent_id, &command.attempt)?;
             if let Some(projection) = command.attempt.input_projection.as_ref() {
@@ -112,6 +118,27 @@ pub(crate) fn validate_execution_commands_tx(
                 crate::runtime::input_consumption::projection::validate_projection(
                     &message, projection,
                 )?;
+            }
+        }
+        if let ExecutionProtocolCommand::Settle(command) = command {
+            if let Some(attempt) = state.attempts.get(&command.outcome.attempt_id) {
+                if let Some(source) = &attempt.source_message_id {
+                    if crate::runtime_db::current_run_abort::input_aborted_tx(tx, agent_id, source)?
+                    {
+                        let ExecutionProtocolCommand::Settle(aborted) =
+                            crate::runtime_db::current_run_abort::settle_attempt(
+                                attempt,
+                                Utc::now(),
+                            )
+                        else {
+                            unreachable!("abort settles an execution")
+                        };
+                        anyhow::ensure!(
+                            command.outcome.outcome == aborted.outcome.outcome,
+                            "operator-aborted attempt cannot commit producer outcome"
+                        );
+                    }
+                }
             }
         }
         if let ExecutionProtocolCommand::RegisterWorkItem(command) = command {

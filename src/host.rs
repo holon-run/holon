@@ -10583,6 +10583,16 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
+                        ExecutionOutcome::Conversation(ConversationOutcome::Aborted { reason })
+                        | ExecutionOutcome::WorkItem(WorkItemOutcome::Aborted { reason }) => {
+                            return Ok(Some(InvocationTerminalEvidence {
+                                status: TaskStatus::Cancelled,
+                                text: format!("agent invocation was aborted: {reason}"),
+                                activation_id: Some(attempt.attempt_id),
+                                turn_id: attempt.turn_id,
+                                completion_ref: None,
+                            }));
+                        }
                         ExecutionOutcome::Conversation(ConversationOutcome::Failed { policy }) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Failed,

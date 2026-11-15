@@ -272,6 +272,8 @@ enum InputTransitionCommand {
     Posture {
         command: AgentPostureTransitionCommand,
         started_turn: Option<TurnRecord>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        abort_intent: Option<super::super::current_run_abort::CurrentRunAbortIntent>,
     },
     Queue(PreparedQueueTransition),
     QueueHeadNoProgress {
@@ -575,6 +577,31 @@ impl PreparedInputTransition {
             InputTransitionCommand::Posture {
                 command,
                 started_turn,
+                abort_intent: None,
+            },
+        )
+    }
+    pub(crate) fn current_run_abort(
+        scope: InputEvidenceScope,
+        command_nonce: String,
+        prepared_at: chrono::DateTime<Utc>,
+        command: AgentPostureTransitionCommand,
+        intent: super::super::current_run_abort::CurrentRunAbortIntent,
+    ) -> Result<Self> {
+        anyhow::ensure!(
+            intent.agent_id == command.agent_id
+                && command.expected_incarnation == Some(intent.identity_incarnation)
+                && scope.identity_incarnation == intent.identity_incarnation,
+            "current-run abort scope differs"
+        );
+        Self::prepare(
+            scope,
+            command_nonce,
+            prepared_at,
+            InputTransitionCommand::Posture {
+                command,
+                started_turn: None,
+                abort_intent: Some(intent),
             },
         )
     }
@@ -1598,6 +1625,7 @@ impl PreparedInputTransition {
             InputTransitionCommand::Posture {
                 command,
                 started_turn,
+                ..
             } => {
                 state(&command.agent_state)?;
                 if let Some(turn) = started_turn {
@@ -2595,6 +2623,7 @@ impl RuntimeTransitionRepository<'_> {
             let InputTransitionCommand::Posture {
                 command,
                 started_turn: Some(turn),
+                ..
             } = prepared.command.as_ref()
             else {
                 anyhow::bail!("original claim has another business command");
@@ -3233,10 +3262,20 @@ impl RuntimeTransitionRepository<'_> {
                 InputTransitionCommand::Posture {
                     command,
                     started_turn,
-                } => (
-                    repository.commit_agent_posture_tx(tx, command, started_turn.as_ref())?,
-                    InputMutationResult::Transition,
-                ),
+                    abort_intent,
+                } => {
+                    if let Some(intent) = abort_intent {
+                        super::super::current_run_abort::persist_intent_tx(
+                            tx,
+                            intent,
+                            &command.agent_state,
+                        )?;
+                    }
+                    (
+                        repository.commit_agent_posture_tx(tx, command, started_turn.as_ref())?,
+                        InputMutationResult::Transition,
+                    )
+                }
                 InputTransitionCommand::Terminal(command) => (
                     repository.commit_prepared_terminal_tx(
                         tx,
@@ -4213,10 +4252,11 @@ impl PreparedInputTransition {
             InputTransitionCommand::Posture {
                 command,
                 started_turn,
+                abort_intent,
             } => {
                 anyhow::ensure!(
-                    started_turn.is_none(),
-                    "Deleting identity cannot start a Turn"
+                    started_turn.is_none() && abort_intent.is_none(),
+                    "Deleting identity cannot start a Turn or request an abort"
                 );
                 validate_state(&command.agent_state)?;
                 let expected = command

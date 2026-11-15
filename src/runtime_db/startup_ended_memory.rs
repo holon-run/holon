@@ -33,6 +33,8 @@ use std::{
 
 #[path = "startup_ended_memory_lineage.rs"]
 mod lineage;
+#[path = "startup_ended_memory_abort.rs"]
+mod operator_abort;
 #[path = "startup_ended_memory_queue.rs"]
 mod queue_reentry;
 
@@ -75,6 +77,24 @@ impl<'cap, 'guard> StartupEndedMemorySession<'cap, 'guard> {
             add_proof_material(&mut material, bytes, records)?;
         }
         Ok(material)
+    }
+    pub(crate) fn aborted_proof_material_tx(
+        &self,
+        tx: &Transaction<'_>,
+        binding: &DispatchMemoryBinding,
+    ) -> Result<(usize, usize)> {
+        self.activity.validate_tx(tx)?;
+        operator_abort::proof_material_tx(tx, binding)
+    }
+    pub(crate) fn authorize_aborted_tx(
+        &self,
+        tx: &Transaction<'_>,
+        binding: &DispatchMemoryBinding,
+    ) -> Result<StartupEndedDispatchAuthorization> {
+        self.aborted_proof_material_tx(tx, binding)?;
+        let common = read_original_address_tx(tx, binding)?;
+        let aborted = operator_abort::read_tx(tx, binding, &common)?;
+        Ok(self.authorization(binding, common, CanonicalEnd::OperatorAborted(aborted)))
     }
     pub(crate) fn stopped_proof_material_tx(
         &self,
@@ -206,6 +226,9 @@ impl StartupEndedDispatchAuthorization {
             CanonicalEnd::StartupInterrupted(_) => {
                 startup_interruption_proof_material_tx(tx, &self.binding)
             }
+            CanonicalEnd::OperatorAborted(_) => {
+                operator_abort::proof_material_tx(tx, &self.binding)
+            }
             CanonicalEnd::ControlStopped(address) => stopped_binding_material_tx(
                 tx,
                 &self.binding,
@@ -257,6 +280,10 @@ impl StartupEndedDispatchAuthorization {
             CanonicalEnd::StartupInterrupted(expected) => ensure!(
                 read_startup_interruption_tx(tx, &self.binding, &self.original)? == *expected,
                 "startup interruption proof changed"
+            ),
+            CanonicalEnd::OperatorAborted(expected) => ensure!(
+                operator_abort::read_tx(tx, &self.binding, &self.original)? == *expected,
+                "original operator abort proof changed"
             ),
             CanonicalEnd::ControlStopped(expected) => {
                 // No latest run/lease inference: reconstruct only the frozen
@@ -310,6 +337,7 @@ struct OriginalAddress {
 enum CanonicalEnd {
     QueueReentry(queue_reentry::QueueReentryAddress),
     StartupInterrupted(InterruptedAddress),
+    OperatorAborted(operator_abort::AbortedAddress),
     ControlStopped(StoppedAddress),
 }
 #[derive(Debug, Serialize)]

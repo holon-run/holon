@@ -92,6 +92,23 @@ impl TaskResultSettlementRepository<'_> {
                 .into());
             }
             if let Some(turn) = attached_turn_for_activation_tx(tx, &attempt, true)? {
+                if turn
+                    .terminal
+                    .as_ref()
+                    .is_some_and(|terminal| terminal.reason.as_deref() == Some("operator_aborted"))
+                    || super::super::current_run_abort::input_aborted_tx(
+                        tx,
+                        agent_id,
+                        source_message_id,
+                    )?
+                {
+                    return Err(InterruptedReplaySourceInvalid::new(
+                        "operator_aborted",
+                        agent_id,
+                        activation_id,
+                    )
+                    .into());
+                }
                 if turn.terminal.as_ref().map(|terminal| terminal.kind)
                     != Some(crate::types::TurnTerminalKind::Interrupted)
                 {

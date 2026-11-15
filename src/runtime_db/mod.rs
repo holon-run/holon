@@ -28,6 +28,7 @@ pub(crate) mod control_transition;
 pub mod conversation;
 pub(crate) mod current_query;
 pub(crate) mod current_read_writes;
+pub(crate) mod current_run_abort;
 pub mod destructive_operations;
 pub(crate) mod dispatch_memory;
 pub(crate) mod episode_memory;
@@ -152,6 +153,9 @@ pub use holon_storage::RuntimeDbReadScope;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod brief_latest_tests;
+#[cfg(holon_lib_test_shard = "b")]
+#[cfg(test)]
+mod current_run_abort_tests;
 #[cfg(test)]
 mod tests;
 

@@ -3,6 +3,8 @@ mod agent_and_tools;
 #[cfg(holon_lib_test_shard = "a")]
 mod contracts;
 #[cfg(holon_lib_test_shard = "a")]
+mod current_run_abort_replay;
+#[cfg(holon_lib_test_shard = "a")]
 mod input_consumption_baseline;
 #[cfg(holon_lib_test_shard = "a")]
 mod input_consumption_budget;

@@ -891,6 +891,8 @@ struct RuntimeInner {
     #[cfg(test)]
     provider_pause_commit_checkpoint: StdMutex<Option<Arc<TransitionTestCheckpoint>>>,
     #[cfg(test)]
+    producer_terminal_commit_checkpoint: StdMutex<Option<Arc<TransitionTestCheckpoint>>>,
+    #[cfg(test)]
     transition_notifications_checkpoint: StdMutex<Option<Arc<TransitionTestCheckpoint>>>,
     transition_warnings: StdMutex<Vec<PostCommitWarning>>,
 }
@@ -1371,6 +1373,17 @@ fn execution_protocol_settlement_transition_from_facts(
     };
     if attempt.state != ExecutionAttemptState::Open {
         return Ok(Default::default());
+    }
+    if runtime_db.operator_aborted_input(&record.agent_id, &record.message_id)? {
+        return Ok(
+            crate::runtime_db::transitions::ExecutionProtocolTransition {
+                bootstrap: None,
+                commands: vec![crate::runtime_db::current_run_abort::settle_attempt(
+                    attempt,
+                    record.updated_at,
+                )],
+            },
+        );
     }
     let interrupted = |reason: &str| crate::runtime_db::transitions::ExecutionProtocolTransition {
         bootstrap: None,
@@ -3740,6 +3753,23 @@ impl RuntimeHandle {
             }
         }
 
+        let lease = self
+            .inner
+            .control_cancellations
+            .run_for(&handle.run_id)
+            .context("current-run abort requires its original cancellation lease")?;
+        let abort_intent = crate::runtime_db::current_run_abort::CurrentRunAbortIntent {
+            agent_id: agent_id.clone(),
+            identity_incarnation: self.inner.identity_incarnation,
+            owner_epoch: self.instance_owner_epoch(),
+            run_id: handle.run_id.clone(),
+            runtime_lease_id: lease.lease_id().to_owned(),
+            activation_id: lease.activation_id().map(ToOwned::to_owned),
+            source_message_id: lease.source_message_id().to_owned(),
+            turn_id: guard.state.current_turn_id.clone(),
+            stop_after_abort: request.mode == CurrentRunAbortMode::StopAfterAbort,
+            requested_at: self.now(),
+        };
         match request.mode {
             CurrentRunAbortMode::StopAfterAbort => {
                 scheduler::apply_stop_projection(&mut guard.state);
@@ -3751,7 +3781,7 @@ impl RuntimeHandle {
             }
         }
         guard.defer_abort_current_run("operator_aborted");
-        guard.persist_state(&self.inner.storage).await?;
+        guard.persist_current_run_abort(abort_intent).await?;
         drop(guard);
 
         self.append_original_audit_event(AuditEvent::legacy(
@@ -5839,6 +5869,19 @@ impl RuntimeHandle {
         brief_evidence: Vec<BriefRecord>,
         provider_pause: Option<&provider_admission::ProviderPauseSettlement<'_>>,
     ) -> Result<bool> {
+        #[cfg(test)]
+        {
+            let checkpoint = self
+                .inner
+                .producer_terminal_commit_checkpoint
+                .lock()
+                .expect("producer terminal checkpoint lock poisoned")
+                .take();
+            if let Some(checkpoint) = checkpoint {
+                checkpoint.reached.notify_one();
+                checkpoint.release.notified().await;
+            }
+        }
         let normalized_terminal_transition = terminal_transition
             .map(|transition| -> Result<_> {
                 let mut transition = transition.try_clone()?;
@@ -5858,8 +5901,12 @@ impl RuntimeHandle {
             prepared_completion.is_none() || prepared_wait.is_none(),
             "terminal settlement cannot complete a WorkItem and register WaitFor together"
         );
+        let operator_aborted = terminal_transition.is_some_and(|transition| {
+            transition.terminal.kind == TurnTerminalKind::Aborted
+                && transition.terminal.reason.as_deref() == Some("operator_aborted")
+        });
         let task_result_settlement = if terminal_transition
-            .is_some_and(|transition| !transition.terminal.kind.is_failure())
+            .is_some_and(|transition| !transition.terminal.kind.is_failure() || operator_aborted)
         {
             let guard = self.inner.agent.lock().await;
             guard
@@ -5875,7 +5922,7 @@ impl RuntimeHandle {
                         } if admitted_activation_id == activation_id => {
                             Some(crate::runtime_db::task_result_settlement::TaskResultActivationSettlement {
                                 activation_id: activation_id.clone(),
-                                disposition: if terminal_transition.is_some_and(|transition|
+                                disposition: if operator_aborted || terminal_transition.is_some_and(|transition|
                                     transition.terminal.reason.as_deref()
                                         == Some("reducer_only/parent_turn_already_delivered"))
                                 {
@@ -6030,6 +6077,60 @@ impl RuntimeHandle {
             // Rebuild guard-dependent fields from the current baseline.
             let mut command = command.clone();
             let mut mutation = self.begin_mutation().await?;
+            // Cancellation and producer completion serialize on this guard.
+            // A prepared success (including recovery/WaitFor/CompleteWorkItem)
+            // has no authority over the durable cancellation decision.
+            if !operator_aborted
+                && self
+                    .inner
+                    .runtime_db
+                    .operator_aborted_input(&record.agent_id, &record.message_id)?
+            {
+                let mut terminal = terminal_transition
+                    .context("cancelled producer settlement requires its Turn")?
+                    .terminal
+                    .clone();
+                terminal.kind = TurnTerminalKind::Aborted;
+                terminal.reason = Some("operator_aborted".into());
+                terminal.last_assistant_message = None;
+                terminal.no_brief_reason = Some(TurnNoBriefReason::Aborted);
+                terminal.completed_at = self.now();
+                drop(mutation);
+                // Reassemble from committed inputs, not unpublished report or
+                // tool artifacts carried by the losing producer transition.
+                let turn_record = self.build_turn_record(&terminal).await?;
+                let cancelled = turn::TurnTerminalTransition {
+                    terminal,
+                    turn_record,
+                    prepared_work_item_completion: None,
+                    prepared_wait_for: None,
+                    provider_recovery_message: None,
+                    terminal_tool_executions: Vec::new(),
+                };
+                return self
+                    .commit_queue_terminal_settlement_with_evidence(
+                        QueueEntryRecord {
+                            status: QueueEntryStatus::Aborted,
+                            updated_at: self.now(),
+                            ..record
+                        },
+                        vec![AuditEvent::legacy(
+                            "message_processing_aborted",
+                            serde_json::json!({
+                                "message_id": cancelled.turn_record.trigger.as_ref()
+                                    .and_then(|trigger| trigger.message_id.as_deref()),
+                                "reason": "operator_aborted",
+                            }),
+                        )],
+                        notify_scheduler,
+                        Some(&cancelled),
+                        None,
+                        Vec::new(),
+                        Vec::new(),
+                        None,
+                    )
+                    .await;
+            }
             let mut stopped_provider_pause = false;
             if let crate::runtime_db::transitions::QueueMutation::ParkProviderDispatch {
                 expected,
@@ -7196,15 +7297,24 @@ impl RuntimeHandle {
                 ) =
                     aborted.as_ref()
                 {
-                    (
-                        self.build_turn_interrupted_record(
-                            &aborted.reason,
-                            None,
-                            u64::try_from(processing_started.elapsed().as_millis())
-                                .unwrap_or(u64::MAX),
+                    let duration_ms =
+                        u64::try_from(processing_started.elapsed().as_millis()).unwrap_or(u64::MAX);
+                    let (terminal, queue_status) = if aborted.reason == "operator_aborted" {
+                        (
+                            self.build_turn_aborted_record(&aborted.reason, None, duration_ms)
+                                .await,
+                            QueueEntryStatus::Aborted,
                         )
-                        .await,
-                        QueueEntryStatus::Interrupted,
+                    } else {
+                        (
+                            self.build_turn_interrupted_record(&aborted.reason, None, duration_ms)
+                                .await,
+                            QueueEntryStatus::Interrupted,
+                        )
+                    };
+                    (
+                        terminal,
+                        queue_status,
                         vec![AuditEvent::legacy(
                             "message_processing_aborted",
                             serde_json::json!({
