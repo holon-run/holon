@@ -49,6 +49,7 @@ futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
 holon-model-client = { version = "0.1.0", path = "crates/holon-model-client" }
+holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
 encoding_rs = "0.8"
 flate2 = "1.0"
@@ -61,7 +62,6 @@ reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tl
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 resvg = { version = "0.45.1", default-features = false }
 rpassword = "7.3"
-r2d2 = "0.8.10"
 rust-embed = "8.11"
 rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
 pulldown-cmark = "0.13"
@@ -98,6 +98,7 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
+holon-storage = { version = "0.1.0", path = "crates/holon-storage", features = ["test-support"] }
 proptest = "1.6"
 rusqlite = { version = "0.31", features = ["hooks", "trace"] }
 tokio = { version = "1.43", features = ["test-util"] }

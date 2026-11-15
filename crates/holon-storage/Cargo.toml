@@ -1,0 +1,30 @@
+[package]
+name = "holon-storage"
+version = "0.1.0"
+edition = "2021"
+description = "SQLite storage infrastructure for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+readme = "README.md"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1.0"
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+r2d2 = "0.8.10"
+rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-util = "0.7"
+tracing = "0.1"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+tempfile = "3.14"
+tracing-subscriber = "0.3"

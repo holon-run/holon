@@ -16,7 +16,6 @@ pub mod agent_message_delivery;
 pub mod agent_relations;
 pub mod audit;
 pub mod authentication;
-mod blocking;
 pub(crate) mod bootstrap_inputs;
 pub mod brief_publication_repair;
 #[doc(hidden)]
@@ -46,10 +45,6 @@ pub mod migrations;
 pub mod persistence;
 pub(crate) mod prepared_input_evidence;
 pub mod provider_admission;
-pub(crate) mod read_block;
-mod read_scope;
-mod reader_config;
-mod reader_pool;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod reader_pool_tests;
@@ -59,6 +54,7 @@ pub mod repositories;
 pub mod retention;
 pub mod retired_scheduler_cleanup;
 pub(crate) mod startup_ended_memory;
+mod storage_diagnostics;
 pub mod storage_domain;
 pub(crate) mod task_result_queue;
 pub(crate) mod task_result_settlement;
@@ -151,7 +147,7 @@ pub use crate::runtime_db::types::{
 pub use crate::runtime_db::work_item_source_revision_repair::{
     WorkItemSourceRevisionRepairEntry, WorkItemSourceRevisionRepairReport,
 };
-pub use read_scope::RuntimeDbReadScope;
+pub use holon_storage::RuntimeDbReadScope;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod brief_latest_tests;
@@ -159,7 +155,6 @@ mod brief_latest_tests;
 mod tests;
 
 use std::{
-    error::Error as StdError,
     fmt,
     fs::{self, File, OpenOptions},
     path::{Path, PathBuf},
@@ -168,6 +163,8 @@ use std::{
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::Utc;
+pub(crate) use holon_storage::read_block;
+use holon_storage::{blocking, reader_pool};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
@@ -190,48 +187,11 @@ pub(crate) const TASK_PAYLOAD_STRING_LIMIT: usize = 2048;
 pub(crate) const TASK_PAYLOAD_ARRAY_LIMIT: usize = 64;
 pub(crate) const EVIDENCE_PREVIEW_LIMIT: usize = 2048;
 pub(crate) const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
-pub(crate) const RUNTIME_DB_BUSY_TIMEOUT: Duration = Duration::from_millis(30_000);
-pub(crate) const RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY: Duration = Duration::from_millis(25);
-pub(crate) const RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY: Duration = Duration::from_millis(1_000);
-pub(crate) const RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
-pub(crate) const RUNTIME_DB_TRANSACTION_RETRY_WARN_INTERVAL: Duration = Duration::from_secs(30);
-pub(crate) const RUNTIME_DB_APPEND_RETRY_MAX_DELAY: Duration = Duration::from_millis(5_000);
-pub(crate) const RUNTIME_DB_WRITE_QUEUE_CAPACITY: usize = 1024;
-
-#[derive(Debug)]
-pub struct RuntimeDbRetryableError {
-    operation: &'static str,
-    path: PathBuf,
-    source: String,
-}
-
-impl RuntimeDbRetryableError {
-    pub(crate) fn new(operation: &'static str, path: &Path, source: impl fmt::Display) -> Self {
-        Self {
-            operation,
-            path: path.to_path_buf(),
-            source: source.to_string(),
-        }
-    }
-
-    pub fn operation(&self) -> &'static str {
-        self.operation
-    }
-}
-
-impl fmt::Display for RuntimeDbRetryableError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "retryable runtime db error while {} for {}: {}",
-            self.operation,
-            self.path.display(),
-            self.source
-        )
-    }
-}
-
-impl StdError for RuntimeDbRetryableError {}
+pub(crate) use holon_storage::RUNTIME_DB_BUSY_TIMEOUT;
+pub use holon_storage::{
+    RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbProtectionStatus,
+    RuntimeDbRetryableError, RuntimeStateTransitionConflict,
+};
 
 pub(crate) fn is_reader_checkout_pressure(error: &anyhow::Error) -> bool {
     error.chain().any(|source| {
@@ -271,54 +231,6 @@ where
     read().await
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeDbProtectionError {
-    path: PathBuf,
-    evidence: String,
-}
-
-impl RuntimeDbProtectionError {
-    pub(crate) fn new(path: &Path, evidence: impl Into<String>) -> Self {
-        Self {
-            path: path.to_path_buf(),
-            evidence: evidence.into(),
-        }
-    }
-
-    pub fn evidence(&self) -> &str {
-        &self.evidence
-    }
-}
-
-impl fmt::Display for RuntimeDbProtectionError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "runtime database is quarantined after sidecar protection failed for {}: {}; preserve the database, WAL, SHM, and open-FD evidence, then restart or perform offline recovery",
-            self.path.display(),
-            self.evidence
-        )
-    }
-}
-
-impl StdError for RuntimeDbProtectionError {}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeDbProtectionState {
-    Starting,
-    Protected,
-    Unsupported,
-    Quarantined,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RuntimeDbProtectionStatus {
-    pub state: RuntimeDbProtectionState,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub evidence: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ConversationInputAssignmentRollbackReport {
     pub apply: bool,
@@ -336,134 +248,6 @@ pub struct ConversationInputAssignmentRollbackReport {
     pub reason: Option<String>,
 }
 
-impl RuntimeDbProtectionStatus {
-    pub fn is_healthy(&self) -> bool {
-        self.state != RuntimeDbProtectionState::Quarantined
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RuntimeStateTransitionConflict {
-    domain: &'static str,
-    record_id: String,
-    code: &'static str,
-    existing_status: String,
-    incoming_status: String,
-    expected_revision: Option<u64>,
-    actual_revision: Option<u64>,
-    retryable: bool,
-}
-
-impl RuntimeStateTransitionConflict {
-    pub(crate) fn new(
-        domain: &'static str,
-        record_id: impl Into<String>,
-        existing_status: impl Into<String>,
-        incoming_status: impl Into<String>,
-    ) -> Self {
-        Self {
-            domain,
-            record_id: record_id.into(),
-            code: "state_transition_conflict",
-            existing_status: existing_status.into(),
-            incoming_status: incoming_status.into(),
-            expected_revision: None,
-            actual_revision: None,
-            retryable: false,
-        }
-    }
-
-    pub(crate) fn revision(
-        record_id: impl Into<String>,
-        code: &'static str,
-        expected_revision: Option<u64>,
-        actual_revision: Option<u64>,
-        retryable: bool,
-    ) -> Self {
-        Self {
-            domain: "work_item",
-            record_id: record_id.into(),
-            code,
-            existing_status: actual_revision
-                .map_or_else(|| "missing".to_string(), |revision| revision.to_string()),
-            incoming_status: expected_revision
-                .map_or_else(|| "none".to_string(), |revision| revision.to_string()),
-            expected_revision,
-            actual_revision,
-            retryable,
-        }
-    }
-
-    pub(crate) fn concurrent_mutation(domain: &'static str, record_id: impl Into<String>) -> Self {
-        Self {
-            domain,
-            record_id: record_id.into(),
-            code: "revision_conflict",
-            existing_status: "changed".into(),
-            incoming_status: "expected_snapshot".into(),
-            expected_revision: None,
-            actual_revision: None,
-            retryable: true,
-        }
-    }
-
-    pub fn domain(&self) -> &'static str {
-        self.domain
-    }
-
-    pub fn record_id(&self) -> &str {
-        &self.record_id
-    }
-
-    pub fn code(&self) -> &'static str {
-        self.code
-    }
-
-    pub fn existing_status(&self) -> &str {
-        &self.existing_status
-    }
-
-    pub fn incoming_status(&self) -> &str {
-        &self.incoming_status
-    }
-
-    pub fn expected_revision(&self) -> Option<u64> {
-        self.expected_revision
-    }
-
-    pub fn actual_revision(&self) -> Option<u64> {
-        self.actual_revision
-    }
-
-    pub fn retryable(&self) -> bool {
-        self.retryable
-    }
-}
-
-impl fmt::Display for RuntimeStateTransitionConflict {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if self.expected_revision.is_some() || self.actual_revision.is_some() {
-            write!(
-                formatter,
-                "{} for {} {}: expected revision {:?}, actual revision {:?}",
-                self.code,
-                self.domain,
-                self.record_id,
-                self.expected_revision,
-                self.actual_revision
-            )
-        } else {
-            write!(
-                formatter,
-                "conflicting {} transition for {}: {} -> {}",
-                self.domain, self.record_id, self.existing_status, self.incoming_status
-            )
-        }
-    }
-}
-
-impl StdError for RuntimeStateTransitionConflict {}
-
 #[derive(Clone)]
 pub struct RuntimeDb {
     path: PathBuf,
@@ -478,7 +262,7 @@ pub struct RuntimeDb {
     observer_sync_self_heal_last_attempt_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
-pub use reader_config::{
+pub use holon_storage::{
     RuntimeDbReaderConfig, DEFAULT_ORDINARY_MAX_CONNECTIONS, DEFAULT_PREPARATION_MAX_CONNECTIONS,
     MAX_READER_CONNECTIONS,
 };
@@ -527,15 +311,19 @@ impl RuntimeDb {
         readers: RuntimeDbReaderConfig,
     ) -> Result<Self> {
         let path = path.into();
-        let writer = RuntimeDbWriter::open_starting(path.clone(), open_connection(&path)?)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            open_connection(&path)?,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
         let db = Self {
             readers: reader_pool::RuntimeDbReaderPool::with_capacity(
-                std::sync::Arc::clone(&writer.state),
+                std::sync::Arc::clone(writer.state()),
                 readers.ordinary_max_connections(),
                 "ordinary",
             ),
             preparation_readers: reader_pool::RuntimeDbReaderPool::with_capacity(
-                std::sync::Arc::clone(&writer.state),
+                std::sync::Arc::clone(writer.state()),
                 readers.preparation_max_connections(),
                 "preparation",
             ),
@@ -575,11 +363,15 @@ impl RuntimeDb {
         }
         let connection = open_connection(&path)?;
         configure_persistent_database(&connection)?;
-        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
         let db = Self {
-            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
             preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
-                std::sync::Arc::clone(&writer.state),
+                std::sync::Arc::clone(writer.state()),
             ),
             writer,
             path,
@@ -621,11 +413,15 @@ impl RuntimeDb {
         }
         let connection = open_connection(&path)?;
         configure_persistent_database(&connection)?;
-        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
         let db = Self {
-            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
             preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
-                std::sync::Arc::clone(&writer.state),
+                std::sync::Arc::clone(writer.state()),
             ),
             writer,
             path,
@@ -679,11 +475,15 @@ impl RuntimeDb {
                 path.display()
             );
         }
-        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
         let db = Self {
-            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
             preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
-                std::sync::Arc::clone(&writer.state),
+                std::sync::Arc::clone(writer.state()),
             ),
             writer,
             path,
@@ -737,11 +537,15 @@ impl RuntimeDb {
                 schema_version
             );
         }
-        let writer = RuntimeDbWriter::open_starting(path.clone(), connection)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
         let db = Self {
-            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(&writer.state)),
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
             preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
-                std::sync::Arc::clone(&writer.state),
+                std::sync::Arc::clone(writer.state()),
             ),
             writer,
             path,
@@ -758,17 +562,11 @@ impl RuntimeDb {
         &self,
         agent_id: &str,
     ) -> Result<std::sync::Arc<std::sync::atomic::AtomicU64>> {
-        self.writer.state.queue.register_audit_frontier(agent_id)
+        self.writer.register_audit_frontier(agent_id)
     }
 
     pub(crate) fn capability_policy_generation(&self) -> Option<u64> {
-        let generation = self
-            .writer
-            .state
-            .queue
-            .capability_policy_generation
-            .load(std::sync::atomic::Ordering::Acquire);
-        (generation % 2 == 0).then_some(generation)
+        self.writer.capability_policy_generation()
     }
 
     pub fn path(&self) -> &Path {
@@ -854,12 +652,12 @@ impl RuntimeDb {
             bail!("reader pool test capacity and budget must be positive");
         }
         self.readers = reader_pool::RuntimeDbReaderPool::with_config(
-            std::sync::Arc::clone(&self.writer.state),
+            std::sync::Arc::clone(self.writer.state()),
             capacity,
             budget,
         );
         self.preparation_readers = reader_pool::RuntimeDbReaderPool::with_config(
-            std::sync::Arc::clone(&self.writer.state),
+            std::sync::Arc::clone(self.writer.state()),
             1,
             budget,
         );
@@ -1667,11 +1465,10 @@ impl RuntimeDb {
             fs::create_dir_all(parent)
                 .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
         }
-        let _turn = self.writer.state.queue.wait_turn()?;
+        let _turn = self.writer.wait_turn()?;
         let mut connection = self
             .writer
-            .state
-            .connection
+            .connection_mutex()
             .lock()
             .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
         configure_new_database_auto_vacuum(&connection)?;

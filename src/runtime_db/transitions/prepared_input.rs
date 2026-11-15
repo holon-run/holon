@@ -3088,7 +3088,7 @@ impl RuntimeTransitionRepository<'_> {
             };
             tracing::trace_span!(
                 "prepared_queue",
-                operation = write_context.operation,
+                operation = write_context.operation(),
                 agent_id = %scope.agent_id,
                 message_id,
             )

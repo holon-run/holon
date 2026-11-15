@@ -53,7 +53,7 @@ impl RuntimeDbReadScope {
         Ok(())
     }
 
-    pub(crate) async fn cancelled(scope: &Option<Self>) {
+    pub async fn cancelled(scope: &Option<Self>) {
         match scope {
             Some(scope) => scope.cancellation.cancelled().await,
             None => std::future::pending().await,

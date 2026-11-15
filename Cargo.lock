@@ -1539,6 +1539,7 @@ dependencies = [
  "futures-util",
  "holon-domain",
  "holon-model-client",
+ "holon-storage",
  "holon-system",
  "hyper",
  "hyper-util",
@@ -1549,7 +1550,6 @@ dependencies = [
  "percent-encoding",
  "proptest",
  "pulldown-cmark",
- "r2d2",
  "ratatui",
  "reqwest",
  "resvg",
@@ -1608,6 +1608,23 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "holon-storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "holon-domain",
+ "libc",
+ "r2d2",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
 ]
 
 [[package]]

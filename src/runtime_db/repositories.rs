@@ -1,5 +1,9 @@
 //! Domain repository implementations and their transaction helpers.
 
+pub(crate) use holon_storage::workspace_context::{
+    decode_execution_root_entry_payload, decode_workspace_entry_payload,
+};
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, Context, Result};
@@ -5700,22 +5704,12 @@ impl EvidenceRepository<'_> {
             .transaction(|tx| insert_delivery_summary_evidence_tx(tx, record));
         // An uncertain commit also requires the next compatibility read to
         // reload. The write may have moved an existing ID to another WorkItem.
-        self.db
-            .writer
-            .state
-            .queue
-            .delivery_summary_generation
-            .fetch_add(1, std::sync::atomic::Ordering::Release);
+        self.db.writer.bump_delivery_summary_generation();
         outcome
     }
 
     pub(crate) fn delivery_summary_generation(&self) -> u64 {
-        self.db
-            .writer
-            .state
-            .queue
-            .delivery_summary_generation
-            .load(std::sync::atomic::Ordering::Acquire)
+        self.db.writer.delivery_summary_generation()
     }
 
     pub fn query(&self, kind: EvidenceKind, query: EvidenceQuery<'_>) -> Result<Vec<EvidenceRow>> {
@@ -8788,18 +8782,10 @@ pub(crate) fn decode_agent_state_payload(payload: &str) -> Result<AgentState> {
     serde_json::from_str(payload).context("decoding agent state payload from runtime db")
 }
 
-pub(crate) fn decode_workspace_entry_payload(payload: &str) -> Result<WorkspaceEntry> {
-    serde_json::from_str(payload).context("decoding workspace entry payload from runtime db")
-}
-
 pub(crate) fn decode_workspace_occupancy_payload(
     payload: &str,
 ) -> Result<WorkspaceOccupancyRecord> {
     serde_json::from_str(payload).context("decoding workspace occupancy payload from runtime db")
-}
-
-pub(crate) fn decode_execution_root_entry_payload(payload: &str) -> Result<ExecutionRootEntry> {
-    serde_json::from_str(payload).context("decoding execution root entry payload from runtime db")
 }
 
 pub(crate) fn decode_agent_identity_payload(payload: &str) -> Result<AgentIdentityRecord> {

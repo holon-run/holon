@@ -2,7 +2,7 @@
 //! attempts including errors/cancellation. Snapshots are not transactional.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -34,6 +34,19 @@ impl Stage {
         }
     }
 
+    pub(crate) fn record(&self, elapsed: Duration, rows: u64) {
+        let elapsed_ns = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.total_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
+        self.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);
+        self.rows.fetch_add(rows, Ordering::Relaxed);
+        self.count.fetch_add(1, Ordering::Relaxed);
+        tracing::trace!(
+            target: "holon::performance",
+            stage = self.name, elapsed_ns, rows = rows,
+            "performance stage completed"
+        );
+    }
+
     fn snapshot(&self) -> StageSnapshot {
         StageSnapshot {
             name: self.name.to_owned(),
@@ -59,16 +72,7 @@ impl Timer {
 
 impl Drop for Timer {
     fn drop(&mut self) {
-        let elapsed_ns = self.started.elapsed().as_nanos().min(u128::from(u64::MAX)) as u64;
-        self.stage.total_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
-        self.stage.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);
-        self.stage.rows.fetch_add(self.rows, Ordering::Relaxed);
-        self.stage.count.fetch_add(1, Ordering::Relaxed);
-        tracing::trace!(
-            target: "holon::performance",
-            stage = self.stage.name, elapsed_ns, rows = self.rows,
-            "performance stage completed"
-        );
+        self.stage.record(self.started.elapsed(), self.rows);
     }
 }
 
