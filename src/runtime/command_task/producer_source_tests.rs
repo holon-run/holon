@@ -25,6 +25,132 @@ async fn settle_original_command_parent(
 }
 
 #[tokio::test]
+async fn original_command_terminal_ignores_completed_legacy_work_sources() -> Result<()> {
+    use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
+    use crate::runtime_db::input_preparation::recovery_fixture::{
+        legacy_completed_work_fixture, SOURCE_ID, WORK_ID,
+    };
+    use crate::runtime_db::transitions::TransitionFaultPoint;
+
+    for fault in [None, Some(TransitionFaultPoint::BeforeCacheUpdate)] {
+        let (_directory, db) = legacy_completed_work_fixture(128)?;
+        let home = tempdir()?;
+        let workspace = tempdir()?;
+        let runtime = RuntimeHandle::new_with_clock_and_runtime_db(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("done")),
+            "default".into(),
+            ContextConfig {
+                recent_messages: 0,
+                ..Default::default()
+            },
+            Arc::new(crate::runtime::clock::SystemClock),
+            Some(db),
+        )?;
+        crate::runtime::tests::support::isolate_test_user_home(&runtime);
+        runtime.await_initial_resources().await;
+        let process = FakeRunningProcess::pending();
+        let resolved = resolved_command(&runtime, &command_spec(false, false)).await;
+        let task = runtime
+            .register_command_task(
+                "command after upgrade".into(),
+                resolved,
+                running_command(process.clone(), "", ""),
+                AuthorityClass::OperatorInstruction,
+                false,
+                CapturedOutput::default(),
+            )
+            .await?;
+        wait_for_latest_task(&runtime, &task.id, TaskStatus::Running).await;
+        let lease = runtime
+            .inner
+            .task_handles
+            .lock()
+            .await
+            .get(&task.id)
+            .and_then(ManagedTaskHandle::control_lease)
+            .context("Command lease missing")?;
+        let source = lease
+            .original_command()?
+            .context("Command producer missing")?;
+        let (_, session) = runtime.begin_task_birth_session().await?;
+        if let Some(fault) = fault {
+            runtime.inject_next_transition_fault(fault);
+        }
+        *process.status.lock().await = Some(RunningProcessExitStatus::new(Some(0), None));
+        lease.join().await?;
+        runtime
+            .continue_original_command_terminal(source.clone())
+            .await?;
+        assert!(source.is_durable_finished());
+        assert!(source.frozen_terminal()?.is_none());
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .tasks()
+                .latest(&task.id)?
+                .unwrap()
+                .status,
+            TaskStatus::Completed
+        );
+        let observed = runtime
+            .capture_run_once_statuses_after_writer(&session)
+            .await?;
+        assert!(observed
+            .messages()
+            .any(|message| message.task_id.as_deref() == Some(task.id.as_str())));
+        let receipt =
+            original_terminal_receipt(&runtime, &source)?.context("terminal receipt missing")?;
+        runtime
+            .continue_original_command_terminal(source.clone())
+            .await?;
+        assert_eq!(
+            original_terminal_receipt(&runtime, &source)?.unwrap(),
+            receipt
+        );
+        runtime.runtime_db().transaction(|tx| {
+            assert_eq!(
+                tx.query_row(
+                    "SELECT COUNT(*) FROM messages WHERE task_id=?1",
+                    [&task.id],
+                    |row| row.get::<_, usize>(0)
+                )?,
+                1
+            );
+            assert_eq!(
+                tx.query_row(
+                    "SELECT COUNT(*) FROM input_mutation_receipts WHERE command_nonce=?1",
+                    [format!("command-terminal:{}", source.address().lease_id)],
+                    |row| row.get::<_, usize>(0)
+                )?,
+                1
+            );
+            Ok(())
+        })?;
+        runtime.operator_state_read_projection(10, 10).await?;
+        let root = runtime
+            .inner
+            .mutation_owner
+            .capture()?
+            .context("Ready owner missing")?;
+        let work = root
+            .work
+            .as_ref()
+            .unwrap()
+            .capture(&WorkCaptureRequest::current())?;
+        assert!(work
+            .lookup(&WorkKey::new(WorkFamily::Work, WORK_ID))?
+            .is_some());
+        let inputs = root.input_evidence.as_ref().unwrap().capture()?;
+        assert!(!inputs.execution.sources.contains_key(SOURCE_ID));
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn original_command_two_terminals_keep_old_source_after_parent_moves_on() -> Result<()> {
     use super::super::scheduler_executor::{RunLoopPoll, SchedulerDecisionExecutor};
     for recent_messages in [0, 1] {
