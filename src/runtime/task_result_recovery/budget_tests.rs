@@ -233,6 +233,117 @@ async fn paused_diagnostic_preserves_unit_result_through_runtime_write_and_noop(
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test(start_paused = true)]
+async fn dispatch_prepare_surfaces_registered_dependency_write_across_the_frozen_clock() {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    let record = pending_command_result(
+        runtime,
+        "reload-dependency",
+        harness.now() - chrono::Duration::seconds(2000),
+    )
+    .await;
+    let source = runtime
+        .storage()
+        .read_message_by_id(&record.message_id)
+        .unwrap()
+        .unwrap();
+    let request = crate::runtime::resident_task::TaskCaptureRequest {
+        recovery_source_ids: std::collections::BTreeSet::from([source.id.clone()]),
+        ..crate::runtime::resident_task::TaskCaptureRequest::current()
+    };
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    let at = harness.now();
+    mutation
+        .prepare_dispatch_tasks(&request, Some(at))
+        .await
+        .unwrap();
+    let baseline = std::sync::Arc::clone(
+        mutation
+            .capture_published_root()
+            .unwrap()
+            .tasks
+            .as_ref()
+            .unwrap(),
+    );
+    let baseline_recheck = baseline
+        .coverage()
+        .result_metadata
+        .get(&record.result_identity)
+        .unwrap()
+        .next_recheck_at;
+    drop(mutation);
+
+    // One real registered transaction write changes the tracked dependency.
+    let charge_at = harness.now();
+    let result_identity = record.result_identity.clone();
+    owned_settlement_write(runtime, &record.result_identity, move |tx| {
+        assert!(charge_recovery_admission_tx(
+            tx,
+            &result_identity,
+            "reload-dependency-root",
+            charge_at,
+        )?);
+        Ok(())
+    })
+    .await;
+    let charged = runtime
+        .runtime_db()
+        .task_result_settlements()
+        .latest_for_message(&record.message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(charged.recovery_attempts, 1);
+    assert_eq!(
+        charged.last_recovery_root_attempt_id.as_deref(),
+        Some("reload-dependency-root")
+    );
+
+    // The next preparation must surface the registered write, never the
+    // pre-write domain, while recovery preparation stays available.
+    let later = charge_at + chrono::Duration::seconds(1);
+    let mut mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .prepare_dispatch_tasks(&request, Some(later))
+        .await
+        .unwrap();
+    let after = mutation.capture_published_root().unwrap();
+    let tasks = after.tasks.as_ref().unwrap();
+    assert!(!std::sync::Arc::ptr_eq(&baseline, tasks));
+    assert!(
+        tasks.coverage().recovery_sources.contains_key(&source.id),
+        "recovery source observation missing after the registered write"
+    );
+    let metadata = tasks
+        .coverage()
+        .result_metadata
+        .get(&record.result_identity)
+        .unwrap();
+    assert_ne!(metadata.next_recheck_at, baseline_recheck);
+    assert_eq!(metadata.next_recheck_at, charged.next_recheck_at);
+
+    // Once the write is incorporated, the reuse fast path serves the same
+    // facts again without touching the tasks table.
+    runtime
+        .inner
+        .runtime_db
+        .transaction(|tx| {
+            tx.execute_batch("ALTER TABLE tasks RENAME TO tasks_capture_forbidden")?;
+            Ok(())
+        })
+        .unwrap();
+    mutation
+        .prepare_dispatch_tasks(&request, Some(later + chrono::Duration::milliseconds(1)))
+        .await
+        .unwrap();
+    let reused = mutation.capture_published_root().unwrap();
+    assert!(std::sync::Arc::ptr_eq(
+        tasks,
+        reused.tasks.as_ref().unwrap()
+    ));
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test(start_paused = true)]
 async fn paused_scanner_reports_once_without_queueing_or_exposing_result_content() {
     let harness = LifecycleHarness::new();
     let runtime = harness.runtime();

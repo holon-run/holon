@@ -12,6 +12,9 @@ use std::collections::BTreeMap;
 /// entry is unprepared; a present negative observation is not a grant.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskRecoverySourceObservation {
+    /// Legacy observations remain usable only at their original frozen clock.
+    #[serde(default)]
+    pub time_independent: bool,
     pub exact_source_digest: Option<String>,
     pub durable_source_digest: Option<String>,
     pub candidate: Option<TaskRecoveryCandidate>,
@@ -41,6 +44,24 @@ pub(crate) struct TaskRecoveryReplayObservation {
     pub recovery_epoch: u64,
     pub root_is_charged: bool,
     pub interrupted_anchor: Option<String>,
+    #[serde(default)]
+    pub interrupted_anchor_not_before: Option<DateTime<Utc>>,
+}
+
+impl TaskRecoveryReplayObservation {
+    fn permits_anchor_at(
+        &self,
+        source_id: &str,
+        at: Option<DateTime<Utc>>,
+        time_independent: bool,
+    ) -> bool {
+        self.root_is_charged
+            && self.interrupted_anchor.as_deref() == Some(source_id)
+            && (!time_independent
+                || self
+                    .interrupted_anchor_not_before
+                    .is_some_and(|not_before| at.is_some_and(|now| not_before <= now)))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -372,7 +393,8 @@ fn recovery_budget_rejected(
     if record.recovery_paused_at.is_none() {
         return Ok(false);
     }
-    let observed = recovery_source_observation(source, tasks)?
+    let source_observation = recovery_source_observation(source, tasks)?;
+    let observed = source_observation
         .paused_replays
         .get(&record.result_identity)
         .context("paused Result recovery replay was not prepared")?;
@@ -380,8 +402,11 @@ fn recovery_budget_rejected(
         observed.recovery_epoch == record.recovery_epoch,
         "paused Result recovery observation has a different epoch"
     );
-    Ok(!observed.root_is_charged
-        || observed.interrupted_anchor.as_deref() != Some(source.id.as_str()))
+    Ok(!observed.permits_anchor_at(
+        &source.id,
+        tasks.coverage.recovery_at,
+        source_observation.time_independent,
+    ))
 }
 
 pub(in crate::runtime) enum TaskResultRecoveryDelivery<'a> {
@@ -777,6 +802,7 @@ mod tests {
     #[test]
     fn recovery_observation_requires_both_digests_even_for_negative_predicates() {
         let mut observed = TaskRecoverySourceObservation {
+            time_independent: true,
             exact_source_digest: Some("exact".into()),
             durable_source_digest: Some("durable".into()),
             candidate: None,
@@ -793,5 +819,38 @@ mod tests {
         observed.exact_source_digest = exact;
         observed.durable_source_digest = None;
         assert!(observed.ensure_prepared().is_err());
+    }
+
+    #[test]
+    fn stable_replay_checks_the_capture_clock_each_time_and_fails_closed() {
+        let at = Utc::now();
+        let mut replay = TaskRecoveryReplayObservation {
+            recovery_epoch: 3,
+            root_is_charged: true,
+            interrupted_anchor: Some("anchor".into()),
+            interrupted_anchor_not_before: Some(at),
+        };
+        for now in [
+            at - chrono::Duration::nanoseconds(1),
+            at,
+            at + chrono::Duration::days(1),
+            at - chrono::Duration::days(1),
+        ] {
+            assert_eq!(
+                replay.permits_anchor_at("anchor", Some(now), true),
+                now >= at
+            );
+        }
+        assert!(!replay.permits_anchor_at("other", Some(at), true));
+        assert!(!replay.permits_anchor_at("anchor", None, true));
+        replay.root_is_charged = false;
+        assert!(!replay.permits_anchor_at("anchor", Some(at), true));
+        replay.root_is_charged = true;
+        replay.interrupted_anchor_not_before = None;
+        assert!(!replay.permits_anchor_at("anchor", Some(at), true));
+        // Only the coverage gate may authorize a same-clock legacy observation.
+        assert!(replay.permits_anchor_at("anchor", Some(at), false));
+        replay.interrupted_anchor = None;
+        assert!(!replay.permits_anchor_at("anchor", Some(at), false));
     }
 }

@@ -5345,6 +5345,25 @@ addresses; ordinary captures keep their original strict default. This avoids
 reloading and hashing an unrelated operator backlog whenever `recovery_at`
 advances, without dropping Work trigger relations or weakening Task readers.
 
+Task recovery-source reuse separates qualified facts from the capture clock.
+New observations retain the interrupted replay anchor's earliest valid cutoff,
+using the same source, Result, Task and reply-delivery predicates as canonical
+admission. Capture evaluates that bound at its own frozen time; an anchor that
+only becomes valid later must not authorize an earlier replay. The fixed
+admission-batch cutoff remains a separate fact. Probe/deadline selection still
+uses the current millisecond cutoff and the existing eight-result limit.
+Clock movement alone does not reload a fully qualified Task domain. Missing
+sources or changed dependencies still require preparation, and legacy
+time-qualified coverage is reusable only at its original clock until rebuilt.
+No capture-clock update publishes a new owner revision or grants mutation
+authority; canonical admission continues to revalidate the original facts.
+
+Preparation attribution distinguishes caller and miss reason from actual
+domain loading and resident reconstruction. These are nested attempt counters,
+not business-write counts or additive latency measurements. Writer acquisition
+remains separately attributed; reduced Task loading is not by itself proof of
+reduced end-to-end latency.
+
 Running status qualification preserves the creator's rejoin authority. An
 unbound creator keeps `parent_turn_id` absent; its accepted source Turn is
 checked only against `result_execution_turn_id`. A legacy status source cannot

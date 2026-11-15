@@ -293,6 +293,7 @@ fn load_selected_with_scope_material(
     mut material: &mut read_preparation::TaskReadMaterial<'_>,
     read: Option<&super::super::context_inputs::ContextScopeRead<'_>>,
 ) -> Result<TaskBootstrapSnapshot> {
+    let _load = crate::diagnostics::attribution::TASK_DOMAIN_LOAD.start();
     let facts = match read {
         Some(read) => {
             read.validate(tx, scope)?;
