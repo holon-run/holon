@@ -4086,7 +4086,7 @@ fn settle_recovered_timer_waits_tx(
     result: &mut TimerWakeRecoveryResult,
 ) -> Result<()> {
     for timer in timers {
-        let settlement = settle_cancelled_timer_waits_tx(tx, timer, recovered_at)?;
+        let settlement = settle_cancelled_timer_waits_tx(tx, timer, recovered_at, None)?;
         result
             .settled_wait_conditions
             .extend(settlement.wait_conditions);
@@ -4666,14 +4666,22 @@ impl TimerRepository<'_> {
     }
 
     pub fn cancel(&self, command: &TimerCancel) -> Result<TimerCancelResult> {
-        self.db.transaction(|tx| self.cancel_tx(tx, command))
+        self.db.transaction(|tx| self.cancel_tx(tx, command, None))
     }
 
     pub(crate) fn cancel_tx(
         &self,
         tx: &Transaction<'_>,
         command: &TimerCancel,
+        scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
     ) -> Result<TimerCancelResult> {
+        if let Some(scope) = scope {
+            crate::runtime_db::input_evidence_writes::validate_input_evidence_scope_tx(
+                tx,
+                scope,
+                &command.record.agent_id,
+            )?;
+        }
         if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
             || !matches!(
                 command.expected.status,
@@ -4742,7 +4750,7 @@ impl TimerRepository<'_> {
             upsert_agent_state_tx(tx, record)?;
         }
         let mut settlement =
-            settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at)?;
+            settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at, scope)?;
         if command.expected.status == TimerStatus::Active {
             let mut event = AuditEvent::legacy(
                 "timer_cancelled",
@@ -4783,6 +4791,7 @@ impl TimerRepository<'_> {
                     .map(super::transitions::AuditEventAck::new)
                     .collect::<Result<_>>()?,
                 wait_condition_writes: settlement.wait_writes,
+                input_evidence_delta: settlement.input_delta,
                 notify_memory_index,
                 notify_scheduler,
                 ..Default::default()
@@ -4888,6 +4897,7 @@ struct TimerWaitCancellationSettlement {
     wait_conditions: Vec<WaitConditionRecord>,
     work_items: Vec<WorkItemRecord>,
     audit_events: Vec<AuditEvent>,
+    input_delta: crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta,
 }
 
 const TIMER_CANCELLATION_WAITS_SQL: &str =
@@ -4960,6 +4970,28 @@ pub(in crate::runtime_db) fn visit_timer_cancellation_work_event_ids_tx(
     Ok(())
 }
 
+pub(in crate::runtime_db) fn visit_timer_cancellation_work_ids_tx(
+    tx: &Transaction<'_>,
+    timer: &TimerRecord,
+    mut visit: impl FnMut(&str) -> Result<()>,
+) -> Result<()> {
+    let sql = format!(
+        "SELECT DISTINCT work.work_item_id
+         FROM ({TIMER_CANCELLATION_WAITS_SQL}) selected
+         JOIN work_items work ON work.agent_id=?1
+           AND work.work_item_id=json_extract(selected.payload_json,'$.work_item_id')
+         WHERE work.state='open'
+           AND json_extract(work.payload_json,'$.blocked_by_wait_id')=selected.wait_condition_id
+         ORDER BY work.work_item_id"
+    );
+    let mut statement = tx.prepare(&sql)?;
+    let mut rows = statement.query(params![timer.agent_id, timer.id])?;
+    while let Some(row) = rows.next()? {
+        visit(row.get_ref(0)?.as_str()?)?;
+    }
+    Ok(())
+}
+
 pub(in crate::runtime_db) fn visit_timer_cancellation_wait_ids_tx(
     tx: &Transaction<'_>,
     timer: &TimerRecord,
@@ -5005,6 +5037,7 @@ fn settle_cancelled_timer_waits_tx(
     tx: &Transaction<'_>,
     timer: &TimerRecord,
     cancelled_at: DateTime<Utc>,
+    scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
 ) -> Result<TimerWaitCancellationSettlement> {
     let conditions = timer_cancellation_waits_tx(tx, timer)?;
     let mut result = TimerWaitCancellationSettlement::default();
@@ -5059,12 +5092,17 @@ fn settle_cancelled_timer_waits_tx(
                 work_item.recheck_at = None;
                 work_item.recheck_consumed_at = None;
                 work_item.updated_at = work_item.updated_at.max(cancelled_at);
-                apply_work_item_mutation_with_source_revision_tx(
+                let delta = apply_work_item_mutation_with_source_revision_tx(
                     tx,
                     &WorkItemMutation::Update {
                         record: work_item.clone(),
                         expected_revision: revision,
                     },
+                    scope,
+                )?;
+                crate::runtime_db::input_evidence_writes::merge_input_evidence_delta(
+                    &mut result.input_delta,
+                    delta,
                 )?;
                 let mut event = AuditEvent::typed(
                     RuntimeEventKind::WorkItemWritten,

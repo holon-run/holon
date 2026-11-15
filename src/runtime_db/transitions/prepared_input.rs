@@ -2936,7 +2936,7 @@ impl RuntimeTransitionRepository<'_> {
         // before either phase, not after the first canonical writer.
         *native_input = crate::runtime_db::input_evidence_snapshot::native_birth::NativeInputWriteProof::prepare_with_scope_read_tx(
             tx, scope, memory_ledger, crate::runtime_db::input_evidence_snapshot::native_birth::original_material_limits(memory_ledger)?,
-            memory_budget.as_mut(), Some(scope_read), |visit| native_input::visit_original(prepared, visit),
+            memory_budget.as_mut(), Some(scope_read), |visit| native_input::visit_original(tx, prepared, visit),
         )?;
         if let Some(native) = native_input.as_mut() {
             native.bind_query_source(input_query_source, memory_ledger)?;

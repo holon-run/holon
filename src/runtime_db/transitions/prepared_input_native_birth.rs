@@ -43,6 +43,7 @@ fn messages(values: &[MessageEnvelope], visit: &mut Visitor<'_>) -> Result<()> {
 }
 
 pub(super) fn visit_original(
+    tx: &Transaction<'_>,
     prepared: &PreparedInputTransition,
     visit: &mut Visitor<'_>,
 ) -> Result<()> {
@@ -119,6 +120,13 @@ pub(super) fn visit_original(
         InputTransitionCommand::Timer(timer) => {
             if let Some((message, _)) = timer.new_wake() {
                 visit(Family::Message, &message.id)?;
+            }
+            if let PreparedTimerTransition::Cancel { command, .. } = timer {
+                crate::runtime_db::repositories::visit_timer_cancellation_work_ids_tx(
+                    tx,
+                    &command.expected,
+                    |id| visit(Family::WorkExecution, id),
+                )?;
             }
         }
         InputTransitionCommand::TaskResult(_)

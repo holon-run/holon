@@ -4127,6 +4127,17 @@ Active or not-yet-admitted Triggered timer waits. The original Native phase
 admits the complete address footprint before constructing identifiers; late,
 unrelated, cancelled or already-admitted waits gain no Event qualification.
 
+The same original cancellation also declares the finite WorkExecution addresses
+of open WorkItems whose blocker is exactly one of those selected waits. Source
+revision synchronization never registers a missing execution. For each execution
+actually changed by that synchronization, the writer reads back the canonical row
+by agent and WorkItem in the same transaction and produces an Input qualification
+ACK. Those actual deltas join the original Timer effects before Native Input birth
+finalization and whole-receipt publication. A receipt replay performs no business
+writes or stale resident installation. Neither read-time requalification nor
+post-commit repair may replace this ACK; unrelated canonical drift still fails
+closed with `ProjectionChanged`, and the cancelled Work remains explicitly blocked.
+
 Explicit preparation merges its requested selection with every live role, even
 when the prior query is missing. It retains the original scope-material guard
 and checks the identity incarnation as an integer. Preparation publishes through

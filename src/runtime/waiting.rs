@@ -3567,3 +3567,12 @@ mod mutation_tests {
 #[cfg(test)]
 #[path = "timer_producer_reads_tests.rs"]
 mod timer_producer_resident_tests;
+
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+#[path = "timer_cancel_input_boundary_tests.rs"]
+mod timer_cancel_input_boundary_tests;
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+#[path = "timer_cancel_input_tests.rs"]
+mod timer_cancel_input_tests;
