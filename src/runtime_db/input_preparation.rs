@@ -7,6 +7,11 @@ use rusqlite::Transaction;
 mod scheduling_capture;
 pub(crate) mod turn_inputs;
 
+#[cfg(all(test, any(holon_lib_test_shard = "a", holon_lib_test_shard = "b")))]
+pub(crate) mod recovery_fixture;
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+mod recovery_tests;
+
 use super::{
     bootstrap_inputs::prepare_pending_queue_read_tx,
     context_inputs::{ContextDurableRead, ContextScopeFacts},
@@ -59,7 +64,6 @@ pub(crate) fn prepare_input_domains_tx(
         budget,
         false,
         None,
-        false,
         None,
         None,
         None,
@@ -88,7 +92,6 @@ pub(crate) fn prepare_existing_admission_cleanup_domains_tx(
         budget,
         true,
         None,
-        false,
         None,
         None,
         None,
@@ -119,7 +122,6 @@ pub(crate) fn prepare_original_input_recovery_with_work_tx(
         budget,
         true,
         Some(work_request),
-        false,
         Some(task_request),
         None,
         None,
@@ -148,7 +150,6 @@ pub(crate) fn prepare_original_input_recovery_with_queries_tx(
         budget,
         true,
         Some(work),
-        false,
         Some(tasks),
         query,
         None,
@@ -177,7 +178,6 @@ pub(crate) fn prepare_control_recovery_with_queries_tx(
         budget,
         true,
         Some(work),
-        true,
         Some(tasks),
         query,
         None,
@@ -209,7 +209,6 @@ pub(crate) fn prepare_episode_recovery_domains_tx(
         budget,
         true,
         Some(work),
-        true,
         Some(tasks),
         query,
         None,
@@ -248,7 +247,6 @@ pub(crate) fn prepare_partial_task_stop_input_recovery_tx(
         budget,
         true,
         Some(work),
-        true,
         None,
         None,
         None,
@@ -277,7 +275,6 @@ pub(crate) fn prepare_input_with_scheduling_tx(
         budget,
         false,
         None,
-        false,
         None,
         None,
         None,
@@ -317,7 +314,6 @@ pub(in crate::runtime_db) fn prepare_child_terminal_input_recovery_tx(
         budget,
         true,
         Some(work),
-        false,
         Some(tasks),
         query,
         Some(material),
@@ -346,7 +342,6 @@ pub(crate) fn load_input_with_scheduling_tx(
         budget,
         original_recovery,
         None,
-        false,
         None,
         None,
         None,
@@ -440,7 +435,6 @@ fn prepare_input_domains_inner_tx(
     budget: &InputEvidenceBudgetLedger,
     original_recovery: bool,
     work_request: Option<&crate::runtime::resident_work::WorkCaptureRequest>,
-    current_work_roots_only: bool,
     task_request: Option<&crate::runtime::resident_task::TaskCaptureRequest>,
     query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
     task_material: Option<&mut super::task_snapshot::read_preparation::TaskReadMaterial<'_>>,
@@ -574,17 +568,13 @@ fn prepare_input_domains_inner_tx(
                 && prepared.facts.control_revision == facts.control_revision,
             "Work recovery canonical read view differs"
         );
-        if current_work_roots_only {
-            for key in super::work_snapshot::current_recovery_owning_input_roots(
-                &prepared.resident,
-                published_state,
-            )? {
-                request.insert_admitted_root(key.family, &key.id)?;
-            }
-        } else {
-            for key in &prepared.owning_input_roots {
-                request.insert_admitted_root(key.family, &key.id)?;
-            }
+        // History and receipt selectors retain Work bodies without promoting
+        // their old completion sources to current execution dependencies.
+        for key in super::work_snapshot::current_recovery_owning_input_roots(
+            &prepared.resident,
+            published_state,
+        )? {
+            request.insert_admitted_root(key.family, &key.id)?;
         }
         for id in selected.iter().filter_map(|id| {
             prepared

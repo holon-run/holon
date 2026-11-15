@@ -4642,6 +4642,14 @@ epoch or incarnation, and an unresolved original attempt remains Unknown.
 Its durable-only cleanup/delegation audits are original Current addresses too:
 the same terminal transaction qualifies their actual readback without adding
 notification permission or a second audit on whole-ACK replay.
+Work bodies selected by the nonopen history window or an original receipt remain
+qualified Work selectors. They do not independently promote their historical
+completion source Messages or Turns into current Input roots. Recovery derives
+Work-owned Input roots from live Work, unresolved Waits, active continuations,
+and the current State/execution Work. Pending inputs and unsettled Task results
+retain their independently required sources. Named receipt targets retain their
+current qualified availability in the fresh Work domain without granting
+historical execution authority or replaying the original command.
 RunOnce may await an in-flight original writer's reservation before taking its
 pure resident cut. It never reconciles a released Unknown owner or repairs an
 unprepared domain through SQL.
