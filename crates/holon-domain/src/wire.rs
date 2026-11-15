@@ -314,6 +314,7 @@ impl SlimAgentDto {
             effective_service_tier: self.model.effective_service_tier,
         };
         let mut summary = AgentListEntry {
+            observation: None,
             identity: self.identity,
             status: self.agent.status.clone(),
             scheduling_posture: self.scheduling_posture,

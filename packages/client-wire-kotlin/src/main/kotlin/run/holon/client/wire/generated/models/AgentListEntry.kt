@@ -27,6 +27,7 @@ import run.holon.client.wire.generated.models.ActiveWorkspaceEntry
 import run.holon.client.wire.generated.models.AgentIdentityView
 import run.holon.client.wire.generated.models.AgentLifecycleHint
 import run.holon.client.wire.generated.models.AgentListModelSummary
+import run.holon.client.wire.generated.models.AgentListObservation
 import run.holon.client.wire.generated.models.AgentPostureProjection
 import run.holon.client.wire.generated.models.AgentStatus
 import run.holon.client.wire.generated.models.WaitingReason
@@ -44,6 +45,7 @@ import kotlinx.serialization.Contextual
  * @param activeWorkspaceEntry
  * @param currentRunId
  * @param lifecycle
+ * @param observation
  * @param pending
  * @param schedulingPosture
  * @param waitingReason
@@ -69,6 +71,9 @@ data class AgentListEntry (
 
     @SerialName(value = "lifecycle")
     val lifecycle: AgentLifecycleHint? = null,
+
+    @SerialName(value = "observation")
+    val observation: AgentListObservation? = null,
 
     @SerialName(value = "pending")
     val pending: kotlin.Int? = 0,

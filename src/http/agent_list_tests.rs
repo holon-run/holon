@@ -68,7 +68,10 @@ async fn list_503_traces_member_cause_in_request_span_and_recovers() -> Result<(
     let mut reservations = host
         .reserve_agent_mutations(&[identity.agent_id.clone()])
         .await?;
-    reservations[0].begin("private-recovery-ticket".into())?;
+    crate::runtime::mutation_owner::MutationReservation::begin_all_identity_change(
+        &mut reservations,
+        "private-recovery-ticket".into(),
+    )?;
 
     let mut state = AppState::for_unix(host.clone());
     state.projection_gate = Arc::new(ProjectionGate::new(4, StdDuration::ZERO));
@@ -146,11 +149,79 @@ async fn list_503_traces_member_cause_in_request_span_and_recovers() -> Result<(
     let mut reservations = host
         .reserve_agent_mutations(&[identity.agent_id.clone()])
         .await?;
-    reservations[0].begin("another-private-ticket".into())?;
+    crate::runtime::mutation_owner::MutationReservation::begin_all_identity_change(
+        &mut reservations,
+        "another-private-ticket".into(),
+    )?;
     assert_eq!(
         app.oneshot(request()).await?.status(),
         StatusCode::SERVICE_UNAVAILABLE
     );
+    reservations[0].definitely_not_committed()?;
+    drop(reservations);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn list_serves_complete_versioned_observations_during_commit_without_stale_fallback(
+) -> Result<()> {
+    use crate::types::AgentListObservationStatus;
+
+    let home = tempfile::tempdir()?;
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"}}"#,
+    )?;
+    let config = crate::config::AppConfig::load_with_home(Some(home.path().to_owned()))?;
+    let host = RuntimeHost::new_with_provider(
+        config,
+        Arc::new(crate::provider::StubProvider::new("unused")),
+    )?;
+    let identity = host.ensure_default_agent_identity()?;
+    let mut state = AppState::for_unix(host.clone());
+    state.projection_gate = Arc::new(ProjectionGate::new(4, StdDuration::ZERO));
+    let app = crate::http::router(state);
+    let request = || {
+        Request::builder()
+            .uri("/api/agents/list")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let before = app.clone().oneshot(request()).await?;
+    assert_eq!(before.status(), StatusCode::OK);
+    let before: Vec<crate::types::AgentListEntry> =
+        serde_json::from_slice(&to_bytes(before.into_body(), usize::MAX).await?)?;
+    let mut reservations = host
+        .reserve_agent_mutations(&[identity.agent_id.clone()])
+        .await?;
+    reservations[0].begin("private-observer-commit".into())?;
+    let db = host.runtime_db();
+    let reads = db.reader_pool_stats_for_tests().checkout_attempts;
+    let preparations = db.preparation_pool_stats_for_tests().checkout_attempts;
+    let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+    let writes = writer.write_channel_admissions_for_tests()?;
+    let response = app.clone().oneshot(request()).await?;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(!response.headers().contains_key("x-holon-projection-stale"));
+    let body = to_bytes(response.into_body(), usize::MAX).await?;
+    let during: Vec<crate::types::AgentListEntry> = serde_json::from_slice(&body)?;
+    assert_eq!(during.len(), before.len());
+    let observed = during
+        .iter()
+        .find(|entry| entry.identity.agent_id == identity.agent_id)
+        .unwrap();
+    assert_eq!(
+        observed.observation.unwrap().status,
+        AgentListObservationStatus::Committing
+    );
+    assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
+    assert_eq!(
+        db.preparation_pool_stats_for_tests().checkout_attempts,
+        preparations
+    );
+    assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+    assert!(!std::str::from_utf8(&body)?.contains("private-observer-commit"));
     reservations[0].definitely_not_committed()?;
     drop(reservations);
     host.shutdown().await?;

@@ -212,7 +212,7 @@ impl AgentListPublisher {
             && matches!(publication.roster, PreparedAgentList::Repair(revision) if revision == identity.revision)
             && self.source.matches_identity(&identity)
         {
-            publication.roster = PreparedAgentList::Ready(Arc::new(entry));
+            publication.install_roster(PreparedAgentList::Ready(Arc::new(entry)));
         }
         matches!(publication.roster, PreparedAgentList::Repair(_))
     }

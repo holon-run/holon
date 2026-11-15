@@ -326,6 +326,7 @@ impl RuntimeHandle {
                 &agent.active_workspace_entry,
             ))?;
             Ok(crate::types::AgentListEntry {
+                observation: None,
                 identity: AgentIdentityView::from_record(identity, &self.inner.default_agent_id),
                 lifecycle: crate::runtime::agent_observation::read_lifecycle_hint(
                     &agent.id,

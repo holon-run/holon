@@ -17,17 +17,19 @@ public struct AgentListEntry: Codable, JSONEncodable {
     public var identity: AgentIdentityView
     public var lifecycle: AgentLifecycleHint?
     public var model: AgentListModelSummary
+    public var observation: AgentListObservation?
     public var pending: Int? = 0
     public var schedulingPosture: AgentPostureProjection?
     public var status: AgentStatus
     public var waitingReason: WaitingReason?
 
-    public init(activeWorkspaceEntry: ActiveWorkspaceEntry? = nil, currentRunId: String? = nil, identity: AgentIdentityView, lifecycle: AgentLifecycleHint? = nil, model: AgentListModelSummary, pending: Int? = 0, schedulingPosture: AgentPostureProjection? = nil, status: AgentStatus, waitingReason: WaitingReason? = nil) {
+    public init(activeWorkspaceEntry: ActiveWorkspaceEntry? = nil, currentRunId: String? = nil, identity: AgentIdentityView, lifecycle: AgentLifecycleHint? = nil, model: AgentListModelSummary, observation: AgentListObservation? = nil, pending: Int? = 0, schedulingPosture: AgentPostureProjection? = nil, status: AgentStatus, waitingReason: WaitingReason? = nil) {
         self.activeWorkspaceEntry = activeWorkspaceEntry
         self.currentRunId = currentRunId
         self.identity = identity
         self.lifecycle = lifecycle
         self.model = model
+        self.observation = observation
         self.pending = pending
         self.schedulingPosture = schedulingPosture
         self.status = status
@@ -40,6 +42,7 @@ public struct AgentListEntry: Codable, JSONEncodable {
         case identity
         case lifecycle
         case model
+        case observation
         case pending
         case schedulingPosture = "scheduling_posture"
         case status
@@ -55,6 +58,7 @@ public struct AgentListEntry: Codable, JSONEncodable {
         try container.encode(identity, forKey: .identity)
         try container.encodeIfPresent(lifecycle, forKey: .lifecycle)
         try container.encode(model, forKey: .model)
+        try container.encodeIfPresent(observation, forKey: .observation)
         try container.encodeIfPresent(pending, forKey: .pending)
         try container.encodeIfPresent(schedulingPosture, forKey: .schedulingPosture)
         try container.encode(status, forKey: .status)

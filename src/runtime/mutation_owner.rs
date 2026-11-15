@@ -21,7 +21,10 @@ use super::{
     resident_state::ResidentEpisodes,
 };
 
-use crate::types::{AgentIdentityRecord, AgentRegistryStatus, AgentState};
+use crate::types::{
+    AgentIdentityRecord, AgentListObservation, AgentListObservationStatus, AgentRegistryStatus,
+    AgentState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RecoveryKey {
@@ -175,6 +178,7 @@ pub(in crate::runtime) enum OriginalInputRecoveryEvidence {
 pub(crate) struct RecoveryRecord {
     pub key: RecoveryKey,
     pub phase: RecoveryPhase,
+    identity_change: bool,
     // Compatibility views only; `known` distinguishes absent rows from unknown.
     pub committed_state: Option<Arc<AgentState>>,
     pub(super) committed_runtime: Option<Arc<super::state_mutation::RuntimeMutationFacts>>,
@@ -242,13 +246,39 @@ enum PreparedAgentList {
     Repair(u64),
 }
 
+#[derive(Debug, Clone)]
+struct PublishedAgentList {
+    projection: Arc<AgentListProjection>,
+    owner_epoch: u64,
+    generation: u64,
+}
+
 #[derive(Debug, Default)]
 struct Publication {
     epoch: u64,
     generation: u64,
     roster: PreparedAgentList,
+    observer_roster: Option<PublishedAgentList>,
     recovery: Option<RecoveryRecord>,
     lifetime: Weak<OwnerLifetime>,
+}
+
+impl Publication {
+    fn install_roster(&mut self, roster: PreparedAgentList) {
+        match &roster {
+            PreparedAgentList::Ready(projection) => {
+                self.observer_roster = Some(PublishedAgentList {
+                    projection: projection.clone(),
+                    owner_epoch: self.epoch,
+                    generation: self.generation,
+                });
+            }
+            PreparedAgentList::Unlisted => self.observer_roster = None,
+            // A failed refresh keeps its last complete observation, not a candidate.
+            PreparedAgentList::Repair(_) => {}
+        }
+        self.roster = roster;
+    }
 }
 
 #[derive(Debug, Default)]
@@ -372,13 +402,14 @@ impl MutationOwnerRegistry {
                 && publication.recovery.is_none()
                 && source.matches_identity(identity)
             {
-                publication.roster = match entry {
+                let roster = match entry {
                     Some(entry) => PreparedAgentList::Ready(entry),
                     None => {
                         publisher.schedule(&identity.agent_id, identity.incarnation, &slot);
                         PreparedAgentList::Repair(identity.revision)
                     }
                 };
+                publication.install_roster(roster);
             }
         }
         read_error.map_or(Ok(()), Err)
@@ -401,7 +432,7 @@ impl MutationOwnerRegistry {
             slot.publication
                 .lock()
                 .expect("publication poisoned")
-                .roster = PreparedAgentList::Unlisted;
+                .install_roster(PreparedAgentList::Unlisted);
         }
     }
 
@@ -410,7 +441,7 @@ impl MutationOwnerRegistry {
         identity: &AgentIdentityRecord,
         loaded_epoch: Option<u64>,
         db: &crate::runtime_db::RuntimeDb,
-    ) -> anyhow::Result<Arc<AgentListProjection>> {
+    ) -> anyhow::Result<(Arc<AgentListProjection>, AgentListObservation)> {
         use super::agent_list_projection::AgentListUnavailable;
 
         let unavailable = |reason: AgentListUnavailable| {
@@ -428,24 +459,55 @@ impl MutationOwnerRegistry {
             .cloned()
             .ok_or_else(|| unavailable(AgentListUnavailable::Missing))?;
         let publication = slot.publication.lock().expect("publication poisoned");
-        if publication.recovery.is_some() {
+        // Identity writers can revoke membership or replace the incarnation.
+        // Ordinary State writers do not invalidate the last published roster.
+        if publication.recovery.as_ref().is_some_and(|recovery| {
+            recovery.identity_change
+                || recovery.identity_rename.is_some()
+                || matches!(&recovery.known, Some(KnownCommit::Metadata(facts))
+                    if facts.identity.as_deref() != Some(identity))
+        }) {
             return Err(unavailable(AgentListUnavailable::ReconciliationPending));
         }
-        match &publication.roster {
-            PreparedAgentList::Ready(entry) => {
-                if entry.identity_revision != identity.revision {
-                    return Err(unavailable(AgentListUnavailable::RevisionChanged));
-                }
-                if loaded_epoch
-                    .is_some_and(|epoch| epoch != publication.epoch || slot.root.load().is_none())
-                {
-                    return Err(unavailable(AgentListUnavailable::OwnerChanged));
-                }
-                Ok(entry.clone())
-            }
-            PreparedAgentList::Repair(_) => Err(unavailable(AgentListUnavailable::RepairPending)),
-            PreparedAgentList::Unlisted => Err(unavailable(AgentListUnavailable::Unlisted)),
+        if matches!(publication.roster, PreparedAgentList::Unlisted) {
+            return Err(unavailable(AgentListUnavailable::Unlisted));
         }
+        let published = publication.observer_roster.as_ref().ok_or_else(|| {
+            unavailable(match publication.roster {
+                PreparedAgentList::Repair(_) => AgentListUnavailable::RepairPending,
+                _ => AgentListUnavailable::Missing,
+            })
+        })?;
+        if published.projection.identity_revision != identity.revision {
+            return Err(unavailable(match publication.roster {
+                PreparedAgentList::Repair(_) => AgentListUnavailable::RepairPending,
+                _ => AgentListUnavailable::RevisionChanged,
+            }));
+        }
+        if loaded_epoch.is_some_and(|epoch| epoch != publication.epoch) {
+            return Err(unavailable(AgentListUnavailable::OwnerChanged));
+        }
+        let status = if let Some(recovery) = &publication.recovery {
+            match recovery.phase {
+                RecoveryPhase::Committing => AgentListObservationStatus::Committing,
+                RecoveryPhase::NeedsReconcile => AgentListObservationStatus::ReconciliationPending,
+            }
+        } else if matches!(publication.roster, PreparedAgentList::Repair(_)) {
+            AgentListObservationStatus::RepairPending
+        } else if published.owner_epoch != publication.epoch {
+            AgentListObservationStatus::OwnerPending
+        } else {
+            AgentListObservationStatus::Current
+        };
+        Ok((
+            published.projection.clone(),
+            AgentListObservation {
+                identity_revision: identity.revision,
+                owner_epoch: published.owner_epoch,
+                publication_generation: published.generation,
+                status,
+            },
+        ))
     }
 
     pub(crate) fn claim(&self, agent_id: &str, incarnation: u64) -> anyhow::Result<MutationOwner> {
@@ -970,7 +1032,14 @@ impl MutationReservation {
         reservations: &mut [Self],
         operation_id: String,
     ) -> Result<Vec<RecoveryKey>, MutationOwnerError> {
-        Self::begin_all_inner(reservations, operation_id, None)
+        Self::begin_all_inner(reservations, operation_id, None, false)
+    }
+
+    pub(crate) fn begin_all_identity_change(
+        reservations: &mut [Self],
+        operation_id: String,
+    ) -> Result<Vec<RecoveryKey>, MutationOwnerError> {
+        Self::begin_all_inner(reservations, operation_id, None, true)
     }
 
     /// Registers a frozen durable result address in the same critical section
@@ -980,13 +1049,14 @@ impl MutationReservation {
         operation_id: String,
         witness: MutationWitness,
     ) -> Result<Vec<RecoveryKey>, MutationOwnerError> {
-        Self::begin_all_inner(reservations, operation_id, Some(witness))
+        Self::begin_all_inner(reservations, operation_id, Some(witness), false)
     }
 
     fn begin_all_inner(
         reservations: &mut [Self],
         operation_id: String,
         witness: Option<MutationWitness>,
+        identity_change: bool,
     ) -> Result<Vec<RecoveryKey>, MutationOwnerError> {
         Self::validate_order(reservations)?;
         let mut publications = reservations
@@ -1045,6 +1115,7 @@ impl MutationReservation {
             publication.recovery = Some(RecoveryRecord {
                 key: key.clone(),
                 phase: RecoveryPhase::Committing,
+                identity_change,
                 committed_state: None,
                 committed_runtime: None,
                 known: None,
@@ -1863,7 +1934,7 @@ impl MutationReservation {
                 && before.status == AgentRegistryStatus::Active,
             "rename identity differs from its owner"
         );
-        self.begin(operation_id)?;
+        Self::begin_all_identity_change(std::slice::from_mut(self), operation_id)?;
         let mut publication = self
             .owner
             .slot
@@ -2325,7 +2396,7 @@ impl MutationReservation {
             })
         });
         self.owner.slot.root.store(observation.clone());
-        publication.roster = roster;
+        publication.install_roster(roster);
         publication.recovery = None;
         if matches!(publication.roster, PreparedAgentList::Repair(_)) {
             if let Some(publisher) = &self.owner.list_publisher {

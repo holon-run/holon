@@ -1075,6 +1075,7 @@ impl RuntimeHandle {
         let identity = self.agent_identity_view().await?;
         let waiting_reason = super::lightweight_agent_list_waiting_reason(&agent);
         Ok(AgentListEntry {
+            observation: None,
             identity,
             lifecycle: crate::types::AgentLifecycleHint::from_status(
                 &agent.id,
