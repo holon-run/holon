@@ -950,6 +950,13 @@ mod tests {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("runtime.sqlite");
         let connection = crate::connection::open_connection(&path, &NO_DIAGNOSTICS)?;
+        crate::connection::configure_persistent_database(&connection)?;
+        // Commit once so SQLite creates the WAL and shared-memory sidecars.
+        connection.execute_batch("CREATE TABLE reader_fixture (value INTEGER)")?;
+        assert!(
+            directory.path().join("runtime.sqlite-wal").is_file(),
+            "reader fixture needs a live WAL file"
+        );
         let writer = RuntimeDbWriter::open(path.clone(), connection)?;
         let readers =
             RuntimeDbReaderPool::with_config(Arc::clone(writer.state()), 1, Duration::from_secs(2));
