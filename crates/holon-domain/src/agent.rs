@@ -1091,8 +1091,30 @@ impl AgentListModelSummary {
     }
 }
 
+/// The version and availability of the last published roster observation.
+/// These values describe an observation; they never authorize execution.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+pub struct AgentListObservation {
+    pub identity_revision: u64,
+    pub owner_epoch: u64,
+    pub publication_generation: u64,
+    pub status: AgentListObservationStatus,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentListObservationStatus {
+    Current,
+    Committing,
+    ReconciliationPending,
+    RepairPending,
+    OwnerPending,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AgentListEntry {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<AgentListObservation>,
     pub identity: AgentIdentityView,
     pub status: AgentStatus,
     #[serde(default)]
@@ -1113,6 +1135,7 @@ pub struct AgentListEntry {
 impl AgentListEntry {
     pub fn from_summary(summary: &AgentSummary) -> Self {
         Self {
+            observation: None,
             identity: summary.identity.clone(),
             status: summary.agent.status.clone(),
             scheduling_posture: summary.scheduling_posture.clone(),

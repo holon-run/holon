@@ -199,6 +199,46 @@ function reportKotlinDrift(current, generated) {
     .filter((name) => current.get(name) !== generated.get(name));
 }
 
+function renderKotlinAgentListObservation(schema) {
+  const counters = ["identity_revision", "owner_epoch", "publication_generation"];
+  const properties = schema.properties ?? {};
+  const fields = [...counters, "status"];
+  if (
+    Object.keys(properties).length !== fields.length ||
+    schema.required?.length !== fields.length ||
+    !fields.every((name) => schema.required.includes(name)) ||
+    !counters.every((name) =>
+      properties[name]?.type === "integer" && properties[name]?.format === "uint64"
+    ) ||
+    properties.status?.$ref !== "#/components/schemas/AgentListObservationStatus"
+  ) {
+    throw new Error("Update the Kotlin observation renderer to match its schema");
+  }
+  // The pinned generator maps uint64 to Int. Keep these new counters lossless
+  // without changing existing client model types.
+  return [
+    "// Generated from docs/website/reference/openapi.json by web-gui/openapi-tools.",
+    "// Do not edit by hand. Run `make transport-types` from the repository root.",
+    "",
+    `package ${kotlinPackage}`,
+    "",
+    "import kotlinx.serialization.SerialName",
+    "import kotlinx.serialization.Serializable",
+    "",
+    "@Serializable",
+    "data class AgentListObservation(",
+    ...counters.flatMap((name) => [
+      `    @SerialName("${name}")`,
+      `    val ${name.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase())}: kotlin.ULong,`,
+      "",
+    ]),
+    '    @SerialName("status")',
+    "    val status: AgentListObservationStatus,",
+    ")",
+    "",
+  ].join("\n");
+}
+
 async function generateKotlinModels(openapi) {
   const schemas = openapi.components?.schemas;
   if (!schemas) {
@@ -263,6 +303,10 @@ async function generateKotlinModels(openapi) {
     for (const name of openEnums) {
       generated.set(`${name}.kt`, renderKotlinOpenEnum(name, schemas[name]));
     }
+    generated.set(
+      "AgentListObservation.kt",
+      renderKotlinAgentListObservation(schemas.AgentListObservation),
+    );
     return generated;
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true });

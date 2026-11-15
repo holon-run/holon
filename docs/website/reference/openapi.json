@@ -1649,6 +1649,16 @@
           "model": {
             "$ref": "#/components/schemas/AgentListModelSummary"
           },
+          "observation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentListObservation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "pending": {
             "default": 0,
             "format": "uint",
@@ -1759,6 +1769,46 @@
           "effective_model"
         ],
         "type": "object"
+      },
+      "AgentListObservation": {
+        "description": "The version and availability of the last published roster observation.\n These values describe an observation; they never authorize execution.",
+        "properties": {
+          "identity_revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "owner_epoch": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "publication_generation": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "status": {
+            "$ref": "#/components/schemas/AgentListObservationStatus"
+          }
+        },
+        "required": [
+          "identity_revision",
+          "owner_epoch",
+          "publication_generation",
+          "status"
+        ],
+        "type": "object"
+      },
+      "AgentListObservationStatus": {
+        "enum": [
+          "current",
+          "committing",
+          "reconciliation_pending",
+          "repair_pending",
+          "owner_pending"
+        ],
+        "type": "string"
       },
       "AgentListResponse": {
         "items": {
@@ -4141,6 +4191,46 @@
                 ],
                 "type": "object"
               },
+              "observation": {
+                "description": "The version and availability of the last published roster observation.\n These values describe an observation; they never authorize execution.",
+                "properties": {
+                  "identity_revision": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "owner_epoch": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "publication_generation": {
+                    "format": "uint64",
+                    "minimum": 0,
+                    "type": "integer"
+                  },
+                  "status": {
+                    "enum": [
+                      "current",
+                      "committing",
+                      "reconciliation_pending",
+                      "repair_pending",
+                      "owner_pending"
+                    ],
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "identity_revision",
+                  "owner_epoch",
+                  "publication_generation",
+                  "status"
+                ],
+                "type": [
+                  "object",
+                  "null"
+                ]
+              },
               "pending": {
                 "default": 0,
                 "format": "uint",
@@ -4954,6 +5044,46 @@
                         "effective_model"
                       ],
                       "type": "object"
+                    },
+                    "observation": {
+                      "description": "The version and availability of the last published roster observation.\n These values describe an observation; they never authorize execution.",
+                      "properties": {
+                        "identity_revision": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "owner_epoch": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "publication_generation": {
+                          "format": "uint64",
+                          "minimum": 0,
+                          "type": "integer"
+                        },
+                        "status": {
+                          "enum": [
+                            "current",
+                            "committing",
+                            "reconciliation_pending",
+                            "repair_pending",
+                            "owner_pending"
+                          ],
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "identity_revision",
+                        "owner_epoch",
+                        "publication_generation",
+                        "status"
+                      ],
+                      "type": [
+                        "object",
+                        "null"
+                      ]
                     },
                     "pending": {
                       "default": 0,

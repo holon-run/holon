@@ -168,6 +168,7 @@ impl AgentListProjection {
             },
         )?;
         Ok(AgentListEntry {
+            observation: None,
             identity: AgentIdentityView::from_record(identity, default_agent_id),
             lifecycle: crate::runtime::agent_observation::read_lifecycle_hint(
                 &identity.agent_id,

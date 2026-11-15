@@ -176,7 +176,7 @@ impl RuntimeHost {
         let mut entries = Vec::new();
         for (identity, material) in identities {
             db.check_read_scope()?;
-            let (projection, runtime) =
+            let ((projection, observation), runtime) =
                 {
                     let registry = db.wait_for_memory_lock(self.inner.runtimes.read()).await?;
                     let runtime = registry
@@ -214,16 +214,18 @@ impl RuntimeHost {
                     (projection, runtime.cloned())
                 };
             let entry = material.read(|| {
-                if let Some(runtime) = runtime {
-                    runtime.agent_list_entry_from_projection(&identity, &projection)
+                let mut entry = if let Some(runtime) = runtime {
+                    runtime.agent_list_entry_from_projection(&identity, &projection)?
                 } else {
                     projection.to_entry(
                         &identity,
                         false,
                         self.inner.registry.model_catalog().as_ref(),
                         &self.config().default_agent_id,
-                    )
-                }
+                    )?
+                };
+                entry.observation = Some(observation);
+                Ok(entry)
             })?;
             db.check_read_scope()?;
             material.read(|| {

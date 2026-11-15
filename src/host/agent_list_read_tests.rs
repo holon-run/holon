@@ -127,9 +127,9 @@ fn register(host: &RuntimeHost, id: &str, parent: &str) -> Result<AgentIdentityR
 }
 
 #[tokio::test]
-async fn fleet_list_refuses_pending_members_without_database_admission() -> Result<()> {
+async fn fleet_list_observes_committing_members_without_database_admission() -> Result<()> {
     let (_home, host) = host()?;
-    // Visit a healthy member first: a later failure must discard partial work.
+    // The complete committed roster remains observable during a later mutation.
     let pending = register(&host, "z-pending", "isolation-parent")?;
     register(&host, "a-healthy", "isolation-parent")?;
     host.refresh_agent_list()?;
@@ -143,13 +143,32 @@ async fn fleet_list_refuses_pending_members_without_database_admission() -> Resu
     let reads = db.reader_pool_stats_for_tests().checkout_attempts;
     let preparations = db.preparation_pool_stats_for_tests().checkout_attempts;
     let writes = writer.write_channel_admissions_for_tests()?;
-    let error = tokio::time::timeout(
+    let entries = tokio::time::timeout(
         Duration::from_millis(250),
         host.list_agent_entries_for_parent(Some("isolation-parent")),
     )
-    .await?
-    .unwrap_err();
-    assert_unavailable(&error, AgentListUnavailable::ReconciliationPending);
+    .await??;
+    assert_eq!(
+        entries
+            .iter()
+            .map(|entry| entry.identity.agent_id.as_str())
+            .collect::<Vec<_>>(),
+        ["a-healthy", "z-pending"]
+    );
+    let observed = entries[1].observation.expect("versioned observation");
+    assert_eq!(
+        observed.status,
+        crate::types::AgentListObservationStatus::Committing
+    );
+    let owner = host
+        .inner
+        .mutation_owners
+        .current_owner(&pending.agent_id, pending.incarnation)?;
+    assert!(matches!(
+        owner.capture(),
+        Err(MutationOwnerError::NeedsReconcile(_))
+    ));
+    drop(entries);
     assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
     assert_eq!(
         db.preparation_pool_stats_for_tests().checkout_attempts,
@@ -172,6 +191,118 @@ async fn fleet_list_refuses_pending_members_without_database_admission() -> Resu
     );
     drop(entries);
     assert_eq!(host.inner.input_evidence_budget.report()?.observed_bytes, 0);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_list_keeps_last_committed_observation_until_publication() -> Result<()> {
+    use crate::runtime::mutation_owner::{IdentityMutationFacts, KnownCommit};
+    use crate::types::AgentListObservationStatus;
+
+    let (_home, host) = host()?;
+    let identity = register(&host, "committed-roster", "committed-parent")?;
+    let mut state = AgentState::new(&identity.agent_id);
+    state.status = AgentStatus::AwakeIdle;
+    let db = host.runtime_db();
+    db.agent_states()
+        .initialize_cold_for_fixture(&state, identity.incarnation)?;
+    host.refresh_agent_list()?;
+    let before = host
+        .list_agent_entries_for_parent(Some("committed-parent"))
+        .await?;
+    let version = before[0].observation.unwrap();
+    assert_eq!(before[0].status, AgentStatus::AwakeIdle);
+    drop(before);
+
+    let mut reservations = host
+        .reserve_agent_mutations(&[identity.agent_id.clone()])
+        .await?;
+    reservations[0].begin(ids::audit_event_id())?;
+    state.status = AgentStatus::Stopped;
+    db.transaction(|tx| {
+        crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
+        Ok(())
+    })?;
+    MutationReservation::committed_all(
+        &mut reservations,
+        vec![KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+            identity: Some(Arc::new(identity.clone())),
+            state: Some(Arc::new(state)),
+        }))],
+    )?;
+    let owner = host
+        .inner
+        .mutation_owners
+        .current_owner(&identity.agent_id, identity.incarnation)?;
+    let reads = db.reader_pool_stats_for_tests().checkout_attempts;
+    let writer = db.reader_pool_writer_weak_for_tests().upgrade().unwrap();
+    let writes = writer.write_channel_admissions_for_tests()?;
+    for _ in 0..3 {
+        let during = host
+            .list_agent_entries_for_parent(Some("committed-parent"))
+            .await?;
+        assert_eq!(during[0].status, AgentStatus::AwakeIdle);
+        let observation = during[0].observation.unwrap();
+        assert_eq!(observation.owner_epoch, version.owner_epoch);
+        assert_eq!(
+            observation.publication_generation,
+            version.publication_generation
+        );
+        assert_eq!(observation.status, AgentListObservationStatus::Committing);
+        assert!(matches!(
+            owner.capture(),
+            Err(MutationOwnerError::NeedsReconcile(_))
+        ));
+    }
+    assert_eq!(db.reader_pool_stats_for_tests().checkout_attempts, reads);
+    assert_eq!(writer.write_channel_admissions_for_tests()?, writes);
+
+    // Cancellation transfers the known ACK; observation never repairs it.
+    drop(reservations);
+    let during = host
+        .list_agent_entries_for_parent(Some("committed-parent"))
+        .await?;
+    assert_eq!(during[0].status, AgentStatus::AwakeIdle);
+    assert_eq!(
+        during[0].observation.unwrap().status,
+        AgentListObservationStatus::ReconciliationPending
+    );
+    drop(during);
+    let reservations = host
+        .reserve_agent_mutations(&[identity.agent_id.clone()])
+        .await?;
+    drop(reservations);
+    let after = host
+        .list_agent_entries_for_parent(Some("committed-parent"))
+        .await?;
+    assert_eq!(after[0].status, AgentStatus::Stopped);
+    let current = after[0].observation.unwrap();
+    assert!(current.publication_generation > version.publication_generation);
+    assert_eq!(current.status, AgentListObservationStatus::Current);
+    drop(after);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_list_keeps_identity_change_fenced_even_with_previous_observation() -> Result<()> {
+    let (_home, host) = host()?;
+    let identity = register(&host, "identity-change-roster", "identity-parent")?;
+    host.refresh_agent_list()?;
+    let before = host.list_agent_entries().await?;
+    assert!(before
+        .iter()
+        .any(|entry| entry.identity.agent_id == identity.agent_id));
+    drop(before);
+    let mut reservations = host
+        .reserve_agent_mutations(&[identity.agent_id.clone()])
+        .await?;
+    MutationReservation::begin_all_identity_change(&mut reservations, ids::audit_event_id())?;
+    let error = host.list_agent_entries().await.unwrap_err();
+    assert_unavailable(&error, AgentListUnavailable::ReconciliationPending);
+    MutationReservation::definitely_not_committed_all(&mut reservations)?;
+    drop(reservations);
     host.shutdown().await?;
     Ok(())
 }
@@ -565,6 +696,83 @@ async fn cold_roster_updates_at_the_external_rename_ack() -> Result<()> {
     );
     assert_eq!(entries[0].status, AgentStatus::Asleep);
     assert!(host.inner.runtimes.read().await.agents.is_empty());
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn fleet_list_retains_same_identity_observation_during_repair_and_owner_handoff() -> Result<()>
+{
+    use crate::types::AgentListObservationStatus;
+
+    let (_home, host) = host()?;
+    let identity = register(&host, "retained-roster", "retained-parent")?;
+    let db = host.runtime_db();
+    let mut state = AgentState::new(&identity.agent_id);
+    state.status = AgentStatus::Asleep;
+    db.agent_states()
+        .initialize_cold_for_fixture(&state, identity.incarnation)?;
+    host.refresh_agent_list()?;
+    let before = host
+        .list_agent_entries_for_parent(Some("retained-parent"))
+        .await?;
+    let version = before[0].observation.unwrap();
+    let status = before[0].status.clone();
+    drop(before);
+    db.transaction(|tx| {
+        tx.execute_batch("ALTER TABLE work_items RENAME TO unavailable_list_work")?;
+        Ok(())
+    })?;
+    // Force producer preparation to fail without changing the identity.
+    let _ = host.refresh_agent_list();
+    let during = host
+        .list_agent_entries_for_parent(Some("retained-parent"))
+        .await?;
+    assert_eq!(during[0].status, status);
+    let observation = during[0].observation.unwrap();
+    assert_eq!(
+        observation.status,
+        AgentListObservationStatus::RepairPending
+    );
+    assert_eq!(observation.owner_epoch, version.owner_epoch);
+    assert_eq!(
+        observation.publication_generation,
+        version.publication_generation
+    );
+    drop(during);
+    db.transaction(|tx| {
+        tx.execute_batch("ALTER TABLE unavailable_list_work RENAME TO work_items")?;
+        Ok(())
+    })?;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let (_, observation) = host
+                .inner
+                .mutation_owners
+                .agent_list_projection(&identity, None, db)?;
+            if observation.status == AgentListObservationStatus::Current {
+                break anyhow::Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await??;
+
+    let (owner, reservation) = host
+        .inner
+        .mutation_owners
+        .claim_reserved(&identity.agent_id, identity.incarnation)?;
+    assert!(owner.capture()?.is_none());
+    let during = host
+        .list_agent_entries_for_parent(Some("retained-parent"))
+        .await?;
+    assert_eq!(during[0].status, status);
+    assert_eq!(
+        during[0].observation.unwrap().status,
+        AgentListObservationStatus::OwnerPending
+    );
+    assert!(during[0].observation.unwrap().owner_epoch < owner.owner_epoch());
+    drop((during, reservation, owner));
     host.shutdown().await?;
     Ok(())
 }

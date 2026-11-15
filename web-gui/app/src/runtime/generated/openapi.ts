@@ -3282,6 +3282,7 @@ export interface components {
              */
             lifecycle: components["schemas"]["AgentLifecycleHint"];
             model: components["schemas"]["AgentListModelSummary"];
+            observation?: components["schemas"]["AgentListObservation"] | null;
             /**
              * Format: uint
              * @default 0
@@ -3311,6 +3312,21 @@ export interface components {
             runtime_default_model: string;
             source: components["schemas"]["AgentModelSource"];
         };
+        /**
+         * @description The version and availability of the last published roster observation.
+         *      These values describe an observation; they never authorize execution.
+         */
+        AgentListObservation: {
+            /** Format: uint64 */
+            identity_revision: number;
+            /** Format: uint64 */
+            owner_epoch: number;
+            /** Format: uint64 */
+            publication_generation: number;
+            status: components["schemas"]["AgentListObservationStatus"];
+        };
+        /** @enum {string} */
+        AgentListObservationStatus: "current" | "committing" | "reconciliation_pending" | "repair_pending" | "owner_pending";
         /** Array_of_AgentListEntry */
         AgentListResponse: components["schemas"]["AgentListEntry"][];
         /** @enum {string} */
@@ -3963,6 +3979,20 @@ export interface components {
                     source: "runtime_default" | "agent_override";
                 };
                 /**
+                 * @description The version and availability of the last published roster observation.
+                 *      These values describe an observation; they never authorize execution.
+                 */
+                observation?: {
+                    /** Format: uint64 */
+                    identity_revision: number;
+                    /** Format: uint64 */
+                    owner_epoch: number;
+                    /** Format: uint64 */
+                    publication_generation: number;
+                    /** @enum {string} */
+                    status: "current" | "committing" | "reconciliation_pending" | "repair_pending" | "owner_pending";
+                } | null;
+                /**
                  * Format: uint
                  * @default 0
                  */
@@ -4174,6 +4204,20 @@ export interface components {
                         /** @enum {string} */
                         source: "runtime_default" | "agent_override";
                     };
+                    /**
+                     * @description The version and availability of the last published roster observation.
+                     *      These values describe an observation; they never authorize execution.
+                     */
+                    observation?: {
+                        /** Format: uint64 */
+                        identity_revision: number;
+                        /** Format: uint64 */
+                        owner_epoch: number;
+                        /** Format: uint64 */
+                        publication_generation: number;
+                        /** @enum {string} */
+                        status: "current" | "committing" | "reconciliation_pending" | "repair_pending" | "owner_pending";
+                    } | null;
                     /**
                      * Format: uint
                      * @default 0

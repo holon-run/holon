@@ -90,10 +90,25 @@ projection per Active/Public identity. Host initialization and startup recovery
 prepare cold members without activating them. The original mutation publication
 updates the list projection for both loaded and cold Agents. The projection
 outlives unloading and retains only list fields and their model inputs, scoped
-to the identity incarnation and revision. A pending, missing or repairing
-publication fails the complete list with a retryable 503, as does an identity
-or owner mismatch. An unreadable member is never silently omitted or supplied
-with an invented status or another identity's projection. Structured warning
+to the identity incarnation and revision. Each returned list entry carries an
+optional `observation` with the published identity revision, owner epoch,
+publication generation and availability at capture. `current` means the roster
+publication was current at capture; it is not a health or execution-admission
+claim. Ordinary `committing` and `reconciliation_pending` mutations retain the
+last complete published roster. A failed refresh may retain it as `repair_pending`
+only while its identity revision still matches; an owner handoff may retain it
+as `owner_pending`. These observations never consume a candidate, authorize a
+command, wait for the writer, or reconcile the outstanding mutation. HTTP
+singleflight and its short cache retain the same entry metadata as the bytes.
+The legacy list does not use the HTTP stale-fallback cache: identity or
+protection failures retain their original error instead of becoming
+`projection_stale_unhandled` or an unvalidated older identity set.
+
+Identity-changing writes close roster observation before SQL, including unknown
+outcomes. A missing first publication, an unlisted identity, an incompatible
+identity revision, or a mismatched loaded owner still fails the complete list
+with a retryable 503. An unreadable member is never silently omitted, supplied
+with an invented status, or served from another incarnation. Structured warning
 logs identify the unavailable Agent, incarnation, identity revision and reason.
 List build failures also log their stage and safe error descriptor under the
 originating HTTP request span; internal error details are not added to the wire.

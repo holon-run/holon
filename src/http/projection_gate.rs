@@ -37,6 +37,15 @@ pub(crate) enum ProjectionKey {
     AgentState(String),
 }
 
+impl ProjectionKey {
+    fn allows_stale_fallback(&self) -> bool {
+        matches!(
+            self,
+            Self::AgentsRosterSnapshot(_) | Self::AgentProjectionSnapshot(_, _)
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ProjectionFailure {
     status: StatusCode,
@@ -385,7 +394,7 @@ impl<'a> LeaderGuard<'a> {
                     );
                     // State shares only in-flight results: each later request
                     // captures a new cut or returns the typed unavailable failure.
-                    if !matches!(self.key, ProjectionKey::AgentState(_)) {
+                    if self.key.allows_stale_fallback() {
                         state.stale.insert(
                             self.key.clone(),
                             StaleEntry {
@@ -393,6 +402,8 @@ impl<'a> LeaderGuard<'a> {
                                 built_at,
                             },
                         );
+                    }
+                    if !matches!(self.key, ProjectionKey::AgentState(_)) {
                         state.entries.insert(
                             self.key.clone(),
                             Entry::Ready {
@@ -409,9 +420,10 @@ impl<'a> LeaderGuard<'a> {
                     state.entries.remove(&self.key);
                     // Bind fallback to this terminal decision, never to a
                     // later cache generation observed by an awakened waiter.
-                    match is_retryable_service_unavailable(&failure)
-                        .then(|| state.fresh_stale_bytes(&self.key, self.gate.stale_max_age))
-                        .flatten()
+                    match (self.key.allows_stale_fallback()
+                        && is_retryable_service_unavailable(&failure))
+                    .then(|| state.fresh_stale_bytes(&self.key, self.gate.stale_max_age))
+                    .flatten()
                     {
                         Some(bytes) => Err(ProjectionGateError::StaleServed(bytes)),
                         None => Err(ProjectionGateError::Build(failure)),
@@ -437,10 +449,7 @@ impl Drop for LeaderGuard<'_> {
                 .expect("projection gate lock poisoned");
             let delivery = if entry_matches_flight(state.entries.get(&self.key), &self.flight) {
                 state.entries.remove(&self.key);
-                match self
-                    .flight
-                    .scope
-                    .is_none()
+                match (self.key.allows_stale_fallback() && self.flight.scope.is_none())
                     .then(|| state.fresh_stale_bytes(&self.key, self.gate.stale_max_age))
                     .flatten()
                 {
@@ -649,6 +658,26 @@ mod tests {
             wait_for_flight(new_flight).await.unwrap(),
             Bytes::from_static(b"replacement")
         );
+    }
+
+    #[tokio::test]
+    async fn legacy_list_never_selects_an_unhandled_http_stale_fallback() {
+        let gate = ProjectionGate::new(4, Duration::ZERO);
+        let key = ProjectionKey::AgentsList(None);
+        gate.run(key.clone(), || async { Ok(Bytes::from_static(b"[]")) })
+            .await
+            .unwrap();
+        match gate
+            .run(key.clone(), || async { Err(service_unavailable_failure()) })
+            .await
+        {
+            Err(ProjectionGateError::Build(failure)) => {
+                assert_eq!(failure.status(), StatusCode::SERVICE_UNAVAILABLE);
+            }
+            other => panic!("expected original build failure, got {other:?}"),
+        }
+        assert!(!gate.state.lock().unwrap().stale.contains_key(&key));
+        assert_eq!(gate.stale_deliveries.load(Ordering::Relaxed), 0);
     }
 
     #[tokio::test]

@@ -1,12 +1,17 @@
 package run.holon.android.sdk
 
 import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import run.holon.client.wire.generated.models.AgentListEntry
 import run.holon.client.wire.generated.models.ErrorResponse
 import run.holon.client.wire.generated.models.HandshakeResponse
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class SdkFoundationTest {
@@ -67,6 +72,36 @@ class SdkFoundationTest {
 
             assertEquals(expected, agent.identity.incarnation)
             assertEquals(expected, agent.toAgentSummary().incarnation)
+        }
+    }
+
+    @Test
+    fun `agent roster observation counters retain their full unsigned width`() {
+        val original = HolonWire.json.parseToJsonElement(fixture("agent-list-v1.json"))
+            .jsonArray.single().jsonObject
+        val counters = listOf(
+            0uL,
+            Int.MAX_VALUE.toULong(),
+            Int.MAX_VALUE.toULong() + 1uL,
+            Long.MAX_VALUE.toULong(),
+            Long.MAX_VALUE.toULong() + 1uL,
+            ULong.MAX_VALUE,
+        )
+        for (counter in counters) {
+            val metadata = HolonWire.json.parseToJsonElement(
+                """{"identity_revision":$counter,"owner_epoch":$counter,"publication_generation":$counter,"status":"committing"}""",
+            ).jsonObject
+            val body = JsonObject(original + ("observation" to metadata)).toString()
+            val agent = HolonWire.json.decodeFromString<AgentListEntry>(body)
+            val observation = assertNotNull(agent.observation)
+
+            assertEquals(counter.toString(), observation.identityRevision.toString())
+            assertEquals(counter.toString(), observation.ownerEpoch.toString())
+            assertEquals(counter.toString(), observation.publicationGeneration.toString())
+            assertEquals("committing", observation.status.value)
+            assertEquals("main", agent.toAgentSummary().id)
+            val encoded = HolonWire.json.parseToJsonElement(HolonWire.json.encodeToString(agent))
+            assertEquals(metadata, encoded.jsonObject["observation"])
         }
     }
 
