@@ -67,6 +67,15 @@ The operator State GET returns `503 agent_reconciliation_pending` with
 `retryable=true` when a required Agent publication is fenced by reconciliation.
 After a fresh cache entry expires, State returns the current build failure.
 Retrying the read carries no authority to repeat the original mutation.
+The finite operator Event page GET uses the same typed
+`503 agent_reconciliation_pending`, `domain=runtime`, `retryable=true` and
+`Retry-After: 1` contract when its existing synchronized read path returns
+`MutationOwnerError::NeedsReconcile`. This does not change its reservation
+waiting or existing reconciliation responsibilities: a normal Committing owner
+may finish while the Event read waits. An unresolved read returns no event page
+or cursor, does not activate a cold agent, and cannot authorize repeating the
+original mutation. This HTTP classification contract does not establish the
+cause or recovery of a historical production incident.
 Default `GetAgent` cleanup inspection uses the runtime's fixed scoped identity,
 not a mutable State read merely to retrieve its ID.
 Daemon identity/authentication probes use readiness metadata, keeping agent
