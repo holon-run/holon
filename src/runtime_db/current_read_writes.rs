@@ -10,35 +10,7 @@ use crate::runtime::{
     input_evidence_budget::BudgetViewGuard, resident_input_evidence::InputEvidenceScope,
 };
 
-pub(super) const VERSION: i64 = 103;
-pub(super) const SCHEMA: &str = r#"
-CREATE TABLE current_read_revisions (
- agent_id TEXT NOT NULL,
- identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
- revision INTEGER NOT NULL CHECK(revision>=0),
- PRIMARY KEY(agent_id,identity_incarnation));
-CREATE TABLE current_read_qualification (
- agent_id TEXT NOT NULL,
- identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
- family TEXT NOT NULL CHECK(family IN ('queue','event')),
- record_id TEXT NOT NULL CHECK(length(CAST(record_id AS BLOB))>0),
- revision INTEGER NOT NULL CHECK(revision>0),
- qualification_state TEXT NOT NULL CHECK(qualification_state IN ('qualified','unborn','absent','unprepared')),
- content_digest TEXT,
- CHECK((qualification_state='qualified' AND content_digest IS NOT NULL AND length(content_digest)=64)
-    OR (qualification_state IN ('unborn','absent','unprepared') AND content_digest IS NULL)),
- PRIMARY KEY(agent_id,identity_incarnation,family,record_id),
- FOREIGN KEY(agent_id,identity_incarnation) REFERENCES current_read_revisions(agent_id,identity_incarnation));
-CREATE INDEX current_read_known_address ON current_read_qualification(family,record_id);
-CREATE TABLE event_history_acks (
- agent_id TEXT NOT NULL,
- identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
- audit_event_id TEXT NOT NULL CHECK(length(CAST(audit_event_id AS BLOB))>0),
- event_seq INTEGER NOT NULL CHECK(event_seq>0),
- content_digest TEXT NOT NULL CHECK(length(content_digest)=64),
- PRIMARY KEY(agent_id,identity_incarnation,audit_event_id));
-CREATE INDEX event_history_ack_address ON event_history_acks(audit_event_id);
-"#;
+pub(super) use holon_storage::schema::CURRENT_READ_WRITES_VERSION as VERSION;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum CurrentFamily {

@@ -38,30 +38,7 @@ pub(crate) fn is_agent_message(message: &MessageEnvelope) -> bool {
             .is_some()
 }
 
-pub(crate) fn agent_message_reply_reference(message: &MessageEnvelope) -> Option<&str> {
-    if message.kind != MessageKind::TaskResult
-        || message.delivery_surface != Some(MessageDeliverySurface::TaskRejoin)
-        || message.admission_context != Some(AdmissionContext::RuntimeOwned)
-        || message.authority_class != AuthorityClass::RuntimeInstruction
-        || !matches!(&message.origin, MessageOrigin::Task { task_id } if Some(task_id) == message.task_id.as_ref())
-    {
-        return None;
-    }
-    let metadata = message.metadata.as_ref()?;
-    if metadata.get("task_id")?.as_str()? != message.task_id.as_deref()? {
-        return None;
-    }
-    if metadata.get("task_kind")?.as_str()? != crate::types::AGENT_MESSAGE_WAIT_TASK_KIND
-        || metadata.get("task_status")?.as_str()? != "completed"
-    {
-        return None;
-    }
-    let detail = metadata.get("task_detail")?;
-    if detail.get("reply_content_source")?.as_str()? != "original_message" {
-        return None;
-    }
-    detail.get("message_id")?.as_str()
-}
+pub(crate) use holon_domain::agent_message_reply_reference;
 
 pub(crate) fn select_wait_to_trigger<'a>(
     message: &'a MessageEnvelope,

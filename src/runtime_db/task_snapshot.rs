@@ -148,8 +148,8 @@ pub(in crate::runtime_db) use writes::{
 mod stop_progress;
 pub(crate) use stop_progress::invalidate_task_scope_for_stop_progress_tx;
 
-pub(super) const TASK_DOMAIN_VERSION: i64 = 100;
-pub(super) const TASK_DOMAIN_SCHEMA: &str = include_str!("task_snapshot/schema.sql");
+pub(super) use holon_storage::schema::TASK_DOMAIN_VERSION;
+
 const MAX_RECORDS: usize = 65_536;
 const MAX_BYTES: usize = 64 * 1024 * 1024;
 #[derive(Debug, thiserror::Error)]

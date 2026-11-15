@@ -1,4 +1,3 @@
-use super::{FIRST_FEATURE_VERSION, LAST_FEATURE_VERSION};
 use crate::{
     runtime_db::{
         evidence::{append_message_tx, upsert_agent_identity_tx, upsert_agent_state_tx},
@@ -16,6 +15,7 @@ use crate::{
     },
 };
 use anyhow::{Context, Result};
+use holon_storage::migrations::{FIRST_FEATURE_VERSION, LAST_FEATURE_VERSION};
 use rusqlite::{types::Value, Connection, Transaction};
 
 const CANONICAL_TABLES: &[&str] = &[
@@ -267,7 +267,7 @@ fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_linea
                 )?;
             }
         }
-        let old_history = super::history(&connection)?;
+        let old_history = read_history(&connection)?;
         drop(connection);
         let db = RuntimeDb::open_and_migrate(&path, &lock)
             .with_context(|| format!("prefix={prefix}, legacy_start={legacy_start:?}"))?;
@@ -325,7 +325,7 @@ fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_linea
         } else {
             expected_fixed = Some(fixed.clone());
         }
-        let history = super::history(&connection)?;
+        let history = read_history(&connection)?;
         drop(connection);
         drop(db);
         let reopened = RuntimeDb::open_and_migrate(&path, &lock)?;
@@ -336,7 +336,7 @@ fn migration_data_matrix_preserves_task_input_status_and_scheduling_across_linea
             fixed,
             "reopen must not recapture"
         );
-        assert_eq!(super::history(&connection)?, history);
+        assert_eq!(read_history(&connection)?, history);
     }
     Ok(())
 }
@@ -361,4 +361,13 @@ fn fresh_migration_has_no_invented_task_input_or_scheduling_members() -> Result<
     )?;
     assert_eq!(count, 24);
     Ok(())
+}
+
+fn read_history(connection: &Connection) -> Result<Vec<(i64, String, String)>> {
+    let mut query = connection
+        .prepare("SELECT version,name,applied_at FROM schema_migrations ORDER BY version")?;
+    let rows = query
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(rows)
 }

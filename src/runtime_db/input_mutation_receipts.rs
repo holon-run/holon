@@ -18,22 +18,6 @@ use crate::{
     types::{AgentMessageDeliveryReceipt, AgentMessageDeliveryRecord, AuditEvent},
 };
 
-pub(crate) const INPUT_MUTATION_RECEIPT_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS input_mutation_receipts (
-  command_nonce TEXT PRIMARY KEY CHECK(length(command_nonce) > 0),
-  family TEXT NOT NULL,
-  phase_version INTEGER NOT NULL CHECK(phase_version = 1),
-  command_digest TEXT NOT NULL CHECK(length(command_digest) = 64),
-  scope_digest TEXT NOT NULL CHECK(length(scope_digest) = 64),
-  scopes_json TEXT NOT NULL,
-  prepared_at TEXT NOT NULL,
-  prepared_json TEXT NOT NULL,
-  outcome_json TEXT NOT NULL,
-  committed_at TEXT NOT NULL,
-  result_digest TEXT NOT NULL CHECK(length(result_digest) = 64)
-);
-"#;
-
 const PHASE_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]

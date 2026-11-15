@@ -4,11 +4,30 @@ pub(crate) use holon_storage::workspace_context::{
     decode_execution_root_entry_payload, decode_workspace_entry_payload,
 };
 
+pub(crate) use holon_storage::codec::{enum_string, timestamp};
+
+pub(crate) use holon_storage::task::{
+    decode_task_payload, is_active_task_status, is_terminal_task_status,
+    slim_task_record_for_payload, task_detail_i64, task_detail_string, task_revision,
+    task_transition, truncate_task_payload_string, upsert_task_tx, write_task_row_tx,
+    write_task_row_with_mode_tx, StateTransitionOutcome, TaskRowWriteMode,
+};
+
+pub(crate) use holon_storage::work_item::{
+    decode_work_item_payload, insert_new_work_item_tx, update_expected_work_item_tx,
+};
+
+#[cfg(all(test, holon_lib_test_shard = "a"))]
+pub(crate) use holon_storage::task::slim_task_detail_value;
+pub(crate) use holon_storage::turn::decode_turn_record_payload;
+#[cfg(test)]
+pub(crate) use holon_storage::turn::validate_turn_record_identity;
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, params_from_iter, Connection, OptionalExtension, ToSql, Transaction};
+use rusqlite::{params, params_from_iter, Connection, OptionalExtension, Transaction};
 use sha2::{Digest, Sha256};
 
 use crate::runtime_db::agent_relations::{
@@ -17,8 +36,8 @@ use crate::runtime_db::agent_relations::{
 };
 use crate::runtime_db::context_inputs::{ContextDurableRead, ContextScopeFacts};
 use crate::runtime_db::conversation::{
-    assign_input_to_turn_tx, assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx,
-    ensure_turn_revision_tx, settle_turn_result_tx, SOURCE_OPERATOR, SOURCE_WAIT,
+    assigned_turn_id_tx, bump_source_revision_tx, bump_turn_revision_tx, SOURCE_OPERATOR,
+    SOURCE_WAIT,
 };
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
@@ -29,11 +48,10 @@ use crate::runtime_db::transitions::{
 use crate::runtime_db::types::*;
 use crate::runtime_db::workspace_context::WorkspaceContextChange;
 use crate::runtime_db::write_queue::RuntimeDbWriteContext;
-use crate::runtime_db::{
-    RuntimeStateTransitionConflict, TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT,
-};
+use crate::runtime_db::RuntimeStateTransitionConflict;
 use crate::runtime_event::RuntimeEventKind;
 use crate::types::*;
+pub(crate) use holon_storage::evidence::context_evidence_by_id_on;
 
 mod active_wait_material;
 use active_wait_material::active_wait_records;
@@ -5716,49 +5734,8 @@ impl EvidenceRepository<'_> {
         if query.limit == 0 {
             return Ok(Vec::new());
         }
-        let mut clauses = Vec::new();
-        let mut params = Vec::<String>::new();
-        push_optional_clause(&mut clauses, &mut params, "agent_id", query.agent_id);
-        push_optional_clause(&mut clauses, &mut params, "turn_id", query.turn_id);
-        push_optional_clause(&mut clauses, &mut params, "message_id", query.message_id);
-        push_optional_clause(&mut clauses, &mut params, "task_id", query.task_id);
-        push_optional_clause(
-            &mut clauses,
-            &mut params,
-            "work_item_id",
-            query.work_item_id,
-        );
-        let where_clause = if clauses.is_empty() {
-            String::new()
-        } else {
-            format!(" WHERE {}", clauses.join(" AND "))
-        };
-        let limit = i64::try_from(query.limit).unwrap_or(i64::MAX);
-        let sql = format!(
-            "SELECT evidence_id, agent_id, turn_id, message_id, task_id, work_item_id, created_at, preview
-             FROM {}{}
-             ORDER BY created_at DESC, evidence_id ASC
-             LIMIT {}",
-            kind.table_name(),
-            where_clause,
-            limit
-        );
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(rusqlite::params_from_iter(params.iter()), |row| {
-                Ok(EvidenceRow {
-                    evidence_id: row.get(0)?,
-                    agent_id: row.get(1)?,
-                    turn_id: row.get(2)?,
-                    message_id: row.get(3)?,
-                    task_id: row.get(4)?,
-                    work_item_id: row.get(5)?,
-                    created_at: row.get(6)?,
-                    preview: row.get(7)?,
-                })
-            })?;
-            rows.map(|row| row.map_err(Into::into)).collect()
-        })
+        self.db
+            .with_read(|connection| holon_storage::evidence::query_in(connection, kind, query))
     }
 
     pub fn recent_payloads(
@@ -5780,21 +5757,8 @@ impl EvidenceRepository<'_> {
         agent_id: &str,
         turn_id: &str,
     ) -> Result<Vec<EvidencePayloadRow>> {
-        let sql = format!(
-            "SELECT payload_json
-             FROM {}
-             WHERE agent_id = ?1 AND turn_id = ?2
-             ORDER BY created_at ASC, evidence_id ASC",
-            kind.table_name()
-        );
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(&sql)?;
-            let rows = statement.query_map(params![agent_id, turn_id], |row| {
-                Ok(EvidencePayloadRow {
-                    payload_json: row.get(0)?,
-                })
-            })?;
-            rows.map(|row| row.map_err(Into::into)).collect()
+            holon_storage::evidence::payloads_for_turn_in(connection, kind, agent_id, turn_id)
         })
     }
 
@@ -5818,31 +5782,8 @@ impl EvidenceRepository<'_> {
         if evidence_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let placeholders = evidence_ids
-            .iter()
-            .enumerate()
-            .map(|(i, _)| format!("?{}", i + 2))
-            .collect::<Vec<_>>()
-            .join(", ");
-        let sql = format!(
-            "SELECT payload_json FROM {} WHERE agent_id = ?1 AND evidence_id IN ({})",
-            kind.table_name(),
-            placeholders
-        );
         self.db.with_read(|connection| {
-            let mut statement = connection.prepare(&sql)?;
-            let mut all_params: Vec<Box<dyn ToSql>> = Vec::with_capacity(1 + evidence_ids.len());
-            all_params.push(Box::new(agent_id.to_string()));
-            for id in evidence_ids {
-                all_params.push(Box::new(id.clone()));
-            }
-            let param_refs: Vec<&dyn ToSql> = all_params.iter().map(|p| p.as_ref()).collect();
-            let rows = statement.query_map(param_refs.as_slice(), |row| {
-                Ok(EvidencePayloadRow {
-                    payload_json: row.get(0)?,
-                })
-            })?;
-            rows.map(|row| row.map_err(Into::into)).collect()
+            holon_storage::evidence::payloads_by_ids_in(connection, kind, agent_id, evidence_ids)
         })
     }
 
@@ -6686,289 +6627,6 @@ fn upsert_operator_delivery_record_tx(
     Ok(())
 }
 
-pub(crate) fn insert_new_work_item_tx(
-    tx: &Transaction<'_>,
-    record: &WorkItemRecord,
-) -> Result<bool> {
-    if record.revision != 1 {
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "invalid_initial_revision",
-            Some(1),
-            Some(record.revision),
-            false,
-        )
-        .into());
-    }
-    let actual_revision = tx
-        .query_row(
-            "SELECT revision FROM work_items WHERE work_item_id = ?1",
-            [&record.id],
-            |row| row.get::<_, i64>(0),
-        )
-        .optional()?
-        .map(|revision| u64::try_from(revision).context("stored work item revision is negative"))
-        .transpose()?;
-    if let Some(actual_revision) = actual_revision {
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "record_exists",
-            None,
-            Some(actual_revision),
-            false,
-        )
-        .into());
-    }
-    import_work_item_tx(tx, record)?;
-    Ok(true)
-}
-
-pub(crate) fn update_expected_work_item_tx(
-    tx: &Transaction<'_>,
-    record: &WorkItemRecord,
-    expected_revision: u64,
-) -> Result<bool> {
-    let next_revision = expected_revision.checked_add(1).ok_or_else(|| {
-        RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "invalid_revision_transition",
-            Some(expected_revision),
-            Some(record.revision),
-            false,
-        )
-    })?;
-    if record.revision != next_revision {
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "invalid_revision_transition",
-            Some(expected_revision),
-            Some(record.revision),
-            false,
-        )
-        .into());
-    }
-
-    let existing = tx
-        .query_row(
-            "SELECT revision, payload_json FROM work_items WHERE work_item_id = ?1",
-            [&record.id],
-            |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)),
-        )
-        .optional()?;
-    let Some((actual_revision, existing_payload)) = existing else {
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "not_found",
-            Some(expected_revision),
-            None,
-            false,
-        )
-        .into());
-    };
-    let actual_revision =
-        u64::try_from(actual_revision).context("stored work item revision is negative")?;
-    let payload_json = serde_json::to_string(record)?;
-    if actual_revision == next_revision {
-        if existing_payload == payload_json {
-            return Ok(false);
-        }
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "same_revision_payload_conflict",
-            Some(expected_revision),
-            Some(actual_revision),
-            false,
-        )
-        .into());
-    }
-    if actual_revision != expected_revision {
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "revision_conflict",
-            Some(expected_revision),
-            Some(actual_revision),
-            true,
-        )
-        .into());
-    }
-
-    update_work_item_row_tx(tx, record, &payload_json, expected_revision)?;
-    Ok(true)
-}
-
-fn update_work_item_row_tx(
-    tx: &Transaction<'_>,
-    record: &WorkItemRecord,
-    payload_json: &str,
-    expected_revision: u64,
-) -> Result<()> {
-    let state = enum_string(&record.state)?;
-    let plan_status = enum_string(&record.plan_status)?;
-    let completed_at =
-        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at));
-    let plan_artifact_path = record
-        .plan_artifact
-        .as_ref()
-        .map(|artifact| artifact.path.display().to_string());
-    let changed = tx.execute(
-        "UPDATE work_items SET
-            agent_id = ?1,
-            state = ?2,
-            objective = ?3,
-            plan_status = ?4,
-            revision = ?5,
-            created_at = ?6,
-            updated_at = ?7,
-            completed_at = ?8,
-            plan_artifact_path = ?9,
-            last_turn_id = ?10,
-            payload_json = ?11,
-            blocked_by = ?12,
-            recheck_at = ?13,
-            recheck_consumed_at = ?14
-         WHERE work_item_id = ?15 AND revision = ?16",
-        params![
-            record.agent_id,
-            state,
-            record.objective,
-            plan_status,
-            record.revision as i64,
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            completed_at,
-            plan_artifact_path,
-            record.turn_id,
-            payload_json,
-            record.blocked_by,
-            record.recheck_at.map(timestamp),
-            record.recheck_consumed_at.map(timestamp),
-            record.id,
-            expected_revision as i64,
-        ],
-    )?;
-    if changed != 1 {
-        return Err(RuntimeStateTransitionConflict::revision(
-            &record.id,
-            "revision_conflict",
-            Some(expected_revision),
-            None,
-            true,
-        )
-        .into());
-    }
-    Ok(())
-}
-
-enum WorkImportOutcome {
-    ActualWrite,
-    LegacyEqual,
-    Ignored,
-}
-
-fn import_work_item_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<WorkImportOutcome> {
-    if record.state != WorkItemState::Completed {
-        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
-    }
-    let existing: Option<String> = tx
-        .query_row(
-            "SELECT payload_json FROM work_items WHERE work_item_id=?1",
-            [&record.id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if let Some(payload) = existing {
-        let existing: WorkItemRecord = decode_work_item_payload(&payload)?;
-        if existing == *record && work_import_projection_equal_tx(tx, record)? {
-            return Ok(WorkImportOutcome::LegacyEqual);
-        }
-    }
-    let payload_json = serde_json::to_string(record)?;
-    let state = enum_string(&record.state)?;
-    let plan_status = enum_string(&record.plan_status)?;
-    let completed_at =
-        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at));
-    let plan_artifact_path = record
-        .plan_artifact
-        .as_ref()
-        .map(|artifact| artifact.path.display().to_string());
-    let blocked_by = record.blocked_by.clone();
-    let recheck_at = record.recheck_at.map(|t| timestamp(t));
-    let recheck_consumed_at = record.recheck_consumed_at.map(|t| timestamp(t));
-    let changed = tx.execute(
-        "INSERT INTO work_items (
-            work_item_id, agent_id, state, objective, plan_status,
-            revision, current_focus, created_at, updated_at, completed_at,
-            plan_artifact_path, last_turn_id, payload_json,
-            blocked_by, recheck_at, recheck_consumed_at
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
-         ON CONFLICT(work_item_id) DO UPDATE SET
-            agent_id = excluded.agent_id,
-            state = excluded.state,
-            objective = excluded.objective,
-            plan_status = excluded.plan_status,
-            revision = excluded.revision,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            completed_at = excluded.completed_at,
-            plan_artifact_path = excluded.plan_artifact_path,
-            last_turn_id = excluded.last_turn_id,
-            payload_json = excluded.payload_json,
-            blocked_by = excluded.blocked_by,
-            recheck_at = excluded.recheck_at,
-            recheck_consumed_at = excluded.recheck_consumed_at
-         WHERE excluded.revision >= work_items.revision",
-        params![
-            record.id,
-            record.agent_id,
-            state,
-            record.objective,
-            plan_status,
-            record.revision as i64,
-            0_i64,
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            completed_at,
-            plan_artifact_path,
-            record.turn_id,
-            payload_json,
-            blocked_by,
-            recheck_at,
-            recheck_consumed_at,
-        ],
-    )?;
-    Ok(if changed == 1 {
-        WorkImportOutcome::ActualWrite
-    } else {
-        WorkImportOutcome::Ignored
-    })
-}
-
-fn work_import_projection_equal_tx(tx: &Transaction<'_>, record: &WorkItemRecord) -> Result<bool> {
-    let actual: String = tx.query_row(
-        "SELECT json_array(agent_id,state,objective,plan_status,revision,created_at,updated_at,completed_at,plan_artifact_path,last_turn_id,blocked_by,recheck_at,recheck_consumed_at) FROM work_items WHERE work_item_id=?1",
-        [&record.id], |row| row.get(0),
-    )?;
-    let expected = serde_json::json!([
-        record.agent_id,
-        record.state,
-        record.objective,
-        record.plan_status,
-        record.revision,
-        timestamp(record.created_at),
-        timestamp(record.updated_at),
-        (record.state == WorkItemState::Completed).then(|| timestamp(record.updated_at)),
-        record
-            .plan_artifact
-            .as_ref()
-            .map(|artifact| artifact.path.display().to_string()),
-        record.turn_id,
-        record.blocked_by,
-        record.recheck_at.map(timestamp),
-        record.recheck_consumed_at.map(timestamp)
-    ]);
-    Ok(serde_json::from_str::<serde_json::Value>(&actual)? == expected)
-}
-
 #[derive(Debug, thiserror::Error)]
 #[error("task target was deleted before terminal publication")]
 pub(crate) struct TaskTargetDeleted;
@@ -7001,32 +6659,6 @@ pub(crate) fn task_target_is_deleted(
                 identity.status,
                 AgentRegistryStatus::Deleting | AgentRegistryStatus::Deleted
             )))
-}
-
-pub(crate) fn upsert_task_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
-    if is_active_task_status(&record.status) {
-        super::reclamation::ensure_work_admission_tx(tx, &record.agent_id)?;
-        if let Some(child_id) = task_detail_string(&record.detail, "child_agent_id") {
-            super::reclamation::ensure_work_admission_tx(tx, &child_id)?;
-        }
-    }
-    let existing = tx
-        .query_row(
-            "SELECT payload_json FROM tasks WHERE task_id = ?1",
-            [&record.id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?
-        .map(|payload| decode_task_payload(&payload))
-        .transpose()?;
-    if let Some(existing) = existing.as_ref() {
-        match task_transition(existing, record)? {
-            StateTransitionOutcome::Applied => {}
-            StateTransitionOutcome::Idempotent => return Ok(false),
-        }
-    }
-
-    write_task_row_tx(tx, record)
 }
 
 pub(crate) fn upsert_interrupted_child_task_stop_tx(
@@ -7085,119 +6717,6 @@ pub(in crate::runtime_db) fn update_original_child_running_tx(
         return Ok(false);
     }
     write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::ExistingOriginalRunning)
-}
-#[derive(Clone, Copy)]
-enum TaskRowWriteMode {
-    Upsert,
-    ExistingOriginalBinding,
-    ExistingOriginalRunning,
-}
-fn write_task_row_tx(tx: &Transaction<'_>, record: &TaskRecord) -> Result<bool> {
-    write_task_row_with_mode_tx(tx, record, TaskRowWriteMode::Upsert)
-}
-fn write_task_row_with_mode_tx(
-    tx: &Transaction<'_>,
-    record: &TaskRecord,
-    mode: TaskRowWriteMode,
-) -> Result<bool> {
-    let kind = record.kind.as_str();
-    let status = enum_string(&record.status)?;
-    let status_phase = i64::from(task_status_phase(&record.status));
-    let child_agent_id = task_detail_string(&record.detail, "child_agent_id");
-    let parent_agent_id = child_agent_id.as_ref().map(|_| record.agent_id.clone());
-    let input_target = task_detail_string(&record.detail, "input_target");
-    let wait_policy = enum_string(&record.wait_policy())?;
-    let output_path = task_detail_string(&record.detail, "output_path");
-    let result_summary = task_detail_string(&record.detail, "output_summary")
-        .map(|summary| truncate_task_payload_string(&summary));
-    let exit_status = task_detail_i64(&record.detail, "exit_status");
-    let terminal_reentry = i64::from(record.terminal_reentry());
-    let completed_at =
-        is_terminal_task_status(&record.status).then(|| timestamp(record.updated_at));
-    let payload_json = serde_json::to_string(&slim_task_record_for_payload(record))?;
-    let sql=match mode {TaskRowWriteMode::Upsert=>"INSERT INTO tasks (
-            task_id, owner_agent_id, parent_agent_id, child_agent_id, kind, status,
-            summary, input_target, wait_policy, output_path, result_summary,
-            exit_status, terminal_reentry, revision, created_at, updated_at,
-            completed_at, last_message_id, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
-         ON CONFLICT(task_id) DO UPDATE SET
-            owner_agent_id = excluded.owner_agent_id,
-            parent_agent_id = excluded.parent_agent_id,
-            child_agent_id = excluded.child_agent_id,
-            kind = excluded.kind,
-            status = excluded.status,
-            summary = excluded.summary,
-            input_target = excluded.input_target,
-            wait_policy = excluded.wait_policy,
-            output_path = excluded.output_path,
-            result_summary = excluded.result_summary,
-            exit_status = excluded.exit_status,
-            terminal_reentry = excluded.terminal_reentry,
-            revision = excluded.revision,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            completed_at = excluded.completed_at,
-            last_message_id = excluded.last_message_id,
-            payload_json = excluded.payload_json
-         WHERE excluded.revision >= tasks.revision
-            AND ?20 >= CASE tasks.status
-                WHEN 'queued' THEN 0
-                WHEN 'running' THEN 1
-                WHEN 'cancelling' THEN 2
-                ELSE 3
-            END",TaskRowWriteMode::ExistingOriginalBinding | TaskRowWriteMode::ExistingOriginalRunning=>"UPDATE tasks SET owner_agent_id=?2,parent_agent_id=?3,child_agent_id=?4,kind=?5,status=?6,
-         summary=?7,input_target=?8,wait_policy=?9,output_path=?10,result_summary=?11,exit_status=?12,
-         terminal_reentry=?13,revision=?14,created_at=?15,updated_at=?16,completed_at=?17,last_message_id=?18,payload_json=?19
-         WHERE task_id=?1 AND ?14>=revision AND ?20>=CASE status
-            WHEN 'queued' THEN 0 WHEN 'running' THEN 1 WHEN 'cancelling' THEN 2 ELSE 3 END"};
-    let actual = tx.execute(
-        sql,
-        params![
-            record.id,
-            record.agent_id,
-            parent_agent_id,
-            child_agent_id,
-            kind,
-            status,
-            record.summary,
-            input_target,
-            wait_policy,
-            output_path,
-            result_summary,
-            exit_status,
-            terminal_reentry,
-            task_revision(record),
-            timestamp(record.created_at),
-            timestamp(record.updated_at),
-            completed_at,
-            record.parent_message_id,
-            payload_json,
-            status_phase,
-        ],
-    )?;
-    if matches!(
-        mode,
-        TaskRowWriteMode::ExistingOriginalBinding | TaskRowWriteMode::ExistingOriginalRunning
-    ) {
-        anyhow::ensure!(
-            actual == 1,
-            "existing child binding UPDATE did not affect its original Task"
-        );
-    }
-    Ok(true)
-}
-
-pub(crate) fn task_status_phase(status: &TaskStatus) -> u8 {
-    match status {
-        TaskStatus::Queued => 0,
-        TaskStatus::Running => 1,
-        TaskStatus::Cancelling => 2,
-        TaskStatus::Completed
-        | TaskStatus::Failed
-        | TaskStatus::Cancelled
-        | TaskStatus::Interrupted => 3,
-    }
 }
 
 /// The primary row's outcome and every row actually changed by this write.
@@ -7320,54 +6839,22 @@ pub(crate) fn upsert_wait_condition_with_writes_tx(
     let resolved_at = record.resolved_at.map(wait_sql_timestamp).transpose()?;
     let cancelled_at = record.cancelled_at.map(wait_sql_timestamp).transpose()?;
     let triggered_at = record.triggered_at().map(wait_sql_timestamp).transpose()?;
-    let changed = tx.execute(
-        "INSERT INTO wait_conditions (
-            wait_condition_id, agent_id, work_item_id, status, kind, source,
-            subject_ref, waiting_for, created_at, updated_at, expires_at,
-            resolved_at, cancelled_at, last_turn_id, trigger_message_id, triggered_at,
-            wake_sources_json, continuation_json, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)
-         ON CONFLICT(wait_condition_id) DO UPDATE SET
-            agent_id = excluded.agent_id,
-            work_item_id = excluded.work_item_id,
-            status = excluded.status,
-            kind = excluded.kind,
-            source = excluded.source,
-            subject_ref = excluded.subject_ref,
-            waiting_for = excluded.waiting_for,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            expires_at = excluded.expires_at,
-            resolved_at = excluded.resolved_at,
-            cancelled_at = excluded.cancelled_at,
-            last_turn_id = excluded.last_turn_id,
-            trigger_message_id = excluded.trigger_message_id,
-            triggered_at = excluded.triggered_at,
-            wake_sources_json = excluded.wake_sources_json,
-            continuation_json = excluded.continuation_json,
-            payload_json = excluded.payload_json
-         WHERE excluded.updated_at >= wait_conditions.updated_at",
-        params![
-            record.id,
-            record.agent_id,
-            record.work_item_id,
-            status,
-            kind,
-            record.source,
-            record.subject_ref,
-            record.waiting_for,
-            created_at,
-            updated_at,
-            expires_at,
-            resolved_at,
-            cancelled_at,
-            record.turn_id,
-            record.trigger_message_id(),
-            triggered_at,
-            wake_sources_json,
-            continuation_json,
-            payload_json,
-        ],
+    let changed = holon_storage::wait::upsert_wait_row_tx(
+        tx,
+        record,
+        status,
+        kind,
+        holon_storage::wait::WaitRow {
+            created_at: &created_at,
+            updated_at: &updated_at,
+            expires_at: expires_at.as_deref(),
+            resolved_at: resolved_at.as_deref(),
+            cancelled_at: cancelled_at.as_deref(),
+            triggered_at: triggered_at.as_deref(),
+            wake_sources_json: &wake_sources_json,
+            continuation_json: continuation_json.as_deref(),
+            payload_json: &payload_json,
+        },
     )?;
     if changed == 1 {
         writes.primary_applied = true;
@@ -7416,13 +6903,7 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
 ) -> Result<WaitConditionWrites> {
     // Freeze every candidate before updating the table being scanned.
     let rows = {
-        let mut statement = tx.prepare(
-            "SELECT wait_condition_id, payload_json FROM wait_conditions
-             WHERE agent_id = ?1
-               AND work_item_id IS ?2
-               AND wait_condition_id != ?3
-               AND status IN ('active', 'triggered')",
-        )?;
+        let mut statement = holon_storage::wait::prepare_unresolved_replacements(tx)?;
         let mut cursor =
             statement.query(params![record.agent_id, record.work_item_id, record.id])?;
         let mut rows = Vec::new();
@@ -7454,16 +6935,8 @@ fn cancel_stale_unresolved_wait_owner_rows_tx(
         crate::diagnostics::resource_io::admit_serialized_value(&stale)?;
         let payload_json = serde_json::to_string(&stale)?;
         let updated_at = wait_sql_timestamp(record.updated_at)?;
-        let changed = tx.execute(
-            "UPDATE wait_conditions
-             SET status = 'cancelled',
-                 updated_at = ?1,
-                 resolved_at = NULL,
-                 cancelled_at = ?1,
-                 payload_json = ?2
-             WHERE wait_condition_id = ?3",
-            params![updated_at, payload_json, wait_id],
-        )?;
+        let changed =
+            holon_storage::wait::cancel_wait_row_tx(tx, &wait_id, &updated_at, &payload_json)?;
         if changed > 0 {
             WaitConditionWrites::insert_id(&mut writes.wait_ids, &stale.id)?;
         }
@@ -7813,112 +7286,6 @@ pub(crate) fn compare_and_set_queue_entry_with_audits_tx(
     Ok(changed == 1)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StateTransitionOutcome {
-    Applied,
-    Idempotent,
-}
-
-pub(crate) fn task_transition(
-    existing: &TaskRecord,
-    incoming: &TaskRecord,
-) -> Result<StateTransitionOutcome> {
-    if existing == incoming {
-        return Ok(StateTransitionOutcome::Idempotent);
-    }
-    if let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
-        message,
-        target_agent_id,
-        authority_class,
-        delivery_id,
-        after_delivery_rowid,
-        reply_deadline_at,
-        requester_incarnation,
-        ..
-    }) = existing.recovery.as_ref()
-    {
-        anyhow::ensure!(
-            matches!(incoming.recovery.as_ref(),
-                Some(crate::types::TaskRecoverySpec::AgentMessageWait {
-                    message: incoming_message,
-                    target_agent_id: incoming_target,
-                    authority_class: incoming_authority,
-                    delivery_id: incoming_delivery,
-                    after_delivery_rowid: incoming_boundary,
-                    reply_deadline_at: incoming_deadline,
-                    requester_incarnation: incoming_incarnation, ..
-                }) if incoming_message == message
-                    && incoming_target == target_agent_id
-                    && incoming_authority == authority_class
-                    && delivery_id.as_ref().is_none_or(|id| incoming_delivery.as_ref() == Some(id))
-                    && after_delivery_rowid.is_none_or(|boundary| *incoming_boundary == Some(boundary))
-                    && incoming_deadline == reply_deadline_at
-                    && incoming_incarnation == requester_incarnation),
-            "message_wait_binding_conflict: immutable request, receipt, deadline or requester incarnation"
-        );
-    }
-    if existing
-        .target()
-        .is_some_and(|target| target.kind == crate::types::TaskTargetKind::ChildAgent)
-        && existing
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.get("source_message_id"))
-            .is_some()
-    {
-        for key in [
-            "source_message_id",
-            "source_turn_id",
-            "child_agent_id",
-            "target",
-        ] {
-            anyhow::ensure!(
-                existing.detail.as_ref().and_then(|detail| detail.get(key))
-                    == incoming.detail.as_ref().and_then(|detail| detail.get(key)),
-                "supervised_invocation_source_binding_conflict: {key}"
-            );
-        }
-    }
-    if existing.kind == crate::types::TaskKind::AgentMessageWait
-        && existing
-            .detail
-            .as_ref()
-            .and_then(|detail| detail.get("request_delivery_id"))
-            .is_some()
-    {
-        for key in [
-            "target",
-            "request_delivery_id",
-            "message_wait_after_delivery_rowid",
-        ] {
-            anyhow::ensure!(
-                existing.detail.as_ref().and_then(|detail| detail.get(key))
-                    == incoming.detail.as_ref().and_then(|detail| detail.get(key)),
-                "message_wait_binding_conflict: {key}"
-            );
-        }
-    }
-    if is_terminal_task_status(&existing.status) {
-        if is_terminal_task_status(&incoming.status) && task_terminal_payload_eq(existing, incoming)
-        {
-            return Ok(StateTransitionOutcome::Idempotent);
-        }
-        return Err(RuntimeStateTransitionConflict::new(
-            "task",
-            &existing.id,
-            enum_string(&existing.status)?,
-            enum_string(&incoming.status)?,
-        )
-        .into());
-    }
-    if task_revision(incoming) < task_revision(existing)
-        || task_status_phase(&incoming.status) < task_status_phase(&existing.status)
-    {
-        return Ok(StateTransitionOutcome::Idempotent);
-    }
-    Ok(StateTransitionOutcome::Applied)
-}
-
 pub(crate) fn queue_entry_transition(
     existing: &QueueEntryRecord,
     incoming: &QueueEntryRecord,
@@ -8033,55 +7400,6 @@ fn wait_condition_terminal_payload_eq(
     let mut existing = existing.clone();
     existing.updated_at = incoming.updated_at;
     existing == *incoming
-}
-
-fn task_terminal_payload_eq(existing: &TaskRecord, incoming: &TaskRecord) -> bool {
-    let existing = canonical_task_terminal_payload(existing);
-    let incoming = canonical_task_terminal_payload(incoming);
-    existing.id == incoming.id
-        && existing.agent_id == incoming.agent_id
-        && existing.kind == incoming.kind
-        && existing.status == incoming.status
-        && existing.parent_message_id == incoming.parent_message_id
-        && existing.work_item_id == incoming.work_item_id
-        && existing.summary == incoming.summary
-        && existing.detail == incoming.detail
-        && existing.recovery == incoming.recovery
-}
-
-fn canonical_task_terminal_payload(record: &TaskRecord) -> TaskRecord {
-    let mut canonical = record.clone();
-    canonical.detail = canonical
-        .detail
-        .as_ref()
-        .map(canonical_task_terminal_detail);
-    canonical
-}
-
-fn canonical_task_terminal_detail(value: &serde_json::Value) -> serde_json::Value {
-    // Terminal identity ignores derived observation fields even when storage retains them.
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut canonical = serde_json::Map::new();
-            for (key, value) in map {
-                if matches!(
-                    key.as_str(),
-                    "initial_output"
-                        | "output_summary"
-                        | "output_preview"
-                        | "terminal_snapshot_ready"
-                ) {
-                    continue;
-                }
-                canonical.insert(key.clone(), canonical_task_terminal_detail(value));
-            }
-            serde_json::Value::Object(canonical)
-        }
-        serde_json::Value::Array(values) => {
-            serde_json::Value::Array(values.iter().map(canonical_task_terminal_detail).collect())
-        }
-        _ => value.clone(),
-    }
 }
 
 pub(crate) fn try_claim_queued_message_tx(
@@ -8415,342 +7733,11 @@ pub(crate) fn committed_turn_record_tx(
     })
 }
 
-pub(crate) fn validate_turn_record_identity(
-    existing: &TurnRecord,
-    record: &TurnRecord,
-) -> Result<()> {
-    let replay_identity_matches = match (&existing.replay, &record.replay) {
-        (Some(existing), Some(record)) => {
-            existing.source_message_id == record.source_message_id
-                && existing.source_turn_id == record.source_turn_id
-                && existing.reason == record.reason
-        }
-        (None, None) => true,
-        _ => false,
-    };
-    let identity_matches = existing.agent_id == record.agent_id
-        && existing.turn_index == record.turn_index
-        && existing.run_id == record.run_id
-        && existing.current_work_item_id == record.current_work_item_id
-        && (existing.owner == record.owner || existing.owner.is_none())
-        && existing
-            .trigger
-            .as_ref()
-            .and_then(|trigger| trigger.message_id.as_deref())
-            == record
-                .trigger
-                .as_ref()
-                .and_then(|trigger| trigger.message_id.as_deref())
-        && existing.created_at == record.created_at
-        && replay_identity_matches;
-    if !identity_matches {
-        return Err(RuntimeStateTransitionConflict::new(
-            "turn identity",
-            &record.turn_id,
-            "immutable",
-            "conflicting",
-        )
-        .into());
-    }
-    Ok(())
-}
-
-pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
-    if let Some(owner) = record.owner.as_ref() {
-        let owner_work_item_id = owner.work_item_id();
-        if record.current_work_item_id.as_deref() != owner_work_item_id {
-            return Err(RuntimeStateTransitionConflict::new(
-                "turn owner",
-                &record.turn_id,
-                owner_work_item_id.unwrap_or("unbound"),
-                record.current_work_item_id.as_deref().unwrap_or("unbound"),
-            )
-            .into());
-        }
-    }
-    let existing_payload = tx
-        .query_row(
-            "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
-            [&record.turn_id],
-            |row| row.get::<_, String>(0),
-        )
-        .optional()?;
-    let existing = existing_payload
-        .as_deref()
-        .map(decode_turn_record_payload)
-        .transpose()?;
-    if let Some(existing) = existing.as_ref() {
-        validate_turn_record_identity(existing, record)?;
-    }
-    let payload_json = serde_json::to_string(record)?;
-    let terminal_kind = record
-        .terminal
-        .as_ref()
-        .map(|terminal| enum_string(&terminal.kind))
-        .transpose()?;
-    let completed_at = record
-        .terminal
-        .as_ref()
-        .map(|terminal| timestamp(terminal.completed_at));
-    let (owner_kind, owner_id) = match record.owner.as_ref() {
-        Some(owner) => {
-            let (kind, id) = owner.index_parts();
-            (Some(kind), id)
-        }
-        None => (None, None),
-    };
-    let has_owner_columns = tx.query_row(
-        "SELECT EXISTS(
-            SELECT 1
-              FROM pragma_table_info('turn_records')
-             WHERE name = 'owner_kind'
-        )",
-        [],
-        |row| row.get::<_, i64>(0),
-    )? != 0;
-    let has_replay_source_column = tx.query_row(
-        "SELECT EXISTS(
-            SELECT 1
-              FROM pragma_table_info('turn_records')
-             WHERE name = 'replay_source_turn_id'
-        )",
-        [],
-        |row| row.get::<_, i64>(0),
-    )? != 0;
-    if has_owner_columns && has_replay_source_column {
-        tx.execute(
-            "INSERT INTO turn_records (
-                turn_id, turn_index, agent_id, run_id, current_work_item_id,
-                owner_kind, owner_id, trigger_message_id, replay_source_turn_id,
-                terminal_kind, created_at, completed_at, payload_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
-             ON CONFLICT(turn_id) DO UPDATE SET
-                owner_kind = COALESCE(turn_records.owner_kind, excluded.owner_kind),
-                owner_id = COALESCE(turn_records.owner_id, excluded.owner_id),
-                replay_source_turn_id = excluded.replay_source_turn_id,
-                terminal_kind = excluded.terminal_kind,
-                completed_at = excluded.completed_at,
-                payload_json = excluded.payload_json
-             WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
-            params![
-                record.turn_id,
-                record.turn_index as i64,
-                record.agent_id,
-                record.run_id,
-                record.current_work_item_id,
-                owner_kind,
-                owner_id,
-                record
-                    .trigger
-                    .as_ref()
-                    .and_then(|trigger| trigger.message_id.as_deref()),
-                record
-                    .replay
-                    .as_ref()
-                    .map(|replay| replay.source_turn_id.as_str()),
-                terminal_kind,
-                timestamp(record.created_at),
-                completed_at,
-                payload_json,
-            ],
-        )?;
-    } else if has_owner_columns {
-        tx.execute(
-            "INSERT INTO turn_records (
-                turn_id, turn_index, agent_id, run_id, current_work_item_id,
-                owner_kind, owner_id, trigger_message_id, terminal_kind, created_at,
-                completed_at, payload_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-             ON CONFLICT(turn_id) DO UPDATE SET
-                owner_kind = COALESCE(turn_records.owner_kind, excluded.owner_kind),
-                owner_id = COALESCE(turn_records.owner_id, excluded.owner_id),
-                terminal_kind = excluded.terminal_kind,
-                completed_at = excluded.completed_at,
-                payload_json = excluded.payload_json
-             WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
-            params![
-                record.turn_id,
-                record.turn_index as i64,
-                record.agent_id,
-                record.run_id,
-                record.current_work_item_id,
-                owner_kind,
-                owner_id,
-                record
-                    .trigger
-                    .as_ref()
-                    .and_then(|trigger| trigger.message_id.as_deref()),
-                terminal_kind,
-                timestamp(record.created_at),
-                completed_at,
-                payload_json,
-            ],
-        )?;
-    } else {
-        tx.execute(
-            "INSERT INTO turn_records (
-                turn_id, turn_index, agent_id, run_id, current_work_item_id,
-                trigger_message_id, terminal_kind, created_at, completed_at, payload_json
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-             ON CONFLICT(turn_id) DO UPDATE SET
-                terminal_kind = excluded.terminal_kind,
-                completed_at = excluded.completed_at,
-                payload_json = excluded.payload_json
-             WHERE COALESCE(excluded.completed_at, excluded.created_at) >= COALESCE(turn_records.completed_at, turn_records.created_at)",
-            params![
-                record.turn_id,
-                record.turn_index as i64,
-                record.agent_id,
-                record.run_id,
-                record.current_work_item_id,
-                record
-                    .trigger
-                    .as_ref()
-                    .and_then(|trigger| trigger.message_id.as_deref()),
-                terminal_kind,
-                timestamp(record.created_at),
-                completed_at,
-                payload_json,
-            ],
-        )?;
-    }
-    let stored_payload = tx.query_row(
-        "SELECT payload_json FROM turn_records WHERE turn_id = ?1",
-        [&record.turn_id],
-        |row| row.get::<_, String>(0),
-    )?;
-    let stored = decode_turn_record_payload(&stored_payload)?;
-    let changed = existing_payload.as_deref() != Some(stored_payload.as_str());
-    if changed {
-        let _ = bump_turn_revision_tx(
-            tx,
-            &stored.agent_id,
-            &stored.turn_id,
-            true,
-            false,
-            stored
-                .terminal
-                .as_ref()
-                .map_or(stored.created_at, |terminal| terminal.completed_at),
-        )?;
-    } else {
-        let _ = ensure_turn_revision_tx(tx, &stored.agent_id, &stored.turn_id, stored.created_at)?;
-    }
-    if stored
-        .terminal
-        .as_ref()
-        .and_then(|terminal| terminal.no_brief_reason.as_ref())
-        .is_some()
-    {
-        let updated_at = stored
-            .terminal
-            .as_ref()
-            .map_or(stored.created_at, |terminal| terminal.completed_at);
-        let _ = settle_turn_result_tx(tx, &stored.agent_id, &stored.turn_id, updated_at)?;
-    }
-    for message_id in &stored.input_message_ids {
-        let existing_assignment = assigned_turn_id_tx(tx, &stored.agent_id, message_id)?;
-        let assignment_turn_id = if let Some(existing_turn_id) = existing_assignment.as_deref() {
-            existing_turn_id
-        } else if let Some(replay) = stored
-            .replay
-            .as_ref()
-            .filter(|replay| replay.source_message_id == *message_id)
-        {
-            let source_owns_input = tx.query_row(
-                "SELECT EXISTS(
-                    SELECT 1
-                    FROM turn_records AS source
-                    WHERE source.agent_id = ?1
-                      AND source.turn_id = ?2
-                      AND EXISTS (
-                        SELECT 1
-                        FROM json_each(source.payload_json, '$.input_message_ids') AS input
-                        WHERE input.type = 'text' AND input.value = ?3
-                      )
-                 )",
-                params![stored.agent_id, replay.source_turn_id, message_id],
-                |row| row.get::<_, i64>(0),
-            )? != 0;
-            if source_owns_input {
-                replay.source_turn_id.as_str()
-            } else {
-                stored.turn_id.as_str()
-            }
-        } else {
-            stored.turn_id.as_str()
-        };
-        let assignment_target_exists = tx.query_row(
-            "SELECT EXISTS(
-                SELECT 1 FROM turn_records
-                WHERE agent_id = ?1 AND turn_id = ?2
-             )",
-            params![stored.agent_id, assignment_turn_id],
-            |row| row.get::<_, i64>(0),
-        )? != 0;
-        anyhow::ensure!(
-            assignment_target_exists,
-            "conversation input assignment target is not persisted: agent_id={}, message_id={}, turn_id={}",
-            stored.agent_id,
-            message_id,
-            assignment_turn_id
-        );
-        let _ = assign_input_to_turn_tx(
-            tx,
-            &stored.agent_id,
-            message_id,
-            assignment_turn_id,
-            stored.created_at,
-        )?;
-    }
-    Ok(())
-}
-
 pub(crate) fn timer_updated_at(record: &TimerRecord) -> DateTime<Utc> {
     record
         .last_fired_at
         .or(record.next_fire_at)
         .unwrap_or(record.created_at)
-}
-
-pub(crate) fn slim_task_record_for_payload(record: &TaskRecord) -> TaskRecord {
-    let mut slim = record.clone();
-    slim.detail = slim.detail.as_ref().map(slim_task_detail_value);
-    slim
-}
-
-pub(crate) fn slim_task_detail_value(value: &serde_json::Value) -> serde_json::Value {
-    match value {
-        serde_json::Value::Object(map) => {
-            let mut slim = serde_json::Map::new();
-            for (key, value) in map {
-                if key == "initial_output" {
-                    continue;
-                }
-                slim.insert(key.clone(), slim_task_detail_value(value));
-            }
-            serde_json::Value::Object(slim)
-        }
-        serde_json::Value::Array(values) => serde_json::Value::Array(
-            values
-                .iter()
-                .take(TASK_PAYLOAD_ARRAY_LIMIT)
-                .map(slim_task_detail_value)
-                .collect(),
-        ),
-        serde_json::Value::String(value) => {
-            serde_json::Value::String(truncate_task_payload_string(value))
-        }
-        _ => value.clone(),
-    }
-}
-
-pub(crate) fn truncate_task_payload_string(value: &str) -> String {
-    value.chars().take(TASK_PAYLOAD_STRING_LIMIT).collect()
-}
-
-pub(crate) fn task_revision(record: &TaskRecord) -> i64 {
-    record.updated_at.timestamp_millis()
 }
 
 pub(super) fn projected_agent_state_on(
@@ -8821,10 +7808,6 @@ fn ensure_deleted_tombstone_tx(
     Ok(true)
 }
 
-pub(crate) fn decode_work_item_payload(payload: &str) -> Result<WorkItemRecord> {
-    serde_json::from_str(payload).context("decoding work item payload from runtime db")
-}
-
 pub(crate) fn decode_work_item_delegation_payload(
     payload: &str,
 ) -> Result<WorkItemDelegationRecord> {
@@ -8863,10 +7846,6 @@ pub(crate) fn decode_operator_delivery_record_payload(
 ) -> Result<OperatorDeliveryRecord> {
     serde_json::from_str(payload)
         .context("decoding operator delivery record payload from runtime db")
-}
-
-pub(crate) fn decode_task_payload(payload: &str) -> Result<TaskRecord> {
-    serde_json::from_str(payload).context("decoding task payload from runtime db")
 }
 
 pub(crate) fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
@@ -9008,60 +7987,12 @@ fn timer_list_on(
     Ok(records)
 }
 
-pub(crate) fn decode_turn_record_payload(payload: &str) -> Result<TurnRecord> {
-    serde_json::from_str(payload).context("decoding turn record payload from runtime db")
-}
-
 pub(crate) fn decode_message_payload(payload: &str) -> Result<MessageEnvelope> {
     serde_json::from_str(payload).context("decoding message payload from runtime db")
 }
 
 pub(crate) fn decode_transcript_entry_payload(payload: &str) -> Result<TranscriptEntry> {
     serde_json::from_str(payload).context("decoding transcript entry payload from runtime db")
-}
-
-pub(crate) fn enum_string<T: serde::Serialize>(value: &T) -> Result<String> {
-    let value = serde_json::to_value(value)?;
-    value
-        .as_str()
-        .map(ToString::to_string)
-        .ok_or_else(|| anyhow!("expected enum to serialize as string"))
-}
-
-pub(crate) fn task_detail_string(detail: &Option<serde_json::Value>, key: &str) -> Option<String> {
-    detail
-        .as_ref()
-        .and_then(|value| value.get(key))
-        .and_then(|value| value.as_str())
-        .map(ToString::to_string)
-}
-
-pub(crate) fn task_detail_i64(detail: &Option<serde_json::Value>, key: &str) -> Option<i64> {
-    detail
-        .as_ref()
-        .and_then(|value| value.get(key))
-        .and_then(|value| value.as_i64())
-}
-
-pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
-    matches!(
-        status,
-        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-    )
-}
-
-pub(crate) fn is_terminal_task_status(status: &TaskStatus) -> bool {
-    matches!(
-        status,
-        TaskStatus::Completed
-            | TaskStatus::Failed
-            | TaskStatus::Cancelled
-            | TaskStatus::Interrupted
-    )
-}
-
-pub(crate) fn timestamp(value: DateTime<Utc>) -> String {
-    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 // Same-query readers for one context acquisition transaction.
@@ -9626,28 +8557,24 @@ pub(crate) fn context_recent_evidence_on(
     if limit == 0 {
         return Ok(Vec::new());
     }
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let sql = format!(
-        "SELECT payload_json
-         FROM {}
-         WHERE agent_id = ?1
-         ORDER BY created_at DESC, evidence_id DESC
-         LIMIT ?2",
-        kind.table_name()
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let mut rows = statement.query(params![agent_id, limit])?;
-    let mut records = Vec::new();
-    while let Some(row) = rows.next()? {
-        let payload = borrowed_sql_text(row, 0)?;
-        reserve_source_vec_slot(&mut records)?;
-        crate::diagnostics::resource_io::charge_owned_metadata(u64::try_from(payload.len())?, 1)?;
-        records.push(EvidencePayloadRow {
-            payload_json: payload.to_owned(),
-        });
-    }
-    records.reverse();
-    Ok(records)
+    holon_storage::evidence::context_recent_evidence_on(
+        connection,
+        kind,
+        agent_id,
+        limit,
+        |row, records| {
+            let payload = borrowed_sql_text(row, 0)?;
+            reserve_source_vec_slot(records)?;
+            crate::diagnostics::resource_io::charge_owned_metadata(
+                u64::try_from(payload.len())?,
+                1,
+            )?;
+            records.push(EvidencePayloadRow {
+                payload_json: payload.to_owned(),
+            });
+            Ok(())
+        },
+    )
 }
 
 pub(crate) fn reserve_source_vec_slot<T>(records: &mut Vec<T>) -> Result<()> {
@@ -9716,29 +8643,6 @@ pub(crate) fn audit_event_records(
         records.push(serde_json::from_str(payload)?);
     }
     Ok(records)
-}
-
-pub(crate) fn context_evidence_by_id_on(
-    connection: &rusqlite::Connection,
-    kind: EvidenceKind,
-    agent_id: &str,
-    evidence_id: &str,
-) -> Result<Option<EvidencePayloadRow>> {
-    let sql = format!(
-        "SELECT payload_json
-         FROM {}
-         WHERE agent_id = ?1 AND evidence_id = ?2
-         LIMIT 1",
-        kind.table_name()
-    );
-    connection
-        .query_row(&sql, params![agent_id, evidence_id], |row| {
-            Ok(EvidencePayloadRow {
-                payload_json: row.get(0)?,
-            })
-        })
-        .optional()
-        .map_err(Into::into)
 }
 
 pub(crate) fn context_work_item_by_id_on(
@@ -10084,4 +8988,8 @@ impl EvidenceRepository<'_> {
             super::input_evidence_writes::acknowledge_input_evidence_tx(tx, scope, actual, &facts)
         })
     }
+}
+
+pub(crate) fn upsert_turn_record_tx(tx: &Transaction<'_>, record: &TurnRecord) -> Result<()> {
+    holon_storage::turn::upsert_turn_record_tx(tx, record, &super::conversation::REVISION_WRITES)
 }

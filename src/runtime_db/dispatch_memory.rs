@@ -30,56 +30,8 @@ use super::{
     work_snapshot::WorkWriteProof,
 };
 
-pub(crate) const DISPATCH_MEMORY_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS dispatch_memory_checkpoints (
-  agent_id TEXT NOT NULL,
-  identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation > 0),
-  turn_id TEXT NOT NULL,
-  source_message_id TEXT NOT NULL,
-  turn_index INTEGER NOT NULL CHECK(turn_index > 0),
-  state TEXT NOT NULL CHECK(state IN ('started', 'pending', 'done')),
-  seed_digest TEXT NOT NULL CHECK(length(seed_digest) = 64),
-  record_digest TEXT NOT NULL CHECK(length(record_digest) = 64),
-  payload_json TEXT NOT NULL,
-  PRIMARY KEY(agent_id, identity_incarnation, turn_id)
-);
-CREATE TABLE IF NOT EXISTS dispatch_memory_legacy_dispatches (
-  agent_id TEXT NOT NULL,
-  identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation > 0),
-  turn_id TEXT NOT NULL,
-  source_message_id TEXT NOT NULL,
-  turn_index INTEGER NOT NULL CHECK(turn_index > 0),
-  PRIMARY KEY(agent_id, identity_incarnation, turn_id)
-);
-CREATE TABLE IF NOT EXISTS dispatch_memory_retired_handoffs (
-  agent_id TEXT NOT NULL,
-  identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation > 0),
-  turn_id TEXT NOT NULL,
-  source_message_id TEXT NOT NULL,
-  turn_index INTEGER NOT NULL CHECK(turn_index > 0),
-  seed_digest TEXT NOT NULL CHECK(length(seed_digest) = 64),
-  checkpoint_digest TEXT NOT NULL CHECK(length(checkpoint_digest) = 64),
-  control_command_id TEXT NOT NULL,
-  control_digest TEXT NOT NULL CHECK(length(control_digest) = 64),
-  run_id TEXT NOT NULL,
-  runtime_lease_id TEXT NOT NULL,
-  record_digest TEXT NOT NULL CHECK(length(record_digest) = 64),
-  payload_json TEXT NOT NULL,
-  PRIMARY KEY(agent_id, identity_incarnation, turn_id)
-);
-CREATE TABLE IF NOT EXISTS dispatch_memory_auto_commands (
-  command_nonce TEXT PRIMARY KEY CHECK(length(command_nonce) > 0),
-  base_command_digest TEXT NOT NULL CHECK(length(base_command_digest) = 64),
-  final_command_digest TEXT NOT NULL CHECK(length(final_command_digest) = 64),
-  metadata_digest TEXT NOT NULL CHECK(length(metadata_digest) = 64),
-  payload_json TEXT NOT NULL
-);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_dispatch_memory_one_unfinished
-  ON dispatch_memory_checkpoints(agent_id, identity_incarnation) WHERE state != 'done';
-CREATE INDEX IF NOT EXISTS idx_dispatch_memory_unfinished
-  ON dispatch_memory_checkpoints(agent_id, identity_incarnation, turn_index, turn_id)
-  WHERE state != 'done';
-"#;
+#[cfg(test)]
+pub(crate) use holon_storage::schema::DISPATCH_MEMORY_SCHEMA;
 
 const MAX_METADATA_BYTES: usize = 64 * 1024 * 1024;
 

@@ -12,11 +12,14 @@ test-support = []
 
 [dependencies]
 anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+schemars = "0.9"
 holon-domain = { version = "0.1.0", path = "../holon-domain" }
 r2d2 = "0.8.10"
 rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+sha2 = "0.10"
 thiserror = "2.0"
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-util = "0.7"
