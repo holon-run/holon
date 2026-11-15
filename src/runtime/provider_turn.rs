@@ -342,7 +342,7 @@ fn markdown_image_messages_from_sections_with_material(
                     media_type: read_image.visual_reference.mime,
                     data_base64: match material {
                         Some(material) => {
-                            crate::provider::ProviderImageData::encode(&read_image.bytes, material)?
+                            crate::provider::encode_image(&read_image.bytes, material)?
                         }
                         None => base64::engine::general_purpose::STANDARD
                             .encode(read_image.bytes)

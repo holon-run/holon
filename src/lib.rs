@@ -16,7 +16,7 @@
 pub mod agent_memory;
 pub mod agent_template;
 pub mod agents_md;
-mod auth;
+use holon_provider::auth;
 pub mod authentication;
 pub mod avatar;
 mod callbacks;
@@ -82,7 +82,7 @@ pub mod tool;
 pub mod tui;
 mod tui_markdown;
 pub mod types;
-mod utf8;
+use holon_system::utf8;
 mod wake_contract;
 pub mod web;
 pub mod work_item_plan;

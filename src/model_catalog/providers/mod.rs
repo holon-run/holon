@@ -8,11 +8,10 @@ mod core;
 mod gateways;
 #[cfg(test)]
 mod hosted;
+#[cfg(test)]
 mod tencent_tokenhub;
 #[cfg(test)]
 mod typesafe;
-
-pub(crate) use tencent_tokenhub::is_tencent_tokenhub_model_id;
 
 #[cfg(test)]
 pub(super) fn entries_for_registration(

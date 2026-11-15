@@ -2,9 +2,8 @@
 pub(crate) use holon_domain::model_values::ProviderCatalogRegistration;
 
 pub(crate) use holon_domain::model_values::{
-    provider_definition, provider_definitions, ModelDiscoveryAuth, ModelDiscoveryDecoder,
-    ModelDiscoveryDefinition, ModelDiscoveryRoute, ProviderCatalogPolicy,
-    ProviderContextManagement, ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
+    provider_definition, provider_definitions, ProviderCatalogPolicy, ProviderContextManagement,
+    ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 
 #[cfg(holon_lib_test_shard = "c")]

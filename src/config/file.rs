@@ -411,10 +411,6 @@ pub struct ProviderPlanConfigFile {
     pub endpoint: Option<ProviderEndpointId>,
 }
 
-pub(crate) fn default_true() -> bool {
-    true
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AgentTemplatesConfigFile {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]

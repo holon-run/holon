@@ -1,13 +1,21 @@
 use super::*;
+use crate::config::{ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind};
+use crate::provider::http_trace::ProviderHttpTrace;
+use crate::provider::retry::invalid_response_error;
 use crate::{
     config::StateMemoryLimits,
     diagnostics::resource_io::ResourceReadMaterial,
-    provider::{material::tests::response, ProviderRequestMaterial},
+    provider::{runtime_material::tests::response, ProviderRequestMaterial},
     runtime::{
         input_evidence_budget::InputEvidenceBudgetLedger,
         resident_input_evidence::InputEvidenceScope,
     },
 };
+use anyhow::Result;
+use holon_provider::provider::transports::openai::images::*;
+use reqwest::Client;
+use serde_json::json;
+use std::sync::Arc;
 
 fn scope() -> InputEvidenceScope {
     InputEvidenceScope {
@@ -23,26 +31,28 @@ async fn generated_image_public_error_keeps_material_and_typed_classification() 
     let material = ProviderRequestMaterial::scoped(source.clone());
     let (url, server) = response(b"{invalid JSON", "application/json").await?;
     let home = tempfile::tempdir()?;
-    let provider = OpenAiChatCompletionsProvider {
-        transport: ChatProvider::new(
-            Client::new(),
-            ChatCompletionsConfig {
-                base_url: url,
-                api_key: None,
-                model: "gpt-image-2".into(),
-                max_output_tokens: 128,
-                max_output_tokens_parameter: "max_tokens",
-                context_window_tokens: None,
-                reasoning_effort: None,
-            },
-        ),
-        request_headers: Default::default(),
-        provider_id: "openai".into(),
-        route_provider: "openai".into(),
-        quota_identity: None,
-        trace_home_dir: home.path().into(),
-        continuation: Default::default(),
+    let runtime = ProviderRuntimeConfig {
+        id: ProviderId::openai(),
+        route_provider: ProviderId::openai(),
+        route_endpoint: ProviderEndpointId::default_endpoint(),
+        transport: ProviderTransportKind::OpenAiChatCompletions,
+        base_url: url,
+        auth: Default::default(),
+        headers: Default::default(),
+        credential: None,
+        credential_store_path: None,
+        codex_home: None,
+        originator: None,
+        reasoning_effort: None,
+        context_management: Default::default(),
+        builtin_web_search: None,
     };
+    let provider = OpenAiChatCompletionsProvider::from_runtime_config(
+        &runtime,
+        "gpt-image-2",
+        128,
+        home.path(),
+    )?;
     let error = provider
         .generate_image(ProviderGenerateImageRequest {
             prompt: "image".into(),

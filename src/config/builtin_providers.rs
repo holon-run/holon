@@ -718,9 +718,10 @@ pub(crate) fn resolve_provider_registry(
             .or_else(|| stored_config.providers.get(&provider.route_provider))
         {
             provider.headers = effective_provider_headers(config, &provider.route_endpoint)?;
-            provider
-                .headers
-                .validate_for_provider(&provider.route_provider)?;
+            provider_headers::validate_headers_for_provider(
+                &provider.headers,
+                &provider.route_provider,
+            )?;
         }
         if provider.credential.is_none() {
             provider.credential =

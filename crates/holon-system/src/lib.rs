@@ -3,7 +3,9 @@ pub mod file_location;
 pub mod host_local_policy;
 pub mod local;
 pub mod process;
+pub mod resource_material;
 pub mod types;
+pub mod utf8;
 pub mod workspace;
 
 pub use file::FileHost;

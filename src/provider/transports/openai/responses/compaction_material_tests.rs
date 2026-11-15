@@ -1,15 +1,26 @@
-use super::super::plan::plan_openai_responses_request;
 use super::*;
 use crate::{
     config::StateMemoryLimits,
     diagnostics::resource_io::ResourceReadMaterial,
-    provider::{material::tests::response, ProviderRequestMaterial},
+    provider::{runtime_material::tests::response, ProviderRequestMaterial},
     runtime::{
         input_evidence_budget::InputEvidenceBudgetLedger,
         resident_input_evidence::InputEvidenceScope,
     },
     token_estimate::estimate_json_tokens,
 };
+use anyhow::Result;
+use holon_provider::provider::transports::openai::{
+    continuation::*,
+    responses::{
+        compaction::*, continuation::*, parse::parse_openai_response_with_transport_state,
+        plan::plan_openai_responses_request,
+    },
+    OpenAiCompactionPolicy, OpenAiResponsesContinuationContract,
+};
+use reqwest::Client;
+use serde_json::{json, Value};
+use std::sync::{Arc, Mutex};
 
 fn scope() -> InputEvidenceScope {
     InputEvidenceScope {
@@ -70,7 +81,7 @@ fn continuation_snapshot_and_candidate_borrow_original_material_until_last_holde
     let request = request(material.clone());
     let state = Arc::new(Mutex::new(OpenAiContinuationState::default()));
     let plan = plan(body(), &request, &state, true)?;
-    let parsed = super::super::parse::parse_openai_response_with_transport_state(json!({
+    let parsed = parse_openai_response_with_transport_state(json!({
         "id":"response-1","output":[{"type":"message","role":"assistant",
             "content":[{"type":"output_text","text":"answer"}]}]
     }))?;

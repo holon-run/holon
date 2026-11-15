@@ -1,0 +1,1108 @@
+use anyhow::{anyhow, Result};
+use async_trait::async_trait;
+use holon_domain::{Citation, PromptStability, TokenUsage, ToolError, ToolSpec};
+use serde::{Deserialize, Serialize};
+use serde_json::Value;
+use sha2::{Digest, Sha256};
+use thiserror::Error;
+
+use crate::config::ModelRouteRef;
+
+pub mod budget;
+pub mod fallback;
+pub mod http_trace;
+pub mod image_delivery;
+pub mod image_generation;
+pub mod material;
+pub mod quota;
+mod request_headers;
+pub mod retry;
+pub mod test_support;
+pub mod tool_schema;
+pub mod transports;
+mod wire_fingerprint;
+pub use http_trace::ProviderHttpTraceDiagnostics;
+pub use material::ProviderRequestMaterial;
+pub use request_headers::ProviderSessionId;
+#[cfg(any(test, feature = "runtime-tests"))]
+pub use retry::provider_max_attempts;
+pub use retry::{sanitize_transport_url, sanitized_provider_error};
+#[cfg(any(test, feature = "runtime-tests"))]
+pub use tool_schema::validate_emitted_tool_schema;
+#[cfg(any(test, feature = "runtime-tests"))]
+pub use transports::{build_openai_input, build_openai_responses_request, parse_openai_response};
+pub use transports::{is_dispatch_guard_rejected, OpenAiBearerAuth};
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ContinuationScopeId(String);
+
+impl ContinuationScopeId {
+    pub fn new(value: impl Into<String>) -> Option<Self> {
+        let value = value.into();
+        (!value.trim().is_empty()).then_some(Self(value))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+pub trait ProviderDispatchGuard: Send + Sync + std::fmt::Debug {
+    fn before_dispatch(&self) -> anyhow::Result<()>;
+
+    /// Declare that the next dispatch's contract rejection is
+    /// adapter-correctable in-turn: the adapter either replays the same
+    /// inference without the rejected continuation form or skips the rejected
+    /// auxiliary probe. Such a rejection must not cool down or consume the
+    /// candidate: the corrected send still targets the same candidate.
+    fn declare_adapter_correctable_dispatch(&self) {}
+
+    /// Declare that the next dispatch's auth rejection is adapter-correctable
+    /// in-turn: the adapter refreshes the credential and resends the same
+    /// inference. Such a rejection must not cool down or consume the
+    /// candidate: the corrected send still targets the same candidate.
+    fn declare_auth_refreshable_dispatch(&self) {}
+
+    /// Settle a complete HTTP result before an adapter retries or compacts.
+    /// `None` is a successful auxiliary response, not a usable model response.
+    fn after_request(
+        &self,
+        _result: std::result::Result<Option<&ProviderTurnResponse>, &anyhow::Error>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn allows_auxiliary_dispatch(&self) -> anyhow::Result<bool> {
+        Ok(true)
+    }
+
+    fn after_response(&self, result: &anyhow::Result<ProviderTurnResponse>) -> anyhow::Result<()> {
+        self.after_request(result.as_ref().map(Some))
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderTurnRequest {
+    pub dispatch_guard: Option<std::sync::Arc<dyn ProviderDispatchGuard>>,
+    pub material: ProviderRequestMaterial,
+    pub continuation_scope_id: Option<ContinuationScopeId>,
+    pub provider_session_id: Option<ProviderSessionId>,
+    pub prompt_frame: ProviderPromptFrame,
+    pub conversation: Vec<ConversationMessage>,
+    pub tools: Vec<ToolSpec>,
+    pub native_web_search: Option<ProviderNativeWebSearchRequest>,
+    pub response_format: Option<ProviderResponseFormatRequest>,
+}
+
+impl ProviderTurnRequest {
+    pub fn plain(
+        system_prompt: impl Into<String>,
+        conversation: Vec<ConversationMessage>,
+        tools: Vec<ToolSpec>,
+    ) -> Self {
+        Self {
+            dispatch_guard: None,
+            material: Default::default(),
+            continuation_scope_id: None,
+            provider_session_id: None,
+            prompt_frame: ProviderPromptFrame::plain(system_prompt),
+            conversation,
+            tools,
+            native_web_search: None,
+            response_format: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderTurnResponse {
+    pub material: ProviderRequestMaterial,
+    pub blocks: Vec<ModelBlock>,
+    pub stop_reason: Option<String>,
+    pub input_tokens: u64,
+    pub output_tokens: u64,
+    pub cache_usage: Option<ProviderCacheUsage>,
+    pub provider_message_id: Option<String>,
+    pub provider_request_id: Option<String>,
+    pub request_diagnostics: Option<ProviderRequestDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProviderGenerateImageRequest {
+    pub prompt: String,
+    pub size: Option<String>,
+    pub aspect_ratio: Option<String>,
+    pub resolution: Option<String>,
+    pub background: Option<String>,
+    pub output_format: Option<String>,
+    #[serde(skip)]
+    pub material: ProviderRequestMaterial,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderGeneratedImage {
+    pub bytes: tokio_util::bytes::Bytes,
+    pub mime: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderGenerateImageResponse {
+    pub provider: String,
+    pub model: String,
+    pub images: Vec<ProviderGeneratedImage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderPromptFrame {
+    pub system_prompt: String,
+    pub system_blocks: Vec<PromptContentBlock>,
+    pub context_blocks: Vec<PromptContentBlock>,
+    pub cache: Option<ProviderPromptCache>,
+}
+
+impl ProviderPromptFrame {
+    pub fn structured(
+        system_prompt: impl Into<String>,
+        system_blocks: Vec<PromptContentBlock>,
+        context_blocks: Vec<PromptContentBlock>,
+        cache: Option<ProviderPromptCache>,
+    ) -> Self {
+        Self {
+            system_prompt: system_prompt.into(),
+            system_blocks,
+            context_blocks,
+            cache,
+        }
+    }
+
+    pub fn plain(system_prompt: impl Into<String>) -> Self {
+        Self {
+            system_prompt: system_prompt.into(),
+            system_blocks: Vec::new(),
+            context_blocks: Vec::new(),
+            cache: None,
+        }
+    }
+
+    pub fn has_structured_system_blocks(&self) -> bool {
+        !self.system_blocks.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PromptContentBlock {
+    pub text: String,
+    pub stability: PromptStability,
+    #[serde(default)]
+    pub cache_breakpoint: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderPromptCache {
+    pub agent_id: String,
+    pub prompt_cache_key: String,
+    pub context_fingerprint: String,
+    pub compression_epoch: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderCacheUsage {
+    #[serde(default)]
+    pub read_input_tokens: u64,
+    #[serde(default)]
+    pub creation_input_tokens: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderRequestDiagnostics {
+    pub request_lowering_mode: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_transport: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_dialect: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_cache: Option<AnthropicPromptCacheDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anthropic_context_management: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_request_controls: Option<ProviderOpenAiRequestControlsDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incremental_continuation: Option<ProviderIncrementalContinuationDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openai_remote_compaction: Option<ProviderOpenAiRemoteCompactionDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_web_search: Option<ProviderNativeWebSearchDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_format: Option<ProviderResponseFormatDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stable_prefix: Option<ProviderStablePrefixDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_timeline: Option<ProviderTransportTimeline>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderTransportTimeline {
+    pub request_started_at: chrono::DateTime<chrono::Utc>,
+    pub response_headers_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub response_body_completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub parse_completed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default)]
+    pub streaming: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderStablePrefixDiagnostics {
+    pub schema_version: u32,
+    pub algorithm: String,
+    pub full_request_fingerprint: String,
+    pub stable_prefix_fingerprint: String,
+    pub history_prefix_items: usize,
+    pub dynamic_tail_items: usize,
+    pub components: Vec<ProviderStablePrefixComponentDiagnostics>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderStablePrefixComponentDiagnostics {
+    pub name: String,
+    pub fingerprint: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub item_count: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderNativeWebSearchKind {
+    OpenAi,
+    Anthropic,
+    DeepSeek,
+    Gemini,
+    Xai,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderNativeWebSearchRequest {
+    pub kind: ProviderNativeWebSearchKind,
+    pub provider_id: String,
+    pub provider_model_ref: String,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderNativeWebSearchDiagnostics {
+    pub kind: ProviderNativeWebSearchKind,
+    pub provider_id: String,
+    pub provider_model_ref: String,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
+    pub lowered: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ProviderResponseFormatRequest {
+    JsonSchema(ProviderJsonSchemaResponseFormat),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderJsonSchemaResponseFormat {
+    pub name: String,
+    pub schema: Value,
+    pub strict: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderResponseFormatDiagnostics {
+    pub requested: bool,
+    pub lowered: bool,
+    pub format_type: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub schema_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderBuiltinWebSearchCapability {
+    pub kind: ProviderNativeWebSearchKind,
+    pub provider_id: String,
+    pub provider_model_ref: String,
+    pub provider_transport: String,
+    pub provider_base_url: String,
+    pub advertised_tool_type: String,
+    pub backend_kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AnthropicPromptCacheDiagnostics {
+    #[serde(default)]
+    pub cache_strategy: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub explicit_cache_control_enabled: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_control_source: Option<crate::model_catalog::AnthropicCacheControlSource>,
+    #[serde(default)]
+    pub betas: Vec<String>,
+    pub tools_count: usize,
+    pub tools_hash: String,
+    pub system_hash: String,
+    pub system_block_count: usize,
+    pub estimated_system_tokens: u64,
+    pub context_hash_by_stability: std::collections::BTreeMap<String, String>,
+    pub conversation_message_count: usize,
+    pub conversation_content_block_count: usize,
+    #[serde(default)]
+    pub system_cache_control_count: usize,
+    #[serde(default)]
+    pub message_cache_control_count: usize,
+    #[serde(default)]
+    pub rolling_marker_lag_messages: usize,
+    #[serde(default)]
+    pub rolling_marker_at_tail: bool,
+    /// Retained for persisted diagnostics and older readers; new requests have no tail blocks.
+    #[serde(default)]
+    pub turn_scoped_context_tail_blocks: usize,
+    /// TurnScoped context blocks re-attached before conversation history.
+    #[serde(default)]
+    pub turn_scoped_context_prefix_blocks: usize,
+    pub cache_breakpoints: Vec<CacheBreakpointInfo>,
+    pub tokens_before_last_breakpoint: u64,
+    pub tokens_after_last_breakpoint: u64,
+    pub automatic_cache_control_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheBreakpointInfo {
+    pub location: String,
+    pub provider_payload_path: String,
+    pub block_kind: String,
+    pub stability: String,
+    pub estimated_prefix_tokens: u64,
+    pub content_hash: String,
+    pub canonical_prefix_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderIncrementalContinuationDiagnostics {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_side_context_may_be_lost: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub incremental_input_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub full_input_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_prefix_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_mismatch_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_item_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_type: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_item_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_item_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_shape_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub first_mismatch_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mismatch_kind: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderOpenAiRequestControlsDiagnostics {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub served_service_tier: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verbosity: Option<String>,
+    pub reasoning_sent: bool,
+    pub include_reasoning_encrypted_content: bool,
+    pub max_output_tokens_sent: bool,
+    pub max_output_tokens_unsupported: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderOpenAiRemoteCompactionDiagnostics {
+    pub status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_reason: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compaction_items: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub latest_compaction_index: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub estimated_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trigger_input_tokens: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content_hashes: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encrypted_content_bytes: Option<Vec<usize>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_shape_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_generation: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderContextManagementPolicy {
+    pub provider: String,
+    pub strategy: String,
+    pub keep_recent_tool_uses: usize,
+    pub trigger_input_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clear_at_least_input_tokens: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderPromptCapability {
+    FullRequestOnly,
+    PromptCacheKey,
+    PromptCacheBlocks,
+    IncrementalResponses,
+    ContextManagement,
+}
+
+mod image_data;
+pub use image_data::ProviderImageData;
+
+#[derive(Debug, Clone)]
+pub enum ConversationMessage {
+    UserText(String),
+    UserBlocks(Vec<PromptContentBlock>),
+    UserImage {
+        prompt: String,
+        media_type: String,
+        data_base64: ProviderImageData,
+        /// Only runtime-classified historical attachments may be omitted on overflow.
+        optional_history: bool,
+    },
+    AssistantBlocks(Vec<ModelBlock>),
+    UserToolResults(Vec<ToolResultBlock>),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ModelBlock {
+    Text {
+        text: String,
+    },
+    Citations {
+        citations: Vec<Citation>,
+    },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+        #[serde(default)]
+        kind: ModelToolCallKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_data: Option<ProviderBlockData>,
+    },
+    /// A tool call executed by the model provider rather than by Holon.
+    ///
+    /// Provider-owned tool blocks are retained for audit and compatible
+    /// conversation replay, but must never be dispatched as managed tools or
+    /// rendered as assistant prose.
+    ProviderToolUse {
+        id: String,
+        name: String,
+        input: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_data: Option<ProviderBlockData>,
+    },
+    /// A result produced by a provider-owned tool.
+    ProviderToolResult {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        tool_use_id: Option<String>,
+        content: Value,
+        #[serde(default)]
+        is_error: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        status: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        provider_data: Option<ProviderBlockData>,
+    },
+    Thinking {
+        text: String,
+        /// Opaque signature returned by the provider (e.g. DeepSeek V4 Pro).
+        /// Must be passed back verbatim in subsequent requests.
+        signature: String,
+    },
+    ReasoningText {
+        /// Plain provider reasoning that must be replayed as reasoning, never
+        /// rendered as user-visible assistant text.
+        text: String,
+    },
+    RedactedThinking {
+        /// Opaque encrypted/redacted thinking payload returned by the provider.
+        /// Must be passed back verbatim in subsequent requests.
+        data: String,
+    },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderBlockData {
+    pub format: String,
+    pub payload: Value,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelToolCallKind {
+    #[default]
+    Function,
+    Custom,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolResultBlock {
+    pub tool_use_id: String,
+    pub content: String,
+    pub is_error: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<ToolError>,
+}
+
+/// Sentinel content for tool_results synthesized over tool_use calls that
+/// never completed before a turn ended; providers requiring
+/// tool_use/tool_result pairing would otherwise reject the conversation.
+pub const INCOMPLETE_TOOL_RESULT_SENTINEL: &str =
+    "[tool result unavailable: turn ended before completion]";
+
+impl ToolResultBlock {
+    /// Synthesized failed result for a tool_use call that never completed.
+    pub fn incomplete(tool_use_id: impl Into<String>) -> Self {
+        Self {
+            tool_use_id: tool_use_id.into(),
+            content: INCOMPLETE_TOOL_RESULT_SENTINEL.to_string(),
+            is_error: true,
+            error: None,
+        }
+    }
+}
+
+#[async_trait]
+pub trait AgentProvider: Send + Sync {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse>;
+
+    fn quota_identity(&self) -> Option<ProviderQuotaIdentity> {
+        None
+    }
+
+    fn select_model_lineage(
+        &self,
+        _model_ref: &ModelRouteRef,
+    ) -> Option<std::sync::Arc<dyn AgentProvider>> {
+        None
+    }
+
+    async fn generate_image(
+        &self,
+        _request: ProviderGenerateImageRequest,
+    ) -> Result<ProviderGenerateImageResponse> {
+        Err(anyhow!("active provider does not support image generation"))
+    }
+
+    fn prompt_capabilities(&self) -> Vec<ProviderPromptCapability> {
+        vec![ProviderPromptCapability::FullRequestOnly]
+    }
+
+    fn supports_freeform_grammar_tools(&self) -> bool {
+        false
+    }
+
+    fn prompt_tool_specs(&self, tools: &[ToolSpec]) -> Vec<ToolSpec> {
+        if self.supports_freeform_grammar_tools() {
+            return tools.to_vec();
+        }
+
+        tools
+            .iter()
+            .cloned()
+            .map(|mut tool| {
+                tool.freeform_grammar = None;
+                tool
+            })
+            .collect()
+    }
+
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        None
+    }
+
+    async fn probe_builtin_web_search(
+        &self,
+        _request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        Err(anyhow!(
+            "active provider does not support builtin web search probing"
+        ))
+    }
+
+    fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
+        self.builtin_web_search().map(|capability| capability.kind)
+    }
+
+    fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
+        None
+    }
+
+    fn resolved_image_input_support(&self) -> Option<bool> {
+        None
+    }
+
+    async fn complete_turn_with_diagnostics(
+        &self,
+        request: ProviderTurnRequest,
+    ) -> Result<(ProviderTurnResponse, Option<ProviderAttemptTimeline>)> {
+        self.complete_turn(request)
+            .await
+            .map(|response| (response, None))
+    }
+
+    #[cfg(any(test, feature = "runtime-tests"))]
+    fn configured_model_refs(&self) -> Vec<String> {
+        Vec::new()
+    }
+}
+
+pub fn builtin_web_search_probe_turn_request(
+    native_web_search: ProviderNativeWebSearchRequest,
+) -> ProviderTurnRequest {
+    ProviderTurnRequest {
+        dispatch_guard: None,
+        material: Default::default(),
+        continuation_scope_id: None,
+        provider_session_id: None,
+        prompt_frame: ProviderPromptFrame::plain("Reply with exactly OK."),
+        conversation: vec![ConversationMessage::UserText(
+            "Reply with exactly OK.".into(),
+        )],
+        tools: Vec::new(),
+        native_web_search: Some(native_web_search),
+        response_format: None,
+    }
+}
+
+#[derive(Clone)]
+pub struct StubProvider {
+    reply: String,
+}
+
+impl StubProvider {
+    pub fn new(reply: impl Into<String>) -> Self {
+        Self {
+            reply: reply.into(),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentProvider for StubProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Ok(ProviderTurnResponse {
+            material: Default::default(),
+            blocks: vec![ModelBlock::Text {
+                text: self.reply.clone(),
+            }],
+            stop_reason: None,
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_usage: None,
+            provider_message_id: None,
+            provider_request_id: None,
+            request_diagnostics: None,
+        })
+    }
+
+    #[cfg(any(test, feature = "runtime-tests"))]
+    fn configured_model_refs(&self) -> Vec<String> {
+        vec!["stub".into()]
+    }
+}
+
+pub struct BootstrapProvider;
+
+#[async_trait]
+impl AgentProvider for BootstrapProvider {
+    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        Err(anyhow!(
+            "model provider is not configured; complete onboarding before running an agent turn"
+        ))
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAttemptOutcome {
+    Retrying,
+    RetriesExhausted,
+    FailFastAborted,
+    Succeeded,
+}
+
+impl ProviderAttemptOutcome {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Retrying => "retrying",
+            Self::RetriesExhausted => "retries_exhausted",
+            Self::FailFastAborted => "fail_fast_aborted",
+            Self::Succeeded => "succeeded",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderFallbackDisposition {
+    Immediate,
+    Deferred,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderAttemptRecord {
+    pub provider: String,
+    pub model_ref: String,
+    pub attempt: usize,
+    pub max_attempts: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub duration_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub failure_kind: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disposition: Option<String>,
+    pub outcome: ProviderAttemptOutcome,
+    pub advanced_to_fallback: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backoff_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token_usage: Option<TokenUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cache_usage: Option<ProviderCacheUsage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_message_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_request_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_http_trace_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_diagnostics: Option<ProviderTransportDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_timeline: Option<ProviderTransportTimeline>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderAttemptTimeline {
+    pub attempts: Vec<ProviderAttemptRecord>,
+    #[serde(default)]
+    pub requested_model_ref: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub winning_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_fallback_model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_fallback_disposition: Option<ProviderFallbackDisposition>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub aggregated_token_usage: Option<TokenUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderTransportDiagnostics {
+    pub stage: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub streaming: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reqwest: Option<ReqwestTransportDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_budget: Option<ProviderContextBudgetDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_trace: Option<ProviderHttpTraceDiagnostics>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quota_identity: Option<ProviderQuotaIdentity>,
+    /// Absolute server Retry-After deadline, independent of quota throttling.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after_not_before: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub throttle: Option<ProviderThrottleMetadata>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderThrottleKind {
+    Transient,
+    HardQuota,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderThrottleReason {
+    RateLimited,
+    BigmodelWeeklyMonthlyQuota,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderThrottleHintSource {
+    RetryAfter,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderThrottleMetadata {
+    pub kind: ProviderThrottleKind,
+    pub reason: ProviderThrottleReason,
+    pub observed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub not_before: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hint_source: Option<ProviderThrottleHintSource>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderQuotaIdentityConfidence {
+    Exact,
+    Coarse,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct ProviderQuotaIdentity {
+    pub scope: String,
+    pub confidence: ProviderQuotaIdentityConfidence,
+}
+
+impl ProviderQuotaIdentity {
+    pub fn for_api_credential(config: &crate::config::ProviderRuntimeConfig) -> Option<Self> {
+        use crate::config::CredentialKind;
+
+        if !matches!(
+            config.auth.kind,
+            CredentialKind::ApiKey | CredentialKind::BearerToken | CredentialKind::SessionToken
+        ) {
+            return None;
+        }
+        let credential = config
+            .credential
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())?;
+        // Credential equality is not proof of an account-wide quota identity.
+        // Keep this fallback endpoint-scoped and never persist credential bytes.
+        let material = serde_json::to_string(&(
+            config.route_provider.as_str(),
+            config.base_url.trim_end_matches('/'),
+            credential,
+        ))
+        .ok()?;
+        Some(Self::coarse("provider-api-credential", &material))
+    }
+
+    pub fn exact(namespace: &str, value: &str) -> Option<Self> {
+        Self::hashed(namespace, value, ProviderQuotaIdentityConfidence::Exact)
+    }
+
+    pub fn coarse(namespace: &str, value: &str) -> Self {
+        Self::hashed(namespace, value, ProviderQuotaIdentityConfidence::Coarse)
+            .expect("coarse quota identity namespace and value are non-empty")
+    }
+
+    fn hashed(
+        namespace: &str,
+        value: &str,
+        confidence: ProviderQuotaIdentityConfidence,
+    ) -> Option<Self> {
+        let namespace = namespace.trim();
+        let value = value.trim();
+        if namespace.is_empty() || value.is_empty() {
+            return None;
+        }
+
+        let mut hasher = Sha256::new();
+        hasher.update(namespace.as_bytes());
+        hasher.update([0]);
+        hasher.update(value.as_bytes());
+        Some(Self {
+            scope: format!("sha256:{:x}", hasher.finalize()),
+            confidence,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProviderContextBudgetDiagnostics {
+    pub estimated_input_tokens: usize,
+    /// Non-image JSON estimate, including tool schemas and image envelopes.
+    #[serde(default)]
+    pub estimated_text_tokens: usize,
+    /// Heuristic admission reserve, not a billing token count.
+    #[serde(default)]
+    pub image_reserve_tokens: usize,
+    #[serde(default)]
+    pub image_count: usize,
+    /// Base64 payload lengths only; excludes data URL prefixes and remote URLs.
+    #[serde(default)]
+    pub inline_image_base64_bytes: usize,
+    /// Length-only estimate without decoding or validating the base64 payloads.
+    #[serde(default)]
+    pub estimated_inline_image_decoded_bytes: usize,
+    pub requested_output_tokens: usize,
+    pub safety_headroom_tokens: usize,
+    pub required_tokens: usize,
+    pub context_window_tokens: usize,
+    pub overflow_tokens: usize,
+    pub suggestion: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReqwestTransportDiagnostics {
+    pub is_timeout: bool,
+    pub is_connect: bool,
+    pub is_request: bool,
+    pub is_body: bool,
+    pub is_decode: bool,
+    pub is_redirect: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<u16>,
+}
+
+#[derive(Debug, Error)]
+#[error("{message}")]
+struct ProviderTurnError {
+    message: String,
+    timeline: ProviderAttemptTimeline,
+}
+
+pub fn provider_attempt_timeline(error: &anyhow::Error) -> Option<&ProviderAttemptTimeline> {
+    error
+        .downcast_ref::<ProviderTurnError>()
+        .map(|error| &error.timeline)
+}
+
+pub fn provider_transport_diagnostics(
+    error: &anyhow::Error,
+) -> Option<&ProviderTransportDiagnostics> {
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.diagnostics.as_ref())
+        .or_else(|| {
+            provider_attempt_timeline(error).and_then(|timeline| {
+                timeline
+                    .attempts
+                    .iter()
+                    .rev()
+                    .find_map(|attempt| attempt.transport_diagnostics.as_ref())
+            })
+        })
+}
+
+pub fn provider_error_code(error: &anyhow::Error) -> Option<&str> {
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.code.as_deref())
+}
+
+pub fn provider_error_token_usage(error: &anyhow::Error) -> Option<&TokenUsage> {
+    error
+        .chain()
+        .find_map(|source| source.downcast_ref::<retry::ProviderTransportError>())
+        .and_then(|error| error.token_usage.as_ref())
+}
+
+pub fn provider_error_is_context_length_exceeded(error: &anyhow::Error) -> bool {
+    provider_error_code(error) == Some("context_length_exceeded")
+}
+
+pub fn provider_turn_error(
+    message: impl Into<String>,
+    timeline: ProviderAttemptTimeline,
+    source: anyhow::Error,
+) -> anyhow::Error {
+    source.context(ProviderTurnError {
+        message: message.into(),
+        timeline,
+    })
+}
+
+pub fn aggregate_attempt_token_usage(attempts: &[ProviderAttemptRecord]) -> Option<TokenUsage> {
+    let mut total_input_tokens = 0u64;
+    let mut total_output_tokens = 0u64;
+    let mut saw_usage = false;
+    for attempt in attempts {
+        if let Some(usage) = attempt.token_usage.as_ref() {
+            total_input_tokens = total_input_tokens.saturating_add(usage.input_tokens);
+            total_output_tokens = total_output_tokens.saturating_add(usage.output_tokens);
+            saw_usage = true;
+        }
+    }
+
+    saw_usage.then(|| TokenUsage::new(total_input_tokens, total_output_tokens))
+}
+
+pub use retry::{
+    classify_provider_error, provider_transport_error_with_code, ProviderFailureClassification,
+    ProviderFailureKind, ProviderTransportError, RetryDisposition,
+    PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
+    PROVIDER_RECOVERY_MAX_FALLBACKS,
+};
+
+pub use tool_schema::{emitted_tool_json_schema, ToolSchemaContract};

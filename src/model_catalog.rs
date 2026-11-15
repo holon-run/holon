@@ -23,11 +23,12 @@ use metadata_selection::{
 
 use holon_domain::model_values::default_agent_turn_capability;
 pub use holon_domain::model_values::{
-    AnthropicCacheControlSource, DecisionProtocol, EndpointModelPolicy, ModelCapabilityFlags,
-    ModelIntrinsicCapabilities, ModelMetadataConstraint, ModelMetadataConstraintKind,
-    ModelMetadataConstraintSource, ModelMetadataEvidence, ModelMetadataField, ModelMetadataOrigin,
-    ModelMetadataSource, ModelModality, ModelParameterSupport, ModelReasoningCapability,
-    ModelVerbosity, ResolvedAnthropicCachePolicy, ResolvedRuntimeModelPolicy,
+    AnthropicCacheControlSource, BuiltInModelMetadata, DecisionProtocol, EndpointModelPolicy,
+    ModelCapabilityFlags, ModelIntrinsicCapabilities, ModelMetadataConstraint,
+    ModelMetadataConstraintKind, ModelMetadataConstraintSource, ModelMetadataEvidence,
+    ModelMetadataField, ModelMetadataOrigin, ModelMetadataSource, ModelModality,
+    ModelParameterSupport, ModelReasoningCapability, ModelVerbosity, ResolvedAnthropicCachePolicy,
+    ResolvedRuntimeModelPolicy,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -274,36 +275,6 @@ struct BuiltInModelRouteDefinition {
     model_ref: ModelRef,
     endpoint: ProviderEndpointId,
     policy: BuiltInModelRoutePolicy,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct BuiltInModelMetadata {
-    pub model_ref: ModelRef,
-    pub display_name: String,
-    pub description: String,
-    #[serde(default)]
-    pub context_window_tokens: Option<usize>,
-    #[serde(default = "default_effective_context_window_percent")]
-    pub effective_context_window_percent: u8,
-    #[serde(default)]
-    pub auto_compact_token_limit: Option<usize>,
-    #[serde(default)]
-    pub default_max_output_tokens: Option<u32>,
-    #[serde(default)]
-    pub max_output_tokens_upper_limit: Option<u32>,
-    #[serde(default)]
-    pub default_verbosity: Option<ModelVerbosity>,
-    #[serde(default)]
-    pub tool_output_truncation_estimated_tokens: Option<usize>,
-    #[serde(default)]
-    pub capabilities: ModelCapabilityFlags,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub reasoning_effort_options: Vec<String>,
-    pub source: ModelMetadataSource,
-    /// Non-default endpoint this model belongs to under its canonical provider.
-    /// When `None`, the model uses the provider's default endpoint.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub endpoint: Option<ProviderEndpointId>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -1556,10 +1527,6 @@ fn apply_route_capability_constraint(
     }
 }
 
-fn default_effective_context_window_percent() -> u8 {
-    DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT
-}
-
 fn validated_percent(percent: u8) -> u8 {
     percent.clamp(1, 100)
 }
@@ -1690,8 +1657,6 @@ mod providers;
 mod snapshot;
 #[cfg(test)]
 use providers::common::catalog_model;
-
-pub(crate) use providers::is_tencent_tokenhub_model_id;
 
 #[cfg(test)]
 fn built_in_entries() -> Vec<BuiltInModelMetadata> {

@@ -1,15 +1,20 @@
 use super::*;
+use crate::config::{ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind};
 use crate::{
     config::StateMemoryLimits,
     diagnostics::resource_io::ResourceReadMaterial,
-    provider::{
-        material::tests::response, ProviderImageData, ProviderPromptFrame, ProviderRequestMaterial,
-    },
+    provider::{runtime_material::tests::response, ProviderPromptFrame, ProviderRequestMaterial},
     runtime::{
         input_evidence_budget::InputEvidenceBudgetLedger,
         resident_input_evidence::InputEvidenceScope,
     },
 };
+use anyhow::Result;
+use holon_provider::provider::transports::anthropic::{
+    apply_stream_delta, classify_anthropic_sse_parse_error, AnthropicStreamAccumulator,
+    AnthropicStreamDelta, ApiResponseBlock, SseParser,
+};
+use serde_json::{json, Value};
 use std::sync::Arc;
 
 fn scope() -> InputEvidenceScope {
@@ -53,26 +58,24 @@ async fn anthropic_json_and_sse_keep_image_acquisition_through_last_result() -> 
         )
         .await?;
         let home = tempfile::tempdir()?;
-        let provider = AnthropicProvider {
-            client: Client::new(),
-            request_headers: Default::default(),
-            route_provider: "anthropic".into(),
-            route_endpoint: "default".into(),
+        let runtime = ProviderRuntimeConfig {
+            id: ProviderId::anthropic(),
+            route_provider: ProviderId::anthropic(),
+            route_endpoint: ProviderEndpointId::default_endpoint(),
+            transport: ProviderTransportKind::AnthropicMessages,
             base_url: url,
-            auth_token: None,
-            quota_identity: None,
-            model: "test".into(),
-            max_output_tokens: 128,
-            context_window_tokens: None,
+            auth: Default::default(),
+            headers: Default::default(),
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
             reasoning_effort: None,
-            supports_reasoning: false,
             context_management: Default::default(),
-            cache_control_source: None,
-            model_route: "anthropic@default/test".into(),
             builtin_web_search: None,
-            trace_home_dir: home.path().into(),
-            http_trace_override: None,
         };
+        let provider =
+            AnthropicProvider::from_runtime_config(&runtime, "test", 128, home.path(), false)?;
         let request = ProviderTurnRequest {
             dispatch_guard: None,
             provider_session_id: None,
@@ -82,7 +85,7 @@ async fn anthropic_json_and_sse_keep_image_acquisition_through_last_result() -> 
             conversation: vec![ConversationMessage::UserImage {
                 prompt: "image".into(),
                 media_type: "image/png".into(),
-                data_base64: ProviderImageData::encode(b"abc", &source)?,
+                data_base64: crate::provider::encode_image(b"abc", &source)?,
                 optional_history: false,
             }],
             tools: vec![],
@@ -141,14 +144,8 @@ fn anthropic_sse_pending_and_sparse_cells_admit_exactly_before_growth() -> Resul
                 64 + records - deny_records,
             )?;
             let material = ProviderRequestMaterial::scoped(source.clone());
-            let mut parser = SseParser {
-                material: material.clone(),
-                ..Default::default()
-            };
-            let mut accumulator = AnthropicStreamAccumulator {
-                material: material.clone(),
-                ..Default::default()
-            };
+            let mut parser = SseParser::with_material(material.clone());
+            let mut accumulator = AnthropicStreamAccumulator::with_material(material.clone());
             let result = if sparse {
                 accumulator.ensure_content_index(2)
             } else {
@@ -158,7 +155,7 @@ fn anthropic_sse_pending_and_sparse_cells_admit_exactly_before_growth() -> Resul
                 result?;
                 assert_eq!(source.finish()?, (initial + bytes, 64 + records));
                 assert_eq!(
-                    (parser.buffer.len(), accumulator.content.len()),
+                    (parser.buffered_bytes(), accumulator.content.len()),
                     if sparse { (0, 3) } else { (3, 0) }
                 );
             } else {
@@ -170,7 +167,7 @@ fn anthropic_sse_pending_and_sparse_cells_admit_exactly_before_growth() -> Resul
                 assert!(error
                     .downcast_ref::<crate::provider::retry::ProviderTransportError>()
                     .is_none());
-                assert_eq!((parser.buffer.len(), accumulator.content.len()), (0, 0));
+                assert_eq!((parser.buffered_bytes(), accumulator.content.len()), (0, 0));
                 assert!(source.finish().is_err());
             }
             drop((parser, accumulator, material, source));
@@ -185,14 +182,8 @@ fn anthropic_sse_split_utf8_and_tool_json_preserve_protocol() -> Result<()> {
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let source = ResourceReadMaterial::new(&ledger, &scope())?;
     let material = ProviderRequestMaterial::scoped(source.clone());
-    let mut parser = SseParser {
-        material: material.clone(),
-        ..Default::default()
-    };
-    let mut accumulator = AnthropicStreamAccumulator {
-        material: material.clone(),
-        ..Default::default()
-    };
+    let mut parser = SseParser::with_material(material.clone());
+    let mut accumulator = AnthropicStreamAccumulator::with_material(material.clone());
     let events = [
         json!({"type":"message_start","message":{"content":[]}}),
         json!({"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool","name":"test","input":{}}}),

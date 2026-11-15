@@ -1,6 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
+pub mod tencent_tokenhub;
+
 use anyhow::{anyhow, Context, Result};
 use serde::{de::Error as _, Deserialize, Deserializer, Serialize, Serializer};
 
@@ -809,6 +811,40 @@ pub fn default_compaction_trigger_estimated_tokens(prompt_budget: usize) -> usiz
 
 pub fn default_compaction_keep_recent_estimated_tokens(trigger_budget: usize) -> usize {
     trigger_budget.saturating_mul(38) / 100
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BuiltInModelMetadata {
+    pub model_ref: ModelRef,
+    pub display_name: String,
+    pub description: String,
+    #[serde(default)]
+    pub context_window_tokens: Option<usize>,
+    #[serde(default = "default_effective_context_window_percent")]
+    pub effective_context_window_percent: u8,
+    #[serde(default)]
+    pub auto_compact_token_limit: Option<usize>,
+    #[serde(default)]
+    pub default_max_output_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_output_tokens_upper_limit: Option<u32>,
+    #[serde(default)]
+    pub default_verbosity: Option<ModelVerbosity>,
+    #[serde(default)]
+    pub tool_output_truncation_estimated_tokens: Option<usize>,
+    #[serde(default)]
+    pub capabilities: ModelCapabilityFlags,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reasoning_effort_options: Vec<String>,
+    pub source: ModelMetadataSource,
+    /// Non-default endpoint this model belongs to under its canonical provider.
+    /// When `None`, the model uses the provider's default endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub endpoint: Option<ProviderEndpointId>,
+}
+
+fn default_effective_context_window_percent() -> u8 {
+    DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

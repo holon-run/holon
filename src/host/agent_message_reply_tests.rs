@@ -10,18 +10,21 @@ struct ReplyGateProvider {
     recover: bool,
 }
 
+#[derive(Clone)]
+struct SharedReplyGateProvider(Arc<ReplyGateProvider>);
+
 #[async_trait]
-impl AgentProvider for Arc<ReplyGateProvider> {
+impl AgentProvider for SharedReplyGateProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
-        if !self.first.swap(true, Ordering::SeqCst) {
-            self.started.notify_one();
-            self.release.notified().await;
-            if self.recover {
+        if !self.0.first.swap(true, Ordering::SeqCst) {
+            self.0.started.notify_one();
+            self.0.release.notified().await;
+            if self.0.recover {
                 return crate::runtime::tests::support::DeferredFallbackProvider
                     .complete_turn(request)
                     .await;
             }
-            if self.wait {
+            if self.0.wait {
                 return Ok(ProviderTurnResponse {
 material: Default::default(),
                     blocks: vec![crate::provider::ModelBlock::ToolUse {
@@ -43,11 +46,11 @@ material: Default::default(),
                     request_diagnostics: None,
                 });
             }
-        } else if self.recover {
-            self.recovery_started.notify_one();
-            self.recovery_release.notified().await;
+        } else if self.0.recover {
+            self.0.recovery_started.notify_one();
+            self.0.recovery_release.notified().await;
         }
-        StubProvider::new(self.answer).complete_turn(request).await
+        StubProvider::new(self.0.answer).complete_turn(request).await
     }
 
     fn select_model_lineage(
@@ -101,7 +104,7 @@ async fn reply_gate_recovery_fixture(
         wait,
         recover,
     });
-    let host = RuntimeHost::new_with_provider(config, Arc::new(provider.clone())).unwrap();
+    let host = RuntimeHost::new_with_provider(config, Arc::new(SharedReplyGateProvider(provider.clone()))).unwrap();
     let parent = host.default_runtime().await.unwrap();
     parent
         .agent_creation_service()

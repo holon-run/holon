@@ -4,6 +4,7 @@ use crate::config::{
     AppConfig, CredentialKind, CredentialSource, CredentialStoreFile, ProviderEndpointConfigFile,
     ProviderPlanConfigFile, ProviderTransportKind,
 };
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 
 fn headers(pairs: &[(&str, &str)]) -> ProviderHeaders {
@@ -106,20 +107,16 @@ fn provider_headers_reject_invalid_input_without_exposing_values() {
 }
 
 #[test]
-fn provider_headers_reserve_transport_owned_headers_but_allow_user_agent() {
-    for name in RESERVED_HEADERS {
-        assert!(ProviderHeaders::new([(name.to_uppercase(), "not-disclosed".into())]).is_err());
-    }
-    assert!(ProviderHeaders::new([("User-Agent".into(), "custom-client".into())]).is_ok());
+fn provider_headers_reserve_opencode_go_session_across_aliases() {
     let session = headers(&[("x-opencode-session", "custom-session")]);
     for id in ["opencode-go", "opencode-go-messages"] {
-        assert!(session
-            .validate_for_provider(&ProviderId::parse(id).unwrap())
-            .is_err());
+        assert!(validate_headers_for_provider(&session, &ProviderId::parse(id).unwrap()).is_err());
     }
-    session
-        .validate_for_provider(&ProviderId::parse("custom-go-compatible").unwrap())
-        .unwrap();
+    validate_headers_for_provider(
+        &session,
+        &ProviderId::parse("custom-go-compatible").unwrap(),
+    )
+    .unwrap();
 }
 
 #[test]

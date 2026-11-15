@@ -1822,7 +1822,8 @@ impl RuntimeHandle {
                 crate::provider::ProviderRequestMaterial::scoped(self.context_resource_material()?);
         }
         anyhow::ensure!(
-            request.material.matches_runtime(
+            crate::provider::material_matches_runtime(
+                &request.material,
                 &self.inner.input_evidence_budget,
                 self.inner.mutation_owner.agent_id(),
                 self.inner.identity_incarnation,

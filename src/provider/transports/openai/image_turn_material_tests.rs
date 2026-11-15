@@ -2,12 +2,17 @@ use super::*;
 use crate::{
     config::StateMemoryLimits,
     diagnostics::resource_io::ResourceReadMaterial,
-    provider::{material::tests::response, ProviderImageData, ProviderRequestMaterial},
+    provider::{runtime_material::tests::response, ProviderRequestMaterial},
     runtime::{
         input_evidence_budget::InputEvidenceBudgetLedger,
         resident_input_evidence::InputEvidenceScope,
     },
 };
+use anyhow::Result;
+use holon_provider::provider::transports::openai::{chat, responses::send::*};
+use reqwest::Client;
+use serde_json::json;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn image_turn_http_body_and_response_share_explicit_acquisition() -> Result<()> {
@@ -19,7 +24,7 @@ async fn image_turn_http_body_and_response_share_explicit_acquisition() -> Resul
         };
         let source = ResourceReadMaterial::new(&ledger, &scope)?;
         let material = ProviderRequestMaterial::scoped(source.clone());
-        let encoded = ProviderImageData::encode(b"abc", &source)?;
+        let encoded = crate::provider::encode_image(b"abc", &source)?;
         let url = encoded.data_url("image/png")?;
         assert_eq!(url, "data:image/png;base64,YWJj");
         let request = json!({"model":"test","input":[{"image_url":url}]});

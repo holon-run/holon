@@ -17,9 +17,8 @@ mod providers;
 #[cfg(test)]
 pub(crate) use providers::ProviderCatalogRegistration;
 pub(crate) use providers::{
-    provider_definition, provider_definitions, ModelDiscoveryAuth, ModelDiscoveryDecoder,
-    ModelDiscoveryDefinition, ModelDiscoveryRoute, ProviderCatalogPolicy,
-    ProviderContextManagement, ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
+    provider_definition, provider_definitions, ProviderCatalogPolicy, ProviderContextManagement,
+    ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
 };
 
 type ProviderBuilder = fn(&Path, &ResolvedModelRoute) -> Result<Arc<dyn AgentProvider>>;

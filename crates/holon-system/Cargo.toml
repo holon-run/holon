@@ -10,6 +10,7 @@ readme = "README.md"
 [dependencies]
 anyhow = "1.0"
 async-trait = "0.1"
+encoding_rs = "0.8"
 fs2 = "0.4"
 holon-domain = { version = "0.1.0", path = "../holon-domain" }
 percent-encoding = "2.3"
@@ -24,5 +25,6 @@ tokio = { version = "1.43", features = ["fs", "io-util", "process", "rt", "sync"
 libc = "0.2"
 
 [dev-dependencies]
+proptest = "1.6"
 tempfile = "3.14"
 tokio = { version = "1.43", features = ["macros"] }
