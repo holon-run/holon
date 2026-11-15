@@ -535,29 +535,7 @@ fn state_projection_access_error(
     agent_id: &str,
     error: PublicAgentError,
 ) -> (StatusCode, Json<Value>) {
-    use crate::runtime::mutation_owner::MutationOwnerError;
-
-    if let PublicAgentError::Runtime(error) = &error {
-        if let Some(MutationOwnerError::NeedsReconcile(key)) =
-            error.downcast_ref::<MutationOwnerError>()
-        {
-            warn!(
-                agent_id,
-                affected_agent_id = %key.agent_id,
-                identity_incarnation = key.identity_incarnation,
-                "State projection awaiting mutation reconciliation"
-            );
-            let mut envelope = HttpErrorEnvelope::new(
-                "agent_reconciliation_pending",
-                "agent state is temporarily unavailable while a mutation is reconciled",
-            )
-            .hint("retry the state read")
-            .retryable(true);
-            envelope.domain = Some(RuntimeErrorDomain::Runtime);
-            return http_error(StatusCode::SERVICE_UNAVAILABLE, envelope);
-        }
-    }
-    agent_access_error(error)
+    agent_read_access_error(agent_id, AgentReadSurface::State, error)
 }
 
 fn slim_state_agent_runtime_dto(

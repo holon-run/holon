@@ -64,7 +64,7 @@ pub async fn events(
         })
         .await
         .map_err(error_response)?
-        .map_err(agent_access_error)?;
+        .map_err(|error| agent_read_access_error(&agent_id, AgentReadSurface::EventPage, error))?;
     let first = page.events().next().map(|event| event.event_seq);
     let last = page.events().next_back().map(|event| event.event_seq);
     let (oldest_seq, newest_seq) = match order {

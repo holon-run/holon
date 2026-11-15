@@ -2146,6 +2146,53 @@ pub(crate) fn stopped_agent_conflict(
     )
 }
 
+#[derive(Clone, Copy)]
+enum AgentReadSurface {
+    State,
+    EventPage,
+}
+
+fn agent_read_access_error(
+    agent_id: &str,
+    surface: AgentReadSurface,
+    error: PublicAgentError,
+) -> (StatusCode, Json<Value>) {
+    use crate::runtime::mutation_owner::MutationOwnerError;
+
+    if let PublicAgentError::Runtime(error) = &error {
+        if let Some(MutationOwnerError::NeedsReconcile(key)) =
+            error.downcast_ref::<MutationOwnerError>()
+        {
+            let (read_surface, message, hint) = match surface {
+                AgentReadSurface::State => (
+                    "state",
+                    "agent state is temporarily unavailable while a mutation is reconciled",
+                    "retry the state read",
+                ),
+                AgentReadSurface::EventPage => (
+                    "events.page",
+                    "agent events are temporarily unavailable while a mutation is reconciled",
+                    "retry the event page read",
+                ),
+            };
+            warn!(
+                agent_id,
+                affected_agent_id = %key.agent_id,
+                identity_incarnation = key.identity_incarnation,
+                read_surface,
+                error_kind = "needs_reconcile",
+                "Agent read awaiting mutation reconciliation"
+            );
+            let mut envelope = HttpErrorEnvelope::new("agent_reconciliation_pending", message)
+                .hint(hint)
+                .retryable(true);
+            envelope.domain = Some(RuntimeErrorDomain::Runtime);
+            return http_error(StatusCode::SERVICE_UNAVAILABLE, envelope);
+        }
+    }
+    agent_access_error(error)
+}
+
 pub(crate) fn agent_access_error(error: PublicAgentError) -> (StatusCode, Json<Value>) {
     match error {
         PublicAgentError::Private { agent_id } => {
@@ -2436,6 +2483,9 @@ mod subagent_observability_tests;
 
 #[cfg(test)]
 mod tests {
+    #[cfg(holon_lib_test_shard = "c")]
+    mod events_reconciliation;
+
     use super::{
         add_retry_after_to_service_unavailable, auth_error_code, auth_required,
         authenticate_session, error_response, if_none_match_satisfied, origin_guard_allows,

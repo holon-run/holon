@@ -254,6 +254,8 @@ struct Publication {
 #[derive(Debug, Default)]
 struct MutationOwnerSlot {
     reservation: Arc<AsyncMutex<()>>,
+    #[cfg(test)]
+    reservation_waiting: tokio::sync::Notify,
     publication: Mutex<Publication>,
     // Load/store only after validating epoch and fence under publication.
     root: ArcSwapOption<PostureObservation>,
@@ -665,13 +667,31 @@ impl MutationOwner {
     }
 
     pub(crate) async fn reserve(&self) -> Result<MutationReservation, MutationOwnerError> {
-        let guard = self.slot.reservation.clone().lock_owned().await;
+        let acquire = self.slot.reservation.clone().lock_owned();
+        #[cfg(test)]
+        let acquire = async {
+            tokio::pin!(acquire);
+            std::future::poll_fn(|cx| {
+                let result = std::future::Future::poll(acquire.as_mut(), cx);
+                if result.is_pending() {
+                    self.slot.reservation_waiting.notify_one();
+                }
+                result
+            })
+            .await
+        };
+        let guard = acquire.await;
         self.validate_epoch()?;
         Ok(MutationReservation {
             owner: self.clone(),
             _guard: guard,
             ticket: None,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn wait_for_reservation_waiter_for_test(&self) {
+        self.slot.reservation_waiting.notified().await;
     }
 
     fn validate_epoch(&self) -> Result<(), MutationOwnerError> {
