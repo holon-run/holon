@@ -1243,6 +1243,18 @@ clear the physical run while retaining an unfinished Turn and binding; this
 does not erase the dispatch-memory address or prevent an original command from
 recording a deferred obligation. Deferred revalidates the original whole-Posture
 Start receipt inside its business transaction before recording that obligation.
+
+When no execution binding is present but `State.current_turn_id` still points
+at a Turn, lookup classifies that residual pointer instead of assuming a
+missing binding. WorkItem completion cleanup may retire the physical run and
+binding while the historical pointer survives and the next dispatch's
+committed `turn_index` allocation advances the State index past it. Such a
+pointer names a completed execution only when the Turn belongs to this agent,
+is already terminal, sits at or below the current State index, and no run
+remains. An unfinished Turn, a future Turn address, a foreign agent's Turn, or
+a live run without a binding still fails closed, and the diagnostic names the
+residual Turn and both indexes so the failure stays locatable.
+
 Lookup and Deferred do not prove that a producer ended, authorize Finish,
 revive a physical run, or permit a new dispatch. Those transitions retain their
 own original-transaction checks.

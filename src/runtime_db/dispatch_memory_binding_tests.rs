@@ -1188,6 +1188,158 @@ fn original_turn_binding_survives_cleared_current_fields_but_does_not_authorize_
     })?;
     Ok(())
 }
+
+fn residual_terminal_state(f: &Fixture) -> Result<AgentState> {
+    f.db.transitions_in_scope(&f.scope)
+        .commit_prepared_transition(&terminal(&f, "finish-original")?)?;
+    let mut residual = state(&f)?;
+    // The #4154 completion boundary: the physical run is retired and the
+    // execution binding cleared, while the historical current_turn_id
+    // pointer to the completed Turn stays behind.
+    residual.current_execution_binding = None;
+    assert_eq!(residual.current_run_id, None);
+    assert_eq!(
+        residual.current_turn_id,
+        Some(f.start.key.actual_dispatch_turn_id.clone())
+    );
+    f.db.agent_states().upsert_for_fixture(&residual)?;
+    Ok(residual)
+}
+
+#[test]
+fn terminal_residual_pointer_with_advanced_state_index_is_not_a_missing_binding() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let residual = residual_terminal_state(&f)?;
+    // Same-index residual stays the ordinary post-terminal shape...
+    f.db.transaction(|tx| {
+        assert!(load_dispatch_memory_binding_tx(tx, &f.scope, &residual)?.is_none());
+        validate_new_dispatch_tx(tx, &f.scope)?;
+        Ok(())
+    })?;
+    // ...and the next dispatch's committed turn_index allocation may already
+    // have advanced the State index past the residual pointer. That is a
+    // completed execution plus a fresh dispatch, not a missing binding.
+    for advanced in [residual.turn_index + 1, residual.turn_index + 3] {
+        let mut next = residual.clone();
+        next.turn_index = advanced;
+        f.db.agent_states().upsert_for_fixture(&next)?;
+        f.db.transaction(|tx| {
+            assert!(
+                load_dispatch_memory_binding_tx(tx, &f.scope, &next)?.is_none(),
+                "advanced State index {advanced} must classify as no binding"
+            );
+            Ok(())
+        })?;
+    }
+    // The next dispatch may already claim its own physical run before input
+    // publication, so a State run different from the residual Turn's own run
+    // stays a completed execution plus a fresh dispatch claim (#4154).
+    for advanced in [residual.turn_index + 1, residual.turn_index + 3] {
+        let mut next = residual.clone();
+        next.turn_index = advanced;
+        next.current_run_id = Some("run:next-dispatch-claim".into());
+        f.db.agent_states().upsert_for_fixture(&next)?;
+        f.db.transaction(|tx| {
+            assert!(
+                load_dispatch_memory_binding_tx(tx, &f.scope, &next)?.is_none(),
+                "fresh claim run at State index {advanced} must classify as no binding"
+            );
+            Ok(())
+        })?;
+    }
+    Ok(())
+}
+
+#[test]
+fn unfinished_residual_turn_with_advanced_state_index_still_fails_closed() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let mut cleared = state(&f)?;
+    cleared.current_execution_binding = None;
+    cleared.current_run_id = None;
+    cleared.turn_index += 1;
+    f.db.agent_states().upsert_for_fixture(&cleared)?;
+    f.db.transaction(|tx| {
+        let error = load_dispatch_memory_binding_tx(tx, &f.scope, &cleared).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(
+            text.contains("actual started dispatch has no execution binding"),
+            "{text}"
+        );
+        assert!(text.contains(f.start.key.actual_dispatch_turn_id.as_str()));
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn future_residual_turn_pointer_still_fails_closed() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let residual = residual_terminal_state(&f)?;
+    let mut behind = residual.clone();
+    behind.turn_index = residual.turn_index - 1;
+    f.db.agent_states().upsert_for_fixture(&behind)?;
+    f.db.transaction(|tx| {
+        assert!(load_dispatch_memory_binding_tx(tx, &f.scope, &behind).is_err());
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn live_run_owned_by_residual_pointer_still_fails_closed() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let residual = residual_terminal_state(&f)?;
+    let mut active = residual.clone();
+    // The live State run still equals the residual Turn's own run: nothing
+    // proves a fresh dispatch, so the guard stays fail-closed.
+    active.current_run_id = Some("run:dispatch-memory".into());
+    active.turn_index += 1;
+    f.db.agent_states().upsert_for_fixture(&active)?;
+    f.db.transaction(|tx| {
+        let error = load_dispatch_memory_binding_tx(tx, &f.scope, &active).unwrap_err();
+        let text = format!("{error:#}");
+        assert!(text.contains("run:dispatch-memory"), "{text}");
+        Ok(())
+    })?;
+    Ok(())
+}
+
+#[test]
+fn foreign_residual_terminal_turn_pointer_still_fails_closed() -> Result<()> {
+    let f = Fixture::new(true)?;
+    let residual = residual_terminal_state(&f)?;
+    let mut foreign = residual.clone();
+    foreign.current_turn_id = Some("turn:another-agent".into());
+    foreign.turn_index += 1;
+    f.db.agent_states().upsert_for_fixture(&foreign)?;
+    f.db.transaction(|tx| {
+        let mut identity = AgentIdentityRecord::new(
+            "another-agent",
+            AgentKind::Named,
+            AgentVisibility::Public,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        );
+        identity.created_at = f.at;
+        identity.updated_at = f.at;
+        upsert_agent_identity_tx(tx, &identity)?;
+        let mut turn = TurnRecord::new("another-agent", "turn:another-agent", 2);
+        turn.created_at = f.at;
+        turn.terminal = Some(TurnTerminalSummary {
+            kind: TurnTerminalKind::Completed,
+            reason: None,
+            no_brief_reason: None,
+            completed_at: f.at,
+            duration_ms: 1,
+        });
+        upsert_turn_record_tx(tx, &turn)?;
+        assert!(load_dispatch_memory_binding_tx(tx, &f.scope, &foreign).is_err());
+        Ok(())
+    })?;
+    Ok(())
+}
 #[test]
 fn new_actual_queue_claim_is_blocked_before_sql_while_start_receipt_replay_is_legal() -> Result<()>
 {

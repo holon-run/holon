@@ -527,6 +527,70 @@ async fn p1_issue_3669_real_task_rejoin_restart_keeps_source_and_delivers_once()
 }
 
 #[tokio::test(start_paused = true)]
+async fn p1_issue_4154_completion_boundary_residual_pointer_admits_next_result_once() {
+    let (harness, provider, message_id, source) =
+        interrupted_result(TaskKind::CommandTask, false, true, true).await;
+    let runtime = harness.runtime();
+    // The helper returns a pre-terminal snapshot; re-read the completed Turn
+    // so the residual-pointer scenario starts from the real terminal state.
+    let source = runtime
+        .storage()
+        .read_turn_by_id(&source.turn_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        source.terminal.as_ref().unwrap().kind,
+        TurnTerminalKind::Interrupted
+    );
+    // #4154 production shape after the WorkItem completion boundary: the
+    // previous Turn is already terminal, the physical run and execution
+    // binding are retired, but the historical current_turn_id pointer
+    // survived, and the next dispatch's committed turn_index allocation
+    // already advanced the State index past it. The dispatch-memory binding
+    // guard must classify this as a completed execution plus a fresh
+    // dispatch, not a missing execution binding.
+    runtime
+        .update_agent_state(|state| {
+            state.current_execution_binding = None;
+            state.current_run_id = None;
+            state.current_turn_id = Some(source.turn_id.clone());
+            state.turn_index = source.turn_index + 1;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    let scheduled = claim_model_input(runtime).await;
+    assert_eq!(scheduled.message.id, message_id);
+    process_result_batch(runtime, scheduled).await;
+    let delivered = runtime.storage().read_recent_turns(1).unwrap().remove(0);
+    assert_ne!(delivered.turn_id, source.turn_id);
+    let settlement = runtime
+        .runtime_db()
+        .task_result_settlements()
+        .latest_for_message(&message_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        settlement.disposition,
+        Some(crate::runtime_db::TaskResultSettlementDisposition::ModelDelivered)
+    );
+    assert_eq!(provider.requests.lock().await.len(), 1);
+    // A successful next dispatch must never rewrite the previous Turn's
+    // terminal, and the recovered result must not deliver twice.
+    let preserved = runtime
+        .storage()
+        .read_turn_by_id(&source.turn_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        preserved.terminal.unwrap().kind,
+        TurnTerminalKind::Interrupted
+    );
+    assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
+    assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[tokio::test(start_paused = true)]
 async fn issue_3484_consumed_task_result_keeps_backlog_live_across_restart() {
     use crate::runtime_db::task_result_settlement::TaskResultSettlementState;
     use crate::runtime_db::TaskResultSettlementDisposition;
