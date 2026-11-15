@@ -3,13 +3,13 @@ mod oauth_timeout_tests;
 
 use super::{
     build_images_request, build_openai_codex_image_generation_request,
-    build_openai_responses_request, chat_completions_url, choose_openai_codex_credential,
-    consume_openai_sse_event, incremental_diagnostics, latest_openai_compaction_index,
-    native_web_search_diagnostics, openai_codex_coarse_quota_identity,
-    openai_codex_conversation_headers, openai_codex_headers, openai_codex_session_headers,
-    openai_codex_user_agent, openai_compaction_trigger_for_request_plan,
-    openai_compaction_trigger_for_window, openai_images_dialect,
-    openai_model_policy_for_runtime_config, openai_provider_window_compaction_candidate,
+    build_openai_responses_request, choose_openai_codex_credential, consume_openai_sse_event,
+    incremental_diagnostics, latest_openai_compaction_index, native_web_search_diagnostics,
+    openai_codex_coarse_quota_identity, openai_codex_conversation_headers, openai_codex_headers,
+    openai_codex_session_headers, openai_codex_user_agent,
+    openai_compaction_trigger_for_request_plan, openai_compaction_trigger_for_window,
+    openai_images_dialect, openai_model_policy_for_runtime_config,
+    openai_provider_window_compaction_candidate,
     parse_openai_codex_image_generation_response_items, parse_openai_images_response,
     plan_openai_responses_request, resolve_openai_codex_credential, CredentialStoreRefreshLock,
     OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
@@ -296,7 +296,10 @@ fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
     )
     .unwrap();
 
-    assert_eq!(provider.max_output_tokens, 200_000);
+    assert_eq!(
+        provider.transport.request_body(vec![], vec![], None)["max_tokens"],
+        200_000
+    );
 }
 
 #[tokio::test]
@@ -401,34 +404,6 @@ async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget(
     }
     handle.abort();
     handle.await.unwrap_err();
-}
-
-#[test]
-fn chat_completions_url_accepts_openai_compatible_base_urls() {
-    assert_eq!(
-        chat_completions_url("https://api.deepseek.com"),
-        "https://api.deepseek.com/v1/chat/completions"
-    );
-    assert_eq!(
-        chat_completions_url("https://openrouter.ai/api/v1"),
-        "https://openrouter.ai/api/v1/chat/completions"
-    );
-    assert_eq!(
-        chat_completions_url("https://qianfan.baidubce.com/v2"),
-        "https://qianfan.baidubce.com/v2/chat/completions"
-    );
-    assert_eq!(
-        chat_completions_url("https://ark.ap-southeast.bytepluses.com/api/v3"),
-        "https://ark.ap-southeast.bytepluses.com/api/v3/chat/completions"
-    );
-    assert_eq!(
-        chat_completions_url("https://api.z.ai/api/paas/v4"),
-        "https://api.z.ai/api/paas/v4/chat/completions"
-    );
-    assert_eq!(
-        chat_completions_url("https://proxy.example/chat/completions"),
-        "https://proxy.example/chat/completions"
-    );
 }
 
 #[tokio::test]
@@ -1415,7 +1390,7 @@ fn image_dialect_uses_canonical_provider_not_endpoint_display_id() {
     .unwrap();
     assert_eq!(chat.provider_id, "xai-alternate");
     assert_eq!(
-        openai_images_dialect(&chat.route_provider, &chat.base_url),
+        openai_images_dialect(&chat.route_provider, chat.transport.base_url()),
         OpenAiImagesDialect::Xai
     );
 }

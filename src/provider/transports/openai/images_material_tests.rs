@@ -24,19 +24,22 @@ async fn generated_image_public_error_keeps_material_and_typed_classification() 
     let (url, server) = response(b"{invalid JSON", "application/json").await?;
     let home = tempfile::tempdir()?;
     let provider = OpenAiChatCompletionsProvider {
-        client: Client::new(),
+        transport: ChatProvider::new(
+            Client::new(),
+            ChatCompletionsConfig {
+                base_url: url,
+                api_key: None,
+                model: "gpt-image-2".into(),
+                max_output_tokens: 128,
+                max_output_tokens_parameter: "max_tokens",
+                context_window_tokens: None,
+                reasoning_effort: None,
+            },
+        ),
         request_headers: Default::default(),
         provider_id: "openai".into(),
         route_provider: "openai".into(),
-        base_url: url,
-        api_key: None,
         quota_identity: None,
-        model: "gpt-image-2".into(),
-        max_output_tokens: 128,
-        max_output_tokens_parameter: "max_tokens",
-        context_window_tokens: None,
-        reasoning_effort: None,
-        service_tier: None,
         trace_home_dir: home.path().into(),
         continuation: Default::default(),
     };

@@ -14,6 +14,8 @@ use std::{collections::BTreeMap, fmt, time::Duration};
 use thiserror::Error;
 
 #[cfg(feature = "openai-compatible")]
+pub mod chat_completions;
+#[cfg(feature = "openai-compatible")]
 mod openai_compatible;
 
 #[cfg(feature = "openai-compatible")]

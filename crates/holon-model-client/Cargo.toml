@@ -1,6 +1,6 @@
 [package]
 name = "holon-model-client"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Provider-neutral model client contracts with an OpenAI-compatible transport"
 license = "Apache-2.0"

@@ -6,6 +6,8 @@ mod send;
 pub(crate) use parse::{accumulate_chat_completion_stream_events, parse_chat_completion_response};
 #[cfg(test)]
 pub(crate) use plan::build_chat_completion_messages;
+pub(super) use plan::build_chat_completion_parts;
+#[cfg(test)]
 pub(crate) use plan::build_chat_completion_request;
 pub(super) use plan::plan_chat_completion_request;
 pub(super) use send::send_chat_completion_request_with_material;

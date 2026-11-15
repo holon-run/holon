@@ -5,6 +5,14 @@ use super::parse::{
     accumulate_chat_completion_stream_events, process_chat_completion_sse_event,
     ChatCompletionSseEvent,
 };
+use crate::provider::ProviderRequestMaterial;
+use chrono::DateTime;
+#[cfg(test)]
+use holon_provider::openai_chat::complete_chat_request;
+use holon_provider::openai_chat::{
+    classify_error, ChatCompletionTarget, ChatCompletionsTransport, ChatFailureKind,
+};
+use reqwest::{Body, RequestBuilder};
 
 #[cfg(test)]
 pub(crate) async fn send_chat_completion_request(
@@ -15,84 +23,120 @@ pub(crate) async fn send_chat_completion_request(
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &ProviderRequestMaterial,
 ) -> Result<ParsedOpenAiResponse> {
-    send_chat_completion_request_with_material(
-        client,
-        url,
-        body,
-        headers,
+    let transport = RuntimeChatTransport {
         trace,
         agent_id,
         dispatch_guard,
-        &Default::default(),
-    )
-    .await
+        material,
+    };
+    transport.settle(complete_chat_request(client, &url, body, headers, &transport).await)
 }
 
 pub(crate) async fn send_chat_completion_request_with_material(
-    client: &Client,
-    url: String,
+    provider: &ChatProvider,
     body: Value,
     headers: Vec<(&str, String)>,
     trace: Option<&ProviderHttpTrace>,
     agent_id: Option<&str>,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
-    material: &crate::provider::ProviderRequestMaterial,
+    material: &ProviderRequestMaterial,
 ) -> Result<ParsedOpenAiResponse> {
-    let result: Result<ParsedOpenAiResponse> = async {
-        let model_ref = provider_model_ref("openai", &body);
-        let request_trace = trace
+    let transport = RuntimeChatTransport {
+        trace,
+        agent_id,
+        dispatch_guard,
+        material,
+    };
+    transport.settle(provider.complete(body, headers, &transport).await)
+}
+
+struct RuntimeChatTransport<'a> {
+    trace: Option<&'a ProviderHttpTrace>,
+    agent_id: Option<&'a str>,
+    dispatch_guard: Option<&'a dyn ProviderDispatchGuard>,
+    material: &'a ProviderRequestMaterial,
+}
+
+impl RuntimeChatTransport<'_> {
+    fn settle(&self, result: Result<ParsedOpenAiResponse>) -> Result<ParsedOpenAiResponse> {
+        if let Some(guard) = self.dispatch_guard {
+            guard.after_request(result.as_ref().map(|parsed| Some(&parsed.response)))?;
+        }
+        result
+    }
+}
+
+#[async_trait]
+impl ChatCompletionsTransport for RuntimeChatTransport<'_> {
+    type Trace = Option<ProviderHttpTraceRequest>;
+    type Output = ParsedOpenAiResponse;
+
+    fn begin_request(
+        &self,
+        target: &ChatCompletionTarget<'_>,
+        headers: &[(&str, String)],
+        body: &Value,
+    ) -> Result<Self::Trace> {
+        Ok(self
+            .trace
             .map(|trace| {
                 trace.begin_request_with_material(
-                    agent_id,
+                    self.agent_id,
                     "openai",
-                    Some(&model_ref),
-                    url.as_str(),
+                    Some(target.model_ref),
+                    target.url,
                     "chat_completions",
-                    &headers,
-                    &body,
-                    material,
+                    headers,
+                    body,
+                    self.material,
                 )
             })
             .transpose()?
-            .flatten();
-        let mut request = client.post(&url).header("content-type", "application/json");
-        for (name, value) in headers {
-            request = request.header(name, value);
-        }
+            .flatten())
+    }
 
-        let request_started_at = chrono::Utc::now();
+    fn request_body(&self, body: &Value) -> Result<Body> {
+        Ok(self.material.json_bytes(body)?.into())
+    }
+
+    async fn send(
+        &self,
+        request: RequestBuilder,
+        target: &ChatCompletionTarget<'_>,
+        trace: &Self::Trace,
+        request_started_at: DateTime<Utc>,
+    ) -> Result<Self::Output> {
+        let material = self.material;
+        let request_trace = trace.as_ref();
         let response = send_openai_request(
-            request.body(material.json_bytes(&body)?),
+            request,
             "OpenAI Chat Completions request failed",
             "request_send",
             "openai",
-            Some(&model_ref),
-            Some(url.as_str()),
+            Some(target.model_ref),
+            Some(target.url),
             RequestDeadline::FullRequest,
-            request_trace.as_ref(),
-            dispatch_guard,
+            request_trace,
+            self.dispatch_guard,
         )
         .await?;
         let response_headers_at = chrono::Utc::now();
-        trace_response_headers(
-            request_trace.as_ref(),
-            response.status(),
-            response.headers(),
-        );
+        trace_response_headers(request_trace, response.status(), response.headers());
         let provider_request_id = provider_request_id_from_headers(response.headers());
 
         if !response.status().is_success() {
             let status = response.status();
             let retry_after = parse_retry_after(response.headers());
-            let body = read_error_response_body(response, request_trace.as_ref(), material).await?;
+            let body = read_error_response_body(response, request_trace, material).await?;
             return Err(classify_chat_completion_status_error(
                 "OpenAI Chat Completions request failed",
                 status,
                 body,
-                Some(&model_ref),
-                Some(url.as_str()),
-                request_trace.as_ref(),
+                Some(target.model_ref),
+                Some(target.url),
+                request_trace,
                 retry_after,
                 false,
             ));
@@ -112,10 +156,10 @@ pub(crate) async fn send_chat_completion_request_with_material(
                         "OpenAI Chat Completions response body failed",
                         "response_body",
                         "openai",
-                        Some(&model_ref),
-                        Some(url.as_str()),
+                        Some(target.model_ref),
+                        Some(target.url),
                         error,
-                        request_trace.as_ref(),
+                        request_trace,
                     ));
                 }
                 Err(_elapsed) => {
@@ -123,15 +167,15 @@ pub(crate) async fn send_chat_completion_request_with_material(
                         "OpenAI Chat Completions response body read timed out",
                         "response_body",
                         "openai",
-                        Some(&model_ref),
-                        Some(url.as_str()),
+                        Some(target.model_ref),
+                        Some(target.url),
                         format!("timed out after {:?}", response_body_timeout()),
-                        request_trace.as_ref(),
+                        request_trace,
                     ));
                 }
             };
         let response_body_completed_at = chrono::Utc::now();
-        trace_response_body(request_trace.as_ref(), &body);
+        trace_response_body(request_trace, &body);
 
         material.read(|| crate::diagnostics::resource_io::admit_json_payload(&body))?;
         let parsed: Value = serde_json::from_str(&body).map_err(|error| {
@@ -150,11 +194,6 @@ pub(crate) async fn send_chat_completion_request_with_material(
                 streaming: false,
             }))
     }
-    .await;
-    if let Some(guard) = dispatch_guard {
-        guard.after_request(result.as_ref().map(|parsed| Some(&parsed.response)))?;
-    }
-    result
 }
 
 fn classify_chat_completion_status_error(
@@ -242,64 +281,22 @@ fn classify_openai_chat_completion_error_with_streaming(
     let deterministic_error =
         is_known_deterministic_provider_error(detail.as_ref(), error.as_str());
 
-    let classification = match error_code {
-        Some("rate_limit_exceeded") | Some("rate_limit_exceeded_error") => {
-            ProviderFailureClassification {
-                kind: ProviderFailureKind::RateLimited,
-                disposition: RetryDisposition::Retryable,
-            }
-        }
-        Some("insufficient_quota") | Some("quota_exceeded") => ProviderFailureClassification {
-            kind: ProviderFailureKind::AuthError,
-            disposition: RetryDisposition::FailFast,
-        },
-        Some("invalid_api_key") | Some("invalid_authentication") => ProviderFailureClassification {
-            kind: ProviderFailureKind::AuthError,
-            disposition: RetryDisposition::FailFast,
-        },
-        Some("context_length_exceeded") | Some("max_tokens") => ProviderFailureClassification {
-            kind: ProviderFailureKind::ContractError,
-            disposition: RetryDisposition::FailFast,
-        },
-        Some("invalid_request_error") | Some("invalid_request") => ProviderFailureClassification {
-            kind: ProviderFailureKind::ContractError,
-            disposition: RetryDisposition::FailFast,
-        },
-        Some("server_error") | Some("service_unavailable") if !deterministic_error => {
-            ProviderFailureClassification {
-                kind: ProviderFailureKind::ServerError,
-                disposition: RetryDisposition::Retryable,
-            }
-        }
-        _ if error_type == "rate_limit_error" => ProviderFailureClassification {
+    let classification = match classify_error(error_code, error_type, deterministic_error) {
+        ChatFailureKind::RateLimited => ProviderFailureClassification {
             kind: ProviderFailureKind::RateLimited,
             disposition: RetryDisposition::Retryable,
         },
-        _ if deterministic_error => ProviderFailureClassification {
+        ChatFailureKind::AuthError => ProviderFailureClassification {
+            kind: ProviderFailureKind::AuthError,
+            disposition: RetryDisposition::FailFast,
+        },
+        ChatFailureKind::ContractError => ProviderFailureClassification {
             kind: ProviderFailureKind::ContractError,
             disposition: RetryDisposition::FailFast,
         },
-        _ => match error_type {
-            "rate_limit_error" => ProviderFailureClassification {
-                kind: ProviderFailureKind::RateLimited,
-                disposition: RetryDisposition::Retryable,
-            },
-            "invalid_request_error" => ProviderFailureClassification {
-                kind: ProviderFailureKind::ContractError,
-                disposition: RetryDisposition::FailFast,
-            },
-            "authentication_error" => ProviderFailureClassification {
-                kind: ProviderFailureKind::AuthError,
-                disposition: RetryDisposition::FailFast,
-            },
-            "server_error" => ProviderFailureClassification {
-                kind: ProviderFailureKind::ServerError,
-                disposition: RetryDisposition::Retryable,
-            },
-            _ => ProviderFailureClassification {
-                kind: ProviderFailureKind::ContractError,
-                disposition: RetryDisposition::FailFast,
-            },
+        ChatFailureKind::ServerError => ProviderFailureClassification {
+            kind: ProviderFailureKind::ServerError,
+            disposition: RetryDisposition::Retryable,
         },
     };
 
