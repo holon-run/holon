@@ -6250,7 +6250,8 @@ fn apply_agent_state_mutation_tx(
 pub(super) fn apply_work_item_mutation_with_source_revision_tx(
     tx: &Transaction<'_>,
     mutation: &WorkItemMutation,
-) -> Result<bool> {
+    scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+) -> Result<crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta> {
     validate_work_item_mutation_tx(tx, mutation)?;
     let mutations = std::slice::from_ref(mutation);
     let transition = execution_protocol_repository::synchronize_work_item_revisions_opt(
@@ -6269,9 +6270,8 @@ pub(super) fn apply_work_item_mutation_with_source_revision_tx(
         &[],
         &[],
     )?;
-    let applied = apply_work_item_mutation_tx(tx, mutation)?;
-    execution_protocol_repository::persist_execution_commands_tx(tx, prepared)?;
-    Ok(applied)
+    apply_work_item_mutation_tx(tx, mutation)?;
+    execution_protocol_repository::acknowledge_persisted_work_executions_tx(tx, prepared, scope)
 }
 
 pub(super) fn validate_work_item_mutation_tx(

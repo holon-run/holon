@@ -648,6 +648,54 @@ pub(crate) fn persist_execution_commands_with_touched_facts_tx(
     Ok((state, facts))
 }
 
+/// Persists the already validated commands, then qualifies only the WorkExecution
+/// rows this transaction actually changed. The readback is one row per ID.
+pub(super) fn acknowledge_persisted_work_executions_tx(
+    tx: &Transaction<'_>,
+    prepared: Option<PreparedExecutionProtocolCommands>,
+    scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+) -> Result<crate::runtime::resident_input_evidence::CommittedInputEvidenceDelta> {
+    use crate::runtime::resident_input_evidence::InputEvidenceFamily as Family;
+    use crate::runtime_db::input_evidence_snapshot::CanonicalInputEvidence as Fact;
+    let touched = prepared
+        .as_ref()
+        .map(|prepared| prepared.touched_keys.clone())
+        .unwrap_or_default();
+    let agent_id = prepared
+        .as_ref()
+        .map(|prepared| prepared.state.agent_id.clone());
+    persist_execution_commands_tx(tx, prepared)?;
+    let (Some(scope), Some(agent_id)) = (scope, agent_id.as_deref()) else {
+        return Ok(Default::default());
+    };
+    super::super::input_evidence_writes::validate_input_evidence_scope_tx(tx, scope, agent_id)?;
+    let mut facts = Vec::new();
+    for key in touched {
+        anyhow::ensure!(
+            key.family == Family::WorkExecution,
+            "timer source-revision ACK cannot omit a touched non-work execution"
+        );
+        let payload: String = tx
+            .query_row(
+                "SELECT payload_json FROM execution_protocol_work_items
+                 WHERE agent_id=?1 AND work_item_id=?2",
+                params![agent_id, key.id],
+                |row| row.get(0),
+            )
+            .context("committed touched work execution disappeared")?;
+        facts.push(Fact::WorkExecution {
+            work_item_id: key.id,
+            record: serde_json::from_str(&payload)?,
+        });
+    }
+    if facts.is_empty() {
+        return Ok(Default::default());
+    }
+    crate::runtime_db::input_evidence_snapshot::register_committed_input_evidence_tx(
+        tx, scope, &facts,
+    )
+}
+
 fn reduce(
     state: &ExecutionProtocolState,
     command: &ExecutionProtocolCommand,

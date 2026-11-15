@@ -121,7 +121,7 @@ fn borrowed_timer_fire_and_cancel_roll_back_with_the_actual_outer_transaction() 
     };
     let before_cancel = saved(&db)?;
     let result: Result<()> = db.transaction(|tx| {
-        let ack = db.timers().cancel_tx(tx, &cancel)?;
+        let ack = db.timers().cancel_tx(tx, &cancel, None)?;
         assert!(ack.cancelled && ack.dropped_message_id.as_deref() == Some("kernel-message"));
         Err(anyhow::anyhow!("fixture outer transaction rollback"))
     });

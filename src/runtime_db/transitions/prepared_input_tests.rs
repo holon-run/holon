@@ -1,4 +1,7 @@
 use super::*;
+#[cfg(holon_lib_test_shard = "b")]
+#[path = "prepared_timer/cancel_input_tests.rs"]
+mod timer_cancel_input_tests;
 use crate::{
     runtime_db::{
         evidence::{upsert_agent_identity_tx, upsert_agent_state_tx},

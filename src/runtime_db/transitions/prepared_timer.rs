@@ -292,7 +292,7 @@ impl PreparedTimerTransition {
                 fault,
             } => {
                 inject_fault(*fault, TransitionFaultPoint::AfterValidation)?;
-                let mut result = db.timers().cancel_tx(tx, command)?;
+                let mut result = db.timers().cancel_tx(tx, command, Some(scope))?;
                 value.applied = result.cancelled;
                 value.effects = Box::new(std::mem::take(&mut result.effects));
                 if result.cancelled {
