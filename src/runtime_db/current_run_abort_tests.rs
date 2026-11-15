@@ -290,6 +290,85 @@ impl Fixture {
 }
 
 #[test]
+fn abort_fence_defaults_only_absent_legacy_incarnation_to_one() -> Result<()> {
+    let f = Fixture::new()?;
+    f.commit(&f.prepared("legacy-identity-abort", None)?)?;
+    f.db().connection()?.execute(
+        "UPDATE agent_identities SET payload_json=json_remove(payload_json,'$.incarnation')
+         WHERE agent_id=?1",
+        [&f.scope.agent_id],
+    )?;
+    assert!(f
+        .db()
+        .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)?);
+    assert!(!f
+        .db()
+        .operator_aborted_input("missing-agent", &f.source.message_id)?);
+    for incarnation in ["null", "\"1\"", "0"] {
+        f.db().connection()?.execute(
+            "UPDATE agent_identities
+             SET payload_json=json_set(payload_json,'$.incarnation',json(?2))
+             WHERE agent_id=?1",
+            params![f.scope.agent_id, incarnation],
+        )?;
+        assert!(
+            f.db()
+                .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)
+                .is_err(),
+            "malformed incarnation must not bypass the fence: {incarnation}"
+        );
+    }
+    f.db().connection()?.execute(
+        "UPDATE agent_identities SET payload_json=json_set(payload_json,'$.incarnation',2)
+         WHERE agent_id=?1",
+        [&f.scope.agent_id],
+    )?;
+    assert!(!f
+        .db()
+        .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)?);
+    Ok(())
+}
+
+#[test]
+fn abort_schema_replay_preserves_existing_intents_and_indexes() -> Result<()> {
+    let f = Fixture::new()?;
+    f.commit(&f.prepared("schema-replay-abort", None)?)?;
+    for _ in 0..2 {
+        f.db()
+            .connection()?
+            .execute_batch(super::current_run_abort::SCHEMA)?;
+    }
+    assert_eq!(f.count("current_run_abort_intents")?, 1);
+    assert!(f
+        .db()
+        .operator_aborted_input(&f.scope.agent_id, &f.source.message_id)?);
+    Ok(())
+}
+
+#[test]
+fn historical_abort_lookup_seeks_terminal_reason_and_kind_index() -> Result<()> {
+    let f = Fixture::new()?;
+    let connection = f.db().connection()?;
+    let plan = connection
+        .prepare(&format!(
+            "EXPLAIN QUERY PLAN {}",
+            super::current_run_abort::HISTORICAL_ABORTED_TURN_SQL
+        ))?
+        .query_map(params![f.scope.agent_id, f.source.message_id], |row| {
+            row.get::<_, String>(3)
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    assert!(
+        plan.iter().any(|detail| {
+            detail.contains("SEARCH t USING INDEX idx_turn_records_operator_abort_terminal")
+                && detail.matches("<expr>=?").count() == 2
+        }),
+        "historical abort lookup must seek terminal reason and kind: {plan:?}"
+    );
+    Ok(())
+}
+
+#[test]
 fn abort_accepts_the_open_admission_before_settlement_attaches_its_run() -> Result<()> {
     let mut f = Fixture::new()?;
     let mut attempt = f.attempt("original-activation", "original-source", "original-run")?;
