@@ -12,8 +12,8 @@ const pending = {
 
 async function seedHistory(request: { post: (url: string, options: { data: unknown }) => Promise<unknown> }, session: string) {
   const control = (path: string) => `${path}?session=${encodeURIComponent(session)}`;
-  // The fixture server answers detail/state only for visible agents; roster
-  // presence is not admission (State 503 below withholds it).
+  // Keep detail/state endpoints available; trackRequests withholds this
+  // summary from discovery so presentation-cache hydration cannot warm the route.
   await request.post(control("/__e2e__/configure"), { data: {
     visibleAgentIds: [agentId],
     briefsById: { history: {
@@ -47,6 +47,12 @@ async function trackRequests(page: Page) {
   await page.route("**/api/auth/session/me", (route) => route.fulfill({
     json: { user_id: "history-only-user", auth_method: "static_token" },
   }));
+  await page.route("**/api/agents/list", (route) => route.fulfill({ json: [] }));
+  await page.route("**/api/agents/snapshot", async (route) => {
+    const response = await route.fetch();
+    const snapshot = await response.json();
+    await route.fulfill({ json: { ...snapshot, agents: [] } });
+  });
   await page.route(`**/api/agents/${agentId}/events*`, (route) => route.fulfill({
     status: 500, json: { error: "Raw events unavailable" },
   }));
