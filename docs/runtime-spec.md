@@ -115,11 +115,11 @@ The following areas are implementation-level contracts with no dedicated
 focused spec page. They remain in source code, RFCs, or CLI reference:
 
 - **Provider transport contract** (selection, retry, fallback, token usage):
-  `src/provider/`, `src/types.rs` `ProviderAttemptTimeline`
+  [`holon-provider`](../crates/holon-provider/src/provider/mod.rs), which defines `ProviderAttemptTimeline`
 - **Provider prompt frame** (prompt assembly and lowering):
   [`src/prompt/`](../src/prompt/),
-  [`src/provider/transports/openai/`](../src/provider/transports/openai/),
-  [`src/provider/transports/anthropic.rs`](../src/provider/transports/anthropic.rs)
+  [OpenAI lowering](../crates/holon-provider/src/provider/transports/openai/mod.rs),
+  [Anthropic lowering](../crates/holon-provider/src/provider/transports/anthropic.rs)
 - **Failure artifact envelope** (operator-facing failure normalization):
   `src/types.rs` `FailureArtifact`
 - **Agent initialization** (template selection, agent_home materialization):
