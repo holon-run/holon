@@ -1602,6 +1602,3 @@ impl Drop for RuntimeDbLock {
         let _ = unlock(&self.file);
     }
 }
-
-#[cfg(all(test, holon_lib_test_shard = "b"))]
-pub(crate) use holon_storage::task::{TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT};

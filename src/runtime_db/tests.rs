@@ -19,10 +19,7 @@ use crate::runtime_db::repositories::{upsert_queue_entry_tx, upsert_wait_conditi
 #[cfg(test)]
 use crate::runtime_db::storage_domain::upsert_storage_domain;
 #[cfg(test)]
-use crate::runtime_db::{
-    RuntimeDb, RuntimeDbRetryableError, RuntimeStateTransitionConflict, TASK_PAYLOAD_ARRAY_LIMIT,
-    TASK_PAYLOAD_STRING_LIMIT,
-};
+use crate::runtime_db::{RuntimeDb, RuntimeDbRetryableError, RuntimeStateTransitionConflict};
 #[cfg(test)]
 use crate::types::{
     AgentBootstrapDesiredState, AgentBootstrapRecord, AgentBootstrapStatus,
@@ -115,6 +112,7 @@ mod tests {
             AgentRegistryStatus, AgentStatus, AgentVisibility, BriefKind, TaskKind, TimerStatus,
         },
     };
+    use holon_storage::task::{TASK_PAYLOAD_ARRAY_LIMIT, TASK_PAYLOAD_STRING_LIMIT};
     use rusqlite::OptionalExtension;
     use std::process::Command;
     use tempfile::tempdir;
