@@ -2971,6 +2971,9 @@ fn qualified_window_keys(
     limit: usize,
 ) -> Result<Vec<Key>> {
     let (family, filter, order, extra) = window_query(selector);
+    if family == Family::ToolExecution {
+        return qualified_tool_execution_window_keys(tx, scope, binding, limit);
+    }
     let (table, id) = table(family);
     let mut values = vec![
         rusqlite::types::Value::Text(scope.agent_id.clone()),
@@ -3013,6 +3016,75 @@ fn qualified_window_keys(
         r.get::<_, String>(0)
     })?;
     rows.map(|row| Ok(Key::new(family, row?))).collect()
+}
+
+/// Tool-execution windows qualify sparsely across canonical history: an
+/// ordered canonical scan probes every ineligible row before LIMIT can stop
+/// it (#4165). Read the qualifying ids straight from the current/seed sets —
+/// SQL that never touches canonical history — then rank those ids by their
+/// canonical rows so work follows the relevant evidence set sizes. RecentTools
+/// is the only selector mapping to this family and orders by canonical
+/// created_at DESC, evidence_id DESC.
+fn qualified_tool_execution_window_keys(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    binding: &Binding,
+    limit: usize,
+) -> Result<Vec<Key>> {
+    let mut membership = tx.prepare(
+        "SELECT c.record_id FROM input_evidence_current c
+          WHERE c.agent_id=?1 AND c.identity_incarnation=?2
+            AND c.family='tool_execution' AND c.availability='present'
+         UNION
+         SELECT e.record_id FROM input_evidence_eligibility e
+          WHERE e.seed_id=?3 AND e.family='tool_execution'
+            AND NOT EXISTS(SELECT 1 FROM input_evidence_current c
+                            WHERE c.agent_id=?1 AND c.identity_incarnation=?2
+                              AND c.family=e.family AND c.record_id=e.record_id)
+         UNION
+         SELECT e.record_id FROM input_evidence_seed_recovery_current e
+          WHERE e.seed_id=?3 AND e.family='tool_execution'
+            AND NOT EXISTS(SELECT 1 FROM input_evidence_current c
+                            WHERE c.agent_id=?1 AND c.identity_incarnation=?2
+                              AND c.family=e.family AND c.record_id=e.record_id)",
+    )?;
+    let record_ids = membership
+        .query_map(
+            params![
+                scope.agent_id,
+                i64::try_from(scope.identity_incarnation)?,
+                binding.seed_id
+            ],
+            |row| row.get::<_, String>(0),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(membership);
+    // Canonical rows decide window membership and recency; an id without a
+    // canonical row for this agent never surfaced through the scan either.
+    let mut ranked = Vec::with_capacity(record_ids.len());
+    let mut canonical = tx.prepare(
+        "SELECT created_at, evidence_id FROM tool_executions
+          WHERE agent_id=?1 AND evidence_id=?2",
+    )?;
+    for record_id in record_ids {
+        if let Some((created_at, evidence_id)) = canonical
+            .query_row(params![scope.agent_id, record_id], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .optional()?
+        {
+            ranked.push((created_at, evidence_id));
+        }
+    }
+    drop(canonical);
+    // Tuple order mirrors RecentTools ordering: created_at DESC then
+    // evidence_id DESC.
+    ranked.sort_by(|a, b| b.cmp(a));
+    ranked.truncate(limit);
+    Ok(ranked
+        .into_iter()
+        .map(|(_, evidence_id)| Key::new(Family::ToolExecution, evidence_id))
+        .collect())
 }
 /// Relations come only from this incarnation's current aliases or the fixed
 /// legacy metadata checkpoint. Deleted entries remain explicit tombstone edges.
