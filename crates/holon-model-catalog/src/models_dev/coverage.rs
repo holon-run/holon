@@ -4,10 +4,10 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    config::{ModelRouteRef, ProviderEndpointId},
-    context::ContextConfig,
-    model_catalog::{BuiltInModelCatalog, ModelCapabilityFlags, ModelMetadataEvidence},
+use crate::{BuiltInModelCatalog, ModelCapabilityFlags, ModelMetadataEvidence};
+use holon_domain::{
+    model_values::{ModelRouteRef, ProviderEndpointId},
+    ContextConfig,
 };
 
 use super::{ModelsDevSnapshot, ProviderMapping};
@@ -29,7 +29,7 @@ pub struct EndpointAssociation {
 /// A separate, review-only mapping: plan metadata must not enter the generic
 /// projector and leak into another endpoint's canonical model.
 pub fn endpoint_associations() -> Result<Vec<EndpointAssociation>, String> {
-    serde_json::from_str(include_str!("../../../models.dev/endpoint-mappings.json"))
+    serde_json::from_str(include_str!("../../data/endpoint-mappings.json"))
         .map_err(|e| format!("invalid endpoint associations: {e}"))
 }
 
@@ -595,11 +595,11 @@ pub fn render_coverage_summary(report: &CoverageReport) -> String {
     summary
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::ModelRef, model_catalog::models_dev::parse_snapshot};
+    use crate::models_dev::parse_snapshot;
+    use holon_domain::model_values::ModelRef;
 
     #[test]
     fn models_dev_coverage_native_upstream_values_expose_missing_runtime_fields() {

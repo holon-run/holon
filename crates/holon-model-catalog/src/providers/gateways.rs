@@ -423,7 +423,6 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
     entries
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -674,7 +673,7 @@ mod tests {
         assert_eq!(model.default_verbosity, None);
         assert_eq!(model.capabilities, ModelCapabilityFlags::default());
         assert!(model.reasoning_effort_options.is_empty());
-        assert!(crate::model_discovery::OPENCODE_GO_TEXT_MODELS
+        assert!(holon_domain::model_values::OPENCODE_GO_TEXT_MODELS
             .contains(&("gemini-4-argon", "default")));
     }
 }

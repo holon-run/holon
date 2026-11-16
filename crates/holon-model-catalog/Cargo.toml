@@ -1,0 +1,20 @@
+[package]
+name = "holon-model-catalog"
+version = "0.1.0"
+edition = "2021"
+description = "Internal offline model catalog and policy resolver for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+readme = "README.md"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-system = { version = "0.1.0", path = "../holon-system" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"

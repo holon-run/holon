@@ -5121,7 +5121,11 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
     use sha2::Digest;
 
     match command {
-        ModelsDevCommands::Refresh { url, output_dir } => {
+        ModelsDevCommands::Refresh {
+            url,
+            output_dir,
+            supplement_path,
+        } => {
             println!("Fetching models.dev snapshot from {url} …");
             let response = reqwest::get(&url)
                 .await
@@ -5164,7 +5168,8 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
             let report = audit_mappings(&parsed_snapshot, &ProviderMapping::default_mappings());
 
             // Draft the supplemental catalog for allowlisted providers.
-            let supplement_path = output_dir.join("supplemental_catalog.json");
+            let supplement_path =
+                supplement_path.unwrap_or_else(|| output_dir.join("supplemental_catalog.json"));
             let previous_supplement = match std::fs::read_to_string(&supplement_path) {
                 Ok(raw) => Some(
                     holon::model_catalog::models_dev::ModelsDevSupplement::parse(&raw)
@@ -5261,7 +5266,10 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
             }
             Ok(())
         }
-        ModelsDevCommands::Validate { input_dir } => {
+        ModelsDevCommands::Validate {
+            input_dir,
+            supplement_path,
+        } => {
             let snapshot_path = input_dir.join("snapshot.json");
             let artifact_path = input_dir.join("artifact.json");
             let raw_json = std::fs::read_to_string(&snapshot_path)
@@ -5290,8 +5298,10 @@ async fn handle_models_dev_command(command: ModelsDevCommands) -> Result<()> {
                     report.stale_holon.len()
                 );
             }
-            let supplement_path = input_dir.join("supplemental_catalog.json");
-            if supplement_path.exists() {
+            let explicitly_required = supplement_path.is_some();
+            let supplement_path =
+                supplement_path.unwrap_or_else(|| input_dir.join("supplemental_catalog.json"));
+            if explicitly_required || supplement_path.exists() {
                 let raw = std::fs::read_to_string(&supplement_path)
                     .map_err(|e| anyhow!("failed to read supplement: {e}"))?;
                 let supplement = holon::model_catalog::models_dev::ModelsDevSupplement::parse(&raw)

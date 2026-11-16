@@ -1537,6 +1537,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "holon-domain",
+ "holon-model-catalog",
  "holon-provider",
  "holon-storage",
  "holon-system",
@@ -1596,6 +1597,19 @@ dependencies = [
  "thiserror 2.0.18",
  "unicode-casefold",
  "uuid",
+]
+
+[[package]]
+name = "holon-model-catalog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "holon-domain",
+ "holon-system",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

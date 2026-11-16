@@ -1047,7 +1047,7 @@ independent confirmation of both integer hard limits.
 snapshot do not make its region interchangeable with Beijing. The original
 `00800363` snapshot already contained the dated model under the CN provider;
 the international provider did not contain it at that time.
-The review-only [endpoint association](endpoint-mappings.json) therefore binds
+The review-only [endpoint association](../crates/holon-model-catalog/data/endpoint-mappings.json) therefore binds
 only the CN provider. `auto` remains a dynamic selector without a reviewed
 uniform numeric capacity; no underlying model's limits are copied into it.
 
@@ -1055,7 +1055,7 @@ uniform numeric capacity; no underlying model's limits are copied into it.
 
 `deepseek@responses/deepseek-flash` receives **1000000 / 384000**, preserving
 the existing conservative reviewed ceiling in
-[`deepseek_v1.json`](../src/model_catalog/models_dev/manifests/deepseek_v1.json).
+[`deepseek_v1.json`](../crates/holon-model-catalog/src/models_dev/manifests/deepseek_v1.json).
 No builtin default-endpoint eligibility is added.
 
 The [native model page](https://api-docs.deepseek.com/quick_start/pricing/)

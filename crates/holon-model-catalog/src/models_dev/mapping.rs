@@ -253,7 +253,6 @@ fn glob_match(pattern: &str, value: &str) -> bool {
     }
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

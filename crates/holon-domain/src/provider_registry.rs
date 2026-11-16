@@ -1,4 +1,4 @@
-use super::ProviderTransportKind;
+use super::{ProviderEndpointId, ProviderId, ProviderTransportKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderMaterializer {
@@ -492,3 +492,57 @@ pub fn provider_definition(legacy_provider: &str) -> Option<&'static ProviderDef
         .iter()
         .find(|definition| definition.legacy_provider == legacy_provider)
 }
+
+pub fn built_in_provider_endpoint_identity(
+    legacy_provider: &ProviderId,
+) -> anyhow::Result<(ProviderId, ProviderEndpointId)> {
+    let Some(definition) = provider_definition(legacy_provider.as_str()) else {
+        return Ok((
+            legacy_provider.clone(),
+            ProviderEndpointId::default_endpoint(),
+        ));
+    };
+    Ok((
+        ProviderId::parse(definition.route_provider)?,
+        ProviderEndpointId::parse(definition.route_endpoint)?,
+    ))
+}
+
+/// The official Go table lists preferred APIs, not exclusive text eligibility.
+/// Only these reviewed IDs are translated across the three registered endpoints.
+/// Gemini's native Google API is not registered; default is its text fallback.
+pub const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
+    ("grok-4.7", "responses"),
+    ("gpt-6-luna", "responses"),
+    ("gpt-5.6-luna", "responses"),
+    ("crouton-alpha-free", "responses"),
+    ("claude-haiku-5-5", "messages"),
+    ("gemini-4-argon", "default"),
+    ("glm-5.3-flash", "default"),
+    ("glm-5.3", "default"),
+    ("glm-5.2", "default"),
+    ("kimi-k3.1-pro", "default"),
+    ("kimi-k3", "default"),
+    ("kimi-k2.7-code", "default"),
+    ("longcat-2.0", "default"),
+    ("longcat-2.5-free", "default"),
+    ("deepseek-v4.1-flash", "default"),
+    ("deepseek-v4-pro", "default"),
+    ("mimo-v2.6-flash", "default"),
+    ("mimo-v2.6-pro", "default"),
+    ("mimo-v2.5", "default"),
+    ("mimo-v2.5-pro", "default"),
+    ("minimax-m3.1-flash", "default"),
+    ("minimax-m3", "messages"),
+    ("muse-spark-1.3-contributor", "responses"),
+    ("muse-spark-1.2-contributor", "responses"),
+    ("qwen3.8-max", "messages"),
+    ("qwen3.8-flash", "messages"),
+    ("qwen3.7-plus", "messages"),
+    ("hy4", "default"),
+    ("hy4-preview", "default"),
+    ("hy3", "default"),
+    ("step-5-preview", "default"),
+    ("beam-free", "default"),
+    ("iceman-contributor-free", "default"),
+];

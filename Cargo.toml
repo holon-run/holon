@@ -48,6 +48,7 @@ decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-
 futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
+holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
@@ -96,6 +97,7 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
+holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog", features = ["test-support"] }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider", features = ["runtime-tests"] }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage", features = ["test-support"] }
 proptest = "1.6"

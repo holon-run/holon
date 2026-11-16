@@ -33,6 +33,19 @@ constraints, and conservative fallbacks. The migration must preserve that
 behavior while making the built-in data independently versioned and
 validated.
 
+## Implementation boundary
+
+`holon-model-catalog` loads and validates the embedded catalog and the
+reviewed models.dev data. It resolves model metadata and budget policy from
+the snapshots, discovered metadata, and explicit overrides supplied by the
+application. The application layers configured endpoint and transport
+capabilities onto that policy and assembles the provider route.
+
+The supplemental catalog and endpoint associations are checked into the
+catalog package so Cargo builds from an archive use the same inputs as a
+source checkout. The application CLI owns fetches and writes. The repository
+refresh workflow passes the path of the reviewed supplement explicitly.
+
 ## Decisions
 
 ### 1. Keep four fact layers separate

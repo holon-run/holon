@@ -202,7 +202,6 @@ impl<'de> Deserialize<'de> for ModelsDevInterleaved {
     }
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -839,11 +839,17 @@ pub enum ModelsDevCommands {
         url: String,
         #[arg(long, default_value = "models.dev")]
         output_dir: PathBuf,
+        /// Read and write the supplement at this path instead of under the output directory.
+        #[arg(long)]
+        supplement_path: Option<PathBuf>,
     },
     #[command(about = "Validate the checked-in models.dev snapshot and artifact")]
     Validate {
         #[arg(long, default_value = "models.dev")]
         input_dir: PathBuf,
+        /// Validate a supplement outside the input directory.
+        #[arg(long)]
+        supplement_path: Option<PathBuf>,
     },
     #[command(about = "Audit provider mappings against a snapshot")]
     Audit {

@@ -866,7 +866,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -947,7 +947,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -2681,7 +2681,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -2762,7 +2762,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -2843,7 +2843,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -2924,7 +2924,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3005,7 +3005,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3086,7 +3086,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3167,7 +3167,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3248,7 +3248,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3329,7 +3329,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3410,7 +3410,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3491,7 +3491,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3572,7 +3572,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -3653,7 +3653,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -4373,7 +4373,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -4674,7 +4674,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -4761,7 +4761,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -4848,7 +4848,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -4935,7 +4935,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -5022,7 +5022,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -5109,7 +5109,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -9585,7 +9585,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -11954,7 +11954,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -12042,7 +12042,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -12123,7 +12123,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -12288,7 +12288,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -12440,7 +12440,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -12521,7 +12521,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -14070,7 +14070,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -14759,7 +14759,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -15376,7 +15376,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17022,7 +17022,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17103,7 +17103,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17184,7 +17184,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -17266,7 +17266,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17347,7 +17347,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17520,7 +17520,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17607,7 +17607,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17694,7 +17694,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17781,7 +17781,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17868,7 +17868,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -17955,7 +17955,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -18043,7 +18043,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -18388,7 +18388,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -19533,7 +19533,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -21292,7 +21292,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "https://opencode.ai/inference/go/v1/models"
         ]
       }
@@ -21601,7 +21601,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "https://opencode.ai/inference/go/v1/models"
         ]
       }
@@ -25991,7 +25991,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -26072,7 +26072,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "https://opencode.ai/inference/go/v1/models"
         ]
       }
@@ -30416,7 +30416,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -31697,7 +31697,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -31782,7 +31782,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -31868,7 +31868,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -32030,7 +32030,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -32114,7 +32114,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -32199,7 +32199,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -32360,7 +32360,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -33551,7 +33551,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -33640,7 +33640,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -34552,7 +34552,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -34633,7 +34633,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -34714,7 +34714,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -34795,7 +34795,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -34876,7 +34876,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -34957,7 +34957,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -35038,7 +35038,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -35944,7 +35944,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36025,7 +36025,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36106,7 +36106,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36187,7 +36187,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36268,7 +36268,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36349,7 +36349,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36785,7 +36785,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -36877,7 +36877,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -37864,7 +37864,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -37945,7 +37945,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -38026,7 +38026,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -38107,7 +38107,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39050,7 +39050,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39131,7 +39131,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39212,7 +39212,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39293,7 +39293,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39374,7 +39374,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39455,7 +39455,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39891,7 +39891,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -39983,7 +39983,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -41591,7 +41591,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -41672,7 +41672,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -41753,7 +41753,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -41834,7 +41834,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -41915,7 +41915,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -41996,7 +41996,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -42171,7 +42171,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -42252,7 +42252,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -42334,7 +42334,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -42415,7 +42415,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -42496,7 +42496,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -42578,7 +42578,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -42659,7 +42659,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -42740,7 +42740,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -42822,7 +42822,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -42904,7 +42904,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -42989,7 +42989,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -43802,7 +43802,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44108,7 +44108,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44189,7 +44189,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44487,7 +44487,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44568,7 +44568,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44649,7 +44649,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44730,7 +44730,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -44961,7 +44961,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -45046,7 +45046,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -45131,7 +45131,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -45216,7 +45216,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -45297,7 +45297,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -45378,7 +45378,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -45459,7 +45459,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -46561,7 +46561,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -47043,7 +47043,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -47442,7 +47442,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -47523,7 +47523,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48068,7 +48068,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48149,7 +48149,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48230,7 +48230,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48391,7 +48391,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48784,7 +48784,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48869,7 +48869,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -48954,7 +48954,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -49039,7 +49039,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -49120,7 +49120,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -49201,7 +49201,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -49282,7 +49282,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -49368,7 +49368,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -49454,7 +49454,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -49700,7 +49700,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }
@@ -49782,7 +49782,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json"
+          "crates/holon-model-catalog/data/endpoint-mappings.json"
         ]
       }
     },
@@ -49863,7 +49863,7 @@
         "evidence": [
           "models.dev/metadata-evidence.md",
           "models.dev/endpoint-review.md",
-          "models.dev/endpoint-mappings.json",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
           "models.dev/snapshot.json"
         ]
       }

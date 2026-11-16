@@ -160,7 +160,7 @@ impl ModelMetadataSelection<'_> {
             .saturating_add(self.description.len())
             .saturating_add(options_bytes)
             .saturating_add(evidence_bytes);
-        crate::diagnostics::resource_io::charge_owned_metadata(
+        holon_system::resource_material::charge_owned_metadata(
             u64::try_from(bytes)?,
             5usize
                 .saturating_add(options)

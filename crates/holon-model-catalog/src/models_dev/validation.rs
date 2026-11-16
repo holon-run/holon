@@ -12,8 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::ProviderTransportKind;
-use crate::provider::provider_definitions;
+use holon_domain::model_values::provider_definitions;
+use holon_domain::model_values::ProviderTransportKind;
 
 use super::dto::ModelsDevSnapshot;
 use super::mapping::{
@@ -566,14 +566,13 @@ impl Default for ValidationEngine {
     }
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::super::mapping::{
         CapabilityCeiling, LimitCeiling, MappingProvenance, ModelIdAllow, ModelIdMatchMode,
     };
     use super::*;
-    use crate::model_catalog::models_dev::dto::{
+    use crate::models_dev::dto::{
         ModelsDevLimit, ModelsDevModalities, ModelsDevModel, ModelsDevProvider,
     };
     use std::collections::BTreeMap;

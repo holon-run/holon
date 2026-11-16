@@ -24,10 +24,10 @@ use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ModelRef, ModelRouteRef, ProviderEndpointId};
-use crate::model_catalog::{
+use crate::{
     BuiltInModelCatalog, BuiltInModelMetadata, BuiltInModelRoutePolicy, ModelMetadataSource,
 };
+use holon_domain::model_values::{ModelRef, ModelRouteRef, ProviderEndpointId};
 
 use super::dto::{ModelsDevModel, ModelsDevSnapshot};
 use super::projection::{project_model, ProviderMapping};
@@ -118,7 +118,7 @@ impl ModelsDevSupplement {
     /// Structural validation independent of the legacy catalog.
     pub fn validate(&self) -> Result<(), String> {
         for model in &self.models {
-            crate::model_catalog::snapshot::validate_model_entry(model)?;
+            crate::snapshot::validate_model_entry(model)?;
         }
         if self.schema_version != SUPPLEMENT_SCHEMA_VERSION {
             return Err(format!(
@@ -739,11 +739,10 @@ pub fn render_summary_markdown(update: &SupplementUpdate) -> String {
     out
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_catalog::snapshot;
+    use crate::snapshot;
 
     fn snapshot_json() -> String {
         r#"{

@@ -36,7 +36,7 @@ order: 40
 | `cli.md` | `holon --help` | 命令树变化时重新生成 |
 | `configuration.md` | `holon config schema`、`holon config list` | 配置键变化时重新核对 |
 | `http-control-plane.md` | Axum 路由树、OpenAPI 3.1 schema（`openapi.json`） | 路由或载荷变化时重新核对 |
-| `models.md` | 由 `src/model_catalog.rs` 生成 | `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`，再执行 `python3 docs/website/.tools/sync-generated-pages.py` |
+| `models.md` | 由 `crates/holon-model-catalog/src/lib.rs` 生成 | `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`，再执行 `python3 docs/website/.tools/sync-generated-pages.py` |
 | `*-inventory.md`、`*-inventory.json` | 生成的 JSON 基线 | `make snapshots-refresh`，然后审查差异 |
 
 <!-- INDEX:START -->

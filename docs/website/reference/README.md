@@ -37,7 +37,7 @@ baselines are refreshed from source instead of edited here.
 | `cli.md` | `holon --help` | regenerate when the command tree changes |
 | `configuration.md` | `holon config schema`, `holon config list` | re-verify when config keys change |
 | `http-control-plane.md` | Axum route tree, OpenAPI 3.1 schema (`openapi.json`) | re-verify when routes or payloads change |
-| `models.md` | generated from `src/model_catalog.rs` | `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`, then `python3 docs/website/.tools/sync-generated-pages.py` |
+| `models.md` | generated from `crates/holon-model-catalog/src/lib.rs` | `cargo run --bin holon-docgen -- models > docs/website/reference/models.md`, then `python3 docs/website/.tools/sync-generated-pages.py` |
 | `*-inventory.md`, `*-inventory.json` | generated JSON baselines | `make snapshots-refresh`, then review the diff |
 
 <!-- INDEX:START -->

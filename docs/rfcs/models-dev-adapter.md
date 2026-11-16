@@ -14,7 +14,7 @@ This RFC defines Phase 2A+2B of the models.dev integration: a CI-time
 adapter that reads a pinned `models.dev` snapshot, projects it into Holon's
 canonical model registry format, and emits an immutable artifact with
 provenance metadata. The runtime never fetches `models.dev` at run time; the
-reviewed supplemental catalog (`models.dev/supplemental_catalog.json`, see
+reviewed supplemental catalog (`crates/holon-model-catalog/data/supplemental_catalog.json`, see
 [119 models.dev Supplemental Catalog](../implementation-decisions/119-models-dev-supplemental-catalog.md))
 merges into the built-in catalog only through PR review and merge.
 
@@ -151,7 +151,7 @@ will fail at `ModelRouteRef::parse_compatible` with an explicit error.
 
 ## Implementation
 
-New module: `src/model_catalog/models_dev/`
+New module: `crates/holon-model-catalog/src/models_dev/`
 
 - `dto.rs` — upstream DTO types with tri-state `Option<T>` fields.
 - `projection.rs` — DTO → `BuiltInModelMetadata` projection with provider
