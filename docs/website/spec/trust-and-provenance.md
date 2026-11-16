@@ -13,7 +13,7 @@ policy — and how those labels flow through the runtime.
 > **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
-> `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
+> `src/http/state.rs`, `src/context/mod.rs`, `crates/holon-context/src/render.rs`,
 > `src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
 > `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
 > `src/runtime/turn/execution.rs`.
@@ -150,10 +150,8 @@ public contract. Current code keeps compatibility in two places:
   `trusted_operator`, `trusted_system`, `trusted_integration`, and
   `untrusted_external`.
 
-[`src/context/render.rs`](../../../src/context/render.rs) keeps a legacy
-`trust_label` mapping from `authority_class` to the old `trusted_*` /
-`untrusted_*` names, but current model-context message headers label messages
-with `authority_class_label` (`operator_instruction`, `runtime_instruction`,
+Model-context message headers use
+[`authority_class_label`](../../../crates/holon-context/src/render.rs) (`operator_instruction`, `runtime_instruction`,
 and so on). New docs and new contracts should name `authority_class` directly.
 
 ## Current classification matrix

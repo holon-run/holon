@@ -1,15 +1,15 @@
 //! Generic message/body/header rendering helpers and label functions.
 
-use super::budget::estimate_text_tokens;
-use crate::prompt::{PromptSection, PromptStability};
-use crate::tool::helpers::truncate_text;
-use crate::types::{
+use super::budget::{estimate_text_tokens, truncate_section_content};
+use crate::{PromptSection, PromptStability};
+use holon_domain::{
     AdmissionContext, AgentMessageRoutingContext, AuthorityClass, MessageBody,
     MessageDeliverySurface, MessageEnvelope, MessageOrigin,
 };
+use holon_system::utf8::truncate_text;
 
 /// Create a section with `AgentScoped` stability.
-pub(super) fn section(name: &'static str, content: String) -> PromptSection {
+pub fn section(name: &'static str, content: String) -> PromptSection {
     PromptSection {
         name: name.to_string(),
         id: name.to_string(),
@@ -19,7 +19,7 @@ pub(super) fn section(name: &'static str, content: String) -> PromptSection {
 }
 
 /// Render trusted agent-message routing metadata without consulting message text.
-pub(super) fn message_routing_context(message: &MessageEnvelope) -> Option<String> {
+pub fn message_routing_context(message: &MessageEnvelope) -> Option<String> {
     let route = message.routing_context.as_ref()?;
     if route.message_id != message.id || route.recipient_agent_id != message.agent_id {
         return None;
@@ -27,10 +27,7 @@ pub(super) fn message_routing_context(message: &MessageEnvelope) -> Option<Strin
     Some(render_routing_context(route))
 }
 
-pub(super) fn message_routing_context_compact(
-    message: &MessageEnvelope,
-    budget: usize,
-) -> Option<String> {
+pub fn message_routing_context_compact(message: &MessageEnvelope, budget: usize) -> Option<String> {
     let route = message.routing_context.as_ref()?;
     if route.message_id != message.id || route.recipient_agent_id != message.agent_id {
         return None;
@@ -94,7 +91,7 @@ fn render_routing_context(route: &AgentMessageRoutingContext) -> String {
 }
 
 /// Create a section with `TurnScoped` stability.
-pub(super) fn turn_section(name: &'static str, content: String) -> PromptSection {
+pub fn turn_section(name: &'static str, content: String) -> PromptSection {
     PromptSection {
         name: name.to_string(),
         id: name.to_string(),
@@ -104,7 +101,7 @@ pub(super) fn turn_section(name: &'static str, content: String) -> PromptSection
 }
 
 /// Sanitize a string for inline display: collapse whitespace, no newlines.
-pub(super) fn sanitize_inline(value: &str) -> String {
+pub fn sanitize_inline(value: &str) -> String {
     let mut sanitized = String::with_capacity(value.len());
     let mut pending_space = false;
     for ch in value.chars() {
@@ -122,12 +119,12 @@ pub(super) fn sanitize_inline(value: &str) -> String {
 }
 
 /// Truncate and sanitize a value for inline display.
-pub(super) fn bounded_inline(value: &str, max_chars: usize) -> String {
+pub fn bounded_inline(value: &str, max_chars: usize) -> String {
     truncate_text(&sanitize_inline(value), max_chars)
 }
 
 /// Indent every line of a text block by the given number of spaces.
-pub(super) fn indent_block(text: &str, spaces: usize) -> String {
+pub fn indent_block(text: &str, spaces: usize) -> String {
     let prefix = " ".repeat(spaces);
     text.lines()
         .map(|line| format!("{prefix}{line}"))
@@ -136,7 +133,7 @@ pub(super) fn indent_block(text: &str, spaces: usize) -> String {
 }
 
 /// Get a short text preview of a message body.
-pub(super) fn body_preview(body: &MessageBody) -> String {
+pub fn body_preview(body: &MessageBody) -> String {
     let text = message_body_text(body);
     if text.chars().count() <= 160 {
         text
@@ -146,7 +143,7 @@ pub(super) fn body_preview(body: &MessageBody) -> String {
 }
 
 /// Extract text from a message body variant.
-pub(super) fn message_body_text(body: &MessageBody) -> String {
+pub fn message_body_text(body: &MessageBody) -> String {
     match body {
         MessageBody::Text { text } => text.clone(),
         MessageBody::Json { value } => value.to_string(),
@@ -155,7 +152,7 @@ pub(super) fn message_body_text(body: &MessageBody) -> String {
 }
 
 /// Build the message header, including envelope creation time (not external occurrence time).
-pub(super) fn message_header(message: &MessageEnvelope) -> String {
+pub fn message_header(message: &MessageEnvelope) -> String {
     let mut labels = vec![origin_label(&message.origin).to_string()];
     if let Some(surface) = message.delivery_surface {
         labels.push(delivery_surface_label(surface).to_string());
@@ -184,7 +181,7 @@ pub(super) fn message_header(message: &MessageEnvelope) -> String {
 }
 
 /// Render runtime-owned reply expectations without changing the message body.
-pub(crate) fn message_reply_expectation_context(message: &MessageEnvelope) -> Option<String> {
+pub fn message_reply_expectation_context(message: &MessageEnvelope) -> Option<String> {
     if message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
         || message.admission_context != Some(AdmissionContext::RuntimeOwned)
     {
@@ -229,7 +226,7 @@ pub(crate) fn message_reply_expectation_context(message: &MessageEnvelope) -> Op
     ))
 }
 
-pub(super) fn header_label_value(value: &str) -> String {
+pub fn header_label_value(value: &str) -> String {
     value
         .chars()
         .map(|ch| match ch {
@@ -239,11 +236,11 @@ pub(super) fn header_label_value(value: &str) -> String {
         .collect()
 }
 
-pub(super) fn kind_label(message: &MessageEnvelope) -> String {
+pub fn kind_label(message: &MessageEnvelope) -> String {
     format!("{:?}", message.kind)
 }
 
-pub(super) fn origin_label(origin: &MessageOrigin) -> &'static str {
+pub fn origin_label(origin: &MessageOrigin) -> &'static str {
     match origin {
         MessageOrigin::Operator { .. } => "operator",
         MessageOrigin::Channel { .. } => "channel",
@@ -255,17 +252,96 @@ pub(super) fn origin_label(origin: &MessageOrigin) -> &'static str {
     }
 }
 
-#[cfg(test)]
-pub(super) fn trust_label(authority_class: &AuthorityClass) -> &'static str {
-    match authority_class {
-        AuthorityClass::OperatorInstruction => "trusted_operator",
-        AuthorityClass::RuntimeInstruction => "trusted_system",
-        AuthorityClass::IntegrationSignal => "trusted_integration",
-        AuthorityClass::ExternalEvidence => "untrusted_external",
+fn render_current_input_body_with_budget(
+    body: &MessageBody,
+    budget: usize,
+    wake_hint_fallback: Option<&str>,
+) -> String {
+    let mut rendered = match body {
+        MessageBody::Text { text } => text.clone(),
+        MessageBody::Json { value } => {
+            serde_json::to_string_pretty(value).unwrap_or_else(|_| value.to_string())
+        }
+        MessageBody::Brief { text, .. } => text.clone(),
+    };
+    if let Some(wake_hint) = wake_hint_fallback {
+        rendered.push_str("\nwake_hint_context:\n");
+        rendered.push_str(wake_hint);
     }
+    truncate_section_content(
+        "",
+        &rendered,
+        budget.max(16),
+        Some("\n[truncated current input body]"),
+    )
 }
 
-pub(super) fn authority_class_label(authority_class: AuthorityClass) -> &'static str {
+pub fn render_current_input_section(
+    current_message: &MessageEnvelope,
+    section_budget: usize,
+    wake_hint_fallback: Option<&str>,
+) -> PromptSection {
+    let reply_expectation =
+        message_reply_expectation_context(current_message).map(|content| format!("{content}\n"));
+    let routing_context =
+        message_routing_context(current_message).map(|content| format!("{content}\n"));
+    let full_prefix = format!(
+        "Current input:\n- {}\n{}{}",
+        message_header(current_message),
+        routing_context.as_deref().unwrap_or_default(),
+        reply_expectation.as_deref().unwrap_or_default()
+    );
+    let section_header_budget = estimate_text_tokens("[current_input]\n");
+    let compact_base = format!("Current input:\n- {}\n", message_header(current_message));
+    let compact_suffix = reply_expectation
+        .as_ref()
+        .map(|_| "Reply: SendAgentMessage.\n")
+        .unwrap_or_default();
+    let compact_route_budget = section_budget
+        .saturating_sub(section_header_budget)
+        .saturating_sub(estimate_text_tokens(&compact_base))
+        .saturating_sub(estimate_text_tokens(compact_suffix));
+    let routing_context_compact =
+        message_routing_context_compact(current_message, compact_route_budget)
+            .map(|content| format!("{content}\n"));
+    let compact_prefix = if reply_expectation.is_some() {
+        "Current input:\n- ".to_string()
+            + &message_header(current_message)
+            + "\n"
+            + routing_context_compact.as_deref().unwrap_or_default()
+            + "Reply: SendAgentMessage.\n"
+    } else if routing_context.is_some() {
+        "Current input:\n- ".to_string()
+            + &message_header(current_message)
+            + "\n"
+            + routing_context_compact.as_deref().unwrap_or_default()
+    } else {
+        format!("Current input:\n- {}\n", message_header(current_message))
+    };
+    let prefix =
+        if estimate_text_tokens(&format!("[current_input]\n{full_prefix}")) <= section_budget {
+            full_prefix
+        } else {
+            compact_prefix
+        };
+    let current_input_body = render_current_input_body_with_budget(
+        &current_message.body,
+        usize::MAX,
+        wake_hint_fallback,
+    );
+    let body_budget = section_budget
+        .saturating_sub(section_header_budget)
+        .saturating_sub(estimate_text_tokens(&prefix));
+    let current_input_body = truncate_section_content(
+        "",
+        &indent_block(&current_input_body, 2),
+        body_budget,
+        Some("\n[truncated current input body]"),
+    );
+    turn_section("current_input", format!("{prefix}{current_input_body}"))
+}
+
+pub fn authority_class_label(authority_class: AuthorityClass) -> &'static str {
     match authority_class {
         AuthorityClass::OperatorInstruction => "operator_instruction",
         AuthorityClass::RuntimeInstruction => "runtime_instruction",
@@ -274,7 +350,7 @@ pub(super) fn authority_class_label(authority_class: AuthorityClass) -> &'static
     }
 }
 
-pub(super) fn delivery_surface_label(surface: MessageDeliverySurface) -> &'static str {
+pub fn delivery_surface_label(surface: MessageDeliverySurface) -> &'static str {
     match surface {
         MessageDeliverySurface::CliPrompt => "cli_prompt",
         MessageDeliverySurface::RunOnce => "run_once",
@@ -290,7 +366,7 @@ pub(super) fn delivery_surface_label(surface: MessageDeliverySurface) -> &'stati
     }
 }
 
-pub(super) fn admission_context_label(context: AdmissionContext) -> &'static str {
+pub fn admission_context_label(context: AdmissionContext) -> &'static str {
     match context {
         AdmissionContext::PublicUnauthenticated => "public_unauthenticated",
         AdmissionContext::ControlAuthenticated => "control_authenticated",
@@ -301,14 +377,13 @@ pub(super) fn admission_context_label(context: AdmissionContext) -> &'static str
     }
 }
 
-pub(super) fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: &T) -> String {
+pub fn enum_label<T: serde::Serialize + std::fmt::Debug>(value: &T) -> String {
     serde_json::to_value(value)
         .ok()
         .and_then(|value| value.as_str().map(ToString::to_string))
         .unwrap_or_else(|| format!("{value:?}"))
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -318,13 +393,13 @@ mod tests {
     fn message_header_projects_envelope_creation_time() {
         let mut message = MessageEnvelope::new(
             "target",
-            crate::types::MessageKind::OperatorPrompt,
+            holon_domain::MessageKind::OperatorPrompt,
             MessageOrigin::Operator {
                 actor_id: None,
                 actor_display_name: None,
             },
             AuthorityClass::OperatorInstruction,
-            crate::types::Priority::Normal,
+            holon_domain::Priority::Normal,
             MessageBody::Text {
                 text: "request".into(),
             },
@@ -335,7 +410,7 @@ mod tests {
         assert!(header.contains("[message_created_at=2024-01-02T03:04:05.123Z UTC]"));
         assert!(!header.contains("2020-01-01"));
         for budget in [1, 256] {
-            let input = super::super::render_current_input_section(&message, budget, None);
+            let input = super::render_current_input_section(&message, budget, None);
             assert!(input.content.contains(&header));
         }
     }
@@ -344,12 +419,12 @@ mod tests {
     fn reply_expectation_context_requires_runtime_owned_consistent_metadata() {
         let mut message = MessageEnvelope::new(
             "target",
-            crate::types::MessageKind::InternalFollowup,
+            holon_domain::MessageKind::InternalFollowup,
             MessageOrigin::Task {
                 task_id: "task-1".into(),
             },
             AuthorityClass::RuntimeInstruction,
-            crate::types::Priority::Normal,
+            holon_domain::Priority::Normal,
             MessageBody::Text {
                 text: "request".into(),
             },
@@ -376,29 +451,27 @@ mod tests {
         let rendered = message_reply_expectation_context(&message).unwrap();
         assert!(rendered.contains("sender"));
         assert!(rendered.contains("sender is waiting for a reply"));
-        let current_input = super::super::render_current_input_section(&message, 256, None);
+        let current_input = super::render_current_input_section(&message, 256, None);
         assert!(current_input.content.contains(&rendered));
         assert!(current_input.content.contains("\n  request"));
 
         message.correlation_id = Some("other-task".into());
         assert!(message_reply_expectation_context(&message).is_none());
-        assert!(
-            !super::super::render_current_input_section(&message, 256, None)
-                .content
-                .contains("sender is waiting for a reply")
-        );
+        assert!(!super::render_current_input_section(&message, 256, None)
+            .content
+            .contains("sender is waiting for a reply"));
     }
 
     #[test]
     fn ordinary_messages_do_not_render_reply_expectation_context() {
         let message = MessageEnvelope::new(
             "target",
-            crate::types::MessageKind::InternalFollowup,
+            holon_domain::MessageKind::InternalFollowup,
             MessageOrigin::System {
                 subsystem: "agent_message".into(),
             },
             AuthorityClass::RuntimeInstruction,
-            crate::types::Priority::Normal,
+            holon_domain::Priority::Normal,
             MessageBody::Text {
                 text: "notification".into(),
             },
@@ -411,12 +484,12 @@ mod tests {
     fn compact_routing_context_shows_sender_recipient_and_reply_target() {
         let mut message = MessageEnvelope::new(
             "target",
-            crate::types::MessageKind::InternalFollowup,
+            holon_domain::MessageKind::InternalFollowup,
             MessageOrigin::System {
                 subsystem: "agent_message".into(),
             },
             AuthorityClass::RuntimeInstruction,
-            crate::types::Priority::Normal,
+            holon_domain::Priority::Normal,
             MessageBody::Text {
                 text: "forwarded message".into(),
             },

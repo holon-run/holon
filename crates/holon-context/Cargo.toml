@@ -1,0 +1,18 @@
+[package]
+name = "holon-context"
+version = "0.1.0"
+edition = "2021"
+description = "Read-only context selection and prompt rendering for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-system = { version = "0.1.0", path = "../holon-system" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"

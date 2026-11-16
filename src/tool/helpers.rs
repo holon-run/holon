@@ -482,14 +482,7 @@ pub(crate) fn normalize_path(path: &Path) -> Result<PathBuf> {
     Ok(normalized)
 }
 
-/// Truncate text to a maximum character count.
-pub(crate) fn truncate_text(text: &str, max: usize) -> String {
-    if text.chars().count() <= max {
-        text.to_string()
-    } else {
-        format!("{}...", text.chars().take(max).collect::<String>())
-    }
-}
+pub(crate) use holon_system::utf8::truncate_text;
 
 pub(crate) fn output_char_budget(max_output_tokens: Option<usize>) -> usize {
     max_output_tokens
@@ -525,30 +518,9 @@ pub(crate) fn command_display(cmd: &str) -> String {
     redacted
 }
 
-pub(crate) use holon_domain::command_digest;
-
-pub(crate) fn command_receipt_source_ref(
-    tool_execution_id: &str,
-    batch_item_index: Option<usize>,
-) -> String {
-    match batch_item_index {
-        Some(index) => format!("tool_execution:{tool_execution_id}:batch_item:{index}:cmd"),
-        None => format!("tool_execution:{tool_execution_id}:cmd"),
-    }
-}
-
-pub(crate) fn command_output_source_ref(
-    tool_execution_id: &str,
-    batch_item_index: Option<usize>,
-    stream: &str,
-) -> String {
-    match batch_item_index {
-        Some(index) => {
-            format!("tool_execution:{tool_execution_id}:batch_item:{index}:{stream}")
-        }
-        None => format!("tool_execution:{tool_execution_id}:{stream}"),
-    }
-}
+pub(crate) use holon_domain::{
+    command_digest, command_output_source_ref, command_receipt_source_ref,
+};
 
 pub(crate) fn command_cost_diagnostics(
     cmd: &str,

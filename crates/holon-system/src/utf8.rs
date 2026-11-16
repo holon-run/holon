@@ -68,6 +68,15 @@ impl std::fmt::Debug for IncrementalUtf8LossyDecoder {
     }
 }
 
+/// Truncate text to a maximum character count.
+pub fn truncate_text(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        format!("{}...", text.chars().take(max).collect::<String>())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;

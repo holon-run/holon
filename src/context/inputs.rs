@@ -1395,20 +1395,20 @@ mod resident_tests {
 
         let turn = TurnRecord::new("default", "turn-a", 1);
         let render = |entries: &[TranscriptEntry]| {
-            super::super::render_turn_execution_sequence(
+            holon_context::history::render_turn_execution_sequence(
                 &turn,
                 &[] as &[BriefRecord],
                 std::slice::from_ref(&tool),
                 entries,
-                super::super::RecentTurnProjectionMode::Continuity,
+                holon_context::history::RecentTurnProjectionMode::Continuity,
             )
         };
-        let selected_render = super::super::render_turn_execution_sequence(
+        let selected_render = holon_context::history::render_turn_execution_sequence(
             &turn,
             &[] as &[BriefRecord],
             std::slice::from_ref(&tool),
             &selected,
-            super::super::RecentTurnProjectionMode::Continuity,
+            holon_context::history::RecentTurnProjectionMode::Continuity,
         );
         assert_eq!(render(&full), selected_render);
         assert_eq!(selected_render.0.len(), 2);
@@ -4303,7 +4303,7 @@ mod resident_tests {
             Some("printf hello")
         );
         let rendered =
-            crate::context::render_recent_tool_execution_rollup(&[&projection]).join("\n");
+            holon_context::history::render_recent_tool_execution_rollup(&[&projection]).join("\n");
         assert!(rendered.contains("printf hello"));
         assert!(rendered.contains("tool_execution:tool-large-output:output"));
     }
