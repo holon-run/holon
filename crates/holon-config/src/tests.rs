@@ -90,6 +90,138 @@ fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
 }
 
 #[test]
+fn built_in_github_copilot_defaults_to_oauth_profile() {
+    let settings_env = HashMap::new();
+    let registry = built_in_provider_registry_with_settings(&settings_env).unwrap();
+    let github_copilot = registry
+        .get(&ProviderId::parse("github-copilot").unwrap())
+        .unwrap();
+
+    assert_eq!(
+        github_copilot.transport,
+        ProviderTransportKind::OpenAiChatCompletions
+    );
+    assert_eq!(github_copilot.base_url, "https://api.githubcopilot.com");
+    assert_eq!(github_copilot.auth.source, CredentialSource::AuthProfile);
+    assert_eq!(github_copilot.auth.kind, CredentialKind::OAuth);
+    assert_eq!(
+        github_copilot.auth.profile.as_deref(),
+        Some(GITHUB_COPILOT_CREDENTIAL_PROFILE)
+    );
+    assert!(github_copilot.credential.is_none());
+    let integration_id = github_copilot
+        .headers
+        .iter()
+        .find(|(name, _)| *name == "copilot-integration-id")
+        .map(|(_, value)| value.to_string());
+    assert_eq!(integration_id.as_deref(), Some("holon"));
+}
+
+#[test]
+fn github_copilot_catalog_is_discovery_only() {
+    use holon_domain::model_values::{
+        provider_definition, ModelDiscoveryAuth, ModelDiscoveryRoute, ProviderCatalogPolicy,
+    };
+    let definition = provider_definition("github-copilot").unwrap();
+    assert_eq!(
+        definition.catalog_policy,
+        ProviderCatalogPolicy::DiscoveryOnly
+    );
+    let discovery = definition.discovery.unwrap();
+    assert_eq!(discovery.auth, ModelDiscoveryAuth::Optional);
+    assert_eq!(discovery.route, ModelDiscoveryRoute::OpenAiCompatible);
+}
+
+#[test]
+fn provider_auth_config_client_id_round_trip() {
+    let auth: ProviderAuthConfig = serde_json::from_str(
+        r#"{"source":"credential_profile","kind":"oauth","profile":"github-copilot","client_id":"Iv1.client"}"#,
+    )
+    .unwrap();
+    assert_eq!(auth.client_id.as_deref(), Some("Iv1.client"));
+    assert_eq!(
+        serde_json::to_value(&auth).unwrap().get("client_id"),
+        Some(&json!("Iv1.client"))
+    );
+
+    let without: ProviderAuthConfig = serde_json::from_str(
+        r#"{"source":"credential_profile","kind":"oauth","profile":"github-copilot"}"#,
+    )
+    .unwrap();
+    assert!(without.client_id.is_none());
+    assert!(serde_json::to_value(&without)
+        .unwrap()
+        .get("client_id")
+        .is_none());
+}
+
+#[test]
+fn github_copilot_configured_headers_keep_builtin_integration_id() {
+    let mut config = HolonConfigFile::default();
+    let id = ProviderId::parse("github-copilot").unwrap();
+    config.providers.insert(
+        id.clone(),
+        ProviderConfigFile {
+            headers: Default::default(),
+            cache_capabilities: None,
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.githubcopilot.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                external: None,
+                client_id: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
+        },
+    );
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    let runtime = registry.get(&id).unwrap();
+    assert_eq!(
+        runtime
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "copilot-integration-id")
+            .map(|(_, value)| *value),
+        Some("holon")
+    );
+
+    let mut with_override = config;
+    with_override.providers.get_mut(&id).unwrap().headers =
+        ProviderHeaders::new([("X-Copilot-Test".to_string(), "1".to_string())]).unwrap();
+    let registry = resolve_provider_registry(
+        &with_override,
+        &HashMap::new(),
+        &CredentialStoreFile::default(),
+    )
+    .unwrap();
+    let runtime = registry.get(&id).unwrap();
+    assert_eq!(
+        runtime
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "copilot-integration-id")
+            .map(|(_, value)| *value),
+        Some("holon")
+    );
+    assert_eq!(
+        runtime
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-copilot-test")
+            .map(|(_, value)| *value),
+        Some("1")
+    );
+}
+
+#[test]
 fn opencode_go_registers_messages_and_legacy_chat_but_not_responses() {
     let entries = built_in_provider_doc_entries().unwrap();
     let mut endpoints = entries
@@ -862,6 +994,7 @@ fn custom_provider_auth_requires_explicit_contract() {
         env: None,
         profile: None,
         external: None,
+        client_id: None,
     };
     let err = super::validate_provider_auth(&id, &auth).unwrap_err();
     assert!(err.to_string().contains("requires auth.env"));
@@ -881,6 +1014,7 @@ fn provider_builtin_web_search_rejects_empty_tool_metadata() {
             env: Some("CUSTOM_API_KEY".into()),
             profile: None,
             external: None,
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -912,6 +1046,7 @@ fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
             env: Some("CUSTOM_API_KEY".into()),
             profile: None,
             external: None,
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -942,6 +1077,7 @@ fn provider_builtin_web_search_rejects_wrong_tool_type() {
             env: Some("CUSTOM_API_KEY".into()),
             profile: None,
             external: None,
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -972,6 +1108,7 @@ fn provider_builtin_web_search_accepts_codex_tool_type() {
             env: None,
             profile: None,
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -1001,6 +1138,7 @@ fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
             env: None,
             profile: None,
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -1039,6 +1177,7 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
                 env: None,
                 profile: None,
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -1166,6 +1305,7 @@ fn materialize_provider_config_resolves_env_credentials_from_settings() {
                 env: Some("OPENROUTER_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: None,
@@ -1258,6 +1398,7 @@ fn materialize_provider_config_resolves_credential_profile() {
                 env: None,
                 profile: Some(" openrouter:default ".into()),
                 external: None,
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: None,
@@ -1342,6 +1483,7 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
                 env: None,
                 profile: None,
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: None,
@@ -1535,6 +1677,7 @@ fn model_selection_derives_custom_provider_from_catalog_override() {
                 env: Some("CUSTOM_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: Some("custom-key".into()),
             credential_store_path: None,

@@ -16,8 +16,12 @@ use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OAuthDeviceProtocol {
+    /// OpenAI Codex first-party device flow (auth.openai.com JSON protocol).
     Codex,
+    /// OIDC-discovery-based standard device flow (for example xAI).
     Standard,
+    /// GitHub's fixed-endpoint OAuth device flow for user-owned apps.
+    GitHub,
 }
 
 pub fn load_oauth_profile_credential(material: &str, profile: &str) -> Result<OAuthCredential> {
@@ -26,10 +30,17 @@ pub fn load_oauth_profile_credential(material: &str, profile: &str) -> Result<OA
     let tokens = auth
         .tokens
         .ok_or_else(|| anyhow!("OAuth credential profile {profile} did not contain tokens"))?;
-    let expires_at = parse_jwt_expiration(&tokens.access_token)
-        .ok()
-        .flatten()
-        .or_else(|| auth.last_refresh.map(|ts| ts + chrono::Duration::hours(6)));
+    let token_expires_at = parse_jwt_expiration(&tokens.access_token).ok().flatten();
+    // GitHub material stores the app identity and the real token expiry (or
+    // none for non-expiring tokens); the last_refresh fallback would invent an
+    // expiry that forces pointless refresh attempts.
+    let expires_at = if auth.oauth_client_id.is_some() {
+        token_expires_at.or(auth.expires_at)
+    } else {
+        token_expires_at
+            .or(auth.expires_at)
+            .or_else(|| auth.last_refresh.map(|ts| ts + chrono::Duration::hours(6)))
+    };
     Ok(OAuthCredential {
         access_token: tokens.access_token,
         expires_at,
@@ -44,6 +55,17 @@ pub async fn refresh_oauth_profile_material(
 ) -> std::result::Result<RefreshedOAuthProfile, CodexOAuthRefreshFailure> {
     if config.device_protocol == OAuthDeviceProtocol::Codex {
         let refreshed = refresh_codex_oauth_profile_material(client, material, profile).await?;
+        return Ok(RefreshedOAuthProfile {
+            material: refreshed.material,
+            credential: OAuthCredential {
+                access_token: refreshed.credential.access_token,
+                expires_at: refreshed.credential.expires_at,
+            },
+        });
+    }
+    if config.device_protocol == OAuthDeviceProtocol::GitHub {
+        let refreshed =
+            refresh_github_oauth_profile_material(client, config, material, profile).await?;
         return Ok(RefreshedOAuthProfile {
             material: refreshed.material,
             credential: OAuthCredential {
@@ -86,7 +108,7 @@ pub async fn refresh_oauth_profile_material(
         .form(&[
             ("grant_type", "refresh_token"),
             ("refresh_token", refresh_token.as_str()),
-            ("client_id", config.client_id),
+            ("client_id", config.client_id.as_ref()),
         ])
         .send()
         .await
@@ -159,7 +181,7 @@ pub struct OAuthCredential {
 pub struct OAuthProviderConfig {
     pub provider_id: &'static str,
     pub issuer: &'static str,
-    pub client_id: &'static str,
+    pub client_id: std::borrow::Cow<'static, str>,
     pub scopes: &'static [&'static str],
     pub profile_name: &'static str,
     pub device_protocol: OAuthDeviceProtocol,
@@ -170,7 +192,7 @@ impl OAuthProviderConfig {
         Self {
             provider_id: "openai-codex",
             issuer: CODEX_OAUTH_ISSUER,
-            client_id: CODEX_OAUTH_CLIENT_ID,
+            client_id: CODEX_OAUTH_CLIENT_ID.into(),
             scopes: &[
                 "openid",
                 "profile",
@@ -188,7 +210,7 @@ impl OAuthProviderConfig {
         Self {
             provider_id: "xai",
             issuer: "https://auth.x.ai",
-            client_id: "b1a00492-073a-47ea-816f-4c329264a828",
+            client_id: "b1a00492-073a-47ea-816f-4c329264a828".into(),
             scopes: &[
                 "openid",
                 "profile",
@@ -201,14 +223,58 @@ impl OAuthProviderConfig {
             device_protocol: OAuthDeviceProtocol::Standard,
         }
     }
+
+    /// GitHub Copilot uses the user's own OAuth app, so the client ID is
+    /// installation-specific rather than compiled in.
+    pub fn github_copilot(client_id: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+        Self {
+            provider_id: GITHUB_COPILOT_PROVIDER_ID,
+            issuer: "https://github.com",
+            client_id: client_id.into(),
+            scopes: &[],
+            profile_name: GITHUB_COPILOT_CREDENTIAL_PROFILE,
+            device_protocol: OAuthDeviceProtocol::GitHub,
+        }
+    }
 }
 
 pub fn oauth_provider_config(provider_id: &str) -> Option<OAuthProviderConfig> {
     match provider_id {
         "openai-codex" | "codex" => Some(OAuthProviderConfig::codex()),
         "xai" => Some(OAuthProviderConfig::xai()),
+        // github-copilot needs the user's own client ID; use
+        // resolve_oauth_provider_config instead.
         _ => None,
     }
+}
+
+/// Resolves the OAuth configuration for a provider, including the
+/// user-supplied client ID that GitHub Copilot device login requires.
+///
+/// `client_id_hint` is consulted before the `GITHUB_COPILOT_CLIENT_ID`
+/// environment variable for GitHub Copilot; the winning value is persisted in
+/// the credential profile so later refreshes do not depend on ambient
+/// configuration.
+pub fn resolve_oauth_provider_config(
+    provider_id: &str,
+    client_id_hint: Option<&str>,
+) -> Result<Option<OAuthProviderConfig>> {
+    if provider_id == GITHUB_COPILOT_PROVIDER_ID {
+        let client_id = client_id_hint
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+            .or_else(|| env_client_id(GITHUB_COPILOT_CLIENT_ID_ENV_VAR))
+            .ok_or_else(|| {
+                anyhow!(
+                    "GitHub Copilot login requires the client ID of your own GitHub OAuth app; \
+                     set providers.github-copilot.auth.client_id or {}",
+                    GITHUB_COPILOT_CLIENT_ID_ENV_VAR
+                )
+            })?;
+        return Ok(Some(OAuthProviderConfig::github_copilot(client_id)));
+    }
+    Ok(oauth_provider_config(provider_id))
 }
 
 #[derive(Debug, Clone)]
@@ -220,17 +286,30 @@ pub struct CodexCliCredential {
     pub source: String,
 }
 
+/// Credential profile material shared by the OAuth device-flow providers.
+///
+/// `expires_at` and `oauth_client_id` are only written by the GitHub
+/// protocol: GitHub tokens are opaque (no JWT claims), report their own
+/// lifetime, and the user's app client ID must survive alongside the tokens
+/// so refresh works without ambient configuration.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct AuthDotJson {
     #[serde(default)]
     tokens: Option<TokenData>,
     #[serde(default)]
     last_refresh: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    expires_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    oauth_client_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct TokenData {
     access_token: String,
+    // GitHub may issue tokens without a refresh token (non-expiring-token
+    // apps); keep codex/xai material byte-compatible by omitting empties.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     refresh_token: String,
     #[serde(default)]
     account_id: Option<String>,
@@ -452,6 +531,19 @@ const CODEX_OAUTH_CALLBACK_PORT: u16 = 1455;
 const CODEX_OAUTH_CALLBACK_FALLBACK_PORT: u16 = 1457;
 const CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS: i64 = 15 * 60;
 
+const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
+const GITHUB_COPILOT_CREDENTIAL_PROFILE: &str = "github-copilot";
+const GITHUB_COPILOT_CLIENT_ID_ENV_VAR: &str = "GITHUB_COPILOT_CLIENT_ID";
+const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
+const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
+
+fn env_client_id(env_var: &str) -> Option<String> {
+    std::env::var(env_var)
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
 pub fn run_codex_oauth_login_profile_material() -> Result<CodexOAuthLoginResult> {
     run_codex_oauth_login_profile_material_with_browser(true)
 }
@@ -478,6 +570,9 @@ pub async fn request_codex_device_code() -> Result<CodexDeviceCode> {
 }
 
 pub async fn request_oauth_device_code(config: &OAuthProviderConfig) -> Result<CodexDeviceCode> {
+    if config.device_protocol == OAuthDeviceProtocol::GitHub {
+        return request_github_device_code(config).await;
+    }
     if config.device_protocol == OAuthDeviceProtocol::Standard {
         return request_standard_oauth_device_code(config).await;
     }
@@ -539,6 +634,9 @@ pub async fn complete_oauth_device_login(
     }
     if config.device_protocol == OAuthDeviceProtocol::Standard {
         return complete_standard_oauth_device_login(config, &device_code).await;
+    }
+    if config.device_protocol == OAuthDeviceProtocol::GitHub {
+        return complete_github_device_login(config, &device_code).await;
     }
     let issuer = std::env::var(CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| CODEX_OAUTH_ISSUER.to_string());
@@ -666,12 +764,14 @@ async fn request_standard_oauth_device_code(
         .device_authorization_endpoint
         .unwrap_or_else(|| format!("{}/oauth2/device/code", config.issuer.trim_end_matches('/')));
     validate_oauth_endpoint(config, &endpoint)?;
+    let scope = config.scopes.join(" ");
+    let form: Vec<(&str, &str)> = vec![
+        ("client_id", config.client_id.as_ref()),
+        ("scope", scope.as_str()),
+    ];
     let response = oauth_http_client()?
         .post(endpoint)
-        .form(&[
-            ("client_id", config.client_id),
-            ("scope", &config.scopes.join(" ")),
-        ])
+        .form(&form)
         .send()
         .await
         .with_context(|| format!("failed to request {} device code", config.provider_id))?;
@@ -719,7 +819,7 @@ async fn complete_standard_oauth_device_login(
             .form(&[
                 ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
                 ("device_code", device_code.secret.as_str()),
-                ("client_id", config.client_id),
+                ("client_id", config.client_id.as_ref()),
             ])
             .send()
             .await
@@ -767,6 +867,316 @@ async fn complete_standard_oauth_device_login(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct GitHubTokenResponse {
+    #[serde(default)]
+    error: Option<String>,
+    #[serde(default)]
+    error_description: Option<String>,
+    #[serde(default)]
+    access_token: Option<String>,
+    #[serde(default)]
+    refresh_token: Option<String>,
+    #[serde(default)]
+    expires_in: Option<i64>,
+}
+
+async fn request_github_device_code(config: &OAuthProviderConfig) -> Result<CodexDeviceCode> {
+    let scope = config.scopes.join(" ");
+    let mut form = vec![("client_id", config.client_id.as_ref())];
+    if !scope.is_empty() {
+        form.push(("scope", scope.as_str()));
+    }
+    let response = oauth_http_client()?
+        .post(GITHUB_DEVICE_CODE_URL)
+        .header("Accept", "application/json")
+        .form(&form)
+        .send()
+        .await
+        .with_context(|| format!("failed to request {} device code", config.provider_id))?;
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().await.unwrap_or_default();
+        anyhow::bail!(
+            "{} device code request failed with HTTP {status}: {}",
+            config.provider_id,
+            try_parse_refresh_error_message(&body).unwrap_or(body)
+        );
+    }
+    let body = response
+        .json::<StandardDeviceCodeResponse>()
+        .await
+        .with_context(|| format!("failed to parse {} device code", config.provider_id))?;
+    Ok(CodexDeviceCode {
+        provider_id: config.provider_id.to_string(),
+        verification_url: body
+            .verification_uri_complete
+            .unwrap_or(body.verification_uri),
+        user_code: body.user_code,
+        interval: body.interval.max(1),
+        expires_at: Utc::now() + chrono::Duration::seconds(body.expires_in.max(1)),
+        secret: body.device_code,
+        token_endpoint: Some(GITHUB_TOKEN_URL.to_string()),
+    })
+}
+
+async fn complete_github_device_login(
+    config: &OAuthProviderConfig,
+    device_code: &CodexDeviceCode,
+) -> Result<CodexOAuthLoginResult> {
+    let endpoint = device_code
+        .token_endpoint
+        .as_deref()
+        .context("OAuth device code did not retain its token endpoint")?;
+    let deadline = device_code.expires_at;
+    let mut interval = device_code.interval.max(1);
+    let client = oauth_http_client()?;
+    loop {
+        let response = client
+            .post(endpoint)
+            .header("Accept", "application/json")
+            .form(&[
+                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
+                ("device_code", device_code.secret.as_str()),
+                ("client_id", config.client_id.as_ref()),
+            ])
+            .send()
+            .await
+            .with_context(|| format!("failed to poll {} device login", config.provider_id))?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        // GitHub answers device polls with HTTP 200 plus an `error` field in
+        // the JSON body while authorization is pending or has failed.
+        let parsed = serde_json::from_str::<GitHubTokenResponse>(&body);
+        if let Ok(tokens) = &parsed {
+            if tokens.error.is_none() {
+                if let Some(access_token) = tokens
+                    .access_token
+                    .clone()
+                    .filter(|token| !token.trim().is_empty())
+                {
+                    return github_tokens_to_login_result(
+                        config,
+                        access_token,
+                        tokens
+                            .refresh_token
+                            .clone()
+                            .filter(|token| !token.trim().is_empty()),
+                        tokens.expires_in,
+                    );
+                }
+            }
+        }
+        match classify_device_poll_status(status, &body) {
+            DevicePollStatus::Pending => {}
+            DevicePollStatus::SlowDown => interval = interval.saturating_add(5),
+            DevicePollStatus::Expired => {
+                anyhow::bail!(
+                    "{} device login expired before authorization",
+                    config.provider_id
+                )
+            }
+            DevicePollStatus::AccessDenied => {
+                anyhow::bail!("{} device login was denied by the user", config.provider_id)
+            }
+            DevicePollStatus::Failed(message) => anyhow::bail!(
+                "{} device login failed with HTTP {status}: {message}",
+                config.provider_id
+            ),
+        }
+        if Utc::now() >= deadline {
+            anyhow::bail!("{} device login expired", config.provider_id);
+        }
+        tokio::time::sleep(Duration::from_secs(interval)).await;
+    }
+}
+
+fn github_tokens_to_login_result(
+    config: &OAuthProviderConfig,
+    access_token: String,
+    refresh_token: Option<String>,
+    expires_in: Option<i64>,
+) -> Result<CodexOAuthLoginResult> {
+    let auth = AuthDotJson {
+        tokens: Some(TokenData {
+            access_token,
+            refresh_token: refresh_token.unwrap_or_default(),
+            account_id: None,
+            id_token: None,
+        }),
+        last_refresh: Some(Utc::now()),
+        expires_at: expires_in
+            .filter(|seconds| *seconds > 0)
+            .map(|seconds| Utc::now() + chrono::Duration::seconds(seconds)),
+        oauth_client_id: Some(config.client_id.to_string()),
+    };
+    Ok(CodexOAuthLoginResult {
+        material: serde_json::to_string(&auth).with_context(|| {
+            format!(
+                "failed to serialize {} OAuth credential",
+                config.provider_id
+            )
+        })?,
+        account_id: None,
+    })
+}
+
+async fn refresh_github_oauth_profile_material(
+    client: &reqwest::Client,
+    config: &OAuthProviderConfig,
+    material: &str,
+    profile: &str,
+) -> std::result::Result<RefreshedOAuthProfile, CodexOAuthRefreshFailure> {
+    let mut auth: AuthDotJson =
+        serde_json::from_str(material).map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Other,
+            status: None,
+            message: format!("failed to parse Holon credential profile {profile}: {error}"),
+        })?;
+    // Prefer the client ID captured at login; fall back to the resolved
+    // configuration so refresh also works after the user rotates their
+    // GitHub OAuth app client ID.
+    let client_id = auth
+        .oauth_client_id
+        .clone()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or_else(|| config.client_id.to_string());
+    let refresh_token = auth
+        .tokens
+        .as_ref()
+        .map(|tokens| tokens.refresh_token.clone())
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Rejected,
+            status: None,
+            message: format!(
+                "Holon credential profile {profile} has no refresh token; \
+                 run GitHub Copilot device login again"
+            ),
+        })?;
+    let response = client
+        .post(GITHUB_TOKEN_URL)
+        .header("Accept", "application/json")
+        .form(&[
+            ("grant_type", "refresh_token"),
+            ("refresh_token", refresh_token.as_str()),
+            ("client_id", client_id.as_str()),
+        ])
+        .send()
+        .await
+        .map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::Transport,
+            status: None,
+            message: format!(
+                "failed to refresh {} OAuth token: {error}",
+                config.provider_id
+            ),
+        })?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(CodexOAuthRefreshFailure {
+            kind: classify_github_refresh_failure(status, &body),
+            status: Some(status.as_u16()),
+            message: format!(
+                "{} OAuth refresh failed with HTTP {status}: {}",
+                config.provider_id,
+                try_parse_refresh_error_message(&body).unwrap_or(body)
+            ),
+        });
+    }
+    let tokens: GitHubTokenResponse =
+        serde_json::from_str(&body).map_err(|error| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+            status: Some(status.as_u16()),
+            message: format!(
+                "failed to parse {} OAuth refresh response: {error}",
+                config.provider_id
+            ),
+        })?;
+    // GitHub also reports refresh failures with HTTP 200 plus an error field.
+    if let Some(error) = tokens.error.as_deref() {
+        return Err(CodexOAuthRefreshFailure {
+            kind: classify_github_refresh_failure(status, &body),
+            status: Some(status.as_u16()),
+            message: format!(
+                "{} OAuth refresh failed: {}",
+                config.provider_id,
+                tokens.error_description.as_deref().unwrap_or(error)
+            ),
+        });
+    }
+    let access_token = tokens
+        .access_token
+        .filter(|token| !token.trim().is_empty())
+        .ok_or_else(|| CodexOAuthRefreshFailure {
+            kind: CodexOAuthRefreshFailureKind::InvalidResponse,
+            status: Some(status.as_u16()),
+            message: format!(
+                "{} OAuth refresh response did not contain an access token",
+                config.provider_id
+            ),
+        })?;
+    let mut current = auth.tokens.take().unwrap_or(TokenData {
+        access_token: String::new(),
+        refresh_token: String::new(),
+        account_id: None,
+        id_token: None,
+    });
+    current.access_token = access_token;
+    // GitHub rotates the refresh token; keep the stored one if the response
+    // omits it.
+    if let Some(rotated) = tokens
+        .refresh_token
+        .filter(|token| !token.trim().is_empty())
+    {
+        current.refresh_token = rotated;
+    }
+    let now = Utc::now();
+    let expires_at = tokens
+        .expires_in
+        .filter(|seconds| *seconds > 0)
+        .map(|seconds| now + chrono::Duration::seconds(seconds));
+    auth.tokens = Some(current);
+    auth.last_refresh = Some(now);
+    auth.expires_at = expires_at;
+    auth.oauth_client_id = Some(client_id);
+    let material = serde_json::to_string(&auth).map_err(|error| CodexOAuthRefreshFailure {
+        kind: CodexOAuthRefreshFailureKind::Other,
+        status: None,
+        message: format!("failed to serialize {profile} OAuth credential: {error}"),
+    })?;
+    let access_token = auth
+        .tokens
+        .as_ref()
+        .map(|tokens| tokens.access_token.clone())
+        .unwrap_or_default();
+    Ok(RefreshedOAuthProfile {
+        material,
+        credential: OAuthCredential {
+            access_token,
+            expires_at,
+        },
+    })
+}
+
+fn classify_github_refresh_failure(
+    status: reqwest::StatusCode,
+    body: &str,
+) -> CodexOAuthRefreshFailureKind {
+    match extract_refresh_error_code(body).as_deref() {
+        // GitHub reports OAuth-standard codes: an invalid (expired, revoked,
+        // or rotated-away) grant means the user must log in again.
+        Some("invalid_grant") | Some("expired_token") | Some("refresh_token_expired") => {
+            CodexOAuthRefreshFailureKind::Expired
+        }
+        Some("incorrect_client_credentials")
+        | Some("unverified_user_agent")
+        | Some("device_flow_disabled") => CodexOAuthRefreshFailureKind::Rejected,
+        _ => classify_refresh_failure_kind(status, body),
+    }
+}
+
 fn oauth_tokens_to_login_result(
     config: &OAuthProviderConfig,
     access_token: String,
@@ -786,6 +1196,8 @@ fn oauth_tokens_to_login_result(
             id_token: id_token.map(Value::String),
         }),
         last_refresh: Some(Utc::now()),
+        expires_at: None,
+        oauth_client_id: None,
     };
     Ok(CodexOAuthLoginResult {
         material: serde_json::to_string(&auth).with_context(|| {
@@ -1226,6 +1638,8 @@ fn codex_oauth_tokens_to_login_result(tokens: LoginTokenResponse) -> Result<Code
             id_token: Some(Value::String(tokens.id_token)),
         }),
         last_refresh: Some(Utc::now()),
+        expires_at: None,
+        oauth_client_id: None,
     };
     let material = serde_json::to_string(&auth)
         .context("failed to serialize OpenAI Codex OAuth credential")?;
@@ -1623,6 +2037,8 @@ mod tests {
                     })),
                 }),
                 last_refresh: None,
+                expires_at: None,
+                oauth_client_id: None,
             },
             "file",
         )
@@ -1707,6 +2123,8 @@ mod tests {
                 id_token: None,
             }),
             last_refresh: None,
+            expires_at: None,
+            oauth_client_id: None,
         };
 
         apply_standard_token_response(
@@ -1815,5 +2233,97 @@ mod tests {
         let account = compute_codex_keychain_account(std::path::Path::new("/tmp/codex-home"));
         assert!(account.starts_with("cli|"));
         assert_eq!(account.len(), 20);
+    }
+
+    #[test]
+    fn github_copilot_config_uses_the_users_own_client_id() {
+        let config = OAuthProviderConfig::github_copilot("Iv1.user-owned-client");
+
+        assert_eq!(config.provider_id, GITHUB_COPILOT_PROVIDER_ID);
+        assert_eq!(config.profile_name, GITHUB_COPILOT_CREDENTIAL_PROFILE);
+        assert_eq!(config.client_id, "Iv1.user-owned-client");
+        assert_eq!(config.device_protocol, OAuthDeviceProtocol::GitHub);
+    }
+
+    #[test]
+    fn github_copilot_is_not_a_static_oauth_provider() {
+        // The client id is user-owned, so the static lookup must not claim
+        // GitHub Copilot support without one.
+        assert!(oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID).is_none());
+    }
+
+    #[test]
+    fn github_copilot_resolution_requires_a_client_id() {
+        let error = resolve_oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID, None)
+            .expect_err("GitHub Copilot must not resolve without a client id");
+        assert!(
+            error.to_string().contains("client ID"),
+            "unexpected error: {error}"
+        );
+
+        let resolved = resolve_oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID, Some("  "))
+            .expect_err("a blank client id must not resolve");
+        assert!(resolved.to_string().contains("client ID"));
+    }
+
+    #[test]
+    fn github_copilot_material_records_client_id_and_expiry() {
+        let result = github_tokens_to_login_result(
+            &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
+            "gho_access".to_string(),
+            Some("ghr_refresh".to_string()),
+            Some(28800),
+        )
+        .expect("GitHub Copilot material should serialize");
+        let auth: AuthDotJson =
+            serde_json::from_str(&result.material).expect("material should use auth.json shape");
+
+        assert_eq!(
+            auth.oauth_client_id.as_deref(),
+            Some("Iv1.user-owned-client")
+        );
+        let tokens = auth.tokens.expect("tokens should be present");
+        assert_eq!(tokens.access_token, "gho_access");
+        assert_eq!(tokens.refresh_token, "ghr_refresh");
+        assert!(auth.expires_at.is_some());
+    }
+
+    #[test]
+    fn github_copilot_material_without_refresh_token_stays_refreshable_shaped() {
+        let result = github_tokens_to_login_result(
+            &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
+            "gho_access".to_string(),
+            None,
+            None,
+        )
+        .expect("GitHub Copilot material should serialize");
+        let auth: AuthDotJson =
+            serde_json::from_str(&result.material).expect("material should use auth.json shape");
+
+        assert_eq!(auth.tokens.expect("tokens").refresh_token, "");
+        assert!(auth.expires_at.is_none());
+    }
+
+    #[test]
+    fn github_device_poll_uses_oauth_standard_error_codes() {
+        assert_eq!(
+            classify_device_poll_status(
+                reqwest::StatusCode::OK,
+                r#"{"error":"authorization_pending"}"#
+            ),
+            DevicePollStatus::Pending
+        );
+        assert_eq!(
+            classify_device_poll_status(reqwest::StatusCode::OK, r#"{"error":"slow_down"}"#),
+            DevicePollStatus::SlowDown
+        );
+        assert_eq!(
+            classify_device_poll_status(reqwest::StatusCode::OK, r#"{"error":"expired_token"}"#),
+            DevicePollStatus::Expired
+        );
+        assert_eq!(
+            classify_device_poll_status(reqwest::StatusCode::OK, r#"{"error":"access_denied"}"#),
+            DevicePollStatus::AccessDenied
+        );
     }
 }

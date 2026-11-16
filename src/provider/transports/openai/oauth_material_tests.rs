@@ -68,6 +68,7 @@ fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig
             env: None,
             profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         credential,
         credential_store_path: None,

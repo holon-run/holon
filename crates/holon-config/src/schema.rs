@@ -339,6 +339,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "providers.<id>.endpoints.<endpoint_id>.auth.client_id",
+            kind: "string",
+            description: "OAuth client id used when endpoint auth.kind=oauth requires a user-owned OAuth app (github-copilot).",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "providers.<id>.plans.<plan_id>.endpoint",
             kind: "provider_endpoint_ref",
             description: "Named provider plan endpoint route. This is persisted routing metadata; legacy provider/model refs remain supported.",
@@ -390,6 +397,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "providers.<id>.auth.external",
             kind: "string",
             description: "External credential provider id used when auth.source=external_cli.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "providers.<id>.auth.client_id",
+            kind: "string",
+            description: "OAuth client id used when auth.kind=oauth requires a user-owned OAuth app (github-copilot).",
             default: Value::Null,
             allowed_values: vec![],
         },

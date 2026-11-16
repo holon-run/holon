@@ -196,6 +196,7 @@ fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig
             env: None,
             profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         credential,
         credential_store_path: None,
@@ -222,6 +223,7 @@ fn test_xai_oauth_config(credential: String) -> ProviderRuntimeConfig {
             env: None,
             profile: Some("xai".into()),
             external: None,
+            client_id: None,
         },
         credential: Some(credential),
         credential_store_path: None,
@@ -359,6 +361,13 @@ async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget(
     ] {
         for (configured, context) in [(131_072, None), (1_024, None), (131_072, Some(8_192))] {
             let mut config = test_openai_codex_config(Some("local-test-only".into()));
+            // This test covers the wire output limit, not credentials: use a
+            // static API key so the OAuth profile path stays out of scope.
+            config.auth.source = CredentialSource::Env;
+            config.auth.kind = CredentialKind::ApiKey;
+            config.auth.env = Some("TOKENHUB_TEST_KEY".into());
+            config.auth.profile = None;
+            config.auth.external = None;
             config.route_provider = ProviderId::parse(provider).unwrap();
             config.route_endpoint = ProviderEndpointId::parse(endpoint).unwrap();
             config.base_url = base_url.clone();
@@ -1133,6 +1142,7 @@ fn image_dialect_uses_canonical_provider_not_endpoint_display_id() {
     runtime.auth = ProviderAuthConfig {
         source: CredentialSource::None,
         kind: CredentialKind::None,
+        client_id: None,
         ..Default::default()
     };
     let home = std::path::Path::new(".");

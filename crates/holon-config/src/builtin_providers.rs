@@ -690,7 +690,10 @@ pub fn resolve_provider_registry(
             .get(&provider.id)
             .or_else(|| stored_config.providers.get(&provider.route_provider))
         {
-            provider.headers = effective_provider_headers(config, &provider.route_endpoint)?;
+            let configured_headers = effective_provider_headers(config, &provider.route_endpoint)?;
+            // Built-in defaults stay when the user configures no headers;
+            // explicit user headers win per name.
+            provider.headers = provider.headers.merged(&configured_headers)?;
             provider_headers::validate_headers_for_provider(
                 &provider.headers,
                 &provider.route_provider,
@@ -872,6 +875,9 @@ pub(crate) fn populate_built_in_provider_catalog(
             ProviderMaterializer::VercelAiGateway => {
                 insert_vercel_ai_gateway_provider(catalog, definition, settings_env)?
             }
+            ProviderMaterializer::GitHubCopilot => {
+                insert_github_copilot_provider(catalog, definition, settings_env)?
+            }
             ProviderMaterializer::AliasOnly => {}
         }
     }
@@ -920,6 +926,7 @@ fn insert_openai_codex_provider(
                 env: None,
                 profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -932,6 +939,47 @@ fn insert_openai_codex_provider(
             reasoning_effort,
             context_management: Default::default(),
             builtin_web_search: Some(openai_codex_builtin_web_search_config()),
+        },
+    )
+}
+
+fn insert_github_copilot_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    // Real integration identity only: no editor/IDE mimicry headers.
+    let headers = holon_provider::config::ProviderHeaders::new([(
+        "Copilot-Integration-Id".to_string(),
+        "holon".to_string(),
+    )])?;
+    insert_definition_runtime(
+        catalog,
+        definition,
+        ProviderRuntimeConfig {
+            headers,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
+            base_url: get_config_value("HOLON_GITHUB_COPILOT_BASE_URL", None, settings_env)
+                .unwrap_or_else(|| definition.default_base_url.to_string()),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                external: None,
+                client_id: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
         },
     )
 }
@@ -960,6 +1008,7 @@ fn insert_openai_provider(
                 env: Some("OPENAI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: env::var("OPENAI_API_KEY").ok(),
             credential_store_path: None,
@@ -995,6 +1044,7 @@ fn insert_anthropic_provider(
                 env: Some("ANTHROPIC_AUTH_TOKEN".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: get_config_value("ANTHROPIC_AUTH_TOKEN", None, settings_env),
             credential_store_path: None,
@@ -1030,6 +1080,7 @@ fn insert_gemini_provider(
                 env: Some("GEMINI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: get_config_value("GEMINI_API_KEY", None, settings_env),
             credential_store_path: None,
@@ -1139,6 +1190,7 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
                 env: Some(env_name),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential,
             credential_store_path: None,
@@ -1197,6 +1249,7 @@ fn insert_builtin_http_provider_with_context_management(
                     env: Some(env.clone()),
                     profile: None,
                     external: None,
+                    client_id: None,
                 })
                 .unwrap_or_default(),
             credential: credential.map(|resolution| resolution.value),
@@ -1340,8 +1393,11 @@ pub fn materialize_provider_config(
     runtime.transport = effective_provider_config.transport;
     runtime.base_url = effective_provider_config.base_url;
     runtime.auth = effective_provider_config.auth;
-    runtime.headers =
+    let configured_headers =
         effective_provider_headers(&provider_config, &ProviderEndpointId::default_endpoint())?;
+    // Built-in default headers (e.g. Copilot-Integration-Id) survive absent
+    // user headers; explicit user headers win per name.
+    runtime.headers = runtime.headers.merged(&configured_headers)?;
     runtime.credential = credential;
     if provider_config.reasoning_effort.is_some() {
         runtime.reasoning_effort = provider_config.reasoning_effort;
@@ -1669,6 +1725,7 @@ pub fn provider_registry_for_tests(
                 env: None,
                 profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1695,6 +1752,7 @@ pub fn provider_registry_for_tests(
                 env: Some("OPENAI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: openai_key.map(ToString::to_string),
             credential_store_path: None,
@@ -1721,6 +1779,7 @@ pub fn provider_registry_for_tests(
                 env: Some("ANTHROPIC_AUTH_TOKEN".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: anthropic_token.map(ToString::to_string),
             credential_store_path: None,
@@ -1747,6 +1806,7 @@ pub fn provider_registry_for_tests(
                 env: Some("GEMINI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1773,6 +1833,7 @@ pub fn provider_registry_for_tests(
                 env: Some("TYPESAFE_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,

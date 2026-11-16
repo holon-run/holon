@@ -1414,6 +1414,7 @@ fn runtime_config_surface_reports_credential_free_providers_as_ready() {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,

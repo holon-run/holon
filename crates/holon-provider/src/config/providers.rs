@@ -31,6 +31,8 @@ pub enum CredentialKind {
 
 pub const OPENAI_CODEX_CREDENTIAL_PROFILE: &str = "openai-codex";
 
+pub const GITHUB_COPILOT_CREDENTIAL_PROFILE: &str = "github-copilot";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderRuntimeConfig {
     pub id: ProviderId,
@@ -86,6 +88,11 @@ pub struct ProviderAuthConfig {
     pub profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external: Option<String>,
+    /// OAuth client id for providers whose device login requires a
+    /// user-owned OAuth app (e.g. `github-copilot`). Optional;
+    /// runtime-managed OAuth providers ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id: Option<String>,
 }
 
 /// Per-endpoint prompt-cache capabilities for Anthropic-compatible
@@ -178,6 +185,7 @@ impl Default for ProviderAuthConfig {
             env: None,
             profile: None,
             external: None,
+            client_id: None,
         }
     }
 }

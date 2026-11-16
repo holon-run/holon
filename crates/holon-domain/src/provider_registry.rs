@@ -8,6 +8,7 @@ pub enum ProviderMaterializer {
     Gemini,
     Generic,
     VercelAiGateway,
+    GitHubCopilot,
     AliasOnly,
 }
 
@@ -198,6 +199,13 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         "gemini" => "gemini" @ "default",
         GeminiGenerateContent, "https://generativelanguage.googleapis.com/v1beta",
         ["GEMINI_API_KEY"], Gemini, Default, None, None, None, StaticOnly
+    ),
+    provider!(
+        "github-copilot" => "github-copilot" @ "default",
+        OpenAiChatCompletions, "https://api.githubcopilot.com", [],
+        GitHubCopilot, Default, None, None,
+        discovery!(Optional, ModelDiscoveryRoute::OpenAiCompatible, OpenAiCompatible),
+        DiscoveryOnly
     ),
     provider!(
         "arcee" => "arcee" @ "default",

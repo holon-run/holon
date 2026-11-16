@@ -9,7 +9,10 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind};
+use crate::config::{
+    CredentialKind, CredentialSource, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
+    ProviderTransportKind,
+};
 use holon_domain::model_values::{
     provider_definition, tencent_tokenhub::is_tencent_tokenhub_model_id, BuiltInModelMetadata,
     ModelCapabilityFlags, ModelDiscoveryAuth, ModelDiscoveryDecoder, ModelDiscoveryDefinition,
@@ -332,13 +335,36 @@ fn provider_models_request(
     match discovery.auth {
         ModelDiscoveryAuth::Public => Ok(request),
         ModelDiscoveryAuth::Required | ModelDiscoveryAuth::Optional => {
-            Ok(if let Some(credential) = provider.credential.as_deref() {
-                request.bearer_auth(credential)
-            } else {
-                request
+            Ok(match discovery_bearer_credential(provider)? {
+                Some(credential) => request.bearer_auth(credential),
+                None => request,
             })
         }
     }
+}
+
+/// Resolve the bearer credential for a model-discovery request.
+///
+/// OAuth credential profiles store a material document rather than the token
+/// itself, so the access token has to be read from the material. Providers
+/// with a static credential keep using it verbatim.
+fn discovery_bearer_credential(provider: &ProviderRuntimeConfig) -> Result<Option<String>> {
+    let Some(credential) = provider.credential.as_deref() else {
+        return Ok(None);
+    };
+    if !matches!(
+        (provider.auth.source, provider.auth.kind),
+        (CredentialSource::AuthProfile, CredentialKind::OAuth)
+    ) {
+        return Ok(Some(credential.to_string()));
+    }
+    let profile = provider
+        .auth
+        .profile
+        .as_deref()
+        .unwrap_or_else(|| provider.id.as_str());
+    let oauth = crate::auth::load_oauth_profile_credential(credential, profile)?;
+    Ok(Some(oauth.access_token))
 }
 
 #[doc(hidden)]
@@ -1705,6 +1731,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1730,6 +1757,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: Some("test-key".into()),
             credential_store_path: None,
@@ -1755,6 +1783,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1780,6 +1809,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1805,6 +1835,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1830,6 +1861,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1855,6 +1887,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1880,6 +1913,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1905,6 +1939,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1930,6 +1965,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1955,6 +1991,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -2974,6 +3011,38 @@ mod tests {
                 "Bearer test-only-discovery-credential"
             );
         }
+    }
+
+    #[test]
+    fn oauth_model_discovery_request_uses_the_profile_access_token() {
+        let mut provider = custom_openai_provider("https://api.githubcopilot.com".into());
+        provider.auth.source = CredentialSource::AuthProfile;
+        provider.auth.kind = CredentialKind::OAuth;
+        provider.auth.profile = Some("github-copilot".into());
+        provider.credential = Some(
+            serde_json::json!({
+                "tokens": {
+                    "access_token": "gho_test_access",
+                    "refresh_token": "ghr_test_refresh"
+                },
+                "last_refresh": "2026-01-01T00:00:00Z"
+            })
+            .to_string(),
+        );
+        let discovery = provider_discovery_definition(&provider).unwrap();
+        let request = provider_models_request(
+            &provider,
+            discovery,
+            &provider_models_url(&provider).unwrap(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer gho_test_access"
+        );
     }
 
     #[test]

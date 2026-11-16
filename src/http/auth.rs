@@ -741,11 +741,21 @@ pub async fn start_oauth_device_login(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
-    let config = crate::auth::oauth_provider_config(&provider).ok_or_else(|| {
-        error_response(anyhow::anyhow!(
-            "provider {provider} does not support OAuth device login"
-        ))
-    })?;
+    // GitHub Copilot uses the user's own OAuth app, so its client id comes
+    // from the stored provider configuration instead of the built-in catalog.
+    let app_config = state.host.config();
+    let configured_client_id = crate::config::ProviderId::parse(&provider)
+        .ok()
+        .and_then(|provider_id| app_config.stored_config.providers.get(&provider_id))
+        .and_then(|provider_config| provider_config.auth.client_id.clone());
+    let config =
+        crate::auth::resolve_oauth_provider_config(&provider, configured_client_id.as_deref())
+            .map_err(error_response)?
+            .ok_or_else(|| {
+                error_response(anyhow::anyhow!(
+                    "provider {provider} does not support OAuth device login"
+                ))
+            })?;
     let device_code = crate::auth::request_oauth_device_code(&config)
         .await
         .map_err(error_response)?;
