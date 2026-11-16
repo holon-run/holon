@@ -49,6 +49,12 @@ impl ContinuationScopeId {
 pub trait ProviderDispatchGuard: Send + Sync + std::fmt::Debug {
     fn before_dispatch(&self) -> anyhow::Result<()>;
 
+    /// Final admission for optional auxiliary IO. False skips it without IO;
+    /// execution or integrity errors must still propagate.
+    fn before_auxiliary_dispatch(&self) -> anyhow::Result<bool> {
+        self.before_dispatch().map(|()| true)
+    }
+
     /// Declare that the next dispatch's contract rejection is
     /// adapter-correctable in-turn: the adapter either replays the same
     /// inference without the rejected continuation form or skips the rejected

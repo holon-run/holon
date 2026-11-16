@@ -1375,6 +1375,15 @@ fn openai_provider_window_tracks_latest_compaction_item() {
 
 #[tokio::test]
 async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
+    run_openai_compaction_final_admission(false).await;
+}
+
+#[tokio::test]
+async fn openai_compaction_final_admission_skips_both_paths_without_http() {
+    run_openai_compaction_final_admission(true).await;
+}
+
+async fn run_openai_compaction_final_admission(skip: bool) {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     #[derive(Debug, thiserror::Error)]
@@ -1382,12 +1391,25 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
     struct CompactionDenied;
 
     #[derive(Debug, Default)]
-    struct RejectGuard(AtomicUsize);
+    struct RejectGuard {
+        normal_calls: AtomicUsize,
+        auxiliary_calls: AtomicUsize,
+        skip: bool,
+    }
 
     impl crate::provider::ProviderDispatchGuard for RejectGuard {
         fn before_dispatch(&self) -> anyhow::Result<()> {
-            self.0.fetch_add(1, Ordering::SeqCst);
+            self.normal_calls.fetch_add(1, Ordering::SeqCst);
             Err(CompactionDenied.into())
+        }
+
+        fn before_auxiliary_dispatch(&self) -> anyhow::Result<bool> {
+            self.auxiliary_calls.fetch_add(1, Ordering::SeqCst);
+            if self.skip {
+                Ok(false)
+            } else {
+                self.before_dispatch().map(|()| true)
+            }
         }
     }
 
@@ -1414,11 +1436,14 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
             generation: 1,
         }),
     );
-    let guard = RejectGuard::default();
+    let guard = RejectGuard {
+        skip,
+        ..Default::default()
+    };
     let policy = OpenAiCompactionPolicy {
         trigger_input_tokens: 1,
     };
-    let error = super::maybe_compact_openai_provider_window(
+    let result = super::maybe_compact_openai_provider_window(
         &continuation,
         Some(&scope),
         &request_shape,
@@ -1432,13 +1457,17 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
         "openai/test",
         Some(&guard),
     )
-    .await
-    .unwrap_err();
-    assert!(error.is::<CompactionDenied>());
-    assert_eq!(
-        classify_provider_error(&error).disposition,
-        RetryDisposition::FailFast
-    );
+    .await;
+    if skip {
+        assert!(result.unwrap().is_none());
+    } else {
+        let error = result.unwrap_err();
+        assert!(error.is::<CompactionDenied>());
+        assert_eq!(
+            classify_provider_error(&error).disposition,
+            RetryDisposition::FailFast
+        );
+    }
 
     let mut plan = OpenAiRequestPlan {
         material: Default::default(),
@@ -1460,7 +1489,7 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
             None,
         ),
     };
-    let error = super::maybe_compact_openai_request_plan(
+    let result = super::maybe_compact_openai_request_plan(
         &continuation,
         &mut plan,
         policy,
@@ -1473,14 +1502,22 @@ async fn openai_compaction_dispatch_rejection_is_not_best_effort() {
         "openai/test",
         Some(&guard),
     )
-    .await
-    .unwrap_err();
-    assert!(error.is::<CompactionDenied>());
+    .await;
+    if skip {
+        assert!(result.unwrap().is_none());
+    } else {
+        let error = result.unwrap_err();
+        assert!(error.is::<CompactionDenied>());
+        assert_eq!(
+            classify_provider_error(&error).disposition,
+            RetryDisposition::FailFast
+        );
+    }
+    assert_eq!(guard.auxiliary_calls.load(Ordering::SeqCst), 2);
     assert_eq!(
-        classify_provider_error(&error).disposition,
-        RetryDisposition::FailFast
+        guard.normal_calls.load(Ordering::SeqCst),
+        if skip { 0 } else { 2 }
     );
-    assert_eq!(guard.0.load(Ordering::SeqCst), 2);
     assert!(
         tokio::time::timeout(std::time::Duration::from_millis(25), listener.accept())
             .await

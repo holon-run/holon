@@ -260,7 +260,8 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
     let server = OutageServer::start(false).await;
     server.healthy.store(true, Ordering::SeqCst);
     let home = tempfile::tempdir().unwrap();
-    let config = config_with_urls(home.path(), [&server.url, &server.url]);
+    let mut config = config_with_urls(home.path(), [&server.url, &server.url]);
+    config.fallback_models.clear();
     let now = chrono::DateTime::from_timestamp_millis(Utc::now().timestamp_millis()).unwrap();
     let clock = Arc::new(crate::runtime::clock::TestClock::new(now));
     let runtime = open_runtime_with_clock(home.path(), config.clone(), clock.clone());
@@ -287,9 +288,10 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
     let admission = scheduled.dispatch_plan.provider_admission.as_ref().unwrap();
     let episode_key = admission.episode_key.clone();
     let attempt_id = admission.attempt.attempt_id.clone();
-    let lease = admission.state.lock().unwrap().lease.take().unwrap();
-    let deadline = runtime.now() + Duration::minutes(10);
-    // Another request cools the scope after admission but before this send.
+    // Another request cools the scope after candidate selection but before
+    // this send's atomic admit.
+    let lease = stale_admission::concurrent_lease(&runtime, admission);
+    let server_floor = runtime.now() + Duration::minutes(10);
     assert!(runtime
         .runtime_db()
         .record_provider_admission_failure(
@@ -297,7 +299,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
             &admission.candidate.connection,
             ProviderCooldownPolicy::Transport,
             runtime.now(),
-            Some(deadline),
+            Some(server_floor),
             &admission.candidate.model.as_string(),
         )
         .unwrap());
@@ -308,7 +310,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         .unwrap()
         .not_before;
     // Operator probes bypass local padding, not the original server deadline.
-    assert!(policy_deadline > deadline);
+    assert!(policy_deadline > server_floor);
     let started = std::time::Instant::now();
     let result = runtime
         .process_message_with_plan_deferred(
@@ -756,7 +758,8 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         .provider_queue_parking("default", &input.id)
         .unwrap()
         .unwrap();
-    assert_eq!(parking.not_before, deadline);
+    assert_eq!(parking.not_before, policy_deadline);
+    assert!(parking.not_before >= server_floor);
     assert_eq!(parking.episode_key, episode_key);
     let paused = runtime.agent_state().await.unwrap();
     assert!(
@@ -801,7 +804,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         .expect("confirmed pause must publish its committed disposition");
     assert_eq!(pause.data["message_id"], input.id);
     assert_eq!(pause.data["attempt_id"], attempt_id);
-    assert_eq!(pause.data["not_before"], deadline.to_rfc3339());
+    assert_eq!(pause.data["not_before"], policy_deadline.to_rfc3339());
     let disposition = if stopped {
         "suspended_by_control"
     } else {
@@ -827,7 +830,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         .unwrap()
         .expect("the committed pause must have a non-terminal acknowledgement");
     assert_eq!(pause_brief.kind, crate::types::BriefKind::Ack);
-    assert!(pause_brief.text.contains(&deadline.to_rfc3339()));
+    assert!(pause_brief.text.contains(&policy_deadline.to_rfc3339()));
     if !stopped {
         assert!(turn.produced_brief_ids.contains(&pause_brief.id));
     }
@@ -847,7 +850,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         drop(runtime);
         let restored = open_runtime_with_clock(home.path(), config, clock.clone());
         clock.advance(
-            (deadline - restored.now() + Duration::seconds(1))
+            (policy_deadline - restored.now() + Duration::seconds(1))
                 .to_std()
                 .unwrap(),
         );
@@ -1009,7 +1012,7 @@ async fn cooling_dispatch_rejection_scenario(readback_stop: Option<bool>, test_m
         Some(parking)
     );
     clock.advance(
-        (deadline - restored.now() + Duration::seconds(1))
+        (policy_deadline - restored.now() + Duration::seconds(1))
             .to_std()
             .unwrap(),
     );
@@ -1136,7 +1139,7 @@ async fn unsafe_pause_denial_scenario() {
         };
         assert_eq!(
             summary,
-            format!("{reason} Recovery needs attention; check the diagnostics before retrying.")
+            format!("{reason} Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair.")
         );
     }
     let mut clean = RequestState {
@@ -1188,12 +1191,19 @@ async fn unsafe_pause_denial_scenario() {
         ),
     ] {
         let error = admission.deny(&mut clean, reason).unwrap_err();
-        let pause = error
-            .downcast_ref::<DispatchDeferred>()
-            .unwrap()
-            .1
-            .as_ref()
-            .unwrap();
+        let deferred = error.downcast_ref::<DispatchDeferred>().unwrap();
+        let replanned = if matches!(reason, LocalDispatchDenial::ScopeCooling { .. }) {
+            assert!(
+                deferred.1.is_none(),
+                "cooling first permits legal reselection"
+            );
+            admission
+                .availability_pause(&clean, reason, Some(expected_deadline))
+                .unwrap()
+        } else {
+            None
+        };
+        let pause = replanned.as_ref().or(deferred.1.as_ref()).unwrap();
         assert_eq!(pause.parking.not_before, expected_deadline);
         assert_eq!(
             runtime
@@ -1311,14 +1321,7 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
         panic!("operator input must be admitted");
     };
     let admission = scheduled.dispatch_plan.provider_admission.as_mut().unwrap();
-    assert!(admission
-        .state
-        .lock()
-        .unwrap()
-        .lease
-        .as_ref()
-        .unwrap()
-        .is_probe());
+    assert!(admission.state.lock().unwrap().lease.is_none());
     // Corrupt only the pre-send comparison snapshot, not canonical authority.
     // This models a post-claim stale guard while the execution still owns its lane.
     Arc::get_mut(admission)
@@ -1449,7 +1452,7 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
         .unwrap();
     let turns = runtime.storage().read_recent_turns(20).unwrap();
     assert_eq!(turns.len(), 1);
-    let expected_summary = "A local safety check blocked this model send. Recovery needs attention; check the diagnostics before retrying.";
+    let expected_summary = "A local safety check blocked this model send. Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair.";
     let last_failure = runtime
         .agent_state()
         .await

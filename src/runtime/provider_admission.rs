@@ -16,9 +16,9 @@ use crate::{
     runtime_db::provider_admission::{
         ProviderAdmissionLease, ProviderAdmissionScope, ProviderCooldownCause,
         ProviderCooldownPolicy, ProviderDispatchPause, ProviderQueueParking,
-        ProviderRecoveryAdmissionReservation, ProviderRecoveryBinding, ProviderRecoveryBudgetKind,
-        ProviderRecoveryBudgetState, ProviderRecoveryDispatch, ProviderRecoveryDispatchDenial,
-        ProviderRecoveryDispatchResult, ProviderRecoveryEpisode, ProviderRecoveryRequestOutcome,
+        ProviderRecoveryAdmissionPreview, ProviderRecoveryBinding, ProviderRecoveryBudgetKind,
+        ProviderRecoveryBudgetState, ProviderRecoveryDispatch, ProviderRecoveryDispatchAdmission,
+        ProviderRecoveryDispatchDenial, ProviderRecoveryEpisode, ProviderRecoveryRequestOutcome,
     },
     runtime_db::RuntimeDb,
     types::{
@@ -77,7 +77,7 @@ pub(super) enum CoolingContinuation {
 
 enum CoolingReplanOutcome {
     Reselect(ModelRouteRef),
-    Wait,
+    Wait(DateTime<Utc>),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -131,6 +131,12 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
         Some(LocalDispatchDenial::ScopeCooling { .. }) => {
             "The model channel is cooling down. This send was blocked."
         }
+        Some(LocalDispatchDenial::UnknownDispatch) => {
+            "A previous model request has an unknown outcome. This send was blocked."
+        }
+        Some(LocalDispatchDenial::Dispatch(ProviderRecoveryDispatchDenial::StaleAdmission)) => {
+            "Model admission could not be verified. This send was blocked."
+        }
         Some(_) => "A local safety check blocked this model send.",
         // Legacy diagnostics cannot prove a reason or whether this send occurred.
         None => "The model request could not continue.",
@@ -140,7 +146,10 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
         .get("recovery_disposition")
         .is_some_and(|disposition| disposition == "needs_repair");
     Some(if needs_repair {
-        format!("{base} Recovery needs attention; check the diagnostics before retrying.")
+        format!(
+            "{base} Automatic recovery has stopped; input retained. \
+             Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair."
+        )
     } else {
         format!("{base} Check the diagnostics for recovery status.")
     })
@@ -258,6 +267,8 @@ pub(super) fn is_continuation_input_changed(error: &anyhow::Error) -> bool {
 enum LocalDispatchDenial {
     ScopeCooling { not_before: DateTime<Utc> },
     InputChanged,
+    UnknownDispatch,
+    NoEligibleCandidate,
     EpisodeChanged,
     Reservation(ProviderRecoveryDispatchDenial),
     Dispatch(ProviderRecoveryDispatchDenial),
@@ -309,6 +320,8 @@ pub(super) struct ProviderTurnAdmission {
     recovery_reselection_reason: Option<&'static str>,
     state: Mutex<RequestState>,
     input_fence: Mutex<Option<(Arc<std::sync::atomic::AtomicU64>, u64)>>,
+    #[cfg(test)]
+    dispatch_barrier: Mutex<Option<Box<dyn FnMut() + Send>>>,
 }
 
 impl std::fmt::Debug for ProviderTurnAdmission {
@@ -323,6 +336,82 @@ impl std::fmt::Debug for ProviderTurnAdmission {
 }
 
 impl ProviderTurnAdmission {
+    fn admit_dispatch(&self, allow_probe: bool) -> Result<bool> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| anyhow!("provider admission poisoned"))?;
+        if self
+            .input_fence
+            .lock()
+            .map_err(|_| anyhow!("provider input fence poisoned"))?
+            .as_ref()
+            .is_some_and(|(revision, expected)| {
+                revision.load(std::sync::atomic::Ordering::Acquire) != *expected
+            })
+        {
+            return self
+                .deny(&mut state, LocalDispatchDenial::InputChanged)
+                .map(|()| true);
+        }
+        if state.dispatch.take().is_some() {
+            state.unknown_dispatch = true;
+        }
+        if state.unknown_dispatch {
+            return self
+                .deny(&mut state, LocalDispatchDenial::UnknownDispatch)
+                .map(|()| true);
+        }
+        #[cfg(test)]
+        if let Some(barrier) = self.dispatch_barrier.lock().unwrap().as_mut() {
+            barrier();
+        }
+        let now = self.clock.now();
+        let mut episode = self.episode()?;
+        if episode.state == ProviderRecoveryBudgetState::Resolved {
+            let next = self.db.begin_provider_recovery_probe_epoch(&episode, now)?;
+            let Some(next) = next else {
+                return self
+                    .deny(&mut state, LocalDispatchDenial::EpisodeChanged)
+                    .map(|()| true);
+            };
+            episode = next;
+        }
+        match self.db.admit_provider_recovery_dispatch_for_attempt(
+            &episode,
+            &self.candidate.scopes,
+            &uuid::Uuid::new_v4().to_string(),
+            self.next_cursor,
+            &self.attempt,
+            now,
+            PROBE_LEASE,
+            allow_probe,
+        )? {
+            ProviderRecoveryDispatchAdmission::Charged { lease, dispatch } => {
+                state.lease = Some(lease);
+                state.dispatch = Some(dispatch);
+                state.dispatched = true;
+                Ok(true)
+            }
+            ProviderRecoveryDispatchAdmission::AuxiliarySkipped => {
+                state.adapter_correctable_dispatch = false;
+                state.auth_refreshable_dispatch = false;
+                Ok(false)
+            }
+            ProviderRecoveryDispatchAdmission::Blocked(blocked) => self
+                .deny(
+                    &mut state,
+                    LocalDispatchDenial::ScopeCooling {
+                        not_before: blocked.not_before,
+                    },
+                )
+                .map(|()| true),
+            ProviderRecoveryDispatchAdmission::Denied(reason) => self
+                .deny(&mut state, LocalDispatchDenial::Dispatch(reason))
+                .map(|()| true),
+        }
+    }
+
     pub(super) fn fence_operator_interjections(
         &self,
         revision: Arc<std::sync::atomic::AtomicU64>,
@@ -343,6 +432,21 @@ impl ProviderTurnAdmission {
                 state.lease = None;
             }
         }
+        // Try remaining legal candidates before parking an unsent request.
+        let pause = if matches!(reason, LocalDispatchDenial::ScopeCooling { .. }) {
+            None
+        } else {
+            self.availability_pause(state, reason, None)?
+        };
+        Err(DispatchDeferred(reason, pause).into())
+    }
+
+    fn availability_pause(
+        &self,
+        state: &RequestState,
+        reason: LocalDispatchDenial,
+        deadline: Option<DateTime<Utc>>,
+    ) -> Result<Option<Box<ProviderDispatchPause>>> {
         let mut pause = None;
         if reason.is_availability_pause()
             && !state.dispatched
@@ -350,12 +454,19 @@ impl ProviderTurnAdmission {
             && !state.side_effect_boundary
         {
             let episode = self.episode()?;
-            let not_before = match reason {
-                LocalDispatchDenial::ScopeCooling { not_before } => not_before,
-                _ => episode
-                    .not_before
-                    .context("provider pause deadline missing")?,
+            let not_before = match deadline {
+                Some(deadline) => deadline,
+                None => match reason {
+                    LocalDispatchDenial::ScopeCooling { not_before } => not_before,
+                    _ => episode
+                        .not_before
+                        .context("provider pause deadline missing")?,
+                },
             };
+            ensure!(
+                not_before > self.clock.now(),
+                "provider pause deadline is not in the future"
+            );
             // Persist the original deadline before releasing execution ownership.
             // Interrupted replay retains this attempt's canonical recovery root.
             let parking = ProviderQueueParking {
@@ -385,7 +496,7 @@ impl ProviderTurnAdmission {
                 },
             }));
         }
-        Err(DispatchDeferred(reason, pause).into())
+        Ok(pause)
     }
 
     pub(super) fn model(&self) -> &ModelRouteRef {
@@ -438,74 +549,11 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
     }
 
     fn before_dispatch(&self) -> Result<()> {
-        let now = self.clock.now();
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| anyhow!("provider admission poisoned"))?;
-        if self
-            .input_fence
-            .lock()
-            .map_err(|_| anyhow!("provider input fence poisoned"))?
-            .as_ref()
-            .is_some_and(|(revision, expected)| {
-                revision.load(std::sync::atomic::Ordering::Acquire) != *expected
-            })
-        {
-            return self.deny(&mut state, LocalDispatchDenial::InputChanged);
-        }
-        if state.dispatch.take().is_some() {
-            state.unknown_dispatch = true;
-        }
-        let mut episode = self.episode()?;
-        if episode.state == ProviderRecoveryBudgetState::Resolved {
-            let next = self.db.begin_provider_recovery_probe_epoch(&episode, now)?;
-            let Some(next) = next else {
-                return self.deny(&mut state, LocalDispatchDenial::EpisodeChanged);
-            };
-            episode = next;
-        }
-        if state.lease.is_none() {
-            state.lease = match self.db.reserve_provider_recovery_admission(
-                &episode,
-                &self.candidate.scopes,
-                now,
-                PROBE_LEASE,
-            )? {
-                ProviderRecoveryAdmissionReservation::Granted(lease) => Some(lease),
-                ProviderRecoveryAdmissionReservation::Blocked(blocked) => {
-                    return self.deny(
-                        &mut state,
-                        LocalDispatchDenial::ScopeCooling {
-                            not_before: blocked.not_before,
-                        },
-                    );
-                }
-                ProviderRecoveryAdmissionReservation::Denied(reason) => {
-                    return self.deny(&mut state, LocalDispatchDenial::Reservation(reason));
-                }
-            };
-        }
-        let lease = state.lease.as_ref().expect("reservation was checked");
-        match self.db.charge_provider_recovery_dispatch_for_attempt(
-            &episode,
-            lease,
-            &uuid::Uuid::new_v4().to_string(),
-            self.next_cursor,
-            &self.attempt,
-            now,
-        )? {
-            ProviderRecoveryDispatchResult::Charged(dispatch) => {
-                // A previous HTTP result not reported by the adapter is unknown:
-                // it remains charged, never inferred successful or refunded.
-                state.dispatch = Some(dispatch);
-                state.dispatched = true;
-                Ok(())
-            }
-            ProviderRecoveryDispatchResult::Denied(reason) => {
-                self.deny(&mut state, LocalDispatchDenial::Dispatch(reason))
-            }
-        }
+        self.admit_dispatch(true).map(|_| ())
+    }
+
+    fn before_auxiliary_dispatch(&self) -> Result<bool> {
+        self.admit_dispatch(false)
     }
 
     fn allows_auxiliary_dispatch(&self) -> Result<bool> {
@@ -513,8 +561,19 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
             .state
             .lock()
             .map_err(|_| anyhow!("provider admission poisoned"))?;
-        // A scarce recovery probe must request an actual model response.
-        Ok(!state.lease.as_ref().is_some_and(|lease| lease.is_probe()))
+        if let Some(lease) = state.lease.as_ref() {
+            return Ok(!lease.is_probe());
+        }
+        // Optional compaction must not take the one recovery probe. This is
+        // only a preview; its own send still passes the atomic dispatch guard.
+        Ok(matches!(
+            self.db.preview_provider_recovery_admission(
+                &self.episode()?,
+                &self.candidate.scopes,
+                self.clock.now(),
+            )?,
+            ProviderRecoveryAdmissionPreview::Granted { is_probe: false }
+        ))
     }
 
     fn after_request(
@@ -697,7 +756,7 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
     }
 }
 
-/// A turn-local handle with cancellation-safe release of undispatched claims.
+/// A turn-local handle for dispatch admission and response settlement.
 pub(super) struct ActiveAdmission {
     inner: Arc<RuntimeInner>,
 }
@@ -1012,12 +1071,21 @@ impl RuntimeHandle {
         // The marker describes only this send. Earlier requests remain charged
         // and their diagnostics stay attached to the original error chain.
         let category = denial.to_string();
+        let episode = self
+            .active_provider_admission()
+            .ok()
+            .flatten()
+            .and_then(|admission| admission.episode().ok());
         if let Err(audit_error) = self
             .append_original_audit_event(AuditEvent::legacy(
                 "provider_dispatch_rejected",
                 serde_json::json!({
                     "dispatch_occurred": false,
                     "denial": category,
+                    "episode_key": episode.as_ref().map(|episode| episode.key()),
+                    "epoch": episode.as_ref().map(|episode| episode.epoch()),
+                    "prior_dispatches": episode.as_ref().map(|episode| episode.total_requests),
+                    "candidate_cursor": episode.as_ref().map(|episode| episode.candidate_cursor),
                     "recovery_disposition": disposition,
                 }),
             ))
@@ -1035,7 +1103,7 @@ impl RuntimeHandle {
             .with_safe_context("predicate", category)
             .with_safe_context("recovery_disposition", disposition)
             .with_recovery_hint(
-                "Recheck the canonical execution and admission state before resuming the retained source.",
+                "Run `holon debug scheduler-recovery --agent <id> --json` to inspect retained input; repair requires separate explicit authorization.",
             ),
         )
     }
@@ -1396,21 +1464,19 @@ impl RuntimeHandle {
             }
             untried = true;
             pending_forward |= index >= start;
-            match self.inner.runtime_db.reserve_provider_recovery_admission(
+            match self.inner.runtime_db.preview_provider_recovery_admission(
                 &episode,
                 &candidate.scopes,
                 now,
-                PROBE_LEASE,
             )? {
-                ProviderRecoveryAdmissionReservation::Granted(lease) => {
+                ProviderRecoveryAdmissionPreview::Granted { is_probe } => {
                     // Do not renew a failed prefix's floor while a later probe
                     // is pending. A prefix recovered by another root is usable.
                     if episode.kind == ProviderRecoveryBudgetKind::Network
                         && index < start
                         && pending_forward
-                        && lease.is_probe()
+                        && is_probe
                     {
-                        self.inner.runtime_db.release_provider_admission(&lease)?;
                         continue;
                     }
                     return Ok(ProviderCandidateSelection::Granted(Arc::new(
@@ -1429,7 +1495,7 @@ impl RuntimeHandle {
                                     reselection_reason.unwrap_or("requested_candidate_unavailable")
                                 }),
                             state: Mutex::new(RequestState {
-                                lease: Some(lease),
+                                lease: None,
                                 dispatch: None,
                                 unknown_dispatch: false,
                                 dispatched: false,
@@ -1438,28 +1504,33 @@ impl RuntimeHandle {
                                 side_effect_boundary: episode.side_effect_boundary,
                             }),
                             input_fence: Mutex::new(None),
+                            #[cfg(test)]
+                            dispatch_barrier: Mutex::new(None),
                         },
                     )));
                 }
-                ProviderRecoveryAdmissionReservation::Blocked(blocked) => {
+                ProviderRecoveryAdmissionPreview::Blocked(blocked) => {
                     if requested == Some(&candidate.model) {
                         reselection_reason = Some("requested_candidate_cooling");
                     }
                     earliest =
                         Some(earliest.map_or(blocked.not_before, |at| at.min(blocked.not_before)));
                 }
-                ProviderRecoveryAdmissionReservation::Denied(_) => {
-                    if requested == Some(&candidate.model) {
-                        reselection_reason = Some("requested_candidate_reservation_denied");
-                    }
-                    if blocked.is_none() {
-                        earliest = Some(now);
-                    }
+                ProviderRecoveryAdmissionPreview::Denied(reason) => {
+                    // A canonical or budget denial is not a cooldown deadline.
+                    return Err(
+                        DispatchDeferred(LocalDispatchDenial::Reservation(reason), None).into(),
+                    );
                 }
             }
         }
         Ok(ProviderCandidateSelection::Cooling {
-            not_before: earliest.unwrap_or(now),
+            not_before: earliest.or(episode.not_before).ok_or_else(|| {
+                anyhow::Error::new(DispatchDeferred(
+                    LocalDispatchDenial::NoEligibleCandidate,
+                    None,
+                ))
+            })?,
             untried,
         })
     }
@@ -1569,7 +1640,13 @@ impl RuntimeHandle {
             }
             // A continuation has already crossed its source replay boundary.
             // Exhausted candidate selection must not mutate it into source parking.
-            ProviderCandidateSelection::Cooling { .. } => Ok(CoolingReplanOutcome::Wait),
+            ProviderCandidateSelection::Cooling { not_before, .. } => {
+                Ok(CoolingReplanOutcome::Wait(
+                    episode
+                        .not_before
+                        .map_or(not_before, |floor| floor.max(not_before)),
+                ))
+            }
         }
     }
 
@@ -1586,7 +1663,7 @@ impl RuntimeHandle {
         {
             return Err(error);
         }
-        let Some(cooling_until) = scope_cooling_deadline(&error) else {
+        let Some(mut cooling_until) = scope_cooling_deadline(&error) else {
             return Err(error);
         };
         let current = self
@@ -1601,7 +1678,8 @@ impl RuntimeHandle {
                 return Err(error);
             }
         }
-        if may_reselect {
+        // A first send has no completed round to port to another candidate.
+        if may_reselect || round == 1 {
             match self
                 .reselect_cooling_provider(&current, cooling_until, excluded)
                 .await
@@ -1610,8 +1688,21 @@ impl RuntimeHandle {
                 CoolingReplanOutcome::Reselect(model) => {
                     return Ok(CoolingContinuation::Reselect(model));
                 }
-                CoolingReplanOutcome::Wait => {}
+                CoolingReplanOutcome::Wait(not_before) => cooling_until = not_before,
             }
+        }
+        let reason = dispatch_denial(&error)
+            .expect("typed availability was checked")
+            .0;
+        let pause = {
+            let state = current
+                .state
+                .lock()
+                .map_err(|_| anyhow!("provider admission poisoned"))?;
+            current.availability_pause(&state, reason, Some(cooling_until))?
+        };
+        if let Some(pause) = pause {
+            return Err(error.context(DispatchDeferred(reason, Some(pause))));
         }
         self.wait_for_cooling_provider(&current, cooling_until, round, observed_interjections)
             .await
@@ -1626,8 +1717,7 @@ impl RuntimeHandle {
     ) -> Result<CoolingContinuation> {
         let episode = current.episode()?;
         let abort = self.current_run_abort_token().await;
-        // Expired/repeated denials still yield rather than spin at zero time.
-        let mut deadline = original_deadline.max(self.now() + Duration::seconds(1));
+        let mut deadline = original_deadline;
         let mut visible = None;
         let result: Result<CoolingContinuation> = async {
             loop {

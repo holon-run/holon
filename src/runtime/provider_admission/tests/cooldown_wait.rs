@@ -163,7 +163,7 @@ async fn cooling_replan_case(case: ReplanCase) {
     // A retained continuation has crossed a side-effect boundary, so a local
     // rejection must not turn into first-round source parking.
     admission.mark_side_effect_boundary(true).unwrap();
-    let lease = admission.state.lock().unwrap().lease.take().unwrap();
+    let lease = stale_admission::concurrent_lease(&runtime, &admission);
     runtime
         .runtime_db()
         .record_provider_admission_failure(

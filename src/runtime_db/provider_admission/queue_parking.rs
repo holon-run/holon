@@ -361,6 +361,43 @@ pub(crate) fn acknowledge_frozen_stopped_provider_pause_tx(
 mod stopped_pause_tests;
 
 impl RuntimeDb {
+    /// A zero-send pause may resume its consumed exact wait, not a newer owner
+    /// registration. This observation is not an execution admission grant.
+    pub(crate) fn provider_parked_wait_replay_is_current(
+        &self,
+        agent_id: &str,
+        message_id: &str,
+        wait_id: &str,
+    ) -> Result<bool> {
+        self.with_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT EXISTS(
+                    SELECT 1 FROM provider_queue_parking parking
+                    JOIN provider_recovery_episodes episode
+                      ON episode.episode_key = parking.episode_key
+                    JOIN queue_entries queue
+                      ON queue.agent_id = parking.agent_id
+                     AND queue.message_id = parking.message_id
+                    JOIN wait_conditions wait ON wait.wait_condition_id = ?3
+                    JOIN agent_states agent ON agent.agent_id = parking.agent_id
+                    WHERE parking.agent_id = ?1 AND parking.message_id = ?2
+                      AND episode.total_requests = 0 AND episode.side_effect_boundary = 0
+                      AND queue.status = 'interrupted' AND agent.status != 'stopped'
+                      AND wait.agent_id = ?1 AND wait.trigger_message_id = ?2
+                      AND wait.status = 'resolved' AND wait.cancelled_at IS NULL
+                      AND NOT EXISTS(
+                        SELECT 1 FROM wait_conditions newer
+                        WHERE newer.agent_id = wait.agent_id
+                          AND newer.work_item_id IS wait.work_item_id
+                          AND newer.rowid > wait.rowid
+                      )
+                )",
+                params![agent_id, message_id, wait_id],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     /// Replaying an unchanged condition does not write or move its deadline.
     /// The caller supplies the canonical gate's deadline, not a new wake-relative floor.
     pub fn park_provider_queue(&self, record: &ProviderQueueParking) -> Result<bool> {

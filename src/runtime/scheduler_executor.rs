@@ -2543,16 +2543,36 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
         }
         let original_candidate = candidate.clone();
-        let interrupted_exact_wait = if repaired_wait.is_some() {
-            self.interrupted_exact_wait_recovery(
-                message,
-                existing_execution.as_ref(),
-                captured_tasks,
-                captured_work,
-            )?
-        } else {
-            None
-        };
+        let interrupted_exact_wait = self.interrupted_exact_wait_recovery(
+            message,
+            existing_execution.as_ref(),
+            captured_tasks,
+            captured_work,
+        )?;
+        if interrupted_exact_wait.is_none()
+            && existing_execution.as_ref().is_some_and(|state| {
+                state.attempts.values().any(|attempt| {
+                    attempt.source_message_id.as_deref() == Some(message.id.as_str())
+                        && matches!(
+                            attempt.source.identity,
+                            crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait { .. }
+                        )
+                })
+            })
+            && self
+                .runtime
+                .inner
+                .runtime_db
+                .provider_queue_parking(&message.agent_id, &message.id)?
+                .is_some()
+        {
+            // Parking cannot turn an expired/replaced exact continuation into
+            // a fresh TaskResult or lifecycle activation with a different owner.
+            return Ok(canonical_claim_hard_blocker(
+                scenario_class,
+                "canonical_parked_wait_replay_invalid",
+            ));
+        }
         let mut scenario = match &interrupted_exact_wait {
             Some((scenario, _)) => Some(scenario.clone()),
             None => {
@@ -3130,23 +3150,68 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )>,
     > {
         use crate::domain::execution_protocol::{
-            ExecutionAttemptState, ExecutionSourceIdentity, ExecutionWaitIngress,
-            WorkItemExecutionState,
+            ExecutionAttemptState, ExecutionSourceIdentity, WorkItemExecutionState,
         };
 
         let Some(execution) = execution else {
             return Ok(None);
         };
-        let Some(wait) = super::task_reads::exact_waiter_recovery_replay_wait(
+        let repaired_wait = super::task_reads::exact_waiter_recovery_replay_wait(
             message,
             tasks,
             work,
             self.runtime.now(),
-        )?
-        else {
+        )?;
+        if repaired_wait.is_none()
+            && self
+                .runtime
+                .inner
+                .runtime_db
+                .provider_queue_parking(&message.agent_id, &message.id)?
+                .is_none()
+        {
             return Ok(None);
+        }
+        let parked_waits = if repaired_wait.is_none() {
+            work.waits_triggered_by(&message.id)?
+                .into_iter()
+                .filter(|wait| {
+                    wait.agent_id == message.agent_id
+                        && wait.source.as_deref() == Some("WaitFor")
+                        && wait.status == WaitConditionStatus::Resolved
+                        && wait.cancelled_at.is_none()
+                        && wait
+                            .expires_at
+                            .is_none_or(|until| until > self.runtime.now())
+                        && scheduler::message_matches_wait_condition(message, wait)
+                })
+                .map(|wait| {
+                    self.runtime
+                        .inner
+                        .runtime_db
+                        .provider_parked_wait_replay_is_current(
+                            &message.agent_id,
+                            &message.id,
+                            &wait.id,
+                        )
+                        .map(|current| current.then_some(wait))
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
         };
-        let owner = if let Some(work_item_id) = &message.work_item_id {
+        let wait = match (repaired_wait, parked_waits.as_slice()) {
+            (Some(wait), _) => wait,
+            (None, [wait]) => *wait,
+            _ => return Ok(None),
+        };
+        if wait.trigger_message_id() != Some(message.id.as_str()) {
+            return Ok(None);
+        }
+        let owner = if let Some(work_item_id) = &wait.work_item_id {
             if !execution.work_items.get(work_item_id).is_some_and(|work| {
                 matches!(
                     &work.state,
@@ -3173,7 +3238,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         let expected_source = ExecutionSourceIdentity::TriggeredWait {
             wait_id: wait.id.clone(),
             trigger_message_id: message.id.clone(),
-            ingress: Some(ExecutionWaitIngress::RuntimeOwnedInternalFollowup),
+            ingress: execution_wait_ingress(message),
         };
         // Resolved waits stay terminal. Only their interrupted canonical leaf
         // can replay the same immutable source, never a replacement wait.

@@ -4,6 +4,23 @@ use super::continuation::*;
 use crate::provider::classify_provider_error;
 use crate::provider::transports::http::DispatchGuardRejected;
 
+#[derive(Debug, thiserror::Error)]
+#[error("optional compaction skipped by final admission")]
+struct AuxiliaryDispatchSkipped;
+
+#[derive(Debug)]
+struct AuxiliaryDispatchGuard<'a>(&'a dyn ProviderDispatchGuard);
+
+impl ProviderDispatchGuard for AuxiliaryDispatchGuard<'_> {
+    fn before_dispatch(&self) -> Result<()> {
+        if self.0.before_auxiliary_dispatch()? {
+            Ok(())
+        } else {
+            Err(AuxiliaryDispatchSkipped.into())
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct OpenAiCompactionCandidate<'a> {
     pub items: &'a [Value],
@@ -131,6 +148,7 @@ pub async fn maybe_compact_openai_provider_window(
     .await
     {
         Ok(compacted) => compacted,
+        Err(error) if error.is::<AuxiliaryDispatchSkipped>() => return Ok(None),
         Err(error) if error.is::<DispatchGuardRejected>() => return Err(error),
         Err(error) => {
             if is_compact_material_error(&error) {
@@ -416,6 +434,7 @@ pub async fn maybe_compact_openai_request_plan(
     .await
     {
         Ok(compacted) => compacted,
+        Err(error) if error.is::<AuxiliaryDispatchSkipped>() => return Ok(None),
         Err(error) if error.is::<DispatchGuardRejected>() => return Err(error),
         Err(error)
             if dispatch_guard.is_some()
@@ -973,6 +992,7 @@ pub async fn send_openai_compact_request(
             guard.declare_adapter_correctable_dispatch();
         }
 
+        let auxiliary_guard = dispatch_guard.map(AuxiliaryDispatchGuard);
         let response = send_openai_request(
             request.body(material.json_bytes(&body)?),
             "OpenAI compact request failed",
@@ -982,7 +1002,9 @@ pub async fn send_openai_compact_request(
             Some(url.as_str()),
             RequestDeadline::FullRequest,
             request_trace.as_ref(),
-            dispatch_guard,
+            auxiliary_guard
+                .as_ref()
+                .map(|guard| guard as &dyn ProviderDispatchGuard),
         )
         .await?;
         trace_response_headers(

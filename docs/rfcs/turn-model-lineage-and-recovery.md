@@ -399,10 +399,11 @@ dispatch budget, or canonical execution fence.
 An epoch with no dispatched requests is an availability pause, not a failed
 epoch: it neither increments the episode's failure count nor restarts its
 failure floor. Its next recheck follows the earliest future candidate deadline,
-including shared cooldowns and probe leases. If selection supplies no future
-deadline, a fixed first-step local delay prevents busy rechecks without
-escalating failure history. Epochs with actual dispatched requests retain their
-failure floor; repeated parking within an epoch does not restart that floor.
+including shared cooldowns and probe leases. An unexplained reservation denial
+or absence of an authoritative deadline is an explicit stop, not an invented
+`Cooling(now)` followed by empty turns. Epochs with actual dispatched requests
+retain their failure floor; repeated parking within an epoch does not restart
+that floor.
 
 Runtime model requests carry an explicit dispatch guard through transport
 lowering. Local prompt, payload, header, and HTTP-request construction complete
@@ -417,7 +418,17 @@ earlier requests and unknown outcomes are never refunded or erased.
 Dispatch diagnostics distinguish canonical source, owner, generation, authority
 and recovery-root failures from availability/budget refusals.
 
-Only typed `ScopeCooling` permits the runtime-level local replan above.
+Candidate selection only previews availability; it does not reserve a sending
+permit or hold a probe while constructing a request. After HTTP construction,
+the final dispatch guard atomically validates canonical execution, episode,
+duplicate request, budget and failed-scope fences, checks current availability,
+reserves any probe and charges the dispatch in one writer transaction. There
+is no earlier permit to expire and no stale-permit readmission loop.
+
+Only typed `ScopeCooling` permits the runtime-level local replan above. A
+concurrent cooldown or probe holder yields its authoritative absolute deadline,
+without IO, request charge or inferred provider failure. The admitted lease
+belongs to response settlement or Drop; unknown outcomes are never refunded.
 Execution, owner, cancellation, storage, unknown admission, episode and budget
 refusals remain fail closed. Candidate selection distinguishes normal
 unavailability from replan errors: only a normal no-healthy-candidate result may
@@ -432,10 +443,27 @@ entire source; exhausted chain selection persists one absolute parking deadline,
 subject to the recovery episode floor. Diagnostics distinguish an unsent local
 candidate rejection, an actual HTTP attempt, and final chain parking.
 
-That replan is bounded to a turn that already completed at least one round. A
-candidate cooldown before a turn's first round keeps the existing parking
-contract and resumes the same source at the original deadline, so restart and
-interrupted-replay recovery stay unchanged.
+First-send `ScopeCooling` may check remaining legal candidates before parking
+because there are no completed turn rounds to transfer. If none qualifies, only
+a replay-safe source may persist parking, at the earliest eligible candidate
+deadline subject to the episode floor. Already completed HTTP or tool work
+cannot become source parking: keep the exact live continuation, or stop
+explicitly when it cannot be recovered safely. No cross-restart continuation
+snapshot or replay permission is added.
+
+Recoverable availability refusals must not enter the non-retryable local-failure
+TaskResult settlement. A committed provider pause retains the original result,
+canonical owner and source for one eventual consumption; a failed pause commit
+cannot announce automatic recovery. Genuine fail-closed outcomes still retain
+the input for diagnosis. Historical paused results are not migrated or rearmed.
+When a zero-send queue pause follows an exact-wait claim, retry must retain the
+valid waiter and WorkItem, not reinterpret the result using its task creator.
+The resolved wait is not reactivated or consumed twice. Cancelled, expired or
+replaced waits and spent-request or side-effect boundaries cannot use this
+path. Existing claim and dispatch fences still apply; cross-restart equality
+of execution-chain identifiers is not an acceptance requirement.
+Manual diagnosis uses `holon debug scheduler-recovery --agent <id> --json`;
+any maintenance apply remains separately authorized and operator-only.
 
 When a continuation cannot select an independent healthy candidate (including
 provider-native history), typed `ScopeCooling` may instead wait within the
@@ -565,18 +593,22 @@ protocol/auxiliary result may end a healthy sequence, but never replenishes
 an active recovery episode. Scarce probes skip optional compaction until an
 actual usable model response arrives; an auxiliary failure cannot retroactively
 discard or masquerade as that model response.
+The auxiliary purpose is enforced by final atomic admission, not its read-only
+preview: a concurrent incident or probe holder skips optional compaction with
+no HTTP, probe reservation or request charge. Execution and integrity denials
+still propagate.
 
 Provider queue parking is separate from business waits. The scheduler checks
 canonical eligibility before consulting provider admission, retains the queued
 source when parked, and can continue reducer-only bookkeeping behind it. Its
 deadline participates in the existing run-loop recheck, without consuming a task
-result or moving its owner. A cancelled pre-dispatch build releases its probe;
+result or moving its owner. A cancelled pre-dispatch build holds no probe;
 an in-flight unknown result retains its lease until controlled expiry.
 When an exact wait resolution advances the WorkItem source revision, the
 scheduler finalizes that transition before creating the provider guard and
 commits the same aligned admission plan. Dispatch still checks the canonical
 fences exactly. A changed wait or owner snapshot requires replanning the whole
-admission and releasing its unused reservation, rather than relaxing fences.
+admission plan rather than relaxing fences.
 An unrelated AgentState conflict may refresh that baseline with the same guard.
 
 Local context planning failures are not provider attempt failures. A recovery
