@@ -42,6 +42,9 @@ mod workspace;
 mod workspace_control;
 
 #[cfg(holon_lib_test_shard = "a")]
+mod round_admission;
+
+#[cfg(holon_lib_test_shard = "a")]
 mod deletion_worktree;
 #[cfg(holon_lib_test_shard = "a")]
 mod prestart_terminal;

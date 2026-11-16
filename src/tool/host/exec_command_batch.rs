@@ -202,6 +202,69 @@ mod tests {
     }
 
     #[test]
+    fn oversized_items_array_is_rejected_before_per_item_parsing() {
+        // Thirteen items whose per-item payloads would fail typed parsing:
+        // the raw array length check must reject first, without scanning
+        // any item.
+        let input = serde_json::json!({
+            "items": (0..13).map(|_| serde_json::json!({"cmd": {"nested": "invalid"}})).collect::<Vec<_>>()
+        });
+        let error = parse_batch_args(&input).unwrap_err();
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        let details = tool_error.details.expect("bounded details");
+        assert_eq!(
+            details.get("validation_error").and_then(|v| v.as_str()),
+            Some("too_many_items")
+        );
+        assert_eq!(
+            details.get("actual_items").and_then(|v| v.as_u64()),
+            Some(13)
+        );
+    }
+
+    #[test]
+    fn flood_of_empty_batch_objects_is_rejected_before_per_item_parsing() {
+        let input = serde_json::json!({
+            "items": (0..18_471).map(|_| serde_json::json!({})).collect::<Vec<_>>()
+        });
+        let error = parse_batch_args(&input).unwrap_err();
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        let details = tool_error.details.expect("bounded details");
+        assert_eq!(
+            details.get("validation_error").and_then(|v| v.as_str()),
+            Some("too_many_items")
+        );
+        assert_eq!(
+            details.get("actual_items").and_then(|v| v.as_u64()),
+            Some(18_471)
+        );
+    }
+
+    #[test]
+    fn twelve_items_parse_normally() {
+        let input = serde_json::json!({
+            "items": (0..12).map(|i| serde_json::json!({"cmd": format!("echo {i}")})).collect::<Vec<_>>()
+        });
+        let args = parse_batch_args(&input).expect("twelve items are in contract");
+        assert_eq!(args.items.len(), 12);
+    }
+
+    #[test]
+    fn non_array_items_keeps_typed_parse_failure() {
+        let input = serde_json::json!({"items": null});
+        let error = parse_batch_args(&input).unwrap_err();
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input");
+        let details = tool_error.details.expect("typed parse details");
+        assert!(
+            details.get("validation_error").is_none(),
+            "missing/non-array items keep the existing parse failure shape"
+        );
+    }
+
+    #[test]
     fn top_level_defaults_apply_to_items_without_overriding_explicit_values() {
         let defaults = ExecCommandBatchDefaults {
             workdir: Some("src".into()),

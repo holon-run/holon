@@ -11,6 +11,7 @@ mod execution;
 pub(super) mod inputs;
 mod projection;
 mod reminders;
+mod round_admission;
 mod tool_summary;
 
 #[cfg(holon_lib_test_shard = "a")]

@@ -19,13 +19,16 @@ use serde_json::Value;
 
 pub const NAME: &str = crate::tool::names::EXEC_COMMAND_BATCH;
 
-const MAX_ITEMS: usize = 12;
+pub const MAX_ITEMS: usize = 12;
 
 pub const DEFAULT_BATCH_YIELD_TIME_MS: u64 = 30_000;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ExecCommandBatchArgs {
+    /// One to twelve sequential commands; every array entry (including an
+    /// empty object) counts toward the batch limit.
+    #[schemars(length(min = 1, max = 12))]
     pub items: Vec<ExecCommandBatchItemArgs>,
     pub stop_on_error: Option<bool>,
     pub workdir: Option<String>,
@@ -57,6 +60,25 @@ pub fn definition() -> Result<BuiltinToolDefinition> {
 }
 
 pub fn parse_batch_args(input: &Value) -> Result<ExecCommandBatchArgs> {
+    // Reject oversized raw item arrays before per-item typed parsing,
+    // recovery-hint scanning, or any execution work; empty arrays keep the
+    // existing validate_batch_shape error, and missing or non-array `items`
+    // keeps the existing typed parse failure.
+    if let Some(items) = input.get("items").and_then(Value::as_array) {
+        if items.len() > MAX_ITEMS {
+            return Err(invalid_tool_input(
+                NAME,
+                format!("{NAME} accepts at most {MAX_ITEMS} items"),
+                json!({
+                    "field": "items",
+                    "validation_error": "too_many_items",
+                    "max_items": MAX_ITEMS,
+                    "actual_items": items.len(),
+                }),
+                "split the command batch into smaller bounded batches",
+            ));
+        }
+    }
     parse_tool_args_with_recovery_hint(NAME, input, || exec_command_batch_recovery_hint(input))
 }
 
