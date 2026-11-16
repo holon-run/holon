@@ -135,7 +135,7 @@ fn github_copilot_catalog_is_discovery_only() {
 #[test]
 fn provider_auth_config_client_id_round_trip() {
     let auth: ProviderAuthConfig = serde_json::from_str(
-        r#"{"source":"credential_profile","kind":"oauth","profile":"github-copilot","client_id":"Iv1.client"}"#,
+        r#"{"source":"credential_profile","kind":"o_auth","profile":"github-copilot","client_id":"Iv1.client"}"#,
     )
     .unwrap();
     assert_eq!(auth.client_id.as_deref(), Some("Iv1.client"));
@@ -145,7 +145,7 @@ fn provider_auth_config_client_id_round_trip() {
     );
 
     let without: ProviderAuthConfig = serde_json::from_str(
-        r#"{"source":"credential_profile","kind":"oauth","profile":"github-copilot"}"#,
+        r#"{"source":"credential_profile","kind":"o_auth","profile":"github-copilot"}"#,
     )
     .unwrap();
     assert!(without.client_id.is_none());
@@ -189,7 +189,7 @@ fn github_copilot_configured_headers_keep_builtin_integration_id() {
             .headers
             .iter()
             .find(|(name, _)| *name == "copilot-integration-id")
-            .map(|(_, value)| *value),
+            .map(|(_, value)| value),
         Some("holon")
     );
 
@@ -208,7 +208,7 @@ fn github_copilot_configured_headers_keep_builtin_integration_id() {
             .headers
             .iter()
             .find(|(name, _)| *name == "copilot-integration-id")
-            .map(|(_, value)| *value),
+            .map(|(_, value)| value),
         Some("holon")
     );
     assert_eq!(
@@ -216,7 +216,7 @@ fn github_copilot_configured_headers_keep_builtin_integration_id() {
             .headers
             .iter()
             .find(|(name, _)| *name == "x-copilot-test")
-            .map(|(_, value)| *value),
+            .map(|(_, value)| value),
         Some("1")
     );
 }
