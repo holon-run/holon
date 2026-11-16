@@ -33,7 +33,7 @@ Effective memory management starts with placing information at the right layer:
 | **Active task execution & status** | Runtime WorkItem | Scheduling kernel. Tracks immediate objectives, plans, and checklist items. Memory never replaces active task state. |
 
 > **Research Insight: Why explicit memory needs raw history retrieval as a baseline**
-> Recent agent research (such as arXiv:2610.30755 and arXiv:2610.24671) highlights that aggressively abstracting conversation history into lossy summaries or graph memories frequently drops essential dependency chains and contextual facts ("losing evidence during memory creation"). Holon keeps explicit memories concise and high-signal, while empowering agents to trace exact evidence back to raw runtime event logs whenever complex reasoning or verification is required.
+> Recent agent research (such as [arXiv:2610.30755](https://arxiv.org/abs/2610.30755) and [arXiv:2610.24671](https://arxiv.org/abs/2610.24671)) highlights that aggressively abstracting conversation history into lossy summaries or graph memories frequently drops essential dependency chains and contextual facts ("losing evidence during memory creation"). Holon keeps explicit memories concise and high-signal, while empowering agents to trace exact evidence back to raw runtime event logs whenever complex reasoning or verification is required.
 
 ---
 
@@ -127,6 +127,15 @@ Ask your agent to audit its memory files and remove outdated rules:
 ### When should I use conversational prompts versus editing files directly?
 - **Conversational prompts (recommended)**: Ideal for day-to-day tweaks. The agent ensures correct formatting and merges rules naturally.
 - **Direct file edits**: Ideal for bulk imports or major restructuring. Open `agent_home/memory/operator.md` or `memory/self.md` in any text editor and format as clean Markdown.
+
+---
+
+## Academic References & Further Reading
+
+For empirical studies comparing explicit agent memory architectures against raw conversation history retrieval, see:
+
+- **Bao et al. (2024)**, *Is Complex Agentic Memory Always Needed?*, [arXiv:2610.30755](https://arxiv.org/abs/2610.30755) — Evaluates complex agentic memory frameworks against strong raw-history retrieval (Raw-RAG), finding that dense retrieval over uncompressed conversation turns frequently outperforms lossy summary abstractions in multi-hop reasoning.
+- **Zhou et al. (2024)**, *Do Conversational Agents Need Explicit Memory?*, [arXiv:2610.24671](https://arxiv.org/abs/2610.24671) — Empirically evaluates six explicit memory systems against raw dialogue retrieval units, identifying "evidence loss during memory construction" as a major failure mode and establishing raw history retrieval as an indispensable baseline.
 
 ---
 
