@@ -3,7 +3,6 @@ pub(crate) mod episode_transition;
 pub mod index;
 pub(crate) mod refs;
 pub mod working;
-pub(crate) mod write_coordinator;
 
 pub use episode::refresh_episode_memory;
 pub(crate) use index::get_memory_snapshot;

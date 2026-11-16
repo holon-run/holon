@@ -1,0 +1,23 @@
+[package]
+name = "holon-memory-index"
+version = "0.1.0"
+edition = "2021"
+description = "SQLite memory search projection and writer coordination for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+schemars = { version = "0.9", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tracing = "0.1"
+
+[dev-dependencies]
+tempfile = "3.14"

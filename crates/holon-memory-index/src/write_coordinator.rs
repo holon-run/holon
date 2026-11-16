@@ -2,13 +2,31 @@ use std::{
     collections::{BTreeMap, VecDeque},
     path::{Path, PathBuf},
     sync::{Arc, Condvar, Mutex, OnceLock},
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use anyhow::{anyhow, Context, Result};
 use sha2::{Digest, Sha256};
 
-use crate::diagnostics;
+/// Callbacks for the application's index writer diagnostics.
+#[derive(Clone, Copy)]
+pub struct WriterMetrics {
+    pub enqueued: fn(maintenance: bool),
+    pub dequeued: fn(maintenance: bool),
+    pub timed_out: fn(maintenance: bool, operation: &'static str),
+    pub queue_wait: fn(operation: &'static str, elapsed: Duration),
+}
+
+impl Default for WriterMetrics {
+    fn default() -> Self {
+        Self {
+            enqueued: |_| {},
+            dequeued: |_| {},
+            timed_out: |_, _| {},
+            queue_wait: |_, _| {},
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum MemoryIndexWriteClass {
@@ -91,11 +109,22 @@ impl MemoryIndexWriteCoordinator {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn wait_turn_until(
         self: &Arc<Self>,
         write_class: MemoryIndexWriteClass,
         operation: &'static str,
         deadline: Instant,
+    ) -> Result<MemoryIndexWriteTurn> {
+        self.wait_turn_until_observed(write_class, operation, deadline, WriterMetrics::default())
+    }
+
+    pub(crate) fn wait_turn_until_observed(
+        self: &Arc<Self>,
+        write_class: MemoryIndexWriteClass,
+        operation: &'static str,
+        deadline: Instant,
+        metrics: WriterMetrics,
     ) -> Result<MemoryIndexWriteTurn> {
         let wait_started_at = Instant::now();
         let wait_budget = deadline.saturating_duration_since(wait_started_at);
@@ -109,9 +138,7 @@ impl MemoryIndexWriteCoordinator {
             .checked_add(1)
             .context("memory index write coordinator ticket overflow")?;
         state.waiters_mut(write_class).push_back(ticket);
-        diagnostics::record_memory_index_writer_enqueued(
-            write_class == MemoryIndexWriteClass::Maintenance,
-        );
+        (metrics.enqueued)(write_class == MemoryIndexWriteClass::Maintenance);
         let queued_depths = state.queue_depths();
         tracing::debug!(
             db_role = "index",
@@ -130,9 +157,7 @@ impl MemoryIndexWriteCoordinator {
                 let popped = state.waiters_mut(write_class).pop_front();
                 debug_assert_eq!(popped, Some(ticket));
                 state.active_ticket = Some(ticket);
-                diagnostics::record_memory_index_writer_dequeued(
-                    write_class == MemoryIndexWriteClass::Maintenance,
-                );
+                (metrics.dequeued)(write_class == MemoryIndexWriteClass::Maintenance);
                 break;
             }
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -141,7 +166,7 @@ impl MemoryIndexWriteCoordinator {
                 debug_assert!(removed);
                 let queue_wait = wait_started_at.elapsed();
                 if removed {
-                    diagnostics::record_memory_index_writer_timeout(
+                    (metrics.timed_out)(
                         write_class == MemoryIndexWriteClass::Maintenance,
                         operation,
                     );
@@ -160,7 +185,7 @@ impl MemoryIndexWriteCoordinator {
                     queue_wait_ms = u64::try_from(queue_wait.as_millis()).unwrap_or(u64::MAX),
                     "memory index writer queue wait timed out"
                 );
-                diagnostics::record_memory_index_writer_queue_wait(operation, queue_wait);
+                (metrics.queue_wait)(operation, queue_wait);
                 return Err(anyhow!(
                     "memory index writer queue wait timed out after {} ms",
                     wait_budget.as_millis()
@@ -173,7 +198,7 @@ impl MemoryIndexWriteCoordinator {
             state = next_state;
         }
         let queue_wait_ms = elapsed_millis(wait_started_at);
-        diagnostics::record_memory_index_writer_queue_wait(operation, wait_started_at.elapsed());
+        (metrics.queue_wait)(operation, wait_started_at.elapsed());
         let queue_depths = state.queue_depths();
         tracing::debug!(
             db_role = "index",
@@ -329,7 +354,6 @@ fn elapsed_millis(started_at: Instant) -> u64 {
     u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::{sync::mpsc, thread, time::Duration};
