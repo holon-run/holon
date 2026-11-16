@@ -1,30 +1,32 @@
 use super::*;
-use crate::model_catalog::{
+use holon_model_catalog::{
     AnthropicCacheControlSource, ModelMetadataConstraint, ModelMetadataConstraintKind,
     ModelMetadataConstraintSource, ModelMetadataField, ReasoningEffortValidationError,
     ResolvedAnthropicCachePolicy,
 };
 use std::collections::HashSet;
 
-pub(crate) const VIEW_IMAGE_CONTRACT_VERSION: &str = "view_image.v2";
+#[doc(hidden)]
+pub const VIEW_IMAGE_CONTRACT_VERSION: &str = "view_image.v2";
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 #[path = "route_cache_tests.rs"]
 mod route_cache_tests;
 
 #[derive(Debug, Clone)]
-pub(crate) struct ResolvedViewImageVisionSelection {
-    pub(crate) selection: crate::types::ViewImageVisionSelection,
-    pub(crate) selected_route: Option<ModelRouteRef>,
-    pub(crate) primary_route: ModelRouteRef,
+#[doc(hidden)]
+pub struct ResolvedViewImageVisionSelection {
+    pub selection: ViewImageVisionSelection,
+    pub selected_route: Option<ModelRouteRef>,
+    pub primary_route: ModelRouteRef,
 }
 
 pub use holon_domain::model_values::{
     ModelRef, ModelRouteCapability, ModelRouteRef, ProviderEndpointId, ResolvedModelCapabilities,
 };
 
-pub(crate) fn authenticated_model_route_candidates(
+#[doc(hidden)]
+pub fn authenticated_model_route_candidates(
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
 ) -> Vec<ModelRouteRef> {
@@ -45,7 +47,7 @@ fn resolve_model_capabilities(
     transport: ProviderTransportKind,
 ) -> ResolvedModelCapabilities {
     let intrinsic = policy.capabilities.intrinsic();
-    let endpoint = crate::model_catalog::EndpointModelPolicy {
+    let endpoint = holon_model_catalog::EndpointModelPolicy {
         accepted_parameters: resolved_parameter_contracts(policy),
         anthropic_cache: None,
     };
@@ -106,16 +108,16 @@ fn constrain_transport_capability(
 
 fn resolved_parameter_contracts(
     policy: &ResolvedRuntimeModelPolicy,
-) -> Vec<crate::model_catalog::ModelParameterSupport> {
+) -> Vec<holon_model_catalog::ModelParameterSupport> {
     let mut parameters = Vec::new();
     if !policy.reasoning_effort_options.is_empty() {
-        parameters.push(crate::model_catalog::ModelParameterSupport {
+        parameters.push(holon_model_catalog::ModelParameterSupport {
             name: "reasoning_effort".to_string(),
             allowed_values: policy.reasoning_effort_options.clone(),
         });
     }
     if policy.max_output_tokens_upper_limit.is_some() || policy.runtime_max_output_tokens > 0 {
-        parameters.push(crate::model_catalog::ModelParameterSupport {
+        parameters.push(holon_model_catalog::ModelParameterSupport {
             name: "max_output_tokens".to_string(),
             allowed_values: Vec::new(),
         });
@@ -152,7 +154,8 @@ pub struct ResolvedModelRoute {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedModelRouteMetadata {
+#[doc(hidden)]
+pub struct ResolvedModelRouteMetadata {
     pub route_ref: ModelRouteRef,
     pub model_ref: ModelRef,
     pub endpoint: ResolvedProviderEndpointConfig,
@@ -186,7 +189,8 @@ impl ResolvedModelRoute {
     }
 }
 
-pub(crate) fn resolve_image_generation_model(
+#[doc(hidden)]
+pub fn resolve_image_generation_model(
     stored_config: &HolonConfigFile,
 ) -> Result<Option<ModelRouteRef>> {
     if let Ok(value) = env::var("HOLON_IMAGE_GENERATION_MODEL") {
@@ -203,6 +207,33 @@ fn parse_image_generation_model_ref(value: &str) -> Result<Option<ModelRouteRef>
         Ok(None)
     } else {
         ModelRouteRef::parse_compatible(value).map(Some)
+    }
+}
+
+/// Effective model settings borrowed from the application configuration.
+#[derive(Clone, Copy)]
+pub struct ModelCatalogConfig<'a> {
+    pub stored_config: &'a HolonConfigFile,
+    pub default_model: &'a ModelRouteRef,
+    pub fallback_models: &'a [ModelRouteRef],
+    pub vision_model: Option<&'a ModelRouteRef>,
+    pub image_generation_model: Option<&'a ModelRouteRef>,
+    pub vision_candidate_models: &'a [ModelRouteRef],
+    pub disable_provider_fallback: bool,
+    pub providers: &'a ProviderRegistry,
+    pub model_discovery_cache: &'a holon_provider::model_discovery::ModelDiscoveryCacheFile,
+    pub validated_model_overrides: &'a HashMap<ModelRef, ModelRuntimeOverride>,
+    pub validated_unknown_model_fallback: Option<&'a ModelRuntimeOverride>,
+    pub runtime_max_output_tokens: u32,
+}
+
+pub trait ModelCatalogSource {
+    fn model_catalog_config(&self) -> ModelCatalogConfig<'_>;
+}
+
+impl<T: ModelCatalogSource> ModelCatalogSource for std::sync::Arc<T> {
+    fn model_catalog_config(&self) -> ModelCatalogConfig<'_> {
+        self.as_ref().model_catalog_config()
     }
 }
 
@@ -223,40 +254,34 @@ pub struct RuntimeModelCatalog {
     pub provider_cache_overrides: HashMap<ProviderId, bool>,
     pub unknown_model_fallback: Option<ModelRuntimeOverride>,
     pub configured_runtime_max_output_tokens: u32,
-    pub context_budget_overrides: crate::context::ContextBudgetOverrides,
+    pub context_budget_overrides: ContextBudgetOverrides,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct ModelListCatalog<'a> {
-    pub(crate) default_model: &'a ModelRouteRef,
-    fallback_models: &'a [ModelRouteRef],
-    route_options: &'a BTreeMap<String, ModelRouteOptions>,
-    disable_provider_fallback: bool,
-    built_in_catalog: &'a BuiltInModelCatalog,
+#[doc(hidden)]
+pub struct ModelListCatalog<'a> {
+    pub default_model: &'a ModelRouteRef,
+    pub fallback_models: &'a [ModelRouteRef],
+    pub route_options: &'a BTreeMap<String, ModelRouteOptions>,
+    pub disable_provider_fallback: bool,
+    pub built_in_catalog: &'a BuiltInModelCatalog,
 }
 
-#[cfg(holon_lib_test_shard = "d")]
-#[cfg(test)]
-#[path = "models/list_catalog_tests.rs"]
-mod list_catalog_tests;
-
-#[cfg(holon_lib_test_shard = "d")]
-#[cfg(test)]
-#[path = "models/policy_material_tests.rs"]
-mod policy_material_tests;
-
 impl<'a> ModelListCatalog<'a> {
-    pub(crate) fn from_config(config: &'a AppConfig) -> Self {
+    #[doc(hidden)]
+    pub fn from_config(config: &'a impl ModelCatalogSource) -> Self {
+        let config = config.model_catalog_config();
         Self {
-            default_model: &config.default_model,
-            fallback_models: &config.fallback_models,
+            default_model: config.default_model,
+            fallback_models: config.fallback_models,
             route_options: &config.stored_config.model.route_options,
-            disable_provider_fallback: config.provider_fallback_disabled(),
+            disable_provider_fallback: config.disable_provider_fallback,
             built_in_catalog: BuiltInModelCatalog::shared(),
         }
     }
 
-    pub(crate) fn route_service_tier(self, route: &ModelRouteRef) -> Option<ServiceTier> {
+    #[doc(hidden)]
+    pub fn route_service_tier(self, route: &ModelRouteRef) -> Option<ServiceTier> {
         let model_ref = route.model_ref();
         let canonical = self.built_in_catalog.canonical_model_ref(&model_ref);
         self.route_options
@@ -269,11 +294,9 @@ impl<'a> ModelListCatalog<'a> {
             .and_then(|o| o.service_tier)
     }
 
-    pub(crate) fn try_route_service_tier(
-        self,
-        route: &ModelRouteRef,
-    ) -> Result<Option<ServiceTier>> {
-        use crate::diagnostics::resource_io::charge_owned_metadata;
+    #[doc(hidden)]
+    pub fn try_route_service_tier(self, route: &ModelRouteRef) -> Result<Option<ServiceTier>> {
+        use holon_system::resource_material::charge_owned_metadata;
         charge_owned_metadata(
             route
                 .provider
@@ -307,7 +330,8 @@ impl<'a> ModelListCatalog<'a> {
         Ok(self.route_options.get(&key).and_then(|o| o.service_tier))
     }
 
-    pub(crate) fn provider_chain_refs(
+    #[doc(hidden)]
+    pub fn provider_chain_refs(
         self,
         model_override: Option<&'a ModelRouteRef>,
     ) -> impl Iterator<Item = &'a ModelRouteRef> {
@@ -329,7 +353,8 @@ impl<'a> ModelListCatalog<'a> {
         )
     }
 
-    pub(crate) fn provider_chain_for_turn_refs(
+    #[doc(hidden)]
+    pub fn provider_chain_for_turn_refs(
         self,
         model_override: Option<&'a ModelRouteRef>,
         pending_fallback_model: Option<&'a ModelRouteRef>,
@@ -369,19 +394,18 @@ impl RuntimeModelCatalog {
         ModelListCatalog::from(self).route_service_tier(route)
     }
 
-    #[cfg(test)]
-    pub(crate) fn try_route_service_tier(
-        &self,
-        route: &ModelRouteRef,
-    ) -> Result<Option<ServiceTier>> {
+    #[doc(hidden)]
+    pub fn try_route_service_tier(&self, route: &ModelRouteRef) -> Result<Option<ServiceTier>> {
         ModelListCatalog::from(self).try_route_service_tier(route)
     }
 
-    pub(crate) fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
+    #[doc(hidden)]
+    pub fn canonicalize_model_route_ref(&self, route_ref: &ModelRouteRef) -> ModelRouteRef {
         canonicalize_route_ref(&self.built_in_catalog, route_ref)
     }
 
-    pub fn from_config(config: &AppConfig) -> Self {
+    pub fn from_config(config: &impl ModelCatalogSource) -> Self {
+        let config = config.model_catalog_config();
         let mut provider_endpoints = config
             .providers
             .iter()
@@ -408,11 +432,11 @@ impl RuntimeModelCatalog {
         Self {
             route_options: config.stored_config.model.route_options.clone(),
             default_model: config.default_model.clone(),
-            fallback_models: config.fallback_models.clone(),
-            vision_model: config.vision_model.clone(),
-            image_generation_model: config.image_generation_model.clone(),
-            vision_candidate_models: config.vision_candidate_models.clone(),
-            disable_provider_fallback: config.provider_fallback_disabled(),
+            fallback_models: config.fallback_models.to_vec(),
+            vision_model: config.vision_model.cloned(),
+            image_generation_model: config.image_generation_model.cloned(),
+            vision_candidate_models: config.vision_candidate_models.to_vec(),
+            disable_provider_fallback: config.disable_provider_fallback,
             provider_endpoints,
             built_in_catalog: BuiltInModelCatalog::default(),
             discovered_models: config
@@ -421,10 +445,10 @@ impl RuntimeModelCatalog {
                 .into_iter()
                 .collect::<HashMap<_, _>>(),
             model_overrides: config.validated_model_overrides.clone(),
-            model_route_overrides: resolve_model_route_overrides(&config.stored_config)
+            model_route_overrides: resolve_model_route_overrides(config.stored_config)
                 .expect("model route overrides were validated when loading config"),
-            provider_cache_overrides: explicit_provider_cache_overrides(&config.stored_config),
-            unknown_model_fallback: config.validated_unknown_model_fallback.clone(),
+            provider_cache_overrides: explicit_provider_cache_overrides(config.stored_config),
+            unknown_model_fallback: config.validated_unknown_model_fallback.cloned(),
             configured_runtime_max_output_tokens: config.runtime_max_output_tokens,
             context_budget_overrides: config.stored_config.runtime.context_budget_overrides,
         }
@@ -481,7 +505,8 @@ impl RuntimeModelCatalog {
         })
     }
 
-    pub(crate) fn resolve_explicit_model_metadata(
+    #[doc(hidden)]
+    pub fn resolve_explicit_model_metadata(
         &self,
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
@@ -503,7 +528,7 @@ impl RuntimeModelCatalog {
         }
         if service_tier_supported(&canonical_route_ref, &endpoint.runtime_config) {
             capabilities.endpoint.accepted_parameters.push(
-                crate::model_catalog::ModelParameterSupport {
+                holon_model_catalog::ModelParameterSupport {
                     name: "service_tier".into(),
                     allowed_values: vec!["default".into(), "fast".into()],
                 },
@@ -563,9 +588,11 @@ impl RuntimeModelCatalog {
                     .map(|value| (value, AnthropicCacheControlSource::RouteBuiltin))
             })
             .unwrap_or_else(|| {
-                if crate::provider::provider_definition(endpoint.id.as_str()).is_some()
-                    || crate::provider::provider_definition(endpoint.route_provider.as_str())
-                        .is_some()
+                if holon_domain::model_values::provider_definition(endpoint.id.as_str()).is_some()
+                    || holon_domain::model_values::provider_definition(
+                        endpoint.route_provider.as_str(),
+                    )
+                    .is_some()
                 {
                     (
                         endpoint.context_management.cache_capabilities.cache_control,
@@ -612,7 +639,8 @@ impl RuntimeModelCatalog {
         self.provider_chain_refs(model_override).cloned().collect()
     }
 
-    pub(crate) fn provider_chain_refs<'a>(
+    #[doc(hidden)]
+    pub fn provider_chain_refs<'a>(
         &'a self,
         model_override: Option<&'a ModelRouteRef>,
     ) -> impl Iterator<Item = &'a ModelRouteRef> {
@@ -651,12 +679,13 @@ impl RuntimeModelCatalog {
         policy
     }
 
-    pub(crate) fn try_resolved_model_policy(
+    #[doc(hidden)]
+    pub fn try_resolved_model_policy(
         &self,
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
     ) -> Result<ResolvedRuntimeModelPolicy> {
-        use crate::diagnostics::resource_io::charge_owned_metadata;
+        use holon_system::resource_material::charge_owned_metadata;
         let route = model_override.unwrap_or(&self.default_model);
         charge_owned_metadata(
             (std::mem::size_of::<ModelRef>() + route.provider.as_str().len() + route.model.len())
@@ -721,7 +750,8 @@ impl RuntimeModelCatalog {
         Ok(policy)
     }
 
-    fn resolved_model_policy_for_route(
+    #[doc(hidden)]
+    pub fn resolved_model_policy_for_route(
         &self,
         base_context_config: &ContextConfig,
         route_ref: &ModelRouteRef,
@@ -761,7 +791,7 @@ impl RuntimeModelCatalog {
 
     fn context_config_for_resolution(&self, base: &ContextConfig) -> ContextConfig {
         let mut context = base.clone();
-        context.budget_overrides = crate::context::ContextBudgetOverrides {
+        context.budget_overrides = ContextBudgetOverrides {
             prompt_budget_estimated_tokens: self
                 .context_budget_overrides
                 .prompt_budget_estimated_tokens
@@ -848,7 +878,8 @@ impl RuntimeModelCatalog {
         .selection
     }
 
-    pub(crate) fn select_view_image_vision_model_with_route(
+    #[doc(hidden)]
+    pub fn select_view_image_vision_model_with_route(
         &self,
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
@@ -902,7 +933,8 @@ impl RuntimeModelCatalog {
         )
     }
 
-    pub(crate) fn select_view_image_vision_model_for_call(
+    #[doc(hidden)]
+    pub fn select_view_image_vision_model_for_call(
         &self,
         base_context_config: &ContextConfig,
         model_override: Option<&ModelRouteRef>,
@@ -1155,12 +1187,13 @@ impl Default for RuntimeModelCatalog {
             provider_cache_overrides: HashMap::new(),
             unknown_model_fallback: None,
             configured_runtime_max_output_tokens: 8192,
-            context_budget_overrides: crate::context::ContextBudgetOverrides::default(),
+            context_budget_overrides: ContextBudgetOverrides::default(),
         }
     }
 }
 
-pub(crate) fn resolve_model_catalog(
+#[doc(hidden)]
+pub fn resolve_model_catalog(
     stored_config: &HolonConfigFile,
 ) -> Result<HashMap<ModelRef, ModelRuntimeOverride>> {
     stored_config
@@ -1189,7 +1222,8 @@ fn canonicalize_route_ref(catalog: &BuiltInModelCatalog, route: &ModelRouteRef) 
     ModelRouteRef::new(provider, endpoint, model.model)
 }
 
-pub(crate) fn resolve_model_route_overrides(
+#[doc(hidden)]
+pub fn resolve_model_route_overrides(
     stored_config: &HolonConfigFile,
 ) -> Result<HashMap<ModelRouteRef, ModelRouteRuntimeOverride>> {
     let catalog = BuiltInModelCatalog::default();
@@ -1221,7 +1255,8 @@ pub(crate) fn resolve_model_route_overrides(
     Ok(resolved)
 }
 
-fn explicit_provider_cache_overrides(config: &HolonConfigFile) -> HashMap<ProviderId, bool> {
+#[doc(hidden)]
+pub fn explicit_provider_cache_overrides(config: &HolonConfigFile) -> HashMap<ProviderId, bool> {
     let mut overrides = HashMap::new();
     for (id, provider) in &config.providers {
         if let Some(cache) = provider.cache_capabilities {
@@ -1246,7 +1281,8 @@ fn explicit_provider_cache_overrides(config: &HolonConfigFile) -> HashMap<Provid
     overrides
 }
 
-pub(crate) fn validate_optional_model_runtime_override(
+#[doc(hidden)]
+pub fn validate_optional_model_runtime_override(
     override_config: Option<ModelRuntimeOverride>,
 ) -> Result<Option<ModelRuntimeOverride>> {
     override_config
@@ -1258,7 +1294,8 @@ pub(crate) fn validate_optional_model_runtime_override(
 /// A configured fallback entry: an explicit route ref or the `auto` marker,
 /// which expands to one preferred route per authenticated provider.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FallbackEntry {
+#[doc(hidden)]
+pub enum FallbackEntry {
     Auto,
     Route(ModelRouteRef),
 }
@@ -1299,14 +1336,15 @@ pub(crate) fn parse_fallback_entry_list(raw_value: &str) -> Result<Vec<FallbackE
     Ok(values)
 }
 
-pub(crate) fn resolve_model_selection_for_load_mode(
+#[doc(hidden)]
+pub fn resolve_model_selection_for_load_mode(
     explicit_default: Option<ModelRouteRef>,
     explicit_fallbacks: Option<Vec<FallbackEntry>>,
     providers: &ProviderRegistry,
     model_overrides: &HashMap<ModelRef, ModelRuntimeOverride>,
-    mode: ConfigLoadMode,
+    skip_authenticated_model_resolution: bool,
 ) -> Result<(ModelRouteRef, Vec<ModelRouteRef>)> {
-    if mode.skip_authenticated_model_resolution() {
+    if skip_authenticated_model_resolution {
         let default_model = explicit_default.unwrap_or_else(|| {
             ModelRouteRef::new(
                 ProviderId::openai(),
@@ -1338,7 +1376,8 @@ pub(crate) fn resolve_model_selection_for_load_mode(
     )
 }
 
-pub(crate) fn resolve_model_selection_from_explicit(
+#[doc(hidden)]
+pub fn resolve_model_selection_from_explicit(
     explicit_default: Option<ModelRouteRef>,
     explicit_fallbacks: Option<Vec<FallbackEntry>>,
     providers: &ProviderRegistry,
@@ -1379,9 +1418,8 @@ pub(crate) fn resolve_model_selection_from_explicit(
     ))
 }
 
-pub(crate) fn resolve_default_model(
-    stored_config: &HolonConfigFile,
-) -> Result<Option<ModelRouteRef>> {
+#[doc(hidden)]
+pub fn resolve_default_model(stored_config: &HolonConfigFile) -> Result<Option<ModelRouteRef>> {
     if let Ok(value) = env::var("HOLON_MODEL") {
         return ModelRouteRef::parse_compatible(&value).map(Some);
     }
@@ -1391,7 +1429,8 @@ pub(crate) fn resolve_default_model(
     Ok(None)
 }
 
-pub(crate) fn resolve_fallback_models(
+#[doc(hidden)]
+pub fn resolve_fallback_models(
     stored_config: &HolonConfigFile,
 ) -> Result<Option<Vec<FallbackEntry>>> {
     if let Ok(value) = env::var("HOLON_MODEL_FALLBACKS") {
@@ -1410,9 +1449,8 @@ pub(crate) fn resolve_fallback_models(
     }
 }
 
-pub(crate) fn resolve_vision_model(
-    stored_config: &HolonConfigFile,
-) -> Result<Option<ModelRouteRef>> {
+#[doc(hidden)]
+pub fn resolve_vision_model(stored_config: &HolonConfigFile) -> Result<Option<ModelRouteRef>> {
     if let Ok(value) = env::var("HOLON_VISION_MODEL") {
         return ModelRouteRef::parse_compatible(&value).map(Some);
     }
@@ -1437,7 +1475,8 @@ fn authenticated_provider_ids(providers: &ProviderRegistry) -> Vec<ProviderId> {
     provider_ids
 }
 
-pub(crate) fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
+#[doc(hidden)]
+pub fn provider_has_usable_auth(provider: &ProviderRuntimeConfig) -> bool {
     match provider.auth.source {
         CredentialSource::Env => provider.has_configured_credential(),
         CredentialSource::AuthProfile => {
@@ -1500,7 +1539,6 @@ pub(crate) fn dedupe_fallback_models(configured: Vec<ModelRouteRef>) -> Vec<Mode
     })
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1519,7 +1557,7 @@ mod tests {
                     .map(|route| route.model_ref()),
             )
             .chain(
-                crate::provider::provider_definitions()
+                holon_domain::model_values::provider_definitions()
                     .iter()
                     .map(|definition| {
                         ModelRef::new(
@@ -1568,14 +1606,14 @@ mod tests {
             policy
                 .evidence
                 .source_for(ModelMetadataField::ReasoningEffortOptions),
-            Some(crate::model_catalog::ModelMetadataOrigin::RouteBuiltin)
+            Some(holon_model_catalog::ModelMetadataOrigin::RouteBuiltin)
         );
     }
 
     #[test]
     fn resolved_capabilities_intersect_model_and_transport_image_output() {
         let mut policy = ResolvedRuntimeModelPolicy {
-            capabilities: crate::model_catalog::ModelCapabilityFlags {
+            capabilities: holon_model_catalog::ModelCapabilityFlags {
                 image_generation: true,
                 ..Default::default()
             },
@@ -1588,7 +1626,7 @@ mod tests {
         assert!(capabilities
             .intrinsic
             .output_modalities
-            .contains(&crate::model_catalog::ModelModality::Image));
+            .contains(&holon_model_catalog::ModelModality::Image));
         assert!(!capabilities.transport.image_output);
         assert!(!capabilities.image_output);
         assert!(!capabilities.supports(ModelRouteCapability::ImageGeneration));
@@ -1607,7 +1645,7 @@ mod tests {
     #[test]
     fn resolved_capabilities_record_each_transport_image_constraint_once() {
         let mut policy = ResolvedRuntimeModelPolicy {
-            capabilities: crate::model_catalog::ModelCapabilityFlags {
+            capabilities: holon_model_catalog::ModelCapabilityFlags {
                 image_input: true,
                 image_generation: true,
                 ..Default::default()
@@ -1657,13 +1695,13 @@ mod tests {
 
     #[test]
     fn gemini_transport_supports_vision_without_unimplemented_reasoning_controls() {
-        let catalog = crate::model_catalog::BuiltInModelCatalog::new();
+        let catalog = holon_model_catalog::BuiltInModelCatalog::new();
         let mut policy = catalog.resolve_policy(
             &ModelRef::parse("gemini/gemini-3.5-flash").unwrap(),
             &HashMap::new(),
             &HashMap::new(),
             None,
-            &crate::config::ContextConfig::default(),
+            &crate::ContextConfig::default(),
             8192,
         );
 
@@ -1696,11 +1734,11 @@ mod tests {
         assert_eq!(
             capabilities.endpoint.accepted_parameters,
             vec![
-                crate::model_catalog::ModelParameterSupport {
+                holon_model_catalog::ModelParameterSupport {
                     name: "reasoning_effort".into(),
                     allowed_values: vec!["low".into(), "high".into()],
                 },
-                crate::model_catalog::ModelParameterSupport {
+                holon_model_catalog::ModelParameterSupport {
                     name: "max_output_tokens".into(),
                     allowed_values: Vec::new(),
                 },

@@ -319,14 +319,16 @@ impl ApiCorsConfigFile {
     }
 }
 
-pub(crate) fn default_api_cors_allowed_methods() -> Vec<String> {
+#[doc(hidden)]
+pub fn default_api_cors_allowed_methods() -> Vec<String> {
     ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"]
         .into_iter()
         .map(str::to_string)
         .collect()
 }
 
-pub(crate) fn default_api_cors_allowed_headers() -> Vec<String> {
+#[doc(hidden)]
+pub fn default_api_cors_allowed_headers() -> Vec<String> {
     [
         "content-type",
         "authorization",
@@ -444,11 +446,11 @@ impl AgentTemplateRemoteSourceConfigFile {
 pub struct RuntimeConfigFile {
     /// Load-time environment policy; never read from or written to config.json.
     #[serde(skip)]
-    pub context_budget_overrides: crate::context::ContextBudgetOverrides,
+    pub context_budget_overrides: ContextBudgetOverrides,
     #[serde(
         default,
         skip_serializing_if = "Option::is_none",
-        deserialize_with = "crate::prompt::time::deserialize_optional_timezone"
+        deserialize_with = "holon_domain::timezone::deserialize_optional_timezone"
     )]
     pub timezone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -899,12 +901,12 @@ impl RuntimeDbReadersConfigFile {
         self.ordinary_max_connections.is_none() && self.preparation_max_connections.is_none()
     }
 
-    pub fn resolve(&self) -> Result<crate::runtime_db::RuntimeDbReaderConfig> {
-        crate::runtime_db::RuntimeDbReaderConfig::new(
+    pub fn resolve(&self) -> Result<holon_storage::RuntimeDbReaderConfig> {
+        holon_storage::RuntimeDbReaderConfig::new(
             self.ordinary_max_connections
-                .unwrap_or(crate::runtime_db::DEFAULT_ORDINARY_MAX_CONNECTIONS),
+                .unwrap_or(holon_storage::DEFAULT_ORDINARY_MAX_CONNECTIONS),
             self.preparation_max_connections
-                .unwrap_or(crate::runtime_db::DEFAULT_PREPARATION_MAX_CONNECTIONS),
+                .unwrap_or(holon_storage::DEFAULT_PREPARATION_MAX_CONNECTIONS),
         )
     }
 }

@@ -14,10 +14,7 @@ use super::{
 
 mod providers;
 
-pub(crate) use providers::{
-    provider_definition, provider_definitions, ProviderCatalogPolicy, ProviderContextManagement,
-    ProviderDefinition, ProviderMaterializer, ProviderWebSearch,
-};
+pub(crate) use providers::{provider_definition, ProviderCatalogPolicy};
 
 type ProviderBuilder = fn(&Path, &ResolvedModelRoute) -> Result<Arc<dyn AgentProvider>>;
 
@@ -191,6 +188,7 @@ mod tests {
 
     use super::*;
     use crate::config::{built_in_provider_registry_with_settings, ProviderEndpointId, ProviderId};
+    use holon_domain::model_values::{provider_definitions, ProviderMaterializer};
 
     #[test]
     fn transport_definitions_are_complete_and_unique() {

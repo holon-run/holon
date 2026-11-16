@@ -24,7 +24,8 @@ pub(crate) fn validate_provider_headers(
     Ok(())
 }
 
-pub(crate) fn effective_provider_headers(
+#[doc(hidden)]
+pub fn effective_provider_headers(
     provider: &ProviderConfigFile,
     endpoint: &ProviderEndpointId,
 ) -> Result<ProviderHeaders> {
@@ -118,7 +119,7 @@ fn provider_config_for_header_update(
     };
     if let Some(endpoint) = endpoint {
         let (canonical, _) = super::built_in_provider_endpoint_identity(provider)?;
-        let registered = crate::provider::provider_definitions()
+        let registered = holon_domain::model_values::provider_definitions()
             .iter()
             .any(|definition| {
                 definition.route_provider == canonical.as_str()
@@ -138,5 +139,5 @@ fn provider_config_for_header_update(
     Ok(candidate)
 }
 
-#[cfg(all(test, holon_lib_test_shard = "d"))]
+#[cfg(test)]
 mod tests;

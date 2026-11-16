@@ -834,6 +834,7 @@ jobs:
           cargo fmt --manifest-path crates/holon-model-client/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-provider/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-model-catalog/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/holon-config/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-core/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-jev/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-openai/Cargo.toml -- --check
@@ -914,6 +915,7 @@ jobs:
           cargo test --manifest-path crates/holon-storage/Cargo.toml --locked
           cargo test --manifest-path crates/holon-provider/Cargo.toml --locked
           cargo test --manifest-path crates/holon-model-catalog/Cargo.toml --locked
+          cargo test --manifest-path crates/holon-config/Cargo.toml --locked
 
       - name: Package check
         run: |

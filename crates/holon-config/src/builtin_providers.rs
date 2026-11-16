@@ -1,9 +1,9 @@
 use super::*;
-use crate::provider::{
+pub(crate) use holon_domain::model_values::built_in_provider_endpoint_identity;
+use holon_domain::model_values::{
     provider_definitions, ProviderContextManagement, ProviderDefinition, ProviderMaterializer,
     ProviderWebSearch,
 };
-pub(crate) use holon_domain::model_values::built_in_provider_endpoint_identity;
 
 pub fn validate_provider_config(
     provider_id: &ProviderId,
@@ -593,7 +593,8 @@ pub fn built_in_provider_default_config(
     built_in_provider_default_config_with_settings(provider_id, &settings_env)
 }
 
-pub(crate) fn built_in_provider_default_config_with_settings(
+#[doc(hidden)]
+pub fn built_in_provider_default_config_with_settings(
     provider_id: &ProviderId,
     settings_env: &HashMap<String, String>,
 ) -> Result<Option<ProviderConfigFile>> {
@@ -631,37 +632,8 @@ pub fn built_in_provider_doc_entries() -> Result<Vec<ProviderDocEntry>> {
     Ok(BuiltInProviderCatalog::with_settings(&settings_env)?.doc_entries())
 }
 
-pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
-    config
-        .providers
-        .values()
-        .map(|provider| provider_config_view(config, provider))
-        .collect()
-}
-
-pub fn provider_config_view(
-    config: &AppConfig,
-    provider: &ProviderRuntimeConfig,
-) -> ProviderConfigView {
-    ProviderConfigView {
-        id: provider.id.as_str().to_string(),
-        transport: provider.transport.as_str().to_string(),
-        base_url: provider.base_url.clone(),
-        auth: ProviderAuthView {
-            source: provider.auth.source.as_str().to_string(),
-            kind: provider.auth.kind.as_str().to_string(),
-            env: provider.auth.env.clone(),
-            profile: provider.auth.profile.clone(),
-            external: provider.auth.external.clone(),
-        },
-        credential_configured: provider.has_configured_credential()
-            || matches!(provider.auth.source, CredentialSource::None),
-        configured_in_config: config.stored_config.providers.contains_key(&provider.id),
-        header_names: provider.headers.names(),
-    }
-}
-
-pub(crate) fn resolve_provider_registry(
+#[doc(hidden)]
+pub fn resolve_provider_registry(
     stored_config: &HolonConfigFile,
     settings_env: &HashMap<String, String>,
     credential_store: &CredentialStoreFile,
@@ -780,13 +752,15 @@ fn materialize_provider_endpoint_config(
     Ok(runtime)
 }
 
-pub(crate) fn built_in_provider_registry_with_settings(
+#[doc(hidden)]
+pub fn built_in_provider_registry_with_settings(
     settings_env: &HashMap<String, String>,
 ) -> Result<ProviderRegistry> {
     Ok(BuiltInProviderCatalog::with_settings(settings_env)?.into_legacy_registry())
 }
 
-pub(crate) fn resolved_provider_endpoint_config(
+#[doc(hidden)]
+pub fn resolved_provider_endpoint_config(
     legacy_provider: ProviderId,
     runtime_config: ProviderRuntimeConfig,
 ) -> Result<ResolvedProviderEndpointConfig> {
@@ -1321,7 +1295,8 @@ pub(crate) struct ResolvedEnvValue {
     value: String,
 }
 
-pub(crate) fn materialize_provider_config(
+#[doc(hidden)]
+pub fn materialize_provider_config(
     id: ProviderId,
     provider_config: ProviderConfigFile,
     settings_env: &HashMap<String, String>,
@@ -1394,7 +1369,6 @@ pub(crate) fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
     }
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod reasoning_effort_tests {
     use super::*;
@@ -1609,10 +1583,8 @@ pub(crate) fn resolve_provider_credential(
     }
 }
 
-pub(crate) fn validate_provider_auth(
-    provider_id: &ProviderId,
-    auth: &ProviderAuthConfig,
-) -> Result<()> {
+#[doc(hidden)]
+pub fn validate_provider_auth(provider_id: &ProviderId, auth: &ProviderAuthConfig) -> Result<()> {
     match (auth.source, auth.kind) {
         (CredentialSource::Env, CredentialKind::ApiKey | CredentialKind::BearerToken) => {
             if auth.env.as_deref().unwrap_or_default().trim().is_empty() {

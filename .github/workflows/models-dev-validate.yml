@@ -9,7 +9,7 @@ on:
       - "crates/holon-model-catalog/**"
       - "crates/holon-domain/**"
       - "crates/holon-system/src/resource_material.rs"
-      - "src/config/models.rs"
+      - "crates/holon-config/src/models.rs"
       - "src/context/**"
       - "src/provider/registry/providers.rs"
       - "tests/models_dev*.rs"

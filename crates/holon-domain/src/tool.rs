@@ -11,6 +11,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::path::PathBuf;
 
+pub const DEFAULT_TOOL_OUTPUT_TOKENS: u64 = 8_000;
+pub const MAX_TOOL_OUTPUT_TOKENS: u64 = 64_000;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CommandCostDiagnostics {
     pub cmd_preview: String,

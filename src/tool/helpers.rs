@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 use crate::tool::{spec::ToolInputCoercion, ToolError};
 use crate::types::CommandCostDiagnostics;
 
-pub(crate) const DEFAULT_TOOL_OUTPUT_TOKENS: u64 = 8_000;
-pub(crate) const MAX_TOOL_OUTPUT_TOKENS: u64 = 64_000;
+pub(crate) use holon_domain::{DEFAULT_TOOL_OUTPUT_TOKENS, MAX_TOOL_OUTPUT_TOKENS};
+
 pub(crate) const COMMAND_COST_SOFT_THRESHOLD_CHARS: usize = 4_000;
 pub(crate) const COMMAND_PREVIEW_CHARS: usize = 240;
 const TOOL_INPUT_ENVELOPE_KEYS: [&str; 4] = ["arguments", "parameters", "params", "input"];

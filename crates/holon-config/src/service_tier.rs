@@ -11,7 +11,14 @@ pub struct ModelRouteOptions {
 
 #[derive(Debug, thiserror::Error)]
 #[error("model route {0} does not support service_tier")]
-pub struct ServiceTierValidationError(pub(crate) String);
+pub struct ServiceTierValidationError(String);
+
+impl ServiceTierValidationError {
+    #[doc(hidden)]
+    pub fn new(route: String) -> Self {
+        Self(route)
+    }
+}
 
 impl ResolvedModelRoute {
     pub fn validate_service_tier(&self, _tier: ServiceTier) -> Result<()> {
@@ -24,14 +31,12 @@ impl ResolvedModelRoute {
         {
             return Ok(());
         }
-        Err(ServiceTierValidationError(self.route_ref.as_string()).into())
+        Err(ServiceTierValidationError::new(self.route_ref.as_string()).into())
     }
 }
 
-pub(crate) fn service_tier_supported(
-    route: &ModelRouteRef,
-    endpoint: &ProviderRuntimeConfig,
-) -> bool {
+#[doc(hidden)]
+pub fn service_tier_supported(route: &ModelRouteRef, endpoint: &ProviderRuntimeConfig) -> bool {
     // Sharing an OpenAI wire family does not imply sharing its service tiers.
     let Ok(url) = url::Url::parse(&endpoint.base_url) else {
         return false;
@@ -59,27 +64,24 @@ pub(crate) fn service_tier_supported(
         )
 }
 
-impl AppConfig {
-    pub(crate) fn validate_model_route_options(&self) -> Result<()> {
-        let catalog = RuntimeModelCatalog::from_config(self);
-        for (key, options) in &self.stored_config.model.route_options {
-            let route_ref = ModelRouteRef::parse(key)?;
-            if catalog.canonicalize_model_route_ref(&route_ref).as_string() != *key {
-                return Err(anyhow!(
-                    "model.route_options key must be a canonical model route: {key}"
-                ));
-            }
-            let route = catalog
-                .resolve_explicit_model_route(
-                    &ContextConfig::default(),
-                    &route_ref,
-                    ModelRouteCapability::Turn,
-                )
-                .ok_or_else(|| anyhow!("model.route_options route is not configured: {key}"))?;
-            if let Some(tier) = options.service_tier {
-                route.validate_service_tier(tier)?;
-            }
+pub fn validate_model_route_options(catalog: &RuntimeModelCatalog) -> Result<()> {
+    for (key, options) in &catalog.route_options {
+        let route_ref = ModelRouteRef::parse(key)?;
+        if catalog.canonicalize_model_route_ref(&route_ref).as_string() != *key {
+            return Err(anyhow!(
+                "model.route_options key must be a canonical model route: {key}"
+            ));
         }
-        Ok(())
+        let route = catalog
+            .resolve_explicit_model_route(
+                &ContextConfig::default(),
+                &route_ref,
+                ModelRouteCapability::Turn,
+            )
+            .ok_or_else(|| anyhow!("model.route_options route is not configured: {key}"))?;
+        if let Some(tier) = options.service_tier {
+            route.validate_service_tier(tier)?;
+        }
     }
+    Ok(())
 }

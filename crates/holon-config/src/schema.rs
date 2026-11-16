@@ -474,14 +474,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "runtime.default_tool_output_tokens",
             kind: "positive_integer",
             description: "Default model-visible output token budget for local command tools.",
-            default: json!(crate::tool::helpers::DEFAULT_TOOL_OUTPUT_TOKENS),
+            default: json!(DEFAULT_TOOL_OUTPUT_TOKENS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.max_tool_output_tokens",
             kind: "positive_integer",
             description: "Upper model-visible output token budget for local command tools.",
-            default: json!(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS),
+            default: json!(MAX_TOOL_OUTPUT_TOKENS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -489,7 +489,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "positive_integer",
             description: "Maximum combined bytes retained on disk for one command task.",
             default: json!(
-                crate::types::CommandTaskOutputPolicy::default().retention_bytes
+                CommandTaskOutputPolicy::default().retention_bytes
             ),
             allowed_values: vec![],
         },
@@ -498,7 +498,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "positive_integer",
             description: "Maximum bytes a command task may emit before it is terminated.",
             default: json!(
-                crate::types::CommandTaskOutputPolicy::default().execution_quota_bytes
+                CommandTaskOutputPolicy::default().execution_quota_bytes
             ),
             allowed_values: vec![],
         },
@@ -507,7 +507,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "positive_integer",
             description: "Minimum free bytes required while persisting command task output.",
             default: json!(
-                crate::types::CommandTaskOutputPolicy::default().min_free_disk_bytes
+                CommandTaskOutputPolicy::default().min_free_disk_bytes
             ),
             allowed_values: vec![],
         },
@@ -516,7 +516,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             kind: "positive_integer",
             description: "Minimum free filesystem percentage required while persisting command task output.",
             default: json!(
-                crate::types::CommandTaskOutputPolicy::default().min_free_disk_percent
+                CommandTaskOutputPolicy::default().min_free_disk_percent
             ),
             allowed_values: vec![],
         },
@@ -566,14 +566,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "runtime.db_readers.ordinary_max_connections",
             kind: "positive_integer",
             description: "Ordinary reader limit shared across Agents in one Host. Both reader limits must total at most 64. Connections grow on demand; changes require daemon restart.",
-            default: json!(crate::runtime_db::DEFAULT_ORDINARY_MAX_CONNECTIONS),
+            default: json!(DEFAULT_ORDINARY_MAX_CONNECTIONS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.db_readers.preparation_max_connections",
             kind: "positive_integer",
             description: "Reserved preparation reader limit shared across Agents in one Host. Both reader limits must total at most 64. Connections grow on demand; changes require daemon restart.",
-            default: json!(crate::runtime_db::DEFAULT_PREPARATION_MAX_CONNECTIONS),
+            default: json!(DEFAULT_PREPARATION_MAX_CONNECTIONS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -632,56 +632,56 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "runtime.retention.audit_events_days",
             kind: "positive_integer",
             description: "Age window in days for audit event retention.",
-            default: json!(crate::runtime_db::retention::DEFAULT_AUDIT_EVENTS_DAYS),
+            default: json!(DEFAULT_AUDIT_EVENTS_DAYS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.transcript_entries_days",
             kind: "positive_integer",
             description: "Age window in days for transcript entry retention.",
-            default: json!(crate::runtime_db::retention::DEFAULT_TRANSCRIPT_ENTRIES_DAYS),
+            default: json!(DEFAULT_TRANSCRIPT_ENTRIES_DAYS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.tool_executions_days",
             kind: "positive_integer",
             description: "Age window in days for tool execution retention.",
-            default: json!(crate::runtime_db::retention::DEFAULT_TOOL_EXECUTIONS_DAYS),
+            default: json!(DEFAULT_TOOL_EXECUTIONS_DAYS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.audit_events_min_rows_per_scope",
             kind: "positive_integer",
             description: "Minimum audit event rows retained independently for each agent or host scope.",
-            default: json!(crate::runtime_db::retention::DEFAULT_AUDIT_EVENTS_MIN_ROWS_PER_SCOPE),
+            default: json!(DEFAULT_AUDIT_EVENTS_MIN_ROWS_PER_SCOPE),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.transcript_entries_min_rows",
             kind: "positive_integer",
             description: "Minimum transcript rows retained globally.",
-            default: json!(crate::runtime_db::retention::DEFAULT_TRANSCRIPT_ENTRIES_MIN_ROWS),
+            default: json!(DEFAULT_TRANSCRIPT_ENTRIES_MIN_ROWS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.tool_executions_min_rows",
             kind: "positive_integer",
             description: "Minimum tool execution rows retained globally.",
-            default: json!(crate::runtime_db::retention::DEFAULT_TOOL_EXECUTIONS_MIN_ROWS),
+            default: json!(DEFAULT_TOOL_EXECUTIONS_MIN_ROWS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.interval_hours",
             kind: "positive_integer",
             description: "Hours between daemon retention passes while retention is enabled.",
-            default: json!(crate::runtime_db::retention::DEFAULT_RETENTION_INTERVAL_HOURS),
+            default: json!(DEFAULT_RETENTION_INTERVAL_HOURS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "runtime.retention.incremental_vacuum_pages",
             kind: "positive_integer",
             description: "Maximum pages requested from SQLite incremental vacuum after a retention pass.",
-            default: json!(crate::runtime_db::retention::DEFAULT_INCREMENTAL_VACUUM_PAGES),
+            default: json!(DEFAULT_INCREMENTAL_VACUUM_PAGES),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -814,28 +814,28 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "web.fetch.max_chars",
             kind: "positive_integer",
             description: "Maximum model-visible characters returned by WebFetch.",
-            default: json!(crate::web::WebFetchConfig::default().max_chars),
+            default: json!(WebFetchConfig::default().max_chars),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "web.fetch.max_response_bytes",
             kind: "positive_integer",
             description: "Maximum response bytes read by WebFetch before truncation.",
-            default: json!(crate::web::WebFetchConfig::default().max_response_bytes),
+            default: json!(WebFetchConfig::default().max_response_bytes),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "web.fetch.timeout_seconds",
             kind: "positive_integer",
             description: "Per-request timeout for WebFetch and managed WebSearch providers.",
-            default: json!(crate::web::WebFetchConfig::default().timeout_seconds),
+            default: json!(WebFetchConfig::default().timeout_seconds),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "web.fetch.max_redirects",
             kind: "positive_integer",
             description: "Maximum redirect hops followed by WebFetch.",
-            default: json!(crate::web::WebFetchConfig::default().max_redirects),
+            default: json!(WebFetchConfig::default().max_redirects),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -891,14 +891,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "web.search.max_results",
             kind: "positive_integer",
             description: "Maximum number of WebSearch results returned to the model.",
-            default: json!(crate::web::WebSearchConfig::default().max_results),
+            default: json!(WebSearchConfig::default().max_results),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "web.search.max_provider_attempts",
             kind: "positive_integer",
             description: "Maximum WebSearch providers attempted for fallback or aggregate routing.",
-            default: json!(crate::web::WebSearchConfig::default().max_provider_attempts),
+            default: json!(WebSearchConfig::default().max_provider_attempts),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -919,7 +919,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "x_search.timeout_seconds",
             kind: "positive_integer",
             description: "Timeout in seconds for isolated xAI XSearch requests.",
-            default: json!(crate::config::DEFAULT_X_SEARCH_TIMEOUT_SECONDS),
+            default: json!(crate::DEFAULT_X_SEARCH_TIMEOUT_SECONDS),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -996,14 +996,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "web.providers.<name>.limits.timeout_ms",
             kind: "positive_integer",
             description: "Command provider execution timeout in milliseconds.",
-            default: json!(crate::web::WebProviderLimitsConfig::default().timeout_ms),
+            default: json!(WebProviderLimitsConfig::default().timeout_ms),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
             key: "web.providers.<name>.limits.max_output_bytes",
             kind: "positive_integer",
             description: "Command provider stdout byte limit.",
-            default: json!(crate::web::WebProviderLimitsConfig::default().max_output_bytes),
+            default: json!(WebProviderLimitsConfig::default().max_output_bytes),
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
@@ -1625,7 +1625,8 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
     }
 }
 
-pub(crate) fn is_runtime_db_reader_config_key(key: &str) -> bool {
+#[doc(hidden)]
+pub fn is_runtime_db_reader_config_key(key: &str) -> bool {
     matches!(
         key,
         "runtime.db_readers.ordinary_max_connections"
@@ -1634,7 +1635,8 @@ pub(crate) fn is_runtime_db_reader_config_key(key: &str) -> bool {
 }
 
 /// Stage one field; the caller must validate the final effective pair.
-pub(crate) fn stage_runtime_db_reader_update(
+#[doc(hidden)]
+pub fn stage_runtime_db_reader_update(
     readers: &mut RuntimeDbReadersConfigFile,
     key: &str,
     raw_value: Option<&str>,
@@ -1794,7 +1796,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         }
         key if key.starts_with("providers.") => set_provider_config_key(config, key, raw_value)?,
         "runtime.timezone" => {
-            crate::prompt::time::parse_timezone(raw_value)?;
+            holon_domain::timezone::parse_timezone(raw_value)?;
             config.runtime.timezone = Some(raw_value.to_string());
         }
         "runtime.max_output_tokens" => {
@@ -1802,16 +1804,12 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             config.runtime.max_output_tokens = Some(value);
         }
         "runtime.default_tool_output_tokens" => {
-            config.runtime.default_tool_output_tokens = Some(
-                parse_positive_u32_key(key, raw_value)?
-                    .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
-            );
+            config.runtime.default_tool_output_tokens =
+                Some(parse_positive_u32_key(key, raw_value)?.min(MAX_TOOL_OUTPUT_TOKENS as u32));
         }
         "runtime.max_tool_output_tokens" => {
-            config.runtime.max_tool_output_tokens = Some(
-                parse_positive_u32_key(key, raw_value)?
-                    .min(crate::tool::helpers::MAX_TOOL_OUTPUT_TOKENS as u32),
-            );
+            config.runtime.max_tool_output_tokens =
+                Some(parse_positive_u32_key(key, raw_value)?.min(MAX_TOOL_OUTPUT_TOKENS as u32));
         }
         "runtime.command_task_output_retention_bytes" => {
             config.runtime.command_task_output_retention_bytes =
@@ -1923,7 +1921,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "decision.model" => {
             let model = raw_value.trim();
             anyhow::ensure!(!model.is_empty(), "{key} must not be empty");
-            crate::config::ModelRouteRef::parse_compatible(model)
+            crate::ModelRouteRef::parse_compatible(model)
                 .map_err(|error| anyhow!("{key} is invalid: {error}"))?;
             config.decision.model = Some(model.into());
         }
@@ -2178,7 +2176,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
         "agent_templates.remote_sources" => {
             let sources: std::collections::BTreeMap<
                 String,
-                crate::config::file::AgentTemplateRemoteSourceConfigFile,
+                crate::file::AgentTemplateRemoteSourceConfigFile,
             > = serde_json::from_str(raw_value).with_context(|| {
                 format!("invalid agent_templates.remote_sources JSON: {}", raw_value)
             })?;
@@ -2191,7 +2189,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                     "agent_templates.remote_sources.<id> requires a non-empty source id"
                 ));
             }
-            let source: crate::config::file::AgentTemplateRemoteSourceConfigFile =
+            let source: crate::file::AgentTemplateRemoteSourceConfigFile =
                 serde_json::from_str(raw_value).with_context(|| {
                     format!(
                         "invalid agent template source config for {}: {}",
@@ -2616,7 +2614,8 @@ pub(crate) fn parse_string_list(raw_value: &str) -> Result<Vec<String>> {
         .collect())
 }
 
-pub(crate) fn parse_bool_value(raw_value: &str) -> Result<Option<bool>> {
+#[doc(hidden)]
+pub fn parse_bool_value(raw_value: &str) -> Result<Option<bool>> {
     match raw_value.trim().to_ascii_lowercase().as_str() {
         "" => Ok(None),
         "true" | "1" | "yes" | "on" => Ok(Some(true)),
@@ -2625,7 +2624,8 @@ pub(crate) fn parse_bool_value(raw_value: &str) -> Result<Option<bool>> {
     }
 }
 
-pub(crate) fn parse_comma_separated_values(raw_value: &str) -> Vec<String> {
+#[doc(hidden)]
+pub fn parse_comma_separated_values(raw_value: &str) -> Vec<String> {
     raw_value
         .split(',')
         .map(str::trim)
@@ -2670,13 +2670,14 @@ pub(crate) fn parse_percentage_u8_key(key: &str, raw_value: &str) -> Result<u8> 
         .ok_or_else(|| anyhow!("{key} expects an integer from 1 to 100"))
 }
 
-pub(crate) fn parse_url_value(key: &str, raw_value: &str) -> Result<()> {
+#[doc(hidden)]
+pub fn parse_url_value(key: &str, raw_value: &str) -> Result<()> {
     let trimmed = raw_value.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("{key} expects a non-empty URL"));
     }
-    let parsed = reqwest::Url::parse(trimmed)
-        .with_context(|| format!("{key} expects a valid absolute URL"))?;
+    let parsed =
+        url::Url::parse(trimmed).with_context(|| format!("{key} expects a valid absolute URL"))?;
     if parsed.scheme() != "http" && parsed.scheme() != "https" {
         return Err(anyhow!("{key} expects an http or https URL"));
     }
@@ -2712,7 +2713,8 @@ pub(crate) fn startup_only_config_key_error(key: &str) -> anyhow::Error {
     )
 }
 
-pub(crate) fn get_config_value(
+#[doc(hidden)]
+pub fn get_config_value(
     primary_env: &str,
     secondary_env: Option<&str>,
     settings_env: &HashMap<String, String>,

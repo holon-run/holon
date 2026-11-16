@@ -75,5 +75,5 @@ fn config_parent(path: &Path) -> &Path {
         .unwrap_or_else(|| Path::new("."))
 }
 
-#[cfg(all(test, holon_lib_test_shard = "d"))]
+#[cfg(test)]
 mod tests;

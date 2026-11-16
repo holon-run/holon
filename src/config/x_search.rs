@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Result};
 
-use super::{AppConfig, ModelRouteRef, ProviderId, ProviderRuntimeConfig, ProviderTransportKind};
-
-pub const DEFAULT_X_SEARCH_MODEL: &str = "grok-4.3";
-pub const DEFAULT_X_SEARCH_TIMEOUT_SECONDS: u64 = 60;
+use super::{
+    AppConfig, ModelRouteRef, ProviderId, ProviderRuntimeConfig, ProviderTransportKind,
+    DEFAULT_X_SEARCH_MODEL, DEFAULT_X_SEARCH_TIMEOUT_SECONDS,
+};
 
 #[derive(Debug, Clone)]
 pub struct XSearchRuntimeConfig {

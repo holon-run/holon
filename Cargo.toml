@@ -47,6 +47,7 @@ decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
 decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-decisions" }
 futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
+holon-config = { version = "0.1.0", path = "crates/holon-config" }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
 holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }

@@ -8629,7 +8629,7 @@ pub(crate) fn reserve_source_vec_slot<T>(records: &mut Vec<T>) -> Result<()> {
     Ok(())
 }
 
-pub(super) const SCHEDULER_EVENT_WINDOW: usize = 64;
+use holon_storage::retention_config::SCHEDULER_EVENT_WINDOW;
 
 // Both loaded and cold schedulers need metadata, not the Event body capability.
 // Limit before filtering: an older error outside the original window is irrelevant.
