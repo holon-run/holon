@@ -92,6 +92,14 @@ async fn finite_history_cold_read_matches_original_page_without_activation_or_li
 ) -> Result<()> {
     let (_home, host) = fixture().await?;
     let storage = host.agent_storage_read_only("default")?;
+    // A committed startup observation has no live Current qualification.
+    let event = AuditEvent::legacy(
+        "startup_external_side_effect_indeterminate",
+        serde_json::json!({"index": 4}),
+    );
+    host.runtime_db()
+        .audit_events()
+        .append(Some("default"), &event)?;
     let revision: u64 = host.runtime_db().connection()?.query_row(
         "SELECT revision FROM current_read_revisions WHERE agent_id='default'",
         [],
@@ -114,7 +122,7 @@ async fn finite_history_cold_read_matches_original_page_without_activation_or_li
             (page.has_older, page.has_newer),
             (expected.has_older, expected.has_newer)
         );
-        assert_eq!(page.cursor_seq, Some(4));
+        assert_eq!(page.cursor_seq, Some(5));
         drop(page);
         assert_eq!(host.inner.input_evidence_budget.report()?.observed_bytes, 0);
     }
@@ -128,6 +136,12 @@ async fn finite_history_cold_read_matches_original_page_without_activation_or_li
         after, revision,
         "reads must not create Current publications"
     );
+    let qualifications: usize = host.runtime_db().connection()?.query_row(
+        "SELECT COUNT(*) FROM current_read_qualification WHERE record_id=?1",
+        [&event.id],
+        |row| row.get(0),
+    )?;
+    assert_eq!(qualifications, 0);
     host.shutdown().await?;
     Ok(())
 }

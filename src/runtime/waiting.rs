@@ -2928,7 +2928,7 @@ mod mutation_tests {
     }
 
     #[tokio::test]
-    async fn terminal_timer_queue_keeps_generated_current_and_history_ack() {
+    async fn terminal_timer_queue_keeps_generated_current_and_history() {
         use crate::runtime_db::transitions::{
             AgentStateMutation, PreparedQueueTransition, QueueMutation, QueueOperation,
             QueueTransitionCommand,

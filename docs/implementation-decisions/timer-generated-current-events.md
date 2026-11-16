@@ -11,12 +11,12 @@ Prepare all exact audit addresses before canonical writes. Suppression uses a
 stable per-timer/fire-count ID. Cancellation derives the exact bound Work's
 next revision from the original transaction selection. Retirement uses its
 original Message address and carries the actual appended audit back through
-the Queue transition ACK. The producer attaches archive history proof in the
-same transaction, including bootstrap normalization. Return audit notifications
+the Queue transition ACK, including bootstrap normalization. Return audit notifications
 in their original append order so streaming cursors cannot skip a helper
-event. These history ACKs never grant live Current authority. Keep scope
+event. Historical reads require no per-event credentials and never grant live
+Current authority. Keep scope
 qualification,
 complete Current Event membership equality, atomic rollback and idempotence.
 Do not remove the guard, omit the generated event, or qualify a source after
 mutation. These producer fixes require no schema migration or historical
-database repair; they do not adopt existing unacknowledged historical rows.
+database repair; they do not qualify historical rows for live Current.

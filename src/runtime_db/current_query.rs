@@ -587,7 +587,7 @@ fn prepare_inner(
     for id in &selection.queue_ids {
         queue.insert(
             id.clone(),
-            load_body(tx, scope, CurrentFamily::Queue, id, &mut material, false)?,
+            load_body(tx, scope, CurrentFamily::Queue, id, &mut material)?,
         );
     }
     let mut events = BTreeMap::new();
@@ -600,7 +600,7 @@ fn prepare_inner(
             ensure!(events.len() < count, "Current source interval changed");
             let id = row.get_ref(0)?.as_str()?;
             let seq: u64 = row.get(1)?;
-            let body = load_body(tx, scope, CurrentFamily::Event, id, &mut material, false)?
+            let body = load_body(tx, scope, CurrentFamily::Event, id, &mut material)?
                 .context("Current Event body is absent")?;
             ensure!(
                 matches!(body.record(), CurrentRecord::Event(event) if event.event_seq == seq),
@@ -645,15 +645,8 @@ pub(crate) fn restore_tool_result_event_reads_tx(
     }
     let mut material = InputReadMaterial::new(scope, ledger, limits, None)?;
     for event in events {
-        let body = load_body(
-            tx,
-            scope,
-            CurrentFamily::Event,
-            &event.id,
-            &mut material,
-            false,
-        )?
-        .context("committed tool result Event is absent")?;
+        let body = load_body(tx, scope, CurrentFamily::Event, &event.id, &mut material)?
+            .context("committed tool result Event is absent")?;
         let read = CommittedEventRead(body);
         ensure!(
             read.event() == &**event,
@@ -670,7 +663,6 @@ fn load_body(
     family: CurrentFamily,
     id: &str,
     material: &mut InputReadMaterial<'_>,
-    history: bool,
 ) -> Result<Option<Arc<OwnedCurrentRecord>>> {
     let mut statement = tx.prepare_cached(family.sql())?;
     let mut rows = statement.query([id])?;
@@ -697,25 +689,21 @@ fn load_body(
         params![scope.agent_id, scope.identity_incarnation, family.name(), id, hash],
         |row| row.get::<_, bool>(0),
     ).optional()?.unwrap_or(false);
-    // The explicit finite history page may also consume an archive ACK
-    // frozen by the original upgrade cut or attached by an original
-    // non-Active writer. Exact identity, sequence and digest must all match;
-    // this never satisfies a live Current selection address.
-    let qualified = if !qualified && history && family == CurrentFamily::Event {
-        tx.query_row(
-            "SELECT 1 FROM event_history_acks k
-             JOIN audit_events a ON a.audit_event_id=k.audit_event_id AND a.agent_id=k.agent_id
-             WHERE k.agent_id=?1 AND k.identity_incarnation=?2 AND k.audit_event_id=?3
-               AND k.content_digest=?4 AND a.event_seq=k.event_seq",
-            params![scope.agent_id, scope.identity_incarnation, id, hash],
-            |_| Ok(true),
-        )
-        .optional()?
-        .unwrap_or(false)
-    } else {
-        qualified
-    };
     ensure!(qualified, "Current body needs original writer preparation");
+    decode_body(tx, scope, family, id, payload, hash, material).map(Some)
+}
+
+// Shared decoding and accounting, not read authority. Live callers validate
+// qualification first; finite history selects committed rows by exact owner.
+fn decode_body(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    family: CurrentFamily,
+    id: &str,
+    payload: &str,
+    content_digest: String,
+    material: &mut InputReadMaterial<'_>,
+) -> Result<Arc<OwnedCurrentRecord>> {
     let (address_material, guard) = if family == CurrentFamily::Event {
         // One typed Event, not a completion/resolver aggregate. Gate SQLite
         // traversal before counting nodes, and owning cells before decoding.
@@ -768,10 +756,10 @@ fn load_body(
             CurrentRecord::Event(super::transitions::AuditEventAck::new(event)?)
         }
     };
-    Ok(Some(Arc::new(OwnedCurrentRecord {
+    Ok(Arc::new(OwnedCurrentRecord {
         record,
-        content_digest: hash,
+        content_digest,
         _address_material: address_material,
         _material: guard,
-    })))
+    }))
 }

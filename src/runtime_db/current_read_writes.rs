@@ -767,51 +767,6 @@ pub(super) fn digest(payload: &str) -> String {
     format!("{:x}", Sha256::digest(payload.as_bytes()))
 }
 
-/// Archive proof attached by original Event writers inside their own append
-/// transaction, and frozen once by the legacy upgrade cut. It never grants
-/// live Current authority; only the finite history page consumes it, against
-/// the exact identity, sequence and body digest.
-pub(crate) fn append_event_history_ack_tx(
-    tx: &Transaction<'_>,
-    scope: &InputEvidenceScope,
-    event_id: &str,
-) -> Result<()> {
-    // Offline recovery also writes original Events before this domain exists.
-    // Its later original upgrade cut adopts those Events. Gate on the committed
-    // schema version, not table existence: a missing installed table must fail.
-    let installed: bool = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version>=?1)",
-        [VERSION],
-        |row| row.get(0),
-    )?;
-    if !installed {
-        return Ok(());
-    }
-    let (seq, payload): (i64, String) = tx
-        .query_row(
-            "SELECT event_seq,data_json FROM audit_events
-             WHERE audit_event_id=?1 AND agent_id=?2",
-            params![event_id, scope.agent_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .context("history ACK Event row is absent")?;
-    ensure!(seq > 0, "history ACK Event sequence is not allocated");
-    tx.execute(
-        "INSERT INTO event_history_acks(agent_id,identity_incarnation,audit_event_id,event_seq,content_digest)
-         VALUES(?1,?2,?3,?4,?5)
-         ON CONFLICT(agent_id,identity_incarnation,audit_event_id)
-         DO UPDATE SET event_seq=excluded.event_seq,content_digest=excluded.content_digest",
-        params![
-            scope.agent_id,
-            scope.identity_incarnation,
-            event_id,
-            seq,
-            digest(&payload)
-        ],
-    )?;
-    Ok(())
-}
-
 fn validate_canonical_payload(value: &impl serde::Serialize, payload: &str) -> Result<()> {
     struct MatchPayload<'a>(&'a [u8]);
     impl std::io::Write for MatchPayload<'_> {

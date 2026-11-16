@@ -515,16 +515,12 @@ fn assert_external_command_startup_recovery(tool_name: &str) -> Result<()> {
             "external_command_no_replay_barrier",
             json!({"turn_id": legacy_turn.turn_id}),
         );
-        let (event, _) = crate::runtime_db::evidence::append_audit_event_tx(
+        crate::runtime_db::evidence::append_audit_event_tx(
             tx,
             Some(&legacy.scope.agent_id),
             &event,
         )?;
-        crate::runtime_db::current_read_writes::append_event_history_ack_tx(
-            tx,
-            &legacy.scope,
-            &event.id,
-        )
+        Ok(())
     })?;
     legacy
         .db

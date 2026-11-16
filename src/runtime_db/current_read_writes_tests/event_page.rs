@@ -4,32 +4,24 @@ use crate::{
     storage::EventLogPageOrder,
 };
 
-fn append(f: &Fixture, ledger: &InputEvidenceBudgetLedger, index: usize) -> Result<()> {
+fn append(f: &Fixture, index: usize) -> Result<()> {
     let mut event = AuditEvent::legacy(
         if index % 2 == 0 { "even" } else { "odd" },
         serde_json::json!({"index": index}),
     );
     event.id = format!("finite-event-{index}");
-    drop(attempt(
-        f,
-        ledger,
-        &[(CurrentFamily::Event, &event.id)],
-        &[(CurrentFamily::Event, &event.id)],
-        |tx| {
-            append_audit_event_tx(tx, Some(&f.scope.agent_id), &event)?;
-            Ok(())
-        },
-    )?);
+    f.db.audit_events()
+        .append(Some(&f.scope.agent_id), &event)?;
     Ok(())
 }
 
 #[test]
-fn qualified_history_page_preserves_sparse_order_filter_lookahead_and_one_cut_metadata(
+fn unqualified_history_page_preserves_sparse_order_filter_lookahead_and_one_cut_metadata(
 ) -> Result<()> {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
     for index in 0..5 {
-        append(&f, &ledger, index)?;
+        append(&f, index)?;
     }
     for order in [EventLogPageOrder::Asc, EventLogPageOrder::Desc] {
         let page = f.db.transaction(|tx| {
@@ -62,12 +54,16 @@ fn qualified_history_page_preserves_sparse_order_filter_lookahead_and_one_cut_me
 }
 
 #[test]
-fn finite_event_history_rejects_raw_changed_foreign_incarnation_and_overflow() -> Result<()> {
+fn finite_event_history_reads_committed_changes_but_rejects_foreign_incarnation_and_overflow(
+) -> Result<()> {
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    append(&f, &ledger, 0)?;
+    append(&f, 0)?;
     let raw = AuditEvent::legacy("unqualified", serde_json::json!({}));
     f.db.audit_events().append(Some(&f.scope.agent_id), &raw)?;
+    let foreign_event = AuditEvent::legacy("another-agent", serde_json::json!({}));
+    f.db.audit_events()
+        .append(Some("another-agent"), &foreign_event)?;
     let read = |before, after, scope: &InputEvidenceScope| {
         f.db.transaction(|tx| {
             prepare_event_page(
@@ -82,16 +78,18 @@ fn finite_event_history_rejects_raw_changed_foreign_incarnation_and_overflow() -
             )
         })
     };
-    assert!(format!(
-        "{:#}",
-        read(None, Some(1), &f.scope)
-            .err()
-            .context("raw must fail")?
-    )
-    .contains("Current body needs original writer preparation"));
-    // The finite bound does not prepare or inspect bodies beyond it.
-    let page = read(Some(2), Some(0), &f.scope)?;
+    let page = read(None, Some(1), &f.scope)?;
+    assert_eq!(page.events().next().context("raw event")?.id, raw.id);
     assert_eq!(page.events().len(), 1);
+    assert!(!page.has_newer);
+    drop(page);
+    // Cursor bounds exclude both the next own event and all other agents.
+    let page = read(Some(2), Some(0), &f.scope)?;
+    assert_eq!(
+        page.events().next().context("bounded event")?.id,
+        "finite-event-0"
+    );
+    assert!(!page.has_newer);
     drop(page);
     let mut foreign = f.scope.clone();
     foreign.identity_incarnation += 1;
@@ -101,35 +99,33 @@ fn finite_event_history_rejects_raw_changed_foreign_incarnation_and_overflow() -
         "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',999) WHERE audit_event_id='finite-event-0'",
         [],
     )?;
-    assert!(format!(
-        "{:#}",
-        read(Some(2), Some(0), &f.scope)
-            .err()
-            .context("digest must fail")?
-    )
-    .contains("Current body needs original writer preparation"));
+    let page = read(Some(2), Some(0), &f.scope)?;
+    assert_eq!(
+        page.events().next().context("committed change")?.data["index"],
+        999
+    );
+    drop(page);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
 
 #[test]
-fn finite_event_history_accepts_only_exact_archive_acks() -> Result<()> {
+fn finite_event_history_reads_startup_observations_without_live_promotion_or_writes() -> Result<()>
+{
     let f = Fixture::new()?;
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    // An original non-Active writer appends its observation Event with an
-    // archive history ACK in the same transaction.
-    let mut event = AuditEvent::legacy("offline_observation", serde_json::json!({"index": 0}));
-    event.id = "offline-observed-0".into();
-    let scope = f.scope.clone();
+    let event = AuditEvent::legacy(
+        "startup_external_side_effect_indeterminate",
+        serde_json::json!({}),
+    );
+    f.db.audit_events()
+        .append(Some(&f.scope.agent_id), &event)?;
     f.db.transaction(|tx| {
-        let (actual, _) = append_audit_event_tx(tx, Some(&scope.agent_id), &event)?;
-        crate::runtime_db::current_read_writes::append_event_history_ack_tx(
-            tx, &scope, &actual.id,
+        let before: (i64, i64) = tx.query_row(
+            "SELECT total_changes(),(SELECT COUNT(*) FROM current_read_qualification)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        Ok(())
-    })?;
-    f.db.transaction(|tx| {
-        // The finite history page reads the archived body through its ACK.
         let page = prepare_event_page(
             tx,
             &f.scope,
@@ -140,63 +136,71 @@ fn finite_event_history_accepts_only_exact_archive_acks() -> Result<()> {
             EventLogPageOrder::Asc,
             |_| true,
         )?;
-        let ids = page
-            .events()
-            .map(|event| event.id.as_str())
-            .collect::<Vec<_>>();
-        assert_eq!(ids, vec!["offline-observed-0"]);
+        assert_eq!(page.events().next().context("startup event")?.id, event.id);
         drop(page);
-        // A live Current selection still refuses the same archived address.
+        // Historical visibility never qualifies this event for live Current.
         let live = CurrentSelection {
             events_after: Some(0),
             ..Default::default()
         };
         assert!(prepare(tx, &f.scope, Some(&live), &ledger, (1024 * 1024, 1024)).is_err());
-        Ok(())
-    })?;
-    // A tampered body is rejected by its frozen digest.
-    f.db.connection()?.execute(
-        "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',999)
-         WHERE audit_event_id='offline-observed-0'",
-        [],
-    )?;
-    f.db.transaction(|tx| {
-        assert!(prepare_event_page(
-            tx,
-            &f.scope,
-            &ledger,
-            None,
-            Some(0),
-            10,
-            EventLogPageOrder::Asc,
-            |_| true
-        )
-        .is_err());
-        Ok(())
-    })?;
-    // A foreign incarnation cannot borrow the archive ACK.
-    let mut foreign = f.scope.clone();
-    foreign.identity_incarnation += 1;
-    f.db.connection()?.execute(
-        "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',0)
-         WHERE audit_event_id='offline-observed-0'",
-        [],
-    )?;
-    f.db.transaction(|tx| {
-        assert!(prepare_event_page(
-            tx,
-            &foreign,
-            &ledger,
-            None,
-            Some(0),
-            10,
-            EventLogPageOrder::Asc,
-            |_| true
-        )
-        .is_err());
+        let after = tx.query_row(
+            "SELECT total_changes(),(SELECT COUNT(*) FROM current_read_qualification)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(before, after);
         Ok(())
     })?;
     assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn finite_event_history_still_rejects_corrupt_body_address_and_sequence() -> Result<()> {
+    let f = Fixture::new()?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    append(&f, 0)?;
+    let payload: String = f.db.connection()?.query_row(
+        "SELECT data_json FROM audit_events WHERE audit_event_id='finite-event-0'",
+        [],
+        |row| row.get(0),
+    )?;
+    for replacement in [
+        "{".to_string(),
+        {
+            let mut value: serde_json::Value = serde_json::from_str(&payload)?;
+            value["id"] = "wrong-address".into();
+            value.to_string()
+        },
+        {
+            let mut value: serde_json::Value = serde_json::from_str(&payload)?;
+            value["event_seq"] = 999.into();
+            value.to_string()
+        },
+    ] {
+        f.db.connection()?.execute(
+            "UPDATE audit_events SET data_json=?1 WHERE audit_event_id='finite-event-0'",
+            [&replacement],
+        )?;
+        let error =
+            f.db.transaction(|tx| {
+                prepare_event_page(
+                    tx,
+                    &f.scope,
+                    &ledger,
+                    None,
+                    Some(0),
+                    1,
+                    EventLogPageOrder::Asc,
+                    |_| true,
+                )
+            })
+            .err()
+            .context("corrupt history must fail")?;
+        assert!(!format!("{error:#}").contains("original writer preparation"));
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
     Ok(())
 }
 

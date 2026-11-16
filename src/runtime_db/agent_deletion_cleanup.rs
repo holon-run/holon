@@ -93,7 +93,6 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     // Domain projections are private content, not retained identity fences.
     ("current_read_qualification", "agent_id"),
     ("current_read_revisions", "agent_id"),
-    ("event_history_acks", "agent_id"),
     ("input_query_birth_members", "agent_id"),
     ("input_query_birth_cursors", "agent_id"),
     ("input_evidence_execution_current_sources", "agent_id"),
@@ -901,6 +900,10 @@ fn assert_safe_ownership_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<()> 
         ensure!(!exists(tx, sql, agent_id)?, "shared history requires explicit ownership resolution");
     }
     for table in tables(tx)? {
+        // Retired history ACK storage is inert, even when old rows remain.
+        if table == "event_history_acks" {
+            continue;
+        }
         if PRIVATE_TABLES.iter().any(|(name, _)| *name == table)
             || DEPENDENT_TABLES
                 .iter()
@@ -1711,22 +1714,12 @@ mod tests {
         Ok(())
     }
 
-    fn history_ack(db: &RuntimeDb, agent: &str) -> Result<()> {
-        db.transaction(|tx| {
-            let (event, _) = super::super::evidence::append_audit_event_tx(
-                tx,
-                Some(agent),
-                &AuditEvent::legacy("deletion_history", serde_json::json!({"agent_id": agent})),
-            )?;
-            super::super::current_read_writes::append_event_history_ack_tx(
-                tx,
-                &crate::runtime::resident_input_evidence::InputEvidenceScope {
-                    agent_id: agent.into(),
-                    identity_incarnation: identity_tx(tx, agent)?.incarnation,
-                },
-                &event.id,
-            )
-        })
+    fn history_event(db: &RuntimeDb, agent: &str) -> Result<()> {
+        db.append_offline_observation_event(
+            agent,
+            &AuditEvent::legacy("deletion_history", serde_json::json!({"agent_id": agent})),
+        )?;
+        Ok(())
     }
 
     fn attempt(db: &RuntimeDb) -> Result<()> {
@@ -2754,18 +2747,9 @@ mod tests {
         for agent in ["a", "b"] {
             message(&db, agent, &format!("message-{agent}"))?;
             task(&db, agent, &format!("task-{agent}"), None)?;
-            history_ack(&db, agent)?;
+            history_event(&db, agent)?;
         }
         memory(&db)?;
-        db.transaction(|tx| {
-            tx.execute_batch(
-                "CREATE TRIGGER require_history_ack_cleanup BEFORE DELETE ON audit_events
-                 WHEN EXISTS(SELECT 1 FROM event_history_acks
-                             WHERE agent_id=OLD.agent_id AND audit_event_id=OLD.audit_event_id)
-                 BEGIN SELECT RAISE(ABORT,'history ACKs must be cleared before Events'); END;",
-            )?;
-            Ok(())
-        })?;
         let foreign_before = private_rows(&db, "b")?;
         fence(&db)?;
         settle_execution(&db, "a", 1, Utc::now())?;
@@ -2775,7 +2759,7 @@ mod tests {
             assert_private_history_cleared_tx(tx, "a")?;
             assert!(exists(
                 tx,
-                "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM audit_events WHERE agent_id = ?1)",
                 "b"
             )?);
             assert_eq!(identity_tx(tx, "a")?.incarnation, 1);
@@ -2825,7 +2809,7 @@ mod tests {
     fn purge_fault_rolls_back_sources_fts_and_proof() -> Result<()> {
         let (_dir, db) = fixture()?;
         message(&db, "a", "message-a")?;
-        history_ack(&db, "a")?;
+        history_event(&db, "a")?;
         memory(&db)?;
         db.turn_records()
             .upsert(&TurnRecord::new("a", "operation-turn", 1))?;
@@ -2855,7 +2839,7 @@ mod tests {
             assert!(!proof_tx(tx, "a")?.unwrap().purged);
             assert!(exists(
                 tx,
-                "SELECT EXISTS(SELECT 1 FROM event_history_acks WHERE agent_id = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM audit_events WHERE agent_id = ?1)",
                 "a"
             )?);
             let fences: i64 = tx.query_row(
@@ -2894,6 +2878,72 @@ mod tests {
             )?);
             Ok(())
         })
+    }
+
+    #[test]
+    fn deletion_ignores_dropped_or_residual_history_ack_storage() -> Result<()> {
+        for retain_legacy_table in [false, true] {
+            let (dir, db) = fixture()?;
+            db.connection()?.execute_batch(
+                "CREATE TABLE event_history_acks (
+                   agent_id TEXT NOT NULL,
+                   identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation > 0),
+                   audit_event_id TEXT NOT NULL CHECK(length(CAST(audit_event_id AS BLOB)) > 0),
+                   event_seq INTEGER NOT NULL CHECK(event_seq > 0),
+                   content_digest TEXT NOT NULL CHECK(length(content_digest) = 64),
+                   PRIMARY KEY(agent_id, identity_incarnation, audit_event_id));
+                 CREATE INDEX event_history_ack_address ON event_history_acks(audit_event_id);
+                 INSERT INTO event_history_acks VALUES
+                   ('a', 1, 'retired-ack', 1, hex(zeroblob(32)));
+                 CREATE TRIGGER retired_ack_insert BEFORE INSERT ON event_history_acks
+                   BEGIN SELECT RAISE(ABORT, 'retired history ACK insert'); END;
+                 CREATE TRIGGER retired_ack_update BEFORE UPDATE ON event_history_acks
+                   BEGIN SELECT RAISE(ABORT, 'retired history ACK update'); END;
+                 CREATE TRIGGER retired_ack_delete BEFORE DELETE ON event_history_acks
+                   BEGIN SELECT RAISE(ABORT, 'retired history ACK delete'); END;",
+            )?;
+            if !retain_legacy_table {
+                db.connection()?
+                    .execute_batch("DROP TABLE event_history_acks;")?;
+            }
+            drop(db);
+
+            let db = RuntimeDb::open_and_migrate(
+                dir.path().join("runtime.sqlite"),
+                dir.path().join("runtime.lock"),
+            )?;
+            history_event(&db, "a")?;
+            fence(&db)?;
+            let job = db.agent_deletions().latest_for_agent("a")?.unwrap();
+            settle_execution(&db, "a", 1, Utc::now())?;
+            purge_private_history(&db, "a", 1, Utc::now())?;
+            assert_private_history_cleared(&db, "a")?;
+
+            message(&db, "a", "late-private-residue")?;
+            assert!(assert_private_history_cleared(&db, "a").is_err());
+            assert!(db.agent_deletions().finalize(&job).is_err());
+            purge_private_history(&db, "a", 1, Utc::now())?;
+            let (deleted, _) = db.agent_deletions().finalize(&job)?;
+            assert_eq!(deleted.status, AgentRegistryStatus::Deleted);
+            assert_private_history_cleared(&db, "a")?;
+            if retain_legacy_table {
+                let count: usize = db.connection()?.query_row(
+                    "SELECT COUNT(*) FROM event_history_acks",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "retired ACK rows must remain untouched");
+            } else {
+                let count: usize = db.connection()?.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master
+                     WHERE name IN ('event_history_acks', 'event_history_ack_address')",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0);
+            }
+        }
+        Ok(())
     }
 
     #[test]
