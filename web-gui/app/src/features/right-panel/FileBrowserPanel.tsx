@@ -6,6 +6,7 @@ import {
   Info,
   Monitor,
   Globe,
+  Maximize2,
   MoreHorizontal,
   ExternalLink,
   ArrowUp,
@@ -43,6 +44,7 @@ interface FileBrowserPanelProps {
   initialPath?: string;
   initialFragment?: string;
   onOpenFile?: (target: FileTarget) => void;
+  onOpenFloating?: () => void;
   workspaceLabel?: string;
   workspaceControl?: ReactNode;
   backActionRef?: RefObject<(() => void) | null>;
@@ -295,7 +297,7 @@ export function FileBrowserPanel(props: FileBrowserPanelProps) {
     snapshot={props.snapshot?.identity === identity ? props.snapshot : undefined} />;
 }
 
-function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, workspaceLabel, workspaceControl, backActionRef, onClose, snapshot, onSnapshot, fileRevisions }: FileBrowserPanelProps & { identity: string }) {
+function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId, initialPath, initialFilePath, initialFragment, onOpenFile, onOpenFloating, workspaceLabel, workspaceControl, backActionRef, onClose, snapshot, onSnapshot, fileRevisions }: FileBrowserPanelProps & { identity: string }) {
   const copyText = useCopyText();
   const client = useMemo(() => createRuntimeClient(getRuntimeConnectionConfig()), [identity]);
   const connection = connectionLocation(getRuntimeConnectionConfig(), window.location.origin);
@@ -803,6 +805,7 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
           <button type="button" className={!showRendered ? "active" : ""} onClick={() => setShowRendered(false)}>{t("fileBrowser.source")}</button>
         </div> : null}
         <div className="file-browser-controls-end">
+          {onOpenFloating ? <button type="button" aria-label={t("fileBrowser.openInFloatingWindow")} title={t("fileBrowser.openInFloatingWindow")} onClick={onOpenFloating}><Maximize2 size={16} /></button> : null}
           {selectedFile && (viewMode === "preview" || split) ? <button type="button" aria-label={t("fileBrowser.openInNewTab")} title={t("fileBrowser.openInNewTab")} disabled={!selectedWebUrl} onClick={openSelectedFileInNewTab}><ExternalLink size={16} /></button> : null}
           <div className="file-browser-popover" ref={menuRef}>
             <button type="button" aria-label={t("fileBrowser.fileActions")} aria-expanded={menuOpen} onClick={() => setMenuOpen(!menuOpen)}><MoreHorizontal size={18} /></button>

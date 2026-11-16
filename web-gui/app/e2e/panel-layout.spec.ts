@@ -419,3 +419,43 @@ for (const language of ["en", "zh-CN"]) {
     }
   });
 }
+
+test("floating file browser opens at the panel's file with split browsing and closes cleanly", async ({ page }) => {
+  const panel = page.locator(".side-panel");
+  await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
+  await panel.getByRole("button", { name: "README.md", exact: false }).click();
+  await expect(panel.locator(".file-browser-markdown")).toBeVisible();
+  await panel.getByRole("button", { name: "Open in floating window", exact: true }).click();
+  const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+  await expect(dialog).toBeVisible();
+  // The large floating window enables split browsing the narrow panel cannot.
+  await expect(dialog.locator(".file-browser")).toHaveAttribute("data-split", "true");
+  await expect(dialog.locator(".file-browser-markdown")).toContainText("File reading test");
+  await expect(dialog.locator(".file-browser-standalone-title")).toHaveText("README.md");
+  // The conversation panel stays mounted behind the dimmed overlay.
+  await expect(panel).toBeVisible();
+  await dialog.locator(".modal-close").click();
+  await expect(dialog).toHaveCount(0);
+  await expect(panel.locator(".file-browser")).toBeVisible();
+});
+
+test("floating file browser restores its own position and closes via Escape or backdrop", async ({ page }) => {
+  const panel = page.locator(".side-panel");
+  await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
+  await panel.getByRole("button", { name: "README.md", exact: false }).click();
+  await expect(panel.locator(".file-browser-markdown")).toBeVisible();
+  await panel.getByRole("button", { name: "Open in floating window", exact: true }).click();
+  const dialog = page.locator('[role="dialog"][aria-modal="true"]');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "notes.md", exact: false }).click();
+  await expect(dialog.locator(".file-browser-standalone-title")).toHaveText("notes.md");
+  await page.keyboard.press("Escape");
+  await expect(dialog).toHaveCount(0);
+  // Reopening keeps the floating window's own last file, not the panel's.
+  await panel.getByRole("button", { name: "Open in floating window", exact: true }).click();
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator(".file-browser-standalone-title")).toHaveText("notes.md");
+  await dialog.click({ position: { x: 2, y: 2 } });
+  await expect(dialog).toHaveCount(0);
+  await expect(panel.locator(".panel-header strong")).toHaveText("README.md");
+});
