@@ -145,11 +145,28 @@ fn qualified_count(connection: &Connection) -> Result<usize> {
     )?)
 }
 
+fn assert_history_is_unqualified(connection: &Connection) -> Result<()> {
+    let history_tables: usize = connection.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'event_history_%'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(history_tables, 0);
+    let qualified_events: usize = connection.query_row(
+        "SELECT COUNT(*) FROM current_read_qualification WHERE family='event'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(qualified_events, 0);
+    Ok(())
+}
+
 #[test]
 fn current_upgrade_adopts_only_fixed_pending_queues_and_no_event_history() -> Result<()> {
     let (mut connection, messages) = legacy(1)?;
     migrate_to(&mut connection, current_read_writes::VERSION)?;
     assert_eq!(qualified_count(&connection)?, 1);
+    assert_history_is_unqualified(&connection)?;
     let scope = InputEvidenceScope {
         agent_id: AGENT.into(),
         identity_incarnation: 1,
@@ -176,7 +193,7 @@ fn current_upgrade_adopts_only_fixed_pending_queues_and_no_event_history() -> Re
 }
 
 #[test]
-fn offline_event_before_history_schema_is_adopted_by_original_upgrade() -> Result<()> {
+fn offline_event_before_upgrade_is_readable_without_history_qualification() -> Result<()> {
     let (mut connection, _messages) = legacy(1)?;
     let scope = InputEvidenceScope {
         agent_id: AGENT.into(),
@@ -186,22 +203,29 @@ fn offline_event_before_history_schema_is_adopted_by_original_upgrade() -> Resul
     {
         let tx = connection.transaction()?;
         append_audit_event_tx(&tx, Some(AGENT), &event)?;
-        current_read_writes::append_event_history_ack_tx(&tx, &scope, &event.id)?;
         tx.commit()?;
     }
     migrate_to(&mut connection, current_read_writes::VERSION)?;
-    let acked: usize = connection.query_row(
-        "SELECT COUNT(*) FROM event_history_acks
-         WHERE agent_id=?1 AND identity_incarnation=?2 AND audit_event_id=?3",
-        params![scope.agent_id, scope.identity_incarnation, event.id],
-        |row| row.get(0),
+    assert_history_is_unqualified(&connection)?;
+    let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+    let tx = connection.transaction()?;
+    let page = prepare_event_page(
+        &tx,
+        &scope,
+        &ledger,
+        None,
+        Some(0),
+        10,
+        crate::storage::EventLogPageOrder::Asc,
+        |_| true,
     )?;
-    assert_eq!(acked, 1);
+    assert!(page.events().any(|stored| stored.id == event.id));
+    assert_history_is_unqualified(&tx)?;
     Ok(())
 }
 
 #[test]
-fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> Result<()> {
+fn current_upgrade_preserves_finite_history_without_granting_live_qualification() -> Result<()> {
     let (mut connection, _messages) = legacy(1)?;
     // Give the legacy database real Events before the Current cut.
     {
@@ -229,12 +253,8 @@ fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> R
         identity_incarnation: 1,
     };
     let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
-    let acked: usize = connection.query_row(
-        "SELECT COUNT(*) FROM event_history_acks WHERE audit_event_id LIKE 'legacy-event-%'",
-        [],
-        |row| row.get(0),
-    )?;
-    assert_eq!(acked, 3);
+    assert_eq!(qualified_count(&connection)?, 1);
+    assert_history_is_unqualified(&connection)?;
     {
         let tx = connection.transaction()?;
         // Live Current selection still refuses the legacy Event window.
@@ -243,7 +263,7 @@ fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> R
             ..Default::default()
         };
         assert!(prepare(&tx, &scope, Some(&history), &ledger, (1024 * 1024, 1024)).is_err());
-        // The finite history page reads the archived bodies through the ACKs.
+        // Finite history reads ordinary archived bodies without live qualification.
         let page = prepare_event_page(
             &tx,
             &scope,
@@ -260,13 +280,13 @@ fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> R
             .collect::<Vec<_>>();
         assert_eq!(ids, expected_ids);
         drop(page);
-        // A tampered archived body is rejected by its frozen digest.
+        // History has no frozen ACK digest: it reads the current durable body.
         tx.execute(
             "UPDATE audit_events SET data_json=json_set(data_json,'$.data.index',999)
              WHERE audit_event_id='legacy-event-1'",
             [],
         )?;
-        let refused = prepare_event_page(
+        let updated = prepare_event_page(
             &tx,
             &scope,
             &ledger,
@@ -275,10 +295,15 @@ fn current_upgrade_freezes_event_history_acks_for_the_finite_history_page() -> R
             10,
             crate::storage::EventLogPageOrder::Asc,
             |_| true,
-        )
-        .err()
-        .context("tampered archive must fail")?;
-        assert!(format!("{refused:#}").contains("needs original writer preparation"));
+        )?;
+        let event = updated
+            .events()
+            .find(|event| event.id == "legacy-event-1")
+            .context("updated archived event is present")?;
+        assert_eq!(serde_json::to_value(event)?["data"]["index"], 999);
+        assert_eq!(qualified_count(&tx)?, 1);
+        assert_history_is_unqualified(&tx)?;
+        assert!(prepare(&tx, &scope, Some(&history), &ledger, (1024 * 1024, 1024)).is_err());
     }
     Ok(())
 }
@@ -453,7 +478,9 @@ fn current_upgrade_is_not_a_startup_requalification_path() -> Result<()> {
 }
 
 #[test]
-fn current_upgrade_streams_event_histories_larger_than_one_record_page() -> Result<()> {
+fn current_upgrade_does_not_scan_history_bodies_outside_a_finite_page() -> Result<()> {
+    const HISTORY_EVENT_COUNT: usize = 65_537;
+
     let (mut connection, _) = legacy(1)?;
     migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
     let original: usize = connection.query_row(
@@ -461,7 +488,7 @@ fn current_upgrade_streams_event_histories_larger_than_one_record_page() -> Resu
         [AGENT],
         |r| r.get(0),
     )?;
-    {
+    let history_end = {
         let tx = connection.transaction()?;
         let last: i64 = tx.query_row(
             "SELECT COALESCE(MAX(event_seq),0) FROM audit_events WHERE agent_id=?1",
@@ -472,7 +499,7 @@ fn current_upgrade_streams_event_histories_larger_than_one_record_page() -> Resu
             "INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
             VALUES(?1,?2,?3,'fixture','2026-10-01T00:00:00Z','{}')",
         )?;
-        for index in 0..=CONTINUITY_MAX_RECORDS {
+        for index in 0..HISTORY_EVENT_COUNT {
             insert.execute(params![
                 format!("bulk-event-{index}"),
                 last + i64::try_from(index)? + 1,
@@ -480,80 +507,48 @@ fn current_upgrade_streams_event_histories_larger_than_one_record_page() -> Resu
             ])?;
         }
         drop(insert);
+        // An oversized non-text body cannot be decoded or adopted by an archive scan.
+        tx.execute(
+            "UPDATE audit_events SET data_json=?1 WHERE audit_event_id='bulk-event-0'",
+            [vec![0xffu8; 1024 * 1024 + 1]],
+        )?;
         tx.commit()?;
-    }
+        u64::try_from(last + 1)?
+    };
     apply_migration(&mut connection, current_migration())?;
-    let acked: usize = connection.query_row(
-        "SELECT COUNT(*) FROM event_history_acks WHERE agent_id=?1",
+    let events: usize = connection.query_row(
+        "SELECT COUNT(*) FROM audit_events WHERE agent_id=?1",
         [AGENT],
         |r| r.get(0),
     )?;
-    assert_eq!(acked, original + CONTINUITY_MAX_RECORDS + 1);
-    let changed: usize = connection.query_row("SELECT COUNT(*) FROM event_history_acks WHERE agent_id=?1 AND audit_event_id LIKE 'bulk-event-%' AND content_digest!=?2",params![AGENT,bytes_digest(b"{}")],|r|r.get(0))?;
-    assert_eq!(changed, 0);
-    Ok(())
-}
-
-#[test]
-fn event_upgrade_pages_preserve_every_ack_including_a_row_larger_than_the_page() -> Result<()> {
-    let (mut connection, _) = legacy(0)?;
-    migrate_to(&mut connection, current_read_writes::VERSION - 1)?;
-    connection.execute_batch(current_migration().sql)?;
-    // Isolate the deliberately small byte-page fixture from legacy event framing.
-    connection.execute("DELETE FROM audit_events", [])?;
+    assert_eq!(events, original + HISTORY_EVENT_COUNT);
+    assert_eq!(qualified_count(&connection)?, 1);
+    assert_history_is_unqualified(&connection)?;
     let scope = InputEvidenceScope {
         agent_id: AGENT.into(),
         identity_incarnation: 1,
     };
-    {
-        let tx = connection.transaction()?;
-        for index in 0..5 {
-            tx.execute("INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
-                VALUES(?1,?2,?3,'fixture','2026-10-01T00:00:00Z',?4)",params![format!("byte-event-{index}"),100+index,AGENT,serde_json::json!({"padding":"x".repeat(20)}).to_string()])?;
-        }
-        capture_event_history_tx(&tx, &scope, 2, 64)?;
-        let events: usize = tx.query_row(
-            "SELECT COUNT(*) FROM audit_events WHERE agent_id=?1",
-            [AGENT],
-            |r| r.get(0),
-        )?;
-        let acks: usize = tx.query_row(
-            "SELECT COUNT(*) FROM event_history_acks WHERE agent_id=?1",
-            [AGENT],
-            |r| r.get(0),
-        )?;
-        assert_eq!(events, acks);
-        tx.commit()?;
-    }
-    let before: usize =
-        connection.query_row("SELECT COUNT(*) FROM event_history_acks", [], |r| r.get(0))?;
-    {
-        let tx = connection.transaction()?;
-        tx.execute(
-            "INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
-            VALUES('oversized-event',200,?1,'fixture','2026-10-01T00:00:00Z',?2)",
-            params![AGENT, "x".repeat(65)],
-        )?;
-        capture_event_history_tx(&tx, &scope, 2, 64)?;
-        let large_ack: usize = tx.query_row(
-            "SELECT COUNT(*) FROM event_history_acks WHERE audit_event_id='oversized-event'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(large_ack, 1);
-        tx.commit()?;
-    }
-    let after: usize =
-        connection.query_row("SELECT COUNT(*) FROM event_history_acks", [], |r| r.get(0))?;
-    assert_eq!(before + 1, after);
-    {
-        let tx = connection.transaction()?;
-        tx.execute(
-            "INSERT INTO audit_events(audit_event_id,event_seq,agent_id,kind,created_at,data_json)
-            VALUES('invalid-sequence',0,?1,'fixture','2026-10-01T00:00:00Z','{}')",
-            [AGENT],
-        )?;
-        assert!(capture_event_history_tx(&tx, &scope, 2, 64).is_err());
-    }
+    let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits {
+        history_per_agent_bytes: 16 * 1024,
+        pending_per_agent_bytes: 16 * 1024,
+        ..Default::default()
+    })?;
+    let tx = connection.transaction()?;
+    // The cursor excludes the malformed archive, even with a much smaller material budget.
+    let page = prepare_event_page(
+        &tx,
+        &scope,
+        &ledger,
+        Some(history_end),
+        Some(0),
+        original + 1,
+        crate::storage::EventLogPageOrder::Asc,
+        |_| true,
+    )?;
+    assert_eq!(page.events().len(), original);
+    assert!(ledger.report()?.observed_bytes < 32 * 1024);
+    assert_history_is_unqualified(&tx)?;
+    drop(page);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

@@ -1466,7 +1466,6 @@ mod tests {
              DROP TABLE command_task_creation_sources;
              DROP TABLE current_read_qualification;
              DROP TABLE current_read_revisions;
-             DROP TABLE event_history_acks;
              DROP TABLE input_query_birth_members;
              DROP TABLE input_query_birth_cursors;
              DROP INDEX input_native_known_current;
@@ -8354,6 +8353,69 @@ CREATE TABLE working_memory_deltas (
         )
     }
 
+    #[test]
+    fn agent_reincarnation_ignores_dropped_or_residual_history_ack_storage() -> Result<()> {
+        for retain_legacy_table in [false, true] {
+            let (_temp_dir, db_path, lock_path) = temp_paths()?;
+            let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
+            db.connection()?.execute_batch(
+                "CREATE TABLE event_history_acks (
+                   agent_id TEXT NOT NULL,
+                   identity_incarnation INTEGER NOT NULL,
+                   audit_event_id TEXT NOT NULL,
+                   event_seq INTEGER NOT NULL,
+                   content_digest TEXT NOT NULL,
+                   PRIMARY KEY(agent_id, identity_incarnation, audit_event_id));
+                 INSERT INTO event_history_acks VALUES
+                   ('reborn-history-ack', 1, 'retired-event', 1, hex(zeroblob(32)));
+                 CREATE TRIGGER retired_ack_insert BEFORE INSERT ON event_history_acks
+                   BEGIN SELECT RAISE(ABORT, 'retired history ACK insert'); END;
+                 CREATE TRIGGER retired_ack_update BEFORE UPDATE ON event_history_acks
+                   BEGIN SELECT RAISE(ABORT, 'retired history ACK update'); END;
+                 CREATE TRIGGER retired_ack_delete BEFORE DELETE ON event_history_acks
+                   BEGIN SELECT RAISE(ABORT, 'retired history ACK delete'); END;",
+            )?;
+            if !retain_legacy_table {
+                db.connection()?
+                    .execute_batch("DROP TABLE event_history_acks;")?;
+            }
+            let (tombstone, _) = fully_delete_agent(&db, "reborn-history-ack")?;
+            let identity = db
+                .agent_identities()
+                .reincarnate_with_bootstrap_and_relations(
+                    "reborn-history-ack",
+                    "operator:test",
+                    &reincarnation_ledger()?,
+                    fresh_incarnation,
+                )?;
+            assert_eq!(identity.status, AgentRegistryStatus::Active);
+            assert_eq!(identity.incarnation, tombstone.incarnation + 1);
+            let (event_count, kind): (usize, String) = db.connection()?.query_row(
+                "SELECT COUNT(*), MIN(kind) FROM audit_events WHERE agent_id='reborn-history-ack'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+            assert_eq!(event_count, 1);
+            assert_eq!(kind, "agent_recreated");
+            if retain_legacy_table {
+                let count: usize = db.connection()?.query_row(
+                    "SELECT COUNT(*) FROM event_history_acks",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 1, "reincarnation must ignore old ACK rows");
+            } else {
+                let count: usize = db.connection()?.query_row(
+                    "SELECT COUNT(*) FROM sqlite_master WHERE name='event_history_acks'",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(count, 0);
+            }
+        }
+        Ok(())
+    }
+
     fn fresh_incarnation(
         tombstone: &AgentIdentityRecord,
     ) -> (
@@ -8419,7 +8481,7 @@ CREATE TABLE working_memory_deltas (
         assert_eq!(event.data["requested_by"], "operator:test");
         assert_eq!(ledger.report()?.observed_bytes, 0);
 
-        // Qualification is committed by the writer, not added by a later read.
+        // Historical visibility survives reopen without qualifying a live read.
         drop(db);
         let db = RuntimeDb::open_and_migrate(&db_path, &lock_path)?;
         let scope = InputEvidenceScope {
@@ -8454,10 +8516,15 @@ CREATE TABLE working_memory_deltas (
             "UPDATE audit_events SET data_json=json_set(data_json,'$.data.requested_by','tampered') WHERE audit_event_id=?1",
             [&event.id],
         )?;
-        let error = read(&scope)
-            .err()
-            .context("changed Event must fail closed")?;
-        assert!(format!("{error:#}").contains("Current body needs original writer preparation"));
+        let page = read(&scope)?;
+        assert_eq!(
+            page.events()
+                .next()
+                .context("changed historical Event")?
+                .data["requested_by"],
+            "tampered"
+        );
+        drop(page);
         assert_eq!(ledger.report()?.observed_bytes, 0);
         Ok(())
     }

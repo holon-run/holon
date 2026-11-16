@@ -249,14 +249,6 @@ CREATE TABLE current_read_qualification (
  PRIMARY KEY(agent_id,identity_incarnation,family,record_id),
  FOREIGN KEY(agent_id,identity_incarnation) REFERENCES current_read_revisions(agent_id,identity_incarnation));
 CREATE INDEX current_read_known_address ON current_read_qualification(family,record_id);
-CREATE TABLE event_history_acks (
- agent_id TEXT NOT NULL,
- identity_incarnation INTEGER NOT NULL CHECK(identity_incarnation>0),
- audit_event_id TEXT NOT NULL CHECK(length(CAST(audit_event_id AS BLOB))>0),
- event_seq INTEGER NOT NULL CHECK(event_seq>0),
- content_digest TEXT NOT NULL CHECK(length(content_digest)=64),
- PRIMARY KEY(agent_id,identity_incarnation,audit_event_id));
-CREATE INDEX event_history_ack_address ON event_history_acks(audit_event_id);
 "#;
 
 pub const COMMAND_TASK_CREATION_VERSION: i64 = 104;

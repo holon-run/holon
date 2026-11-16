@@ -196,9 +196,8 @@ Cancellation declares the audit for every open Work item whose exact bound
 wait will be cancelled, including the resulting Work revision. Queue terminal
 settlement and queue-head quarantine declare the exact Message-based retirement
 audit and acknowledge the changed pending Timer wake in the same transaction.
-Producer audit ACKs preserve append order and attach original archive history
-proof, including bootstrap normalization. Archive proof never grants live
-Current authority. Publication retains the complete Current Event membership check: a missing producer ACK is
+Producer audit ACKs preserve append order, including bootstrap normalization.
+Publication retains the complete Current Event membership check: a missing producer ACK is
 an error, never permission to omit an event or qualify it after the write.
 
 Scheduler advisory builders must not append through raw storage. Queue-head
@@ -4203,32 +4202,31 @@ copies remain bounded and retained with the report. This WIP does not attest the
 complete Queue/Event API, cold/fleet/SSE readers or the full writer matrix.
 
 Explicit historical Event pages use a separate finite read under the exact
-incarnation owner. Every examined body, including filter lookahead, must match
-its original Current qualification and canonical digest in the same transaction
-as the page cursor, epoch and recovery window. This read neither extends a live
-Current interval nor publishes Ready, retains a Root, or activates a cold Agent.
-An Event body may instead match an archive history ACK frozen in its original
-write transaction: the one-time legacy Current upgrade cut freezes one ACK per
-already-persisted Event under the exact agent, incarnation, event id, sequence
-and content digest, and original non-Active Event writers — offline scheduler
-recovery observations, startup interrupted-turn repair and startup
-normalization audits — attach the same ACK
-inside their own append transaction once the Current schema is committed.
-Offline recovery before that schema leaves the Event for the original upgrade
-cut; an absent ACK table after schema activation is an error, not a bypass.
+active incarnation owner. They read committed audit rows directly in the same
+read-only transaction as the page cursor, epoch and recovery window, without
+Current qualification or per-event history ACKs. Every examined body, including
+filter lookahead, retains canonical decoding, owner/address/sequence checks and
+bounded material accounting. Malformed records and storage errors still fail
+the read rather than being skipped. This read neither extends a live Current
+interval nor publishes Ready, retains a Root, activates a cold Agent, prepares
+an original writer, or writes qualifications.
+History ACK storage, writer attachment and upgrade backfill are retired.
+The unreleased schema version 103 keeps its name and live Current tables but
+does not create the history ACK table or index. Existing internal databases may
+retain an unused table or have it manually dropped during an operator-managed,
+backed-up binary/database switch; the new runtime never accesses it.
+Deletion still clears committed audit rows transactionally and recreation
+requires clean private state. Incarnation and stale-writer fences remain
+mandatory: historical visibility cannot grant live authority.
 Bootstrap retains a terminal activation's execution binding when its original
 dispatch memory checkpoint exists, including Done: neither activation settlement
 nor memory completion retires the persisted dispatch state. Only legacy terminal
 bindings without an original checkpoint may be cleared here. Checkpoint
 existence grants no read or finish authority; original checkpoint and receipt
 validation remain mandatory.
-The ACK is archive-read authority only: a
-live Current selection address, SSE live notification or Ready publication
-never consumes it, no read path or ordinary startup may create or extend it,
-and a body whose stored digest or sequence differs from its frozen ACK is
-refused exactly like an unqualified raw row. Live Current qualification still
-deliberately excludes Events the legacy upgrade adopted without a Current
-writer.
+Live Current selection, SSE live notification and Ready publication still
+require original Current qualification. Events adopted by a legacy upgrade
+without a Current writer remain historical only.
 The existing display filter remains presentation context, not Work body authority.
 Public envelopes borrow selected facts and omit private top-level payload keys
 during serialization rather than copying and removing them. Exact wire buffers
@@ -5045,7 +5043,7 @@ the sidecar's count and bytes.
 Exclusive startup finalization must also retain the original qualified Input
 footprint of already interrupted Attempts. A `FinalizeInterrupted` write
 publishes its final canonical SQL readback through that original actor's Input
-acknowledgement, together with any Queue readbacks and Event history ACKs in
+acknowledgement, together with any Queue readbacks and committed audit Events in
 the same transaction. When interruption and finalization touch the same key,
 the actor publishes only the last readback. Existing membership checks remain
 mandatory; this does not qualify raw history or reconcile previously stale
@@ -5604,10 +5602,9 @@ The loaded State dependency cut is:
 | Timers, triggers and eligibility | `scheduling` | Original Scheduling coverage/deltas and same-cut receipt recovery; a proved rename leaves the domain unchanged. |
 
 Scalar Event ACKs are scope-bound and independent of Current record/body
-qualification. The original Episode writer also records a history ACK for
-each new audit Event in the same transaction; later explicit Current history
-preparation must not invent that authority from canonical rows. This archive
-ACK does not qualify a live Current Event selection.
+qualification. Episode audit Events are committed in the same transaction and
+are directly readable as history; this does not qualify a live Current Event
+selection.
 Episode receipt recovery must retain the Queue/Event facts
 already prepared in its fresh receipt transaction. An exact positive ACK saves
 these facts with the complete owner group before asynchronous installation, so

@@ -1,4 +1,4 @@
-//! Finite qualified historical Event reads under the original incarnation owner.
+//! Finite committed historical Event reads under the active incarnation owner.
 use super::*;
 use crate::{
     diagnostics::resource_io::{self, ResourceReadMaterial},

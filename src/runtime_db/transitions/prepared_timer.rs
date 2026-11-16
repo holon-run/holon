@@ -242,11 +242,6 @@ impl PreparedTimerTransition {
                     memory,
                 )?;
                 for event in actual_audits {
-                    // This canonical producer owns archive birth as well as its
-                    // exact predeclared Current event address.
-                    crate::runtime_db::current_read_writes::append_event_history_ack_tx(
-                        tx, scope, &event.id,
-                    )?;
                     value
                         .effects
                         .audit_events

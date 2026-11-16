@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use holon::{
     client::{EventStreamRequest, LocalClient},
     config::{AppConfig, ControlAuthMode},
@@ -324,29 +324,52 @@ pub async fn events_route_supports_cursor_pagination() -> Result<()> {
     Ok(())
 }
 
-pub async fn events_route_rejects_raw_event_without_original_writer() -> Result<()> {
+pub async fn events_route_reads_raw_history_without_original_writer() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
-    runtime.storage().append_event(&AuditEvent::legacy(
-        "raw_unqualified_event",
+    let event = AuditEvent::legacy(
+        "startup_external_side_effect_indeterminate",
         serde_json::json!({ "original_writer": false }),
-    ))?;
-    let response = Client::new()
-        .get(format!("{base}/api/agents/default/events"))
+    );
+    runtime.storage().append_event(&event)?;
+    let client = Client::new();
+    for limit in [8, 20, 5000] {
+        let response = client
+            .get(format!(
+                "{base}/api/agents/default/events?limit={limit}&order=desc"
+            ))
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await?;
+        assert!(
+            body["events"]
+                .as_array()
+                .context("events")?
+                .iter()
+                .any(|row| row["id"] == event.id && row["payload"]["original_writer"] == false),
+            "committed history must be readable without qualifying it for live Current: {body}"
+        );
+    }
+    for index in 0..=holon::http::MAX_EVENT_STREAM_WINDOW {
+        runtime.storage().append_event(&AuditEvent::legacy(
+            "raw_cap_fixture",
+            serde_json::json!({"index": index}),
+        ))?;
+    }
+    let response = client
+        .get(format!(
+            "{base}/api/agents/default/events?limit=5000&order=desc"
+        ))
         .send()
         .await?;
-    assert_eq!(
-        response.status(),
-        reqwest::StatusCode::INTERNAL_SERVER_ERROR
-    );
+    assert_eq!(response.status(), reqwest::StatusCode::OK);
     let body: serde_json::Value = response.json().await?;
-    assert_eq!(body["code"], "runtime_error");
-    assert!(
-        body["error"]
-            .as_str()
-            .is_some_and(|error| error.contains("Current body needs original writer preparation")),
-        "raw Event must not acquire body authority through the HTTP read: {body}"
+    assert_eq!(
+        body["events"].as_array().context("capped events")?.len(),
+        holon::http::MAX_EVENT_STREAM_WINDOW
     );
+    assert_eq!(body["has_older"], true);
     server.abort();
     Ok(())
 }

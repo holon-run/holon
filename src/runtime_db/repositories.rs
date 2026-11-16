@@ -5027,9 +5027,6 @@ fn append_original_timer_audit_tx(
     event: &AuditEvent,
 ) -> Result<AuditEvent> {
     let (actual, _) = append_audit_event_tx(tx, Some(agent), event)?;
-    if let Some(scope) = super::transitions::active_input_scope_tx(tx, agent)? {
-        super::current_read_writes::append_event_history_ack_tx(tx, &scope, &actual.id)?;
-    }
     Ok(actual)
 }
 
@@ -7153,9 +7150,6 @@ pub(crate) fn retire_terminal_timer_wake_with_audits_tx(
         let (actual, inserted) =
             super::evidence::append_audit_event_tx(tx, Some(&entry.agent_id), &event)?;
         if inserted {
-            if let Some(scope) = super::transitions::active_input_scope_tx(tx, &entry.agent_id)? {
-                super::current_read_writes::append_event_history_ack_tx(tx, &scope, &actual.id)?;
-            }
             reserve_source_vec_slot(actual_audits)?;
             actual_audits.push(actual);
         }

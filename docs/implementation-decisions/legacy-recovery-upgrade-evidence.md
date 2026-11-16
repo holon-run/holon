@@ -36,11 +36,10 @@ the Attempt through the strict closure and qualification checks. Missing tables
 or witnesses, live queues and inconsistent canonical projections cannot use this
 exclusion.
 
-Event history ACK adoption streams keyset pages inside the original Current
-upgrade transaction. Each page retains the existing record and byte bounds;
-individual oversized bodies and invalid sequences still fail. An agent's total
-archived history can span multiple pages without dropping old ACKs or qualifying
-those Events as live Current. Digest checks, scope and the one-time cut remain
+The Current upgrade does not scan archived Events or backfill history ACKs.
+Finite historical pages directly decode committed Events under the active
+identity and existing page/material bounds. This does not qualify archived
+Events as live Current; fixed Queue adoption, scope and the one-time cut remain
 unchanged.
 
 The historical Brief linkage backfill added `created_event_seq` to the payload

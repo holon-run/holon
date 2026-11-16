@@ -278,10 +278,10 @@ fn assert_episode_event_history_only(
             |_| true,
         )?;
         assert_eq!(page.events().map(|event| event.id.as_str()).collect::<Vec<_>>(), [event_id]);
-        // A standalone Episode archive ACK is not live Current authority.
+        // A historical Episode Event is not live Current authority.
         let error = prepare(&tx, &scope, Some(&selection), ledger, (1024 * 1024, 1024))
             .err()
-            .context("Episode history ACK granted live Current authority")?;
+            .context("Episode history granted live Current authority")?;
         assert!(error.to_string().contains("Current body needs original writer preparation"));
         Ok(())
     })

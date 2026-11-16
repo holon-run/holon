@@ -428,7 +428,6 @@ fn write_validated_episode_memory_tx(
             event_log_epoch: event.event_log_epoch.clone(),
         });
         if inserted {
-            super::current_read_writes::append_event_history_ack_tx(tx, &scope, &event.id)?;
             let ack = match &audit_material {
                 Some(material) => super::transitions::AuditEventAck::with_dispatch_material(
                     event,
@@ -1430,7 +1429,6 @@ mod tests {
             for table in [
                 "context_episode_anchors",
                 "audit_events",
-                "event_history_acks",
                 "runtime_index_outbox",
                 "runtime_index_outbox_watermarks",
                 "episode_memory_results",
@@ -1492,7 +1490,6 @@ mod tests {
         assert!(transition.effects.notify_memory_index);
         assert_eq!(fixture.count("context_episode_anchors"), 1);
         assert_eq!(fixture.count("audit_events"), 1);
-        assert_eq!(fixture.count("event_history_acks"), 1);
         assert_eq!(fixture.count("runtime_index_outbox"), 1);
         assert_eq!(fixture.count("episode_memory_results"), 1);
         let connection = fixture.db.connection().unwrap();

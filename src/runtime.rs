@@ -3043,8 +3043,7 @@ fn apply_scheduler_recovery_plan_with_options(
         }
     }
     // Offline recovery observation, not an Active-runtime body admission.
-    // The append still attaches its archive history ACK: the finite history
-    // page must read this Event after the upgrade without live authority.
+    // Finite history reads this committed Event without live authority.
     let recovery_applied = AuditEvent::legacy(
         "scheduler_recovery_applied",
         serde_json::json!({

@@ -2224,14 +2224,6 @@ impl RuntimeTransitionRepository<'_> {
         for event in events {
             let (actual, _) =
                 crate::runtime_db::evidence::append_audit_event_ack_tx(tx, Some(agent_id), event)?;
-            // Startup normalization audits are original non-Active writers;
-            // attach the archive history ACK so the finite history page can
-            // still read them without live Current authority.
-            if let Some(scope) = super::active_input_scope_tx(tx, agent_id)? {
-                crate::runtime_db::current_read_writes::append_event_history_ack_tx(
-                    tx, &scope, &actual.id,
-                )?;
-            }
             audit_events.push(actual);
         }
         inject_fault(fault, TransitionFaultPoint::AfterAuditWrites)?;

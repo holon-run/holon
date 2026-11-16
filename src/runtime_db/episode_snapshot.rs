@@ -102,8 +102,10 @@ pub(super) mod work_checkpoint;
 
 pub(crate) const EPISODE_CONTINUITY_POLICY: i64 = 1;
 pub(crate) const LEGACY_EPISODE_RECENT_CANDIDATES: usize = 12;
-// Current reads are bounded; the one-time upgrade streams complete history.
+// Large legacy fixtures verify that adoption is not truncated at former caps.
+#[cfg(all(test, holon_lib_test_shard = "b"))]
 const CONTINUITY_MAX_RECORDS: usize = 65_536;
+#[cfg(all(test, holon_lib_test_shard = "b"))]
 const CONTINUITY_MAX_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 const CONTINUITY_MAX_REF_DEPTH: usize = 64;
 const UPGRADE_BOUNDARY_KEY: &str = "episode_continuity/v1/upgrade_boundary";
