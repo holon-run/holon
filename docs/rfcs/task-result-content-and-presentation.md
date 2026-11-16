@@ -48,6 +48,22 @@ through normal admission. An exact wait retains its existing precedence.
 Historical canonically dropped replies may suspend automatic rechecks while
 remaining available to an exact waiter.
 
+Reply disposition and model reading are separate facts. An accepted original
+reply with an unfulfilled, authorized delivery obligation must still reach its
+receiver; a reducer-only reference signal is not proof that its body was read.
+When all captured owners have ended and no exact consuming wait grants further
+delivery, retain the captured owner for canonical non-model rejection instead
+of treating the reply as an unbound new input. The original queue and delivery
+reach their own terminal states with an explicit reason; do not label that
+outcome `model_delivered` or `reply_consumed_elsewhere`.
+
+Non-model terminal disposition preserves the original message body, provenance,
+and `message:` reference. The receiving agent may retrieve retained replies
+through MemorySearch and MemoryGet under the existing scope, retention, and
+index-freshness rules. This does not promise automatic full-body injection into
+the next model request, immediate search indexing, or that the model read it.
+Temporary owner waits remain delivery obligations, not archive conditions.
+
 Task completion, caller admission, and successful activation settlement remain
 separate durable facts. The existing settlement ledger retains deferred results,
 restart recovery, and generation fences. A reply can satisfy concurrent observer

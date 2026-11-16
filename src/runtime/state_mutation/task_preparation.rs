@@ -17,24 +17,16 @@ pub(in crate::runtime) struct OwnerTaskRequestMaterial {
 }
 
 impl RuntimeMutation {
-    /// Completed reply ownership and live Work use one final publication.
-    pub(in crate::runtime) fn capture_reply_work_owner(
+    fn capture_reply_tasks(
         &self,
         lease: &super::super::task_queries::TaskQueryLease,
         message_id: &str,
-    ) -> Result<(
-        Option<String>,
-        Arc<super::super::input_evidence_budget::BudgetViewGuard>,
-    )> {
+    ) -> Result<CapturedTasks> {
         let root = self.capture_published_root()?;
         let tasks = root.tasks.as_ref().ok_or(TaskReadError::IncompleteActive)?;
-        let work = root
-            .work
-            .as_ref()
-            .ok_or(super::super::resident_work::WorkReadError::IncompleteLive)?;
         anyhow::ensure!(
-            tasks.scope() == &self.input_evidence_scope() && work.scope() == tasks.scope(),
-            "reply Task/Work publication scope differs"
+            tasks.scope() == &self.input_evidence_scope(),
+            "reply Task publication scope differs"
         );
         self.runtime.inner.task_queries.validate_lease(
             lease,
@@ -45,8 +37,39 @@ impl RuntimeMutation {
             lease.selection().reply_message_ids.contains(message_id),
             "reply query role differs"
         );
-        let tasks = tasks.capture_query(lease.selection())?;
-        let work = work.capture(&super::super::work_reads::live_work_request())?;
+        tasks.capture_query(lease.selection())
+    }
+
+    pub(in crate::runtime) fn reply_work_owner_request(
+        &self,
+        lease: &super::super::task_queries::TaskQueryLease,
+        message_id: &str,
+    ) -> Result<super::super::resident_work::WorkCaptureRequest> {
+        let tasks = self.capture_reply_tasks(lease, message_id)?;
+        super::super::task_reads::reply_work_request(&tasks, message_id)
+    }
+
+    /// Completed reply ownership and live Work use one final publication.
+    pub(in crate::runtime) fn capture_reply_work_owner(
+        &self,
+        lease: &super::super::task_queries::TaskQueryLease,
+        message_id: &str,
+    ) -> Result<(
+        Option<String>,
+        Arc<super::super::input_evidence_budget::BudgetViewGuard>,
+    )> {
+        let root = self.capture_published_root()?;
+        let tasks = self.capture_reply_tasks(lease, message_id)?;
+        let work = root
+            .work
+            .as_ref()
+            .ok_or(super::super::resident_work::WorkReadError::IncompleteLive)?;
+        anyhow::ensure!(
+            work.scope() == &tasks.scope,
+            "reply Task/Work publication scope differs"
+        );
+        let request = super::super::task_reads::reply_work_request(&tasks, message_id)?;
+        let work = work.capture(&request)?;
         let owner = super::super::task_reads::reply_work_owner(&tasks, &work, message_id)?;
         let (_, _records, _bytes) = self.context_input_evidence_policy()?;
         let estimate = super::super::input_evidence_budget::serialized_bytes(&owner)?

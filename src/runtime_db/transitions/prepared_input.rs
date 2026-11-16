@@ -3308,6 +3308,7 @@ impl RuntimeTransitionRepository<'_> {
                             Some(scope),
                             command,
                             Some(tasks.allowed_keys()),
+                            Some(memory_ledger),
                         )?,
                         InputMutationResult::Transition,
                     )

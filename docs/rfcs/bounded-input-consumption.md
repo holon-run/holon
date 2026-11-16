@@ -44,7 +44,8 @@ Do not infer grouping or authority from body text.
 
 For an input with a runtime-validated recipient relationship, use:
 
-1. an explicit recipient WorkItem owner;
+1. an explicit recipient WorkItem owner, or the canonical completed reply-wait
+   Task's original captured receiver owner when the message has no explicit one;
 2. otherwise, the source's explicit lifecycle or exact delivery scope;
 3. otherwise, for an ordinary unbound agent message, its authenticated runtime
    sender and required source/session boundary.
@@ -53,6 +54,13 @@ An invalid or conflicting relationship must not fall back to a sender bucket.
 The sending agent's WorkItem and the recipient's current focus do not establish
 recipient ownership. In particular, the sender relation is not a transitive
 bridge between owner A, an unbound message, and owner B.
+
+Dispatch and live attachment use the same reply-owner selection: prefer an open
+captured owner, ordered by the original Task creation time at millisecond
+precision and then Task ID. If no open captured owner remains, keep the
+deterministic ended-owner binding for canonical non-model disposition. Missing
+or invalid ownership does not become sender fallback. Derivation never rewrites
+the original message or borrows the recipient's current focus.
 
 Unbound ordinary messages from one sender may be presented together without
 proving that their bodies describe one business task. Preserve receive order
@@ -153,6 +161,13 @@ Other exact task/reply/wait sources require canonical delivery eligibility.
 Ordinary owner-bound inputs require the current execution owner. Unbound
 ordinary messages may only extend a durably established matching sender batch;
 a WorkItem turn does not acquire this privilege from its latest sender.
+
+An original reply whose completed Task captures the current receiver owner can
+join that owner's later turn at an ordinary provider safe point, even when its
+Task's parent is an older turn. This does not relax same-parent TaskResult
+eligibility, exact-wait precedence, independent settlement grants, or source and
+execution fences. Revalidate the canonical reply relationship and receiver
+owner in the attachment transaction; never use a stale planning-only binding.
 
 Attach only when no provider request is in flight and accepted tool calls have
 their receipts paired. A background task's already-returned handle is a receipt;

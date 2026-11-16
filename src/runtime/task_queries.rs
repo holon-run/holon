@@ -1144,6 +1144,12 @@ mod birth_session_tests {
         let second = runtime
             .create_work_item("second reply owner".into(), None, None, vec![])
             .await?;
+        let ended = runtime
+            .create_work_item("ended reply owner".into(), None, None, vec![])
+            .await?;
+        runtime
+            .complete_work_item(ended.id.clone(), Vec::new())
+            .await?;
         let role = runtime.register_task_query(TaskQuerySpec {
             reply_message_ids: &["reply-evidence", "empty-reply"],
             ..Default::default()
@@ -1170,6 +1176,9 @@ mod birth_session_tests {
             } else if index == 2 {
                 row.created_at = base - chrono::Duration::seconds(1);
                 row.work_item_id = Some("absent-open-owner".into());
+            } else if index == 3 {
+                row.created_at = base - chrono::Duration::seconds(3);
+                row.work_item_id = Some(ended.id.clone());
             }
             runtime
                 .persist_task_transition(&row, "task_completed")
@@ -1185,9 +1194,8 @@ mod birth_session_tests {
         assert_eq!(expected.as_deref(), Some(second.id.as_str()));
         let mut owner = runtime.begin_mutation().await?;
         owner.prepare_owner_task_query(&role).await?;
-        owner
-            .prepare_owner_work_request(&super::super::work_reads::live_work_request())
-            .await?;
+        let request = owner.reply_work_owner_request(&role, "reply-evidence")?;
+        owner.prepare_owner_work_request(&request).await?;
         let (actual, _actual_budget) = owner.capture_reply_work_owner(&role, "reply-evidence")?;
         assert_eq!(actual, expected);
         assert!(owner

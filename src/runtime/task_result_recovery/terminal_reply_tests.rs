@@ -2,6 +2,169 @@ use super::*;
 use crate::runtime::{PrepareWaitForOutcome, WaitForRegistrationOutcome, WaitForWakeKind};
 use crate::types::AgentMessageDeliveryState;
 
+#[derive(Default)]
+struct UnboundLiveReplyProvider {
+    runtime: Mutex<Option<RuntimeHandle>>,
+    owner: Mutex<Option<WorkItemRecord>>,
+    reply: Mutex<Option<(TaskRecord, String)>>,
+    recorded: FailureProvider,
+}
+
+#[async_trait::async_trait]
+impl AgentProvider for UnboundLiveReplyProvider {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+        let material = request.material.clone();
+        let first = self.recorded.requests.lock().await.is_empty();
+        let mut response = self.recorded.complete_turn(request).await?;
+        response.material = material;
+        if first {
+            let runtime = self.runtime.lock().await.clone().unwrap();
+            let owner = self.owner.lock().await.clone().unwrap();
+            *self.reply.lock().await = Some(
+                Box::pin(reply_result_with_binding(
+                    &runtime,
+                    &owner,
+                    "unbound-live-reply",
+                    false,
+                ))
+                .await,
+            );
+            response.blocks = (0..2)
+                .map(|index| ModelBlock::ToolUse {
+                    id: format!("live-reply-safe-point-{index}"),
+                    name: "GetAgent".into(),
+                    input: serde_json::json!({}),
+                    kind: crate::provider::ModelToolCallKind::Function,
+                    provider_data: None,
+                })
+                .collect();
+        }
+        Ok(response)
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn unbound_old_parent_reply_joins_only_its_captured_live_owner() {
+    for same_owner in [true, false] {
+        let provider = Arc::new(UnboundLiveReplyProvider::default());
+        let harness = LifecycleHarness::with_provider(provider.clone());
+        let runtime = harness.runtime();
+        {
+            // This fixture exercises a public-tool continuation, not prompt exhaustion.
+            let mut context = runtime.inner.context_config.write().await;
+            context.prompt_budget_estimated_tokens += 32_768;
+            context.turn_projection_min_budget = context.prompt_budget_estimated_tokens;
+            context.turn_projection_max_budget = context.prompt_budget_estimated_tokens;
+        }
+        *provider.runtime.lock().await = Some(runtime.clone());
+        let owner = runtime
+            .create_work_item(
+                "live reply owner".into(),
+                Some(WorkItemPlanStatus::Ready),
+                None,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let reply_owner = if same_owner {
+            owner.clone()
+        } else {
+            runtime
+                .create_work_item(
+                    "unrelated captured reply owner".into(),
+                    Some(WorkItemPlanStatus::Ready),
+                    None,
+                    Vec::new(),
+                )
+                .await
+                .unwrap()
+        };
+        *provider.owner.lock().await = Some(reply_owner);
+        let mut prompt = MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "continue this work".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::HttpControlPrompt,
+            AdmissionContext::ControlAuthenticated,
+        );
+        prompt.work_item_id = Some(owner.id.clone());
+        runtime.enqueue(prompt).await.unwrap();
+        let scheduled = claim_model(runtime).await;
+        process(runtime, scheduled).await;
+        *provider.runtime.lock().await = None;
+        let (task, reply_id) = provider.reply.lock().await.clone().unwrap();
+        let requests = provider.recorded.requests.lock().await;
+        assert_eq!(
+            requests.len(),
+            2,
+            "live fixture must reach the next provider safe point: {:?}",
+            runtime.storage().read_recent_events(8).unwrap()
+        );
+        assert!(!requests[0].contains("repeated-reply-evidence"));
+        assert_eq!(
+            requests[1].matches("repeated-reply-evidence").count(),
+            usize::from(same_owner),
+            "only the captured receiver owner may consume an unbound reply"
+        );
+        assert!(runtime
+            .storage()
+            .read_message_by_id(&reply_id)
+            .unwrap()
+            .unwrap()
+            .work_item_id
+            .is_none());
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&reply_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            if same_owner {
+                QueueEntryStatus::Interjected
+            } else {
+                QueueEntryStatus::Queued
+            }
+        );
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .agent_message_deliveries()
+                .latest_for_message(&reply_id)
+                .unwrap()
+                .unwrap()
+                .state,
+            if same_owner {
+                AgentMessageDeliveryState::Consumed
+            } else {
+                AgentMessageDeliveryState::Queued
+            }
+        );
+        let result_id = task.parent_message_id.as_deref().unwrap();
+        let due = latest(runtime, result_id).next_recheck_at.unwrap();
+        harness
+            .advance((due - harness.now()).to_std().unwrap() + std::time::Duration::from_secs(1))
+            .await;
+        let emitted = runtime.emit_due_task_result_recovery().await.unwrap();
+        let result = latest(runtime, result_id);
+        // An open owner reconciles its result through a recovery continuation.
+        assert_eq!(emitted, same_owner);
+        assert_eq!(result.state, TaskResultSettlementState::PersistedPending);
+        assert_eq!(result.disposition, None);
+    }
+}
+
 async fn dropped_reply(harness: &LifecycleHarness) -> (WorkItemRecord, TaskRecord, String) {
     let runtime = harness.runtime();
     let owner = runtime
@@ -62,6 +225,12 @@ async fn dropped_reply(harness: &LifecycleHarness) -> (WorkItemRecord, TaskRecor
 
 #[tokio::test(start_paused = true)]
 async fn queued_reply_waits_for_owner_without_blocking_sleep_or_losing_delivery() {
+    for explicit_owner in [true, false] {
+        Box::pin(assert_queued_reply_waits_for_owner(explicit_owner)).await;
+    }
+}
+
+async fn assert_queued_reply_waits_for_owner(explicit_owner: bool) {
     let mut harness = LifecycleHarness::with_provider(Arc::new(
         crate::provider::StubProvider::new("fixture reply"),
     ));
@@ -75,7 +244,8 @@ async fn queued_reply_waits_for_owner_without_blocking_sleep_or_losing_delivery(
         )
         .await
         .unwrap();
-    let (_, reply_id) = reply_result(runtime, &owner).await;
+    let (_, reply_id) =
+        reply_result_with_binding(runtime, &owner, "waiting-owner-reply", explicit_owner).await;
     let executor = scheduler_executor::SchedulerDecisionExecutor::new(runtime);
     let mut waiting = scheduler_executor::WaitingReplyQueue::default();
     assert!(matches!(
