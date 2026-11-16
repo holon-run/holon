@@ -1526,7 +1526,6 @@ dependencies = [
  "chrono-tz",
  "clap",
  "cron",
- "crossterm",
  "decision-clef",
  "decision-core",
  "decision-jev",
@@ -1536,12 +1535,14 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "holon-client",
  "holon-config",
  "holon-domain",
  "holon-model-catalog",
  "holon-provider",
  "holon-storage",
  "holon-system",
+ "holon-tui",
  "hyper",
  "hyper-util",
  "image",
@@ -1550,8 +1551,6 @@ dependencies = [
  "mime_guess",
  "percent-encoding",
  "proptest",
- "pulldown-cmark",
- "ratatui",
  "reqwest",
  "resvg",
  "rpassword",
@@ -1574,11 +1573,28 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "unicode-casefold",
- "unicode-width 0.2.0",
  "url",
  "uuid",
  "wreq",
  "wreq-util",
+]
+
+[[package]]
+name = "holon-client"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "holon-config",
+ "holon-domain",
+ "holon-provider",
+ "holon-storage",
+ "reqwest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1707,6 +1723,31 @@ dependencies = [
  "serde_json",
  "thiserror 2.0.18",
  "tokio",
+]
+
+[[package]]
+name = "holon-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "crossterm",
+ "holon-client",
+ "holon-config",
+ "holon-domain",
+ "holon-provider",
+ "holon-system",
+ "pulldown-cmark",
+ "ratatui",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "unicode-width 0.2.0",
+ "url",
+ "uuid",
 ]
 
 [[package]]

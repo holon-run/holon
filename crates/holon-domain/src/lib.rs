@@ -39,12 +39,14 @@ mod task;
 mod templates;
 mod tool;
 mod tool_error;
+pub mod tool_names;
 mod trace;
 mod transcript;
 mod turn;
 mod wake;
 mod wire;
 pub mod work_item;
+pub mod work_item_scheduling;
 mod workspace;
 mod workspace_identity;
 

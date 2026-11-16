@@ -21,7 +21,7 @@ pub use profile::{
     load_serve_profile, persist_serve_profile, serve_profile_path, validate_cloudflare_url,
     DaemonServeProfile, ResolvedDaemonServePlan, ServeProfileAccess, ServeProfileAuthentication,
 };
-pub(crate) use service::runtime_activity_message;
+pub(crate) use service::{activity_from_snapshots, runtime_activity_message};
 pub use service::{
     runtime_activity_summary, RuntimeActivityState, RuntimeActivitySummary, RuntimeConfigSurface,
     RuntimeControlAuthMode, RuntimeServiceHandle, RuntimeServiceMetadata, RuntimeShutdownResponse,

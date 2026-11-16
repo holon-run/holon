@@ -1,5 +1,7 @@
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
+pub use holon_client::wire::{
+    RecentTrace, RecentTraceSummary, TraceAttributes, TraceSpan, TraceSpanStatus,
+};
+
 use std::collections::VecDeque;
 use std::sync::{Mutex, OnceLock};
 
@@ -9,97 +11,6 @@ const SPANS_PER_TRACE_LIMIT: usize = 256;
 static RECENT_TRACES: OnceLock<Mutex<RecentTraceStore>> = OnceLock::new();
 
 pub use holon_domain::{TraceContext, TraceContextError};
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TraceAttributes {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub turn_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub run_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub work_item_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub task_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tool_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub round: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub attempt: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_attempts: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub outcome: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub failure_kind: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub disposition: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backoff_source: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub output_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_read_input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub cache_creation_input_tokens: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_message_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub provider_http_trace_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum TraceSpanStatus {
-    Ok,
-    Error,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct TraceSpan {
-    pub name: String,
-    pub span_id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub parent_span_id: Option<String>,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    pub completed_at: chrono::DateTime<chrono::Utc>,
-    pub duration_us: u64,
-    pub status: TraceSpanStatus,
-    pub attributes: TraceAttributes,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RecentTrace {
-    pub trace_id: String,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    pub completed_at: chrono::DateTime<chrono::Utc>,
-    pub duration_us: u64,
-    pub span_count: usize,
-    pub dropped_spans: u64,
-    pub error_count: usize,
-    pub spans: Vec<TraceSpan>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct RecentTraceSummary {
-    pub trace_id: String,
-    pub started_at: chrono::DateTime<chrono::Utc>,
-    pub completed_at: chrono::DateTime<chrono::Utc>,
-    pub duration_us: u64,
-    pub span_count: usize,
-    pub dropped_spans: u64,
-    pub error_count: usize,
-}
 
 #[derive(Debug, Default)]
 struct RecentTraceStore {
@@ -197,20 +108,6 @@ pub fn search_recent_traces(query: &str) -> Vec<RecentTraceSummary> {
         })
         .map(RecentTraceSummary::from)
         .collect()
-}
-
-impl From<&RecentTrace> for RecentTraceSummary {
-    fn from(trace: &RecentTrace) -> Self {
-        Self {
-            trace_id: trace.trace_id.clone(),
-            started_at: trace.started_at,
-            completed_at: trace.completed_at,
-            duration_us: trace.duration_us,
-            span_count: trace.span_count,
-            dropped_spans: trace.dropped_spans,
-            error_count: trace.error_count,
-        }
-    }
 }
 
 pub fn completed_span(

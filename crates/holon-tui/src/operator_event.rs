@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use crate::tool::names as tn;
+use holon_domain::tool_names as tn;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -2097,7 +2097,6 @@ fn collapse_whitespace(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{

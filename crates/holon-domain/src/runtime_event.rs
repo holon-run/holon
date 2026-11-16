@@ -360,3 +360,5 @@ pub fn is_legacy_event_shape(payload_schema: &str, contract_version: u32) -> boo
     payload_schema == LEGACY_PAYLOAD_SCHEMA
         || contract_version == LEGACY_RUNTIME_EVENT_CONTRACT_VERSION
 }
+
+pub const EVENT_STREAM_HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(15);

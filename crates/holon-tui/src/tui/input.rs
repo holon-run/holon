@@ -2363,8 +2363,8 @@ impl TuiApp {
     async fn apply_onboarding_default_model(&mut self, model: &str) -> Result<()> {
         let response = self
             .client
-            .update_runtime_config(&crate::http::RuntimeConfigUpdateRequest {
-                updates: vec![crate::http::RuntimeConfigUpdateEntry {
+            .update_runtime_config(&holon_client::wire::RuntimeConfigUpdateRequest {
+                updates: vec![holon_client::wire::RuntimeConfigUpdateEntry {
                     key: "model.default".into(),
                     value: Some(serde_json::Value::String(model.to_string())),
                     unset: false,
@@ -2467,7 +2467,7 @@ fn is_complete_slash_command_token(trimmed: &str) -> bool {
 
 fn onboarding_runtime_config_status(
     model: &str,
-    response: &crate::http::RuntimeConfigUpdateResponse,
+    response: &holon_client::wire::RuntimeConfigUpdateResponse,
 ) -> String {
     let Some(result) = response
         .results
@@ -2479,15 +2479,15 @@ fn onboarding_runtime_config_status(
         );
     };
     match result.effect {
-        crate::http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart => format!(
+        holon_client::wire::RuntimeConfigUpdateEffect::AcceptedRequiresRestart => format!(
             "Onboarding set runtime default model to {model} via daemon config; restart/reload required: {}",
             result.reason
         ),
-        crate::http::RuntimeConfigUpdateEffect::AcceptedReloadScheduled => format!(
+        holon_client::wire::RuntimeConfigUpdateEffect::AcceptedReloadScheduled => format!(
             "Onboarding set runtime default model to {model} via daemon config; reload scheduled: {}",
             result.reason
         ),
-        crate::http::RuntimeConfigUpdateEffect::Rejected => format!(
+        holon_client::wire::RuntimeConfigUpdateEffect::Rejected => format!(
             "Onboarding daemon config update rejected for model.default: {}",
             result.reason
         ),
@@ -2829,7 +2829,6 @@ impl TuiApp {
     }
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -3219,7 +3218,7 @@ mod tests {
 
     #[test]
     fn onboarding_runtime_config_status_reports_restart_and_rejection() {
-        let runtime_surface = crate::daemon::RuntimeConfigSurface {
+        let runtime_surface = holon_client::wire::RuntimeConfigSurface {
             model_default: "anthropic/claude-sonnet-4-6".into(),
             model_fallbacks: Vec::new(),
             vision_default: None,
@@ -3235,9 +3234,9 @@ mod tests {
             command_task_min_free_disk_bytes: 512 * 1024 * 1024,
             command_task_min_free_disk_percent: 5,
             disable_provider_fallback: false,
-            runtime_db_retention: crate::runtime_db::RuntimeDbRetentionPolicy::default(),
+            runtime_db_retention: Default::default(),
             providers: Vec::new(),
-            web_search: crate::daemon::RuntimeWebSearchSummary {
+            web_search: holon_client::wire::RuntimeWebSearchSummary {
                 enabled: false,
                 builtin_provider_enabled: false,
                 provider: "duckduckgo".into(),
@@ -3249,19 +3248,19 @@ mod tests {
             available_search_provider_kinds: Vec::new(),
             web_search_providers: Vec::new(),
         };
-        let accepted = crate::http::RuntimeConfigUpdateResponse {
+        let accepted = holon_client::wire::RuntimeConfigUpdateResponse {
             ok: true,
             changed: true,
             config_file_path: "/tmp/config.json".into(),
-            results: vec![crate::http::RuntimeConfigUpdateResult {
+            results: vec![holon_client::wire::RuntimeConfigUpdateResult {
                 key: "model.default".into(),
-                effect: crate::http::RuntimeConfigUpdateEffect::AcceptedRequiresRestart,
+                effect: holon_client::wire::RuntimeConfigUpdateEffect::AcceptedRequiresRestart,
                 reason: "persisted; restart required".into(),
             }],
             runtime_surface: runtime_surface.clone(),
             reload: Default::default(),
-            setup: crate::onboarding::RuntimeSetup {
-                status: crate::onboarding::RuntimeSetupStatus::Blocked,
+            setup: holon_client::wire::RuntimeSetup {
+                status: holon_client::wire::RuntimeSetupStatus::Blocked,
                 default_model: Some("anthropic/claude-sonnet-4-6".into()),
                 provider: Some("anthropic".into()),
                 actions: vec!["configure_model_credential".into()],
@@ -3271,13 +3270,13 @@ mod tests {
         assert!(status.contains("via daemon config"));
         assert!(status.contains("restart/reload required"));
 
-        let rejected = crate::http::RuntimeConfigUpdateResponse {
+        let rejected = holon_client::wire::RuntimeConfigUpdateResponse {
             ok: true,
             changed: false,
             config_file_path: "/tmp/config.json".into(),
-            results: vec![crate::http::RuntimeConfigUpdateResult {
+            results: vec![holon_client::wire::RuntimeConfigUpdateResult {
                 key: "model.default".into(),
-                effect: crate::http::RuntimeConfigUpdateEffect::Rejected,
+                effect: holon_client::wire::RuntimeConfigUpdateEffect::Rejected,
                 reason: "unsupported or startup-only config key".into(),
             }],
             runtime_surface: runtime_surface.clone(),
@@ -3288,7 +3287,7 @@ mod tests {
         assert!(status.contains("rejected"));
         assert!(status.contains("unsupported"));
 
-        let omitted = crate::http::RuntimeConfigUpdateResponse {
+        let omitted = holon_client::wire::RuntimeConfigUpdateResponse {
             ok: true,
             changed: true,
             config_file_path: "/tmp/config.json".into(),

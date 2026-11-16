@@ -1,14 +1,14 @@
 use super::super::*;
 use super::support::*;
 
+use holon_tui::test_support::PresentationLog;
+
 use crate::{
     client::{AgentStateSnapshot, AgentStreamEvent, StateSessionSnapshot, StreamEventEnvelope},
     config::ModelRouteRef,
     model_catalog::ResolvedRuntimeModelPolicy,
     provider::test_support::{ScriptedAgentProvider, ScriptedProviderStep},
     system::{ExecutionProfile, ExecutionSnapshot},
-    tui::logging::TuiLogWriter,
-    tui::projection::TuiProjection,
     types::{
         AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
         AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentStatus,
@@ -179,7 +179,8 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     .unwrap();
 
     // ── 3. Create TuiLogWriter with presentation logging ─────────────
-    let log_writer = TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_dir = tempdir().unwrap();
+    let log_writer = PresentationLog::new(log_dir.path(), 65536).unwrap();
     let log_root = log_writer.root().to_path_buf();
 
     // ── 4. Run one agent turn ────────────────────────────────────────
@@ -226,12 +227,13 @@ async fn e2e_tui_pipeline_smoke_scripted_agent() {
     );
 
     // Bootstrap projection and feed all audit events through it.
-    let mut projection = TuiProjection::from_snapshot(minimal_snapshot("default", "cursor-0"));
-
-    for (idx, event) in events.iter().enumerate() {
-        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "default");
-        projection.apply_event(stream_event, &log_writer);
-    }
+    log_writer.project(
+        minimal_snapshot("default", "cursor-0"),
+        events
+            .iter()
+            .enumerate()
+            .map(|(idx, event)| audit_to_stream_event(event, (idx + 1) as u64, "default")),
+    );
 
     // ── 6. Verify presentation.jsonl ──────────────────────────────────
     let presentation_path = log_root.join("presentation.jsonl");
@@ -347,7 +349,8 @@ async fn e2e_tui_complex_turn_multi_operation() {
     .unwrap();
 
     // ── 3. Create TuiLogWriter with presentation logging ─────────────
-    let log_writer = TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_dir = tempdir().unwrap();
+    let log_writer = PresentationLog::new(log_dir.path(), 65536).unwrap();
     let log_root = log_writer.root().to_path_buf();
 
     // ── 4. Run one agent turn with room for 3 tool rounds ────────────
@@ -380,12 +383,13 @@ async fn e2e_tui_complex_turn_multi_operation() {
         "should have many audit events for 3 tool calls"
     );
 
-    let mut projection = TuiProjection::from_snapshot(minimal_snapshot("default", "cursor-0"));
-
-    for (idx, event) in events.iter().enumerate() {
-        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "default");
-        projection.apply_event(stream_event, &log_writer);
-    }
+    log_writer.project(
+        minimal_snapshot("default", "cursor-0"),
+        events
+            .iter()
+            .enumerate()
+            .map(|(idx, event)| audit_to_stream_event(event, (idx + 1) as u64, "default")),
+    );
 
     // ── 6. Verify presentation.jsonl ──────────────────────────────────
     let presentation_path = log_root.join("presentation.jsonl");
@@ -496,7 +500,8 @@ async fn e2e_tui_concurrent_agents_attribution() {
     ]);
 
     // ── 2. Create shared TuiLogWriter ────────────────────────────────
-    let log_writer = TuiLogWriter::new_temp_with_presentation_logging(65536).unwrap();
+    let log_dir = tempdir().unwrap();
+    let log_writer = PresentationLog::new(log_dir.path(), 65536).unwrap();
     let log_root = log_writer.root().to_path_buf();
 
     // ── 3. Create and run Agent A ────────────────────────────────────
@@ -601,18 +606,20 @@ async fn e2e_tui_concurrent_agents_attribution() {
     }
 
     // ── 7. Create two projections, both writing to shared log ────────
-    let mut projection_a = TuiProjection::from_snapshot(minimal_snapshot("agent-a", "cursor-a0"));
-    let mut projection_b = TuiProjection::from_snapshot(minimal_snapshot("agent-b", "cursor-b0"));
-
-    for (idx, event) in events_a.iter().enumerate() {
-        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "agent-a");
-        projection_a.apply_event(stream_event, &log_writer);
-    }
-
-    for (idx, event) in events_b.iter().enumerate() {
-        let stream_event = audit_to_stream_event(event, (idx + 1) as u64, "agent-b");
-        projection_b.apply_event(stream_event, &log_writer);
-    }
+    log_writer.project(
+        minimal_snapshot("agent-a", "cursor-a0"),
+        events_a
+            .iter()
+            .enumerate()
+            .map(|(idx, event)| audit_to_stream_event(event, (idx + 1) as u64, "agent-a")),
+    );
+    log_writer.project(
+        minimal_snapshot("agent-b", "cursor-b0"),
+        events_b
+            .iter()
+            .enumerate()
+            .map(|(idx, event)| audit_to_stream_event(event, (idx + 1) as u64, "agent-b")),
+    );
 
     // ── 8. Verify shared presentation.jsonl ──────────────────────────
     let presentation_path = log_root.join("presentation.jsonl");

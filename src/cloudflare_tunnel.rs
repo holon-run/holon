@@ -3,6 +3,8 @@
 //! Registration describes the cloudflared-to-edge connection, not end-to-end
 //! reachability of the public URL. This module never creates or restarts tunnels.
 
+pub use holon_client::wire::{TunnelPhase, TunnelStatus};
+
 use std::io::Read;
 use std::path::Path;
 use std::process::Stdio;
@@ -10,7 +12,6 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use anyhow::{anyhow, bail, Result};
-use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{oneshot, watch};
@@ -40,22 +41,6 @@ const CHILD_ENV_ALLOWLIST: &[&str] = &[
     "all_proxy",
     "no_proxy",
 ];
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum TunnelPhase {
-    Starting,
-    Connected,
-    Failed,
-    Stopped,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct TunnelStatus {
-    pub phase: TunnelPhase,
-    pub public_url: String,
-    pub message: String,
-}
 
 #[derive(Debug, Clone)]
 pub struct TunnelStatusHandle {

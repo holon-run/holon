@@ -1,0 +1,24 @@
+[package]
+name = "holon-client"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP, Unix socket, and SSE client for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+holon-config = { version = "0.1.0", path = "../holon-config" }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-provider = { version = "0.1.0", path = "../holon-provider" }
+holon-storage = { version = "0.1.0", path = "../holon-storage" }
+reqwest = { version = "0.12", features = ["gzip", "json", "rustls-tls", "stream"], default-features = false }
+schemars = { version = "0.9", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.43", features = ["io-util", "net", "time"] }
+url = "2.5"
+
+[dev-dependencies]
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "test-util"] }

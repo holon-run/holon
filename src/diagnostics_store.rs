@@ -1,3 +1,5 @@
+pub use holon_client::wire::DiagnosticsWriterStats;
+
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, OnceLock};
@@ -7,8 +9,6 @@ use std::time::Duration;
 use anyhow::{anyhow, Context, Result};
 use chrono::{Duration as ChronoDuration, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 use crate::observability::{RecentTrace, RecentTraceSummary};
 
@@ -77,17 +77,6 @@ impl DiagnosticsWriterConfig {
             .context("diagnostics retention age is out of range")?;
         Ok(self)
     }
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub struct DiagnosticsWriterStats {
-    pub queue_depth: u64,
-    pub queued_traces: u64,
-    pub dropped_traces: u64,
-    pub filtered_traces: u64,
-    pub persisted_traces: u64,
-    pub retention_deleted_traces: u64,
-    pub writer_failures: u64,
 }
 
 #[derive(Default)]

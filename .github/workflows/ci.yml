@@ -139,7 +139,7 @@ jobs:
       android: ${{ steps.filter.outputs.android }}
       swift_sdk: ${{ steps.filter.outputs.swift_sdk }}
       ios_app: ${{ steps.filter.outputs.ios_app }}
-      ios_compat: ${{ steps.ios-compat.outputs.ios_compat == 'true' || steps.src-scope.outputs.src_non_tui == 'true' }}
+      ios_compat: ${{ steps.ios-compat.outputs.ios_compat == 'true' || steps.src-scope.outputs.src_non_tui == 'true' || steps.src-scope.outputs.crates_non_tui == 'true' }}
       macos_app: ${{ steps.filter.outputs.macos_app }}
       macos_rust_check: ${{ steps.filter.outputs.macos_rust_check }}
       src_non_tui: ${{ steps.src-scope.outputs.src_non_tui }}
@@ -246,14 +246,14 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
-      # Non-TUI src changes feed the Rust-base iOS tier (ios_compat): the
+      # Non-TUI Rust changes feed the Rust-base iOS tier (ios_compat): the
       # swift-sdk wire tests plus the real-daemon contract probe, never the
       # full iOS simulator gates; those stay on iOS-relevant paths and the
       # nightly full sweep.
       # paths-filter's default 'some' quantifier cannot express exclusion
       # (a '!' rule would match every other path), so this dedicated step
       # uses predicate-quantifier: every to AND the rules per file:
-      # src/** minus TUI-only sources.
+      # src/** and workspace crates minus TUI-only sources.
       - uses: dorny/paths-filter@v3
         id: src-scope
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -267,15 +267,16 @@ jobs:
               - '!src/tui_markdown.rs'
               - '!src/onboarding_tui.rs'
               - '!src/runtime/tests/tui_pipeline_e2e.rs'
-      # Rust-base changes outside src/ (workspace crates and build inputs)
-      # join the same ios_compat tier.
+            crates_non_tui:
+              - 'crates/**'
+              - '!crates/holon-tui/**'
+      # Changes to the root Rust build inputs join the same ios_compat tier.
       - uses: dorny/paths-filter@v3
         id: ios-compat
         if: github.event_name == 'push' || github.event_name == 'pull_request'
         with:
           filters: |
             ios_compat:
-              - 'crates/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
@@ -835,6 +836,8 @@ jobs:
           cargo fmt --manifest-path crates/holon-provider/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-model-catalog/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-config/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/holon-client/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/holon-tui/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-core/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-jev/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-openai/Cargo.toml -- --check
@@ -916,6 +919,8 @@ jobs:
           cargo test --manifest-path crates/holon-provider/Cargo.toml --locked
           cargo test --manifest-path crates/holon-model-catalog/Cargo.toml --locked
           cargo test --manifest-path crates/holon-config/Cargo.toml --locked
+          cargo test --manifest-path crates/holon-client/Cargo.toml --locked
+          cargo test --manifest-path crates/holon-tui/Cargo.toml --locked
 
       - name: Package check
         run: |

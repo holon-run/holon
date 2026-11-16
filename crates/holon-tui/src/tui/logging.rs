@@ -61,13 +61,17 @@ impl TuiLogWriter {
 
     #[cfg(test)]
     pub(crate) fn new_temp_with_presentation_logging(max_bytes: u64) -> Result<Self> {
-        let mut writer = Self::new_temp()?;
-        writer.presentation_logging_enabled = true;
-        writer.presentation_log_max_bytes = max_bytes;
-        Ok(writer)
+        Ok(Self::new_temp()?.with_presentation_logging(max_bytes))
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_presentation_logging(mut self, max_bytes: u64) -> Self {
+        self.presentation_logging_enabled = true;
+        self.presentation_log_max_bytes = max_bytes;
+        self
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn root(&self) -> &Path {
         &self.root
     }
@@ -381,7 +385,6 @@ fn rotate_jsonl(path: &Path) -> Result<()> {
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

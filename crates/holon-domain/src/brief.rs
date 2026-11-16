@@ -186,3 +186,83 @@ impl BriefRecord {
         }
     }
 }
+
+use crate::{AuditEvent, MessageEnvelope};
+
+pub const QUEUED_WORK_ACK_PREFIX: &str = "Queued work: ";
+
+pub fn make_acknowledgement_event(message: &MessageEnvelope) -> AuditEvent {
+    AuditEvent::legacy(
+        "message_acknowledged",
+        serde_json::json!({
+            "agent_id": &message.agent_id,
+            "message_id": &message.id,
+            "summary": format!("{QUEUED_WORK_ACK_PREFIX}{}", preview_message(message)),
+        }),
+    )
+}
+
+pub fn make_ack(agent_id: &str, message: &MessageEnvelope) -> BriefRecord {
+    let preview = preview_message(message);
+    BriefRecord::new(
+        agent_id,
+        BriefKind::Ack,
+        format!("{QUEUED_WORK_ACK_PREFIX}{preview}"),
+        Some(message.id.clone()),
+        None,
+    )
+}
+
+pub fn make_result(
+    agent_id: &str,
+    message: &MessageEnvelope,
+    text: impl Into<String>,
+) -> BriefRecord {
+    BriefRecord::new(
+        agent_id,
+        BriefKind::Result,
+        text,
+        Some(message.id.clone()),
+        None,
+    )
+}
+
+pub fn make_failure(
+    agent_id: &str,
+    message: &MessageEnvelope,
+    text: impl Into<String>,
+) -> BriefRecord {
+    BriefRecord::new(
+        agent_id,
+        BriefKind::Failure,
+        text,
+        Some(message.id.clone()),
+        None,
+    )
+}
+
+pub fn make_task_result(agent_id: &str, task_id: &str, text: impl Into<String>) -> BriefRecord {
+    BriefRecord::new(
+        agent_id,
+        BriefKind::Result,
+        text,
+        None,
+        Some(task_id.to_string()),
+    )
+}
+
+fn preview_message(message: &MessageEnvelope) -> String {
+    match &message.body {
+        crate::MessageBody::Text { text } => truncate(text, 80),
+        crate::MessageBody::Json { value } => truncate(&value.to_string(), 80),
+        crate::MessageBody::Brief { text, .. } => truncate(text, 80),
+    }
+}
+
+fn truncate(text: &str, max: usize) -> String {
+    if text.chars().count() <= max {
+        return text.to_string();
+    }
+    let truncated: String = text.chars().take(max).collect();
+    format!("{truncated}...")
+}

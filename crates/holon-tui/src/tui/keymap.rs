@@ -456,7 +456,6 @@ pub(super) fn scroll_action_for_key(key: KeyCode) -> Option<ScrollAction> {
     }
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

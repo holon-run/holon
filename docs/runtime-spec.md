@@ -97,7 +97,7 @@
 
 | Original section | Current home |
 |------------------|--------------|
-| Local Operator Console Contract | Implementation detail; `holon tui` contract in `src/tui/` |
+| Local Operator Console Contract | Implementation detail; `holon tui` contract in `crates/holon-tui/src/tui/` |
 | Local Daemon Lifecycle Contract | Operational surface; `holon daemon` CLI reference |
 
 ### Historical / deferred
@@ -127,7 +127,7 @@ focused spec page. They remain in source code, RFCs, or CLI reference:
 - **Memory search index** (FTS indexing, CJK, rebuild markers):
   `src/memory/`, tool schema inventory
 - **Local operator console** (TUI contract):
-  `src/tui/`
+  `crates/holon-tui/src/tui/`
 - **Local daemon lifecycle** (`holon daemon` commands):
   CLI reference, `src/daemon/`
 

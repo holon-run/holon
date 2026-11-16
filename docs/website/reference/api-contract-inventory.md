@@ -21,7 +21,7 @@ the API long term.
 - **Route/schema drift check:** `tests/snapshots/http_route_inventory.json`,
   produced from the Axum route tree and generated OpenAPI baseline by
   `make snapshots-check`.
-- **Client source:** `src/client.rs` for the subset consumed by the TUI/CLI.
+- **Client source:** `crates/holon-client/src/lib.rs` for the subset consumed by the TUI/CLI.
 - **Current status:** pre-1.0 baseline. Treat shapes below as observed
   behavior, not a final compatibility promise. Milestone 8 established the
   first checked baseline; the remaining gaps are Phase 2 stabilization work.
@@ -141,7 +141,7 @@ Known stable error `code` values:
 | `remote_skill_install_failed` | `502` | Remote skill installer exited unsuccessfully. |
 | `remote_skill_install_timeout` | `504` | Remote skill installer exceeded its timeout. |
 
-`src/client.rs` decodes this envelope compatibly: it requires only `error` for
+`crates/holon-client/src/lib.rs` decodes this envelope compatibly: it requires only `error` for
 display and preserves optional `code` and `hint` in `LocalHttpError`. Unknown
 extension fields are ignored by the client unless a caller inspects the raw
 response directly.

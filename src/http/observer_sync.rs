@@ -8,6 +8,10 @@
 //! is advertised only after its durable verification
 //! succeeds, so route registration alone never serves a snapshot contract.
 
+pub(crate) use holon_client::wire::{
+    AgentEventWindow, AgentLatestBrief, AgentRosterEntry, AgentRosterSnapshot,
+};
+
 use anyhow::Context;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -119,55 +123,6 @@ pub(crate) fn advertised_observer_sync_capabilities(
     capabilities.push(CONVERSATION_LOCATE_CAPABILITY);
     capabilities.push(CONVERSATION_HISTORY_BIDIRECTIONAL_CAPABILITY);
     capabilities
-}
-
-/// Authoritative roster snapshot for membership, authorization visibility,
-/// and per-Agent event-window anchors. All-or-nothing: a failure to assemble
-/// one Agent fails the whole response.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct AgentRosterSnapshot {
-    pub(crate) contract_version: u32,
-    /// Stable public identity of the runtime installation. Distinguishes a
-    /// replaced server from an ordinary restart. Not a secret.
-    pub(crate) runtime_id: String,
-    pub(crate) event_log_epoch: String,
-    pub(crate) visibility_scope_id: String,
-    /// Active public Agents visible to the caller. Private child Agents are
-    /// never included.
-    pub(crate) agents: Vec<AgentRosterEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct AgentRosterEntry {
-    /// Same entry shape as `GET /api/agents/list`.
-    pub(crate) agent: AgentListEntry,
-    pub(crate) event_window: AgentEventWindow,
-    /// Latest canonical Brief; `null` when the Agent has no Brief yet.
-    pub(crate) latest_brief: Option<AgentLatestBrief>,
-}
-
-/// Committed event window for one Agent inside the snapshot read view. Both
-/// values must come from the same committed database view, never from an
-/// in-memory watcher or a sequence allocator.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct AgentEventWindow {
-    /// Greatest committed `event_seq` visible in the response read view.
-    pub(crate) event_head_seq: u64,
-    /// Retention floor; `0` means no retained prefix has ever been deleted.
-    pub(crate) oldest_retained_seq: u64,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub(crate) struct AgentLatestBrief {
-    pub(crate) brief_id: String,
-    /// `brief_created` event sequence linkage. `null` when the Brief cannot
-    /// be linked to a unique retained event; such Briefs do not participate
-    /// in exact unread calculation.
-    pub(crate) created_event_seq: Option<u64>,
-    pub(crate) created_at: DateTime<Utc>,
-    /// Bounded preview, at most `LATEST_BRIEF_PREVIEW_MAX_UTF8_BYTES`
-    /// UTF-8 bytes. Full text remains available from the Brief APIs.
-    pub(crate) preview: String,
 }
 
 /// Per-Agent canonical projection snapshot at one consistency boundary.

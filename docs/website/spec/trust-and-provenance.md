@@ -14,7 +14,7 @@ policy — and how those labels flow through the runtime.
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
 > `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
-> `src/prompt/mod.rs`, `src/operator_event.rs`, `src/presentation.rs`,
+> `src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
 > `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
 > `src/runtime/turn/execution.rs`.
 
@@ -241,7 +241,7 @@ Validated implementation points:
   and [`src/runtime/turn/execution.rs`](../../../src/runtime/turn/execution.rs)
   include provenance labels in queue, processing, transcript, and interjection
   events.
-- `src/operator_event.rs` and `src/presentation.rs` keep raw event provenance
+- `crates/holon-tui/src/operator_event.rs` and `crates/holon-tui/src/presentation.rs` keep raw event provenance
   available while rendering operator-origin messages as user messages.
 
 ## Drift and follow-up classification

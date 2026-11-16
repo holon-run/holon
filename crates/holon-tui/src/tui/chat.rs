@@ -17,7 +17,7 @@ pub(super) struct LocalCommandOutput {
 fn canonical_conversation_cells(
     model: &super::conversation::ConversationModel,
 ) -> Vec<ConversationCell> {
-    use crate::domain::conversation::{
+    use holon_domain::conversation::{
         ExecutionState, NoBriefReason, PresentationClass, ResultState, TerminalOutcome,
     };
     let mut cells = Vec::new();
@@ -67,7 +67,7 @@ fn canonical_conversation_cells(
         cells.push(keyed_cell(&turn.turn_id, "header", header));
         if model.details_expanded(turn) {
             for activity in model.activities.get(&turn.turn_id).into_iter().flatten() {
-                use crate::domain::conversation::ConversationActivity;
+                use holon_domain::conversation::ConversationActivity;
                 if matches!(activity, ConversationActivity::Operator(_)) {
                     continue;
                 }
@@ -157,7 +157,7 @@ fn canonical_conversation_cells(
     });
     for input in pending {
         let created_at = input.created_at.parse().unwrap_or_default();
-        let assigning = input.state == crate::domain::conversation::PendingInputState::Assigning;
+        let assigning = input.state == holon_domain::conversation::PendingInputState::Assigning;
         let cell = if let Some(result) = &input.task_result {
             canonical_notice(
                 created_at,
@@ -210,7 +210,7 @@ fn keyed_cell(turn_id: &str, key: &str, cell: ConversationCell) -> ConversationC
 }
 
 pub(super) fn task_result_text(
-    result: &crate::domain::conversation::TaskResultPresentation,
+    result: &holon_domain::conversation::TaskResultPresentation,
     queue_state: Option<&str>,
 ) -> String {
     let mut body = format!(
@@ -249,7 +249,7 @@ pub(super) fn task_result_text(
 
 pub(super) fn turn_detail_summary(
     model: &super::conversation::ConversationModel,
-    turn: &crate::domain::conversation::ConversationTurnSummary,
+    turn: &holon_domain::conversation::ConversationTurnSummary,
 ) -> String {
     let tools: Vec<_> = model
         .activities
@@ -287,7 +287,7 @@ pub(super) fn turn_detail_summary(
 
 pub(super) fn activity_detail_text(
     model: &super::conversation::ConversationModel,
-    activity: &crate::domain::conversation::ConversationActivity,
+    activity: &holon_domain::conversation::ConversationActivity,
     expanded: bool,
 ) -> String {
     if let Some(id) = super::conversation::tool_id(activity) {
@@ -354,12 +354,12 @@ pub(super) fn conversation_input_text(preview: &str) -> String {
 }
 
 fn conversation_activity_text(
-    activity: &crate::domain::conversation::ConversationActivity,
+    activity: &holon_domain::conversation::ConversationActivity,
 ) -> String {
     let summary = &super::conversation::activity_item(activity).summary;
     if !matches!(
         activity,
-        crate::domain::conversation::ConversationActivity::Assistant(_)
+        holon_domain::conversation::ConversationActivity::Assistant(_)
     ) {
         return summary.clone();
     }
@@ -1659,7 +1659,7 @@ pub(super) fn conversation_event_body(
 
 #[cfg(test)]
 fn is_sleep_tool_event(event: &crate::tui::projection::ProjectionEventRecord) -> bool {
-    event.payload.get("tool_name").and_then(Value::as_str) == Some(crate::tool::names::SLEEP)
+    event.payload.get("tool_name").and_then(Value::as_str) == Some(holon_domain::tool_names::SLEEP)
 }
 
 #[cfg(test)]
@@ -1689,7 +1689,6 @@ fn trim_preview(input: &str, max_chars: usize) -> String {
     trimmed
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1780,7 +1779,7 @@ mod tests {
                 override_reasoning_effort: None,
                 override_service_tier: None,
                 effective_service_tier: None,
-                resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy::default(),
+                resolved_policy: holon_domain::model_values::ResolvedRuntimeModelPolicy::default(),
             },
             token_usage: AgentTokenUsageSummary {
                 total: TokenUsage::new(0, 0),
