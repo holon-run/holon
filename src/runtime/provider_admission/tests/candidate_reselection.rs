@@ -42,15 +42,27 @@ impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CoolOnRetry {
 
 #[test]
 fn real_http_tool_continuation_reselects_an_independent_cooling_candidate() {
-    run_tool_continuation_reselection(false);
+    run_tool_continuation_reselection(CoolingBoundary::FirstResponse);
 }
 
 #[test]
 fn real_http_tool_continuation_reselection_preserves_retry_usage() {
-    run_tool_continuation_reselection(true);
+    run_tool_continuation_reselection(CoolingBoundary::Retry);
 }
 
-fn run_tool_continuation_reselection(retry_before_cooling: bool) {
+#[test]
+fn real_http_stale_tool_continuation_reselects_without_replaying_the_tool() {
+    run_tool_continuation_reselection(CoolingBoundary::ReservedToolContinuation);
+}
+
+#[derive(Clone, Copy)]
+enum CoolingBoundary {
+    FirstResponse,
+    Retry,
+    ReservedToolContinuation,
+}
+
+fn run_tool_continuation_reselection(boundary: CoolingBoundary) {
     std::thread::Builder::new()
         .stack_size(8 * 1024 * 1024)
         .spawn(move || {
@@ -58,17 +70,19 @@ fn run_tool_continuation_reselection(retry_before_cooling: bool) {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(tool_continuation_reselection(retry_before_cooling));
+                .block_on(tool_continuation_reselection(boundary));
         })
         .unwrap()
         .join()
         .unwrap();
 }
 
-async fn tool_continuation_reselection(retry_before_cooling: bool) {
+async fn tool_continuation_reselection(boundary: CoolingBoundary) {
     use crate::runtime_db::provider_admission::ProviderAdmissionReservation;
     use axum::{routing::post, Json, Router};
 
+    let retry_before_cooling = matches!(boundary, CoolingBoundary::Retry);
+    let stale_after_tool = matches!(boundary, CoolingBoundary::ReservedToolContinuation);
     let failure = Arc::new(Mutex::<Option<ConcurrentFailure>>::new(None));
     let _subscriber = retry_before_cooling.then(|| {
         tracing::subscriber::set_default(
@@ -95,7 +109,7 @@ async fn tool_continuation_reselection(retry_before_cooling: bool) {
                 }));
             }
             assert_eq!(call, 0, "cooled A must not receive a continuation");
-            if !retry_before_cooling {
+            if !retry_before_cooling && !stale_after_tool {
                 cool_primary(&failure);
             }
             Json(serde_json::json!({
@@ -162,6 +176,18 @@ async fn tool_continuation_reselection(retry_before_cooling: bool) {
         admission.candidate.connection.clone(),
         runtime.now(),
     ));
+    if stale_after_tool {
+        let failure = failure.clone();
+        let mut dispatches = 0;
+        *admission.dispatch_barrier.lock().unwrap() = Some(Box::new(move || {
+            dispatches += 1;
+            if dispatches == 2 {
+                // The real tool ran and the continuation payload is built;
+                // cool its scope before the single admit and HTTP send.
+                cool_primary(&failure);
+            }
+        }));
+    }
     let message = scheduled.message.clone();
     let terminal = Box::pin(runtime.process_message_with_plan_deferred(
         scheduled.message,
@@ -230,6 +256,29 @@ async fn tool_continuation_reselection(retry_before_cooling: bool) {
         if retry_before_cooling { 3 } else { 2 },
         "only actual HTTP requests are charged"
     );
+    if stale_after_tool {
+        assert!(failure.lock().unwrap().is_none());
+        let events = runtime.storage().read_recent_events(256).unwrap();
+        let rejection = events
+            .iter()
+            .find(|event| {
+                event.kind == "provider_dispatch_rejected"
+                    && event.data["denial"]
+                        .as_str()
+                        .is_some_and(|denial| denial.starts_with("ScopeCooling"))
+            })
+            .expect("the built tool continuation must be rejected before HTTP");
+        assert_eq!(rejection.data["dispatch_occurred"], false);
+        assert_eq!(rejection.data["prior_dispatches"], 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "provider_attempt_failed")
+                .count(),
+            0,
+            "the rejected continuation is not a failed HTTP request"
+        );
+    }
     if retry_before_cooling {
         assert!(failure.lock().unwrap().is_none(), "retry boundary cooled A");
         let events = runtime.storage().read_recent_events(256).unwrap();

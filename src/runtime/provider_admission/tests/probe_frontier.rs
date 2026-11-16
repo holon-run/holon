@@ -3,7 +3,9 @@ use crate::runtime::clock::TestClock;
 use crate::runtime::resident_input_evidence::{
     InputEvidenceFamily as Family, InputEvidenceKey as Key, InputEvidenceReadError,
 };
-use crate::runtime_db::provider_admission::ProviderAdmissionReservation;
+use crate::runtime_db::provider_admission::{
+    ProviderAdmissionReservation, ProviderRecoveryDispatchResult,
+};
 
 #[tokio::test]
 async fn provider_admission_requires_captured_original_root_before_budget_mutation() {
@@ -100,7 +102,7 @@ async fn probe_frontier(primary_recovers: bool) {
     let primary = &chain.candidates[0];
     let fallback = &chain.candidates[1];
     let db = runtime.runtime_db();
-    let lease = admission.state.lock().unwrap().lease.take().unwrap();
+    let lease = stale_admission::concurrent_lease(&runtime, &admission);
     // Seed the durable dispatch/outcome boundary without running a model turn.
     let ProviderRecoveryDispatchResult::Charged(dispatch) = db
         .charge_provider_recovery_dispatch(&admission.episode().unwrap(), &lease, "primary", 1, now)

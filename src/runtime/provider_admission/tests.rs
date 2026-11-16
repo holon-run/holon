@@ -1,3 +1,4 @@
+mod auxiliary_dispatch;
 mod candidate_reselection;
 mod cooldown_wait;
 mod failure_messages;
@@ -7,6 +8,7 @@ mod probe_frontier;
 mod rate_limited;
 mod repair_blocks;
 mod root_fairness;
+mod stale_admission;
 
 use super::*;
 use crate::{
@@ -472,14 +474,14 @@ async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
                 Box::pin(async move {
                     let admission = admission.expect("gate must precede the claim snapshot race");
                     assert_eq!(admission.episode()?.total_requests, 0);
-                    assert!(admission
-                        .state
-                        .lock()
-                        .unwrap()
-                        .lease
-                        .as_ref()
-                        .unwrap()
-                        .is_probe());
+                    {
+                        let state = admission.state.lock().unwrap();
+                        assert!(
+                            state.lease.is_none(),
+                            "candidate selection must not pre-reserve the send"
+                        );
+                        assert!(state.dispatch.is_none());
+                    }
                     *observed.lock().unwrap() = Some((
                         Arc::downgrade(&admission),
                         admission.attempt.attempt_id.clone(),
@@ -630,7 +632,7 @@ async fn external_wait_dispatch_with_claim_race(race: Option<&'static str>) {
         } else {
             assert!(
                 old.upgrade().is_none(),
-                "stale guard must release its lease"
+                "a replanned dispatch must not reuse the superseded admission"
             );
         }
         assert_eq!(
@@ -677,6 +679,7 @@ enum ContinuationDispatchFault {
     HttpFailureWithAuthority(RecoveryAuthorityChange),
     LocalRejection,
     LocalCooling,
+    LocalCoolingFallback,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -749,6 +752,14 @@ fn exact_task_result_local_dispatch_rejection_preserves_settlement_obligation() 
 }
 
 fn run_continuation_dispatch(kind: ContinuationDispatch, fault: ContinuationDispatchFault) {
+    run_continuation_dispatch_with_fence(kind, fault, None);
+}
+
+fn run_continuation_dispatch_with_fence(
+    kind: ContinuationDispatch,
+    fault: ContinuationDispatchFault,
+    fence: Option<stale_admission::ParkedWaitFence>,
+) {
     let thread = std::thread::Builder::new()
         .name("continuation-dispatch".into())
         .stack_size(8 * 1024 * 1024)
@@ -757,7 +768,7 @@ fn run_continuation_dispatch(kind: ContinuationDispatch, fault: ContinuationDisp
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(continuation_dispatch_scenario(kind, fault));
+                .block_on(continuation_dispatch_scenario(kind, fault, fence));
         })
         .unwrap();
     if let Err(panic) = thread.join() {
@@ -768,6 +779,7 @@ fn run_continuation_dispatch(kind: ContinuationDispatch, fault: ContinuationDisp
 async fn continuation_dispatch_scenario(
     kind: ContinuationDispatch,
     fault: ContinuationDispatchFault,
+    fence: Option<stale_admission::ParkedWaitFence>,
 ) {
     use crate::{
         domain::execution_protocol::{
@@ -786,16 +798,26 @@ async fn continuation_dispatch_scenario(
             ContinuationDispatchFault::None
                 | ContinuationDispatchFault::LocalRejection
                 | ContinuationDispatchFault::LocalCooling
+                | ContinuationDispatchFault::LocalCoolingFallback
         ),
         Ordering::SeqCst,
     );
+    let fallback_server = if matches!(fault, ContinuationDispatchFault::LocalCoolingFallback) {
+        let fallback = OutageServer::start(false).await;
+        fallback.healthy.store(true, Ordering::SeqCst);
+        Some(fallback)
+    } else {
+        None
+    };
     let home = tempfile::tempdir().unwrap();
-    let mut config = config_with_urls(home.path(), [&server.url, &server.url]);
-    if matches!(
-        fault,
-        ContinuationDispatchFault::HttpFailureSecondHop
-            | ContinuationDispatchFault::HttpFailureInterruptedReplay
-    ) {
+    let fallback_url = fallback_server
+        .as_ref()
+        .map_or(server.url.as_str(), |fallback| fallback.url.as_str());
+    let mut config = config_with_urls(home.path(), [&server.url, fallback_url]);
+    if matches!(fault, ContinuationDispatchFault::LocalCooling) {
+        config.fallback_models.clear();
+    }
+    if matches!(fault, ContinuationDispatchFault::HttpFailureSecondHop) {
         config
             .fallback_models
             .push(ModelRouteRef::parse("openai@default/gpt-5.4-mini").unwrap());
@@ -1023,8 +1045,13 @@ async fn continuation_dispatch_scenario(
             .host_registry_revision += 1;
     }
     let admission = admission.clone();
-    let cooling_deadline = if matches!(fault, ContinuationDispatchFault::LocalCooling) {
-        let lease = admission.state.lock().unwrap().lease.take().unwrap();
+    let cooling_deadline = if matches!(
+        fault,
+        ContinuationDispatchFault::LocalCooling | ContinuationDispatchFault::LocalCoolingFallback
+    ) {
+        // Cool the shared scope after candidate selection and request
+        // construction but before the single atomic admit at dispatch.
+        let lease = stale_admission::concurrent_lease(&runtime, &admission);
         let server_deadline = runtime.now() + Duration::minutes(10);
         assert!(runtime
             .runtime_db()
@@ -1047,7 +1074,11 @@ async fn continuation_dispatch_scenario(
             .unwrap()
             .not_before;
         assert!(deadline >= server_deadline);
-        Some(deadline)
+        if matches!(fault, ContinuationDispatchFault::LocalCoolingFallback) {
+            None
+        } else {
+            Some(deadline)
+        }
     } else {
         None
     };
@@ -1059,7 +1090,42 @@ async fn continuation_dispatch_scenario(
         &scheduled.scheduler_decision,
     ))
     .await;
-    if let Some(deadline) = cooling_deadline {
+    if matches!(fault, ContinuationDispatchFault::LocalCoolingFallback) {
+        let terminal =
+            result.expect("a construction-cooled primary must reselect the healthy fallback");
+        assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            fallback_server
+                .as_ref()
+                .unwrap()
+                .calls
+                .load(Ordering::SeqCst),
+            1
+        );
+        assert_eq!(admission.episode().unwrap().total_requests, 1);
+        stale_admission::assert_construction_cooldown_without_provider_failure(&runtime);
+        runtime
+            .finish_scheduled_message_processing(
+                &message,
+                scheduled.running_state.current_run_id.as_deref().unwrap(),
+                processing_started,
+                Ok(terminal),
+            )
+            .await
+            .unwrap();
+        stale_admission::assert_result_delivered(
+            &runtime,
+            result_message_id.as_ref().unwrap(),
+            &waiter.id,
+            &captured.id,
+        );
+        let after = runtime.latest_work_item(&waiter.id).await.unwrap().unwrap();
+        assert_eq!(after.blocked_by, blocked.blocked_by);
+        assert_eq!(after.blocked_by_wait_id, blocked.blocked_by_wait_id);
+        assert_eq!(after.recheck_at, blocked.recheck_at);
+        return;
+    }
+    if let Some(mut deadline) = cooling_deadline {
         assert!(is_parked_dispatch_rejection(result.as_ref().unwrap_err()));
         let source_id = message.id.clone();
         runtime
@@ -1103,9 +1169,74 @@ async fn continuation_dispatch_scenario(
             assert_ne!(settlement.state, TaskResultSettlementState::Settled);
             assert!(settlement.disposition.is_none());
         }
+        let construction_cooling = matches!(fault, ContinuationDispatchFault::LocalCooling);
+        let original_attempt = admission.attempt.clone();
+        let episode_key = admission.episode_key.clone();
+        let candidate = admission.candidate.clone();
+        if construction_cooling {
+            stale_admission::assert_construction_cooldown_without_provider_failure(&runtime);
+            stale_admission::assert_source_parked(
+                &runtime,
+                &source_id,
+                &original_attempt.attempt_id,
+                &waiter.id,
+            );
+            assert_eq!(admission.episode().unwrap().total_requests, 0);
+            assert_eq!(admission.episode().unwrap().request_count, 0);
+            assert_eq!(admission.episode().unwrap().candidate_cursor, 0);
+            assert!(runtime
+                .inner
+                .agent
+                .lock()
+                .await
+                .queue
+                .peek_next_matching(|queued| queued.id == source_id)
+                .is_some());
+        }
+        if let Some(fence) = fence {
+            stale_admission::invalidate_parked_wait(
+                &runtime,
+                wait_id.as_ref().unwrap(),
+                &episode_key,
+                deadline,
+                fence,
+            )
+            .await;
+        }
         drop(admission);
         drop(runtime);
-        let restored = open_runtime_with_clock(home.path(), config, clock.clone());
+        let mut restored = open_runtime_with_clock(home.path(), config.clone(), clock.clone());
+        if fence.is_some() {
+            clock.advance(
+                (deadline - restored.now() + Duration::seconds(1))
+                    .to_std()
+                    .unwrap(),
+            );
+            assert!(!process_next_model_input(&restored).await);
+            assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                restored
+                    .runtime_db()
+                    .provider_recovery_episode(&episode_key)
+                    .unwrap()
+                    .unwrap()
+                    .total_requests,
+                0,
+            );
+            if let Some(id) = result_message_id.as_ref() {
+                assert_ne!(
+                    restored
+                        .runtime_db()
+                        .task_result_settlements()
+                        .latest_for_message(id)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    TaskResultSettlementState::Settled,
+                );
+            }
+            return;
+        }
         assert_eq!(
             restored
                 .runtime_db()
@@ -1116,6 +1247,87 @@ async fn continuation_dispatch_scenario(
             deadline
         );
         assert!(!process_next_model_input(&restored).await, "{kind:?}");
+        if construction_cooling {
+            stale_admission::assert_source_parked(
+                &restored,
+                &source_id,
+                &original_attempt.attempt_id,
+                &waiter.id,
+            );
+            let parking = restored
+                .runtime_db()
+                .provider_queue_parking("default", &source_id)
+                .unwrap()
+                .unwrap();
+            let turns_before_due = restored.storage().read_recent_turns(20).unwrap().len();
+            clock.advance(
+                (deadline - restored.now() + Duration::seconds(1))
+                    .to_std()
+                    .unwrap(),
+            );
+            let crate::runtime_db::provider_admission::ProviderAdmissionReservation::Granted(probe) =
+                restored
+                    .runtime_db()
+                    .reserve_provider_admission(&candidate.scopes, restored.now(), PROBE_LEASE)
+                    .unwrap()
+            else {
+                panic!("another legitimate request must acquire the due probe");
+            };
+            let server_floor = restored.now() + Duration::minutes(20);
+            assert!(restored
+                .runtime_db()
+                .record_provider_admission_failure(
+                    &probe,
+                    &candidate.connection,
+                    ProviderCooldownPolicy::Transport,
+                    restored.now(),
+                    Some(server_floor),
+                    &candidate.model.as_string(),
+                )
+                .unwrap());
+            deadline = restored
+                .runtime_db()
+                .provider_admission_blocked(&candidate.scopes, restored.now())
+                .unwrap()
+                .unwrap()
+                .not_before;
+            assert!(deadline >= server_floor);
+            assert!(!process_next_model_input(&restored).await);
+            let extended = restored
+                .runtime_db()
+                .provider_queue_parking("default", &source_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(extended.not_before, deadline);
+            assert_eq!(extended.chain_fingerprint, parking.chain_fingerprint);
+            assert_eq!(
+                extended.episode_key, parking.episode_key,
+                "cooldown extension must retain its canonical binding"
+            );
+            assert_eq!(
+                restored.storage().read_recent_turns(20).unwrap().len(),
+                turns_before_due,
+                "a later authoritative cooldown must not create another zero-send turn"
+            );
+            assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+            let episode = restored
+                .runtime_db()
+                .provider_recovery_episode(&episode_key)
+                .unwrap()
+                .unwrap();
+            assert_eq!(episode.total_requests, 0);
+            assert_eq!(episode.request_count, 0);
+            assert_eq!(episode.candidate_cursor, 0);
+            drop(restored);
+            restored = open_runtime_with_clock(home.path(), config.clone(), clock.clone());
+            assert!(!process_next_model_input(&restored).await);
+            stale_admission::assert_source_parked(
+                &restored,
+                &source_id,
+                &original_attempt.attempt_id,
+                &waiter.id,
+            );
+        }
         clock.advance(
             (deadline - restored.now() + Duration::seconds(1))
                 .to_std()
@@ -1139,8 +1351,73 @@ async fn continuation_dispatch_scenario(
                     .unwrap()
                     .unwrap()
                     .work_item_id,
-                Some(captured.id),
+                Some(captured.id.clone()),
             );
+        }
+        if construction_cooling {
+            assert_eq!(
+                restored
+                    .runtime_db()
+                    .provider_recovery_episode(&episode_key)
+                    .unwrap()
+                    .unwrap()
+                    .total_requests,
+                1,
+                "restarts and construction-time cooldowns must not spend or refill the HTTP budget"
+            );
+            let old_turn = restored
+                .storage()
+                .read_turn_by_id(&turn.turn_id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                serde_json::to_value(&old_turn.terminal).unwrap(),
+                serde_json::to_value(&turn.terminal).unwrap(),
+                "a successful replay must not overwrite the old Interrupted terminal"
+            );
+            let protocol = restored
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                protocol.attempts[&original_attempt.attempt_id].state,
+                crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
+            );
+            if let Some(id) = result_message_id.as_ref() {
+                stale_admission::assert_result_delivered(&restored, id, &waiter.id, &captured.id);
+                let settled = restored
+                    .runtime_db()
+                    .task_result_settlements()
+                    .latest_for_message(id)
+                    .unwrap()
+                    .unwrap();
+                clock.advance(std::time::Duration::from_secs(60));
+                assert!(!restored.emit_due_task_result_recovery().await.unwrap());
+                drop(restored);
+                restored = open_runtime_with_clock(home.path(), config, clock.clone());
+                assert!(!restored.emit_due_task_result_recovery().await.unwrap());
+                assert_eq!(
+                    restored
+                        .runtime_db()
+                        .task_result_settlements()
+                        .latest_for_message(id)
+                        .unwrap()
+                        .unwrap(),
+                    settled,
+                    "the original TaskResult must remain settled exactly once after restart"
+                );
+                assert!(restored
+                    .inner
+                    .agent
+                    .lock()
+                    .await
+                    .queue
+                    .peek_next_matching(|message| message.id == *id)
+                    .is_none());
+                assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+            }
         }
         return;
     }
@@ -1250,10 +1527,35 @@ async fn continuation_dispatch_scenario(
             else {
                 panic!("the first HTTP failure must enqueue a real recovery");
             };
+            let primary = admission.clone();
             let admission = recovery.dispatch_plan.provider_admission.as_ref().unwrap();
             let initial_attempt = admission.attempt.clone();
             let episode_key = admission.episode_key.clone();
-            let lease = admission.state.lock().unwrap().lease.take().unwrap();
+            assert_ne!(primary.candidate.connection, admission.candidate.connection);
+            // Give the previously attempted primary a later server floor through
+            // a legitimate probe, after its original local cooldown expires.
+            let primary_retry_at = runtime
+                .runtime_db()
+                .provider_admission_blocked(&primary.candidate.scopes, runtime.now())
+                .unwrap()
+                .unwrap()
+                .not_before;
+            clock.advance((primary_retry_at - runtime.now()).to_std().unwrap());
+            let primary_floor = runtime.now() + Duration::minutes(20);
+            let primary_lease = stale_admission::concurrent_lease(&runtime, &primary);
+            assert!(runtime
+                .runtime_db()
+                .record_provider_admission_failure(
+                    &primary_lease,
+                    &primary.candidate.connection,
+                    ProviderCooldownPolicy::Transport,
+                    runtime.now(),
+                    Some(primary_floor),
+                    &primary.candidate.model.as_string(),
+                )
+                .unwrap());
+            let fallback_floor = runtime.now() + Duration::minutes(10);
+            let lease = stale_admission::concurrent_lease(&runtime, admission);
             assert!(runtime
                 .runtime_db()
                 .record_provider_admission_failure(
@@ -1261,7 +1563,7 @@ async fn continuation_dispatch_scenario(
                     &admission.candidate.connection,
                     ProviderCooldownPolicy::Transport,
                     runtime.now(),
-                    Some(runtime.now() + Duration::minutes(10)),
+                    Some(fallback_floor),
                     &admission.candidate.model.as_string(),
                 )
                 .unwrap());
@@ -1271,6 +1573,8 @@ async fn continuation_dispatch_scenario(
                 .unwrap()
                 .unwrap()
                 .not_before;
+            assert!(deadline >= fallback_floor);
+            assert!(deadline < primary_floor);
             let recovery_message = recovery.message.clone();
             let started = std::time::Instant::now();
             let result = Box::pin(runtime.process_message_with_plan_deferred(
@@ -1481,6 +1785,30 @@ async fn continuation_dispatch_scenario(
                     crate::runtime::turn::TurnModelSelection::message_has_provider_recovery_provenance,
                 )
                 .cloned();
+            if matches!(
+                fault,
+                ContinuationDispatchFault::HttpFailureInterruptedReplay
+            ) {
+                // The replay's HTTP failure starts a new cooldown even though
+                // the test server is now healthy.
+                assert!(!process_next_model_input(&runtime).await);
+                assert_eq!(server.calls.load(Ordering::SeqCst), 2);
+                assert_eq!(admission.episode().unwrap().total_requests, 2);
+                let parked = runtime
+                    .runtime_db()
+                    .provider_queue_parking(
+                        "default",
+                        &pending_recovery_message.as_ref().unwrap().id,
+                    )
+                    .unwrap()
+                    .expect("the next recovery must wait for its policy deadline");
+                assert!(parked.not_before > runtime.now());
+                clock.advance(
+                    (parked.not_before - runtime.now() + Duration::seconds(1))
+                        .to_std()
+                        .unwrap(),
+                );
+            }
             assert_eq!(
                 process_next_model_input(&runtime).await,
                 should_recover,
@@ -1882,10 +2210,10 @@ async fn unknown_http_attempts_and_a_denied_retry_never_refill_the_budget() {
     admission.before_dispatch().unwrap();
     for _ in 0..3 {
         let error = admission.before_dispatch().unwrap_err();
-        assert!(
-            error.to_string().contains("ScopeAlreadyAttempted"),
-            "{error}"
-        );
+        assert!(matches!(
+            dispatch_denial(&error).map(|denial| denial.0),
+            Some(LocalDispatchDenial::UnknownDispatch)
+        ));
     }
     admission
         .after_response(&Err(anyhow!("guard rejected a repeated quota scope")))
@@ -2284,6 +2612,7 @@ async fn process_next_model_input(runtime: &RuntimeHandle) -> bool {
         return false;
     };
     let message = scheduled.message;
+    let processing_started = std::time::Instant::now();
     let terminal = Box::pin(runtime.process_message_with_plan_deferred(
         message.clone(),
         scheduled.dispatch_plan,
@@ -2329,22 +2658,15 @@ async fn process_next_model_input(runtime: &RuntimeHandle) -> bool {
             crate::runtime::provider_recovery::continuity_sources(&message),
         );
     });
-    assert!(runtime
-        .commit_queue_terminal_settlement(
-            crate::types::QueueEntryRecord {
-                message_id: message.id,
-                agent_id: message.agent_id,
-                priority: message.priority,
-                status: crate::types::QueueEntryStatus::Processed,
-                created_at: message.created_at,
-                updated_at: runtime.now(),
-            },
-            Vec::new(),
-            true,
-            Some(&terminal),
+    runtime
+        .finish_scheduled_message_processing(
+            &message,
+            scheduled.running_state.current_run_id.as_deref().unwrap(),
+            processing_started,
+            Ok(terminal),
         )
         .await
-        .unwrap());
+        .unwrap();
     true
 }
 

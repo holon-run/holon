@@ -5,6 +5,7 @@ use crate::domain::execution_protocol::{
 };
 
 mod auth_contract;
+mod dispatch_admission;
 mod payment_required;
 mod repair_blocks;
 mod revision_diagnostics;
@@ -1352,6 +1353,7 @@ fn due_epoch_cas_preserves_cursor_and_cannot_regrant_operator_override() -> Resu
     let next = db
         .begin_provider_recovery_probe_epoch(&current, until)?
         .unwrap();
+    assert_eq!(next.epoch(), current.epoch() + 1);
     assert!(other
         .begin_provider_recovery_probe_epoch(&current, until)?
         .is_none());

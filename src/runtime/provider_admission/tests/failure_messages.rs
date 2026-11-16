@@ -58,7 +58,7 @@ fn local_dispatch_failure_messages_use_typed_reasons_without_changing_diagnostic
         ),
         (
             LocalDispatchDenial::Dispatch(ProviderRecoveryDispatchDenial::StaleAdmission),
-            "A local safety check blocked this model send.",
+            "Model admission could not be verified. This send was blocked.",
         ),
         (
             LocalDispatchDenial::Reservation(ProviderRecoveryDispatchDenial::BudgetExhausted),
@@ -72,7 +72,7 @@ fn local_dispatch_failure_messages_use_typed_reasons_without_changing_diagnostic
         let summary = RuntimeHandle::concise_runtime_failure_text(&message, &error);
         assert_eq!(
             summary,
-            format!("{reason} Recovery needs attention; check the diagnostics before retrying.")
+            format!("{reason} Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair.")
         );
         assert!(!summary.contains("task_result"));
         assert!(!summary.contains("before IO"));
@@ -107,11 +107,23 @@ fn local_dispatch_failure_messages_do_not_promise_uncommitted_recovery() {
 }
 
 #[test]
+fn unknown_dispatch_requires_explicit_diagnosis() {
+    for denial in [LocalDispatchDenial::UnknownDispatch] {
+        let error = rejection(Some(denial), "needs_repair");
+        let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
+        assert!(summary.contains("Automatic recovery has stopped"));
+        assert!(summary.contains("input retained"));
+        assert!(summary.contains("holon debug scheduler-recovery --agent <id> --json"));
+        assert!(!summary.contains("automatically replayed"));
+    }
+}
+
+#[test]
 fn local_dispatch_failure_messages_without_typed_evidence_are_conservative() {
     for disposition in ["needs_repair", "pause_requested", "", "unknown"] {
         let error = rejection(None, disposition);
         let expected = if disposition == "needs_repair" {
-            "The model request could not continue. Recovery needs attention; check the diagnostics before retrying."
+            "The model request could not continue. Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair."
         } else {
             "The model request could not continue. Check the diagnostics for recovery status."
         };

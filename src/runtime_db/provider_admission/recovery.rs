@@ -126,6 +126,10 @@ impl ProviderRecoveryEpisode {
     pub fn key(&self) -> &str {
         &self.key
     }
+
+    pub fn epoch(&self) -> i64 {
+        self.epoch
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +191,26 @@ pub struct ProviderRecoveryDispatch {
 #[derive(Debug)]
 pub enum ProviderRecoveryDispatchResult {
     Charged(ProviderRecoveryDispatch),
+    Denied(ProviderRecoveryDispatchDenial),
+}
+
+#[derive(Debug)]
+pub enum ProviderRecoveryDispatchAdmission {
+    Charged {
+        lease: ProviderAdmissionLease,
+        dispatch: ProviderRecoveryDispatch,
+    },
+    Blocked(ProviderAdmissionBlocked),
+    Denied(ProviderRecoveryDispatchDenial),
+    AuxiliarySkipped,
+}
+
+/// Read-only candidate precheck. Availability evidence only: it grants no
+/// lease, mints no probe token, and charges no recovery budget.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProviderRecoveryAdmissionPreview {
+    Granted { is_probe: bool },
+    Blocked(ProviderAdmissionBlocked),
     Denied(ProviderRecoveryDispatchDenial),
 }
 
@@ -653,6 +677,43 @@ fn attempted_scopes(
     Ok(attempted)
 }
 
+fn dispatch_episode_tx(
+    tx: &Transaction<'_>,
+    expected: &ProviderRecoveryEpisode,
+    scopes: &[ProviderAdmissionScope],
+    request_id: &str,
+) -> Result<std::result::Result<ProviderRecoveryEpisode, ProviderRecoveryDispatchDenial>> {
+    use ProviderRecoveryDispatchDenial as Denial;
+    ensure!(
+        !request_id.is_empty(),
+        "provider dispatch requires a request ID"
+    );
+    if tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM provider_recovery_requests WHERE request_id = ?1)",
+        [request_id],
+        |row| row.get::<_, bool>(0),
+    )? {
+        return Ok(Err(Denial::DuplicateRequest));
+    }
+    let Some(episode) = read_episode(tx, &expected.key)? else {
+        return Ok(Err(Denial::StaleEpisode));
+    };
+    if episode.epoch != expected.epoch || episode.revision != expected.revision {
+        return Ok(Err(Denial::StaleEpisode));
+    }
+    if episode.request_count >= MAX_REQUESTS {
+        return Ok(Err(Denial::BudgetExhausted));
+    }
+    if episode.state != ProviderRecoveryBudgetState::Ready {
+        return Ok(Err(Denial::EpisodePaused));
+    }
+    let attempted = attempted_scopes(tx, &episode)?;
+    if scopes.iter().any(|scope| attempted.contains(scope)) {
+        return Ok(Err(Denial::ScopeAlreadyAttempted));
+    }
+    Ok(Ok(episode))
+}
+
 impl RuntimeDb {
     /// Idempotent even after restart. Reads never renew an operator grant, reset
     /// counters, or begin another epoch.
@@ -822,6 +883,137 @@ impl RuntimeDb {
         })
     }
 
+    /// The single authoritative recovery admission. Candidate selection no
+    /// longer reserves; reservation, canonical execution validation and
+    /// charging commit atomically at the one send point.
+    #[allow(clippy::too_many_arguments)]
+    pub fn admit_provider_recovery_dispatch_for_attempt(
+        &self,
+        expected: &ProviderRecoveryEpisode,
+        scopes: &[ProviderAdmissionScope],
+        request_id: &str,
+        next_candidate_cursor: u32,
+        attempt: &ExecutionAttempt,
+        now: DateTime<Utc>,
+        lease_duration: Duration,
+        allow_probe: bool,
+    ) -> Result<ProviderRecoveryDispatchAdmission> {
+        use ProviderRecoveryDispatchAdmission as Admission;
+        use ProviderRecoveryDispatchDenial as Denial;
+        self.transaction(|tx| {
+            if let Some(rejection) = dispatch_attempt_rejection(tx, expected, attempt)? {
+                return Ok(Admission::Denied(Denial::StaleExecution(rejection)));
+            }
+            let episode = match dispatch_episode_tx(tx, expected, scopes, request_id)? {
+                Ok(episode) => episode,
+                Err(denial) => return Ok(Admission::Denied(denial)),
+            };
+            tx.execute_batch("SAVEPOINT provider_recovery_admission")?;
+            let result = (|| -> Result<Admission> {
+                let admission = match reserve_admission(
+                    tx,
+                    scopes,
+                    now,
+                    lease_duration,
+                    episode.kind == ProviderRecoveryBudgetKind::Operator,
+                )? {
+                    ProviderAdmissionReservation::Granted(lease) => lease,
+                    ProviderAdmissionReservation::Blocked(_) if !allow_probe => {
+                        return Ok(Admission::AuxiliarySkipped);
+                    }
+                    ProviderAdmissionReservation::Blocked(blocked) => {
+                        return Ok(Admission::Blocked(blocked));
+                    }
+                };
+                if !allow_probe && admission.is_probe() {
+                    return Ok(Admission::AuxiliarySkipped);
+                }
+                Ok(
+                    match Self::charge_provider_recovery_dispatch_tx(
+                        tx,
+                        expected,
+                        &admission,
+                        request_id,
+                        next_candidate_cursor,
+                        now,
+                    )? {
+                        ProviderRecoveryDispatchResult::Charged(dispatch) => Admission::Charged {
+                            lease: admission,
+                            dispatch,
+                        },
+                        ProviderRecoveryDispatchResult::Denied(denial) => Admission::Denied(denial),
+                    },
+                )
+            })();
+            if !matches!(&result, Ok(Admission::Charged { .. })) {
+                tx.execute_batch("ROLLBACK TO provider_recovery_admission")?;
+            }
+            tx.execute_batch("RELEASE provider_recovery_admission")?;
+            result
+        })
+    }
+
+    /// Candidate precheck mirroring reserve_provider_recovery_admission and
+    /// admit_provider_recovery_dispatch_for_attempt without writing. The
+    /// caller gets probe visibility only; before_dispatch remains the one
+    /// authoritative atomic admission. Resolved episodes preview the next
+    /// network epoch; only before_dispatch may actually begin that epoch.
+    pub fn preview_provider_recovery_admission(
+        &self,
+        expected: &ProviderRecoveryEpisode,
+        scopes: &[ProviderAdmissionScope],
+        now: DateTime<Utc>,
+    ) -> Result<ProviderRecoveryAdmissionPreview> {
+        use ProviderRecoveryAdmissionPreview as Preview;
+        use ProviderRecoveryDispatchDenial as Denial;
+        self.with_read(|connection| {
+            let Some(episode) = read_episode(connection, &expected.key)? else {
+                return Ok(Preview::Denied(Denial::StaleEpisode));
+            };
+            if episode.epoch != expected.epoch || episode.revision != expected.revision {
+                return Ok(Preview::Denied(Denial::StaleEpisode));
+            }
+            let resolved = episode.state == ProviderRecoveryBudgetState::Resolved;
+            if !resolved {
+                if episode.request_count >= MAX_REQUESTS {
+                    return Ok(Preview::Denied(Denial::BudgetExhausted));
+                }
+                if episode.state != ProviderRecoveryBudgetState::Ready {
+                    return Ok(Preview::Denied(Denial::EpisodePaused));
+                }
+                let attempted = attempted_scopes(connection, &episode)?;
+                if scopes.iter().any(|scope| attempted.contains(scope)) {
+                    return Ok(Preview::Denied(Denial::ScopeAlreadyAttempted));
+                }
+            }
+            let mut normalized = scopes.to_vec();
+            normalized.sort();
+            normalized.dedup();
+            ensure!(
+                !normalized.is_empty(),
+                "provider admission requires a scope"
+            );
+            if let Some(blocked) = blocked_with_policy(
+                connection,
+                &normalized,
+                now,
+                !resolved && episode.kind == ProviderRecoveryBudgetKind::Operator,
+            )? {
+                return Ok(Preview::Blocked(blocked));
+            }
+            // Mirrors reserve_admission: only an unresolved incident row
+            // yields a probe token; a missing row would be created resolved.
+            let is_probe =
+                normalized
+                    .iter()
+                    .try_fold(false, |probe, scope| -> Result<bool> {
+                        Ok(probe
+                            || read_state(connection, scope)?.is_some_and(|state| !state.resolved))
+                    })?;
+            Ok(Preview::Granted { is_probe })
+        })
+    }
+
     fn charge_provider_recovery_dispatch_tx(
         tx: &Transaction<'_>,
         expected: &ProviderRecoveryEpisode,
@@ -831,40 +1023,18 @@ impl RuntimeDb {
         now: DateTime<Utc>,
     ) -> Result<ProviderRecoveryDispatchResult> {
         use ProviderRecoveryDispatchDenial as Denial;
-        ensure!(
-            !request_id.is_empty(),
-            "provider dispatch requires a request ID"
-        );
         let deny = |reason| Ok(ProviderRecoveryDispatchResult::Denied(reason));
-        if tx.query_row(
-            "SELECT EXISTS(SELECT 1 FROM provider_recovery_requests WHERE request_id = ?1)",
-            [request_id],
-            |row| row.get::<_, bool>(0),
-        )? {
-            return deny(Denial::DuplicateRequest);
-        }
-        let Some(mut episode) = read_episode(tx, &expected.key)? else {
-            return deny(Denial::StaleEpisode);
-        };
-        if episode.epoch != expected.epoch || episode.revision != expected.revision {
-            return deny(Denial::StaleEpisode);
-        }
-        if episode.request_count >= MAX_REQUESTS {
-            return deny(Denial::BudgetExhausted);
-        }
-        if episode.state != ProviderRecoveryBudgetState::Ready {
-            return deny(Denial::EpisodePaused);
-        }
-        if !lease_is_valid(tx, admission, now)? {
-            return deny(Denial::StaleAdmission);
-        }
-        let attempted = attempted_scopes(tx, &episode)?;
-        if admission
+        let scopes: Vec<_> = admission
             .scopes
             .iter()
-            .any(|lease| attempted.contains(&lease.scope))
-        {
-            return deny(Denial::ScopeAlreadyAttempted);
+            .map(|lease| lease.scope.clone())
+            .collect();
+        let mut episode = match dispatch_episode_tx(tx, expected, &scopes, request_id)? {
+            Ok(episode) => episode,
+            Err(denial) => return deny(denial),
+        };
+        if !lease_is_valid(tx, admission, now)? {
+            return deny(Denial::StaleAdmission);
         }
         let recorded: Vec<_> = admission
             .scopes
