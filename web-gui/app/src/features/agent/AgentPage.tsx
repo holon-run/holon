@@ -12,7 +12,7 @@ import {
 } from "lucide-react";
 import {
   useEffect, useLayoutEffect, useMemo, useRef, useState,
-  type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type MutableRefObject,
+  type ClipboardEvent, type CSSProperties, type DragEvent, type FormEvent, type KeyboardEvent, type MouseEvent, type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
 
@@ -164,6 +164,12 @@ function fileToBase64(file: File): Promise<string> {
 
 export function attachmentKindForFile(file: Pick<File, "type">): OperatorPromptAttachment["kind"] {
   return file.type.startsWith("image/") ? "image" : "file";
+}
+
+/** Clipboard file paste shares the attachment pipeline with drop and the file input. */
+export function composerPasteFiles(clipboardData: DataTransfer | null | undefined): File[] {
+  const files = clipboardData?.files;
+  return files ? Array.from(files) : [];
 }
 
 export function resizeComposerTextarea(textarea: HTMLTextAreaElement): void {
@@ -579,13 +585,15 @@ export function AgentPage({
     writeStoredComposerDraft(activeAgent.id, value);
   }
 
-  async function handleAttachmentFiles(files: FileList | null) {
+  // Shared by the file input, composer drop, and clipboard paste.
+  async function handleAttachmentFiles(files: FileList | File[] | null) {
     if (!files || files.length === 0) return;
     const next: OperatorPromptAttachment[] = [];
     for (const file of Array.from(files)) {
       next.push({
         kind: attachmentKindForFile(file),
-        name: file.name,
+        // Pasted clipboard files can carry an empty name; undefined falls back to the kind-label chip.
+        name: file.name || undefined,
         mediaType: file.type,
         dataBase64: await fileToBase64(file),
       });
@@ -633,6 +641,15 @@ export function AgentPage({
     dragCounterRef.current = 0;
     setComposerDragActive(false);
     await handleAttachmentFiles(event.dataTransfer?.files ?? null);
+  }
+
+  function handleComposerPaste(event: ClipboardEvent<HTMLTextAreaElement>) {
+    if (sendingPrompt) return;
+    const files = composerPasteFiles(event.clipboardData);
+    // Text-only pastes keep the browser default insertion.
+    if (files.length === 0) return;
+    event.preventDefault();
+    void handleAttachmentFiles(files);
   }
 
   function handleDisclosureClick(event: MouseEvent<HTMLDivElement>) {
@@ -930,6 +947,7 @@ export function AgentPage({
               disabled={sendingPrompt}
               onChange={(event) => handlePromptChange(event.target.value)}
               onKeyDown={handleComposerKeyDown}
+              onPaste={handleComposerPaste}
             />
             <input
               ref={fileInputRef}
