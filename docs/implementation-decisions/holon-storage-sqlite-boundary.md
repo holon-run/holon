@@ -22,6 +22,13 @@ qualification for the matching historical data inside the same transaction,
 before it records the migration. Errors roll back the schema and the capture
 together.
 
+The storage crate also performs verified backups, WAL checkpoints, and
+vacuum operations with the application's protected connections. Backup
+preflight runs before acquiring the source connection. RuntimeDb acquires
+the offline maintenance lock and migrates the database before compaction.
+Online retention commits canonical removals and publishes their deltas before
+the separate space-reclamation pass.
+
 Run the independent storage tests with
 `cargo test --locked --manifest-path crates/holon-storage/Cargo.toml`.
 Root tests continue to cover the facade, runtime-qualified upgrades, and

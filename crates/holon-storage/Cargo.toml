@@ -13,6 +13,7 @@ test-support = []
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+fs2 = "0.4"
 schemars = "0.9"
 holon-domain = { version = "0.1.0", path = "../holon-domain" }
 r2d2 = "0.8.10"

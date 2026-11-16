@@ -9,9 +9,7 @@ use std::fs::{self, File};
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-use std::path::Path;
-#[cfg(target_os = "linux")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::sync::{Mutex, OnceLock};
 use std::thread;
@@ -291,8 +289,7 @@ struct VerifiedRuntimeDbSidecars {
 static VERIFIED_RUNTIME_DB_SIDECARS: OnceLock<Mutex<HashMap<PathBuf, VerifiedRuntimeDbSidecars>>> =
     OnceLock::new();
 
-#[cfg(target_os = "linux")]
-fn runtime_db_sidecar_file_path(db_path: &Path, suffix: &str) -> PathBuf {
+pub(crate) fn runtime_db_sidecar_file_path(db_path: &Path, suffix: &str) -> PathBuf {
     let mut name = db_path.as_os_str().to_owned();
     name.push(suffix);
     PathBuf::from(name)
