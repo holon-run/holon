@@ -15,8 +15,8 @@ schema/分发对齐，以及结果信封约定。
 [模型工具 schema 清册参考](/zh-CN/reference/model-tool-schema-inventory.md)。
 
 > **Last verified:** 2026-05-27 against `src/types.rs`
-> `ToolCapabilityFamily`, `src/tool/tools/mod.rs` `builtin_tool_definitions()`,
-> `src/tool/spec.rs`, `src/tool/dispatch.rs`.
+> `ToolCapabilityFamily`, `crates/holon-tools/src/tool/tools/mod.rs` `builtin_tool_definitions()`,
+> `crates/holon-tools/src/tool/spec.rs`, `src/tool/dispatch.rs`.
 
 ## 源 RFC
 

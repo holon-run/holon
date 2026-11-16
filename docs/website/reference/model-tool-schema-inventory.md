@@ -10,7 +10,7 @@ This page defines the versioning policy for Holon's **model-facing built-in
 tool surface**. The machine-readable inventory is checked in as
 [`model-tool-schema-inventory.json`](./model-tool-schema-inventory.json).
 
-- **Primary source:** `src/tool/tools/mod.rs` `builtin_tool_definitions()` and
+- **Primary source:** `crates/holon-tools/src/tool/tools/mod.rs` `builtin_tool_definitions()` and
   the typed Rust argument structs deriving `schemars::JsonSchema`.
 - **Generated inventory:** `holon::tool::model_tool_schema_inventory()`.
 - **Drift check:** `make snapshots-check`.

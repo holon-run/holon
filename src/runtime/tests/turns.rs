@@ -1419,6 +1419,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
     tool_execution.turn_index = state.turn_index;
     tool_execution.turn_id = state.current_turn_id.clone();
     let mut prepared = result
+        .runtime_state
         .prepared_wait_for
         .take()
         .expect("silent WaitFor should prepare canonical settlement");

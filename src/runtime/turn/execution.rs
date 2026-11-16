@@ -3040,7 +3040,7 @@ impl RuntimeHandle {
                         });
                         success_record.summary =
                             crate::tool::summary::tool_result_summary(&result.envelope);
-                        if let Some(mut prepared) = result.prepared_wait_for.take() {
+                        if let Some(mut prepared) = result.runtime_state.prepared_wait_for.take() {
                             prepared.tool_execution = Some(success_record.clone());
                             prepared.command.audit_events.push(AuditEvent::legacy(
                                 "wait_report_request_completed",
@@ -3355,30 +3355,31 @@ impl RuntimeHandle {
                             "source": "followup_final_text",
                         }),
                     );
-                    let detached_completed =
-                        if let Some(mut prepared) = result.prepared_work_item_completion.take() {
-                            prepared.tool_execution = Some(success_record.clone());
-                            prepared.audit_events.push(completion_event.clone());
-                            if prepared.settlement
-                                == crate::runtime::WorkItemCompletionSettlement::Detached
-                            {
-                                runtime
-                                    .commit_prepared_detached_work_item_completion(*prepared)
-                                    .await?;
-                                true
-                            } else {
-                                *prepared_work_item_completion = Some(prepared);
-                                false
-                            }
-                        } else {
+                    let detached_completed = if let Some(mut prepared) =
+                        result.runtime_state.prepared_work_item_completion.take()
+                    {
+                        prepared.tool_execution = Some(success_record.clone());
+                        prepared.audit_events.push(completion_event.clone());
+                        if prepared.settlement
+                            == crate::runtime::WorkItemCompletionSettlement::Detached
+                        {
                             runtime
-                                .persist_tool_execution_evidence(&success_record)
-                                .await?;
-                            runtime
-                                .append_original_audit_event(completion_event)
+                                .commit_prepared_detached_work_item_completion(*prepared)
                                 .await?;
                             true
-                        };
+                        } else {
+                            *prepared_work_item_completion = Some(prepared);
+                            false
+                        }
+                    } else {
+                        runtime
+                            .persist_tool_execution_evidence(&success_record)
+                            .await?;
+                        runtime
+                            .append_original_audit_event(completion_event)
+                            .await?;
+                        true
+                    };
                     if detached_completed {
                         let continuation_text = format!(
                         "WorkItem {} was completed as a detached target. Continue the current execution objective; this completion does not end the current turn.",
@@ -4270,11 +4271,13 @@ impl RuntimeHandle {
                                 reason: None,
                             }),
                         );
-                        let stops_tool_batch = result.prepared_work_item_completion.is_some()
-                            || result.prepared_wait_for.is_some();
+                        let stops_tool_batch =
+                            result.runtime_state.prepared_work_item_completion.is_some()
+                                || result.runtime_state.prepared_wait_for.is_some();
                         let persist_started_at = chrono::Utc::now();
                         let persist_result: Result<()> = Box::pin(async {
-                            if let Some(mut prepared) = result.prepared_work_item_completion.take()
+                            if let Some(mut prepared) =
+                                result.runtime_state.prepared_work_item_completion.take()
                             {
                                 prepared.tool_execution = Some(record.clone());
                                 prepared.audit_events.push(tool_executed_event);
@@ -4287,7 +4290,9 @@ impl RuntimeHandle {
                                 } else {
                                     *prepared_work_item_completion = Some(prepared);
                                 }
-                            } else if let Some(mut prepared) = result.prepared_wait_for.take() {
+                            } else if let Some(mut prepared) =
+                                result.runtime_state.prepared_wait_for.take()
+                            {
                                 prepared.tool_execution = Some(record.clone());
                                 prepared.command.audit_events.push(tool_executed_event);
                                 *prepared_wait_for = Some(prepared);

@@ -14911,6 +14911,7 @@ async fn terminal_settlement_materialization_failure_is_fenced_and_aborted() {
     .await
     .unwrap();
     let mut prepared = *result
+        .runtime_state
         .prepared_work_item_completion
         .take()
         .expect("bound completion should prepare an atomic terminal commit");

@@ -54,6 +54,7 @@ holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
+holon-tools = { version = "0.1.0", path = "crates/holon-tools" }
 holon-tui = { version = "0.1.0", path = "crates/holon-tui" }
 flate2 = "1.0"
 fs2 = "0.4"

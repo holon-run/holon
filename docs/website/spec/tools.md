@@ -16,8 +16,8 @@ its versioning policy and refresh workflow are documented in the
 [model tool schema inventory reference](../reference/model-tool-schema-inventory.md).
 
 > **Last verified:** 2026-05-27 against `src/types.rs`
-> `ToolCapabilityFamily`, `src/tool/tools/mod.rs` `builtin_tool_definitions()`,
-> `src/tool/spec.rs`, `src/tool/dispatch.rs`.
+> `ToolCapabilityFamily`, `crates/holon-tools/src/tool/tools/mod.rs` `builtin_tool_definitions()`,
+> `crates/holon-tools/src/tool/spec.rs`, `src/tool/dispatch.rs`.
 
 ## Source RFCs
 

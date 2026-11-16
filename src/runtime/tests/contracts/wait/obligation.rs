@@ -86,7 +86,7 @@ async fn queue_progress_repairs_one_canonical_wake_without_replaying_result() {
                 result
             };
             harness.assert_unchanged(&before);
-            let prepared = result.prepared_wait_for.as_ref().unwrap();
+            let prepared = result.runtime_state.prepared_wait_for.as_ref().unwrap();
             let mut mutation = harness.runtime().begin_mutation().await.unwrap();
             let commit = mutation
                 .commit_wait_transition(
@@ -230,7 +230,7 @@ async fn wait_snapshot_keeps_submillisecond_precision_and_rejects_stale_payloads
         )
         .await
         .unwrap();
-        let prepared = result.prepared_wait_for.as_ref().unwrap();
+        let prepared = result.runtime_state.prepared_wait_for.as_ref().unwrap();
         assert_eq!(
             prepared
                 .command

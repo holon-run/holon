@@ -1,0 +1,874 @@
+//! Tool routing and dispatch logic.
+
+use anyhow::{anyhow, Result};
+use holon_domain::ApplyPatchSurface;
+use serde_json::json;
+use serde_json::Value;
+use std::io::{self, Write};
+use std::path::PathBuf;
+use std::sync::LazyLock;
+
+use crate::{
+    tool::ToolError,
+    types::{AuthorityClass, ToolCapabilityFamily, ToolExecutionRecord, ToolExecutionStatus},
+};
+
+use super::{
+    helpers::capture_tool_input_coercion,
+    spec::{ToolCall, ToolExecutionContext, ToolSpec},
+    tools,
+};
+
+use std::{future::Future, pin::Pin};
+
+use super::spec::ToolOutcome;
+use super::tools::BuiltinTool;
+
+pub type ToolFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+/// Capabilities used by the router. The application owns their execution state.
+pub trait ToolRuntime: Send + Sync {
+    type State: Default + Send + Sync;
+
+    fn allows_tool(&self, family: ToolCapabilityFamily) -> ToolFuture<'_, bool>;
+    fn invoke_builtin<'a>(
+        &'a self,
+        tool: BuiltinTool,
+        agent_id: &'a str,
+        authority_class: &'a AuthorityClass,
+        call: &'a ToolCall,
+        context: &'a ToolExecutionContext,
+    ) -> ToolFuture<'a, ToolOutcome<Self::State>>;
+    fn persist_tool_text_artifact<'a>(
+        &'a self,
+        kind: &'a str,
+        text: &'a str,
+    ) -> ToolFuture<'a, String>;
+    fn record_tool_execution(
+        &self,
+        name: &str,
+        elapsed: std::time::Duration,
+        output_bytes: Option<usize>,
+    );
+    fn refresh_memory_index_for_changed_paths<'a>(
+        &'a self,
+        paths: &'a [String],
+    ) -> ToolFuture<'a, ()>;
+}
+
+/// Tool registry that manages tool execution.
+#[derive(Clone)]
+pub struct ToolRegistry;
+
+#[derive(Default)]
+struct ByteCountingWriter {
+    bytes: usize,
+}
+
+impl Write for ByteCountingWriter {
+    fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+        self.bytes = self.bytes.saturating_add(buffer.len());
+        Ok(buffer.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+#[derive(Clone)]
+struct ToolSpecCatalog {
+    entries: Vec<ToolCatalogEntry>,
+}
+
+#[derive(Clone)]
+struct ToolCatalogEntry {
+    #[cfg_attr(not(test), allow(dead_code))]
+    family: ToolCapabilityFamily,
+    spec: ToolSpec,
+}
+
+static TOOL_SPEC_CATALOG: LazyLock<Result<ToolSpecCatalog, String>> =
+    LazyLock::new(|| build_tool_spec_catalog().map_err(|error| error.to_string()));
+
+impl ToolRegistry {
+    /// Create a new tool registry.
+    pub fn new(_workspace_root: PathBuf) -> Self {
+        Self
+    }
+
+    /// Get the stable tool specifications for this runtime.
+    pub fn tool_specs(&self) -> Result<Vec<ToolSpec>> {
+        let catalog = TOOL_SPEC_CATALOG
+            .as_ref()
+            .map_err(|error| anyhow!("failed to build tool schemas: {error}"))?;
+        Ok(catalog
+            .entries
+            .iter()
+            .filter(|entry| is_model_facing_tool(&entry.spec.name))
+            .map(|entry| entry.spec.clone())
+            .collect())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn tool_specs_with_families(&self) -> Result<Vec<(ToolCapabilityFamily, ToolSpec)>> {
+        let catalog = TOOL_SPEC_CATALOG
+            .as_ref()
+            .map_err(|error| anyhow!("failed to build tool schemas: {error}"))?;
+        Ok(catalog
+            .entries
+            .iter()
+            .filter(|entry| is_model_facing_tool(&entry.spec.name))
+            .map(|entry| (entry.family, entry.spec.clone()))
+            .collect())
+    }
+
+    pub fn tool_specs_with_families_for_apply_patch_surface(
+        &self,
+        surface: ApplyPatchSurface,
+    ) -> Result<Vec<(ToolCapabilityFamily, ToolSpec)>> {
+        Ok(
+            tools::builtin_tool_definitions_for_apply_patch_surface(surface)?
+                .into_iter()
+                .filter(|definition| is_model_facing_tool(&definition.spec.name))
+                .map(|definition| (definition.family, definition.spec))
+                .collect(),
+        )
+    }
+
+    pub fn family_for_tool(&self, tool_name: &str) -> Result<Option<ToolCapabilityFamily>> {
+        let catalog = TOOL_SPEC_CATALOG
+            .as_ref()
+            .map_err(|error| anyhow!("failed to build tool schemas: {error}"))?;
+        Ok(catalog
+            .entries
+            .iter()
+            .find(|entry| entry.spec.name == tool_name)
+            .map(|entry| entry.family))
+    }
+
+    /// Execute a tool call and return the result along with an execution record.
+    pub async fn execute<S: Default + Send + Sync>(
+        &self,
+        runtime: &dyn ToolRuntime<State = S>,
+        agent_id: &str,
+        authority_class: &AuthorityClass,
+        call: &ToolCall,
+    ) -> Result<(ToolOutcome<S>, ToolExecutionRecord)> {
+        self.execute_with_context(
+            runtime,
+            agent_id,
+            authority_class,
+            call,
+            &ToolExecutionContext::default(),
+        )
+        .await
+    }
+
+    pub async fn execute_with_context<S: Default + Send + Sync>(
+        &self,
+        runtime: &dyn ToolRuntime<State = S>,
+        agent_id: &str,
+        authority_class: &AuthorityClass,
+        call: &ToolCall,
+        context: &ToolExecutionContext,
+    ) -> Result<(ToolOutcome<S>, ToolExecutionRecord)> {
+        let started_at = chrono::Utc::now();
+        if call.name == "SpawnAgent" {
+            return Err(ToolError::new("legacy_tool_removed", "SpawnAgent has been removed")
+                .with_details(json!({
+                    "tool_name": call.name,
+                    "replacement_tools": ["CreateAgent", "InvokeAgent"],
+                }))
+                .with_recovery_hint(
+                    "use CreateAgent for persistent named agents or InvokeAgent for child-agent work",
+                )
+                .into());
+        }
+        let required_family = match self.family_for_tool(&call.name)? {
+            Some(required_family) => required_family,
+            None => {
+                return Err(ToolError::new(
+                    "unknown_tool",
+                    format!("{} is not an available tool", call.name),
+                )
+                .with_details(json!({
+                    "tool_name": call.name,
+                }))
+                .with_recovery_hint(format!(
+                    "use one of the advertised tool names from tool_specs() instead of {}",
+                    call.name
+                ))
+                .into());
+            }
+        };
+        if !runtime.allows_tool(required_family).await? {
+            return Err(ToolError::new(
+                "agent_capability_not_allowed",
+                format!(
+                    "{} is not allowed by the agent capability policy",
+                    call.name
+                ),
+            )
+            .with_details(json!({
+                "tool_name": call.name,
+                "required_family": required_family.label(),
+            }))
+            .with_recovery_hint(format!(
+                "run {} from an agent whose capability policy allows the `{}` family",
+                call.name,
+                required_family.label()
+            ))
+            .into());
+        }
+        let tool_started = std::time::Instant::now();
+        let tool = BuiltinTool::from_name(&call.name)
+            .ok_or_else(|| anyhow!("unknown builtin tool {}", call.name))?;
+        let (result, input_coercion) = capture_tool_input_coercion(runtime.invoke_builtin(
+            tool,
+            agent_id,
+            authority_class,
+            call,
+            context,
+        ))
+        .await;
+        let mut result = result?;
+        let pending = context
+            .external_command_attempt
+            .as_ref()
+            .and_then(|attempt| attempt.submitted.get());
+        let execution_id = pending.map_or_else(holon_domain::ids::tool_execution_id, |record| {
+            record.id.clone()
+        });
+        let started_at = pending.map_or(started_at, |record| record.created_at);
+        if !result.is_error() {
+            result.envelope.input_coercion = input_coercion;
+        }
+        attach_result_recovery(runtime, &mut result, &execution_id).await?;
+        let mut byte_counter = ByteCountingWriter::default();
+        let output_bytes = serde_json::to_writer(&mut byte_counter, &result.envelope)
+            .ok()
+            .map(|_| byte_counter.bytes);
+        runtime.record_tool_execution(&call.name, tool_started.elapsed(), output_bytes);
+        if !result.is_error() {
+            if let Err(error) =
+                maybe_refresh_memory_index_after_tool(runtime, call.name.as_str(), &result).await
+            {
+                eprintln!(
+                    "failed to refresh memory index after {}: {error:#}",
+                    call.name
+                );
+            }
+        }
+
+        let output_value = json!({
+            "envelope": result.envelope,
+            "is_error": result.is_error(),
+            "should_sleep": result.should_sleep,
+            "sleep_duration_ms": result.sleep_duration_ms,
+            "error": result.tool_error().cloned(),
+        });
+        let finished_at = chrono::Utc::now();
+        let duration_ms = finished_at
+            .signed_duration_since(started_at)
+            .num_milliseconds()
+            .max(0) as u64;
+        let completed_at = (!matches!(
+            result.envelope.status,
+            crate::tool::spec::ToolResultStatus::Deferred
+        ))
+        .then_some(finished_at);
+        let record = ToolExecutionRecord {
+            id: execution_id,
+            agent_id: agent_id.to_string(),
+            work_item_id: pending.and_then(|record| record.work_item_id.clone()),
+            turn_index: pending.map_or(0, |record| record.turn_index),
+            turn_id: pending.and_then(|record| record.turn_id.clone()),
+            tool_name: call.name.clone(),
+            created_at: started_at,
+            completed_at,
+            duration_ms,
+            authority_class: authority_class.clone(),
+            status: match result.envelope.status {
+                crate::tool::spec::ToolResultStatus::Deferred => ToolExecutionStatus::Deferred,
+                crate::tool::spec::ToolResultStatus::Success => ToolExecutionStatus::Success,
+                crate::tool::spec::ToolResultStatus::Error => ToolExecutionStatus::Error,
+            },
+            input: call.input.clone(),
+            output: output_value,
+            summary: super::summary::tool_result_summary(&result.envelope),
+            call_binding: pending.and_then(|record| record.call_binding.clone()),
+            invocation_surface: tool_invocation_surface(call),
+        };
+        Ok((result, record))
+    }
+}
+
+async fn maybe_refresh_memory_index_after_tool<S: Default + Send + Sync>(
+    runtime: &dyn ToolRuntime<State = S>,
+    tool_name: &str,
+    result: &ToolOutcome<S>,
+) -> Result<()> {
+    if tool_name != "ApplyPatch" {
+        return Ok(());
+    }
+    let Some(paths) = result
+        .envelope
+        .result
+        .as_ref()
+        .and_then(|value| value.get("changed_paths"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    let changed_paths = paths
+        .iter()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    runtime
+        .refresh_memory_index_for_changed_paths(&changed_paths)
+        .await
+}
+
+fn tool_invocation_surface(call: &ToolCall) -> Option<String> {
+    match call.name.as_str() {
+        "ApplyPatch" => Some(
+            if call.input.is_string() {
+                "freeform_grammar"
+            } else {
+                "function_json"
+            }
+            .to_string(),
+        ),
+        _ => None,
+    }
+}
+
+fn is_model_facing_tool(name: &str) -> bool {
+    !super::names::HIDDEN_FROM_MODEL_TOOLS.contains(&name)
+}
+
+fn build_tool_spec_catalog() -> Result<ToolSpecCatalog> {
+    Ok(ToolSpecCatalog {
+        entries: tools::builtin_tool_definitions()?
+            .into_iter()
+            .map(|definition| catalog_entry(definition.family, definition.spec))
+            .collect(),
+    })
+}
+
+fn catalog_entry(family: ToolCapabilityFamily, spec: ToolSpec) -> ToolCatalogEntry {
+    ToolCatalogEntry { family, spec }
+}
+
+/// Export once at execution, including deferred completion resolution, never
+/// while projecting historical rounds.
+pub async fn attach_result_recovery<S: Default + Send + Sync>(
+    runtime: &dyn ToolRuntime<State = S>,
+    result: &mut ToolOutcome<S>,
+    execution_id: &str,
+) -> Result<()> {
+    if let Some(Value::Object(value)) = result.envelope.result.as_mut() {
+        value
+            .entry("output_ref")
+            .or_insert_with(|| serde_json::json!(format!("tool_execution:{execution_id}:output")));
+    }
+    let canonical = serde_json::to_string_pretty(&result.envelope)?;
+    if canonical.chars().count() > 4096 {
+        let artifact = match runtime
+            .persist_tool_text_artifact("tool-result", &canonical)
+            .await
+        {
+            Ok(path) => serde_json::json!({
+                "path": path, "complete": true, "encoding": "utf-8",
+                "range_unit": "unicode_scalar", "chars": canonical.chars().count(),
+            }),
+            Err(error) => serde_json::json!({
+                "complete": false,
+                "reason": format!("canonical artifact could not be saved: {error}"),
+            }),
+        };
+        if let Some(Value::Object(value)) = result.envelope.result.as_mut() {
+            value.insert("recovery_artifact".into(), artifact);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_tool_spec_catalog, ToolRegistry};
+    use crate::{tool::schema::validate_source_tool_schema, types::ToolCapabilityFamily};
+    use holon_provider::provider::{
+        emitted_tool_json_schema, validate_emitted_tool_schema, ToolSchemaContract,
+    };
+    use serde_json::Value;
+    use std::path::PathBuf;
+
+    fn assert_final_schema_shape(schema: &Value) {
+        match schema.get("type").and_then(Value::as_str) {
+            Some("object") => {
+                assert!(
+                    schema
+                        .get("properties")
+                        .and_then(Value::as_object)
+                        .is_some(),
+                    "object schema should expose properties: {schema}"
+                );
+                assert!(
+                    schema.get("required").and_then(Value::as_array).is_some(),
+                    "object schema should expose required array: {schema}"
+                );
+                assert_eq!(
+                    schema.get("additionalProperties"),
+                    Some(&Value::Bool(false)),
+                    "object schema should disable additionalProperties: {schema}"
+                );
+                for property in schema["properties"]
+                    .as_object()
+                    .expect("properties should be object")
+                    .values()
+                {
+                    assert_final_schema_shape(property);
+                }
+            }
+            Some("array") => {
+                if let Some(items) = schema.get("items") {
+                    assert_final_schema_shape(items);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn stable_tool_specs_expose_canonical_coding_tools() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let specs = registry.tool_specs().unwrap();
+        let names = specs
+            .iter()
+            .map(|spec| spec.name.clone())
+            .collect::<Vec<_>>();
+
+        for expected in [
+            "GetAgent",
+            "WaitFor",
+            "CreateAgent",
+            "SendAgentMessage",
+            "InvokeAgent",
+            "ListTasks",
+            "TaskInput",
+            "TaskStatus",
+            "CreateWorkItem",
+            "PickWorkItem",
+            "GetWorkItem",
+            "ListWorkItems",
+            "UpdateWorkItem",
+            "CompleteWorkItem",
+            "MemorySearch",
+            "MemoryGet",
+            "GetWorkspaceState",
+            "AttachWorkspace",
+            "DetachWorkspace",
+            "SwitchWorkspace",
+            "CreateWorktree",
+            "RemoveWorktree",
+            "ApplyPatch",
+            "ExecCommand",
+            "ViewImage",
+            "WebFetch",
+            "WebSearch",
+        ] {
+            assert!(names.iter().any(|name| name == expected));
+        }
+        assert!(!names.iter().any(|name| name == "Sleep"));
+        assert!(!names.iter().any(|name| name == "SpawnAgent"));
+
+        for removed in [
+            "Glob",
+            "Grep",
+            "Read",
+            "Write",
+            "Edit",
+            "ListFiles",
+            "SearchText",
+            "ReadFile",
+            "WriteFile",
+            "EditFile",
+            "KillCommand",
+            "NotifyOperator",
+        ] {
+            assert!(!names.iter().any(|name| name == removed));
+        }
+
+        let exec_command = specs
+            .iter()
+            .find(|spec| spec.name == "ExecCommand")
+            .expect("ExecCommand should be present");
+        assert!(exec_command.input_schema["properties"]
+            .get("run_in_background")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("background")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("sandbox_permissions")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("justification")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("prefix_rule")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("command")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("status")
+            .is_none());
+        assert!(exec_command.input_schema["properties"]
+            .get("commentary")
+            .is_none());
+
+        let generate_image = specs
+            .iter()
+            .find(|spec| spec.name == "GenerateImage")
+            .expect("GenerateImage should be present");
+        assert!(!generate_image.description.contains("workspace://"));
+
+        let update_work_item = specs
+            .iter()
+            .find(|spec| spec.name == "UpdateWorkItem")
+            .expect("UpdateWorkItem should be present");
+        assert!(update_work_item.input_schema["properties"]
+            .get("objective")
+            .is_some());
+
+        let list_model_providers = specs
+            .iter()
+            .find(|spec| spec.name == "ListModelProviders")
+            .expect("ListModelProviders should be present");
+        assert!(list_model_providers.input_schema["properties"]
+            .get("include_unavailable")
+            .is_some());
+
+        let list_provider_models = specs
+            .iter()
+            .find(|spec| spec.name == "ListProviderModels")
+            .expect("ListProviderModels should be present");
+        assert!(list_provider_models.input_schema["properties"]
+            .get("provider")
+            .is_some());
+
+        let create_agent = specs
+            .iter()
+            .find(|spec| spec.name == "CreateAgent")
+            .expect("CreateAgent should be present");
+        assert!(create_agent.input_schema["properties"]
+            .get("agent_id")
+            .is_some());
+        assert!(create_agent.input_schema["properties"]
+            .get("initial_message")
+            .is_some());
+        assert!(create_agent.input_schema["properties"]
+            .get("template")
+            .is_some());
+        assert!(create_agent.input_schema["properties"]
+            .get("model")
+            .is_some());
+        assert!(create_agent.input_schema["properties"]["model"]
+            .to_string()
+            .contains("allow_fallback"));
+        for forbidden in [
+            "authority_class",
+            "origin",
+            "lineage_parent_agent_id",
+            "supervision",
+            "durability",
+            "lifecycle_attachment",
+        ] {
+            assert!(create_agent.input_schema["properties"]
+                .get(forbidden)
+                .is_none());
+        }
+
+        let invoke_agent = specs
+            .iter()
+            .find(|spec| spec.name == "InvokeAgent")
+            .expect("InvokeAgent should be present");
+        assert!(invoke_agent.input_schema["properties"]
+            .get("initial_message")
+            .is_some());
+        let target_schema = &invoke_agent.input_schema["properties"]["target"];
+        let target_schema_text = target_schema.to_string();
+        assert!(target_schema_text.contains("existing_agent"));
+        assert!(target_schema_text.contains("new_subagent"));
+        assert!(target_schema_text.contains("agent_id"));
+        assert!(target_schema_text.contains("workspace_mode"));
+        assert!(target_schema_text.contains("allow_fallback"));
+        for forbidden in ["authority_class", "origin", "caller_agent_id", "trust"] {
+            assert!(invoke_agent.input_schema["properties"]
+                .get(forbidden)
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn stable_tool_specs_include_task_control_and_mutating_tools() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let names = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+
+        assert!(!names.iter().any(|name| name == "TaskOutput"));
+        assert!(names.iter().any(|name| name == "TaskStatus"));
+        assert!(names.iter().any(|name| name == "ListTasks"));
+        assert!(names.iter().any(|name| name == "TaskInput"));
+        assert!(names.iter().any(|name| name == "CreateWorkItem"));
+        assert!(names.iter().any(|name| name == "PickWorkItem"));
+        assert!(names.iter().any(|name| name == "GetWorkItem"));
+        assert!(names.iter().any(|name| name == "ListWorkItems"));
+        assert!(names.iter().any(|name| name == "UpdateWorkItem"));
+        assert!(names.iter().any(|name| name == "CompleteWorkItem"));
+        assert!(names.iter().any(|name| name == "MemorySearch"));
+        assert!(names.iter().any(|name| name == "MemoryGet"));
+        assert!(names.iter().all(|name| name != "CreateExternalTrigger"));
+        assert!(names.iter().all(|name| name != "CancelExternalTrigger"));
+        assert!(names.iter().all(|name| name != "TaskList"));
+        assert!(names.iter().all(|name| name != "UseWorkspace"));
+        assert!(names.iter().any(|name| name == "GetWorkspaceState"));
+        assert!(names.iter().any(|name| name == "AttachWorkspace"));
+        assert!(names.iter().any(|name| name == "DetachWorkspace"));
+        assert!(names.iter().any(|name| name == "SwitchWorkspace"));
+        assert!(names.iter().any(|name| name == "CreateWorktree"));
+        assert!(names.iter().any(|name| name == "RemoveWorktree"));
+        assert!(names.iter().any(|name| name == "ApplyPatch"));
+        assert!(names.iter().any(|name| name == "ViewImage"));
+        assert!(names.iter().any(|name| name == "WebFetch"));
+        assert!(names.iter().any(|name| name == "WebSearch"));
+        assert!(names.iter().all(|name| name != "CreateTask"));
+    }
+
+    #[test]
+    fn stable_tool_specs_cover_expected_capability_families() {
+        let catalog = build_tool_spec_catalog().expect("catalog should build");
+        let family_for = |name: &str| {
+            catalog
+                .entries
+                .iter()
+                .find(|entry| entry.spec.name == name)
+                .map(|entry| entry.family)
+                .expect("tool should be present")
+        };
+
+        assert_eq!(family_for("Sleep"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("MemorySearch"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("MemoryGet"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("ListTasks"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("TaskList"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(
+            family_for("CreateWorkItem"),
+            ToolCapabilityFamily::CoreAgent
+        );
+        assert_eq!(family_for("PickWorkItem"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("GetWorkItem"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(family_for("ListWorkItems"), ToolCapabilityFamily::CoreAgent);
+        assert_eq!(
+            family_for("UpdateWorkItem"),
+            ToolCapabilityFamily::CoreAgent
+        );
+        assert_eq!(
+            family_for("CompleteWorkItem"),
+            ToolCapabilityFamily::CoreAgent
+        );
+        assert_eq!(
+            family_for("CreateAgent"),
+            ToolCapabilityFamily::AgentCreation
+        );
+        assert_eq!(
+            family_for("InvokeAgent"),
+            ToolCapabilityFamily::AgentCreation
+        );
+        assert_eq!(
+            family_for("ExecCommand"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("UseWorkspace"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("GetWorkspaceState"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("SwitchWorkspace"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("CreateWorktree"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("RemoveWorktree"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(
+            family_for("AttachWorkspace"),
+            ToolCapabilityFamily::AuthorityExpanding
+        );
+        assert_eq!(
+            family_for("DetachWorkspace"),
+            ToolCapabilityFamily::AuthorityExpanding
+        );
+        assert_eq!(
+            family_for("ViewImage"),
+            ToolCapabilityFamily::LocalEnvironment
+        );
+        assert_eq!(family_for("WebFetch"), ToolCapabilityFamily::Web);
+        assert_eq!(family_for("WebSearch"), ToolCapabilityFamily::Web);
+    }
+
+    #[test]
+    fn hidden_sleep_stays_dispatchable_but_not_model_facing() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let names = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect::<Vec<_>>();
+
+        assert!(names.iter().all(|name| name != "Sleep"));
+        assert!(names.iter().all(|name| name != "TaskList"));
+        assert!(names.iter().all(|name| name != "UseWorkspace"));
+        assert_eq!(
+            registry.family_for_tool("Sleep").unwrap(),
+            Some(ToolCapabilityFamily::CoreAgent)
+        );
+        assert_eq!(
+            registry.family_for_tool("UseWorkspace").unwrap(),
+            Some(ToolCapabilityFamily::LocalEnvironment)
+        );
+    }
+
+    #[test]
+    fn stable_tool_specs_do_not_drift_by_trust() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let first = registry.tool_specs().unwrap();
+        let second = registry.tool_specs().unwrap();
+        assert_eq!(
+            first
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|spec| spec.name.as_str())
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn complete_work_item_schema_keeps_completion_report_out_of_tool_input() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let complete_work_item = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.name == "CompleteWorkItem")
+            .expect("CompleteWorkItem should be present");
+
+        assert!(complete_work_item.input_schema["properties"]["work_item_id"].is_object());
+        assert!(complete_work_item.input_schema["properties"]["result_summary"].is_null());
+        assert!(complete_work_item
+            .description
+            .contains("assistant text in the same round"));
+    }
+
+    #[test]
+    fn emitted_tool_schemas_remain_strict_for_all_exposed_tools() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+
+        for spec in registry.tool_specs().unwrap() {
+            validate_source_tool_schema(&spec.input_schema)
+                .expect("source tool schema should stay valid");
+            let final_schema =
+                emitted_tool_json_schema(&spec.input_schema, ToolSchemaContract::Strict)
+                    .expect("tool schema should normalize");
+            validate_emitted_tool_schema(&final_schema, ToolSchemaContract::Strict)
+                .expect("strict emitted schema should stay valid");
+            assert_final_schema_shape(&final_schema);
+        }
+    }
+
+    #[test]
+    fn enqueue_priority_becomes_nullable_in_strict_emitted_shape() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let enqueue = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.name == "Enqueue")
+            .expect("Enqueue should be present");
+        let final_schema =
+            emitted_tool_json_schema(&enqueue.input_schema, ToolSchemaContract::Strict)
+                .expect("enqueue schema");
+        let priority = &final_schema["properties"]["priority"];
+
+        let required = final_schema["required"]
+            .as_array()
+            .expect("required should be an array");
+        assert_eq!(required.len(), 2);
+        assert!(required.iter().any(|value| value == "text"));
+        assert!(required.iter().any(|value| value == "priority"));
+        let priority_types = priority["type"]
+            .as_array()
+            .expect("priority type should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(priority_types.contains(&"string"));
+        assert!(priority_types.contains(&"null"));
+        let priority_enum = priority["enum"]
+            .as_array()
+            .expect("priority enum should be an array");
+        assert!(priority_enum.iter().any(|value| value == "interject"));
+        assert!(priority_enum.iter().any(Value::is_null));
+    }
+
+    #[test]
+    fn memory_get_schema_bounds_max_chars_in_final_emitted_shape() {
+        let registry = ToolRegistry::new(PathBuf::from("."));
+        let memory_get = registry
+            .tool_specs()
+            .unwrap()
+            .into_iter()
+            .find(|spec| spec.name == "MemoryGet")
+            .expect("MemoryGet should be present");
+        let final_schema =
+            emitted_tool_json_schema(&memory_get.input_schema, ToolSchemaContract::Strict)
+                .expect("memory get schema");
+        let max_chars = &final_schema["properties"]["max_chars"];
+
+        assert!(final_schema["required"]
+            .as_array()
+            .expect("required should be an array")
+            .iter()
+            .any(|value| value == "max_chars"));
+        let max_chars_types = max_chars["type"]
+            .as_array()
+            .expect("max_chars type should be an array")
+            .iter()
+            .filter_map(Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(max_chars_types.contains(&"integer"));
+        assert!(max_chars_types.contains(&"null"));
+        assert_eq!(max_chars["minimum"], Value::from(1.0));
+        assert_eq!(max_chars["maximum"], Value::from(50000.0));
+    }
+}

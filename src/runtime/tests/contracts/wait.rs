@@ -772,7 +772,7 @@ async fn invalid_final_wait_returns_error_without_requesting_report() {
     assert!(!result.should_sleep);
     assert!(!result.terminal_transition);
     assert!(result.loop_directive.is_none());
-    assert!(result.prepared_wait_for.is_none());
+    assert!(result.runtime_state.prepared_wait_for.is_none());
     harness.assert_unchanged(&before);
 }
 
@@ -829,7 +829,7 @@ async fn wait_tool_classifies_before_requesting_final_report_without_mutation() 
                     .is_none());
                 assert!(!result.should_sleep);
                 assert!(!result.terminal_transition);
-                assert!(result.prepared_wait_for.is_none());
+                assert!(result.runtime_state.prepared_wait_for.is_none());
                 assert!(matches!(
                     result.loop_directive,
                     Some(crate::tool::spec::ToolLoopDirective::AwaitWaitReport(_))
@@ -856,7 +856,7 @@ async fn wait_tool_classifies_before_requesting_final_report_without_mutation() 
             );
             assert!(result.should_sleep);
             assert!(result.terminal_transition);
-            let prepared = result.prepared_wait_for.as_ref().unwrap();
+            let prepared = result.runtime_state.prepared_wait_for.as_ref().unwrap();
             let registered = prepared
                 .command
                 .audit_events
@@ -950,7 +950,7 @@ async fn revoked_task_result_queue_states_are_unavailable_not_consumed() {
             assert!(!result.should_sleep);
             assert!(!result.terminal_transition);
             assert!(result.loop_directive.is_none());
-            assert!(result.prepared_wait_for.is_none());
+            assert!(result.runtime_state.prepared_wait_for.is_none());
             harness.assert_unchanged(&before);
         }
     }
@@ -1442,7 +1442,7 @@ async fn second_terminal_waiter_reports_claimed_waiter_without_duplicate_trigger
         assert!(!result.should_sleep);
         assert!(!result.terminal_transition);
         assert!(result.loop_directive.is_none());
-        assert!(result.prepared_wait_for.is_none());
+        assert!(result.runtime_state.prepared_wait_for.is_none());
         harness.assert_unchanged(&after);
     }
     let triggered: Vec<_> = after

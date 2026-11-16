@@ -666,3 +666,18 @@ pub struct ToolContextProjection {
     pub batch_promoted: usize,
     pub batch_unknown: usize,
 }
+
+#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitForScope {
+    Agent,
+    WorkItem,
+}
+
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WaitForContinuation {
+    ContinueTurn,
+    YieldAndWait,
+    YieldAndReenter,
+}

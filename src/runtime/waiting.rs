@@ -106,12 +106,7 @@ fn replace_wait_conditions(
     }
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WaitForScope {
-    Agent,
-    WorkItem,
-}
+pub use holon_domain::WaitForScope;
 
 #[derive(Debug, Clone, Copy, serde::Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -137,13 +132,7 @@ pub(crate) struct WaitForRegistration {
     pub(crate) cancelled_wait_condition_ids: Vec<String>,
 }
 
-#[derive(Debug, Clone, Copy, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum WaitForContinuation {
-    ContinueTurn,
-    YieldAndWait,
-    YieldAndReenter,
-}
+pub use holon_domain::WaitForContinuation;
 
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(tag = "disposition", rename_all = "snake_case")]

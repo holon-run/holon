@@ -992,6 +992,7 @@ async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_togeth
     .await
     .unwrap();
     let mut prepared = *result
+        .runtime_state
         .prepared_work_item_completion
         .take()
         .expect("detached completion should prepare an atomic commit");
@@ -7102,6 +7103,7 @@ async fn operator_prompt_completion_uses_pre_tool_effective_work_item_as_bound_t
     assert!(result.terminal_transition);
     assert_eq!(
         result
+            .runtime_state
             .prepared_work_item_completion
             .as_ref()
             .expect("bound completion should prepare a terminal commit")
@@ -7204,6 +7206,7 @@ async fn complete_work_item_with_unfinished_todos_returns_structured_warning() {
         .unwrap();
     assert!(result.terminal_transition);
     let prepared = result
+        .runtime_state
         .prepared_work_item_completion
         .as_ref()
         .expect("completion tool should prepare a terminal commit");
@@ -8997,6 +9000,7 @@ async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick()
 
 async fn commit_prepared_wait_for(runtime: &RuntimeHandle, result: &crate::tool::ToolResult) {
     let prepared = result
+        .runtime_state
         .prepared_wait_for
         .as_ref()
         .expect("WaitFor should prepare canonical settlement");
