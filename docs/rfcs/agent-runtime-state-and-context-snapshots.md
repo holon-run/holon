@@ -62,10 +62,44 @@ reserves or reconciles an execution owner. Exhaustion preserves the retryable
 error. `TaskStatus` uses the same one-second budget when its child observation
 hits a transient publication. Each retry rechecks the target incarnation.
 Protection failures and unknown write outcomes are not retried. HTTP observers
-continue to return unavailable immediately.
-The operator State GET returns `503 agent_reconciliation_pending` with
-`retryable=true` when a required Agent publication is fenced by reconciliation.
-After a fresh cache entry expires, State returns the current build failure.
+continue to return unavailable immediately, except for the State display
+observation described below.
+The operator State GET captures its last complete loaded publication and
+availability atomically. Ordinary `Committing` returns **200** immediately with
+that same-identity cut, even after an earlier successful response.
+`NeedsReconcile` also returns **200** when that complete compatible cut exists,
+including an acknowledged write awaiting publication or an unknown original
+commit outcome. It reports `reconciliation_pending`, not `current`: the snapshot
+does not establish whether that write committed, and the GET never resolves,
+acknowledges or replays it. Optional
+`observation` reuses the list's identity revision, owner epoch, publication
+generation and `current`/`committing`/`reconciliation_pending` status;
+incarnation is in `agent.identity`.
+These describe the cut at capture, not health, current execution facts or
+execution admission. Clients must not use the former ordinary-Committing 503
+signal as a health or mutation-retry decision.
+
+State, Work, Task, Wait and Timer records all come from that captured root,
+not from a candidate or a mix with live domains/audit frontiers. Selection,
+serialization and detached record loans keep the existing budgets and
+last-holder release rules; the response does not retain an obsolete root.
+No HTTP stale fallback, writer reservation, on-demand preparation, canonical
+repair or phase-dependent wait is introduced. Cold State reads keep their
+existing synchronized storage path and omit `observation`.
+Only explicit `committing` or `reconciliation_pending` observations may lag the
+scheduler audit frontier. `current` still requires its published facts to be
+fresh; no unpublished facts are labelled current.
+
+A missing first publication or incompatible identity revision/incarnation still
+fails. Identity-changing/rename windows, or recovery without a usable complete
+same-identity cut, keep `503 agent_reconciliation_pending`,
+`domain=runtime`, `retryable=true`, without a State body or observation. Existing
+read-scope, protection and material-admission failures remain errors.
+Owner replacement discards the previous owner's root; no cross-owner snapshot
+or cold-path historical cache is introduced to manufacture an available cut.
+State capture debug logs include phase, pending/known/unknown outcome and
+mutation-window age using the existing tracing surface. Strict Ready/execution
+capture, original transaction recovery and mutation ACK semantics are unchanged.
 Retrying the read carries no authority to repeat the original mutation.
 The finite operator Event page GET uses the same typed
 `503 agent_reconciliation_pending`, `domain=runtime`, `retryable=true` and

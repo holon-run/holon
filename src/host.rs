@@ -374,6 +374,7 @@ impl AgentStateProjectionSource {
 }
 
 pub(crate) struct AgentStateReadProjection {
+    pub(crate) observation: Option<crate::types::AgentListObservation>,
     pub(crate) waits: Vec<crate::types::WaitConditionRecord>,
     pub(crate) source: AgentStateProjectionSource,
     pub(crate) agent: LightweightAgentStateProjection,
@@ -5463,6 +5464,7 @@ impl RuntimeHost {
             _scheduling: Some(scheduling_material),
         };
         Ok(AgentStateReadProjection {
+            observation: None,
             waits,
             source: AgentStateProjectionSource::Storage,
             agent,

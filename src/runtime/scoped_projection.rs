@@ -261,8 +261,7 @@ impl RuntimeHandle {
             timer_limit <= resident_scheduling::SCHEDULING_HISTORY_WINDOW,
             resident_scheduling::SchedulingReadError::NeedsHistory
         );
-        let root = self.observer_ready_root(db)?;
-        let projection = self.operator_state_from_root(&root, task_limit, timer_limit)?;
+        let projection = self.operator_state_observation(db, task_limit, timer_limit)?;
         db.check_read_scope()?;
         Ok(projection)
     }

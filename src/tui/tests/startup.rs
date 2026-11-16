@@ -83,6 +83,7 @@ fn explicit_app(client: LocalClient) -> TuiApp {
 
 fn snapshot(id: &str) -> AgentStateSnapshotDto {
     AgentStateSnapshotDto {
+        observation: None,
         agent: SlimAgentDto::from(&sample_agent_summary(id)),
         session: StateSessionSnapshotDto {
             current_run_id: None,

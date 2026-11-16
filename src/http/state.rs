@@ -504,6 +504,7 @@ fn build_agent_state_projection(
                 "serializing public agent state projection"
             );
             Ok(crate::http_dto::AgentStateSnapshotDto {
+                observation: state_projection.observation,
                 agent: agent_dto,
                 session,
                 tasks,

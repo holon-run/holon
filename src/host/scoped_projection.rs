@@ -138,6 +138,7 @@ impl RuntimeHost {
         };
         db.check_read_scope().map_err(PublicAgentError::Runtime)?;
         Ok(AgentStateReadProjection {
+            observation: None,
             waits,
             source: AgentStateProjectionSource::Storage,
             agent,

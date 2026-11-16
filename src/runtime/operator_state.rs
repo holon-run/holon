@@ -64,17 +64,59 @@ impl RuntimeHandle {
             timer_limit <= super::resident_scheduling::SCHEDULING_HISTORY_WINDOW,
             super::resident_scheduling::SchedulingReadError::NeedsHistory
         );
-        let root = self
-            .observer_ready_root_bounded(&self.inner.runtime_db)
-            .await?;
-        self.operator_state_from_root(&root, task_limit, timer_limit)
+        self.operator_state_observation(&self.inner.runtime_db, task_limit, timer_limit)
     }
 
+    pub(super) fn operator_state_observation(
+        &self,
+        db: &crate::runtime_db::RuntimeDb,
+        task_limit: usize,
+        timer_limit: usize,
+    ) -> Result<crate::host::AgentStateReadProjection> {
+        db.check_read_scope()?;
+        let (root, observation) = self
+            .inner
+            .mutation_owner
+            .capture_state_observation()
+            .map_err(|error| match error {
+                mutation_owner::MutationOwnerError::NeedsReconcile(_) => {
+                    error.into_observer_busy(Self::OBSERVER_PUBLICATION_OPERATION, db)
+                }
+                error => error.into(),
+            })?
+            .ok_or_else(|| {
+                crate::runtime_db::RuntimeDbRetryableError::new(
+                    Self::OBSERVER_PUBLICATION_OPERATION,
+                    db.path(),
+                    "State publication is not available for this identity",
+                )
+            })?;
+        let projection = self.operator_state_from_observation(
+            &root,
+            task_limit,
+            timer_limit,
+            Some(observation),
+        )?;
+        db.check_read_scope()?;
+        Ok(projection)
+    }
+
+    #[cfg(test)]
     pub(super) fn operator_state_from_root(
         &self,
         root: &super::resident_state::AgentSnapshot,
         task_limit: usize,
         timer_limit: usize,
+    ) -> Result<crate::host::AgentStateReadProjection> {
+        self.operator_state_from_observation(root, task_limit, timer_limit, None)
+    }
+
+    fn operator_state_from_observation(
+        &self,
+        root: &super::resident_state::AgentSnapshot,
+        task_limit: usize,
+        timer_limit: usize,
+        observation: Option<crate::types::AgentListObservation>,
     ) -> Result<crate::host::AgentStateReadProjection> {
         anyhow::ensure!(
             root.state.id == self.inner.mutation_owner.agent_id()
@@ -98,7 +140,15 @@ impl RuntimeHandle {
         anyhow::ensure!(
             root.queue_posture.is_some()
                 && root.scheduler_events.is_some_and(|events| {
-                    events.event_cursor
+                    // Explicit historical observations may lag the live audit
+                    // frontier; Current still requires its published facts.
+                    observation.is_some_and(|observation| {
+                        matches!(
+                            observation.status,
+                            crate::types::AgentListObservationStatus::Committing
+                                | crate::types::AgentListObservationStatus::ReconciliationPending
+                        )
+                    }) || events.event_cursor
                         >= self.inner.scheduler_audit_frontier.load(Ordering::Acquire)
                 })
                 && root.work.is_some()
@@ -171,6 +221,7 @@ impl RuntimeHandle {
                 _scheduling: Some(scheduling_material),
             };
             Ok(crate::host::AgentStateReadProjection {
+                observation,
                 source: crate::host::AgentStateProjectionSource::Loaded,
                 agent,
                 tasks,

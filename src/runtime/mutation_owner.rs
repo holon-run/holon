@@ -178,6 +178,7 @@ pub(in crate::runtime) enum OriginalInputRecoveryEvidence {
 pub(crate) struct RecoveryRecord {
     pub key: RecoveryKey,
     pub phase: RecoveryPhase,
+    started_at: std::time::Instant,
     identity_change: bool,
     // Compatibility views only; `known` distinguishes absent rows from unknown.
     pub committed_state: Option<Arc<AgentState>>,
@@ -774,6 +775,76 @@ impl MutationOwner {
         self.capture_with_token().map(|(_, root)| root)
     }
 
+    /// State display only: capture the last complete cut and its phase together.
+    /// Strict execution/cursor readers continue to use `capture_with_token`.
+    pub(crate) fn capture_state_observation(
+        &self,
+    ) -> Result<Option<(Arc<PostureObservation>, AgentListObservation)>, MutationOwnerError> {
+        let publication = self.slot.publication.lock().expect("publication poisoned");
+        self.validate_publication(&publication)?;
+        let status = if let Some(recovery) = &publication.recovery {
+            tracing::debug!(
+                agent_id = %self.agent_id,
+                incarnation = self.incarnation,
+                phase = ?recovery.phase,
+                commit_outcome = if recovery.known.is_some() {
+                    "known"
+                } else if recovery.phase == RecoveryPhase::Committing {
+                    "pending"
+                } else {
+                    "unknown"
+                },
+                mutation_age_ms = recovery.started_at.elapsed().as_millis() as u64,
+                "capturing State observation"
+            );
+            if recovery.identity_change || recovery.identity_rename.is_some() {
+                return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
+            }
+            match recovery.phase {
+                RecoveryPhase::Committing => AgentListObservationStatus::Committing,
+                RecoveryPhase::NeedsReconcile => AgentListObservationStatus::ReconciliationPending,
+            }
+        } else {
+            AgentListObservationStatus::Current
+        };
+        let Some(root) = self.slot.root.load_full() else {
+            if let Some(recovery) = &publication.recovery {
+                return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
+            }
+            return Ok(None);
+        };
+        let Some(identity) = root.identity.as_deref() else {
+            return Ok(None);
+        };
+        if let Some(recovery) = &publication.recovery {
+            if matches!(&recovery.known, Some(KnownCommit::Metadata(facts))
+                if facts.identity.as_deref() != Some(identity))
+            {
+                return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
+            }
+        }
+        if root.token.identity_incarnation != self.incarnation
+            || root.token.owner_epoch != self.epoch
+            || root.token.generation != publication.generation
+            || identity.agent_id != self.agent_id
+            || identity.incarnation != self.incarnation
+            || identity.status != AgentRegistryStatus::Active
+            || self
+                .list_publisher
+                .as_ref()
+                .is_some_and(|publisher| !publisher.source.matches_identity(identity))
+        {
+            return Ok(None);
+        }
+        let observation = AgentListObservation {
+            identity_revision: identity.revision,
+            owner_epoch: root.token.owner_epoch,
+            publication_generation: root.token.generation,
+            status,
+        };
+        Ok(Some((root, observation)))
+    }
+
     #[cfg(test)]
     pub(super) fn state_for_fixture_rollback(&self) -> Option<Arc<AgentState>> {
         let publication = self.slot.publication.lock().expect("publication poisoned");
@@ -1115,6 +1186,7 @@ impl MutationReservation {
             publication.recovery = Some(RecoveryRecord {
                 key: key.clone(),
                 phase: RecoveryPhase::Committing,
+                started_at: std::time::Instant::now(),
                 identity_change,
                 committed_state: None,
                 committed_runtime: None,
