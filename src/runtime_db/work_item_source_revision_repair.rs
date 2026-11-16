@@ -57,6 +57,31 @@ pub struct WorkItemSourceRevisionRepairReport {
     pub entries: Vec<WorkItemSourceRevisionRepairEntry>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkItemSourceRevisionBatchFailure {
+    pub agent_id: String,
+    pub work_item_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkItemSourceRevisionBatchEntry {
+    pub agent_id: String,
+    pub work_item_id: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct WorkItemSourceRevisionBatchReport {
+    pub agent_id: Option<String>,
+    pub scanned_registrations: usize,
+    pub repairable: usize,
+    pub repaired: usize,
+    pub failed: Option<WorkItemSourceRevisionBatchFailure>,
+    pub untried: Vec<WorkItemSourceRevisionBatchEntry>,
+    pub backup_path: Option<PathBuf>,
+    pub entries: Vec<WorkItemSourceRevisionRepairEntry>,
+}
+
 impl RuntimeDb {
     pub fn create_work_item_source_revision_repair_backup(&self) -> Result<PathBuf> {
         self.create_verified_backup("work-item-source-revision")
@@ -92,6 +117,56 @@ impl RuntimeDb {
         report.apply = true;
         report.backup_path = backup_path;
         report.repaired = report.entries.iter().filter(|entry| entry.repaired).count();
+        Ok(report)
+    }
+
+    /// Offline batch variant of the single-item repair. The caller holds
+    /// the maintenance and migration locks for the whole batch. The audit
+    /// runs first: with nothing repairable, no backup is created and no
+    /// write happens. Otherwise one verified backup is created before the
+    /// first repair (unless `no_backup`) and reused for every item, each
+    /// in its own fenced transaction. The first real error stops the
+    /// batch; committed repairs stay committed and the report names the
+    /// failure and the untried remainder. Re-running re-audits and is
+    /// idempotent.
+    pub fn apply_work_item_source_revision_repair_batch(
+        &self,
+        agent_id: Option<&str>,
+        no_backup: bool,
+    ) -> Result<WorkItemSourceRevisionBatchReport> {
+        let audit = self.transaction(|tx| audit_tx(tx, agent_id, None))?;
+        let plan: Vec<(String, String)> = audit
+            .entries
+            .iter()
+            .filter(|entry| entry.verdict == "repairable")
+            .map(|entry| (entry.agent_id.clone(), entry.work_item_id.clone()))
+            .collect();
+        let mut report = WorkItemSourceRevisionBatchReport {
+            agent_id: agent_id.map(str::to_string),
+            scanned_registrations: audit.scanned_registrations,
+            repairable: plan.len(),
+            repaired: 0,
+            failed: None,
+            untried: Vec::new(),
+            backup_path: None,
+            entries: audit.entries,
+        };
+        if plan.is_empty() {
+            return Ok(report);
+        }
+        if !no_backup {
+            report.backup_path = Some(self.create_work_item_source_revision_repair_backup()?);
+        }
+        let executed = execute_repair_plan(&plan, |agent, work_item| {
+            self.apply_work_item_source_revision_repair(agent, work_item, None)
+                .map(|applied| applied.repaired)
+        });
+        report.repaired = executed.repaired;
+        report.failed = executed.failed;
+        report.untried = executed.untried;
+        // Refresh entries so the report reflects the state after whatever
+        // prefix of the plan actually committed.
+        report.entries = self.transaction(|tx| audit_tx(tx, agent_id, None))?.entries;
         Ok(report)
     }
 }
@@ -420,6 +495,48 @@ fn evidence_fingerprint(
     Ok(format!("{:x}", hasher.finalize()))
 }
 
+struct RepairPlanOutcome {
+    repaired: usize,
+    failed: Option<WorkItemSourceRevisionBatchFailure>,
+    untried: Vec<WorkItemSourceRevisionBatchEntry>,
+}
+
+/// Applies the plan one item at a time, stopping at the first real error.
+/// Blocked or already-consistent items never reach this loop; audit
+/// verdicts are outcomes, not errors.
+fn execute_repair_plan(
+    plan: &[(String, String)],
+    mut apply_one: impl FnMut(&str, &str) -> Result<usize>,
+) -> RepairPlanOutcome {
+    let mut repaired = 0;
+    let mut failed = None;
+    let mut untried = Vec::new();
+    for (agent_id, work_item_id) in plan {
+        if failed.is_some() {
+            untried.push(WorkItemSourceRevisionBatchEntry {
+                agent_id: agent_id.clone(),
+                work_item_id: work_item_id.clone(),
+            });
+            continue;
+        }
+        match apply_one(agent_id, work_item_id) {
+            Ok(count) => repaired += count,
+            Err(error) => {
+                failed = Some(WorkItemSourceRevisionBatchFailure {
+                    agent_id: agent_id.clone(),
+                    work_item_id: work_item_id.clone(),
+                    error: error.to_string(),
+                });
+            }
+        }
+    }
+    RepairPlanOutcome {
+        repaired,
+        failed,
+        untried,
+    }
+}
+
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
@@ -540,6 +657,157 @@ mod tests {
             .load_execution_protocol_state_if_initialized("agent-a")?
             .unwrap();
         assert_eq!(state.work_items["work-repairable"].source_revision, 2);
+        Ok(())
+    }
+
+    fn repair_backups(dir: &tempfile::TempDir) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(dir.path().join("state"))
+            .map(|entries| {
+                entries
+                    .filter_map(|entry| entry.ok())
+                    .map(|entry| entry.path())
+                    .filter(|path| {
+                        path.extension().is_some_and(|ext| ext == "bak")
+                            && path
+                                .file_name()
+                                .and_then(|name| name.to_str())
+                                .is_some_and(|name| name.contains("work-item-source-revision"))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn batch_apply_repairs_all_with_one_shared_backup_and_is_idempotent() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        for id in ["batch-1", "batch-2", "batch-3"] {
+            drifted_fixture(&db, id, true)?;
+        }
+        drifted_fixture(&db, "batch-blocked", false)?;
+        let report = db.apply_work_item_source_revision_repair_batch(None, false)?;
+        assert_eq!(report.repairable, 3);
+        assert_eq!(report.repaired, 3);
+        let backup = report.backup_path.as_ref().expect("one shared backup");
+        assert!(backup.is_file());
+        assert_eq!(repair_backups(&dir).len(), 1);
+        // The shared backup is a complete, openable database.
+        let integrity: String =
+            rusqlite::Connection::open(backup)?
+                .query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+        assert_eq!(integrity, "ok");
+        // Evidence gaps stay blocked instead of being forced through.
+        assert!(report
+            .entries
+            .iter()
+            .any(|entry| entry.work_item_id == "batch-blocked"
+                && entry.verdict == "blocked_missing_evidence"));
+        // Re-running re-audits: nothing repairable, so no second backup.
+        let repeated = db.apply_work_item_source_revision_repair_batch(None, false)?;
+        assert_eq!(repeated.repaired, 0);
+        assert!(repeated.backup_path.is_none());
+        assert_eq!(repair_backups(&dir).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn batch_apply_without_repairable_entries_creates_no_backup() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        drifted_fixture(&db, "batch-blocked", false)?;
+        let report = db.apply_work_item_source_revision_repair_batch(None, false)?;
+        assert_eq!(report.repairable, 0);
+        assert_eq!(report.repaired, 0);
+        assert!(report.backup_path.is_none());
+        assert_eq!(repair_backups(&dir).len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn batch_apply_respects_agent_filter() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        drifted_fixture(&db, "batch-1", true)?;
+        let report = db.apply_work_item_source_revision_repair_batch(Some("agent-b"), false)?;
+        assert_eq!(report.scanned_registrations, 0);
+        assert_eq!(report.repairable, 0);
+        assert!(report.backup_path.is_none());
+        assert_eq!(repair_backups(&dir).len(), 0);
+        let report = db.apply_work_item_source_revision_repair_batch(Some("agent-a"), false)?;
+        assert_eq!(report.repaired, 1);
+        assert_eq!(repair_backups(&dir).len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn batch_apply_no_backup_flag_repairs_without_artifact() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        drifted_fixture(&db, "batch-1", true)?;
+        let report = db.apply_work_item_source_revision_repair_batch(None, true)?;
+        assert_eq!(report.repaired, 1);
+        assert!(report.backup_path.is_none());
+        assert_eq!(repair_backups(&dir).len(), 0);
+        Ok(())
+    }
+
+    #[test]
+    fn batch_apply_backup_failure_leaves_repairs_unapplied() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        drifted_fixture(&db, "batch-1", true)?;
+        drifted_fixture(&db, "batch-2", true)?;
+        let _guard = crate::runtime_db::verified_backup::test_hooks::install(
+            crate::runtime_db::verified_backup::test_hooks::Faults {
+                vacuum_failure: Some(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "injected vacuum failure",
+                )),
+                ..Default::default()
+            },
+        );
+        let result = db.apply_work_item_source_revision_repair_batch(None, false);
+        drop(_guard);
+        assert!(result.is_err());
+        // Zero business writes: both entries stay repairable and no backup
+        // artifact survives.
+        assert_eq!(repair_backups(&dir).len(), 0);
+        let audit = db.transaction(|tx| audit_tx(tx, None, None))?;
+        assert_eq!(
+            audit
+                .entries
+                .iter()
+                .filter(|entry| entry.verdict == "repairable")
+                .count(),
+            2
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn repair_plan_stops_at_first_failure_and_reports_remainder() -> Result<()> {
+        let plan = vec![
+            ("agent-a".to_string(), "work-1".to_string()),
+            ("agent-a".to_string(), "work-2".to_string()),
+            ("agent-b".to_string(), "work-3".to_string()),
+        ];
+        let mut calls = 0;
+        let outcome = execute_repair_plan(&plan, |agent, work| {
+            calls += 1;
+            match calls {
+                1 => Ok(1),
+                2 => Err(anyhow!("injected apply failure for {agent}/{work}")),
+                _ => Ok(1),
+            }
+        });
+        assert_eq!(outcome.repaired, 1);
+        let failed = outcome.failed.expect("failure recorded");
+        assert_eq!(failed.work_item_id, "work-2");
+        assert!(failed.error.contains("injected apply failure"));
+        assert_eq!(
+            outcome
+                .untried
+                .iter()
+                .map(|entry| entry.work_item_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["work-3"]
+        );
         Ok(())
     }
 }

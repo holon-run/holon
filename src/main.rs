@@ -5764,20 +5764,18 @@ fn handle_runtime_db_debug_command(
                 Ok(())
             }
         }
-        holon::cli::RuntimeDbDebugCommands::WorkItemSourceRevision {
-            apply,
-            no_backup,
-            agent,
-            work_item,
-            json,
-        } => {
-            let report = if apply {
-                let agent = agent
-                    .as_deref()
-                    .context("WorkItem source revision repair apply requires --agent")?;
-                let work_item = work_item
-                    .as_deref()
-                    .context("WorkItem source revision repair apply requires --work-item")?;
+        holon::cli::RuntimeDbDebugCommands::WorkItemSourceRevision(args) => {
+            // Parse-level rules cover the batch/single split; validate()
+            // enforces the single-item --agent/--work-item pair before any
+            // lock is taken.
+            args.validate()?;
+            let apply = args.apply;
+            let no_backup = args.no_backup;
+            let batch = args.batch;
+            let json = args.json;
+            let agent = &args.agent;
+            let work_item = &args.work_item;
+            if apply && batch {
                 let _maintenance_lock =
                     RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
                         "WorkItem source revision repair apply requires holon serve to be stopped",
@@ -5792,48 +5790,113 @@ fn handle_runtime_db_debug_command(
                     config.runtime_db_path(),
                     config.runtime_db_lock_path(),
                 )?;
-                let backup_path = if no_backup {
-                    None
+                let report =
+                    db.apply_work_item_source_revision_repair_batch(agent.as_deref(), no_backup)?;
+                if json {
+                    print_json(&serde_json::to_value(&report)?)?;
                 } else {
-                    Some(db.create_work_item_source_revision_repair_backup()?)
-                };
-                db.apply_work_item_source_revision_repair(agent, work_item, backup_path)?
-            } else {
-                RuntimeDb::audit_work_item_source_revision_repair_read_only(
-                    &config.runtime_db_path(),
-                    agent.as_deref(),
-                    work_item.as_deref(),
-                )?
-            };
-            if json {
-                print_json(&serde_json::to_value(report)?)
-            } else {
-                println!(
-                    "WorkItem source revision repair: mode={} scanned={} repaired={}",
-                    if report.apply { "apply" } else { "audit" },
-                    report.scanned_registrations,
-                    report.repaired
-                );
-                if let Some(backup_path) = &report.backup_path {
-                    println!("  backup: {}", backup_path.display());
-                }
-                for entry in &report.entries {
                     println!(
-                        "  {} agent={} work_item={} source={} durable={} state={} missing={:?} repaired={} consistent={}",
-                        entry.verdict,
-                        entry.agent_id,
-                        entry.work_item_id,
-                        entry.source_revision,
-                        entry.durable_revision,
-                        entry.registration_state,
-                        entry.missing_revision_evidence,
-                        entry.repaired,
-                        entry.already_consistent
+                        "WorkItem source revision repair: mode=apply-batch scanned={} repairable={} repaired={} failed={} untried={}",
+                        report.scanned_registrations,
+                        report.repairable,
+                        report.repaired,
+                        report
+                            .failed
+                            .as_ref()
+                            .map_or_else(|| "-".to_string(), |failure| {
+                                format!("{}/{}", failure.agent_id, failure.work_item_id)
+                            }),
+                        report.untried.len()
+                    );
+                    if let Some(backup_path) = &report.backup_path {
+                        println!("  backup: {}", backup_path.display());
+                    }
+                    print_work_item_source_revision_entries(&report.entries);
+                }
+                if let Some(failure) = &report.failed {
+                    anyhow::bail!(
+                        "WorkItem source revision batch apply stopped at {}/{}: {}; repaired={} \
+                         untried={}; committed repairs stay committed (see report above)",
+                        failure.agent_id,
+                        failure.work_item_id,
+                        failure.error,
+                        report.repaired,
+                        report.untried.len()
                     );
                 }
                 Ok(())
+            } else {
+                let report =
+                    if apply {
+                        let agent = agent
+                            .as_deref()
+                            .context("WorkItem source revision repair apply requires --agent")?;
+                        let work_item = work_item.as_deref().context(
+                            "WorkItem source revision repair apply requires --work-item",
+                        )?;
+                        let _maintenance_lock =
+                    RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path()).context(
+                        "WorkItem source revision repair apply requires holon serve to be stopped",
+                    )?;
+                        let _migration_lock = RuntimeDbLock::try_lock(config.runtime_db_lock_path())
+                    .context(
+                    "WorkItem source revision repair apply cannot run during a database migration",
+                )?;
+                        // Reuse the offline turn-settlement opener: existing file,
+                        // current schema, no migrations, sidecar protection.
+                        let db = RuntimeDb::open_for_turn_settlement_repair(
+                            config.runtime_db_path(),
+                            config.runtime_db_lock_path(),
+                        )?;
+                        let backup_path = if no_backup {
+                            None
+                        } else {
+                            Some(db.create_work_item_source_revision_repair_backup()?)
+                        };
+                        db.apply_work_item_source_revision_repair(agent, work_item, backup_path)?
+                    } else {
+                        RuntimeDb::audit_work_item_source_revision_repair_read_only(
+                            &config.runtime_db_path(),
+                            agent.as_deref(),
+                            work_item.as_deref(),
+                        )?
+                    };
+                if json {
+                    print_json(&serde_json::to_value(report)?)
+                } else {
+                    println!(
+                        "WorkItem source revision repair: mode={} scanned={} repaired={}",
+                        if report.apply { "apply" } else { "audit" },
+                        report.scanned_registrations,
+                        report.repaired
+                    );
+                    if let Some(backup_path) = &report.backup_path {
+                        println!("  backup: {}", backup_path.display());
+                    }
+                    print_work_item_source_revision_entries(&report.entries);
+                    Ok(())
+                }
             }
         }
+    }
+}
+
+fn print_work_item_source_revision_entries(
+    entries: &[holon::runtime_db::work_item_source_revision_repair::WorkItemSourceRevisionRepairEntry],
+) {
+    for entry in entries {
+        println!(
+            "  {} agent={} work_item={} source={} durable={} state={} missing={:?} repaired={} consistent={}",
+            entry.verdict,
+            entry.agent_id,
+            entry.work_item_id,
+            entry.source_revision,
+            entry.durable_revision,
+            entry.registration_state,
+            entry.missing_revision_evidence,
+            entry.repaired,
+            entry.already_consistent
+        );
     }
 }
 
