@@ -42,12 +42,23 @@ async fn state_observation_does_not_invent_a_first_cut_or_cross_owner_epochs() {
     reservation.definitely_not_committed().unwrap();
     drop(reservation);
     assert!(owner.capture_state_observation().unwrap().is_none());
+    let key = {
+        let mut reservation = owner.reserve().await.unwrap();
+        reservation.begin("interrupted-first-cut".into()).unwrap()
+    };
+    assert!(matches!(
+        owner.capture_state_observation(),
+        Err(MutationOwnerError::NeedsReconcile(actual)) if actual == key
+    ));
     let successor = registry.claim("default", 7).unwrap();
     assert!(matches!(
         owner.capture_state_observation(),
         Err(MutationOwnerError::Replaced)
     ));
-    assert!(successor.capture_state_observation().unwrap().is_none());
+    assert!(matches!(
+        successor.capture_state_observation(),
+        Err(MutationOwnerError::NeedsReconcile(actual)) if actual == key
+    ));
     let recreated = registry.claim("default", 8).unwrap();
     assert!(recreated.capture_state_observation().unwrap().is_none());
 }

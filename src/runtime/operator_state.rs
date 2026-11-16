@@ -140,10 +140,14 @@ impl RuntimeHandle {
         anyhow::ensure!(
             root.queue_posture.is_some()
                 && root.scheduler_events.is_some_and(|events| {
-                    // Only an explicit Committing observation may lag the live
-                    // audit frontier; Current still requires its published facts.
+                    // Explicit historical observations may lag the live audit
+                    // frontier; Current still requires its published facts.
                     observation.is_some_and(|observation| {
-                        observation.status == crate::types::AgentListObservationStatus::Committing
+                        matches!(
+                            observation.status,
+                            crate::types::AgentListObservationStatus::Committing
+                                | crate::types::AgentListObservationStatus::ReconciliationPending
+                        )
                     }) || events.event_cursor
                         >= self.inner.scheduler_audit_frontier.load(Ordering::Acquire)
                 })

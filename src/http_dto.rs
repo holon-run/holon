@@ -25,6 +25,8 @@ use crate::{
 )]
 pub struct AgentStateSnapshotDto<Timer = TimerRecord, WorkItem = SlimWorkItemDto> {
     /// Loaded publication availability, not health or execution authority.
+    /// Committing and reconciliation_pending describe the last complete snapshot,
+    /// not the outcome of the pending write; cold storage reads omit this field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub observation: Option<crate::types::AgentListObservation>,
     pub agent: SlimAgentDto,

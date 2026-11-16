@@ -66,9 +66,15 @@ continue to return unavailable immediately, except for the State display
 observation described below.
 The operator State GET captures its last complete loaded publication and
 availability atomically. Ordinary `Committing` returns **200** immediately with
-that same-identity cut, even after an earlier successful response. Optional
+that same-identity cut, even after an earlier successful response.
+`NeedsReconcile` also returns **200** when that complete compatible cut exists,
+including an acknowledged write awaiting publication or an unknown original
+commit outcome. It reports `reconciliation_pending`, not `current`: the snapshot
+does not establish whether that write committed, and the GET never resolves,
+acknowledges or replays it. Optional
 `observation` reuses the list's identity revision, owner epoch, publication
-generation and `current`/`committing` status; incarnation is in `agent.identity`.
+generation and `current`/`committing`/`reconciliation_pending` status;
+incarnation is in `agent.identity`.
 These describe the cut at capture, not health, current execution facts or
 execution admission. Clients must not use the former ordinary-Committing 503
 signal as a health or mutation-retry decision.
@@ -80,14 +86,17 @@ last-holder release rules; the response does not retain an obsolete root.
 No HTTP stale fallback, writer reservation, on-demand preparation, canonical
 repair or phase-dependent wait is introduced. Cold State reads keep their
 existing synchronized storage path and omit `observation`.
-Outside Committing, the existing scheduler audit-frontier freshness check still
-rejects unpublished facts rather than labelling them `current`.
+Only explicit `committing` or `reconciliation_pending` observations may lag the
+scheduler audit frontier. `current` still requires its published facts to be
+fresh; no unpublished facts are labelled current.
 
 A missing first publication or incompatible identity revision/incarnation still
-fails. Identity-changing/rename windows, genuine `NeedsReconcile` and unknown
-original commit outcomes keep `503 agent_reconciliation_pending`,
+fails. Identity-changing/rename windows, or recovery without a usable complete
+same-identity cut, keep `503 agent_reconciliation_pending`,
 `domain=runtime`, `retryable=true`, without a State body or observation. Existing
 read-scope, protection and material-admission failures remain errors.
+Owner replacement discards the previous owner's root; no cross-owner snapshot
+or cold-path historical cache is introduced to manufacture an available cut.
 State capture debug logs include phase, pending/known/unknown outcome and
 mutation-window age using the existing tracing surface. Strict Ready/execution
 capture, original transaction recovery and mutation ACK semantics are unchanged.

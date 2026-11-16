@@ -797,13 +797,13 @@ impl MutationOwner {
                 mutation_age_ms = recovery.started_at.elapsed().as_millis() as u64,
                 "capturing State observation"
             );
-            if recovery.phase != RecoveryPhase::Committing
-                || recovery.identity_change
-                || recovery.identity_rename.is_some()
-            {
+            if recovery.identity_change || recovery.identity_rename.is_some() {
                 return Err(MutationOwnerError::NeedsReconcile(recovery.key.clone()));
             }
-            AgentListObservationStatus::Committing
+            match recovery.phase {
+                RecoveryPhase::Committing => AgentListObservationStatus::Committing,
+                RecoveryPhase::NeedsReconcile => AgentListObservationStatus::ReconciliationPending,
+            }
         } else {
             AgentListObservationStatus::Current
         };

@@ -3145,7 +3145,7 @@
             "type": "array"
           },
           "observation": {
-            "description": "Loaded publication availability, not health or execution authority.",
+            "description": "Loaded publication availability, not health or execution authority.\n Committing and reconciliation_pending describe the last complete snapshot,\n not the outcome of the pending write; cold storage reads omit this field.",
             "properties": {
               "identity_revision": {
                 "format": "uint64",

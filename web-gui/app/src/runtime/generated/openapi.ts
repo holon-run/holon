@@ -3705,7 +3705,11 @@ export interface components {
                 status: "active" | "revoked";
                 target_agent_id: string;
             }[];
-            /** @description Loaded publication availability, not health or execution authority. */
+            /**
+             * @description Loaded publication availability, not health or execution authority.
+             *      Committing and reconciliation_pending describe the last complete snapshot,
+             *      not the outcome of the pending write; cold storage reads omit this field.
+             */
             observation?: {
                 /** Format: uint64 */
                 identity_revision: number;
