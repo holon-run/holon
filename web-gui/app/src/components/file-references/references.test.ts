@@ -67,12 +67,25 @@ describe("shared Markdown references", () => {
     for (const value of ["a.md?download=1", "workspace://ws/a?root=x&other=y", "workspace://ws/a?root=x&root=y", "javascript:alert(1)", "C:\\foo"]) expect(classifyReference(value, base).kind).toBe("error");
     for (const value of ["https://example.com/a?b#c", "http://example.com", "mailto:user@example.com"]) expect(classifyReference(value)).toEqual({ kind: "web", href: value });
   });
-  it("collects links, images, reference-style links and literal inline code, not prose or fenced code", () => {
+  it("collects links, images, reference-style links, literal inline code and bare file paths, not routes or fenced code", () => {
     const text = '[one](/tmp/a.md) ![image](/tmp/a.md) [again][ref] ` /tmp/空 格%20#?.md ` `./child.md`\n\nworkspace://ws/old.md?root=worktree%3Aone\n\n/tmp/plain.md\n\n```\n/tmp/code.md\nworkspace://ws/code.md\n```\n\n[ref]: /tmp/a.md';
     const entries = [...collectMarkdownReferences(text, base).values()];
-    expect(entries).toHaveLength(4);
+    expect(entries).toHaveLength(5);
     expect(entries.map((entry) => entry.value)).toContainEqual({ kind: "file", reference: { type: "absolute_path", absolutePath: "/tmp/空 格%20#?.md" }, fragment: undefined });
+    expect(entries.map((entry) => entry.value)).toContainEqual({ kind: "file", reference: { type: "absolute_path", absolutePath: "/tmp/plain.md" }, fragment: undefined });
     expect(collectMarkdownReferences('`./child.md`')).toHaveLength(0);
+  });
+  it("collects bare host file paths only with boundaries and file-like endings", () => {
+    const text = [
+      "见 /home/jolestar/reports/raw-history-vs-explicit-memory-2026-11-16.md 这个路径。",
+      "粘prefix/home/a.md 不算；但路径：/home/b.md这个算。",
+      "/api/agents/list、/agents/holon-web、//example.org/x.md、/home/u/notes 均不算。",
+    ].join("\n");
+    const entries = [...collectMarkdownReferences(text).values()];
+    expect(entries.map((entry) => entry.value)).toEqual([
+      { kind: "file", reference: { type: "absolute_path", absolutePath: "/home/jolestar/reports/raw-history-vs-explicit-memory-2026-11-16.md" }, fragment: undefined },
+      { kind: "file", reference: { type: "absolute_path", absolutePath: "/home/b.md" }, fragment: undefined },
+    ]);
   });
   it("collects file URLs from Markdown links and inline code", () => {
     const entries = [...collectMarkdownReferences(
