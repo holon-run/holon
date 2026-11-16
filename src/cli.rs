@@ -873,6 +873,48 @@ pub enum ModelsDevCommands {
     },
 }
 
+/// `holon debug runtime-db work-item-source-revision` arguments.
+///
+/// The `apply_target` group keeps `--batch` and `--work-item` mutually
+/// exclusive while `--apply` must pick one of them. The single-item path
+/// still needs `--agent`, which clap cannot express while `--batch`
+/// legitimately omits it; [`Self::validate`] enforces that before locks
+/// are taken.
+#[derive(Debug, Args)]
+#[command(group(
+    ArgGroup::new("apply_target").args(["work_item", "batch"])
+))]
+pub struct WorkItemSourceRevisionArgs {
+    #[arg(long, requires = "apply_target")]
+    pub apply: bool,
+    #[arg(long, requires = "apply")]
+    pub no_backup: bool,
+    #[arg(long)]
+    pub agent: Option<String>,
+    #[arg(long)]
+    pub work_item: Option<String>,
+    #[arg(long, requires = "apply")]
+    pub batch: bool,
+    #[arg(long)]
+    pub json: bool,
+}
+
+impl WorkItemSourceRevisionArgs {
+    /// Parse-level rules cover the batch/single split; this enforces the
+    /// remaining single-apply requirements.
+    pub fn validate(&self) -> anyhow::Result<()> {
+        if self.apply && !self.batch {
+            if self.agent.is_none() {
+                anyhow::bail!("--apply without --batch requires --agent");
+            }
+            if self.work_item.is_none() {
+                anyhow::bail!("--apply without --batch requires --work-item");
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum RuntimeDbDebugCommands {
     #[command(
@@ -958,18 +1000,7 @@ pub enum RuntimeDbDebugCommands {
     #[command(
         about = "Audit or apply an offline, evidence-fenced repair for WorkItem execution source revision drift"
     )]
-    WorkItemSourceRevision {
-        #[arg(long, requires_all = ["agent", "work_item"])]
-        apply: bool,
-        #[arg(long, requires = "apply")]
-        no_backup: bool,
-        #[arg(long)]
-        agent: Option<String>,
-        #[arg(long)]
-        work_item: Option<String>,
-        #[arg(long)]
-        json: bool,
-    },
+    WorkItemSourceRevision(WorkItemSourceRevisionArgs),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -1363,13 +1394,13 @@ mod tests {
                 command:
                     DebugCommands::RuntimeDb {
                         command:
-                            RuntimeDbDebugCommands::WorkItemSourceRevision {
+                            RuntimeDbDebugCommands::WorkItemSourceRevision(WorkItemSourceRevisionArgs {
                                 apply,
                                 no_backup,
                                 agent: parsed_agent,
                                 work_item: parsed_work_item,
                                 ..
-                            },
+                            }),
                     },
             } = cli.command
             else {
@@ -1404,13 +1435,13 @@ mod tests {
                 command:
                     DebugCommands::RuntimeDb {
                         command:
-                            RuntimeDbDebugCommands::WorkItemSourceRevision {
+                            RuntimeDbDebugCommands::WorkItemSourceRevision(WorkItemSourceRevisionArgs {
                                 apply,
                                 no_backup: parsed_no_backup,
                                 agent,
                                 work_item,
                                 ..
-                            },
+                            }),
                     },
             } = cli.command
             else {
@@ -1428,7 +1459,6 @@ mod tests {
         for options in [
             vec!["--apply"],
             vec!["--apply", "--agent", "agent-a"],
-            vec!["--apply", "--work-item", "work-a"],
             vec!["--no-backup"],
             vec!["--no-backup", "--agent", "agent-a", "--work-item", "work-a"],
         ] {
@@ -1440,6 +1470,112 @@ mod tests {
                 clap::error::ErrorKind::MissingRequiredArgument
             );
         }
+    }
+
+    #[test]
+    fn work_item_source_revision_batch_flag_rules() {
+        for options in [
+            vec!["--apply", "--batch"],
+            vec!["--apply", "--batch", "--agent", "agent-a"],
+            vec!["--apply", "--batch", "--no-backup"],
+            vec!["--apply", "--agent", "agent-a", "--work-item", "work-a"],
+        ] {
+            let mut args = vec!["holon", "debug", "runtime-db", "work-item-source-revision"];
+            args.extend(options);
+            let cli = Cli::try_parse_from(args).unwrap();
+            let Commands::Debug {
+                command:
+                    DebugCommands::RuntimeDb {
+                        command: RuntimeDbDebugCommands::WorkItemSourceRevision(args),
+                    },
+            } = cli.command
+            else {
+                panic!("expected WorkItem source revision repair command");
+            };
+            assert!(args.validate().is_ok());
+        }
+        // --batch and --work-item are mutually exclusive apply targets.
+        let error = Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "work-item-source-revision",
+            "--apply",
+            "--batch",
+            "--work-item",
+            "work-a",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), clap::error::ErrorKind::ArgumentConflict);
+        // --batch only writes together with an explicit --apply.
+        let error = Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "work-item-source-revision",
+            "--batch",
+        ])
+        .unwrap_err();
+        assert_eq!(
+            error.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn work_item_source_revision_single_apply_agent_rule_is_handler_level() {
+        // `--apply --work-item work-a` parses: the apply-target group is
+        // satisfied, and the missing --agent is reported by validate()
+        // before any lock is taken.
+        let cli = Cli::try_parse_from([
+            "holon",
+            "debug",
+            "runtime-db",
+            "work-item-source-revision",
+            "--apply",
+            "--work-item",
+            "work-a",
+        ])
+        .unwrap();
+        let Commands::Debug {
+            command:
+                DebugCommands::RuntimeDb {
+                    command: RuntimeDbDebugCommands::WorkItemSourceRevision(args),
+                },
+        } = cli.command
+        else {
+            panic!("expected WorkItem source revision repair command");
+        };
+        let error = args.validate().expect_err("single apply needs --agent");
+        assert!(error.to_string().contains("requires --agent"));
+
+        let single = WorkItemSourceRevisionArgs {
+            apply: true,
+            batch: false,
+            agent: Some("agent-a".into()),
+            work_item: Some("work-a".into()),
+            no_backup: false,
+            json: false,
+        };
+        assert!(single.validate().is_ok());
+        let batch = WorkItemSourceRevisionArgs {
+            apply: true,
+            batch: true,
+            agent: None,
+            work_item: None,
+            no_backup: false,
+            json: false,
+        };
+        assert!(batch.validate().is_ok());
+        let audit = WorkItemSourceRevisionArgs {
+            apply: false,
+            batch: false,
+            agent: None,
+            work_item: None,
+            no_backup: false,
+            json: false,
+        };
+        assert!(audit.validate().is_ok());
     }
 
     #[test]
