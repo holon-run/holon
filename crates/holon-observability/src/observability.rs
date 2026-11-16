@@ -1,4 +1,4 @@
-pub use holon_client::wire::{
+pub use holon_domain::diagnostics::{
     RecentTrace, RecentTraceSummary, TraceAttributes, TraceSpan, TraceSpanStatus,
 };
 
@@ -165,7 +165,6 @@ fn elapsed_us(
         .max(0) as u64
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

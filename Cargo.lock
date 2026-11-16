@@ -1541,6 +1541,7 @@ dependencies = [
  "holon-domain",
  "holon-memory-index",
  "holon-model-catalog",
+ "holon-observability",
  "holon-provider",
  "holon-storage",
  "holon-system",
@@ -1690,6 +1691,21 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "holon-observability"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "holon-domain",
+ "reqwest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tracing",
 ]
 
 [[package]]

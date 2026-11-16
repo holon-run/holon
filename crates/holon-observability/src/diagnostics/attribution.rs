@@ -1,12 +1,12 @@
 //! Bounded, content-free stage timings. Nested stages overlap; timers count
 //! attempts including errors/cancellation. Snapshots are not transactional.
 
-pub use holon_client::wire::StageSnapshot;
+pub use holon_domain::diagnostics::StageSnapshot;
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-pub(crate) struct Stage {
+pub struct Stage {
     name: &'static str,
     count: AtomicU64,
     total_ns: AtomicU64,
@@ -25,7 +25,7 @@ impl Stage {
         }
     }
 
-    pub(crate) fn start(&'static self) -> Timer {
+    pub fn start(&'static self) -> Timer {
         Timer {
             stage: self,
             started: Instant::now(),
@@ -33,7 +33,7 @@ impl Stage {
         }
     }
 
-    pub(crate) fn record(&self, elapsed: Duration, rows: u64) {
+    pub fn record(&self, elapsed: Duration, rows: u64) {
         let elapsed_ns = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
         self.total_ns.fetch_add(elapsed_ns, Ordering::Relaxed);
         self.max_ns.fetch_max(elapsed_ns, Ordering::Relaxed);
@@ -57,14 +57,14 @@ impl Stage {
     }
 }
 
-pub(crate) struct Timer {
+pub struct Timer {
     stage: &'static Stage,
     started: Instant,
     rows: u64,
 }
 
 impl Timer {
-    pub(crate) fn rows(&mut self, rows: usize) {
+    pub fn rows(&mut self, rows: usize) {
         self.rows = rows as u64;
     }
 }
@@ -77,7 +77,7 @@ impl Drop for Timer {
 
 macro_rules! stages {
     ($($id:ident => $name:literal),+ $(,)?) => {
-        $(pub(crate) static $id: Stage = Stage::new($name);)+
+        $(pub static $id: Stage = Stage::new($name);)+
         pub fn snapshot() -> Vec<StageSnapshot> {
             vec![$($id.snapshot()),+]
         }
@@ -172,7 +172,6 @@ stages! {
     WORKSPACE_STATE_RENDER => "workspace.state.render",
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

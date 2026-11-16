@@ -388,6 +388,7 @@ fn flush_batch(
             let shift = (*consecutive_failures).min(6);
             let backoff = Duration::from_millis(100_u64.saturating_mul(1_u64 << shift));
             tracing::warn!(
+                target: "holon::otlp_exporter",
                 endpoint,
                 failed_spans = span_count,
                 backoff_ms = backoff.as_millis() as u64,
@@ -479,7 +480,6 @@ fn timestamp_nanos(value: chrono::DateTime<chrono::Utc>) -> u64 {
         .unwrap_or_default()
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use std::time::{Duration, Instant};
