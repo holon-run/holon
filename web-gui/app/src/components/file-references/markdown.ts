@@ -5,7 +5,7 @@ import { visit, SKIP } from "unist-util-visit";
 import type { Root, Nodes } from "mdast";
 import type { ResolvedFileLocation } from "../../runtime/types";
 import { classifyReference, createHeadingSlugger, isInlineReference, type Reference } from "./references";
-import { isAppPath } from "../../app/web-urls";
+import { classifyWebReference, isAppPath } from "../../app/web-urls";
 
 export interface MarkdownReference { key: string; raw: string; value: Reference }
 interface Options { base?: ResolvedFileLocation; prefix?: string; collect?: Map<string, MarkdownReference> }
@@ -21,11 +21,15 @@ export function remarkFileReferences(options: Options = {}) {
     visit(tree, (node, index, parent) => {
       if (node.type === "link" || node.type === "linkReference") return SKIP;
       if (node.type !== "text" || index == null || !parent) return;
-      const pattern = /workspace:\/\/[^\s<>"')\]]+|\/apps\/[^\s<>"'，。；！？、（）【】《》]+/g;
+      const pattern = /workspace:\/\/[^\s<>"')\]]+|\/[^\s<>"'，。；！？、（）【】《》]+/g;
       const segments: any[] = [];
       let last = 0;
       for (const match of node.value.matchAll(pattern)) {
         let url = match[0].replace(/[.,;!?:]+$/, "");
+        if (!url.startsWith("workspace:") && !url.startsWith("/apps/")) {
+          // Prose-glued CJK suffixes are not part of bare host paths; path-internal CJK stays.
+          url = url.replace(/[\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+$/, "");
+        }
         // Keep balanced URL parentheses, but leave prose closing punctuation out.
         while (/[)\]]$/.test(url)) {
           const close = url.at(-1)!;
@@ -37,6 +41,14 @@ export function remarkFileReferences(options: Options = {}) {
           const preceding = node.value.slice(0, match.index);
           if (preceding && !/[\s(（[【:：，。；！？、]$/.test(preceding)) continue;
           if (!isAppPath(url.split(/[?#]/, 1)[0]) || classifyReference(url).kind !== "web") continue;
+        }
+        if (!url.startsWith("workspace:") && !url.startsWith("/apps/")) {
+          // Bare host file paths: need a boundary, must lose to Web routes, and end in a file-like segment.
+          const preceding = node.value.slice(0, match.index);
+          if (preceding && !/[\s([{<"'：:，。；！？、（【]$/.test(preceding)) continue;
+          if (classifyWebReference(url) !== undefined) continue;
+          if (!/^[^/]*\.[^/]+$/.test(url.slice(url.lastIndexOf("/") + 1))) continue;
+          url = url.replace(/[.,;!?:]+$/, "");
         }
         if (match.index! > last) segments.push({ type: "text", value: node.value.slice(last, match.index) });
         segments.push({ type: "link", url, children: [{ type: "text", value: url }] });

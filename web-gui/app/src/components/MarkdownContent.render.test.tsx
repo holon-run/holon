@@ -109,6 +109,17 @@ describe("MarkdownContent resolve degradation", () => {
     expect(html).not.toContain('href="#"');
   });
 
+  it("autolinks bare host file paths with boundaries and file-like endings only", () => {
+    const html = renderToStaticMarkup(<MarkdownContent text={
+      "见 /home/jolestar/reports/raw-history-vs-explicit-memory-2026-11-16.md 这个路径。\n\n" +
+      "/api/agents/list、/agents/holon-web、//example.org/x.md、prefix/home/a.md、/home/u/notes 均不链接。"
+    } />);
+    expect(html.match(/file-reference-unresolved/g)).toHaveLength(1);
+    expect(html).toContain("raw-history-vs-explicit-memory-2026-11-16.md");
+    expect(html).toContain("/api/agents/list、/agents/holon-web、//example.org/x.md、prefix/home/a.md、/home/u/notes 均不链接。");
+    expect(html).not.toContain('href="#');
+  });
+
   it("never emits executable or confused App hrefs while retaining host file degradation", () => {
     const html = renderToStaticMarkup(<MarkdownContent text={
       "[js](javascript:alert(1)) [data](data:text/html,hello) " +
