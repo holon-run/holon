@@ -1870,6 +1870,127 @@ async fn timer_message_binds_the_unique_matching_wait_work_item() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn timer_fire_matching_two_waits_selects_the_work_item_and_merges_the_lifecycle_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("timer done")),
+        "default".into(),
+        context_config(),
+        clock.clone(),
+    )
+    .unwrap();
+    let work = runtime
+        .create_work_item("wait for a shared timer".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let timer = runtime
+        .schedule_timer(100, None, Some("shared timer".into()))
+        .await
+        .unwrap();
+    let work_wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "work item timer wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let lifecycle_wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "lifecycle timer wait".into(),
+            None,
+        )
+        .await
+        .unwrap();
+
+    clock.advance(std::time::Duration::from_millis(100));
+    tokio::time::advance(std::time::Duration::from_millis(100)).await;
+    assert_timer_fire_count(&runtime, &timer.id, 1).await;
+
+    let message = runtime
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.kind == MessageKind::TimerTick)
+        .expect("timer tick should be queued");
+    // The WorkItem wait owns the fire; the lifecycle wait stays untouched
+    // until the admission actually succeeds (#3914).
+    let waits = runtime.storage().latest_wait_conditions().unwrap();
+    let triggered = waits
+        .iter()
+        .find(|condition| condition.id == work_wait.condition.id)
+        .expect("work item wait should remain durable");
+    assert_eq!(triggered.status, WaitConditionStatus::Triggered);
+    assert_eq!(triggered.trigger_message_id(), Some(message.id.as_str()));
+    let pending_lifecycle = waits
+        .iter()
+        .find(|condition| condition.id == lifecycle_wait.condition.id)
+        .expect("lifecycle wait should remain durable");
+    assert_eq!(pending_lifecycle.status, WaitConditionStatus::Active);
+
+    let poll = crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let crate::runtime::scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("the matching timer fire must be admitted once");
+    };
+    assert_eq!(scheduled.message.id, message.id);
+    finish_claimed_test_run(&runtime).await;
+
+    let waits = runtime.storage().latest_wait_conditions().unwrap();
+    let resolved = waits
+        .iter()
+        .find(|condition| condition.id == work_wait.condition.id)
+        .expect("work item wait should remain durable");
+    assert_eq!(resolved.status, WaitConditionStatus::Resolved);
+    let merged = waits
+        .iter()
+        .find(|condition| condition.id == lifecycle_wait.condition.id)
+        .expect("lifecycle wait should remain durable");
+    assert_eq!(
+        merged.status,
+        WaitConditionStatus::Resolved,
+        "the same fire resolves the matched agent-lifecycle wait atomically"
+    );
+    assert_eq!(merged.trigger_message_id(), Some(message.id.as_str()));
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&message.id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Dequeued,
+        "the fire must be claimed, not quarantined"
+    );
+    assert!(!runtime
+        .storage()
+        .read_recent_events(200)
+        .unwrap()
+        .iter()
+        .any(|event| event.kind == "timer_wake_terminal_retired"
+            || event.data["kind"] == "ambiguous_canonical_wait_binding"));
+}
+
+#[tokio::test(start_paused = true)]
 async fn timer_fire_fault_rolls_back_the_wait_and_wake_transaction() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

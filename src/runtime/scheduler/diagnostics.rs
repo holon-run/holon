@@ -258,23 +258,6 @@ pub(crate) fn pending_scheduling_advisory_events<'a>(
         })
 }
 
-pub(crate) fn ambiguous_wait_advisory_event(
-    message: &MessageEnvelope,
-    wait_condition_ids: &[String],
-) -> AuditEvent {
-    let diagnostic = SchedulingAdvisory::warning(
-        "ambiguous_canonical_wait_binding",
-        "canonical activation input matches multiple active waits and remains queued",
-    )
-    .maybe_work_item_id(message.work_item_id.clone())
-    .evidence(format!("message_id={}", message.id))
-    .evidence(format!(
-        "wait_condition_ids={}",
-        wait_condition_ids.join(",")
-    ));
-    scheduling_advisory_event(&diagnostic)
-}
-
 pub(crate) fn pending_deferred_activation_advisory(
     storage: &AppStorage,
     message: &MessageEnvelope,

@@ -34,22 +34,4 @@ impl RuntimeHandle {
         }
         Ok(appended)
     }
-
-    pub(super) async fn append_ambiguous_wait_advisory(
-        &self,
-        message: &MessageEnvelope,
-        wait_condition_ids: &[String],
-    ) -> Result<()> {
-        let event = scheduler::ambiguous_wait_advisory_event(message, wait_condition_ids);
-        if !self
-            .inner
-            .storage
-            .read_recent_events(64)?
-            .iter()
-            .any(|latest| latest.kind == event.kind && latest.data == event.data)
-        {
-            self.append_original_audit_event(event).await?;
-        }
-        Ok(())
-    }
 }

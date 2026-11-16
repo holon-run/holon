@@ -318,6 +318,7 @@ fn queue_transaction_merges_transition_registration_extra_and_completion_wait_fo
             updated_at: originals[0].updated_at,
         },
         record: resolved,
+        merged_wait_conditions: Vec::new(),
         work_item: None,
         index_changes: Vec::new(),
     };

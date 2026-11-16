@@ -1959,6 +1959,7 @@ fn readonly_secondary_cannot_receive_nested_wait_work_or_index_writes() -> Resul
                 queue.wait_transition = Some(QueueWaitTransition {
                     expected,
                     record: wait,
+                    merged_wait_conditions: Vec::new(),
                     work_item: None,
                     index_changes: Vec::new(),
                 });
