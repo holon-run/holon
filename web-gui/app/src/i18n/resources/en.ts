@@ -1203,6 +1203,7 @@ const en = {
     binaryFileUnknown: "Binary file (unknown type).",
     download: "Download",
     openInNewTab: "Open in new tab",
+    openInFloatingWindow: "Open in floating window",
     copyAbsolutePath: "Copy absolute path",
     pathCopied: "Path copied",
     copyMarkdownReference: "Copy Markdown reference",

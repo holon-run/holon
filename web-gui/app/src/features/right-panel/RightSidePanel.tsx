@@ -1,5 +1,6 @@
 import { rememberPanelFileLocation } from "../../runtime/panel-preferences";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { createPortal } from "react-dom";
 import { CONVERSATION_MIN, PANEL_MIN } from "./panel-layout";
 
 import type { AgentSummary, RightPanelView, RuntimeConnection, SkillCatalogState, TaskDetailState, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
@@ -11,6 +12,7 @@ import { ActivityInspectorPanel, activityInspectorTitle } from "../inspector/Act
 import { AgentOverviewPanel, AgentSkillManagerPanel, ToolExecutionDetailPanel, WorkItemDetailPanel } from "./AgentOverviewPanel";
 import { TaskDetailPanel } from "./TaskDetailPanel";
 import { FileBrowserPanel, type FileBrowserSnapshot, type FileRevision } from "./FileBrowserPanel";
+import { FloatingFileBrowser } from "./FloatingFileBrowser";
 import { RuntimeTracePanel } from "./RuntimeTracePanel";
 import { useTranslation } from "react-i18next";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -172,6 +174,11 @@ export function RightSidePanel({
   const lastFile = useRef<Extract<RightPanelView, { kind: "file_browser" }>>(undefined);
   const lastDetail = useRef<RightPanelView>(undefined);
   const fileSnapshots = useRef(new Map<string, FileBrowserSnapshot>());
+  const [floatingFileBrowserOpen, setFloatingFileBrowserOpen] = useState(false);
+  const floatingFileInitial = useRef<{
+    workspaceId: string; executionRootId?: string; initialPath?: string; initialFilePath?: string; fragment?: string;
+  } | null>(null);
+  const floatingFileSnapshot = useRef<FileBrowserSnapshot | null>(null);
   const [fileTitle, setFileTitle] = useState<{ viewKey: string; path?: string }>();
   const bodyRef = useRef<HTMLDivElement>(null);
   const fileBackAction = useRef<(() => void) | null>(null);
@@ -204,6 +211,25 @@ export function RightSidePanel({
     if (lastFile.current) onSelectView(lastFile.current);
     else if (workspace?.id) onBrowseFiles({ workspaceId: workspace.id, path: "", executionRootId: workspace.executionRootId });
     else if (workspaces[0]) onBrowseFiles({ workspaceId: workspaces[0].workspaceId, path: "", executionRootId: workspaces[0].executionRootId });
+  };
+  const openFloatingFileBrowser = () => {
+    if (activeView.kind !== "file_browser") return;
+    const prior = floatingFileInitial.current;
+    // Reopening the same workspace keeps the floating window's own position; a
+    // new target restarts from the panel's current file or directory.
+    if (!prior || prior.workspaceId !== activeView.workspaceId
+      || (prior.executionRootId ?? null) !== (activeView.executionRootId ?? null)) {
+      const snapshot = fileSnapshots.current.get(viewKey);
+      floatingFileInitial.current = {
+        workspaceId: activeView.workspaceId,
+        executionRootId: activeView.executionRootId,
+        initialPath: snapshot?.currentPath ?? activeView.initialPath,
+        initialFilePath: snapshot?.selectedFile?.path ?? activeView.initialFilePath,
+        fragment: snapshot?.selectedFile ? snapshot.fragment : activeView.fragment,
+      };
+      floatingFileSnapshot.current = null;
+    }
+    setFloatingFileBrowserOpen(true);
   };
   const skillManagerActive = activeView.kind === "agent_overview" && showSkillManager;
   const runtimeTraceActive = activeView.kind === "agent_overview" && showRuntimeTrace && runtimeTraceEnabled;
@@ -371,6 +397,7 @@ export function RightSidePanel({
         onChange={(event) => { const selected = workspaces.find((ws) => JSON.stringify([ws.workspaceId, ws.executionRootId ?? null]) === event.target.value); if (selected) onBrowseFiles({ workspaceId: selected.workspaceId, path: "", executionRootId: selected.executionRootId }); }}>
         {workspaces.map((ws) => <option key={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])} value={JSON.stringify([ws.workspaceId, ws.executionRootId ?? null])}>{ws.name}{workspaces.filter((other) => other.workspaceId === ws.workspaceId).length > 1 ? ` · ${ws.executionRootId ?? "root"}` : ""}</option>)}
       </select> : null} key={viewKey} agentId={agent.id} workspaceId={activeView.workspaceId} executionRootId={activeView.executionRootId} initialPath={activeView.initialPath} initialFilePath={activeView.initialFilePath} initialFragment={activeView.fragment} workspaceLabel={workspaces.find((ws) => ws.workspaceId === activeView.workspaceId)?.name} onClose={onNavigateBack}
+            onOpenFloating={openFloatingFileBrowser}
             snapshot={fileSnapshots.current.get(viewKey)} onSnapshot={(snapshot) => {
               if (snapshot.selectedFile?.loading || !snapshot.listing) return;
               rememberPanelFileLocation({ ...activeView, initialPath: snapshot.currentPath, initialFilePath: snapshot.selectedFile?.path, fragment: snapshot.fragment });
@@ -401,6 +428,25 @@ export function RightSidePanel({
           />
         ))}
       </div>
+      {floatingFileBrowserOpen && floatingFileInitial.current ? createPortal(
+        <FloatingFileBrowser
+          agentId={agent.id}
+          workspaceId={floatingFileInitial.current.workspaceId}
+          executionRootId={floatingFileInitial.current.executionRootId}
+          initialPath={floatingFileInitial.current.initialPath}
+          initialFilePath={floatingFileInitial.current.initialFilePath}
+          initialFragment={floatingFileInitial.current.fragment}
+          workspaceLabel={workspaces.find((ws) => ws.workspaceId === floatingFileInitial.current!.workspaceId)?.name}
+          snapshot={floatingFileSnapshot.current ?? undefined}
+          onSnapshot={(snapshot) => {
+            if (!snapshot.listing || snapshot.selectedFile?.loading) return;
+            floatingFileSnapshot.current = snapshot;
+          }}
+          fileRevisions={planFileRevisions}
+          onClose={() => setFloatingFileBrowserOpen(false)}
+        />,
+        document.body,
+      ) : null}
     </aside>
   );
 }

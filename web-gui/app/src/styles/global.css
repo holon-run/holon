@@ -7698,6 +7698,59 @@ code {
 
 .file-browser-ancestors { min-width: 140px; width: 160px; }
 
+/* Floating Explorer window opened from the side panel. */
+.floating-file-browser-overlay { z-index: 110; }
+.floating-file-browser-card {
+  display: flex;
+  flex-direction: column;
+  width: min(1440px, 88vw);
+  height: min(960px, 86vh);
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  /* Nudged right of center to keep continuity with the side-panel origin. */
+  margin-left: 8vw;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+}
+.floating-file-browser-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  flex: none;
+}
+.floating-file-browser-head strong {
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.floating-file-browser-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  padding: 10px 12px 12px;
+}
+.floating-file-browser-body > .file-browser { flex: 1; }
+@media (max-width: 760px) {
+  /* Narrow screens: the floating window degrades to a fullscreen sheet. */
+  .floating-file-browser-card {
+    width: 100vw;
+    height: 100dvh;
+    max-width: none;
+    max-height: none;
+    margin: 0;
+    border-radius: 0;
+    border: none;
+  }
+  .floating-file-browser-body { padding: 8px; }
+}
+
 .file-browser-location svg { flex-shrink: 0; }
 .file-browser-location-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 

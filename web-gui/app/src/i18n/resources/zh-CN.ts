@@ -1204,6 +1204,7 @@ const zh: Record<string, any> = {
     binaryFileUnknown: "二进制文件（未知类型）。",
     download: "下载",
     openInNewTab: "在新标签页打开",
+    openInFloatingWindow: "在浮动窗口中打开",
     copyAbsolutePath: "复制绝对路径",
     pathCopied: "路径已复制",
     copyMarkdownReference: "复制 Markdown 引用",
