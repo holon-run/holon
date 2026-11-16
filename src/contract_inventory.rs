@@ -30,7 +30,7 @@ pub fn runtime_status_enum_inventory() -> Result<Value> {
             enum_contract::<WaitConditionStatus>("WaitConditionStatus", "crates/holon-domain/src/wake.rs")?,
             enum_contract::<TimerStatus>("TimerStatus", "crates/holon-domain/src/wake.rs")?,
             enum_contract::<QueueEntryStatus>("QueueEntryStatus", "crates/holon-domain/src/message.rs")?,
-            enum_contract::<ToolResultStatus>("ToolResultStatus", "src/tool/spec.rs")?,
+            enum_contract::<ToolResultStatus>("ToolResultStatus", "crates/holon-tools/src/tool/spec.rs")?,
         ],
     }))
 }

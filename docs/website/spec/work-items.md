@@ -12,8 +12,8 @@ lifecycle, focus, readiness, planning, blocking, and completion semantics.
 > **Last verified:** 2026-05-26 against `src/types.rs` `WorkItemRecord`,
 > `WorkItemState`, `WorkItemPlanStatus`, `WorkItemReadiness`,
 > `WorkItemSchedulingState`, and the tool implementations in
-> `src/tool/tools/{create,update,pick,list,get,complete}_work_item.rs` and
-> `src/tool/tools/wait_for.rs`.
+> `src/tool/host/{create,update,pick,list,get,complete}_work_item.rs` and
+> `src/tool/host/wait_for.rs`.
 
 ## Source RFCs
 
