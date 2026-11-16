@@ -1,0 +1,111 @@
+use super::work_item_query::WorkItemView;
+use crate::tool::helpers::parse_tool_args_with_recovery_hint;
+use crate::tool::helpers::validate_non_empty;
+use crate::types::TodoItem;
+use crate::types::TodoItemState;
+use anyhow::Context;
+use anyhow::Result;
+use holon_domain::WorkItemContinuationSummary;
+use schemars::JsonSchema;
+use serde::Deserialize;
+use serde::Serialize;
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum TodoItemStateArgs {
+    Pending,
+    InProgress,
+    Completed,
+}
+
+#[derive(Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TodoItemArgs {
+    pub text: String,
+    pub state: TodoItemStateArgs,
+}
+
+pub fn convert_todo_list(tool_name: &str, items: Vec<TodoItemArgs>) -> Result<Vec<TodoItem>> {
+    items
+        .into_iter()
+        .enumerate()
+        .map(|(index, item)| {
+            Ok(TodoItem {
+                text: validate_non_empty(item.text, tool_name, "text")
+                    .with_context(|| format!("invalid todo_list item {index}"))?,
+                state: match item.state {
+                    TodoItemStateArgs::Pending => TodoItemState::Pending,
+                    TodoItemStateArgs::InProgress => TodoItemState::InProgress,
+                    TodoItemStateArgs::Completed => TodoItemState::Completed,
+                },
+            })
+        })
+        .collect()
+}
+
+pub fn parse_work_item_action_args<T>(tool_name: &str, input: &serde_json::Value) -> Result<T>
+where
+    T: serde::de::DeserializeOwned,
+{
+    parse_tool_args_with_recovery_hint(tool_name, input, || {
+        work_item_action_recovery_hint(tool_name).to_string()
+    })
+}
+
+fn work_item_action_recovery_hint(tool_name: &str) -> &'static str {
+    match tool_name {
+        "CreateWorkItem" => {
+            "ensure the JSON matches the CreateWorkItem schema, including required top-level field \"objective\"; use todo_list items like {\"text\":\"inspect current handler\",\"state\":\"completed\"}; todo state must be pending, in_progress, or completed"
+        }
+        "UpdateWorkItem" => {
+            "ensure the JSON matches the UpdateWorkItem schema, including required top-level field \"work_item_id\"; use todo_list items like {\"text\":\"inspect current handler\",\"state\":\"completed\"}; todo state must be pending, in_progress, or completed"
+        }
+        _ => {
+            "ensure the JSON matches the tool schema exactly; todo state must be pending, in_progress, or completed"
+        }
+    }
+}
+
+#[derive(Serialize)]
+pub struct WorkItemMutationResult {
+    pub work_item: WorkItemView,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_transition: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub continuation_resumed: Option<WorkItemContinuationSummary>,
+}
+
+impl WorkItemMutationResult {
+    pub fn new(work_item: WorkItemView) -> Self {
+        Self {
+            work_item,
+            warnings: Vec::new(),
+            completed_transition: None,
+            continuation_resumed: None,
+        }
+    }
+
+    pub fn with_completion_transition(
+        work_item: WorkItemView,
+        warnings: Vec<serde_json::Value>,
+        completed_transition: bool,
+    ) -> Self {
+        Self {
+            work_item,
+            warnings,
+            completed_transition: Some(completed_transition),
+            continuation_resumed: None,
+        }
+    }
+
+    pub fn with_continuation_resumed(
+        mut self,
+        continuation_resumed: Option<WorkItemContinuationSummary>,
+    ) -> Self {
+        self.continuation_resumed = continuation_resumed;
+        self
+    }
+}

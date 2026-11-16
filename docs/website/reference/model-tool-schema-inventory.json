@@ -2,9 +2,9 @@
   "source_of_truth": {
     "covered_result_schemas": "typed stable result structs deriving schemars::JsonSchema",
     "input_schemas": "typed Rust argument structs deriving schemars::JsonSchema",
-    "model_rendering": "src/tool/tools/mod.rs render_tool_result_for_model()",
-    "result_envelope": "src/tool/spec.rs ToolResultEnvelope",
-    "tool_definitions": "src/tool/tools/mod.rs builtin_tool_definitions()"
+    "model_rendering": "crates/holon-tools/src/tool/tools/mod.rs render_tool_result_for_model()",
+    "result_envelope": "crates/holon-tools/src/tool/spec.rs ToolResultEnvelope",
+    "tool_definitions": "crates/holon-tools/src/tool/tools/mod.rs builtin_tool_definitions()"
   },
   "stability_policy": {
     "deprecated": "Surface remains for compatibility but should not be introduced into new workflows.",

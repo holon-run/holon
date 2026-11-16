@@ -24,19 +24,7 @@ const WEB_FETCH_USER_AGENT: &str =
 const WEB_FETCH_ACCEPT: &str = "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8";
 const WEB_FETCH_ACCEPT_LANGUAGE: &str = "en-US,en;q=0.9";
 
-#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ExtractMode {
-    Auto,
-    Text,
-    Raw,
-}
-
-impl Default for ExtractMode {
-    fn default() -> Self {
-        Self::Auto
-    }
-}
+pub use holon_tools::builtins::web_fetch::ExtractMode;
 
 #[derive(Debug, Clone)]
 pub struct WebFetchRequest {

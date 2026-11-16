@@ -14,7 +14,7 @@ order: 10
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
 > `RuntimePosture`, and `AgentSummary`; `src/storage/mod.rs`
 > `agent_posture_projection`; `src/runtime/lifecycle.rs` `agent_summary`;
-> `src/runtime/closure.rs` closure derivation; and `src/tool/tools/get_agent.rs`.
+> `src/runtime/closure.rs` closure derivation; and `src/tool/host/get_agent.rs`.
 
 ## 源 RFC
 

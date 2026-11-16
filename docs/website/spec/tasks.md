@@ -11,7 +11,7 @@ terminal re-entry, and supervision surfaces.
 
 > **Last verified:** 2026-09-19 against `src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
-> implementations in `src/tool/tools/{exec_command,task_list,task_status,
+> implementations in `src/tool/host/{exec_command,task_list,task_status,
 > task_input,task_stop,invoke_agent}.rs`.
 
 The output-observation contract was updated for #3534 M2; see

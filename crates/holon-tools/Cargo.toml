@@ -1,0 +1,25 @@
+[package]
+name = "holon-tools"
+version = "0.1.0"
+edition = "2021"
+description = "Built-in agent tools and model-facing tool contracts for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+holon-provider = { version = "0.1.0", path = "../holon-provider" }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-system = { version = "0.1.0", path = "../holon-system" }
+schemars = { version = "0.9", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["rt", "macros", "fs"] }
+
+[dev-dependencies]
+holon-provider = { version = "0.1.0", path = "../holon-provider", features = ["runtime-tests"] }
+proptest = "1.6"
+tempfile = "3.14"

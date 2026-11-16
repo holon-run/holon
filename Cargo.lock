@@ -1543,6 +1543,7 @@ dependencies = [
  "holon-provider",
  "holon-storage",
  "holon-system",
+ "holon-tools",
  "holon-tui",
  "hyper",
  "hyper-util",
@@ -1737,6 +1738,23 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "holon-tools"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "holon-domain",
+ "holon-provider",
+ "holon-system",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
  "thiserror 2.0.18",
  "tokio",
 ]

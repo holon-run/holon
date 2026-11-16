@@ -405,3 +405,35 @@ pub fn readiness_for_scheduling_state(state: WorkItemSchedulingState) -> WorkIte
         WorkItemSchedulingState::Completed => WorkItemReadiness::Completed,
     }
 }
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkItemFocusTransitionWarning {
+    pub code: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkItemFocusTransition {
+    pub previous_work_item_id: Option<String>,
+    pub current_work_item_id: String,
+    pub reason: Option<String>,
+    pub previous_readiness: Option<WorkItemReadiness>,
+    pub current_readiness: WorkItemReadiness,
+    pub switch_kind: String,
+    pub terminal_transition: bool,
+    pub current_focus_mode: String,
+    pub blocker_cleared: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cancelled_wait_condition_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<WorkItemFocusTransitionWarning>,
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema, PartialEq, Eq)]
+pub struct WorkItemContinuationSummary {
+    pub frame_id: String,
+    pub suspended_work_item_id: String,
+    pub active_work_item_id: String,
+    pub return_policy: WorkItemContinuationReturnPolicy,
+    pub reason: String,
+}

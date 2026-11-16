@@ -96,7 +96,7 @@
         "success",
         "error"
       ],
-      "source": "src/tool/spec.rs"
+      "source": "crates/holon-tools/src/tool/spec.rs"
     }
   ],
   "source_of_truth": "typed Rust enums deriving schemars::JsonSchema",

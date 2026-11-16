@@ -9,7 +9,7 @@ order: 26
 本页定义 Holon **面向模型的内置工具接口**的版本策略。机器可读清单检入为
 [`model-tool-schema-inventory.json`](/reference/model-tool-schema-inventory.json)。
 
-- **权威来源：** `src/tool/tools/mod.rs` 的 `builtin_tool_definitions()`，以及
+- **权威来源：** `crates/holon-tools/src/tool/tools/mod.rs` 的 `builtin_tool_definitions()`，以及
   派生 `schemars::JsonSchema` 的带类型 Rust 参数结构体。
 - **生成的清单：** `holon::tool::model_tool_schema_inventory()`。
 - **漂移检查：** `make snapshots-check`。
