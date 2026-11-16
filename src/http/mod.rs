@@ -3652,7 +3652,7 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "c")]
     #[tokio::test]
-    async fn operator_state_route_reports_pending_reconciliation() {
+    async fn operator_state_route_observes_loaded_commit_but_keeps_cold_reconciliation_strict() {
         use crate::runtime::mutation_owner::{MutationOwnerError, MutationReservation};
         use crate::types::{
             AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentVisibility,
@@ -3711,19 +3711,24 @@ mod tests {
                 let response = get_state(requested_id).await.unwrap();
                 let status = response.status();
                 let observes_pending_owner = requested_id == agent_id;
+                let committing_loaded_owner = observes_pending_owner && requested_id == parent_id;
+                let rejects_pending_owner = observes_pending_owner && !committing_loaded_owner;
                 assert_eq!(
                     response.headers().contains_key(header::RETRY_AFTER),
-                    observes_pending_owner
+                    rejects_pending_owner
                 );
                 let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
                 let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-                if observes_pending_owner {
+                if rejects_pending_owner {
                     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{body}");
                     assert_eq!(body["code"], "agent_reconciliation_pending", "{body}");
                     assert_eq!(body["retryable"], true);
                 } else {
                     assert_eq!(status, StatusCode::OK, "{body}");
                     assert!(body["agent"].get("active_children").is_none());
+                    if committing_loaded_owner {
+                        assert_eq!(body["observation"]["status"], "committing", "{body}");
+                    }
                 }
                 assert!(!body.to_string().contains("private-recovery-ticket"));
                 assert!(matches!(

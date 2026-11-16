@@ -1771,7 +1771,7 @@
         "type": "object"
       },
       "AgentListObservation": {
-        "description": "The version and availability of the last published roster observation.\n These values describe an observation; they never authorize execution.",
+        "description": "The version and availability of a last complete Agent publication observation.\n These values describe an observation; they never authorize execution.",
         "properties": {
           "identity_revision": {
             "format": "uint64",
@@ -3144,6 +3144,46 @@
             },
             "type": "array"
           },
+          "observation": {
+            "description": "Loaded publication availability, not health or execution authority.",
+            "properties": {
+              "identity_revision": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "owner_epoch": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "publication_generation": {
+                "format": "uint64",
+                "minimum": 0,
+                "type": "integer"
+              },
+              "status": {
+                "enum": [
+                  "current",
+                  "committing",
+                  "reconciliation_pending",
+                  "repair_pending",
+                  "owner_pending"
+                ],
+                "type": "string"
+              }
+            },
+            "required": [
+              "identity_revision",
+              "owner_epoch",
+              "publication_generation",
+              "status"
+            ],
+            "type": [
+              "object",
+              "null"
+            ]
+          },
           "session": {
             "properties": {
               "current_run_id": {
@@ -4192,7 +4232,7 @@
                 "type": "object"
               },
               "observation": {
-                "description": "The version and availability of the last published roster observation.\n These values describe an observation; they never authorize execution.",
+                "description": "The version and availability of a last complete Agent publication observation.\n These values describe an observation; they never authorize execution.",
                 "properties": {
                   "identity_revision": {
                     "format": "uint64",
@@ -5046,7 +5086,7 @@
                       "type": "object"
                     },
                     "observation": {
-                      "description": "The version and availability of the last published roster observation.\n These values describe an observation; they never authorize execution.",
+                      "description": "The version and availability of a last complete Agent publication observation.\n These values describe an observation; they never authorize execution.",
                       "properties": {
                         "identity_revision": {
                           "format": "uint64",

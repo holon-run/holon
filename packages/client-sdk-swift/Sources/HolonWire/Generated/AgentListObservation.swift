@@ -10,7 +10,7 @@ import Foundation
 import AnyCodable
 #endif
 
-/** The version and availability of the last published roster observation.  These values describe an observation; they never authorize execution. */
+/** The version and availability of a last complete Agent publication observation.  These values describe an observation; they never authorize execution. */
 public struct AgentListObservation: Codable, JSONEncodable {
 
     public var identityRevision: Int

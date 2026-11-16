@@ -3313,7 +3313,7 @@ export interface components {
             source: components["schemas"]["AgentModelSource"];
         };
         /**
-         * @description The version and availability of the last published roster observation.
+         * @description The version and availability of a last complete Agent publication observation.
          *      These values describe an observation; they never authorize execution.
          */
         AgentListObservation: {
@@ -3705,6 +3705,17 @@ export interface components {
                 status: "active" | "revoked";
                 target_agent_id: string;
             }[];
+            /** @description Loaded publication availability, not health or execution authority. */
+            observation?: {
+                /** Format: uint64 */
+                identity_revision: number;
+                /** Format: uint64 */
+                owner_epoch: number;
+                /** Format: uint64 */
+                publication_generation: number;
+                /** @enum {string} */
+                status: "current" | "committing" | "reconciliation_pending" | "repair_pending" | "owner_pending";
+            } | null;
             session: {
                 current_run_id?: string | null;
                 last_turn?: {
@@ -3979,7 +3990,7 @@ export interface components {
                     source: "runtime_default" | "agent_override";
                 };
                 /**
-                 * @description The version and availability of the last published roster observation.
+                 * @description The version and availability of a last complete Agent publication observation.
                  *      These values describe an observation; they never authorize execution.
                  */
                 observation?: {
@@ -4205,7 +4216,7 @@ export interface components {
                         source: "runtime_default" | "agent_override";
                     };
                     /**
-                     * @description The version and availability of the last published roster observation.
+                     * @description The version and availability of a last complete Agent publication observation.
                      *      These values describe an observation; they never authorize execution.
                      */
                     observation?: {

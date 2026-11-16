@@ -24,6 +24,9 @@ use crate::{
     bound = "Timer: JsonSchema + Serialize, WorkItem: JsonSchema + Serialize"
 )]
 pub struct AgentStateSnapshotDto<Timer = TimerRecord, WorkItem = SlimWorkItemDto> {
+    /// Loaded publication availability, not health or execution authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observation: Option<crate::types::AgentListObservation>,
     pub agent: SlimAgentDto,
     pub session: StateSessionSnapshotDto,
     pub tasks: Vec<SlimTaskDto>,

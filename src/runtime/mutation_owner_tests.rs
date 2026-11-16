@@ -29,6 +29,30 @@ fn assert_needs_reconcile(owner: &MutationOwner, key: &RecoveryKey) {
 }
 
 #[tokio::test]
+async fn state_observation_does_not_invent_a_first_cut_or_cross_owner_epochs() {
+    let registry = MutationOwnerRegistry::default();
+    let owner = registry.claim("default", 7).unwrap();
+    assert!(owner.capture_state_observation().unwrap().is_none());
+    let mut reservation = owner.reserve().await.unwrap();
+    let key = reservation.begin("unpublished-first-cut".into()).unwrap();
+    assert!(matches!(
+        owner.capture_state_observation(),
+        Err(MutationOwnerError::NeedsReconcile(actual)) if actual == key
+    ));
+    reservation.definitely_not_committed().unwrap();
+    drop(reservation);
+    assert!(owner.capture_state_observation().unwrap().is_none());
+    let successor = registry.claim("default", 7).unwrap();
+    assert!(matches!(
+        owner.capture_state_observation(),
+        Err(MutationOwnerError::Replaced)
+    ));
+    assert!(successor.capture_state_observation().unwrap().is_none());
+    let recreated = registry.claim("default", 8).unwrap();
+    assert!(recreated.capture_state_observation().unwrap().is_none());
+}
+
+#[tokio::test]
 async fn reservations_keep_prepare_commit_and_publication_in_fifo_order() {
     let owner = MutationOwner::standalone("default", 7);
     let mut first = owner.reserve().await.unwrap();

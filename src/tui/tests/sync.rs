@@ -50,6 +50,7 @@ fn compact_status(id: &str) -> serde_json::Value {
 
 fn state_snapshot(id: &str) -> serde_json::Value {
     serde_json::to_value::<AgentStateSnapshotDto>(AgentStateSnapshotDto {
+        observation: None,
         agent: SlimAgentDto::from(&sample_agent_summary(id)),
         session: StateSessionSnapshotDto {
             current_run_id: None,

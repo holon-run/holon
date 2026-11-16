@@ -1091,7 +1091,7 @@ impl AgentListModelSummary {
     }
 }
 
-/// The version and availability of the last published roster observation.
+/// The version and availability of a last complete Agent publication observation.
 /// These values describe an observation; they never authorize execution.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct AgentListObservation {
