@@ -1250,9 +1250,9 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             None
         };
         let _reply_owner_budget = if let Some(role) = reply_role.as_ref() {
-            let request = super::work_reads::live_work_request();
             let guard = planning_guard.as_mut().expect("planning reservation");
             guard.prepare_owner_task_query(role).await?;
+            let request = guard.reply_work_owner_request(role, &persisted_message.id)?;
             guard.prepare_owner_work_request(&request).await?;
             let (owner, budget) = guard.capture_reply_work_owner(role, &persisted_message.id)?;
             persisted_message.work_item_id = owner;

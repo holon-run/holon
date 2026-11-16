@@ -577,6 +577,14 @@ impl read::IdleRead<'_, '_> {
             return self.valid_receiver_scope(&message.agent_id, owner_id);
         }
         if has_reply_relation {
+            if let Some(owner) = crate::runtime_db::task_snapshot::reply_work_owner_tx(
+                self.tx,
+                &self.scope,
+                &message.id,
+                &self.runtime.inner.input_evidence_budget,
+            )? {
+                return self.valid_receiver_scope(&message.agent_id, &owner);
+            }
             return Ok(None);
         }
         Ok(Some(InputScope::Sender(SenderScope {

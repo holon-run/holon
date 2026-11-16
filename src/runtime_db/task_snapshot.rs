@@ -32,7 +32,9 @@ mod running_sources;
 #[cfg(test)]
 mod running_sources_tests;
 pub(in crate::runtime_db) use qualified_input_read::TaskInputReadAuthorization;
+mod reply_owner;
 mod result_routing;
+pub(crate) use reply_owner::reply_work_owner_tx;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod result_routing_tests;

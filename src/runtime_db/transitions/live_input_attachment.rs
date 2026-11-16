@@ -385,7 +385,7 @@ impl RuntimeTransitionRepository<'_> {
         command: &LiveInputAttachmentCommand,
     ) -> Result<TransitionCommit> {
         self.db
-            .transaction(|tx| self.commit_live_input_attachment_tx(tx, None, command, None))
+            .transaction(|tx| self.commit_live_input_attachment_tx(tx, None, command, None, None))
     }
 
     pub(super) fn commit_live_input_attachment_tx(
@@ -394,6 +394,7 @@ impl RuntimeTransitionRepository<'_> {
         input_scope: Option<&InputEvidenceScope>,
         command: &LiveInputAttachmentCommand,
         allowed_results: Option<&BTreeSet<crate::runtime::resident_task::TaskKey>>,
+        memory_ledger: Option<&crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger>,
     ) -> Result<TransitionCommit> {
         let agent_id = &command.expected_attempt.agent_id;
         let turn_id = &command.expected_turn.turn_id;
@@ -446,7 +447,12 @@ impl RuntimeTransitionRepository<'_> {
                 return Ok(TransitionCommit::default());
             }
             if ordinary.contains(&message.id)
-                && !ordinary_live_source_matches_tx(tx, command, message)?
+                && !ordinary_live_source_matches_tx(
+                    tx,
+                    command,
+                    message,
+                    input_scope.zip(memory_ledger),
+                )?
             {
                 return Ok(TransitionCommit::default());
             }
@@ -1023,6 +1029,10 @@ fn ordinary_live_source_matches_tx(
     tx: &Transaction<'_>,
     command: &LiveInputAttachmentCommand,
     message: &MessageEnvelope,
+    reply_owner_read: Option<(
+        &InputEvidenceScope,
+        &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    )>,
 ) -> Result<bool> {
     if message.kind == MessageKind::TaskResult
         || message.task_id.is_some()
@@ -1079,7 +1089,14 @@ fn ordinary_live_source_matches_tx(
         |row| row.get(0),
     )?;
     if has_reply_relation {
-        return Ok(false);
+        let Some((scope, ledger)) = reply_owner_read else {
+            return Ok(false);
+        };
+        let owner =
+            crate::runtime_db::task_snapshot::reply_work_owner_tx(tx, scope, &message.id, ledger)?;
+        return Ok(owner.is_some_and(|work_item_id| {
+            command.expected_turn.effective_owner() == TurnOwner::WorkItem { work_item_id }
+        }));
     }
     let Some(batch) = &command.expected_turn.idle_input_batch else {
         return Ok(false);

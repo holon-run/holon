@@ -19,6 +19,9 @@ mod live_command_tests;
 #[path = "terminal_reply_tests.rs"]
 mod terminal_reply_tests;
 
+#[path = "non_model_reply_tests.rs"]
+mod non_model_reply_tests;
+
 #[tokio::test(start_paused = true)]
 async fn exact_recovery_restarts_after_anchor_snapshot_before_first_result_admission() {
     Box::pin(assert_exact_recovery_restart_before_admission(
@@ -813,6 +816,15 @@ pub(super) async fn reply_result_with_key(
     owner: &WorkItemRecord,
     key: &str,
 ) -> (TaskRecord, String) {
+    reply_result_with_binding(runtime, owner, key, true).await
+}
+
+async fn reply_result_with_binding(
+    runtime: &RuntimeHandle,
+    owner: &WorkItemRecord,
+    key: &str,
+    explicit_owner: bool,
+) -> (TaskRecord, String) {
     let parent_id = format!("{key}-parent");
     let task_id = format!("{key}-task");
     persist_completed_task_parent_fixture(runtime, &parent_id, Some(&owner.id))
@@ -851,7 +863,7 @@ pub(super) async fn reply_result_with_key(
             },
         )
         .unwrap();
-    prepared.message.work_item_id = Some(owner.id.clone());
+    prepared.message.work_item_id = explicit_owner.then(|| owner.id.clone());
     prepared.message.created_at = runtime.now();
     let reply_id = runtime
         .agent_message_delivery_service()

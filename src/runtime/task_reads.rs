@@ -571,9 +571,27 @@ pub(crate) struct TaskListRead {
 #[path = "task_reads_tests.rs"]
 pub(crate) mod tests;
 
-/// Original completed-wait order is normalized created_at, then Task ID.
-/// Only the original raw Work binding participates in this selector.
-pub(in crate::runtime) fn reply_work_owner<'a>(
+/// Include ended owners so closure cannot turn a reply into unbound new input.
+pub(crate) fn reply_work_request(
+    tasks: &CapturedTasks,
+    message_id: &str,
+) -> Result<super::resident_work::WorkCaptureRequest> {
+    use super::resident_work::{WorkFamily, WorkKey};
+    let mut request = super::work_reads::live_work_request();
+    for id in tasks.reply_task_ids(message_id)? {
+        let task = task_record(tasks, id)?.context("accepted reply Task body is missing")?;
+        if let Some(owner) = task.work_item_id.as_deref() {
+            crate::diagnostics::resource_io::admit_cloned_value(&owner)?;
+            request
+                .mandatory_roots
+                .insert(WorkKey::new(WorkFamily::Work, owner));
+        }
+    }
+    Ok(request)
+}
+
+/// Prefer open owners, then normalized original creation time and Task ID.
+pub(crate) fn reply_work_owner<'a>(
     tasks: &'a CapturedTasks,
     work: &super::resident_work::CapturedWork,
     message_id: &str,
@@ -589,18 +607,20 @@ pub(in crate::runtime) fn reply_work_owner<'a>(
         let Some(owner) = task.work_item_id.as_deref() else {
             continue;
         };
-        if !work.live_work_ids.contains(owner) {
-            continue;
-        }
-        let owner = work
+        let open = work
             .work_item(owner)?
-            .context("complete live Work body is missing")?;
-        if owner.state != WorkItemState::Open {
-            continue;
-        }
+            .is_some_and(|owner| owner.state == WorkItemState::Open);
+        let old_open = selected
+            .and_then(|old| old.work_item_id.as_deref())
+            .map(|id| work.work_item(id))
+            .transpose()?
+            .flatten()
+            .is_some_and(|owner| owner.state == WorkItemState::Open);
         if selected.is_none_or(|old| {
-            (task.created_at.timestamp_millis(), task.id.as_str())
-                < (old.created_at.timestamp_millis(), old.id.as_str())
+            (open && !old_open)
+                || (open == old_open
+                    && (task.created_at.timestamp_millis(), task.id.as_str())
+                        < (old.created_at.timestamp_millis(), old.id.as_str()))
         }) {
             selected = Some(task);
         }
