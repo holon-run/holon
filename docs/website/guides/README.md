@@ -128,6 +128,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Monitor web pages with self-hosted changedetection.io and wake Holon agents via webhook callbacks when changes are detected: Docker deployment, watch and notification configuration, and end-to-end verification.
   <!-- mdorigin:index kind=article -->
 
+- [Wake Holon Agents on Error Alerts with Self-Hosted GlitchTip](./glitchtip-error-alerts.md)
+  Self-hosted GlitchTip as error tracking: errors ingested via Sentry-compatible endpoints generate issues, project alert webhooks wake Holon, and agents verify issues and events via REST APIs without modifying Holon runtime code.
+  <!-- mdorigin:index kind=article -->
+
 - [Share AI assistants with your team](./share-with-your-team.md)
   Deploy Holon on a shared server, enable team sign-in, assign tasks to common assistants, and track progress together.
   <!-- mdorigin:index kind=article -->

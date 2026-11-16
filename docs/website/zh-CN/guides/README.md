@@ -126,6 +126,10 @@ order: 30
   自托管 changedetection.io 监控任意网页，检出变更后通过 webhook 回调唤醒 Holon agent：Docker 部署、watch 与通知配置、端到端验证，全程本地闭环。
   <!-- mdorigin:index kind=article -->
 
+- [用自托管 GlitchTip 把错误告警唤醒 Holon](./glitchtip-error-alerts.md)
+  自托管 GlitchTip 作为错误追踪：错误经 Sentry 兼容摄入生成 issue，项目告警 webhook 唤醒 Holon，agent 再用 REST API 核对 issue 与事件。不改 Holon 运行时代码。
+  <!-- mdorigin:index kind=article -->
+
 - [与团队共用 AI 助手](./share-with-your-team.md)
   在共享服务器部署 Holon、配置团队单点登录，全组协同交办任务给同一个长期 AI 助手并跟踪进度。
   <!-- mdorigin:index kind=article -->
