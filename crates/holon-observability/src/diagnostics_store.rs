@@ -1,4 +1,4 @@
-pub use holon_client::wire::DiagnosticsWriterStats;
+pub use holon_domain::diagnostics::DiagnosticsWriterStats;
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -531,7 +531,6 @@ fn trace_search_text(trace: &RecentTrace) -> String {
     values.join("\n")
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

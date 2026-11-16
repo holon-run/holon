@@ -552,6 +552,7 @@ jobs:
           publish_if_needed holon-system
           publish_if_needed holon-storage
           publish_if_needed holon-memory-index
+          publish_if_needed holon-observability
           publish_if_needed holon-model-client
           publish_if_needed holon-provider
           publish_if_needed holon-model-catalog

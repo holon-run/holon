@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 pub mod calendar;
 pub mod conversation;
 pub mod decision_telemetry;
+pub mod diagnostics;
 pub mod execution_protocol;
 pub mod execution_types;
 pub mod ids;

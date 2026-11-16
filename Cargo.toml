@@ -52,6 +52,7 @@ holon-context = { version = "0.1.0", path = "crates/holon-context" }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
 holon-memory-index = { version = "0.1.0", path = "crates/holon-memory-index" }
 holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog" }
+holon-observability = { version = "0.1.0", path = "crates/holon-observability" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
