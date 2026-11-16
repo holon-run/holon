@@ -1968,7 +1968,11 @@ async fn timer_fire_matching_two_waits_selects_the_work_item_and_merges_the_life
         WaitConditionStatus::Resolved,
         "the same fire resolves the matched agent-lifecycle wait atomically"
     );
-    assert_eq!(merged.trigger_message_id(), Some(message.id.as_str()));
+    assert_eq!(
+        merged.trigger_message_id(),
+        None,
+        "the fire's trigger binding stays owned by the admitted WorkItem wait"
+    );
     assert_eq!(
         runtime
             .inner

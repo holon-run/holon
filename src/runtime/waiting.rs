@@ -267,9 +267,10 @@ fn merged_lifecycle_waits_for_timer_fire(
         })
         .map(|wait| {
             let mut merged = wait.clone();
-            if merged.trigger_message_id.is_none() {
-                merged.mark_triggered(&message.id, now);
-            }
+            // The fire's trigger binding already belongs to the admitted
+            // WorkItem wait; UNIQUE(agent_id, trigger_message_id) keeps one
+            // wait per fire, so the merged lifecycle wait resolves without
+            // claiming the message id.
             merged.status = WaitConditionStatus::Resolved;
             merged.updated_at = now;
             merged.resolved_at = Some(now);
