@@ -1839,6 +1839,43 @@ async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
     runtime_task.abort();
 }
 
+fn describe_recheck_wait_state(
+    runtime: &RuntimeHandle,
+    work_item_id: &str,
+    runtime_task_finished: bool,
+) -> String {
+    let target = runtime
+        .storage()
+        .latest_work_item(work_item_id)
+        .unwrap()
+        .map(|item| {
+            format!(
+                "state={:?} blocked_by={:?} recheck_at={:?} recheck_consumed_at={:?}",
+                item.state, item.blocked_by, item.recheck_at, item.recheck_consumed_at
+            )
+        })
+        .unwrap_or_else(|| "missing".to_string());
+    let turns = runtime
+        .storage()
+        .read_recent_turns(10)
+        .unwrap()
+        .iter()
+        .map(|turn| {
+            format!(
+                "turn {} work_item={:?} terminal={:?}",
+                turn.turn_id,
+                turn.current_work_item_id,
+                turn.terminal.as_ref().map(|terminal| terminal.kind)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "work item [{work_item_id}]: {target}; runtime task finished={runtime_task_finished}; \
+         recent turns: [{turns}]"
+    )
+}
+
 #[tokio::test(start_paused = true)]
 async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
     let dir = tempdir().unwrap();
@@ -1891,26 +1928,23 @@ async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
     // The due recheck should open a turn bound to the target WorkItem: the
     // turn record carries it as the turn's WorkItem while the agent's
     // persistent current WorkItem stays untouched.
-    let mut bound = false;
-    for _ in 0..100 {
-        bound = runtime
-            .storage()
-            .read_recent_turns(10)
-            .unwrap()
-            .iter()
-            .any(|turn| {
-                turn.current_work_item_id.as_deref() == Some(blocked.id.as_str())
-                    && turn.terminal.is_some()
-            });
-        if bound {
-            break;
-        }
-        advance_lifecycle_time(&clock, std::time::Duration::from_millis(20)).await;
-    }
-    assert!(
-        bound,
-        "a blocked recheck should run a turn bound to the target WorkItem"
-    );
+    wait_for_lifecycle_condition(
+        &clock,
+        "a blocked recheck should run a turn bound to the target WorkItem",
+        || {
+            runtime
+                .storage()
+                .read_recent_turns(10)
+                .unwrap()
+                .iter()
+                .any(|turn| {
+                    turn.current_work_item_id.as_deref() == Some(blocked.id.as_str())
+                        && turn.terminal.is_some()
+                })
+        },
+        || describe_recheck_wait_state(&runtime, &blocked.id, runtime_task.is_finished()),
+    )
+    .await;
 
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
@@ -1989,26 +2023,23 @@ async fn wait_bound_blocked_recheck_turn_runs_without_switching_focus() {
     let runtime_task = tokio::spawn(runtime.clone().run());
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
 
-    let mut bound = false;
-    for _ in 0..100 {
-        bound = runtime
-            .storage()
-            .read_recent_turns(10)
-            .unwrap()
-            .iter()
-            .any(|turn| {
-                turn.current_work_item_id.as_deref() == Some(waiting.id.as_str())
-                    && turn.terminal.is_some()
-            });
-        if bound {
-            break;
-        }
-        advance_lifecycle_time(&clock, std::time::Duration::from_millis(20)).await;
-    }
-    assert!(
-        bound,
-        "a wait-bound blocked recheck should run a turn bound to the target WorkItem"
-    );
+    wait_for_lifecycle_condition(
+        &clock,
+        "a wait-bound blocked recheck should run a turn bound to the target WorkItem",
+        || {
+            runtime
+                .storage()
+                .read_recent_turns(10)
+                .unwrap()
+                .iter()
+                .any(|turn| {
+                    turn.current_work_item_id.as_deref() == Some(waiting.id.as_str())
+                        && turn.terminal.is_some()
+                })
+        },
+        || describe_recheck_wait_state(&runtime, &waiting.id, runtime_task.is_finished()),
+    )
+    .await;
 
     let latest = runtime
         .storage()
@@ -2022,6 +2053,48 @@ async fn wait_bound_blocked_recheck_turn_runs_without_switching_focus() {
         "a recheck turn must not implicitly clear the blocker"
     );
     runtime_task.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn bounded_lifecycle_wait_observes_real_time_completion() {
+    // A completion signal only real time can produce, standing in for
+    // blocking-pool persistence finishing under CI load: paused virtual time
+    // cannot advance it.
+    let completed = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let signal = completed.clone();
+    tokio::task::spawn_blocking(move || {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        signal.store(true, std::sync::atomic::Ordering::Release);
+    });
+
+    let clock = controlled_clock();
+
+    // The pre-fix pattern spends its fixed budget of virtual steps, each with
+    // a single yield, long before 250ms of real time passes, so it must miss
+    // the completion.
+    let mut observed_by_fixed_budget = false;
+    for _ in 0..100 {
+        if completed.load(std::sync::atomic::Ordering::Acquire) {
+            observed_by_fixed_budget = true;
+            break;
+        }
+        advance_lifecycle_time(&clock, std::time::Duration::from_millis(20)).await;
+    }
+    assert!(
+        !observed_by_fixed_budget,
+        "a fixed virtual-only budget must not observe real-time completion"
+    );
+
+    // The bounded wall-clock wait observes the same predicate without
+    // weakening it.
+    wait_for_lifecycle_condition(
+        &clock,
+        "real-time completion observed within the wall budget",
+        || completed.load(std::sync::atomic::Ordering::Acquire),
+        || "blocking-pool signal never completed".to_string(),
+    )
+    .await;
+    assert!(completed.load(std::sync::atomic::Ordering::Acquire));
 }
 
 #[tokio::test(start_paused = true)]

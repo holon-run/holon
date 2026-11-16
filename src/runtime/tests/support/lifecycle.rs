@@ -69,6 +69,58 @@ pub(crate) async fn advance_lifecycle_time(
     tokio::task::yield_now().await;
 }
 
+/// Bounded, diagnosable wait for a lifecycle condition under paused time.
+///
+/// Paused Tokio time drives the runtime's business timers (for example a
+/// blocked WorkItem recheck deadline), while the recheck-to-turn chain also
+/// needs real scheduler slots and blocking-pool I/O completion that virtual
+/// time cannot advance. A fixed budget of virtual steps with a single yield
+/// per step therefore flakes on loaded CI runners (#4185).
+///
+/// Every iteration re-checks `predicate` first (polling cannot miss a wake),
+/// then gives both completion dimensions a controlled step: several
+/// `yield_now()` calls for scheduler slots, one 20ms virtual step (capped in
+/// total so far-future fixture timers never fire) for business timers, and a
+/// 1ms real sleep for blocking-pool completion. The total wait is bounded by
+/// wall-clock time, which is independent of paused virtual time. On timeout
+/// the panic reports the label, elapsed wall time, total virtual advancement,
+/// and `diagnostics()`. Errors raised inside `predicate` propagate unchanged.
+pub(crate) async fn wait_for_lifecycle_condition(
+    clock: &crate::runtime::clock::TestClock,
+    label: &str,
+    mut predicate: impl FnMut() -> bool,
+    diagnostics: impl FnOnce() -> String,
+) {
+    const WALL_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
+    const VIRTUAL_STEP: std::time::Duration = std::time::Duration::from_millis(20);
+    const MAX_VIRTUAL_ADVANCE: std::time::Duration = std::time::Duration::from_secs(10);
+    const YIELDS_PER_ITERATION: usize = 4;
+    const REAL_SLEEP_STEP: std::time::Duration = std::time::Duration::from_millis(1);
+
+    let started = std::time::Instant::now();
+    let mut virtual_advanced = std::time::Duration::ZERO;
+    loop {
+        if predicate() {
+            return;
+        }
+        if started.elapsed() >= WALL_BUDGET {
+            panic!(
+                "lifecycle condition '{label}' not met within {WALL_BUDGET:?} wall time \
+                 (virtual advanced {virtual_advanced:?}); diagnostics:\n{}",
+                diagnostics()
+            );
+        }
+        for _ in 0..YIELDS_PER_ITERATION {
+            tokio::task::yield_now().await;
+        }
+        if virtual_advanced < MAX_VIRTUAL_ADVANCE {
+            advance_lifecycle_time(clock, VIRTUAL_STEP).await;
+            virtual_advanced += VIRTUAL_STEP;
+        }
+        std::thread::sleep(REAL_SLEEP_STEP);
+    }
+}
+
 pub(crate) struct LifecycleHarness {
     data_dir: TempDir,
     workspace: TempDir,
