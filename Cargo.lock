@@ -1539,6 +1539,7 @@ dependencies = [
  "holon-config",
  "holon-context",
  "holon-domain",
+ "holon-memory-index",
  "holon-model-catalog",
  "holon-provider",
  "holon-storage",
@@ -1651,6 +1652,20 @@ dependencies = [
  "thiserror 2.0.18",
  "unicode-casefold",
  "uuid",
+]
+
+[[package]]
+name = "holon-memory-index"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tracing",
 ]
 
 [[package]]
