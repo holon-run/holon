@@ -1,4 +1,4 @@
-use crate::diagnostics::resource_io::{admit_cloned_value, charge_owned_metadata};
+use crate::diagnostics::resource_io::admit_cloned_value;
 use crate::types::{
     AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageKind,
     MessageOrigin, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
@@ -21,9 +21,6 @@ pub(crate) enum WaitTriggerSelection<'a> {
         wait_id: String,
     },
     NoMatch,
-    Ambiguous {
-        wait_ids: Vec<String>,
-    },
 }
 
 pub(crate) fn is_agent_message(message: &MessageEnvelope) -> bool {
@@ -68,44 +65,46 @@ pub(crate) fn select_wait_to_trigger<'a>(
             wake: first.1,
         });
     };
-    // A task result consumes only one trigger marker per agent (#3124).
-    // Check every candidate before choosing, without a candidate Vec or sort.
-    if message.kind == MessageKind::TaskResult
-        && wait_trigger_candidates(message, conditions).all(|(condition, _)| {
-            condition.kind == WaitConditionKind::Task
-                && condition.wake_sources.iter().any(|source| {
-                    matches!(
-                        source,
-                        WakeSource::TaskResult { task_id }
-                            if Some(task_id.as_str()) == message.task_id.as_deref()
-                    )
-                })
-        })
-    {
-        let (condition, wake) = std::iter::once(first)
-            .chain(std::iter::once(second))
-            .chain(candidates)
-            .min_by(|(left, _), (right, _)| {
-                let left_owner = left.work_item_id.as_deref() == message.work_item_id.as_deref();
-                let right_owner = right.work_item_id.as_deref() == message.work_item_id.as_deref();
-                right_owner
-                    .cmp(&left_owner)
-                    .then_with(|| left.created_at.cmp(&right.created_at))
-                    .then_with(|| left.id.cmp(&right.id))
-            })
-            .expect("two candidates have a deterministic task wait");
-        return Ok(WaitTriggerSelection::Match { condition, wake });
-    }
-    let mut wait_ids = Vec::new();
-    for (condition, _) in std::iter::once(first)
+    // One wake consumes exactly one durable trigger marker. Selecting the
+    // waiter is the runtime's decision, never a reason to quarantine the wake
+    // (#3914): an exact task waiter for this result wins, then a WorkItem wait
+    // over agent-lifecycle scope, then the earliest registration, then the
+    // stable wait id. The remaining matches keep their own durable state.
+    let (condition, wake) = std::iter::once(first)
         .chain(std::iter::once(second))
         .chain(candidates)
-    {
-        admit_cloned_value(&condition.id)?;
-        charge_owned_metadata(std::mem::size_of::<String>() as u64, 1)?;
-        wait_ids.push(condition.id.clone());
-    }
-    Ok(WaitTriggerSelection::Ambiguous { wait_ids })
+        .min_by(|(left, _), (right, _)| trigger_wait_order(message, left, right))
+        .expect("two candidates have a deterministic selection");
+    Ok(WaitTriggerSelection::Match { condition, wake })
+}
+
+/// Deterministic single-waiter order for a wake that matches several waits
+/// (#3914). It mirrors the scheduler's canonical selection so the planned
+/// owner and the triggered wait row agree.
+pub(crate) fn trigger_wait_order(
+    message: &MessageEnvelope,
+    left: &WaitConditionRecord,
+    right: &WaitConditionRecord,
+) -> std::cmp::Ordering {
+    let exact_task_waiter = |condition: &WaitConditionRecord| {
+        condition.kind == WaitConditionKind::Task
+            && condition.work_item_id.as_deref() == message.work_item_id.as_deref()
+            && message.task_id.as_deref().is_some_and(|task_id| {
+                condition.wake_sources.iter().any(|source| {
+                    matches!(source, WakeSource::TaskResult { task_id: id } if id == task_id)
+                })
+            })
+    };
+    exact_task_waiter(right)
+        .cmp(&exact_task_waiter(left))
+        .then_with(|| {
+            right
+                .work_item_id
+                .is_some()
+                .cmp(&left.work_item_id.is_some())
+        })
+        .then_with(|| left.created_at.cmp(&right.created_at))
+        .then_with(|| left.id.cmp(&right.id))
 }
 
 fn wait_trigger_candidates<'a>(
@@ -172,8 +171,18 @@ pub(crate) fn matching_wake_source<'a>(
             (&message.kind, &message.origin),
             (MessageKind::TaskResult, MessageOrigin::Task { .. })
         );
+    // A Timer fire carries no WorkItem binding when several waits hold the
+    // same Timer (#3914). Both scopes stay candidates; the deterministic
+    // selection decides which one owns the wake and the rest keep their own
+    // durable state.
+    let unbound_timer_fire = message.work_item_id.is_none()
+        && matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::TimerTick, MessageOrigin::Timer { .. })
+        );
     if message.agent_id != condition.agent_id
         || (!task_result_message
+            && !unbound_timer_fire
             && message.work_item_id.as_deref() != condition.work_item_id.as_deref())
         || (condition.status == WaitConditionStatus::Triggered
             && condition.trigger_message_id() != Some(message.id.as_str()))
@@ -386,21 +395,33 @@ mod tests {
     }
 
     #[test]
-    fn selection_rejects_ambiguous_uncorrelated_waits() {
+    fn selection_picks_one_wait_deterministically_instead_of_quarantining() {
+        // #3914: a wake matching several waits is not ambiguous. The runtime
+        // picks one waiter: an exact task waiter, then WorkItem scope over
+        // agent lifecycle, then registration order, then the stable id.
         let message = task_result("task-a", Some("work-a"));
+        let mut lifecycle = task_wait("wait-0-lifecycle", None, "task-a");
+        lifecycle.created_at -= chrono::Duration::days(1);
+        let same_time = task_wait("wait-a", Some("work-a"), "task-a");
+        let mut later = task_wait("wait-b", Some("work-a"), "task-a");
+        later.created_at = same_time.created_at + chrono::Duration::seconds(1);
+        let selected = |waits: &[WaitConditionRecord]| match select_wait_to_trigger(&message, waits)
+            .unwrap()
+        {
+            WaitTriggerSelection::Match { condition, .. } => condition.id.clone(),
+            other => panic!("expected a single deterministic match, got {other:?}"),
+        };
+        // WorkItem scope wins over an older agent-lifecycle wait.
         assert_eq!(
-            select_wait_to_trigger(
-                &message,
-                &[
-                    task_wait("wait-a", Some("work-a"), "task-a"),
-                    task_wait("wait-b", Some("work-a"), "task-a"),
-                ],
-            )
-            .unwrap(),
-            WaitTriggerSelection::Ambiguous {
-                wait_ids: vec!["wait-a".into(), "wait-b".into()],
-            }
+            selected(&[lifecycle, same_time.clone(), later.clone()]),
+            "wait-a"
         );
+        // Equal registration time falls back to the stable id.
+        let mut same_time_late_id = task_wait("wait-c", Some("work-a"), "task-a");
+        same_time_late_id.created_at = same_time.created_at;
+        assert_eq!(selected(&[same_time.clone(), same_time_late_id]), "wait-a");
+        // Registration order decides otherwise.
+        assert_eq!(selected(&[later, same_time]), "wait-a");
     }
 
     #[test]

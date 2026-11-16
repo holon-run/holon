@@ -25,9 +25,6 @@ fn id_cost(id: &str) -> (u64, usize) {
     let bytes = serde_json::to_string(id).unwrap().len() as u64;
     ((bytes * 4 + 128 + 512) * 8, 17 * 8)
 }
-fn cell_cost() -> (u64, usize) {
-    (std::mem::size_of::<String>() as u64 * 8, 8)
-}
 fn ambiguous_fixture() -> (MessageEnvelope, Vec<WaitConditionRecord>) {
     (
         task_result("task-a", Some("work-a")),
@@ -219,15 +216,34 @@ fn wake_subjects_borrow_message_and_condition_fields() -> Result<()> {
     Ok(())
 }
 
+fn timer_fire(work_item_id: Option<&str>) -> MessageEnvelope {
+    let mut message = task_result("timer-a", work_item_id);
+    message.kind = MessageKind::TimerTick;
+    message.origin = MessageOrigin::Timer {
+        timer_id: "timer-a".into(),
+    };
+    message.task_id = None;
+    message
+}
+
+fn timer_wait_at(
+    id: &str,
+    work_item_id: Option<&str>,
+    at: chrono::DateTime<Utc>,
+) -> WaitConditionRecord {
+    let mut wait = task_wait(id, work_item_id, "timer-a");
+    wait.kind = WaitConditionKind::Timer;
+    wait.subject_ref = Some("timer-a".into());
+    wait.wake_sources = vec![WakeSource::Timer { wake_at: at }];
+    wait.created_at = at;
+    wait
+}
+
 #[test]
-fn owning_selectors_share_exact_remainder_and_last_phase_holder() -> Result<()> {
+fn stale_exact_correlation_owns_its_id_and_releases_the_phase_holder() -> Result<()> {
     let (mut message, waits) = ambiguous_fixture();
-    let stale_id = "stale-\"\\\n路";
-    let expected = waits
-        .iter()
-        .fold(add(header(), id_cost(stale_id)), |total, wait| {
-            add(total, add(id_cost(&wait.id), cell_cost()))
-        });
+    let stale_id = "stale-\"\\\n\u{8def}";
+    let expected = add(header(), id_cost(stale_id));
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), expected.0, expected.1)?;
     let holders;
@@ -236,19 +252,10 @@ fn owning_selectors_share_exact_remainder_and_last_phase_holder() -> Result<()> 
         message
             .source_refs
             .insert("wait_id".into(), stale_id.into());
-        let stale = select_wait_to_trigger(&message, &waits)?;
         assert_eq!(
-            stale,
+            select_wait_to_trigger(&message, &waits)?,
             WaitTriggerSelection::StaleExact {
                 wait_id: stale_id.into()
-            }
-        );
-        message.source_refs.clear();
-        let ambiguous = select_wait_to_trigger(&message, &waits)?;
-        assert_eq!(
-            ambiguous,
-            WaitTriggerSelection::Ambiguous {
-                wait_ids: waits.iter().map(|wait| wait.id.clone()).collect(),
             }
         );
         assert_eq!(phase.finish()?, expected);
@@ -267,74 +274,66 @@ fn owning_selectors_share_exact_remainder_and_last_phase_holder() -> Result<()> 
 }
 
 #[test]
-fn every_owning_selector_gate_refuses_and_latches_original_phase() -> Result<()> {
-    let (mut message, waits) = ambiguous_fixture();
-    for stale in [true, false] {
-        let gates = if stale {
-            message.source_refs.insert("wait_id".into(), "stale".into());
-            vec![id_cost("stale")]
-        } else {
-            message.source_refs.clear();
-            waits
-                .iter()
-                .flat_map(|wait| [id_cost(&wait.id), cell_cost()])
-                .collect()
+fn multi_match_timer_selection_needs_only_the_header() -> Result<()> {
+    let message = timer_fire(Some("work-a"));
+    let at = waits_at();
+    let mut waits = vec![
+        timer_wait_at("wait-a", Some("work-a"), at),
+        timer_wait_at("wait-b", Some("work-a"), at + chrono::Duration::seconds(1)),
+        timer_wait_at("wait-lifecycle", None, at - chrono::Duration::days(1)),
+    ];
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), header().0, header().1)?;
+    {
+        let _active = phase.enter();
+        let WaitTriggerSelection::Match { condition, wake } =
+            select_wait_to_trigger(&message, &waits)?
+        else {
+            panic!("a multi-match timer fire must select one waiter");
         };
-        let mut prefix = header();
-        for next in gates {
-            for bytes_bound in [true, false] {
-                let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
-                let phase = ResourceReadMaterial::with_test_limits(
-                    &ledger,
-                    &scope(),
-                    if bytes_bound {
-                        prefix.0 + next.0 - 1
-                    } else {
-                        1024 * 1024
-                    },
-                    if bytes_bound {
-                        8192
-                    } else {
-                        prefix.1 + next.1 - 1
-                    },
-                )?;
-                {
-                    let _active = phase.enter();
-                    for _ in 0..2 {
-                        exhausted(&select_wait_to_trigger(&message, &waits).unwrap_err());
-                        assert!(phase.finish().is_err());
-                        assert!(ResourceReadMaterial::current_or_new(&ledger, &scope()).is_err());
-                        assert_eq!(ledger.report()?.observed_bytes, prefix.0);
-                    }
-                }
-                drop(phase);
-                assert_eq!(ledger.report()?.observed_bytes, 0);
-            }
-            prefix = add(prefix, next);
-        }
+        // WorkItem scope wins over the older agent-lifecycle wait.
+        assert_eq!(condition.id, "wait-a");
+        assert_eq!(wake.source, "timer");
+        // A later-discovered candidate cannot shadow an earlier one.
+        waits[0].created_at = at + chrono::Duration::seconds(2);
+        let WaitTriggerSelection::Match { condition, .. } =
+            select_wait_to_trigger(&message, &waits)?
+        else {
+            panic!("a multi-match timer fire must select one waiter");
+        };
+        assert_eq!(condition.id, "wait-b");
+        assert_eq!(phase.finish()?, header());
     }
-    assert!(ResourceReadMaterial::active_guard()?.is_none());
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }
 
 #[test]
-fn unphased_selection_preserves_ambiguity_and_checks_every_task_candidate() -> Result<()> {
-    let (mut message, mut waits) = ambiguous_fixture();
+fn task_result_selection_prefers_the_exact_owner_and_never_charges_ids() -> Result<()> {
+    let mut message = task_result("task-a", Some("work-a"));
     message.task_id = Some("task-a".into());
-    waits[2].kind = WaitConditionKind::External;
-    let WaitTriggerSelection::Ambiguous { wait_ids } = select_wait_to_trigger(&message, &waits)?
-    else {
-        panic!("a later non-task candidate must preserve ambiguity");
-    };
-    assert_eq!(
-        wait_ids,
-        waits.iter().map(|wait| wait.id.clone()).collect::<Vec<_>>()
-    );
-    waits[2].status = WaitConditionStatus::Cancelled;
-    assert!(matches!(
-        select_wait_to_trigger(&message, &waits)?,
-        WaitTriggerSelection::Match { .. }
-    ));
-    assert!(ResourceReadMaterial::active_guard()?.is_none());
+    let exact = task_wait("wait-owner", Some("work-a"), "task-a");
+    let mut older_foreign = task_wait("wait-foreign", Some("work-b"), "task-a");
+    older_foreign.created_at = exact.created_at - chrono::Duration::days(1);
+    let mut earlier_non_task = task_wait("wait-non-task", Some("work-a"), "task-a");
+    earlier_non_task.kind = WaitConditionKind::External;
+    earlier_non_task.created_at = exact.created_at - chrono::Duration::days(2);
+    let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+    let phase = ResourceReadMaterial::with_test_limits(&ledger, &scope(), header().0, header().1)?;
+    {
+        let _active = phase.enter();
+        let candidates = [earlier_non_task, older_foreign, exact];
+        let WaitTriggerSelection::Match { condition, wake } =
+            select_wait_to_trigger(&message, &candidates)?
+        else {
+            panic!("a task result must select its exact owner waiter");
+        };
+        assert_eq!(condition.id, "wait-owner");
+        assert_eq!(wake.source, "task_result");
+        assert_eq!(phase.finish()?, header());
+    }
+    drop(phase);
+    assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

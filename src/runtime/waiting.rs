@@ -239,6 +239,46 @@ impl WorkItemBlockerClearance {
     }
 }
 
+/// Agent-lifecycle waits matched by the same one-shot timer fire as the
+/// admission-authorizing WorkItem wait (#3914). They are resolved atomically
+/// with the admission, never before it succeeds and never when the fire was
+/// cancelled or re-targeted.
+fn merged_lifecycle_waits_for_timer_fire(
+    unresolved: &[&WaitConditionRecord],
+    admitted: &WaitConditionRecord,
+    message: &MessageEnvelope,
+    now: DateTime<Utc>,
+) -> Vec<WaitConditionRecord> {
+    if admitted.work_item_id.is_none()
+        || !matches!(
+            (&message.kind, &message.origin),
+            (MessageKind::TimerTick, MessageOrigin::Timer { .. })
+        )
+    {
+        return Vec::new();
+    }
+    unresolved
+        .iter()
+        .copied()
+        .filter(|wait| {
+            wait.id != admitted.id
+                && wait.work_item_id.is_none()
+                && crate::wake_contract::matching_wake_source(message, wait).is_some()
+        })
+        .map(|wait| {
+            let mut merged = wait.clone();
+            // The fire's trigger binding already belongs to the admitted
+            // WorkItem wait; UNIQUE(agent_id, trigger_message_id) keeps one
+            // wait per fire, so the merged lifecycle wait resolves without
+            // claiming the message id.
+            merged.status = WaitConditionStatus::Resolved;
+            merged.updated_at = now;
+            merged.resolved_at = Some(now);
+            merged
+        })
+        .collect()
+}
+
 impl RuntimeHandle {
     pub(super) fn wait_resolution_transition_for_message(
         &self,
@@ -250,7 +290,7 @@ impl RuntimeHandle {
             "Wait resolution Work scope differs"
         );
         let unresolved = work.unresolved_wait_conditions()?;
-        let Some(condition) = unresolved.into_iter().find(|condition| {
+        let Some(condition) = unresolved.iter().copied().find(|condition| {
             condition.status == WaitConditionStatus::Triggered
                 && condition.trigger_message_id() == Some(message.id.as_str())
         }) else {
@@ -261,6 +301,13 @@ impl RuntimeHandle {
         resolved.status = WaitConditionStatus::Resolved;
         resolved.updated_at = now;
         resolved.resolved_at = Some(now);
+        // A one-shot timer fire may match both the WorkItem wait that
+        // authorizes this admission and an agent-lifecycle wait holding the
+        // same timer (#3914). The WorkItem wait wins; the lifecycle wait is
+        // resolved in the same transaction instead of staying non-terminal
+        // forever. Unselected WorkItem waits keep their own durable state.
+        let merged_wait_conditions =
+            merged_lifecycle_waits_for_timer_fire(&unresolved, condition, message, now);
 
         let mut work_item = None;
         let mut index_changes = Vec::new();
@@ -303,6 +350,7 @@ impl RuntimeHandle {
                 updated_at: condition.updated_at,
             },
             record: resolved,
+            merged_wait_conditions,
             work_item,
             index_changes,
         }))

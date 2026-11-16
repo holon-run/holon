@@ -254,7 +254,6 @@ enum QueueHeadNoProgressCause {
         reason: &'static str,
     },
     HardBlocker(CanonicalClaimHardBlocker),
-    AmbiguousWait,
     ReplanExhausted,
     InterruptedReplaySourceInvalid,
 }
@@ -264,9 +263,7 @@ impl QueueHeadNoProgressCause {
         match self {
             Self::RetainedAuthority { scenario_class, .. } => Some(*scenario_class),
             Self::HardBlocker(blocker) => Some(blocker.scenario_class),
-            Self::AmbiguousWait | Self::ReplanExhausted | Self::InterruptedReplaySourceInvalid => {
-                None
-            }
+            Self::ReplanExhausted | Self::InterruptedReplaySourceInvalid => None,
         }
     }
 
@@ -274,7 +271,6 @@ impl QueueHeadNoProgressCause {
         match self {
             Self::RetainedAuthority { reason, .. } => reason,
             Self::HardBlocker(blocker) => blocker.blocker_code,
-            Self::AmbiguousWait => "canonical_wait_ambiguous",
             Self::ReplanExhausted => "canonical_claim_replan_exhausted",
             Self::InterruptedReplaySourceInvalid => "interrupted_replay_source_invalid",
         }
@@ -1407,26 +1403,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 ));
             }
             Err(error) => {
-                if let Some(ambiguous) = error.downcast_ref::<scheduler::AmbiguousCanonicalWaits>()
-                {
-                    drop(planning_guard.take());
-                    self.runtime
-                        .append_ambiguous_wait_advisory(
-                            &persisted_message,
-                            &ambiguous.wait_condition_ids,
-                        )
-                        .await?;
-                    self.runtime
-                        .append_prepared_scheduling_advisories(&read.advisories)
-                        .await?;
-                    return Ok(PrepareMessageOutcome::Poll(
-                        self.defer_or_quarantine_queue_head(
-                            &candidate,
-                            QueueHeadNoProgressCause::AmbiguousWait,
-                        )
-                        .await?,
-                    ));
-                }
                 return Err(error);
             }
         };
@@ -2004,13 +1980,22 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .unwrap_or((None, None));
                 let mut attempt_audit_events = claim_audit_events.clone();
                 if let Some(wait_transition) = wait_transition.as_ref() {
+                    let mut wait_condition_ids =
+                        Vec::with_capacity(1 + wait_transition.merged_wait_conditions.len());
+                    wait_condition_ids.push(wait_transition.record.id.clone());
+                    wait_condition_ids.extend(
+                        wait_transition
+                            .merged_wait_conditions
+                            .iter()
+                            .map(|wait| wait.id.clone()),
+                    );
                     attempt_audit_events.push(AuditEvent::legacy(
                         "wait_conditions_resolved",
                         serde_json::json!({
                             "agent_id": persisted_message.agent_id,
                             "message_id": persisted_message.id,
                             "reason": "execution_admission",
-                            "wait_condition_ids": [wait_transition.record.id],
+                            "wait_condition_ids": wait_condition_ids,
                         }),
                     ));
                 }
@@ -2070,6 +2055,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                         crate::runtime_db::transitions::PreparedQueueTransition::new(command);
                     prepared.execution_protocol = execution_protocol;
                     prepared.wait_transition = wait_transition.clone();
+                    prepared.extra_wait_conditions = wait_transition
+                        .as_ref()
+                        .map(|transition| transition.merged_wait_conditions.clone())
+                        .unwrap_or_default();
                     prepared.timer_wake_claim = timer_wake_claim;
                     guard.commit_prepared_queue(run_id.clone(), prepared).await
                 };
@@ -5894,7 +5883,6 @@ mod tests {
                     blocker_code: reason,
                 })
             }
-            "canonical_wait_ambiguous" => QueueHeadNoProgressCause::AmbiguousWait,
             "canonical_claim_replan_exhausted" => QueueHeadNoProgressCause::ReplanExhausted,
             "interrupted_replay_source_invalid" => {
                 QueueHeadNoProgressCause::InterruptedReplaySourceInvalid
@@ -6557,7 +6545,7 @@ mod tests {
                     executor
                         .defer_or_quarantine_queue_head(
                             &candidate,
-                            QueueHeadNoProgressCause::AmbiguousWait,
+                            QueueHeadNoProgressCause::ReplanExhausted,
                         )
                         .await
                         .unwrap();
@@ -6621,7 +6609,10 @@ mod tests {
             .unwrap();
         assert!(matches!(
             executor
-                .defer_or_quarantine_queue_head(&candidate, QueueHeadNoProgressCause::AmbiguousWait)
+                .defer_or_quarantine_queue_head(
+                    &candidate,
+                    QueueHeadNoProgressCause::ReplanExhausted
+                )
                 .await
                 .unwrap(),
             RunLoopPoll::Idle,
@@ -6716,11 +6707,6 @@ mod tests {
                 }),
                 Some(SchedulerScenarioClass::ExactWaitResume),
                 "canonical_activation_scenario_unresolved",
-            ),
-            (
-                QueueHeadNoProgressCause::AmbiguousWait,
-                None,
-                "canonical_wait_ambiguous",
             ),
             (
                 QueueHeadNoProgressCause::ReplanExhausted,
@@ -6921,7 +6907,6 @@ mod tests {
         for reason in [
             "explicit_binding_work_item_missing",
             "canonical_activation_scenario_unresolved",
-            "canonical_wait_ambiguous",
             "canonical_claim_replan_exhausted",
             "interrupted_replay_source_invalid",
         ] {

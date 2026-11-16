@@ -12,7 +12,7 @@ use crate::types::{
 };
 use anyhow::bail;
 use chrono::{DateTime, Utc};
-use std::{collections::HashMap, fmt};
+use std::collections::HashMap;
 
 /// The ordinary closure policy has always observed the latest 64 Briefs.
 pub(crate) const SCHEDULER_BRIEF_LIMIT: usize = 64;
@@ -124,24 +124,6 @@ pub(crate) enum CanonicalActivationCandidate {
     },
 }
 
-#[derive(Debug)]
-pub(crate) struct AmbiguousCanonicalWaits {
-    pub(crate) message_id: String,
-    pub(crate) wait_condition_ids: Vec<String>,
-}
-
-impl fmt::Display for AmbiguousCanonicalWaits {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "canonical activation message {} matches multiple active waits",
-            self.message_id
-        )
-    }
-}
-
-impl std::error::Error for AmbiguousCanonicalWaits {}
-
 impl CanonicalActivationScenario {
     pub(crate) fn work_item_id(&self) -> Option<&str> {
         match self {
@@ -198,10 +180,10 @@ mod semantic_selection;
 #[cfg(test)]
 pub(crate) use diagnostics::append_scheduling_advisories;
 pub(crate) use diagnostics::pending_deferred_activation_advisory;
+pub(super) use diagnostics::pending_scheduling_advisory_events;
 #[cfg(test)]
 pub(crate) use diagnostics::scheduling_advisories_for_facts;
 pub(crate) use diagnostics::scheduling_advisories_for_selected_facts;
-pub(super) use diagnostics::{ambiguous_wait_advisory_event, pending_scheduling_advisory_events};
 pub(crate) use diagnostics::{
     pending_interrupted_replay_source_advisory, pending_queue_head_starved_advisory,
     QUEUE_HEAD_STARVATION_AFTER_MS,
@@ -1093,10 +1075,13 @@ pub(crate) fn resolve_canonical_activation_scenario(
         // and must not make the exact task identity ambiguous.
         matching_waits.clear();
     } else if matching_waits.len() > 1 {
-        return Err(anyhow::Error::new(AmbiguousCanonicalWaits {
-            message_id: message.id.clone(),
-            wait_condition_ids: matching_waits.iter().map(|wait| wait.id.clone()).collect(),
-        }));
+        // One wake consumes exactly one waiter (#3914). An exact task waiter
+        // for this result wins, then a WorkItem wait over agent-lifecycle
+        // scope, then the earliest registration and stable wait id. Matching
+        // several waits is not a reason to quarantine the wake or retire its
+        // timer row; the remaining matches keep their own durable state.
+        matching_waits
+            .sort_by(|left, right| crate::wake_contract::trigger_wait_order(message, left, right));
     }
     let matching_wait = matching_waits.first().copied();
 

@@ -393,6 +393,11 @@ pub(crate) struct TaskExpectation {
 pub(crate) struct QueueWaitTransition {
     pub expected: WaitConditionExpectation,
     pub record: WaitConditionRecord,
+    /// Additional agent-lifecycle waits matched by the same one-shot wake.
+    /// They are resolved in the same transaction as the admission, so a
+    /// resolved WorkItem wait never leaves the merged lifecycle row active
+    /// (#3914).
+    pub merged_wait_conditions: Vec<WaitConditionRecord>,
     pub work_item: Option<WorkItemMutation>,
     pub index_changes: Vec<RuntimeIndexChange>,
 }
@@ -5219,13 +5224,6 @@ fn trigger_wait_and_enqueue_with_audit_time_tx(
         crate::wake_contract::WaitTriggerSelection::NoMatch => {
             TriggerWaitAndEnqueueOutcome::NoMatch
         }
-        crate::wake_contract::WaitTriggerSelection::Ambiguous { wait_ids } => {
-            bail!(
-                "TriggerWaitAndEnqueue rejected ambiguous wait correlation for message {}: {}",
-                message.id,
-                wait_ids.join(",")
-            );
-        }
     };
 
     let (message, message_inserted) = append_message_tx(tx, message)?;
@@ -9382,6 +9380,7 @@ mod tests {
                 updated_at: triggered.updated_at,
             },
             record: resolved,
+            merged_wait_conditions: Vec::new(),
             work_item: Some(WorkItemMutation::Update {
                 record: unblocked.clone(),
                 expected_revision: open.revision,
