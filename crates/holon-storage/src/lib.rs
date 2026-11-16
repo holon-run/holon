@@ -18,6 +18,7 @@ mod read_scope;
 mod reader_config;
 pub mod reader_pool;
 pub mod reclamation;
+pub mod retention_config;
 pub mod retired_scheduler_cleanup;
 pub mod schema;
 pub mod sequences;

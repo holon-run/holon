@@ -370,7 +370,7 @@ fn json_rejection_response(rejection: JsonRejection) -> (StatusCode, Json<Value>
 
 pub(crate) const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 pub(crate) const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
-pub const MAX_EVENT_STREAM_WINDOW: usize = 512;
+pub use holon_domain::MAX_EVENT_STREAM_WINDOW;
 pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const SESSION_COOKIE_NAME: &str = "holon_session";
 

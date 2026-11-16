@@ -1370,7 +1370,7 @@ impl RuntimeHandle {
                     crate::config::ModelRouteCapability::Turn,
                 )
                 .ok_or_else(|| {
-                    crate::config::ServiceTierValidationError(model_override.as_string())
+                    crate::config::ServiceTierValidationError::new(model_override.as_string())
                 })?;
             route.validate_service_tier(tier)?;
         }

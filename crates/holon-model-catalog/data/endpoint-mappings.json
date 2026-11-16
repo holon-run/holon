@@ -8,7 +8,7 @@
     "evidence": [
       "https://help.aliyun.com/zh/model-studio/token-plan-personal-overview",
       "models.dev/snapshot.json#/alibaba-token-plan-cn",
-      "src/config/models.rs"
+      "crates/holon-domain/src/provider_registry.rs"
     ]
   },
   {

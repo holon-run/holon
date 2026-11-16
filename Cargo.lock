@@ -1536,6 +1536,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "holon-config",
  "holon-domain",
  "holon-model-catalog",
  "holon-provider",
@@ -1578,6 +1579,26 @@ dependencies = [
  "uuid",
  "wreq",
  "wreq-util",
+]
+
+[[package]]
+name = "holon-config"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fs2",
+ "holon-domain",
+ "holon-model-catalog",
+ "holon-provider",
+ "holon-storage",
+ "holon-system",
+ "http",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "url",
 ]
 
 [[package]]

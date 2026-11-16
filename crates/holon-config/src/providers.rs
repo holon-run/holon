@@ -49,7 +49,8 @@ pub struct ProviderAuthView {
 }
 
 impl ControlAuthMode {
-    pub(crate) fn parse(value: &str) -> Result<Self> {
+    #[doc(hidden)]
+    pub fn parse(value: &str) -> Result<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
             "auto" => Ok(Self::Auto),
             "required" => Ok(Self::Required),

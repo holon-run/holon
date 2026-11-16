@@ -1,53 +1,47 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    env, fs,
-    io::Write,
-    path::{Path, PathBuf},
-    time::Duration,
-};
+use std::{collections::HashMap, env, path::PathBuf, time::Duration};
 
-use anyhow::{anyhow, Context, Result};
-use axum::http::{HeaderName, HeaderValue, Method};
-use serde::{de::Error as DeError, Deserialize, Deserializer, Serialize};
-use serde_json::{json, Value};
+use anyhow::{anyhow, Result};
 
 use crate::{
-    auth::{codex_cli_auth_file_exists, load_codex_cli_credential},
-    authentication::{AuthConfig, AuthenticationMode, OidcProviderConfig, SessionPolicy},
-    context::ContextConfig,
-    model_catalog::{
-        BuiltInModelCatalog, BuiltInModelMetadata, ModelRouteRuntimeOverride, ModelRuntimeOverride,
-        ResolvedRuntimeModelPolicy,
-    },
+    authentication::AuthConfig,
+    model_catalog::ModelRuntimeOverride,
     model_discovery::{discovery_cache_path, load_discovery_cache_at, ModelDiscoveryCacheFile},
-    provider::ProviderNativeWebSearchKind,
-    types::{ViewImageSelectedMode, ViewImageVisionCandidate, ViewImageVisionSelection},
-    web::{WebProviderKind, WebSearchMode},
 };
 
-mod builtin_providers;
-mod credentials;
-mod file;
-mod models;
-mod persistence;
-mod provider_headers;
-mod providers;
-mod schema;
-mod service_tier;
-mod web;
 mod x_search;
 
-pub use builtin_providers::*;
-pub use credentials::*;
-pub use file::*;
-pub use models::*;
-pub use persistence::*;
-pub use provider_headers::*;
-pub use providers::*;
-pub use schema::*;
-pub use service_tier::*;
-pub use web::*;
-pub use x_search::*;
+pub use holon_config::*;
+pub use x_search::XSearchRuntimeConfig;
+
+pub fn provider_config_views(config: &AppConfig) -> Vec<ProviderConfigView> {
+    config
+        .providers
+        .values()
+        .map(|provider| provider_config_view(config, provider))
+        .collect()
+}
+
+pub fn provider_config_view(
+    config: &AppConfig,
+    provider: &ProviderRuntimeConfig,
+) -> ProviderConfigView {
+    ProviderConfigView {
+        id: provider.id.as_str().to_string(),
+        transport: provider.transport.as_str().to_string(),
+        base_url: provider.base_url.clone(),
+        auth: ProviderAuthView {
+            source: provider.auth.source.as_str().to_string(),
+            kind: provider.auth.kind.as_str().to_string(),
+            env: provider.auth.env.clone(),
+            profile: provider.auth.profile.clone(),
+            external: provider.auth.external.clone(),
+        },
+        credential_configured: provider.has_configured_credential()
+            || matches!(provider.auth.source, CredentialSource::None),
+        configured_in_config: config.stored_config.providers.contains_key(&provider.id),
+        header_names: provider.headers.names(),
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -97,13 +91,24 @@ pub struct AppConfig {
     pub providers: ProviderRegistry,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum AltScreenMode {
-    #[default]
-    Auto,
-    Always,
-    Never,
+impl ModelCatalogSource for AppConfig {
+    fn model_catalog_config(&self) -> ModelCatalogConfig<'_> {
+        let config = self;
+        ModelCatalogConfig {
+            stored_config: &config.stored_config,
+            default_model: &config.default_model,
+            fallback_models: &config.fallback_models,
+            vision_model: config.vision_model.as_ref(),
+            image_generation_model: config.image_generation_model.as_ref(),
+            vision_candidate_models: &config.vision_candidate_models,
+            disable_provider_fallback: config.provider_fallback_disabled(),
+            providers: &config.providers,
+            model_discovery_cache: &config.model_discovery_cache,
+            validated_model_overrides: &config.validated_model_overrides,
+            validated_unknown_model_fallback: config.validated_unknown_model_fallback.as_ref(),
+            runtime_max_output_tokens: config.runtime_max_output_tokens,
+        }
+    }
 }
 
 impl AppConfig {
@@ -277,7 +282,7 @@ impl AppConfig {
             .map(|value| ControlAuthMode::parse(&value))
             .transpose()?
             .unwrap_or(ControlAuthMode::Auto);
-        let auth = materialize_auth_config(&stored_config.auth)?;
+        let auth = holon_config::authentication::materialize_auth_config(&stored_config.auth)?;
         let runtime_max_output_tokens = env::var("HOLON_MAX_OUTPUT_TOKENS")
             .ok()
             .and_then(|value| value.parse::<u32>().ok())
@@ -363,7 +368,7 @@ impl AppConfig {
             explicit_fallbacks,
             &providers,
             &validated_model_overrides,
-            mode,
+            mode.skip_authenticated_model_resolution(),
         ) {
             Ok(selection) => selection,
             Err(error) if mode.allow_unresolved_model() => {
@@ -443,39 +448,6 @@ impl AppConfig {
     }
 }
 
-fn materialize_auth_config(file: &AuthConfigFile) -> Result<AuthConfig> {
-    let defaults = SessionPolicy::default();
-    let absolute_ttl_seconds = file
-        .session
-        .absolute_ttl_seconds
-        .and_then(|value| (value != 0).then_some(value))
-        .or(defaults.absolute_ttl_seconds);
-    // Clamp the derived idle default to an explicit absolute TTL so configs
-    // persisted before a default bump stay loadable.
-    let idle_ttl_seconds = file.session.idle_ttl_seconds.unwrap_or_else(|| {
-        absolute_ttl_seconds.map_or(defaults.idle_ttl_seconds, |absolute| {
-            defaults.idle_ttl_seconds.min(absolute)
-        })
-    });
-    let session = SessionPolicy {
-        absolute_ttl_seconds,
-        idle_ttl_seconds,
-    };
-    let oidc = file.oidc.as_ref().map(|oidc| OidcProviderConfig {
-        issuer_url: oidc.issuer_url.clone(),
-        client_id: oidc.client_id.clone(),
-        client_secret_env: oidc.client_secret_env.clone(),
-        redirect_uri: oidc.redirect_uri.clone(),
-    });
-    let config = AuthConfig {
-        mode: file.mode.unwrap_or(AuthenticationMode::Local),
-        oidc,
-        session,
-    };
-    config.validate()?;
-    Ok(config)
-}
-
 impl AppConfig {
     pub fn run_dir(&self) -> PathBuf {
         self.home_dir.join("run")
@@ -539,6 +511,10 @@ impl AppConfig {
         }
     }
 
+    pub(crate) fn validate_model_route_options(&self) -> Result<()> {
+        validate_model_route_options(&RuntimeModelCatalog::from_config(self))
+    }
+
     pub fn provider_chain(&self) -> Vec<ModelRouteRef> {
         RuntimeModelCatalog::from_config(self).provider_chain(None)
     }
@@ -573,13 +549,13 @@ pub(crate) enum ConfigLoadMode {
 }
 
 impl ConfigLoadMode {
+    fn skip_authenticated_model_resolution(self) -> bool {
+        matches!(self, Self::ConfigInspection)
+    }
+
     fn allow_unresolved_model(self) -> bool {
         matches!(self, Self::ConfigInspection)
             || matches!(self, Self::Runtime) && bootstrap_mode_requested()
-    }
-
-    fn skip_authenticated_model_resolution(self) -> bool {
-        matches!(self, Self::ConfigInspection)
     }
 }
 
@@ -590,72 +566,6 @@ fn bootstrap_mode_requested() -> bool {
             "1" | "true" | "yes" | "on"
         )
     })
-}
-
-impl AltScreenMode {
-    pub fn parse(value: &str) -> Result<Self> {
-        match value.trim().to_ascii_lowercase().as_str() {
-            "auto" => Ok(Self::Auto),
-            "always" => Ok(Self::Always),
-            "never" => Ok(Self::Never),
-            other => Err(anyhow!(
-                "invalid alternate screen mode {other}; expected auto|always|never"
-            )),
-        }
-    }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Always => "always",
-            Self::Never => "never",
-        }
-    }
-}
-
-pub fn load_settings_env() -> Result<HashMap<String, String>> {
-    let path = settings_path();
-    if !path.exists() {
-        return Ok(HashMap::new());
-    }
-
-    let content =
-        fs::read_to_string(&path).with_context(|| format!("failed to read {}", path.display()))?;
-    let settings: ClaudeSettings =
-        serde_json::from_str(&content).context("failed to parse ~/.claude/settings.json")?;
-    Ok(settings.env)
-}
-
-pub fn default_holon_home() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".holon")
-}
-
-pub fn default_user_home_dir() -> Option<PathBuf> {
-    env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| !path.as_os_str().is_empty())
-        .or_else(|| {
-            env::var_os("USERPROFILE")
-                .map(PathBuf::from)
-                .filter(|path| !path.as_os_str().is_empty())
-        })
-        .or_else(|| {
-            let drive = env::var_os("HOMEDRIVE")?;
-            let path = env::var_os("HOMEPATH")?;
-            let joined = PathBuf::from(drive).join(path);
-            (!joined.as_os_str().is_empty()).then_some(joined)
-        })
-}
-
-pub fn default_codex_home() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".codex")
-}
-
-fn settings_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".into());
-    Path::new(&home).join(".claude/settings.json")
 }
 
 fn resolve_disable_provider_fallback(stored_config: &HolonConfigFile) -> Result<bool> {
@@ -697,39 +607,6 @@ fn validate_retired_scheduler_selector_values(
             "{source} is obsolete; remove it because canonical scheduling is always enabled"
         )),
     }
-}
-
-fn resolve_runtime_db_retention_policy(
-    stored_config: &HolonConfigFile,
-) -> Result<crate::runtime_db::RuntimeDbRetentionPolicy> {
-    let configured = &stored_config.runtime.retention;
-    let defaults = crate::runtime_db::RuntimeDbRetentionPolicy::default();
-    crate::runtime_db::RuntimeDbRetentionPolicy {
-        enabled: configured.enabled.unwrap_or(defaults.enabled),
-        audit_events_days: configured
-            .audit_events_days
-            .unwrap_or(defaults.audit_events_days),
-        transcript_entries_days: configured
-            .transcript_entries_days
-            .unwrap_or(defaults.transcript_entries_days),
-        tool_executions_days: configured
-            .tool_executions_days
-            .unwrap_or(defaults.tool_executions_days),
-        audit_events_min_rows_per_scope: configured
-            .audit_events_min_rows_per_scope
-            .unwrap_or(defaults.audit_events_min_rows_per_scope),
-        transcript_entries_min_rows: configured
-            .transcript_entries_min_rows
-            .unwrap_or(defaults.transcript_entries_min_rows),
-        tool_executions_min_rows: configured
-            .tool_executions_min_rows
-            .unwrap_or(defaults.tool_executions_min_rows),
-        interval_hours: configured.interval_hours.unwrap_or(defaults.interval_hours),
-        incremental_vacuum_pages: configured
-            .incremental_vacuum_pages
-            .unwrap_or(defaults.incremental_vacuum_pages),
-    }
-    .validate()
 }
 
 fn resolve_diagnostics_writer_config(
@@ -832,136 +709,22 @@ fn resolve_otlp_exporter_config(
     Ok(Some(config))
 }
 
-fn resolve_disable_provider_fallback_override(
-    env_override: Option<&str>,
-    stored_config: &HolonConfigFile,
-) -> Result<bool> {
-    match env_override {
-        Some(value) => parse_bool_value(value)
-            .map_err(|_| anyhow!("HOLON_DISABLE_PROVIDER_FALLBACK expects a boolean"))?
-            .ok_or_else(|| anyhow!("HOLON_DISABLE_PROVIDER_FALLBACK expects a boolean")),
-        None => Ok(stored_config
-            .runtime
-            .disable_provider_fallback
-            .unwrap_or(false)),
-    }
-}
-
-fn resolve_anthropic_context_management_config() -> Result<AnthropicContextManagementConfig> {
-    resolve_anthropic_context_management_config_with_defaults(
-        default_anthropic_runtime_cache_strategy(),
-        true,
-    )
-}
-
-fn resolve_anthropic_compatible_context_management_config(
-) -> Result<AnthropicContextManagementConfig> {
-    resolve_anthropic_context_management_config_with_defaults(
-        default_anthropic_runtime_cache_strategy(),
-        false,
-    )
-}
-
-fn resolve_anthropic_context_management_config_with_defaults(
-    default_cache_strategy: AnthropicCacheStrategy,
-    auto_prompt_cache_betas: bool,
-) -> Result<AnthropicContextManagementConfig> {
-    let enabled = match env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT").ok() {
-        Some(value) => parse_bool_value(&value)
-            .map_err(|_| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?
-            .ok_or_else(|| anyhow!("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT expects a boolean"))?,
-        None => false,
-    };
-    let trigger_input_tokens = env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_TRIGGER_INPUT_TOKENS")
-        .ok()
-        .map(|value| {
-            parse_positive_u32_key(
-                "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_TRIGGER_INPUT_TOKENS",
-                &value,
-            )
-        })
-        .transpose()?
-        .unwrap_or(100_000);
-    let keep_recent_tool_uses =
-        env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_KEEP_RECENT_TOOL_USES")
-            .ok()
-            .map(|value| {
-                parse_positive_u32_key(
-                    "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_KEEP_RECENT_TOOL_USES",
-                    &value,
-                )
-            })
-            .transpose()?
-            .unwrap_or(3);
-    let clear_at_least_input_tokens =
-        env::var("HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_CLEAR_AT_LEAST_INPUT_TOKENS")
-            .ok()
-            .map(|value| {
-                parse_positive_u32_key(
-                    "HOLON_ANTHROPIC_CONTEXT_MANAGEMENT_CLEAR_AT_LEAST_INPUT_TOKENS",
-                    &value,
-                )
-            })
-            .transpose()?;
-    let cache_strategy = env::var("HOLON_ANTHROPIC_CACHE_STRATEGY")
-        .ok()
-        .map(|value| parse_anthropic_cache_strategy_env(&value))
-        .transpose()?
-        .unwrap_or(default_cache_strategy);
-    let betas_env = env::var("HOLON_ANTHROPIC_BETAS").ok();
-    let betas = match betas_env {
-        Some(value) => parse_comma_separated_values(&value),
-        None if auto_prompt_cache_betas
-            && cache_strategy == AnthropicCacheStrategy::ClaudeCodePromptCache =>
-        {
-            vec![
-                "claude-code-20250219".to_string(),
-                "prompt-caching-scope-2026-01-05".to_string(),
-            ]
-        }
-        None => Vec::new(),
-    };
-
-    Ok(AnthropicContextManagementConfig {
-        enabled,
-        trigger_input_tokens,
-        keep_recent_tool_uses,
-        clear_at_least_input_tokens,
-        cache_strategy,
-        betas,
-        cache_capabilities: AnthropicCacheCapabilities::default(),
-    })
-}
-
-fn default_anthropic_runtime_cache_strategy() -> AnthropicCacheStrategy {
-    AnthropicCacheStrategy::ClaudeCodePromptCache
-}
-
-fn parse_anthropic_cache_strategy_env(raw_value: &str) -> Result<AnthropicCacheStrategy> {
-    if raw_value.trim().is_empty() {
-        return Ok(default_anthropic_runtime_cache_strategy());
-    }
-    parse_anthropic_cache_strategy(raw_value)
-}
-
-fn parse_anthropic_cache_strategy(raw_value: &str) -> Result<AnthropicCacheStrategy> {
-    match raw_value.trim().to_ascii_lowercase().as_str() {
-        "messages_native" | "messages-native" | "native" | "current" => {
-            Ok(AnthropicCacheStrategy::MessagesNative)
-        }
-        "claude_code_prompt_cache"
-        | "claude-code-prompt-cache"
-        | "claude_cli_like"
-        | "claude-cli-like"
-        | "claude" => {
-            Ok(AnthropicCacheStrategy::ClaudeCodePromptCache)
-        }
-        _ => Err(anyhow!(
-            "HOLON_ANTHROPIC_CACHE_STRATEGY expects messages_native, claude_code_prompt_cache, or a legacy alias"
-        )),
-    }
-}
-
 #[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests;
+
+#[cfg(all(test, holon_lib_test_shard = "d"))]
+mod models {
+    use super::*;
+    use crate::model_catalog::BuiltInModelCatalog;
+    use anyhow::Result;
+    mod list_catalog_tests;
+    mod policy_material_tests;
+    mod route_cache_tests;
+}
+
+#[cfg(all(test, holon_lib_test_shard = "d"))]
+mod provider_headers {
+    use super::*;
+    mod tests;
+}

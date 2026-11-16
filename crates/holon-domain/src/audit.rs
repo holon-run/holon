@@ -17,6 +17,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
+pub const MAX_EVENT_STREAM_WINDOW: usize = 512;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct MessageLifecycleAuditEvent {
     pub message_id: String,

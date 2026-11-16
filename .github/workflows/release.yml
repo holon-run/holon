@@ -554,6 +554,7 @@ jobs:
           publish_if_needed holon-model-client
           publish_if_needed holon-provider
           publish_if_needed holon-model-catalog
+          publish_if_needed holon-config
           publish_if_needed decision-core
           publish_if_needed decision-jev
           publish_if_needed decision-clef

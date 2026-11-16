@@ -65,7 +65,8 @@ pub fn list_credential_profiles_at(path: &Path) -> Result<Vec<CredentialProfileS
         .collect())
 }
 
-pub(crate) fn normalize_credential_profile_id(profile: &str) -> Result<String> {
+#[doc(hidden)]
+pub fn normalize_credential_profile_id(profile: &str) -> Result<String> {
     let trimmed = profile.trim();
     if trimmed.is_empty() {
         return Err(anyhow!("credential profile id must not be empty"));
@@ -90,7 +91,8 @@ pub(crate) fn validate_stored_credential_kind(kind: CredentialKind) -> Result<()
     }
 }
 
-pub(crate) fn config_uses_credential_profiles(config: &HolonConfigFile) -> bool {
+#[doc(hidden)]
+pub fn config_uses_credential_profiles(config: &HolonConfigFile) -> bool {
     config
         .providers
         .values()
