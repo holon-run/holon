@@ -12,8 +12,8 @@ use sha2::{Digest, Sha256};
 fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
-use crate::config::{ModelRef, ModelRouteRef, ProviderId};
-use crate::model_catalog::BuiltInModelMetadata;
+use crate::BuiltInModelMetadata;
+use holon_domain::model_values::{ModelRef, ModelRouteRef, ProviderId};
 
 use super::projection::ProjectionResult;
 
@@ -223,7 +223,6 @@ impl ModelsDevArtifact {
     }
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::super::dto::ModelsDevSnapshot;

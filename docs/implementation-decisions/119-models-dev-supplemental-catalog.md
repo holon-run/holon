@@ -4,7 +4,7 @@ Decision:
 
 - upgrade the weekly models.dev refresh from discovery-only to a
   review-gated supply line: `holon models-dev refresh` drafts new catalog
-  entries into the checked-in `models.dev/supplemental_catalog.json`
+  entries into the checked-in `crates/holon-model-catalog/data/supplemental_catalog.json`
 - auto-draft only for a curated provider allowlist
   (`AUTO_SUPPLEMENT_PROVIDERS`); aggregators and gateways (openrouter,
   huggingface, nvidia, venice, nearai, together, fireworks, chutes, arcee)
@@ -14,7 +14,7 @@ Decision:
   window gates entry only, retention is sticky (entries stay while they
   exist upstream and are not promoted into the compiled-in catalog)
 - the runtime merges the checked-in supplement into the built-in catalog at
-  startup (`src/model_catalog/snapshot.rs`): metadata plus a
+  startup (`crates/holon-model-catalog/src/snapshot.rs`): metadata plus a
   default-endpoint route per entry, never overriding compiled-in entries,
   aliases, routes, credentials, or preferred models
 - the refresh PR body is generated from `models.dev/refresh-summary.md`

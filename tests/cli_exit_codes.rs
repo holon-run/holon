@@ -293,7 +293,7 @@ fn models_dev_refresh_retains_only_matching_capacity_reviews() {
         })
         .expect("catalog contains a route with unknown capacities");
 
-    for stale in [false, true] {
+    for (stale, separate_supplement) in [(false, false), (true, true)] {
         let (mut command, home) = isolated_holon_command();
         let output_dir = home.path().join("models-dev");
         std::fs::create_dir(&output_dir).unwrap();
@@ -351,11 +351,18 @@ fn models_dev_refresh_retains_only_matching_capacity_reviews() {
                 }
             }
         });
-        let output = command
+        command
             .args(["models-dev", "refresh", "--url", &url, "--output-dir"])
-            .arg(&output_dir)
-            .output()
-            .unwrap();
+            .arg(&output_dir);
+        let default_supplement = output_dir.join("supplemental_catalog.json");
+        let supplement = if separate_supplement {
+            let path = home.path().join("reviewed-supplement.json");
+            command.arg("--supplement-path").arg(&path);
+            path
+        } else {
+            default_supplement.clone()
+        };
+        let output = command.output().unwrap();
         server.join().unwrap_or_else(|_| {
             let stderr = String::from_utf8_lossy(&output.stderr);
             panic!("models-dev refresh mock failed: {stderr}");
@@ -365,6 +372,24 @@ fn models_dev_refresh_retains_only_matching_capacity_reviews() {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        assert!(supplement.is_file());
+        assert_eq!(default_supplement.exists(), !separate_supplement);
+        if separate_supplement {
+            let (mut validate, _home) = isolated_holon_command();
+            let validation = validate
+                .args(["models-dev", "validate", "--input-dir"])
+                .arg(&output_dir)
+                .arg("--supplement-path")
+                .arg(&supplement)
+                .output()
+                .unwrap();
+            assert!(
+                validation.status.success(),
+                "{}",
+                String::from_utf8_lossy(&validation.stderr)
+            );
+            assert!(String::from_utf8_lossy(&validation.stdout).contains("Supplement valid"));
+        }
         let summary = std::fs::read_to_string(output_dir.join("refresh-summary.md")).unwrap();
         let retained =
             summary.contains("Dynamic | NotApplicable | CLI fixture: reviewed dynamic selector.");

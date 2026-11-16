@@ -17,7 +17,7 @@ pub enum ModelMetadataSource {
     ConservativeBuiltin,
     ConfigOverride,
     RemoteDiscovered,
-    /// Checked-in `models.dev/supplemental_catalog.json` entry, drafted by
+    /// Checked-in supplemental catalog entry, drafted by
     /// `holon models-dev refresh` for already-supported providers and
     /// admitted through PR review.
     ModelsDevSupplement,

@@ -10,7 +10,7 @@ Holon includes built-in configuration for **36 provider accounts**
 across **49 endpoints** and **423 models**.
 
 This page is auto-generated from the Holon source code
-([`src/model_catalog.rs`](../../../src/model_catalog.rs) and
+([`crates/holon-model-catalog/src/lib.rs`](../../../crates/holon-model-catalog/src/lib.rs) and
 [`src/config/mod.rs`](../../../src/config/mod.rs)).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
 

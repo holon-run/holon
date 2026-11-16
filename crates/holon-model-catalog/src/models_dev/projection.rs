@@ -11,8 +11,8 @@
 
 use std::collections::BTreeMap;
 
-use crate::config::{ModelRef, ProviderId};
-use crate::model_catalog::{BuiltInModelMetadata, ModelCapabilityFlags, ModelMetadataSource};
+use crate::{BuiltInModelMetadata, ModelCapabilityFlags, ModelMetadataSource};
+use holon_domain::model_values::{ModelRef, ProviderId};
 
 use super::dto::{ModelsDevModel, ModelsDevSnapshot};
 
@@ -295,11 +295,10 @@ fn project_reasoning_effort_options(model_ref: &ModelRef, model: &ModelsDevModel
         .collect()
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model_catalog::ModelMetadataSource;
+    use crate::ModelMetadataSource;
 
     fn sample_snapshot() -> ModelsDevSnapshot {
         let json = r#"{

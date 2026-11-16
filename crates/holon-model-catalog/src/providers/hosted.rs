@@ -1066,7 +1066,6 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
     ]
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;

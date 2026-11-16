@@ -12,7 +12,7 @@ use holon_domain::model_values::BUILT_IN_SNAPSHOT;
 /// Checked-in `models.dev` supplemental catalog. Drafted by
 /// `holon models-dev refresh` for allowlisted providers and admitted through
 /// PR review; the runtime merges it into the built-in catalog.
-const MODELS_DEV_SUPPLEMENT: &str = include_str!("../../models.dev/supplemental_catalog.json");
+const MODELS_DEV_SUPPLEMENT: &str = include_str!("../data/supplemental_catalog.json");
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -75,7 +75,7 @@ pub(super) fn legacy_catalog() -> Result<BuiltInModelCatalog, String> {
 }
 
 fn apply_models_dev_supplement(catalog: &mut BuiltInModelCatalog, raw: &str) -> Result<(), String> {
-    let supplement = crate::model_catalog::models_dev::supplement::ModelsDevSupplement::parse(raw)?;
+    let supplement = crate::models_dev::supplement::ModelsDevSupplement::parse(raw)?;
     supplement.apply_to(catalog)
 }
 
@@ -389,7 +389,6 @@ pub(super) fn validate_model_entry(model: &BuiltInModelMetadata) -> Result<(), S
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,7 +402,7 @@ mod tests {
         std::fs::write(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/crates/holon-domain/src/builtin_snapshot_v1.json"
+                "/../holon-domain/src/builtin_snapshot_v1.json"
             ),
             format!("{json}\n"),
         )
@@ -420,10 +419,9 @@ mod tests {
     #[test]
     fn built_in_catalog_includes_checked_in_supplement() {
         let catalog = built_in_catalog().expect("built-in snapshot must be valid");
-        let supplement = crate::model_catalog::models_dev::supplement::ModelsDevSupplement::parse(
-            MODELS_DEV_SUPPLEMENT,
-        )
-        .expect("checked-in supplement must parse");
+        let supplement =
+            crate::models_dev::supplement::ModelsDevSupplement::parse(MODELS_DEV_SUPPLEMENT)
+                .expect("checked-in supplement must parse");
         for model in &supplement.models {
             let entry = catalog.get(&model.model_ref).unwrap_or_else(|| {
                 panic!(
@@ -433,11 +431,11 @@ mod tests {
             });
             assert_eq!(
                 entry.source,
-                crate::model_catalog::ModelMetadataSource::ModelsDevSupplement
+                crate::ModelMetadataSource::ModelsDevSupplement
             );
             let route = ModelRouteRef::new(
                 model.model_ref.provider.clone(),
-                crate::config::ProviderEndpointId::default_endpoint(),
+                holon_domain::model_values::ProviderEndpointId::default_endpoint(),
                 model.model_ref.model.clone(),
             );
             assert!(

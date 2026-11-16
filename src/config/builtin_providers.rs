@@ -1,8 +1,9 @@
 use super::*;
 use crate::provider::{
-    provider_definition, provider_definitions, ProviderContextManagement, ProviderDefinition,
-    ProviderMaterializer, ProviderWebSearch,
+    provider_definitions, ProviderContextManagement, ProviderDefinition, ProviderMaterializer,
+    ProviderWebSearch,
 };
+pub(crate) use holon_domain::model_values::built_in_provider_endpoint_identity;
 
 pub fn validate_provider_config(
     provider_id: &ProviderId,
@@ -875,21 +876,6 @@ impl BuiltInProviderCatalog {
         entries.sort_by(|a, b| a.id.as_str().cmp(b.id.as_str()));
         entries
     }
-}
-
-pub(crate) fn built_in_provider_endpoint_identity(
-    legacy_provider: &ProviderId,
-) -> Result<(ProviderId, ProviderEndpointId)> {
-    let Some(definition) = provider_definition(legacy_provider.as_str()) else {
-        return Ok((
-            legacy_provider.clone(),
-            ProviderEndpointId::default_endpoint(),
-        ));
-    };
-    Ok((
-        ProviderId::parse(definition.route_provider)?,
-        ProviderEndpointId::parse(definition.route_endpoint)?,
-    ))
 }
 
 pub(crate) fn populate_built_in_provider_catalog(

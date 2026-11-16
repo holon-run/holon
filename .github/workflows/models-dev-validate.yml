@@ -6,7 +6,9 @@ on:
     paths:
       - "models.dev/**"
       - "src/model_catalog.rs"
-      - "src/model_catalog/**"
+      - "crates/holon-model-catalog/**"
+      - "crates/holon-domain/**"
+      - "crates/holon-system/src/resource_material.rs"
       - "src/config/models.rs"
       - "src/context/**"
       - "src/provider/registry/providers.rs"
@@ -26,7 +28,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     runs-on: ubuntu-latest
     env:
-      # All models_dev library tests belong to this compile group.
+      # Preserve the root integration and binary build profile.
       HOLON_LIB_TEST_SHARD: c
       RUSTFLAGS: -D warnings
       CARGO_INCREMENTAL: "0"
@@ -53,15 +55,16 @@ jobs:
       - name: Validate checked-in artifact (if present)
         run: |
           if [ -f models.dev/snapshot.json ] && [ -f models.dev/artifact.json ]; then
-            cargo run --locked -- models-dev validate --input-dir models.dev
+            cargo run --locked -- models-dev validate --input-dir models.dev --supplement-path crates/holon-model-catalog/data/supplemental_catalog.json
           else
             echo "No checked-in snapshot/artifact; skipping validate."
           fi
 
       - name: Run models.dev tests
         run: |
-          cargo test --locked --lib --no-run
-          cargo test --locked models_dev
+          cargo test --locked --manifest-path crates/holon-model-catalog/Cargo.toml
+          cargo test --locked --test models_dev_adapter --test models_dev_reviewed_capacity --test models_dev_coverage
+          cargo test --locked --test cli_exit_codes models_dev_refresh
 
       - name: Check reviewed route metadata and runtime budget policies (offline)
         run: cargo run --locked -- models-dev coverage --check

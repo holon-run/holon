@@ -14,8 +14,6 @@ use super::{
 
 mod providers;
 
-#[cfg(test)]
-pub(crate) use providers::ProviderCatalogRegistration;
 pub(crate) use providers::{
     provider_definition, provider_definitions, ProviderCatalogPolicy, ProviderContextManagement,
     ProviderDefinition, ProviderMaterializer, ProviderWebSearch,

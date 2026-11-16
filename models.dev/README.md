@@ -9,13 +9,13 @@ artifact generated from it.
   `holon models-dev refresh`.
 - `artifact.json` — Holon canonical model metadata projected from the
   snapshot using the explicit provider mapping in
-  `src/model_catalog/models_dev/projection.rs`.
-- `supplemental_catalog.json` — auto-drafted catalog entries for
+  [`crates/holon-model-catalog/src/models_dev/projection.rs`](../crates/holon-model-catalog/src/models_dev/projection.rs).
+- [`supplemental_catalog.json`](../crates/holon-model-catalog/data/supplemental_catalog.json) — auto-drafted catalog entries for
   already-supported providers (see below). The runtime merges it into the
   built-in catalog after review.
 - `refresh-summary.md` — human-readable summary of the latest refresh:
   drafted, retained, removed, and deferred models.
-- `endpoint-mappings.json` — reviewed, exact-endpoint/region associations for
+- [`endpoint-mappings.json`](../crates/holon-model-catalog/data/endpoint-mappings.json) — reviewed, exact-endpoint/region associations for
   native and plan catalogs. Optional `supported_models` allowlists also enumerate
   supported compatibility routes without pinned metadata. These are audit
   inputs, not runtime registrations or capability overrides.
@@ -25,14 +25,14 @@ artifact generated from it.
 ## Refresh
 
 ```bash
-cargo run -- models-dev refresh
+cargo run -- models-dev refresh --supplement-path crates/holon-model-catalog/data/supplemental_catalog.json
 ```
 
 This fetches the live `models.dev` snapshot, regenerates the artifact,
 drafts the supplemental catalog, and prints a provider mapping audit
 summary. The GitHub Actions workflow `models-dev-refresh.yml` runs this
 only when manually dispatched and opens a generated update PR (with the
-refresh summary as the PR body) when anything under `models.dev/` changes.
+refresh summary as the PR body) when the snapshot, artifact, review summary, or supplemental catalog changes.
 
 Daily maintenance is performed by the `holon-model-provider` agent at
 04:30 Beijing time (20:30 UTC on the previous day), using an agent-owned
@@ -57,10 +57,11 @@ decisions, evidence sources, and unresolved subscription/transport limits.
 ## Validate
 
 ```bash
-cargo run -- models-dev validate
+cargo run -- models-dev validate --supplement-path crates/holon-model-catalog/data/supplemental_catalog.json
 cargo run -- models-dev coverage --check
 cargo run -- models-dev coverage --json
-cargo test models_dev
+cargo test --locked --manifest-path crates/holon-model-catalog/Cargo.toml
+cargo test --locked --test models_dev_adapter --test models_dev_reviewed_capacity --test models_dev_coverage
 ```
 
 The `models-dev-validate.yml` workflow runs these checks on PRs touching
@@ -78,7 +79,8 @@ the relevant paths.
    field origins, internal budgets, and upstream candidates remain separate.
    Refresh summaries include existing-field differences, not only new models.
 4. Change existing builtin fields in their Rust registration, then regenerate
-   the snapshot using `regenerate_builtin_snapshot`. Never bypass supplement
+   the snapshot using
+   `cargo test --manifest-path crates/holon-model-catalog/Cargo.toml regenerate_builtin_snapshot -- --ignored`. Never bypass supplement
    collision protection to update an existing entry.
 5. Update `metadata-review.json` for added/changed routes. Unknown capacities
    require owner, review date, evidence, reason, and recheck condition.

@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub(crate) use holon_domain::model_values::ProviderCatalogRegistration;
-
 pub(crate) use holon_domain::model_values::{
     provider_definition, provider_definitions, ProviderCatalogPolicy, ProviderContextManagement,
     ProviderDefinition, ProviderMaterializer, ProviderWebSearch,

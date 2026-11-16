@@ -1,6 +1,6 @@
 use super::super::*;
 
-pub(in crate::model_catalog) fn catalog_model(
+pub(crate) fn catalog_model(
     provider: &str,
     model: &str,
     display_name: &str,

@@ -32,12 +32,12 @@ jobs:
         run: cargo build --locked
 
       - name: Fetch snapshot and generate artifact
-        run: cargo run --locked -- models-dev refresh --output-dir models.dev
+        run: cargo run --locked -- models-dev refresh --output-dir models.dev --supplement-path crates/holon-model-catalog/data/supplemental_catalog.json
 
       - name: Check for changes
         id: diff
         run: |
-          if [ -z "$(git status --porcelain -- models.dev/)" ]; then
+          if [ -z "$(git status --porcelain -- models.dev/ crates/holon-model-catalog/data/supplemental_catalog.json)" ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"

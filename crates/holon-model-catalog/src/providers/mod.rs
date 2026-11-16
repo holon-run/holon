@@ -15,9 +15,9 @@ mod typesafe;
 
 #[cfg(test)]
 pub(super) fn entries_for_registration(
-    registration: crate::provider::ProviderCatalogRegistration,
+    registration: holon_domain::model_values::ProviderCatalogRegistration,
 ) -> Vec<super::BuiltInModelMetadata> {
-    use crate::provider::ProviderCatalogRegistration;
+    use holon_domain::model_values::ProviderCatalogRegistration;
 
     match registration {
         ProviderCatalogRegistration::Core => core::entries(),
