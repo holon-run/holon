@@ -1867,6 +1867,13 @@
         "required": false
       },
       {
+        "long": "supplement-path",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
         "long": "url",
         "short": null,
         "default_value": "https://models.dev/api.json",
@@ -1884,6 +1891,13 @@
         "long": "input-dir",
         "short": null,
         "default_value": "models.dev",
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "supplement-path",
+        "short": null,
+        "default_value": null,
         "possible_values": null,
         "required": false
       }
