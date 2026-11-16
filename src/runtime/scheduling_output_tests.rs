@@ -189,7 +189,7 @@ async fn loaded_host_scheduling_dto_keeps_material_until_synchronous_wire_build(
 }
 
 #[tokio::test]
-async fn loaded_host_state_query_requires_original_timer_cancel_ack_recovery_before_its_read_token(
+async fn loaded_host_state_query_observes_last_cut_without_recovering_original_timer_cancel_ack(
 ) -> Result<()> {
     let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
     runtime.wait_for_bootstrap().await?;
@@ -199,6 +199,16 @@ async fn loaded_host_state_query_requires_original_timer_cancel_ack_recovery_bef
         .schedule_timer(3_600_000, None, Some("Known Timer cancellation".into()))
         .await?;
     drop(runtime.acquire_scheduling_records_read(50).await?);
+    let published = host
+        .operator_agent_state_projection(runtime.instance_agent_id(), 40, 50)
+        .await
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let mut observation = published.observation.context("State observation missing")?;
+    assert_eq!(
+        observation.status,
+        crate::types::AgentListObservationStatus::Current
+    );
+    assert!(published.timers.iter().any(|record| record.id == timer.id));
     runtime.inject_next_transition_fault(
         crate::runtime_db::transitions::TransitionFaultPoint::BeforeCacheUpdate,
     );
@@ -236,18 +246,25 @@ async fn loaded_host_state_query_requires_original_timer_cancel_ack_recovery_bef
     let before = sql_snapshot()?;
     assert_eq!(before.0, "cancelled");
     let denied = crate::diagnostics::io_probe::DenyResourceReaders::new();
-    let error = host
+    let projection = host
         .operator_agent_state_projection(runtime.instance_agent_id(), 40, 50)
         .await
-        .err()
-        .context("State must not reconcile the original cancellation ACK")?;
-    match error {
-        crate::host::PublicAgentError::Runtime(error) => assert!(
-            error.is::<crate::runtime_db::RuntimeDbRetryableError>(),
-            "{error:#}"
-        ),
-        other => anyhow::bail!("unexpected State error: {other:?}"),
-    }
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    observation.status = crate::types::AgentListObservationStatus::ReconciliationPending;
+    assert_eq!(projection.observation, Some(observation));
+    assert_eq!(projection.agent.agent, published.agent.agent);
+    assert_eq!(
+        serde_json::to_value(&projection.tasks)?,
+        serde_json::to_value(&published.tasks)?
+    );
+    assert_eq!(
+        serde_json::to_value(&projection.waits)?,
+        serde_json::to_value(&published.waits)?
+    );
+    assert_eq!(
+        serde_json::to_value(&projection.timers)?,
+        serde_json::to_value(&published.timers)?
+    );
     assert_eq!(denied.attempts(), 0);
     drop(denied);
     assert!(matches!(
@@ -255,12 +272,21 @@ async fn loaded_host_state_query_requires_original_timer_cancel_ack_recovery_bef
         Err(crate::runtime::mutation_owner::MutationOwnerError::NeedsReconcile(_))
     ));
     assert_eq!(sql_snapshot()?, before);
+    drop((projection, published));
     // The Scheduling owner, not State GET, recovers the original ACK.
     drop(runtime.acquire_scheduling_records_read(50).await?);
     let projection = host
         .operator_agent_state_projection(runtime.instance_agent_id(), 40, 50)
         .await
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    let recovered = projection
+        .observation
+        .context("State observation missing")?;
+    assert_eq!(
+        recovered.status,
+        crate::types::AgentListObservationStatus::Current
+    );
+    assert!(recovered.publication_generation > observation.publication_generation);
     assert!(projection.timers.iter().all(|record| record.id != timer.id));
     let root = runtime
         .inner
