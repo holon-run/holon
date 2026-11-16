@@ -584,7 +584,24 @@ impl RuntimeHandle {
         label: Option<&str>,
         activate: bool,
         on_existing: ExistingWorktreePolicy,
+        path: Option<&str>,
     ) -> Result<CreateWorktreeResult> {
+        let explicit_path = match path.map(str::trim).filter(|value| !value.is_empty()) {
+            None => None,
+            Some(value) => {
+                if value.starts_with('~') {
+                    return Err(anyhow!(
+                        "worktree `path` must be absolute; `~` and environment variables are not expanded"
+                    ));
+                }
+                if !std::path::Path::new(value).is_absolute() {
+                    return Err(anyhow!(
+                        "worktree `path` must be an absolute filesystem path: `{value}`"
+                    ));
+                }
+                Some(normalize_absolute_path(std::path::Path::new(value)))
+            }
+        };
         let _admission = self.execution_admission_lease()?;
         let state = self.agent_state().await?;
         if !state.execution_profile.supports_managed_worktrees {
@@ -707,6 +724,33 @@ impl RuntimeHandle {
                     summary_text: Some("create-only policy rejected existing worktree".into()),
                 });
             }
+            if let Some(explicit) = &explicit_path {
+                if normalize_absolute_path(&record.path) != *explicit {
+                    return Ok(CreateWorktreeResult {
+                        disposition: "conflict".into(),
+                        created: false,
+                        reused: false,
+                        activated: false,
+                        base_ref_applied: false,
+                        requested_base_ref: base_ref.into(),
+                        resolved_base_commit: base_commit,
+                        branch: branch.into(),
+                        branch_ref,
+                        branch_tip,
+                        execution_root_id: None,
+                        worktree_path: Some(record.path.clone()),
+                        conflict: Some(
+                            "requested path does not match the live worktree for the branch".into(),
+                        ),
+                        candidates: self.registered_candidates(workspace_id, &matching)?,
+                        activation_error: None,
+                        summary_text: Some(
+                            "explicit path mismatch with the reusable worktree; no state changed"
+                                .into(),
+                        ),
+                    });
+                }
+            }
             let entry = self
                 .register_worktree_artifact(
                     &state.id,
@@ -771,23 +815,55 @@ impl RuntimeHandle {
             });
         }
 
-        let repo_name = workspace
-            .workspace_anchor
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("repo");
-        let managed_root = workspace
-            .workspace_anchor
-            .parent()
-            .unwrap_or(workspace.workspace_anchor.as_path())
-            .join(format!(".holon-worktrees-{repo_name}"));
-        std::fs::create_dir_all(&managed_root)?;
-        let readable = label.unwrap_or(branch);
-        let worktree_path = managed_root.join(format!(
-            "{}-{}",
-            sanitize_label(readable),
-            crate::ids::runtime_id("wt")
-        ));
+        let worktree_path = match &explicit_path {
+            Some(explicit) => {
+                if let Some(conflict) =
+                    self.explicit_path_conflict(explicit, &workspace, &records)?
+                {
+                    return Ok(CreateWorktreeResult {
+                        disposition: "conflict".into(),
+                        created: false,
+                        reused: false,
+                        activated: false,
+                        base_ref_applied: false,
+                        requested_base_ref: base_ref.into(),
+                        resolved_base_commit: base_commit,
+                        branch: branch.into(),
+                        branch_ref,
+                        branch_tip,
+                        execution_root_id: None,
+                        worktree_path: Some(explicit.clone()),
+                        conflict: Some(conflict),
+                        candidates: Vec::new(),
+                        activation_error: None,
+                        summary_text: Some("explicit target rejected; no state changed".into()),
+                    });
+                }
+                if let Some(parent) = explicit.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                explicit.clone()
+            }
+            None => {
+                let repo_name = workspace
+                    .workspace_anchor
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("repo");
+                let managed_root = workspace
+                    .workspace_anchor
+                    .parent()
+                    .unwrap_or(workspace.workspace_anchor.as_path())
+                    .join(format!(".holon-worktrees-{repo_name}"));
+                std::fs::create_dir_all(&managed_root)?;
+                let readable = label.unwrap_or(branch);
+                managed_root.join(format!(
+                    "{}-{}",
+                    sanitize_label(readable),
+                    crate::ids::runtime_id("wt")
+                ))
+            }
+        };
         let output = self
             .run_git(
                 &workspace,
@@ -832,18 +908,19 @@ impl RuntimeHandle {
         } else {
             None
         };
-        self.append_audit_event(
-            "worktree_created",
-            serde_json::json!({
-                "workspace_id": workspace.workspace_id,
-                "execution_root_id": entry.execution_root_id,
-                "branch": branch,
-                "requested_base_ref": base_ref,
-                "resolved_base_commit": base_commit,
-                "activated": activate && activation_error.is_none(),
-            }),
-        )
-        .await?;
+        let mut audit_payload = serde_json::json!({
+            "workspace_id": workspace.workspace_id,
+            "execution_root_id": entry.execution_root_id,
+            "branch": branch,
+            "requested_base_ref": base_ref,
+            "resolved_base_commit": base_commit,
+            "activated": activate && activation_error.is_none(),
+        });
+        if let Some(explicit) = &explicit_path {
+            audit_payload["requested_path"] = explicit.to_string_lossy().into();
+        }
+        self.append_audit_event("worktree_created", audit_payload)
+            .await?;
         Ok(CreateWorktreeResult {
             disposition: "created".into(),
             created: true,
@@ -1296,6 +1373,44 @@ impl RuntimeHandle {
             .collect())
     }
 
+    fn explicit_path_conflict(
+        &self,
+        explicit: &std::path::Path,
+        workspace: &WorkspaceEntry,
+        records: &[GitWorktreeRecord],
+    ) -> Result<Option<String>> {
+        if normalize_absolute_path(&workspace.workspace_anchor) == *explicit {
+            return Ok(Some(
+                "explicit target path conflicts with the canonical workspace root".into(),
+            ));
+        }
+        if records
+            .iter()
+            .any(|record| normalize_absolute_path(&record.path) == *explicit)
+        {
+            return Ok(Some(
+                "explicit target path conflicts with an existing worktree".into(),
+            ));
+        }
+        let registered = self
+            .inner
+            .runtime_db
+            .execution_root_entries()
+            .active_for_workspace(&workspace.workspace_id)?;
+        if registered
+            .iter()
+            .any(|entry| normalize_absolute_path(&entry.filesystem_path) == *explicit)
+        {
+            return Ok(Some(
+                "explicit target path conflicts with a registered execution root".into(),
+            ));
+        }
+        if std::fs::symlink_metadata(explicit).is_ok() {
+            return Ok(Some("explicit target path already exists".into()));
+        }
+        Ok(None)
+    }
+
     async fn register_worktree_artifact(
         &self,
         agent_id: &str,
@@ -1585,6 +1700,22 @@ fn parse_git_worktree_records(text: &str) -> Result<Vec<GitWorktreeRecord>> {
 
 fn short_branch_name(branch_ref: &str) -> Option<&str> {
     branch_ref.strip_prefix("refs/heads/")
+}
+
+fn normalize_absolute_path(path: &std::path::Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(prefix) => normalized.push(prefix.as_os_str()),
+            std::path::Component::RootDir => normalized.push(component.as_os_str()),
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                normalized.pop();
+            }
+            std::path::Component::Normal(part) => normalized.push(part),
+        }
+    }
+    normalized
 }
 
 fn sanitize_label(label: &str) -> String {
