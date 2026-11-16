@@ -73,8 +73,8 @@ impl OriginalCommandPublicationProbe {
 mod lifecycle;
 pub(crate) use lifecycle::{
     advance_lifecycle_time, assert_injected_transition_fault, controlled_clock,
-    DurableLifecycleSnapshot, LifecycleHarness, POST_COMMIT_FAULTS, PRE_COMMIT_FAULTS,
-    TERMINAL_PRE_COMMIT_FAULTS,
+    wait_for_lifecycle_condition, DurableLifecycleSnapshot, LifecycleHarness, POST_COMMIT_FAULTS,
+    PRE_COMMIT_FAULTS, TERMINAL_PRE_COMMIT_FAULTS,
 };
 
 /// Use the same physical directory spelling that Git reports for worktrees.
