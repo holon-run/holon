@@ -28,11 +28,15 @@ first-party client, and does not expose Copilot as a resold subscription proxy.
 - A user-owned OAuth app token is accepted directly as the Copilot bearer.
   The internal `copilot_internal` token exchange is a first-party IDE path
   with no public contract for third-party apps, so Holon does not use it.
-- Copilot requires an integration identity header and treats it as a routing
-  input, not decoration: different identities expose different model sets.
-  Holon sends its own identity (`Copilot-Integration-Id: holon`) instead of a
-  first-party editor identity, and users can override it through the normal
-  provider header configuration when their plan requires another identity.
+- Copilot treats the integration identity header as a routing input rather
+  than decoration, and third-party OAuth app identities are reported to see a
+  narrower model set than first-party surfaces. Holon sends its own identity
+  (`Copilot-Integration-Id: holon`) instead of a first-party editor identity,
+  and users can override it through the normal provider header configuration.
+  Which identities GitHub accepts for a given account, and which models each
+  one reaches, is server-side behaviour that Holon does not verify; the
+  narrow model list reported for third-party OAuth apps is documented as a
+  known condition, not as a defect Holon can fix.
 
 ## Preserved boundary
 
@@ -46,6 +50,13 @@ message instead of silently falling back to a first-party identity.
 The model list is discovered from the account rather than declared in Holon's
 catalog, so Holon does not claim which models a given subscription can reach.
 Usage is metered and limited by GitHub's own subscription, quota, and policy
-rules, and a rejected credential, revoked authorization, or exhausted quota
+rules. A rejected credential, revoked authorization, or exhausted quota
 surfaces as an explicit authentication or quota failure rather than a silent
-retry loop.
+retry loop: the Chat Completions transport forces one credential refresh and
+replays the request once after an authentication failure, and a refresh that
+the server rejects ends the turn with the credential error.
+
+Holon verifies the request shape, the credential lifecycle, and the failure
+handling with deterministic tests. It does not verify a live Copilot account,
+so the accepted identities, the reachable model set, and the subscription and
+quota behaviour remain unverified server-side conditions.

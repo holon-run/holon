@@ -291,6 +291,87 @@ fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
 }
 
 #[tokio::test]
+async fn github_copilot_chat_uses_the_copilot_endpoint_for_plan_aliases() {
+    use crate::provider::AgentProvider;
+    use axum::{routing::post, Json, Router};
+
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let requests = captured.clone();
+    let server = Router::new().route(
+        "/chat/completions",
+        post(move |uri: axum::http::Uri| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push(uri.path().to_string());
+                Json(json!({
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }]
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+
+    let mut config = test_openai_codex_config(Some("local-test-only".into()));
+    config.id = ProviderId::parse("github-copilot-example").unwrap();
+    config.route_provider = ProviderId::parse("github-copilot").unwrap();
+    config.route_endpoint = ProviderEndpointId::parse("default").unwrap();
+    config.base_url = format!("http://{addr}");
+    let home = tempfile::tempdir().unwrap();
+
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "gpt-5",
+        1024,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("hi".into())],
+        vec![],
+    );
+    provider.complete_turn(request).await.unwrap();
+    assert_eq!(captured.lock().unwrap().as_slice(), ["/chat/completions"]);
+    handle.abort();
+}
+
+#[test]
+fn chat_completions_keeps_opaque_oauth_profile_tokens_as_bearer_values() {
+    // A credential profile may hold an opaque token instead of a Holon OAuth
+    // material document; that form keeps its previous bearer behaviour.
+    let mut config = test_openai_codex_config(Some("opaque-token".into()));
+    config.route_provider = ProviderId::parse("local-custom").unwrap();
+    config.route_endpoint = ProviderEndpointId::default_endpoint();
+    config.base_url = "https://gateway.example.invalid/v1".into();
+    let home = tempfile::tempdir().unwrap();
+
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "model",
+        1024,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        provider.transport.authorization_headers(),
+        vec![("authorization", "Bearer opaque-token".to_string())]
+    );
+}
+
+#[tokio::test]
 async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget() {
     use crate::provider::AgentProvider;
     use axum::{routing::post, Json, Router};

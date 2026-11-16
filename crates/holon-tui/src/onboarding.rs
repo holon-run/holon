@@ -22,8 +22,8 @@ use ratatui::{
 
 use holon_config::{CredentialKind, ModelRef, ModelRouteRef, ProviderId};
 use holon_provider::auth::{
-    oauth_provider_config, run_codex_oauth_login_profile_material,
-    run_oauth_device_login_profile_material,
+    provider_supports_oauth_device_login, resolve_oauth_provider_config,
+    run_codex_oauth_login_profile_material, run_oauth_device_login_profile_material,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -304,7 +304,21 @@ impl OnboardingTuiApp {
             .selected_provider
             .as_mut()
             .context("provider not selected")?;
-        let oauth_config = oauth_provider_config(provider.id.as_str());
+        // GitHub Copilot needs the user's own OAuth app client id, which
+        // comes from the environment or the provider configuration.
+        let oauth_config = if provider.id.is_openai_codex() {
+            None
+        } else {
+            match resolve_oauth_provider_config(provider.id.as_str(), None) {
+                Ok(Some(config)) => Some(config),
+                Ok(None) => None,
+                Err(error) => {
+                    self.status =
+                        format!("Holon {} OAuth login failed: {error}", provider.id.as_str());
+                    return Ok(());
+                }
+            }
+        };
         if !provider.id.is_openai_codex() && oauth_config.is_none() {
             self.status =
                 "This OAuth provider does not have an onboard-managed login command yet.".into();
@@ -362,7 +376,7 @@ impl OnboardingTuiApp {
         self.step == Step::Auth
             && self.selected_provider.as_ref().is_some_and(|provider| {
                 provider.credential_kind == CredentialKind::OAuth
-                    && oauth_provider_config(provider.id.as_str()).is_some()
+                    && provider_supports_oauth_device_login(provider.id.as_str())
             })
     }
 }
@@ -597,7 +611,7 @@ fn draw_auth(frame: &mut Frame<'_>, area: Rect, app: &OnboardingTuiApp) {
     };
     let body = {
         let instruction = match provider.credential_kind {
-                CredentialKind::OAuth if oauth_provider_config(provider.id.as_str()).is_some() => "Press Enter to continue when credential is ready. If missing, Enter starts Holon's built-in OAuth device login; press `l` anytime to run/refresh it.",
+                CredentialKind::OAuth if provider_supports_oauth_device_login(provider.id.as_str()) => "Press Enter to continue when credential is ready. If missing, Enter starts Holon's built-in OAuth device login; press `l` anytime to run/refresh it.",
                 CredentialKind::OAuth => "Use an existing Holon-owned OAuth profile. This provider does not have an onboard-managed login command.",
                 CredentialKind::ApiKey => {
                     "Enter API key. The value is masked and stored in the local Holon credential store."

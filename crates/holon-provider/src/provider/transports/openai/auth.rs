@@ -91,9 +91,6 @@ impl OpenAiBearerAuth {
             .credential_profile
             .as_deref()
             .context("provider does not use an OAuth credential profile")?;
-        let config = oauth_provider_config(&self.provider_id).ok_or_else(|| {
-            anyhow::anyhow!("provider {} has no OAuth configuration", self.provider_id)
-        })?;
         let store_path = self.credential_store_path.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Holon-managed OAuth profile {profile} cannot refresh because the credential store path is unavailable"
@@ -112,6 +109,13 @@ impl OpenAiBearerAuth {
                 entry.kind.as_str()
             );
         }
+        // The client id for a user-owned OAuth app lives in the profile
+        // material, so a refresh does not depend on the environment or the
+        // user configuration still carrying it.
+        let config = oauth_provider_config_for_material(&self.provider_id, &entry.material)?
+            .ok_or_else(|| {
+                anyhow::anyhow!("provider {} has no OAuth configuration", self.provider_id)
+            })?;
         let current = load_oauth_profile_credential(&entry.material, profile)?;
         if !force
             && !current

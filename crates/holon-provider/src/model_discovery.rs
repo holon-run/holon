@@ -327,11 +327,17 @@ fn provider_models_request(
     discovery: &ModelDiscoveryDefinition,
     source_url: &str,
 ) -> Result<reqwest::RequestBuilder> {
-    let request = reqwest::Client::builder()
+    let mut request = reqwest::Client::builder()
         .user_agent("holon-model-discovery")
         .build()
         .context("failed to build model discovery HTTP client")?
         .get(source_url);
+    // Discovery is part of the same provider request, so the configured
+    // provider headers apply here too (for example the Copilot integration
+    // identity).
+    for (name, value) in provider.headers.iter() {
+        request = request.header(name, value);
+    }
     match discovery.auth {
         ModelDiscoveryAuth::Public => Ok(request),
         ModelDiscoveryAuth::Required | ModelDiscoveryAuth::Optional => {
@@ -363,7 +369,11 @@ fn discovery_bearer_credential(provider: &ProviderRuntimeConfig) -> Result<Optio
         .profile
         .as_deref()
         .unwrap_or_else(|| provider.id.as_str());
-    let oauth = crate::auth::load_oauth_profile_credential(credential, profile)?;
+    // A profile may hold an opaque token instead of a Holon OAuth material
+    // document; that form is used as the bearer value directly.
+    let Ok(oauth) = crate::auth::load_oauth_profile_credential(credential, profile) else {
+        return Ok(Some(credential.to_string()));
+    };
     Ok(Some(oauth.access_token))
 }
 
@@ -3043,6 +3053,27 @@ mod tests {
             request.headers()[reqwest::header::AUTHORIZATION],
             "Bearer gho_test_access"
         );
+    }
+
+    #[test]
+    fn model_discovery_request_sends_the_configured_provider_headers() {
+        let mut provider = custom_openai_provider("https://api.githubcopilot.com".into());
+        provider.headers = crate::config::ProviderHeaders::new([(
+            "Copilot-Integration-Id".to_string(),
+            "holon".to_string(),
+        )])
+        .unwrap();
+        let discovery = provider_discovery_definition(&provider).unwrap();
+        let request = provider_models_request(
+            &provider,
+            discovery,
+            &provider_models_url(&provider).unwrap(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert_eq!(request.headers()["copilot-integration-id"], "holon");
     }
 
     #[test]

@@ -12,10 +12,6 @@ use serde_json::Value;
 
 use crate::budget::effective_output_tokens;
 
-/// GitHub Copilot exposes its OpenAI-compatible chat surface at the API
-/// root (`/chat/completions`), not under a `/v1` prefix.
-pub const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
-
 pub struct ChatCompletionsConfig {
     pub base_url: String,
     pub api_key: Option<String>,
@@ -147,7 +143,7 @@ impl OpenAiChatCompletionsProvider {
     /// GitHub Copilot serves the OpenAI-compatible chat surface at the API
     /// root, so it must not receive the generic `/v1` prefix.
     fn chat_completions_url(&self) -> String {
-        if self.provider.as_deref() == Some(GITHUB_COPILOT_PROVIDER_ID) {
+        if self.provider.as_deref() == Some(crate::config::GITHUB_COPILOT_PROVIDER_ID) {
             return format!("{}/chat/completions", self.base_url);
         }
         chat_completions_url(&self.base_url)
@@ -418,7 +414,7 @@ mod tests {
             ChatCompletionsConfig {
                 base_url: "https://api.githubcopilot.com".into(),
                 api_key: None,
-                provider: Some(GITHUB_COPILOT_PROVIDER_ID.to_string()),
+                provider: Some(crate::config::GITHUB_COPILOT_PROVIDER_ID.to_string()),
                 model: "gpt-5".into(),
                 max_output_tokens: 1024,
                 max_output_tokens_parameter: "max_tokens",

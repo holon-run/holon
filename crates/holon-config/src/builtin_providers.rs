@@ -725,7 +725,11 @@ fn materialize_provider_endpoint_config(
     settings_env: &HashMap<String, String>,
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRuntimeConfig> {
-    runtime.headers = effective_provider_headers(provider_config, endpoint_id)?;
+    // Keep the built-in default headers (for example a provider identity
+    // header) and let the user's configured headers win per name.
+    runtime.headers = runtime
+        .headers
+        .merged(&effective_provider_headers(provider_config, endpoint_id)?)?;
     if let Some(endpoint_config) = provider_config.endpoints.get(endpoint_id) {
         if let Some(transport) = endpoint_config.transport {
             runtime.transport = transport;

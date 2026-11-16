@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::config::{GITHUB_COPILOT_CREDENTIAL_PROFILE, GITHUB_COPILOT_PROVIDER_ID};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OAuthDeviceProtocol {
     /// OpenAI Codex first-party device flow (auth.openai.com JSON protocol).
@@ -277,6 +279,41 @@ pub fn resolve_oauth_provider_config(
     Ok(oauth_provider_config(provider_id))
 }
 
+/// Whether a provider supports Holon's OAuth device login flow.
+///
+/// GitHub Copilot supports the flow with the user's own OAuth app, so it is
+/// reported as supported even though the client id must come from the user
+/// configuration or the environment.
+pub fn provider_supports_oauth_device_login(provider_id: &str) -> bool {
+    provider_id == GITHUB_COPILOT_PROVIDER_ID || oauth_provider_config(provider_id).is_some()
+}
+
+/// Read the OAuth client id recorded in a Holon credential profile.
+///
+/// GitHub Copilot stores the user's own OAuth app client id in the profile
+/// material so that a later refresh works without ambient configuration.
+pub fn oauth_client_id_from_material(material: &str) -> Option<String> {
+    let auth: AuthDotJson = serde_json::from_str(material).ok()?;
+    auth.oauth_client_id
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Resolve the OAuth configuration for a provider using a credential profile.
+///
+/// Unlike [`resolve_oauth_provider_config`], this reads the client id from
+/// the stored material, so a refresh does not depend on the user
+/// configuration or the environment still carrying it.
+pub fn oauth_provider_config_for_material(
+    provider_id: &str,
+    material: &str,
+) -> Result<Option<OAuthProviderConfig>> {
+    resolve_oauth_provider_config(
+        provider_id,
+        oauth_client_id_from_material(material).as_deref(),
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct CodexCliCredential {
     pub access_token: String,
@@ -531,11 +568,10 @@ const CODEX_OAUTH_CALLBACK_PORT: u16 = 1455;
 const CODEX_OAUTH_CALLBACK_FALLBACK_PORT: u16 = 1457;
 const CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS: i64 = 15 * 60;
 
-const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
-const GITHUB_COPILOT_CREDENTIAL_PROFILE: &str = "github-copilot";
 const GITHUB_COPILOT_CLIENT_ID_ENV_VAR: &str = "GITHUB_COPILOT_CLIENT_ID";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
+const GITHUB_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "GITHUB_TOKEN_URL_OVERRIDE";
 
 fn env_client_id(env_var: &str) -> Option<String> {
     std::env::var(env_var)
@@ -1054,8 +1090,10 @@ async fn refresh_github_oauth_profile_material(
                  run GitHub Copilot device login again"
             ),
         })?;
+    let endpoint = std::env::var(GITHUB_TOKEN_URL_OVERRIDE_ENV_VAR)
+        .unwrap_or_else(|_| GITHUB_TOKEN_URL.to_string());
     let response = client
-        .post(GITHUB_TOKEN_URL)
+        .post(endpoint)
         .header("Accept", "application/json")
         .form(&[
             ("grant_type", "refresh_token"),
@@ -1908,6 +1946,33 @@ mod tests {
     use base64::Engine;
     use serde_json::json;
 
+    /// Restores an environment variable when the guard is dropped.
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.as_ref() {
+                std::env::set_var(self.key, previous);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    /// Serializes the tests that override process-wide environment variables.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     #[test]
     fn oauth_refresh_http_classification_requires_rejected_grant_status() {
         for status in [400, 401, 403, 429, 500, 503] {
@@ -1957,6 +2022,83 @@ mod tests {
         assert!(!failure.credentials_rejected());
         assert!(failure.safe_summary().contains("endpoint discovery"));
         assert!(!failure.safe_summary().contains("private-refresh-value"));
+    }
+
+    #[tokio::test]
+    async fn github_refresh_uses_the_client_id_recorded_in_the_material() {
+        let server = axum::Router::new().route(
+            "/oauth/token",
+            axum::routing::post(|| async {
+                axum::Json(json!({
+                    "access_token": "new-access",
+                    "refresh_token": "rotated-refresh",
+                    "expires_in": 28800
+                }))
+            }),
+        );
+        let _env_lock = ENV_LOCK.lock().unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, server).await.unwrap();
+        });
+        let _env = EnvVarGuard::set(
+            GITHUB_TOKEN_URL_OVERRIDE_ENV_VAR,
+            format!("http://{addr}/oauth/token"),
+        );
+
+        let material = json!({
+            "tokens": {
+                "access_token": "old-access",
+                "refresh_token": "old-refresh"
+            },
+            "oauth_client_id": "Iv1.user-owned-client"
+        })
+        .to_string();
+        let refreshed = refresh_oauth_profile_material(
+            &reqwest::Client::new(),
+            &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
+            &material,
+            "github-copilot",
+        )
+        .await
+        .expect("GitHub OAuth refresh should succeed");
+
+        assert_eq!(refreshed.credential.access_token, "new-access");
+        let auth: AuthDotJson =
+            serde_json::from_str(&refreshed.material).expect("refreshed material should parse");
+        assert_eq!(
+            auth.tokens.expect("tokens").refresh_token,
+            "rotated-refresh"
+        );
+        assert_eq!(
+            auth.oauth_client_id.as_deref(),
+            Some("Iv1.user-owned-client")
+        );
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn github_refresh_without_a_refresh_token_requires_a_new_login() {
+        let material = json!({
+            "tokens": {
+                "access_token": "old-access"
+            },
+            "oauth_client_id": "Iv1.user-owned-client"
+        })
+        .to_string();
+        let failure = refresh_oauth_profile_material(
+            &reqwest::Client::new(),
+            &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
+            &material,
+            "github-copilot",
+        )
+        .await
+        .unwrap_err();
+
+        assert_eq!(failure.kind, CodexOAuthRefreshFailureKind::Rejected);
+        assert!(failure.message.contains("device login"));
+        assert!(!failure.message.contains("old-access"));
     }
 
     #[test]

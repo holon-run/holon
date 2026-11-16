@@ -33,6 +33,8 @@ pub const OPENAI_CODEX_CREDENTIAL_PROFILE: &str = "openai-codex";
 
 pub const GITHUB_COPILOT_CREDENTIAL_PROFILE: &str = "github-copilot";
 
+pub const GITHUB_COPILOT_PROVIDER_ID: &str = "github-copilot";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderRuntimeConfig {
     pub id: ProviderId,

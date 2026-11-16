@@ -18,9 +18,9 @@ use std::{
 use crate::{
     auth::{
         load_codex_cli_credential, load_codex_oauth_profile_credential,
-        load_oauth_profile_credential, oauth_provider_config, refresh_codex_oauth_profile_material,
-        refresh_oauth_profile_material, CodexCliCredential, CodexOAuthRefreshFailure,
-        OAuthCredential,
+        load_oauth_profile_credential, oauth_provider_config_for_material,
+        refresh_codex_oauth_profile_material, refresh_oauth_profile_material, CodexCliCredential,
+        CodexOAuthRefreshFailure, OAuthCredential,
     },
     config::{
         load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
@@ -465,9 +465,24 @@ impl OpenAiChatCompletionsProvider {
             (provider_config.auth.source, provider_config.auth.kind),
             (CredentialSource::AuthProfile, CredentialKind::OAuth)
         );
+        // A credential profile may hold a Holon OAuth material document or an
+        // opaque token written before OAuth profiles existed. Only the
+        // material document can be refreshed, so the opaque form keeps its
+        // previous bearer-token behaviour.
+        let oauth_material = oauth_profile
+            .then(|| provider_config.credential.clone())
+            .flatten();
+        let oauth_backed = oauth_material.as_deref().is_some_and(|material| {
+            let profile = provider_config
+                .auth
+                .profile
+                .as_deref()
+                .unwrap_or_else(|| provider_config.id.as_str());
+            load_oauth_profile_credential(material, profile).is_ok()
+        });
         let api_key = match (provider_config.auth.source, provider_config.auth.kind) {
             (CredentialSource::None, CredentialKind::None) => None,
-            (CredentialSource::AuthProfile, CredentialKind::OAuth) => None,
+            (CredentialSource::AuthProfile, CredentialKind::OAuth) if oauth_backed => None,
             _ => Some(
                 provider_config
                     .credential
@@ -485,7 +500,7 @@ impl OpenAiChatCompletionsProvider {
                     })?,
             ),
         };
-        let auth = if oauth_profile {
+        let auth = if oauth_backed {
             Some(OpenAiBearerAuth::from_runtime_config(
                 provider_config,
                 build_oauth_http_client()?,
@@ -499,7 +514,9 @@ impl OpenAiChatCompletionsProvider {
                 ChatCompletionsConfig {
                     base_url: provider_config.base_url.clone(),
                     api_key,
-                    provider: Some(provider_config.id.as_str().to_string()),
+                    // The route provider identifies the endpoint shape; the
+                    // display id may be a plan alias.
+                    provider: Some(provider_config.route_provider.as_str().to_string()),
                     model: model.to_string(),
                     max_output_tokens: resolved_max_output_tokens,
                     context_window_tokens,
