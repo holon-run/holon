@@ -72,8 +72,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
   <!-- mdorigin:index kind=article -->
 
-- [Connect external events](./connect-external-events.md)
-  Connect a callback, register a wait, and verify that an external event resumes the intended work.
+- [Connect external events: Webhooks from GitHub to incident alerts](./connect-external-events.md)
+  Configure external Webhook callbacks in natural dialogue, suspend tasks with zero token consumption, and resume securely on external events.
   <!-- mdorigin:index kind=article -->
 
 - [Schedule agent work](./schedule-agent-work.md)
@@ -92,8 +92,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Choose a Decision route, set call limits, and verify a recommendation or explicit abstention.
   <!-- mdorigin:index kind=article -->
 
-- [Manage agent memory](./manage-agent-memory.md)
-  Save durable preferences in the right scope and retrieve past work with traceable sources.
+- [Manage agent memory: From long-term preferences and raw history retrieval to memory auditing and pruning](./manage-agent-memory.md)
+  Have agents record durable preferences in natural dialogue, retrieve factual evidence from immutable raw history, and audit or prune obsolete memories when workflows change.
   <!-- mdorigin:index kind=article -->
 
 - [Connect to a remote Holon runtime](./connect-remote-runtime.md)

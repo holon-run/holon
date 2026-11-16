@@ -74,8 +74,8 @@ order: 30
   明确 issue、评审或 PR 修复的目标与交付边界；单次执行并验证本地产物与 GitHub 副作用。
   <!-- mdorigin:index kind=article -->
 
-- [连接外部事件](./connect-external-events.md)
-  配置回调端点、登记等待条件，并验证外部事件能够如期唤醒目标工作。
+- [为 Agent 配置外部事件 Webhook：从 GitHub 到即时通讯通知响应](./connect-external-events.md)
+  在自然语言对话中让 Agent 配置外部 Webhook 回调，利用事件驱动与唤醒机制实现零 Token 挂起等待，并在收到外部通知后安全核验与闭环执行。
   <!-- mdorigin:index kind=article -->
 
 - [调度 Agent 工作](./schedule-agent-work.md)
@@ -94,8 +94,8 @@ order: 30
   选择决策模型路由、设置调用限额，并验证决策建议或显式弃权行为。
   <!-- mdorigin:index kind=article -->
 
-- [管理 Agent 记忆](./manage-agent-memory.md)
-  在正确的作用域中保存长期偏好，并通过可追溯的来源检索历史工作记录。
+- [管理 Agent 记忆：从长期偏好沉淀、原始历史检索到过期记忆核验与纠偏](./manage-agent-memory.md)
+  在自然语言对话中让 Agent 沉淀操作偏好与长期事实，利用强原始历史检索避免信息丢失与幻觉，并在环境变更时核验与修剪过期矛盾记忆。
   <!-- mdorigin:index kind=article -->
 
 - [连接到远程 Holon 运行时](./connect-remote-runtime.md)
