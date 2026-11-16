@@ -836,6 +836,7 @@ jobs:
           cargo fmt --manifest-path crates/holon-provider/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-model-catalog/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-config/Cargo.toml -- --check
+          cargo fmt --manifest-path crates/holon-context/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-client/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-tui/Cargo.toml -- --check
           cargo fmt --manifest-path crates/decision-core/Cargo.toml -- --check
@@ -919,6 +920,7 @@ jobs:
           cargo test --manifest-path crates/holon-provider/Cargo.toml --locked
           cargo test --manifest-path crates/holon-model-catalog/Cargo.toml --locked
           cargo test --manifest-path crates/holon-config/Cargo.toml --locked
+          cargo test --manifest-path crates/holon-context/Cargo.toml --locked
           cargo test --manifest-path crates/holon-client/Cargo.toml --locked
           cargo test --manifest-path crates/holon-tui/Cargo.toml --locked
 

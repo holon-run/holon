@@ -23,38 +23,7 @@ pub(crate) struct ApplyPatchOutcome {
     pub(crate) diagnostics: Vec<ApplyPatchDiagnostic>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ApplyPatchSurface {
-    CodexDslFreeform,
-    UnifiedDiffJson,
-}
-
-impl ApplyPatchSurface {
-    pub(crate) fn for_model_route_ref(model_ref: &str) -> Self {
-        if model_ref.starts_with("openai-codex/")
-            || model_ref.starts_with("openai-codex@")
-            || model_ref.starts_with("deepseek@responses/")
-        {
-            Self::CodexDslFreeform
-        } else {
-            Self::UnifiedDiffJson
-        }
-    }
-
-    pub(crate) fn label(self) -> &'static str {
-        match self {
-            Self::CodexDslFreeform => "codex_dsl_freeform",
-            Self::UnifiedDiffJson => "unified_diff_json",
-        }
-    }
-
-    fn expected_format(self) -> PatchFormat {
-        match self {
-            Self::CodexDslFreeform => PatchFormat::CodexDsl,
-            Self::UnifiedDiffJson => PatchFormat::UnifiedDiff,
-        }
-    }
-}
+pub use holon_domain::ApplyPatchSurface;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PatchFormat {
@@ -248,7 +217,10 @@ fn apply_patch_sync<W>(
             .checked_mul(8)
             .ok_or_else(|| anyhow::anyhow!("patch parser records overflow"))?,
     )?;
-    let expected_format = surface.expected_format();
+    let expected_format = match surface {
+        ApplyPatchSurface::CodexDslFreeform => PatchFormat::CodexDsl,
+        ApplyPatchSurface::UnifiedDiffJson => PatchFormat::UnifiedDiff,
+    };
     let patch_bytes = input.len();
     let parse = parse_patch_for_format(input, expected_format);
     let (patches, compatibility) = match parse {

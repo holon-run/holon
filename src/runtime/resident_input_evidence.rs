@@ -9,12 +9,11 @@ use crate::{
         ExecutionAttempt, ExecutionAttemptState, ExecutionOutcomeRecord, WorkItemExecutionRecord,
     },
     types::{
-        AuthorityClass, BriefRecord, MessageEnvelope, ToolExecutionRecord, ToolExecutionStatus,
-        TranscriptEntry, TurnOwner, TurnRecord,
+        AuthorityClass, BriefRecord, MessageEnvelope, ToolExecutionRecord, TranscriptEntry,
+        TurnOwner, TurnRecord,
     },
 };
 use anyhow::{ensure, Context, Result};
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -122,36 +121,8 @@ pub(crate) struct EvidenceLocator {
     pub revision: u64,
     pub content_digest: String,
 }
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct ToolCommandProjection {
-    pub command_preview: Option<String>,
-    pub disposition: Option<String>,
-    pub task_id: Option<String>,
-    pub exit_status: Option<i64>,
-    pub has_output_evidence: bool,
-    pub truncated: bool,
-    pub has_artifact: bool,
-}
-/// Input/output JSON, stdout and artifacts are deliberately absent.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub(crate) struct ToolContextProjection {
-    pub id: String,
-    pub agent_id: String,
-    pub work_item_id: Option<String>,
-    pub turn_id: Option<String>,
-    pub turn_index: u64,
-    pub tool_name: String,
-    pub created_at: DateTime<Utc>,
-    pub authority_class: AuthorityClass,
-    pub status: ToolExecutionStatus,
-    pub summary: String,
-    pub command: ToolCommandProjection,
-    pub batch_total: usize,
-    pub batch_succeeded: usize,
-    pub batch_failed: usize,
-    pub batch_promoted: usize,
-    pub batch_unknown: usize,
-}
+pub(crate) use holon_domain::{ToolCommandProjection, ToolContextProjection};
+
 /// SQL already returned this exact canonical record. Project by borrowing its
 /// JSON instead of serializing/cloning large command outputs into the root.
 pub(crate) fn project_tool_record(record: &ToolExecutionRecord) -> Result<ToolContextProjection> {
@@ -2542,6 +2513,8 @@ fn compare_record_order(
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
+    use chrono::{DateTime, Utc};
+
     use super::*;
 
     mod capture_transfer_tests;

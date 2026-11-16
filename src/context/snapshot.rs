@@ -379,6 +379,20 @@ impl HistoryObservations {
     }
 }
 
+impl holon_context::history::TurnHistoryObservations for HistoryObservations {
+    fn message_belongs_to_turn(&self, turn: &TurnRecord, id: &str) -> bool {
+        self.message_belongs_to_turn(turn, id)
+    }
+
+    fn brief_text<'a>(&'a self, brief: &'a BriefRecord) -> &'a str {
+        self.brief_text(brief)
+    }
+
+    fn trigger_summary_valid(&self, turn: &TurnRecord) -> bool {
+        self.trigger_summary_valid(turn)
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingTaskResult {
     pub record: TaskResultSettlementRecord,

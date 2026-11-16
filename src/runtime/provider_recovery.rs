@@ -845,16 +845,6 @@ pub(crate) fn resolve_for_context_with_sources(
 }
 
 // References are consumed only after durable resolution by context assembly.
-pub(crate) fn continuity_turn_id(message: &MessageEnvelope) -> Option<&str> {
-    super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message)
-        .then(|| {
-            message
-                .source_refs
-                .get("source_turn_id")
-                .map(String::as_str)
-        })
-        .flatten()
-}
 
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]

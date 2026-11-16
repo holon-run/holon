@@ -12,7 +12,7 @@ order: 80
 > **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
-> `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
+> `src/http/state.rs`, `src/context/mod.rs`, `crates/holon-context/src/render.rs`,
 > `src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
 > `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
 > `src/runtime/turn/execution.rs`.
@@ -132,10 +132,9 @@ MessageEnvelope {
 - `AuthorityClass` 变体接受旧的 serde/CLI 别名，例如 `trusted_operator`、
   `trusted_system`、`trusted_integration` 和 `untrusted_external`。
 
-[`src/context/render.rs`](../../../src/context/render.rs) 保留了一个旧版 `trust_label`
-映射，把 `authority_class` 映到旧的 `trusted_*` / `untrusted_*` 名称；但当前模型上下文
-的消息头用 `authority_class_label`（`operator_instruction`、`runtime_instruction` 等）
-标注消息。新文档和新契约应直接使用 `authority_class`。
+模型上下文的消息头用
+[`authority_class_label`](../../../../crates/holon-context/src/render.rs)
+（`operator_instruction`、`runtime_instruction` 等）标注消息。新文档和新契约应直接使用 `authority_class`。
 
 ## 当前分类矩阵
 

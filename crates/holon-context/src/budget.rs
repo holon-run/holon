@@ -1,21 +1,21 @@
 //! Token budgeting, estimation, and section truncation helpers.
 
-use crate::prompt::PromptSection;
+use crate::PromptSection;
 
 /// Estimate token count for a prompt section (section header + content).
-pub(crate) fn estimate_section_tokens(section: &PromptSection) -> usize {
+pub fn estimate_section_tokens(section: &PromptSection) -> usize {
     estimate_text_tokens(&format!("[{}]\n{}", section.name, section.content))
 }
 
 /// Estimate token count for a text string using a 4-chars-per-token heuristic.
-pub(crate) fn estimate_text_tokens(text: &str) -> usize {
+pub fn estimate_text_tokens(text: &str) -> usize {
     let chars = text.chars().count();
     chars.div_ceil(4).max(1)
 }
 
 /// Truncate text to fit within a token budget, optionally appending a truncation
 /// notice. Uses binary search to find the maximum character count that fits.
-pub(super) fn truncate_section_content(
+pub fn truncate_section_content(
     prefix: &str,
     text: &str,
     budget: usize,
@@ -58,10 +58,7 @@ pub(super) fn truncate_section_content(
 
 /// Fit a prompt section within a token budget, truncating content if necessary.
 /// Returns `None` if the section cannot fit.
-pub(super) fn fit_section_to_budget(
-    section: PromptSection,
-    budget: usize,
-) -> Option<PromptSection> {
+pub fn fit_section_to_budget(section: PromptSection, budget: usize) -> Option<PromptSection> {
     if budget == 0 {
         return None;
     }

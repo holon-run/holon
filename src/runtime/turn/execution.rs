@@ -261,14 +261,7 @@ fn corrective_replay_blocks(blocks: &[ModelBlock]) -> Vec<ModelBlock> {
 
 impl TurnModelSelection {
     pub(crate) fn message_has_provider_recovery_provenance(message: &MessageEnvelope) -> bool {
-        message.kind == MessageKind::InternalFollowup
-            && message.authority_class == AuthorityClass::RuntimeInstruction
-            && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
-            && message.admission_context == Some(AdmissionContext::RuntimeOwned)
-            && matches!(
-                &message.origin,
-                MessageOrigin::System { subsystem } if subsystem == "model_lineage_recovery"
-            )
+        holon_domain::message_has_provider_recovery_provenance(message)
     }
 
     pub(crate) fn message_has_valid_provider_recovery(message: &MessageEnvelope) -> bool {

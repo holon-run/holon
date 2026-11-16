@@ -619,3 +619,25 @@ pub fn agent_message_reply_reference(message: &MessageEnvelope) -> Option<&str> 
     }
     detail.get("message_id")?.as_str()
 }
+
+pub fn message_has_provider_recovery_provenance(message: &MessageEnvelope) -> bool {
+    message.kind == MessageKind::InternalFollowup
+        && message.authority_class == AuthorityClass::RuntimeInstruction
+        && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
+        && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+        && matches!(
+            &message.origin,
+            MessageOrigin::System { subsystem } if subsystem == "model_lineage_recovery"
+        )
+}
+
+pub fn provider_recovery_source_turn_id(message: &MessageEnvelope) -> Option<&str> {
+    message_has_provider_recovery_provenance(message)
+        .then(|| {
+            message
+                .source_refs
+                .get("source_turn_id")
+                .map(String::as_str)
+        })
+        .flatten()
+}

@@ -585,3 +585,84 @@ pub struct ToolLatencyMetrics {
     pub total_calls: u64,
     pub total_duration_ms: u64,
 }
+
+pub fn command_receipt_source_ref(
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+) -> String {
+    match batch_item_index {
+        Some(index) => format!("tool_execution:{tool_execution_id}:batch_item:{index}:cmd"),
+        None => format!("tool_execution:{tool_execution_id}:cmd"),
+    }
+}
+
+pub fn command_output_source_ref(
+    tool_execution_id: &str,
+    batch_item_index: Option<usize>,
+    stream: &str,
+) -> String {
+    match batch_item_index {
+        Some(index) => {
+            format!("tool_execution:{tool_execution_id}:batch_item:{index}:{stream}")
+        }
+        None => format!("tool_execution:{tool_execution_id}:{stream}"),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyPatchSurface {
+    CodexDslFreeform,
+    UnifiedDiffJson,
+}
+
+impl ApplyPatchSurface {
+    pub fn for_model_route_ref(model_ref: &str) -> Self {
+        if model_ref.starts_with("openai-codex/")
+            || model_ref.starts_with("openai-codex@")
+            || model_ref.starts_with("deepseek@responses/")
+        {
+            Self::CodexDslFreeform
+        } else {
+            Self::UnifiedDiffJson
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CodexDslFreeform => "codex_dsl_freeform",
+            Self::UnifiedDiffJson => "unified_diff_json",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ToolCommandProjection {
+    pub command_preview: Option<String>,
+    pub disposition: Option<String>,
+    pub task_id: Option<String>,
+    pub exit_status: Option<i64>,
+    pub has_output_evidence: bool,
+    pub truncated: bool,
+    pub has_artifact: bool,
+}
+
+/// Input/output JSON, stdout and artifacts are deliberately absent.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ToolContextProjection {
+    pub id: String,
+    pub agent_id: String,
+    pub work_item_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub turn_index: u64,
+    pub tool_name: String,
+    pub created_at: DateTime<Utc>,
+    pub authority_class: AuthorityClass,
+    pub status: ToolExecutionStatus,
+    pub summary: String,
+    pub command: ToolCommandProjection,
+    pub batch_total: usize,
+    pub batch_succeeded: usize,
+    pub batch_failed: usize,
+    pub batch_promoted: usize,
+    pub batch_unknown: usize,
+}

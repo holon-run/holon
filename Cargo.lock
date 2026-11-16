@@ -1537,6 +1537,7 @@ dependencies = [
  "futures-util",
  "holon-client",
  "holon-config",
+ "holon-context",
  "holon-domain",
  "holon-model-catalog",
  "holon-provider",
@@ -1615,6 +1616,21 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "url",
+]
+
+[[package]]
+name = "holon-context"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "chrono-tz",
+ "holon-domain",
+ "holon-system",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

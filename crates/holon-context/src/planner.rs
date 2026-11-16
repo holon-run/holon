@@ -2,12 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::prompt::PromptSection;
+use crate::PromptSection;
 
 use super::budget::{estimate_section_tokens, fit_section_to_budget};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum RetentionPriority {
+pub enum RetentionPriority {
     Low,
     Normal,
     High,
@@ -15,7 +15,7 @@ pub(super) enum RetentionPriority {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum DropTier {
+pub enum DropTier {
     Last,
     Late,
     Normal,
@@ -23,7 +23,7 @@ pub(super) enum DropTier {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct ContextCandidatePolicy {
+pub struct ContextCandidatePolicy {
     pub pinned: bool,
     pub priority: RetentionPriority,
     pub drop_tier: DropTier,
@@ -31,14 +31,14 @@ pub(super) struct ContextCandidatePolicy {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ContextCandidate {
+pub struct ContextCandidate {
     pub full: PromptSection,
     pub compact: Option<PromptSection>,
     pub policy: ContextCandidatePolicy,
 }
 
 impl ContextCandidate {
-    pub(super) fn new(
+    pub fn new(
         full: PromptSection,
         compact: Option<PromptSection>,
         policy: ContextCandidatePolicy,
@@ -56,7 +56,7 @@ impl ContextCandidate {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ContextPlanOutcome {
+pub enum ContextPlanOutcome {
     Full,
     Compact,
     Truncated,
@@ -64,7 +64,7 @@ pub(crate) enum ContextPlanOutcome {
 }
 
 impl ContextPlanOutcome {
-    pub(crate) fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Full => "full",
             Self::Compact => "compact",
@@ -75,7 +75,7 @@ impl ContextPlanOutcome {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ContextPlanReason {
+pub enum ContextPlanReason {
     SelectedFull,
     SelectedCompactForPinnedMinimum,
     SelectedCompactForBudget,
@@ -85,7 +85,7 @@ pub(crate) enum ContextPlanReason {
 }
 
 impl ContextPlanReason {
-    pub(crate) fn code(self) -> &'static str {
+    pub fn code(self) -> &'static str {
         match self {
             Self::SelectedFull => "selected_full",
             Self::SelectedCompactForPinnedMinimum => "selected_compact_for_pinned_minimum",
@@ -98,7 +98,7 @@ impl ContextPlanReason {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ContextPlanDecision {
+pub struct ContextPlanDecision {
     pub candidate_id: String,
     pub section_name: String,
     pub requested_estimated_tokens: usize,
@@ -109,18 +109,14 @@ pub(crate) struct ContextPlanDecision {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub(crate) struct ContextPlanEvidence {
+pub struct ContextPlanEvidence {
     pub total_budget_estimated_tokens: usize,
     pub allocated_estimated_tokens: usize,
     pub decisions: Vec<ContextPlanDecision>,
 }
 
 impl ContextPlanEvidence {
-    pub(crate) fn record_reprojection(
-        &mut self,
-        candidate_id: &str,
-        replacement: Option<&PromptSection>,
-    ) {
+    pub fn record_reprojection(&mut self, candidate_id: &str, replacement: Option<&PromptSection>) {
         let Some(decision) = self
             .decisions
             .iter_mut()
@@ -149,13 +145,13 @@ impl ContextPlanEvidence {
 }
 
 #[derive(Debug, Clone)]
-pub(super) struct ContextPlan {
+pub struct ContextPlan {
     pub sections: Vec<PromptSection>,
     pub evidence: ContextPlanEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum ContextPlanningError {
+pub enum ContextPlanningError {
     #[error("context candidate id must not be empty")]
     EmptyCandidateId,
     #[error("duplicate context candidate id: {0}")]
@@ -180,7 +176,7 @@ struct Selection {
     render_order: u16,
 }
 
-pub(super) fn plan_context(
+pub fn plan_context(
     mut candidates: Vec<ContextCandidate>,
     total_budget: usize,
 ) -> Result<ContextPlan, ContextPlanningError> {
@@ -389,10 +385,9 @@ fn selection_order(left: &ContextCandidate, right: &ContextCandidate) -> std::cm
         .then_with(|| left.id().cmp(right.id()))
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
-    use crate::prompt::{PromptSection, PromptStability};
+    use crate::{PromptSection, PromptStability};
 
     use super::*;
 
