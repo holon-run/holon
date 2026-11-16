@@ -1,3 +1,8 @@
+pub use holon_client::wire::{
+    ModelConfigMigrationField, ModelConfigMigrationReport, ModelConfigMigrationStatus,
+    ModelConfigMigrationStoreReport,
+};
+
 use std::{
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
@@ -5,8 +10,6 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::params;
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{
@@ -23,45 +26,6 @@ const AGENT_MODEL_ROUTE_FIELDS: [&str; 4] = [
     "last_requested_model",
     "last_active_model",
 ];
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum ModelConfigMigrationStatus {
-    Canonical,
-    Legacy,
-    Invalid,
-    Ambiguous,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ModelConfigMigrationField {
-    pub location: String,
-    pub status: ModelConfigMigrationStatus,
-    pub current: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub proposed: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
-pub struct ModelConfigMigrationStoreReport {
-    pub changed: bool,
-    pub fields: Vec<ModelConfigMigrationField>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backup_path: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct ModelConfigMigrationReport {
-    pub ok: bool,
-    pub write: bool,
-    pub changed: bool,
-    pub config_file_path: PathBuf,
-    pub runtime_db_path: PathBuf,
-    pub config: ModelConfigMigrationStoreReport,
-    pub agent_state: ModelConfigMigrationStoreReport,
-}
 
 #[derive(Debug)]
 struct ConfigInspection {

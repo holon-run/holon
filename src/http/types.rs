@@ -1,3 +1,14 @@
+pub use holon_client::wire::{
+    AbortCurrentRunRequest, AgentDeletionResponse, AgentDeletionStatusResponse,
+    AttachWorkspaceRequest, BatchGetBriefsRequest, BatchGetBriefsResponse, BatchGetMessagesRequest,
+    BatchGetMessagesResponse, BatchGetTranscriptEntriesRequest, BatchGetTranscriptEntriesResponse,
+    CancelTimerRequest, ClearAgentModelRequest, ClearAgentTimezoneRequest, ControlPromptAttachment,
+    ControlPromptFileAttachment, ControlPromptImageAttachment, ControlPromptRequest,
+    ControlRequest, CreateAgentRequest, CreateTimerRequest, DebugPromptRequest, DeleteAgentRequest,
+    DetachWorkspaceRequest, ExitWorkspaceRequest, RenameAgentRequest, SetAgentModelRequest,
+    SetAgentTimezoneRequest, TaskInputRequest, TaskStopRequest,
+};
+
 use super::*;
 
 pub(crate) const SEARCH_DEFAULT_LIMIT: usize = 20;
@@ -13,36 +24,6 @@ pub struct SearchRequest {
     pub agent_ids: Option<Vec<String>>,
     #[serde(default)]
     pub types: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
-pub struct RenameAgentRequest {
-    pub name: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
-#[serde(deny_unknown_fields)]
-pub struct DeleteAgentRequest {
-    #[serde(default)]
-    pub cascade_private_children: bool,
-    #[serde(default)]
-    pub archive: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct AgentDeletionResponse {
-    pub ok: bool,
-    pub created: bool,
-    pub identity: crate::types::AgentIdentityView,
-    pub job: crate::types::AgentDeletionJob,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct AgentDeletionStatusResponse {
-    pub identity: crate::types::AgentIdentityView,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub job: Option<crate::types::AgentDeletionJob>,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -134,108 +115,6 @@ pub(crate) struct CallbackResponse {
     pub(crate) result: CallbackDeliveryResult,
 }
 
-#[derive(Debug, Deserialize, Serialize, JsonSchema, Clone, PartialEq, Eq)]
-pub struct ControlPromptRequest {
-    pub text: String,
-    /// Reject stale conversation pages after an agent ID is recreated.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub expected_incarnation: Option<u64>,
-    #[serde(default)]
-    pub work_item_id: Option<String>,
-    #[serde(default)]
-    pub attachments: Vec<ControlPromptAttachment>,
-    /// Stable caller-generated identity used to safely retry a prompt after
-    /// the client loses the HTTP response. Older clients may omit it.
-    #[serde(default)]
-    pub client_request_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-#[serde(tag = "kind", rename_all = "snake_case")]
-pub enum ControlPromptAttachment {
-    Image(ControlPromptImageAttachment),
-    File(ControlPromptFileAttachment),
-}
-
-impl JsonSchema for ControlPromptAttachment {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "ControlPromptAttachment".into()
-    }
-
-    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({
-            "oneOf": [
-                generator.subschema_for::<ControlPromptImageAttachment>(),
-                generator.subschema_for::<ControlPromptFileAttachment>()
-            ],
-            "discriminator": {
-                "propertyName": "kind",
-                "mapping": {
-                    "image": "#/components/schemas/ControlPromptImageAttachment",
-                    "file": "#/components/schemas/ControlPromptFileAttachment"
-                }
-            }
-        })
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-pub struct ControlPromptImageAttachment {
-    pub name: Option<String>,
-    pub media_type: String,
-    pub data_base64: String,
-}
-
-impl JsonSchema for ControlPromptImageAttachment {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "ControlPromptImageAttachment".into()
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        control_prompt_attachment_schema("image")
-    }
-}
-
-#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
-pub struct ControlPromptFileAttachment {
-    pub name: Option<String>,
-    pub media_type: String,
-    pub data_base64: String,
-}
-
-impl JsonSchema for ControlPromptFileAttachment {
-    fn schema_name() -> std::borrow::Cow<'static, str> {
-        "ControlPromptFileAttachment".into()
-    }
-
-    fn json_schema(_generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        control_prompt_attachment_schema("file")
-    }
-}
-
-fn control_prompt_attachment_schema(kind: &'static str) -> schemars::Schema {
-    schemars::json_schema!({
-        "type": "object",
-        "properties": {
-            "kind": {
-                "type": "string",
-                "const": kind,
-                "enum": [kind]
-            },
-            "name": {
-                "type": ["string", "null"]
-            },
-            "media_type": {
-                "type": "string"
-            },
-            "data_base64": {
-                "type": "string"
-            }
-        },
-        "required": ["kind", "media_type", "data_base64"]
-    })
-}
-
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperatorTransportBindingRequest {
@@ -268,14 +147,6 @@ pub struct OperatorIngressRequest {
     pub metadata: Option<Value>,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct DebugPromptRequest {
-    pub text: String,
-    pub authority_class: Option<AuthorityClass>,
-    pub manifest: Option<bool>,
-    pub budget: Option<usize>,
-}
-
 #[derive(Debug, Deserialize)]
 pub struct LimitQuery {
     pub(crate) limit: Option<usize>,
@@ -296,23 +167,6 @@ pub struct TaskOutputQuery {
 }
 
 pub(crate) const TASK_OUTPUT_DEFAULT_TIMEOUT_MS: u64 = 30_000;
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskInputRequest {
-    pub text: String,
-    pub authority_class: Option<AuthorityClass>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invocation_context: Option<crate::types::AgentInvocationContext>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct TaskStopRequest {
-    pub authority_class: Option<AuthorityClass>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub invocation_context: Option<crate::types::AgentInvocationContext>,
-}
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -362,45 +216,6 @@ pub(crate) struct EventsPageResponse {
     pub(crate) has_newer: bool,
     pub(crate) order: EventPageOrder,
     pub(crate) limit: usize,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct BatchGetMessagesRequest {
-    #[serde(default)]
-    pub message_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BatchGetMessagesResponse {
-    pub messages: Vec<MessageEnvelope>,
-    #[serde(default)]
-    pub missing_message_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct BatchGetBriefsRequest {
-    #[serde(default)]
-    pub brief_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BatchGetBriefsResponse {
-    pub briefs: Vec<BriefRecord>,
-    #[serde(default)]
-    pub missing_brief_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, JsonSchema)]
-pub struct BatchGetTranscriptEntriesRequest {
-    #[serde(default)]
-    pub entry_ids: Vec<String>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct BatchGetTranscriptEntriesResponse {
-    pub entries: Vec<TranscriptEntry>,
-    #[serde(default)]
-    pub missing_entry_ids: Vec<String>,
 }
 
 /// One event on the public event surface. The `payload` object is the only
@@ -495,92 +310,4 @@ pub struct PickWorkItemResponse {
     pub current_work_item: WorkItemRecord,
     pub current_work_item_id: String,
     pub transition: crate::runtime::WorkItemFocusTransition,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CreateTimerRequest {
-    pub duration_ms: Option<u64>,
-    pub interval_ms: Option<u64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub calendar_expression: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub timezone: Option<String>,
-    pub summary: Option<String>,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct CancelTimerRequest {
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ControlRequest {
-    pub action: ControlAction,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct AbortCurrentRunRequest {
-    pub run_id: Option<String>,
-    pub mode: Option<String>,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct AttachWorkspaceRequest {
-    pub path: String,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ExitWorkspaceRequest {
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct DetachWorkspaceRequest {
-    pub workspace_id: String,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct SetAgentModelRequest {
-    pub model: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub service_tier: Option<crate::config::ServiceTier>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub reasoning_effort: Option<String>,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ClearAgentModelRequest {
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SetAgentTimezoneRequest {
-    pub timezone: String,
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-pub struct ClearAgentTimezoneRequest {
-    pub authority_class: Option<AuthorityClass>,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct CreateAgentRequest {
-    pub authority_class: Option<AuthorityClass>,
-    pub template: Option<String>,
-    #[serde(default)]
-    pub name: Option<String>,
 }

@@ -19,7 +19,7 @@ order: 25
   检查。
 - **路由/schema 漂移检查：** `tests/snapshots/http_route_inventory.json`，由
   `make snapshots-check` 从 Axum 路由树和生成的 OpenAPI 基线产出。
-- **客户端源码：** `src/client.rs`，对应 TUI/CLI 使用的那部分子集。
+- **客户端源码：** `crates/holon-client/src/lib.rs`，对应 TUI/CLI 使用的那部分子集。
 - **当前状态：** 1.0 之前的基线。把下面的形状视为已观察到的行为，而不是最终的
   兼容性承诺。里程碑 8 确立了首个受检基线；剩余的缺口属于第二阶段稳定化工作。
 
@@ -135,7 +135,7 @@ order: 25
 | `remote_skill_install_failed` | `502` | 远程 skill 安装器以失败状态退出。 |
 | `remote_skill_install_timeout` | `504` | 远程 skill 安装器超时。 |
 
-`src/client.rs` 以兼容方式解码该信封：显示时只要求 `error`，并在
+`crates/holon-client/src/lib.rs` 以兼容方式解码该信封：显示时只要求 `error`，并在
 `LocalHttpError` 中保留可选的 `code` 和 `hint`。除非调用方直接检查原始响应，
 否则客户端会忽略未知扩展字段。
 

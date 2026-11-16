@@ -899,3 +899,10 @@ pub fn command_digest(cmd: &str) -> String {
     let digest = Sha256::digest(cmd.as_bytes());
     format!("{digest:x}")
 }
+
+pub fn is_active_task_status(status: &TaskStatus) -> bool {
+    matches!(
+        status,
+        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
+    )
+}

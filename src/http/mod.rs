@@ -84,13 +84,13 @@ pub(crate) use crate::{
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
-        AdmissionContext, AgentRegistryStatus, AgentState, AuditEvent, AuthorityClass, BriefRecord,
-        CallbackDeliveryPayload, CallbackDeliveryResult, ControlAction, MessageBody,
-        MessageDeliverySurface, MessageEnvelope, MessageKind, MessageOrigin,
-        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
-        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
-        TaskStatusSnapshot, TaskStopResult, TodoItem, TranscriptEntry, TurnTerminalRecord,
-        WorkItemPlanStatus, WorkItemRecord, WorkItemState,
+        AdmissionContext, AgentRegistryStatus, AgentState, AuditEvent, AuthorityClass,
+        CallbackDeliveryPayload, CallbackDeliveryResult, MessageBody, MessageDeliverySurface,
+        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
+        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
+        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
+        TaskStopResult, TodoItem, TurnTerminalRecord, WorkItemPlanStatus, WorkItemRecord,
+        WorkItemState,
     },
 };
 #[cfg(holon_lib_test_shard = "c")]
@@ -370,8 +370,8 @@ fn json_rejection_response(rejection: JsonRejection) -> (StatusCode, Json<Value>
 
 pub(crate) const CALLBACK_BODY_LIMIT_BYTES: usize = 256 * 1024;
 pub(crate) const DEFAULT_EVENT_STREAM_WINDOW: usize = 128;
+pub(crate) use holon_domain::runtime_event::EVENT_STREAM_HEARTBEAT_INTERVAL;
 pub use holon_domain::MAX_EVENT_STREAM_WINDOW;
-pub(crate) const EVENT_STREAM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 pub(crate) const SESSION_COOKIE_NAME: &str = "holon_session";
 
 impl AppState {

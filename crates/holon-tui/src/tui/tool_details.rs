@@ -670,7 +670,6 @@ fn artifact_footer(output: &Value, expanded: bool) -> String {
     )
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

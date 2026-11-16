@@ -221,14 +221,12 @@ fn supports_reasoning_effort(entry: &ResolvedModelAvailability) -> bool {
     !entry.policy.reasoning_effort_options.is_empty()
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{clamp_model_picker_selection, model_picker_rows, selected_model_picker_row};
     use crate::system::{ExecutionProfile, ExecutionSnapshot};
     use crate::{
         config::{ModelRef, ModelRouteRef},
-        model_catalog::{ModelCapabilityFlags, ModelMetadataSource, ResolvedRuntimeModelPolicy},
         types::{
             AgentIdentityView, AgentKind, AgentLifecycleHint, AgentModelSource, AgentModelState,
             AgentOwnership, AgentProfilePreset, AgentRegistryStatus, AgentState, AgentSummary,
@@ -236,6 +234,9 @@ mod tests {
             ClosureOutcome, LoadedAgentsMdView, ResolvedModelAvailability, RuntimePosture,
             SkillsRuntimeView, TokenUsage,
         },
+    };
+    use holon_domain::model_values::{
+        ModelCapabilityFlags, ModelMetadataSource, ResolvedRuntimeModelPolicy,
     };
 
     fn policy(model: &str, display_name: &str, reasoning: bool) -> ResolvedRuntimeModelPolicy {

@@ -436,7 +436,7 @@ pub(super) fn turn_detail_entries(app: &TuiApp) -> Vec<(String, String)> {
 
 fn task_result_detail(
     model: &super::conversation::ConversationModel,
-    result: &crate::domain::conversation::TaskResultPresentation,
+    result: &holon_domain::conversation::TaskResultPresentation,
 ) -> String {
     let mut text = super::chat::task_result_text(result, None);
     if let Some(full) = model.task_results.get(&result.task_id) {

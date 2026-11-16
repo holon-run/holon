@@ -1,3 +1,9 @@
+pub use holon_client::wire::{
+    ModelConfigMigrationRequest, RuntimeConfigReadResponse, RuntimeConfigReloadState,
+    RuntimeConfigReloadStatus, RuntimeConfigUpdateEffect, RuntimeConfigUpdateEntry,
+    RuntimeConfigUpdateRequest, RuntimeConfigUpdateResponse, RuntimeConfigUpdateResult,
+};
+
 use super::*;
 use crate::{
     config::{ApiPromptConfigFile, AppConfig},
@@ -588,7 +594,7 @@ pub async fn runtime_status(
         .public_agent_activity_snapshots()
         .await
         .map_err(error_response)?;
-    let activity = crate::daemon::RuntimeActivitySummary::from_snapshots(&agents);
+    let activity = crate::daemon::activity_from_snapshots(&agents);
     let last_failure = agents
         .into_iter()
         .filter_map(|agent| agent.last_runtime_failure)
@@ -751,109 +757,20 @@ pub async fn scheduler_repair_apply(
     ))
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct RuntimeConfigReadResponse {
-    pub ok: bool,
-    pub config_file_path: std::path::PathBuf,
-    pub runtime_surface: RuntimeConfigSurface,
-    pub reload: RuntimeConfigReloadStatus,
-    pub setup: crate::onboarding::RuntimeSetup,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeConfigUpdateRequest {
-    pub updates: Vec<RuntimeConfigUpdateEntry>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq, Default)]
-#[serde(deny_unknown_fields)]
-pub struct ModelConfigMigrationRequest {
-    #[serde(default)]
-    pub write: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
-#[serde(deny_unknown_fields)]
-pub struct RuntimeConfigUpdateEntry {
-    pub key: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub value: Option<Value>,
-    #[serde(default)]
-    pub unset: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct RuntimeConfigUpdateResponse {
-    pub ok: bool,
-    pub changed: bool,
-    pub config_file_path: std::path::PathBuf,
-    pub results: Vec<RuntimeConfigUpdateResult>,
-    pub runtime_surface: RuntimeConfigSurface,
-    pub reload: RuntimeConfigReloadStatus,
-    pub setup: crate::onboarding::RuntimeSetup,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct RuntimeConfigReloadStatus {
-    pub requested_generation: u64,
-    pub completed_generation: u64,
-    pub state: RuntimeConfigReloadState,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub last_error: Option<String>,
-}
-
-impl Default for RuntimeConfigReloadStatus {
-    fn default() -> Self {
-        Self {
-            requested_generation: 0,
-            completed_generation: 0,
-            state: RuntimeConfigReloadState::Idle,
-            last_error: None,
-        }
+fn runtime_config_reload_status(host: &crate::host::RuntimeHost) -> RuntimeConfigReloadStatus {
+    let status = host.config_reload_status();
+    let state = match status.state {
+        crate::host::ConfigReloadState::Idle => RuntimeConfigReloadState::Idle,
+        crate::host::ConfigReloadState::Applying => RuntimeConfigReloadState::Applying,
+        crate::host::ConfigReloadState::Completed => RuntimeConfigReloadState::Completed,
+        crate::host::ConfigReloadState::Failed => RuntimeConfigReloadState::Failed,
+    };
+    RuntimeConfigReloadStatus {
+        requested_generation: status.requested_generation,
+        completed_generation: status.completed_generation,
+        state,
+        last_error: status.last_error,
     }
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeConfigReloadState {
-    Idle,
-    Applying,
-    Completed,
-    Failed,
-}
-
-impl RuntimeConfigReloadStatus {
-    fn from_host(host: &crate::host::RuntimeHost) -> Self {
-        let status = host.config_reload_status();
-        let state = match status.state {
-            crate::host::ConfigReloadState::Idle => RuntimeConfigReloadState::Idle,
-            crate::host::ConfigReloadState::Applying => RuntimeConfigReloadState::Applying,
-            crate::host::ConfigReloadState::Completed => RuntimeConfigReloadState::Completed,
-            crate::host::ConfigReloadState::Failed => RuntimeConfigReloadState::Failed,
-        };
-        Self {
-            requested_generation: status.requested_generation,
-            completed_generation: status.completed_generation,
-            state,
-            last_error: status.last_error,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-pub struct RuntimeConfigUpdateResult {
-    pub key: String,
-    pub effect: RuntimeConfigUpdateEffect,
-    pub reason: String,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeConfigUpdateEffect {
-    AcceptedRequiresRestart,
-    AcceptedReloadScheduled,
-    Rejected,
 }
 
 pub async fn runtime_config(
@@ -861,9 +778,9 @@ pub async fn runtime_config(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
-    let before_reload = RuntimeConfigReloadStatus::from_host(&state.host);
+    let before_reload = runtime_config_reload_status(&state.host);
     let config = state.host.config();
-    let reload = RuntimeConfigReloadStatus::from_host(&state.host);
+    let reload = runtime_config_reload_status(&state.host);
     let mut setup = runtime_config_setup(&config, &reload);
     if before_reload != reload {
         setup.status = crate::onboarding::RuntimeSetupStatus::Blocked;
@@ -1016,9 +933,9 @@ fn runtime_config_update_blocking(
             }
         }
     }
-    let before_reload = RuntimeConfigReloadStatus::from_host(&state.host);
+    let before_reload = runtime_config_reload_status(&state.host);
     let config = state.host.config();
-    let reload = RuntimeConfigReloadStatus::from_host(&state.host);
+    let reload = runtime_config_reload_status(&state.host);
     let mut setup = runtime_config_setup(&config, &reload);
     if before_reload != reload {
         setup.status = crate::onboarding::RuntimeSetupStatus::Blocked;

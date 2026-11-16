@@ -391,7 +391,6 @@ fn quote_style() -> Style {
     Style::default().fg(Color::Green)
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::{render_markdown_text, render_markdown_text_spaced};

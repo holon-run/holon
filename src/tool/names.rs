@@ -7,56 +7,7 @@
 ///
 /// Importing `tool::names::TOOL_*` lets the compiler catch typos and makes
 /// renames a single-point edit.
-pub mod tool_names {
-    pub const SCHEDULE_DESTRUCTIVE_OPERATION: &str = "ScheduleDestructiveOperation";
-    pub const GET_AGENT: &str = "GetAgent";
-    pub const DELETE_AGENT: &str = "DeleteAgent";
-    pub const APPLY_PATCH: &str = "ApplyPatch";
-    pub const ATTACH_WORKSPACE: &str = "AttachWorkspace";
-    pub const CANCEL_EXTERNAL_TRIGGER: &str = "CancelExternalTrigger";
-    pub const CANCEL_TIMER: &str = "CancelTimer";
-    pub const COMPLETE_WORK_ITEM: &str = "CompleteWorkItem";
-    pub const CREATE_AGENT: &str = "CreateAgent";
-    pub const CREATE_EXTERNAL_TRIGGER: &str = "CreateExternalTrigger";
-    pub const CREATE_TIMER: &str = "CreateTimer";
-    pub const CREATE_WORK_ITEM: &str = "CreateWorkItem";
-    pub const CREATE_WORKTREE: &str = "CreateWorktree";
-    pub const DETACH_WORKSPACE: &str = "DetachWorkspace";
-    pub const ENQUEUE: &str = "Enqueue";
-    pub const EXEC_COMMAND: &str = "ExecCommand";
-    pub const EXEC_COMMAND_BATCH: &str = "ExecCommandBatch";
-    pub const GET_WORK_ITEM: &str = "GetWorkItem";
-    pub const GET_WORKSPACE_STATE: &str = "GetWorkspaceState";
-    pub const GET_TIMER: &str = "GetTimer";
-    pub const GENERATE_IMAGE: &str = "GenerateImage";
-    pub const INVOKE_AGENT: &str = "InvokeAgent";
-    pub const LIST_MODEL_PROVIDERS: &str = "ListModelProviders";
-    pub const LIST_PROVIDER_MODELS: &str = "ListProviderModels";
-    pub const LIST_SUBAGENT_CLEANUP: &str = "ListSubagentCleanup";
-    pub const LIST_TASKS: &str = "ListTasks";
-    pub const LIST_TIMERS: &str = "ListTimers";
-    pub const LIST_WORK_ITEMS: &str = "ListWorkItems";
-    pub const MEMORY_GET: &str = "MemoryGet";
-    pub const MEMORY_SEARCH: &str = "MemorySearch";
-    pub const PICK_WORK_ITEM: &str = "PickWorkItem";
-    pub const REMOVE_WORKTREE: &str = "RemoveWorktree";
-    pub const SEND_AGENT_MESSAGE: &str = "SendAgentMessage";
-    pub const SLEEP: &str = "Sleep";
-    pub const TASK_INPUT: &str = "TaskInput";
-    /// Legacy alias kept for backward-compatible dispatch.
-    pub const TASK_LIST: &str = "TaskList";
-    pub const TASK_STATUS: &str = "TaskStatus";
-    pub const TASK_STOP: &str = "TaskStop";
-    pub const UPDATE_WORK_ITEM: &str = "UpdateWorkItem";
-    pub const USE_WORKSPACE: &str = "UseWorkspace";
-    pub const SWITCH_WORKSPACE: &str = "SwitchWorkspace";
-    pub const VIEW_IMAGE: &str = "ViewImage";
-    pub const WAIT_FOR: &str = "WaitFor";
-    pub const WEB_FETCH: &str = "WebFetch";
-    pub const WEB_SEARCH: &str = "WebSearch";
-    pub const X_SEARCH: &str = "XSearch";
-    pub const ADVISORY_DECISION: &str = "AdvisoryDecision";
-}
+pub use holon_domain::tool_names;
 
 pub use tool_names::*;
 

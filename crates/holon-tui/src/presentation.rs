@@ -1505,18 +1505,19 @@ fn strip_preview_ellipsis(text: &str) -> String {
 }
 
 fn is_sleep_tool_event(event: &ProjectionEventRecord) -> bool {
-    event.payload.get("tool_name").and_then(Value::as_str) == Some(crate::tool::names::SLEEP)
+    event.payload.get("tool_name").and_then(Value::as_str) == Some(holon_domain::tool_names::SLEEP)
 }
 
 fn is_exec_command_tool_event(event: &ProjectionEventRecord) -> bool {
     matches!(
         event.payload.get("tool_name").and_then(Value::as_str),
-        Some(name) if name == crate::tool::names::EXEC_COMMAND || name == crate::tool::names::EXEC_COMMAND_BATCH
+        Some(name) if name == holon_domain::tool_names::EXEC_COMMAND || name == holon_domain::tool_names::EXEC_COMMAND_BATCH
     )
 }
 
 fn is_apply_patch_tool_event(event: &ProjectionEventRecord) -> bool {
-    event.payload.get("tool_name").and_then(Value::as_str) == Some(crate::tool::names::APPLY_PATCH)
+    event.payload.get("tool_name").and_then(Value::as_str)
+        == Some(holon_domain::tool_names::APPLY_PATCH)
 }
 
 fn list_work_items_snapshot_item(event: &ProjectionEventRecord) -> Option<PresentationItem> {
@@ -1524,7 +1525,7 @@ fn list_work_items_snapshot_item(event: &ProjectionEventRecord) -> Option<Presen
         return None;
     }
     if event.payload.get("tool_name").and_then(Value::as_str)
-        != Some(crate::tool::names::LIST_WORK_ITEMS)
+        != Some(holon_domain::tool_names::LIST_WORK_ITEMS)
     {
         return None;
     }
@@ -1674,10 +1675,10 @@ fn is_successful_work_item_tool_event(event: &ProjectionEventRecord) -> bool {
     matches!(
         event.payload.get("tool_name").and_then(Value::as_str),
         Some(name)
-            if name == crate::tool::names::CREATE_WORK_ITEM
-            || name == crate::tool::names::UPDATE_WORK_ITEM
-            || name == crate::tool::names::PICK_WORK_ITEM
-            || name == crate::tool::names::COMPLETE_WORK_ITEM
+            if name == holon_domain::tool_names::CREATE_WORK_ITEM
+            || name == holon_domain::tool_names::UPDATE_WORK_ITEM
+            || name == holon_domain::tool_names::PICK_WORK_ITEM
+            || name == holon_domain::tool_names::COMPLETE_WORK_ITEM
     )
 }
 
@@ -2211,7 +2212,6 @@ fn provider_round_item(event: &ProjectionEventRecord) -> Option<PresentationItem
     })
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3651,8 +3651,8 @@ mod tests {
                 text: "duplicate operator input".into(),
             },
         );
-        let brief = crate::brief::make_ack("default", &message);
-        assert!(brief.text.starts_with(crate::brief::QUEUED_WORK_ACK_PREFIX));
+        let brief = holon_domain::make_ack("default", &message);
+        assert!(brief.text.starts_with(holon_domain::QUEUED_WORK_ACK_PREFIX));
         let event = make_event("brief_created", "Queued work: duplicate", json!(brief));
 
         let mut reducer = PresentationReducer::new();

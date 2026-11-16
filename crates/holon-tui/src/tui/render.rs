@@ -761,8 +761,8 @@ impl TaskOverlayAction {
         match self {
             Self::FullOutput => "bounded read of confirmed command file",
             Self::FollowOutput => "bounded observation of confirmed command file",
-            Self::Stop => crate::tool::names::TASK_STOP,
-            Self::Input => crate::tool::names::TASK_INPUT,
+            Self::Stop => holon_domain::tool_names::TASK_STOP,
+            Self::Input => holon_domain::tool_names::TASK_INPUT,
         }
     }
 }
@@ -1021,7 +1021,6 @@ pub(super) fn render_summary(agent: &AgentSummary) -> String {
     lines.join("\n")
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -1083,7 +1082,7 @@ mod tests {
                 effective_service_tier: None,
                 source: AgentModelSource::RuntimeDefault,
                 effective_fallback_models: Vec::new(),
-                resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy {
+                resolved_policy: holon_domain::model_values::ResolvedRuntimeModelPolicy {
                     model_ref: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
                         .unwrap(),
                     display_name: "Claude Sonnet 4.6".into(),
@@ -1097,15 +1096,15 @@ mod tests {
                     verbosity: None,
                     tool_output_truncation_estimated_tokens: 2_500,
                     max_output_tokens_upper_limit: Some(128_000),
-                    capabilities: crate::model_catalog::ModelCapabilityFlags {
+                    capabilities: holon_domain::model_values::ModelCapabilityFlags {
                         image_input: true,
-                        ..crate::model_catalog::ModelCapabilityFlags::default()
+                        ..holon_domain::model_values::ModelCapabilityFlags::default()
                     },
                     agent_turn: true,
                     decision_capable: false,
                     decision_protocol: None,
                     reasoning_effort_options: Vec::new(),
-                    source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
+                    source: holon_domain::model_values::ModelMetadataSource::BuiltInCatalog,
                     evidence: Default::default(),
                 },
             },
@@ -1298,24 +1297,8 @@ mod tests {
         }];
 
         let work_items = [
-            crate::work_item_scheduling::derive_work_item_scheduling(
-                crate::work_item_scheduling::WorkItemSchedulingFacts {
-                    work_item: &first_open,
-                    is_current: false,
-                    is_yielded: false,
-                    active_wait_conditions: &[],
-                    trigger_delivery_by_id: &std::collections::BTreeMap::new(),
-                },
-            ),
-            crate::work_item_scheduling::derive_work_item_scheduling(
-                crate::work_item_scheduling::WorkItemSchedulingFacts {
-                    work_item: &current,
-                    is_current: true,
-                    is_yielded: false,
-                    active_wait_conditions: &[],
-                    trigger_delivery_by_id: &std::collections::BTreeMap::new(),
-                },
-            ),
+            super::super::tests::sample_work_item_projection(first_open, false),
+            super::super::tests::sample_work_item_projection(current, true),
         ];
         let selected = todo_summary_work_item(&agent, &work_items)
             .expect("current work item should be selected");

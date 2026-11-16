@@ -1,0 +1,37 @@
+[package]
+name = "holon-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal operator console for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+crossterm = "0.28"
+holon-client = { version = "0.1.0", path = "../holon-client" }
+holon-config = { version = "0.1.0", path = "../holon-config" }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-provider = { version = "0.1.0", path = "../holon-provider" }
+holon-system = { version = "0.1.0", path = "../holon-system" }
+pulldown-cmark = "0.13"
+ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+tracing = "0.1"
+unicode-width = "0.2"
+url = "2.5"
+uuid = { version = "1.11", features = ["v4"] }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["json"] }
+tempfile = "3.14"
+tokio = { version = "1.43", features = ["test-util"] }
+tokio-stream = "0.1"

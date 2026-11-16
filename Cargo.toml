@@ -39,7 +39,6 @@ chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"
 cron = "0.17"
 clap = { version = "4.5", features = ["derive", "env"] }
-crossterm = "0.28"
 decision-core = { version = "0.1.0", path = "crates/decision-core" }
 decision-clef = { version = "0.1.0", path = "crates/decision-clef" }
 decision-jev = { version = "0.1.0", path = "crates/decision-jev" }
@@ -47,25 +46,25 @@ decision-openai = { version = "0.1.0", path = "crates/decision-openai" }
 decision-openai-decisions = { version = "0.1.0", path = "crates/decision-openai-decisions" }
 futures-util = "0.3"
 decision-local-onnx = { version = "0.1.0", path = "crates/decision-local-onnx", optional = true }
+holon-client = { version = "0.1.0", path = "crates/holon-client" }
 holon-config = { version = "0.1.0", path = "crates/holon-config" }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain" }
 holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
+holon-tui = { version = "0.1.0", path = "crates/holon-tui" }
 flate2 = "1.0"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2"
-ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
 resvg = { version = "0.45.1", default-features = false }
 rpassword = "7.3"
 rust-embed = "8.11"
 rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
-pulldown-cmark = "0.13"
 percent-encoding = "2.3"
 mime_guess = "2.0"
 schemars = { version = "0.9", features = ["chrono04"] }
@@ -84,7 +83,6 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6.8", features = ["compression-gzip", "cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-unicode-width = "0.2"
 unicode-casefold = "0.2"
 url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4"] }
@@ -98,6 +96,7 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
+holon-tui = { version = "0.1.0", path = "crates/holon-tui", features = ["test-support"] }
 holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog", features = ["test-support"] }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider", features = ["runtime-tests"] }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage", features = ["test-support"] }

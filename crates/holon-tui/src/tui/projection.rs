@@ -887,7 +887,7 @@ impl TuiProjection {
     pub(crate) fn hydrate_brief_texts(&mut self, entries: Vec<TranscriptEntry>) -> bool {
         let mut changed = false;
         for entry in entries {
-            if let Some(text) = crate::object_resolver::transcript_text(&entry) {
+            if let Some(text) = holon_domain::transcript_text(&entry) {
                 // Key by the transcript entry id so multiple briefs sharing
                 // the same transcript entry resolve to the same text.
                 changed |= self.brief_text_cache.insert(entry.id, text).is_none();
@@ -1548,7 +1548,7 @@ where
 
 fn upsert_active_task(tasks: &mut Vec<TaskRecord>, task: TaskRecord) {
     tasks.retain(|existing| existing.id != task.id);
-    if crate::storage::is_active_task_status(&task.status) {
+    if holon_domain::is_active_task_status(&task.status) {
         push_limited_sorted(tasks, task, TASK_TAIL_LIMIT, |left, right| {
             left.updated_at.cmp(&right.updated_at)
         });
@@ -1558,7 +1558,7 @@ fn upsert_active_task(tasks: &mut Vec<TaskRecord>, task: TaskRecord) {
 fn active_tasks_for_projection(tasks: Vec<TaskRecord>) -> Vec<TaskRecord> {
     let mut tasks = tasks
         .into_iter()
-        .filter(|task| crate::storage::is_active_task_status(&task.status))
+        .filter(|task| holon_domain::is_active_task_status(&task.status))
         .collect::<Vec<_>>();
     // TUI keeps tasks oldest-first internally because the overlay reverses them for display.
     tasks.sort_by(|left, right| left.updated_at.cmp(&right.updated_at));
@@ -1902,7 +1902,6 @@ fn trim_summary(value: &str) -> String {
     }
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2487,14 +2486,8 @@ mod tests {
         let mut projection = TuiProjection::from_snapshot(sample_snapshot());
         let mut completed = WorkItemRecord::new("default", "finish docs", WorkItemState::Completed);
         completed.id = "work-done".into();
-        projection.work_items = vec![crate::work_item_scheduling::derive_work_item_scheduling(
-            crate::work_item_scheduling::WorkItemSchedulingFacts {
-                work_item: &completed,
-                is_current: false,
-                is_yielded: false,
-                active_wait_conditions: &[],
-                trigger_delivery_by_id: &std::collections::BTreeMap::new(),
-            },
+        projection.work_items = vec![super::super::tests::sample_work_item_projection(
+            completed, false,
         )];
         let mut work_brief =
             BriefRecord::new("default", BriefKind::Result, "Work done", None, None);
@@ -3548,15 +3541,7 @@ mod tests {
                     text: "do it".into(),
                     state: TodoItemState::InProgress,
                 }];
-                vec![crate::work_item_scheduling::derive_work_item_scheduling(
-                    crate::work_item_scheduling::WorkItemSchedulingFacts {
-                        work_item: &item,
-                        is_current: true,
-                        is_yielded: false,
-                        active_wait_conditions: &[],
-                        trigger_delivery_by_id: &std::collections::BTreeMap::new(),
-                    },
-                )]
+                vec![super::super::tests::sample_work_item_projection(item, true)]
             },
             external_triggers: vec![ExternalTriggerStateSnapshot {
                 external_trigger_id: "cb-1".into(),
@@ -3675,7 +3660,7 @@ mod tests {
                 effective_service_tier: None,
                 source: AgentModelSource::RuntimeDefault,
                 effective_fallback_models: Vec::new(),
-                resolved_policy: crate::model_catalog::ResolvedRuntimeModelPolicy {
+                resolved_policy: holon_domain::model_values::ResolvedRuntimeModelPolicy {
                     model_ref: crate::config::ModelRef::parse("anthropic/claude-sonnet-4-6")
                         .unwrap(),
                     display_name: "Claude Sonnet 4.6".into(),
@@ -3689,15 +3674,15 @@ mod tests {
                     verbosity: None,
                     tool_output_truncation_estimated_tokens: 2_500,
                     max_output_tokens_upper_limit: Some(128_000),
-                    capabilities: crate::model_catalog::ModelCapabilityFlags {
+                    capabilities: holon_domain::model_values::ModelCapabilityFlags {
                         image_input: true,
-                        ..crate::model_catalog::ModelCapabilityFlags::default()
+                        ..holon_domain::model_values::ModelCapabilityFlags::default()
                     },
                     agent_turn: true,
                     decision_capable: false,
                     decision_protocol: None,
                     reasoning_effort_options: Vec::new(),
-                    source: crate::model_catalog::ModelMetadataSource::BuiltInCatalog,
+                    source: holon_domain::model_values::ModelMetadataSource::BuiltInCatalog,
                     evidence: Default::default(),
                 },
             },

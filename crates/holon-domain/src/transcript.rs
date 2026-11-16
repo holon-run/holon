@@ -146,3 +146,90 @@ impl TranscriptEntry {
         }
     }
 }
+
+pub fn transcript_text(entry: &TranscriptEntry) -> Option<String> {
+    transcript_text_projection(entry).map(TranscriptTextProjection::into_text)
+}
+
+/// Borrow only the selected text; unrelated transcript JSON is not materialized.
+pub enum TranscriptTextProjection<'a> {
+    Body(&'a str),
+    Blocks(&'a [Value]),
+}
+
+impl serde::Serialize for TranscriptTextProjection<'_> {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Body(text) => serde::Serialize::serialize(text, serializer),
+            Self::Blocks(blocks) => serializer.collect_seq(text_blocks(blocks)),
+        }
+    }
+}
+
+impl<'a> TranscriptTextProjection<'a> {
+    pub fn borrowed_text(&self) -> Option<&'a str> {
+        match self {
+            Self::Body(text) => Some(text),
+            Self::Blocks(blocks) => {
+                let mut texts = text_blocks(blocks);
+                let text = texts.next()?;
+                texts.next().is_none().then_some(text)
+            }
+        }
+    }
+
+    pub fn into_text(self) -> String {
+        match self {
+            Self::Body(text) => text.to_owned(),
+            Self::Blocks(blocks) => text_blocks(blocks).collect::<Vec<_>>().join(" "),
+        }
+    }
+}
+
+pub fn transcript_text_projection(entry: &TranscriptEntry) -> Option<TranscriptTextProjection<'_>> {
+    match entry.kind {
+        TranscriptEntryKind::AssistantRound
+        | TranscriptEntryKind::ToolResults
+        | TranscriptEntryKind::ContinuationPrompt
+        | TranscriptEntryKind::SubagentPrompt
+        | TranscriptEntryKind::SubagentAssistantRound => text_blocks_projection(&entry.data),
+        TranscriptEntryKind::IncomingMessage | TranscriptEntryKind::RuntimeFailure => {
+            text_from_message_body(&entry.data)
+                .map(TranscriptTextProjection::Body)
+                .or_else(|| text_blocks_projection(&entry.data))
+        }
+    }
+}
+
+fn text_blocks_projection(data: &Value) -> Option<TranscriptTextProjection<'_>> {
+    let blocks = data.get("blocks")?.as_array()?;
+    text_blocks(blocks)
+        .any(|text| !text.trim().is_empty())
+        .then_some(TranscriptTextProjection::Blocks(blocks))
+}
+
+fn text_blocks(blocks: &[Value]) -> impl Iterator<Item = &str> {
+    blocks.iter().filter_map(|block| {
+        let kind = block.get("type").and_then(Value::as_str)?;
+        if kind != "text" {
+            return None;
+        }
+        block
+            .get("Text")
+            .and_then(|value| value.get("text"))
+            .or_else(|| block.get("text"))
+            .and_then(Value::as_str)
+    })
+}
+
+fn text_from_message_body(data: &Value) -> Option<&str> {
+    data.get("body")
+        .and_then(|body| {
+            body.get("Text")
+                .and_then(|value| value.get("text"))
+                .or_else(|| body.get("Brief").and_then(|value| value.get("text")))
+                .or_else(|| body.get("text"))
+                .and_then(Value::as_str)
+        })
+        .filter(|text| !text.trim().is_empty())
+}

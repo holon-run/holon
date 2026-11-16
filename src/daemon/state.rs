@@ -1,3 +1,5 @@
+pub use holon_client::wire::DaemonLifecycleOwner;
+
 use std::{
     fs,
     io::{ErrorKind, Read, Seek, SeekFrom},
@@ -40,13 +42,6 @@ pub enum DaemonLifecycleState {
     Stale,
     Unresponsive,
     VersionMismatch,
-}
-
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum DaemonLifecycleOwner {
-    #[default]
-    Standalone,
 }
 
 /// Scope of the failure diagnostics attached to `holon daemon status`.

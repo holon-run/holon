@@ -7,7 +7,7 @@ use serde_json::Value;
 
 use crate::{
     client::LocalClient,
-    domain::conversation::{
+    types::conversation::{
         ConversationActivity, ConversationChange, ConversationTurnSummary, ExecutionState,
         PendingInput,
     },
@@ -207,7 +207,7 @@ impl ConversationModel {
     }
 
     fn result_readable(&self, turn: &ConversationTurnSummary) -> bool {
-        use crate::domain::conversation::ResultState;
+        use holon_domain::conversation::ResultState;
         matches!(turn.result, ResultState::None { .. })
             || (!turn.brief_ids.is_empty()
                 && turn.brief_ids.iter().all(|id| self.briefs.contains_key(id)))
@@ -499,7 +499,7 @@ impl ConversationModel {
         Ok(())
     }
 
-    fn tool_candidates(&self) -> Vec<(String, String, crate::domain::conversation::ActivityItem)> {
+    fn tool_candidates(&self) -> Vec<(String, String, holon_domain::conversation::ActivityItem)> {
         let mut requested: Vec<_> = self
             .activities
             .iter()
@@ -715,7 +715,7 @@ impl ConversationModel {
 
 pub(super) fn activity_item(
     activity: &ConversationActivity,
-) -> &crate::domain::conversation::ActivityItem {
+) -> &holon_domain::conversation::ActivityItem {
     match activity {
         ConversationActivity::Operator(item)
         | ConversationActivity::Assistant(item)
@@ -848,7 +848,6 @@ pub(super) async fn observe(
     }
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::super::{
@@ -1103,7 +1102,7 @@ mod tests {
 
     #[test]
     fn typed_task_result_cards_separate_queue_state_and_keep_original_reply_identity() {
-        let result: crate::domain::conversation::TaskResultPresentation =
+        let result: holon_domain::conversation::TaskResultPresentation =
             serde_json::from_value(json!({
                 "task_id": "child-task", "status": "completed", "summary": "Review finished",
                 "preview": "command task completed: output_path: private-envelope",
@@ -1418,7 +1417,7 @@ mod tests {
             json!({"kind": "terminal", "outcome": "aborted"}),
             vec![],
         );
-        terminal.presentation_class = crate::domain::conversation::PresentationClass::Internal;
+        terminal.presentation_class = holon_domain::conversation::PresentationClass::Internal;
         model.upsert_turn(terminal);
         let app = app(model);
         assert!(collect_chat_items(&app)

@@ -13,7 +13,7 @@ order: 80
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
 > `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
 > `src/http/state.rs`, `src/context/mod.rs`, `src/context/render.rs`,
-> `src/prompt/mod.rs`, `src/operator_event.rs`, `src/presentation.rs`,
+> `src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
 > `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
 > `src/runtime/turn/execution.rs`.
 
@@ -210,7 +210,7 @@ Holon 的来源契约：
   [`src/runtime/operator_dispatch.rs`](../../../src/runtime/operator_dispatch.rs)
   和 [`src/runtime/turn/execution.rs`](../../../src/runtime/turn/execution.rs) 在队列、
   处理、transcript 和 interjection 事件中包含来源标签。
-- `src/operator_event.rs` 和 `src/presentation.rs` 在把操作者来源消息渲染为用户消息的
+- `crates/holon-tui/src/operator_event.rs` 和 `crates/holon-tui/src/presentation.rs` 在把操作者来源消息渲染为用户消息的
   同时，保留原始事件来源信息。
 
 ## 漂移与后续分类

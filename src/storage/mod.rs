@@ -19,10 +19,9 @@ use crate::{
         AgentIdentityRecord, AgentPostureProjection, AgentState, AuditEvent, BriefRecord,
         ContextEpisodeRecord, DeliverySummaryRecord, ExternalTriggerRecord, MessageEnvelope,
         OperatorDeliveryRecord, OperatorNotificationRecord, OperatorTransportBinding,
-        QueueEntryRecord, TaskRecord, TaskStatus, TimerRecord, ToolExecutionRecord,
-        TranscriptEntry, TurnOwner, TurnRecord, WaitConditionRecord, WorkItemContinuationFrame,
-        WorkItemDelegationRecord, WorkItemDelegationState, WorkItemRecord, WorkspaceEntry,
-        WorkspaceOccupancyRecord,
+        QueueEntryRecord, TaskRecord, TimerRecord, ToolExecutionRecord, TranscriptEntry, TurnOwner,
+        TurnRecord, WaitConditionRecord, WorkItemContinuationFrame, WorkItemDelegationRecord,
+        WorkItemDelegationState, WorkItemRecord, WorkspaceEntry, WorkspaceOccupancyRecord,
     },
 };
 
@@ -1421,12 +1420,7 @@ fn shared_indexes_host_dir_for(data_dir: &Path, agent_scoped: bool) -> PathBuf {
     }
 }
 
-pub(crate) fn is_active_task_status(status: &TaskStatus) -> bool {
-    matches!(
-        status,
-        TaskStatus::Queued | TaskStatus::Running | TaskStatus::Cancelling
-    )
-}
+pub(crate) use holon_domain::is_active_task_status;
 
 pub fn to_json_value<T: Serialize>(value: &T) -> Value {
     serde_json::to_value(value).unwrap_or(Value::Null)

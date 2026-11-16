@@ -1,11 +1,10 @@
 //! Bounded, content-free stage timings. Nested stages overlap; timers count
 //! attempts including errors/cancellation. Snapshots are not transactional.
 
+pub use holon_client::wire::StageSnapshot;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
 
 pub(crate) struct Stage {
     name: &'static str,
@@ -74,15 +73,6 @@ impl Drop for Timer {
     fn drop(&mut self) {
         self.stage.record(self.started.elapsed(), self.rows);
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
-pub struct StageSnapshot {
-    pub name: String,
-    pub count: u64,
-    pub total_ns: u64,
-    pub max_ns: u64,
-    pub rows: u64,
 }
 
 macro_rules! stages {

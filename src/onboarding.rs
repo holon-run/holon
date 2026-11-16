@@ -1,4 +1,11 @@
-use std::{collections::BTreeMap, path::PathBuf};
+pub use holon_tui::onboarding::{
+    OnboardingModelChoice, OnboardingProviderChoice, OnboardingSearchChoice,
+    OnboardingSearchSelection, OnboardingWizardDraft, OnboardingWizardSubmission,
+};
+
+pub use holon_client::wire::{RuntimeSetup, RuntimeSetupStatus};
+
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -25,22 +32,6 @@ pub struct OnboardingReport {
     pub sections: Vec<OnboardingSection>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub next_actions: Vec<OnboardingAction>,
-}
-
-/// Safe first-run projection; readiness is local construction, not a live request.
-#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
-pub struct RuntimeSetup {
-    pub status: RuntimeSetupStatus,
-    pub default_model: Option<String>,
-    pub provider: Option<String>,
-    pub actions: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, schemars::JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub enum RuntimeSetupStatus {
-    Ready,
-    Blocked,
 }
 
 pub fn runtime_setup(config: &AppConfig) -> RuntimeSetup {
@@ -196,59 +187,6 @@ pub struct OnboardingCredentialRepair {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingWizardDraft {
-    pub provider: ProviderId,
-    pub credential_profile: String,
-    pub credential_kind: CredentialKind,
-    pub default_model: ModelRouteRef,
-    pub search: OnboardingSearchSelection,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OnboardingSearchSelection {
-    Disabled,
-    Auto,
-    ManagedDuckDuckGo,
-}
-
-impl OnboardingSearchSelection {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Disabled => "Disable WebSearch",
-            Self::Auto => "Auto: prefer native search, fallback to managed WebSearch",
-            Self::ManagedDuckDuckGo => "Managed WebSearch: DuckDuckGo",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingProviderChoice {
-    pub id: ProviderId,
-    pub title: String,
-    pub detail: String,
-    pub credential_kind: CredentialKind,
-    pub credential_profile: String,
-    pub credential_configured: bool,
-    pub codex_home: Option<PathBuf>,
-    pub configured: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingModelChoice {
-    pub model: ModelRouteRef,
-    pub title: String,
-    pub detail: String,
-    pub custom: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnboardingSearchChoice {
-    pub selection: OnboardingSearchSelection,
-    pub title: String,
-    pub detail: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OnboardingApplySummary {
     pub applied_via: String,
     pub provider: String,
@@ -257,12 +195,6 @@ pub struct OnboardingApplySummary {
     pub default_model: String,
     pub search: String,
     pub credential_written: bool,
-}
-
-#[derive(Clone, PartialEq, Eq)]
-pub struct OnboardingWizardSubmission {
-    pub draft: OnboardingWizardDraft,
-    pub credential_material: Option<String>,
 }
 
 pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProviderChoice> {
