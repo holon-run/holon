@@ -64,6 +64,7 @@ async fn worktree_fixture() -> WorktreeFixture {
             None,
             false,
             ExistingWorktreePolicy::Error,
+            None,
         )
         .await
         .unwrap();

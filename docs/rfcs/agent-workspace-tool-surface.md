@@ -131,6 +131,7 @@ CreateWorktree {
   branch: string,
   base_ref: string,
   label?: string,
+  path?: string,
   activate?: bool = true,
   on_existing?: "reuse" | "error" = "reuse"
 }
@@ -149,8 +150,23 @@ Branch-only existence, canonical-checkout occupancy, multiple candidates,
 missing backing paths, and identity mismatches return structured conflicts
 without changing Git or active state.
 
-New worktrees use runtime-generated paths. `label` is only a readable naming
-hint. Creation and activation are separate internal transitions; activation
+New worktrees use runtime-generated paths unless an absolute `path` selects
+the exact target directory. An explicit `path` must be an absolute filesystem
+path: relative paths, `~`, and environment variables are not resolved, and
+omitted, null, or blank values keep the runtime-managed default root and
+naming. `label` remains a readable naming hint and never moves an explicit
+target. Existing targets (including empty directories) and identities that
+collide with the canonical root, another worktree, or a registered execution
+root are rejected as structured conflicts before any Git mutation, without
+cleanup or relocation of existing content. With `on_existing="reuse"`, an
+explicit path is honored only when its normalized identity matches the unique
+live worktree for the branch; otherwise the request returns a structured
+conflict instead of silently reusing a different location. Explicit-path
+worktrees enter the same registration, occupancy, activation, and
+safety-removal lifecycle; removal never touches the parent directory or
+adjacent files.
+
+Creation and activation are separate internal transitions; activation
 failure retains the created artifact for later inspection or switching.
 
 ## Worktree Removal

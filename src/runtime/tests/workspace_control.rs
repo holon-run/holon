@@ -82,6 +82,7 @@ async fn loaded_context_observes_shared_worktree_registration_and_removal() -> R
             None,
             false,
             ExistingWorktreePolicy::Error,
+            None,
         )
         .await?;
     assert!(worktree.created);
@@ -407,6 +408,7 @@ async fn create_worktree_reuses_unique_live_branch_without_applying_new_base() {
             Some("feature-reuse"),
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -428,6 +430,7 @@ async fn create_worktree_reuses_unique_live_branch_without_applying_new_base() {
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -459,6 +462,7 @@ async fn create_worktree_reports_branch_only_and_strict_existing_conflicts_witho
             None,
             true,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -477,6 +481,7 @@ async fn create_worktree_reports_branch_only_and_strict_existing_conflicts_witho
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -488,6 +493,7 @@ async fn create_worktree_reports_branch_only_and_strict_existing_conflicts_witho
             None,
             true,
             ExistingWorktreePolicy::Error,
+            None,
         )
         .await
         .unwrap();
@@ -514,6 +520,7 @@ async fn active_detach_falls_back_to_agent_home_and_retains_artifact() {
             None,
             true,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -563,6 +570,7 @@ async fn remove_worktree_retains_dirty_then_removes_clean_without_deleting_branc
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -621,6 +629,7 @@ async fn remove_worktree_resolves_registered_path_selector() {
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -660,6 +669,7 @@ async fn remove_worktree_keeps_branch_when_merge_reachability_check_fails() {
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -709,6 +719,7 @@ async fn active_dirty_remove_preflight_does_not_switch_workspace() {
             None,
             true,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -757,6 +768,7 @@ async fn active_remove_accepts_canonical_path_as_return_to() {
             None,
             true,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -806,6 +818,7 @@ async fn remove_worktree_accepts_historical_other_agent_registration() {
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -859,6 +872,7 @@ async fn remove_worktree_requires_caller_binding_for_ids_paths_and_tombstones() 
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -979,6 +993,7 @@ async fn remove_worktree_rejects_extra_same_agent_occupancy() {
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -1024,6 +1039,7 @@ async fn removed_path_reuse_gets_new_generation_and_old_id_cannot_remove_it() {
             None,
             false,
             ExistingWorktreePolicy::Reuse,
+            None,
         )
         .await
         .unwrap();
@@ -1269,4 +1285,342 @@ async fn workspace_state_refresh_preserves_retained_roots_and_removed_evidence()
         serde_json::to_value(removed_after_refresh).unwrap(),
         tombstone
     );
+}
+
+#[tokio::test]
+async fn create_worktree_honors_explicit_absolute_path() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let parent = canonical_tempdir().unwrap();
+    let target = parent.path().join("explicit-target");
+    let target_text = target.to_str().unwrap().to_string();
+
+    let created = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/explicit",
+            "main",
+            Some("ignored-label"),
+            false,
+            ExistingWorktreePolicy::Error,
+            Some(&target_text),
+        )
+        .await
+        .unwrap();
+    assert!(created.created);
+    assert_eq!(created.worktree_path.as_deref(), Some(target.as_path()));
+    assert!(target.is_dir());
+    assert!(git(repo.path(), &["worktree", "list", "--porcelain"]).contains(&target_text));
+
+    let root_id = created.execution_root_id.unwrap();
+    let entry = runtime
+        .inner
+        .runtime_db
+        .execution_root_entries()
+        .get(&root_id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.filesystem_path, target);
+
+    let switched = runtime
+        .switch_workspace_target(
+            WorkspaceSwitchTarget::ExecutionRootId(root_id.clone()),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(switched.execution_root_id, root_id);
+    assert_eq!(switched.execution_root, target);
+}
+
+#[tokio::test]
+async fn create_worktree_blank_or_missing_path_keeps_default_root() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+
+    for (branch, explicit) in [
+        ("feature/default-none", None),
+        ("feature/default-blank", Some("   ")),
+    ] {
+        let created = runtime
+            .create_worktree_for_workspace(
+                &workspace.workspace_id,
+                branch,
+                "main",
+                None,
+                false,
+                ExistingWorktreePolicy::Error,
+                explicit,
+            )
+            .await
+            .unwrap();
+        assert!(created.created, "{branch}");
+        let path = created.worktree_path.unwrap();
+        let parent_name = path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap();
+        assert!(parent_name.starts_with(".holon-worktrees-"), "{branch}");
+        let dir_name = path.file_name().unwrap().to_str().unwrap();
+        assert!(dir_name.contains(&branch.replace('/', "-")), "{branch}");
+        assert!(dir_name.contains("wt_"), "{branch}");
+    }
+}
+
+#[tokio::test]
+async fn create_worktree_rejects_non_absolute_explicit_path() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+
+    for bad in ["relative/path", "~/worktrees/x", "feature/../other"] {
+        let error = runtime
+            .create_worktree_for_workspace(
+                &workspace.workspace_id,
+                "feature/bad-path",
+                "main",
+                None,
+                false,
+                ExistingWorktreePolicy::Error,
+                Some(bad),
+            )
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("absolute"), "{bad}: {error}");
+    }
+
+    let listing = git(repo.path(), &["worktree", "list", "--porcelain"]);
+    assert_eq!(
+        listing
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn create_worktree_rejects_existing_target_and_identity_conflicts() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let before = runtime.agent_state().await.unwrap().active_workspace_entry;
+
+    let existing = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/existing",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Error,
+            None,
+        )
+        .await
+        .unwrap();
+    let existing_path = existing.worktree_path.unwrap();
+
+    let occupied_parent = canonical_tempdir().unwrap();
+    let occupied = occupied_parent.path().join("taken");
+    std::fs::create_dir_all(&occupied).unwrap();
+    let canonical_text = repo
+        .path()
+        .canonicalize()
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let cases: [(String, &str); 3] = [
+        (
+            occupied.to_str().unwrap().to_string(),
+            "explicit target path already exists",
+        ),
+        (
+            format!("{canonical_text}/."),
+            "explicit target path conflicts with the canonical workspace root",
+        ),
+        (
+            existing_path.to_str().unwrap().to_string(),
+            "explicit target path conflicts with an existing worktree",
+        ),
+    ];
+    for (index, (target, expected)) in cases.iter().enumerate() {
+        let conflict = runtime
+            .create_worktree_for_workspace(
+                &workspace.workspace_id,
+                &format!("feature/rejected-{index}"),
+                "main",
+                None,
+                false,
+                ExistingWorktreePolicy::Error,
+                Some(target),
+            )
+            .await
+            .unwrap();
+        assert_eq!(conflict.disposition, "conflict", "{target}");
+        assert!(!conflict.created, "{target}");
+        assert_eq!(conflict.conflict.as_deref(), Some(*expected), "{target}");
+        assert!(conflict.worktree_path.is_some(), "{target}");
+    }
+
+    let listing = git(repo.path(), &["worktree", "list", "--porcelain"]);
+    assert!(listing.contains(existing_path.to_str().unwrap()));
+    assert_eq!(
+        listing
+            .lines()
+            .filter(|line| line.starts_with("worktree "))
+            .count(),
+        2
+    );
+    assert_eq!(
+        runtime.agent_state().await.unwrap().active_workspace_entry,
+        before
+    );
+    assert!(occupied.is_dir());
+}
+
+#[tokio::test]
+async fn create_worktree_reuse_policy_requires_matching_explicit_path() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let existing = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/reuse-path",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Error,
+            None,
+        )
+        .await
+        .unwrap();
+    let existing_path = existing.worktree_path.unwrap();
+    std::fs::write(existing_path.join("work.txt"), "work\n").unwrap();
+    git(&existing_path, &["add", "."]);
+    git(&existing_path, &["commit", "-m", "advance branch"]);
+    let advanced_tip = git(&existing_path, &["rev-parse", "HEAD"]);
+
+    let mismatch_parent = canonical_tempdir().unwrap();
+    let mismatch = mismatch_parent.path().join("elsewhere");
+    let conflict = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/reuse-path",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Reuse,
+            Some(mismatch.to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert_eq!(conflict.disposition, "conflict");
+    assert!(!conflict.reused);
+    assert_eq!(
+        conflict.conflict.as_deref(),
+        Some("requested path does not match the live worktree for the branch")
+    );
+    assert_eq!(
+        conflict.worktree_path.as_deref(),
+        Some(existing_path.as_path())
+    );
+    assert!(!mismatch.exists());
+    assert_eq!(
+        conflict
+            .candidates
+            .iter()
+            .map(|entry| entry.filesystem_path.clone())
+            .collect::<Vec<_>>(),
+        vec![existing_path.clone()]
+    );
+
+    let reused = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/reuse-path",
+            "main",
+            None,
+            false,
+            ExistingWorktreePolicy::Reuse,
+            Some(existing_path.to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert!(reused.reused);
+    assert!(!reused.created);
+    assert!(!reused.base_ref_applied);
+    assert_eq!(reused.branch_tip.as_deref(), Some(advanced_tip.as_str()));
+    assert_eq!(
+        reused.worktree_path.as_deref(),
+        Some(existing_path.as_path())
+    );
+}
+
+#[tokio::test]
+async fn remove_worktree_at_explicit_path_keeps_parent_and_neighbors() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await
+        .unwrap()
+        .workspace;
+    let parent = canonical_tempdir().unwrap();
+    std::fs::write(parent.path().join("neighbor.txt"), "neighbor\n").unwrap();
+    let target = parent.path().join("explicit-wt");
+
+    let created = runtime
+        .create_worktree_for_workspace(
+            &workspace.workspace_id,
+            "feature/explicit-remove",
+            "main",
+            None,
+            true,
+            ExistingWorktreePolicy::Error,
+            Some(target.to_str().unwrap()),
+        )
+        .await
+        .unwrap();
+    assert!(created.created);
+    assert!(created.activated);
+    let execution_root_id = created.execution_root_id.unwrap();
+
+    let removed = runtime
+        .remove_registered_worktree(
+            &execution_root_id,
+            Some("canonical"),
+            WorktreeBranchPolicy::Keep,
+            None,
+        )
+        .await
+        .unwrap();
+    assert!(removed.removed);
+    assert!(!target.exists());
+    assert!(parent.path().exists());
+    assert!(parent.path().join("neighbor.txt").exists());
 }

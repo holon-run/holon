@@ -2291,3 +2291,46 @@ async fn get_agent_with_agent_id_can_access_child() {
         "GetAgent result should contain child agent id"
     );
 }
+
+#[tokio::test]
+async fn create_worktree_tool_rejects_relative_or_home_prefixed_path() {
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let agent_id = runtime.agent_state().await.unwrap().id;
+
+    for (index, bad) in ["worktrees/feature-x", "~/worktrees/feature-x"]
+        .iter()
+        .enumerate()
+    {
+        let call = crate::tool::ToolCall {
+            id: format!("create-worktree-bad-path-{index}"),
+            name: "CreateWorktree".into(),
+            input: serde_json::json!({
+                "workspace_id": "ws_validation_only",
+                "branch": "feature/bad-path",
+                "base_ref": "main",
+                "path": bad,
+            }),
+        };
+        let error = crate::tool::tools::execute_builtin_tool(
+            &runtime,
+            &agent_id,
+            &AuthorityClass::OperatorInstruction,
+            &call,
+        )
+        .await
+        .unwrap_err();
+        let tool_error = crate::tool::tool_error_from_anyhow(&error);
+        assert_eq!(tool_error.kind, "invalid_tool_input", "{bad}: {error}");
+        assert!(
+            tool_error.message.contains("absolute filesystem path"),
+            "{bad}: {}",
+            tool_error.message
+        );
+        assert_eq!(
+            tool_error.details.as_ref().unwrap()["field"],
+            "path",
+            "{bad}: {}",
+            tool_error.message
+        );
+    }
+}

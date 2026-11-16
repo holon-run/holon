@@ -22,6 +22,7 @@ pub struct CreateWorktreeArgs {
     pub branch: String,
     pub base_ref: String,
     pub label: Option<String>,
+    pub path: Option<String>,
     #[serde(default = "default_true")]
     pub activate: bool,
     pub on_existing: Option<ExistingWorktreePolicyArgs>,
