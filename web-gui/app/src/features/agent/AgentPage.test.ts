@@ -6,6 +6,7 @@ import i18next from "i18next";
 import "../../i18n";
 import {
   attachmentKindForFile,
+  composerPasteFiles,
   composerPrimaryAction,
   isScrollKey,
   looksLikeProgrammaticBottomScroll,
@@ -182,6 +183,15 @@ describe("composer attachments", () => {
   it("classifies non-image files as generic file attachments", () => {
     expect(attachmentKindForFile({ type: "application/pdf" })).toBe("file");
     expect(attachmentKindForFile({ type: "" })).toBe("file");
+  });
+
+  it("collects clipboard files so text-only pastes keep the default insertion", () => {
+    const image = { name: "shot.png", type: "image/png" } as File;
+    const pdf = { name: "doc.pdf", type: "application/pdf" } as File;
+    expect(composerPasteFiles({ files: [image, pdf] } as unknown as DataTransfer)).toEqual([image, pdf]);
+    expect(composerPasteFiles({ files: [] } as unknown as DataTransfer)).toEqual([]);
+    expect(composerPasteFiles(null)).toEqual([]);
+    expect(composerPasteFiles(undefined)).toEqual([]);
   });
 });
 
