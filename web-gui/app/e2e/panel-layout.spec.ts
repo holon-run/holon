@@ -2,12 +2,22 @@ import { expect, test } from "@playwright/test";
 import { sessionFor } from "./test-session";
 
 const discoveryGates = new Map<string, () => void>();
+const contentGates = new Map<string, { promise: Promise<void>; release: () => void }>();
 test.afterEach(async ({}, info) => {
   discoveryGates.get(info.testId)?.();
   discoveryGates.delete(info.testId);
+  contentGates.get(info.testId)?.release();
+  contentGates.delete(info.testId);
 });
 
 test.beforeEach(async ({ page, context }, info) => {
+  if (info.title.startsWith("floating file browser restores")) {
+    // Hold one file content response so the floating window can close while
+    // its read is still open.
+    let release!: () => void;
+    const promise = new Promise<void>((resolve) => { release = resolve; });
+    contentGates.set(info.testId, { promise, release });
+  }
   await context.addCookies([{ name: "holon_e2e_session", value: sessionFor(info, "panel"), domain: "127.0.0.1", path: "/" }]);
   await page.route("**/api/agents/list", async (route) => {
     const response = await route.fetch();
@@ -41,6 +51,8 @@ test.beforeEach(async ({ page, context }, info) => {
   });
   await page.route("**/api/workspaces/files-test/files**", async (route) => {
     const path = new URL(route.request().url()).pathname.split("/files/")[1] ?? "";
+    const gate = contentGates.get(info.testId);
+    if (gate && path === "notes.md") await gate.promise;
     await route.fulfill({ json: path ? {
       type: "file", workspace_id: "files-test", execution_root_id: "root-test",
       absolute_path: `/test-worktree/${path}`, root_kind: "git_worktree_root", kind: "file",
@@ -439,7 +451,7 @@ test("floating file browser opens at the panel's file with split browsing and cl
   await expect(panel.locator(".file-browser")).toBeVisible();
 });
 
-test("floating file browser restores its own position and closes via Escape or backdrop", async ({ page }) => {
+test("floating file browser restores its own position and closes via Escape or backdrop", async ({ page }, info) => {
   const panel = page.locator(".side-panel");
   await panel.locator(".panel-sections").getByRole("button", { name: "Files", exact: true }).click();
   await panel.getByRole("button", { name: "README.md", exact: false }).click();
@@ -448,6 +460,8 @@ test("floating file browser restores its own position and closes via Escape or b
   const dialog = page.locator('[role="dialog"][aria-modal="true"]');
   await expect(dialog).toBeVisible();
   await dialog.getByRole("button", { name: "notes.md", exact: false }).click();
+  // The notes.md content is still pending here, so the window closes while its
+  // read is open. The restore target must survive the interrupted read.
   await expect(dialog.locator(".file-browser-standalone-title")).toHaveText("notes.md");
   await page.keyboard.press("Escape");
   await expect(dialog).toHaveCount(0);
@@ -455,6 +469,9 @@ test("floating file browser restores its own position and closes via Escape or b
   await panel.getByRole("button", { name: "Open in floating window", exact: true }).click();
   await expect(dialog).toBeVisible();
   await expect(dialog.locator(".file-browser-standalone-title")).toHaveText("notes.md");
+  // The reopened window reads the file again instead of staying in loading.
+  contentGates.get(info.testId)?.release();
+  await expect(dialog.locator(".file-browser-markdown")).toContainText("File reading test");
   await dialog.click({ position: { x: 2, y: 2 } });
   await expect(dialog).toHaveCount(0);
   await expect(panel.locator(".panel-header strong")).toHaveText("README.md");

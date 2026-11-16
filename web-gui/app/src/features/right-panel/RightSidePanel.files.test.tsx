@@ -134,4 +134,24 @@ describe("RightSidePanel floating file browser", () => {
     expect(floatingProps.snapshot?.currentPath).toBe("notes");
     expect(floatingProps.snapshot?.selectedFile?.path).toBe("notes/a.md");
   });
+
+  it("keeps a pending selection as the floating restore target", async () => {
+    await act(async () => root.render(
+      <ClipboardProvider><RightSidePanel {...base} agent={{ ...agent, workItems: [] }} /></ClipboardProvider>,
+    ));
+    const panelProps = vi.mocked(FileBrowserPanel).mock.calls.at(-1)![0];
+    await act(async () => { panelProps.onOpenFloating!(); });
+    let floatingProps = vi.mocked(FileBrowserPanel).mock.calls.at(-1)![0];
+    // The floating window closes while the selected file is still loading: the
+    // path stays the restore target so the reopened window reads it again.
+    await act(async () => {
+      floatingProps.onSnapshot!(snapshot({ currentPath: "notes", selectedFile: { path: "notes/a.md", loading: true } }));
+    });
+    const dialog = document.body.querySelector('[role="dialog"]');
+    await act(async () => { dialog!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    await act(async () => { panelProps.onOpenFloating!(); });
+    floatingProps = vi.mocked(FileBrowserPanel).mock.calls.at(-1)![0];
+    expect(floatingProps.snapshot?.selectedFile?.path).toBe("notes/a.md");
+    expect(floatingProps.snapshot?.selectedFile?.loading).toBe(true);
+  });
 });

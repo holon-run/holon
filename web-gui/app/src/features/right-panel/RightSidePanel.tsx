@@ -439,7 +439,10 @@ export function RightSidePanel({
           workspaceLabel={workspaces.find((ws) => ws.workspaceId === floatingFileInitial.current!.workspaceId)?.name}
           snapshot={floatingFileSnapshot.current ?? undefined}
           onSnapshot={(snapshot) => {
-            if (!snapshot.listing || snapshot.selectedFile?.loading) return;
+            // A pending selection stays the restore target: the reopened
+            // browser reads the file again instead of reviving the read that
+            // was interrupted when the window closed.
+            if (!snapshot.listing) return;
             floatingFileSnapshot.current = snapshot;
           }}
           fileRevisions={planFileRevisions}

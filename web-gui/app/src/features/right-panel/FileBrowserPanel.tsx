@@ -338,6 +338,11 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
     return () => { document.removeEventListener("click", close); document.removeEventListener("keydown", escape, true); };
   }, [menuOpen, ancestorsOpen]);
   const { t } = useTranslation();
+  // A snapshot can carry a selection whose content read never finished, for
+  // example when the browser closed mid-read. The restore target is that
+  // path; the interrupted read cannot settle in a new instance, so the file
+  // is read again instead of reviving a pending read.
+  const pendingRestorePath = snapshot?.selectedFile?.loading ? snapshot.selectedFile.path : undefined;
   const [fragment, setFragment] = useState(snapshot?.fragment ?? initialFragment);
   const browseWorkspaceDir = useRuntimeStore((s) => s.browseWorkspaceDir);
   const readWorkspaceFile = useRuntimeStore((s) => s.readWorkspaceFile);
@@ -350,7 +355,7 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
   const [listing, setListing] = useState<WorkspaceDirectoryListing | null>(snapshot?.listing ?? null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string>();
-  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(snapshot?.selectedFile ?? null);
+  const [selectedFile, setSelectedFile] = useState<SelectedFile | null>(pendingRestorePath ? null : (snapshot?.selectedFile ?? null));
   const revisionsRef = useRef(fileRevisions);
   revisionsRef.current = fileRevisions;
   const revisionFor = useCallback((path: string) => revisionsRef.current?.find((revision) =>
@@ -370,7 +375,7 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
   const fileMayHaveChanged = Boolean(currentRevision && selectedFile?.revisionHash && currentRevision !== selectedFile.revisionHash);
   const [showHidden, setShowHidden] = useState(snapshot?.showHidden ?? false);
   const [copiedValue, setCopiedValue] = useState<"absolute" | "markdown" | "web" | null>(null);
-  const autoOpenedRef = useRef(Boolean(snapshot?.selectedFile));
+  const autoOpenedRef = useRef(Boolean(snapshot?.selectedFile) && !pendingRestorePath);
   const contentScrollRef = useRef<HTMLDivElement>(null);
   const [showRendered, setShowRendered] = useState(snapshot?.showRendered ?? true);
   const [viewMode, setViewMode] = useState<"files" | "preview">(snapshot?.viewMode ?? "files");
@@ -395,11 +400,19 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
   const scroll = useRef(snapshot?.scroll ?? {});
   const history = useRef<FileBrowserLocation[]>(snapshot?.history ?? []);
   const requestGeneration = useRef(0);
-  useEffect(() => () => { requestGeneration.current++; }, [identity]);
+  // Reads that overlap inside one browser are ordered by this counter: every
+  // read takes the next number and drops its own response when a later read
+  // started meanwhile. The counter deliberately does not advance when the
+  // instance goes away: React ignores state updates on an unmounted
+  // component, and an effect remount (React StrictMode) reuses the same
+  // instance, so a bump there would drop the read the mount just started.
   const latestSnapshot = useRef<FileBrowserSnapshot | null>(null);
   useLayoutEffect(() => {
     latestSnapshot.current = { identity, fragment, currentPath, listing, selectedFile, showHidden, showRendered, viewMode, filterText, sortKey, sortAsc, directoryVisible, scroll: scroll.current, history: history.current };
-    if (!loading && !selectedFile?.loading && (!initialFilePath || autoOpenedRef.current)) onSnapshot?.(latestSnapshot.current);
+    // The snapshot carries the current selection even while its content is
+    // still loading: a browser that closes mid-read must still restore the
+    // selected path, and the reader that reopens it starts a fresh read.
+    if (!loading && (!initialFilePath || autoOpenedRef.current)) onSnapshot?.(latestSnapshot.current);
   });
   useLayoutEffect(() => {
     const node = browserRef.current;
@@ -542,20 +555,24 @@ function FileBrowserPanelView({ identity, agentId, workspaceId, executionRootId,
     if (!snapshot?.listing) void loadDir(effectiveInitialPath);
   }, [loadDir, effectiveInitialPath]);
 
-  // Auto-open the initial file after the directory listing loads.
+  // Auto-open the restore target after the directory listing loads. A pending
+  // selection wins over the panel's initial file: it is the last choice the
+  // browser made, even when that content never finished loading.
+  const restoreFilePath = pendingRestorePath ?? initialFilePath;
   useEffect(() => {
-    if (!listing || !initialFilePath || autoOpenedRef.current) return;
-    const fileName = initialFilePath.split("/").pop();
+    if (!listing || !restoreFilePath || autoOpenedRef.current) return;
+    const fileName = restoreFilePath.split("/").pop();
     const entry = listing.entries.find((e) => e.name === fileName);
-    if (!entry) {
+    const entryPath = entry ? (currentPath ? `${currentPath}/${entry.name}` : entry.name) : undefined;
+    if (!entry || (pendingRestorePath && entryPath !== restoreFilePath)) {
       autoOpenedRef.current = true;
-      void openWorkspacePath(initialFilePath);
+      void openWorkspacePath(restoreFilePath);
       return;
     }
     autoOpenedRef.current = true;
     setViewMode("preview");
     void openEntry(entry, true);
-  }, [listing, initialFilePath]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [listing, restoreFilePath]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const breadcrumbParts = currentPath.split("/").filter(Boolean);
 
