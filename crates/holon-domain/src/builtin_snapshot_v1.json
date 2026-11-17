@@ -3504,7 +3504,7 @@
       "model_ref": "openai-codex/gpt-6.1-sol",
       "display_name": "GPT-6.1-Sol (Codex)",
       "description": "Codex default context from OpenAI codex-rs/models-manager/models.json; account-specific or opt-in larger windows are not global defaults.",
-      "context_window_tokens": 272000,
+      "context_window_tokens": 500000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
@@ -3540,6 +3540,62 @@
         "supports_reasoning": true,
         "interactive_exec": true
       },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "openai-codex/gpt-6.2-astra",
+      "display_name": "GPT-6.2-Astra (Codex)",
+      "description": "Codex default context reviewed independently of the API and experimental maximum context.",
+      "context_window_tokens": 272000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "openai-codex/gpt-6.2-sol",
+      "display_name": "GPT-6.2-Sol (Codex)",
+      "description": "Codex default context reviewed independently of the API and experimental maximum context.",
+      "context_window_tokens": 500000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "built_in_catalog"
     },
     {
@@ -6268,27 +6324,6 @@
         "image_input": false,
         "image_generation": false,
         "supports_reasoning": false,
-        "interactive_exec": false
-      },
-      "source": "conservative_builtin"
-    },
-    {
-      "model_ref": "tencent-tokenhub/minimax-m2.7",
-      "display_name": "MiniMax M2.7",
-      "description": "Holon conservative built-in metadata for the Tencent TokenHub minimax-m2.7 model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
         "interactive_exec": false
       },
       "source": "conservative_builtin"
@@ -10276,6 +10311,26 @@
       }
     },
     {
+      "route_ref": "openai-codex@default/gpt-6.2-astra",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "openai-codex@default/gpt-6.2-sol",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "openai-codex@default/gpt-daybreak-blue-latest",
       "policy": {
         "display_name": null,
@@ -13247,16 +13302,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@default/minimax-m2.7",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@default/minimax-m3",
       "policy": {
         "display_name": null,
@@ -13665,16 +13710,6 @@
       }
     },
     {
-      "route_ref": "tencent-tokenhub@messages/minimax-m2.7",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "tencent-tokenhub@messages/minimax-m3",
       "policy": {
         "display_name": null,
@@ -14001,16 +14036,6 @@
     },
     {
       "route_ref": "tencent-tokenhub@responses/mimo-v2.6-pro",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "tencent-tokenhub@responses/minimax-m2.7",
       "policy": {
         "display_name": null,
         "description": null,
@@ -15469,10 +15494,6 @@
       "target": "tencent-tokenhub/mimo-v2.6-pro"
     },
     {
-      "alias": "tencent-tokenhub-messages/minimax-m2.7",
-      "target": "tencent-tokenhub/minimax-m2.7"
-    },
-    {
       "alias": "tencent-tokenhub-messages/minimax-m3",
       "target": "tencent-tokenhub/minimax-m3"
     },
@@ -15587,10 +15608,6 @@
     {
       "alias": "tencent-tokenhub-responses/mimo-v2.6-pro",
       "target": "tencent-tokenhub/mimo-v2.6-pro"
-    },
-    {
-      "alias": "tencent-tokenhub-responses/minimax-m2.7",
-      "target": "tencent-tokenhub/minimax-m2.7"
     },
     {
       "alias": "tencent-tokenhub-responses/minimax-m3",
@@ -16759,6 +16776,14 @@
       "route_ref": "openai-codex@default/gpt-6.1-terra"
     },
     {
+      "model_ref": "openai-codex/gpt-6.2-astra",
+      "route_ref": "openai-codex@default/gpt-6.2-astra"
+    },
+    {
+      "model_ref": "openai-codex/gpt-6.2-sol",
+      "route_ref": "openai-codex@default/gpt-6.2-sol"
+    },
+    {
       "model_ref": "openai-codex/gpt-daybreak-blue-latest",
       "route_ref": "openai-codex@default/gpt-daybreak-blue-latest"
     },
@@ -17249,10 +17274,6 @@
     {
       "model_ref": "tencent-tokenhub/mimo-v2.6-pro",
       "route_ref": "tencent-tokenhub@default/mimo-v2.6-pro"
-    },
-    {
-      "model_ref": "tencent-tokenhub/minimax-m2.7",
-      "route_ref": "tencent-tokenhub@default/minimax-m2.7"
     },
     {
       "model_ref": "tencent-tokenhub/minimax-m3",

@@ -74,14 +74,6 @@ pub const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
         true,
     ),
     (
-        "minimax-m2.7",
-        "MiniMax M2.7",
-        Some(204_800),
-        None,
-        true,
-        false,
-    ),
-    (
         "hy-vision-2.0-instruct",
         "HY-Vision-2.0-Instruct",
         None,

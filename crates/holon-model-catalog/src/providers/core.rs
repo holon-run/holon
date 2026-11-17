@@ -1,6 +1,6 @@
 use super::super::*;
 
-fn codex_daybreak_model(model: &str, name: &str, context: usize) -> BuiltInModelMetadata {
+fn codex_reviewed_model(model: &str, name: &str, context: usize) -> BuiltInModelMetadata {
     BuiltInModelMetadata {
         model_ref: ModelRef::new(ProviderId::openai_codex(), model),
         display_name: name.into(),
@@ -25,6 +25,42 @@ fn codex_daybreak_model(model: &str, name: &str, context: usize) -> BuiltInModel
             .collect(),
         source: ModelMetadataSource::BuiltInCatalog,
         endpoint: None,
+    }
+}
+
+#[test]
+fn codex_62_models_keep_reviewed_defaults_separate_from_api_limits() {
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for (model, context) in [("gpt-6.2-sol", 500_000), ("gpt-6.2-astra", 272_000)] {
+            let codex = catalog
+                .get(&ModelRef::new(ProviderId::openai_codex(), model))
+                .unwrap();
+            assert_eq!(codex.context_window_tokens, Some(context));
+            assert_eq!(codex.auto_compact_token_limit, None);
+            assert_eq!(codex.default_max_output_tokens, None);
+            assert_eq!(codex.max_output_tokens_upper_limit, None);
+            assert!(codex.capabilities.parallel_tool_calls);
+            assert!(codex.capabilities.image_input);
+            assert_eq!(
+                codex.reasoning_effort_options,
+                ["low", "medium", "high", "xhigh", "max"]
+            );
+        }
+        let sol = catalog
+            .get(&ModelRef::new(ProviderId::openai_codex(), "gpt-6.1-sol"))
+            .unwrap();
+        assert_eq!(sol.context_window_tokens, Some(500_000));
+    }
+    let catalog = BuiltInModelCatalog::new();
+    for model in ["gpt-6.2-sol", "gpt-6.2-astra"] {
+        let api = catalog
+            .get(&ModelRef::new(ProviderId::openai(), model))
+            .unwrap();
+        assert_eq!(api.context_window_tokens, Some(1_050_000));
+        assert_eq!(api.max_output_tokens_upper_limit, Some(128_000));
     }
 }
 
@@ -174,7 +210,7 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
             model_ref: ModelRef::new(ProviderId::openai_codex(), "gpt-6.1-sol"),
             display_name: "GPT-6.1-Sol (Codex)".into(),
             description: "Codex default context from OpenAI codex-rs/models-manager/models.json; account-specific or opt-in larger windows are not global defaults.".into(),
-            context_window_tokens: Some(272_000),
+            context_window_tokens: Some(500_000),
             effective_context_window_percent: 95,
             auto_compact_token_limit: None,
             default_max_output_tokens: None,
@@ -328,8 +364,10 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
-        codex_daybreak_model("gpt-daybreak-blue-latest", "Daybreak Blue (Codex)", 272_000),
-        codex_daybreak_model("gpt-daybreak-red-latest", "Daybreak Red (Codex)", 372_000),
+        codex_reviewed_model("gpt-daybreak-blue-latest", "Daybreak Blue (Codex)", 272_000),
+        codex_reviewed_model("gpt-daybreak-red-latest", "Daybreak Red (Codex)", 372_000),
+        codex_reviewed_model("gpt-6.2-sol", "GPT-6.2-Sol (Codex)", 500_000),
+        codex_reviewed_model("gpt-6.2-astra", "GPT-6.2-Astra (Codex)", 272_000),
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai(), "gpt-image-2"),
             display_name: "GPT Image 2".into(),

@@ -76,7 +76,6 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "kimi-k2.6",
     "minimax-m3",
     "minimax-m3.1-flash",
-    "minimax-m2.7",
     "mimo-v2.6-pro",
     "mimo-v2.6-flash",
 ];
@@ -295,6 +294,8 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
         "kimi-k2.5",
         "mimo-v2.5-pro",
         "minimax-m2.5",
+        "minimax-m2.7",
+        "minimax-m-2-7",
         "qwen3.5-flash",
         "qwen3.5-plus",
         "youtu-vita",
@@ -315,7 +316,6 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
             }
         }
         for id in [
-            "minimax-m2.7",
             "minimax-m3",
             "deepseek-v4-flash-202605",
             "deepseek/deepseek-v4-flash",
@@ -381,7 +381,7 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
 #[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 29);
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 28);
     for id in TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| model.0)

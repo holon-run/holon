@@ -5,6 +5,58 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-18
+
+Pinned models.dev SHA256
+`3a6ced626e1b3e47270eb82c15ed55ab967ae74948634d46e6f7b3c7a0e4c4de`,
+sampled **November 17, 2026 20:35:16 UTC**, against main `6198b476`.
+Public contracts are separate from account qualification and live inference.
+Unchanged fields are preserved, not newly certified.
+
+| Exact route / field | Reviewed contract and boundary | Primary evidence sampled November 17 UTC |
+|---|---|---|
+| `openai/gpt-6.2-sol`, `openai/gpt-6.2-astra` | Ordinary API context 1,050,000, maximum input 922,000, output ceiling 128,000; image/text input and function calling. Do not transfer these limits to Codex. Base prices have separate long-context/cache billing conditions. | [Sol](https://developers.openai.com/api/docs/models/gpt-6.2-sol), [Astra](https://developers.openai.com/api/docs/models/gpt-6.2-astra) |
+| `openai-codex/gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-sol` | Default contexts 500,000 / 272,000 / 500,000, respectively. 872,000 is an opt-in maximum, not the default. New IDs preserve unknown output and explicit auto-compaction limits; expose low/medium/high/xhigh/max without adopting ultra's automatic delegation. No account-access or client-version guarantee. | [Pinned official Codex inventory](https://github.com/openai/codex/blob/8011b92bc82d4cc1b6dc3f35c0cd28768c797c97/codex-rs/models-manager/models.json), blob `56e0f43cb66259e3b8d5a59d8ff12f41e1c8be06`, SHA256 `d50b6749506d97e5f334dbabcb666eb1689f423cf3e88cfabdcf3c536b873068` |
+| `tencent-tokenhub@default`, `@messages`, `@responses` / `minimax-m2.7` | Retired November 17, 23:59:59 UTC+8; remove all three routes and keep the alternate `minimax-m-2-7` absent. Account-qualified M3 migration is not continued access to the old model. Do not extend this notice to another provider or plan. | [TokenHub/CloudBase notice 2511](https://cloud.tencent.com/announce/detail/2511), independently fetched 20:44:09 UTC |
+| DashScope Qwen4 API / Token Plan | Formal API adds Batch support, not a new agent request protocol. Preview remains a time-limited Token Plan entitlement. Team preview no longer lists the personal page's additional night discount; keep pricing/eligibility independent. Messages output defaults and explicit cache qualification remain unknown. | [Formal API](https://help.aliyun.com/zh/model-studio/qwen4-max), [personal Token Plan](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview), [team Token Plan](https://help.aliyun.com/zh/model-studio/token-plan-team-overview) |
+
+The eleven-prefix evidence group archived 50 successful official responses;
+the fifteen-prefix group archived 77 responses (72 successful, five failed).
+Failed/empty pages are not evidence of retirement or lack of support. The four
+DashScope prefixes and Codex were independently sampled by the implementation
+agent. All 30 tracked prefixes have a scoped decision; no group claims
+all-field recertification or live account qualification.
+
+- [Qianfan Flash model](https://cloud.baidu.com/doc/qianfan/s/6mh4stoyf)
+  and [current text-generation API](https://cloud.baidu.com/doc/qianfan-api/s/wmwbl48n4)
+  now establish mandatory thinking, fixed `high`, and unsupported
+  `thinking_budget` / `thinking_strategy`. Omission of effort preserves the
+  fixed service behavior; unsupported explicit efforts must be rejected before
+  networking. The remaining admission blocker is exact-route implementation
+  and construction-path verification, not missing public reasoning/tool facts.
+- [MiniMax FAQ](https://platform.minimax.io/docs/faq/models.md) states
+  November 18 for four ordinary API retirements without a timezone/hour.
+  Its historical retired-table/date conflict is already present in the baseline.
+  Do not infer a new state transition at this UTC November 17 sample or remove
+  M Plan, another region's nonexistent entries, or aggregator compatibility IDs.
+- [Go model inventory](https://opencode.ai/inference/go/v1/models) confirms
+  Qwen4 Messages existence, tools/images, context 1,000,000, output ceiling
+  262,144, and advertised effort capabilities. It does not specify an executable
+  Messages JSON reasoning field; admission remains deferred. The fifteen-prefix
+  group did not perform a previous-day full-object Go hash diff and makes no
+  blanket unchanged-object claim.
+
+Final pinned refresh, validation, 648-route coverage, strict complete-object
+comparison, related crate/integration tests, formatting, and `-D warnings`
+all-targets checks passed. The complete local root lib-c run remains
+1081 passed / 4 failed / 7 ignored: two IPv6 listener failures and two channel
+failures; each non-IPv6 test passed two subsequent exact reruns. Independent
+review of the 13-file frozen change (61 hunks), including final generated data
+and verification documents, found no confirmed finding. Subsequent
+review-status-only documentation edits were checked separately before
+publication; these results do not certify account access or all inherited
+metadata.
+
 ## Incremental review: 2026-11-17
 
 Pinned models.dev SHA256
