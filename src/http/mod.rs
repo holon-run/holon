@@ -72,9 +72,6 @@ pub(crate) use crate::{
     diagnostics,
     host::{PublicAgentError, RuntimeHost},
     ingress::{InboundRequest, WakeDisposition, WakeHint},
-    operator_event::{
-        is_operator_event_in_display_mode, OperatorDisplayMode, OperatorPresentationContext,
-    },
     policy::{default_authority_for_origin, validate_message_kind_for_origin},
     runtime::{CurrentRunAbortError, CurrentRunAbortMode, CurrentRunAbortRequest},
     runtime_error::{

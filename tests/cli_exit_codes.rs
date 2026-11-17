@@ -472,14 +472,9 @@ fn events_tail_resolves_caller_and_operator_targets() {
             paths
         });
         let (mut command, _home) = isolated_holon_command();
-        command.env("HOLON_HTTP_ADDR", addr.to_string()).args([
-            "events",
-            "tail",
-            "--limit",
-            "1",
-            "--max-level",
-            "info",
-        ]);
+        command
+            .env("HOLON_HTTP_ADDR", addr.to_string())
+            .args(["events", "tail", "--limit", "1"]);
         if let Some(caller) = caller {
             // Synthetic child-process context; never mutate the test runner's context.
             command
@@ -502,9 +497,7 @@ fn events_tail_resolves_caller_and_operator_targets() {
             expected_paths.push("/api".to_owned());
         }
         if let Some(target) = expected {
-            expected_paths.push(format!(
-                "/api/agents/{target}/events?limit=1&order=desc&max_level=info"
-            ));
+            expected_paths.push(format!("/api/agents/{target}/events?limit=1&order=desc"));
             assert_eq!(
                 output.status.code(),
                 Some(0),

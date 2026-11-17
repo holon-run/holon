@@ -604,28 +604,11 @@ impl std::fmt::Display for EventPageOrderCli {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
-pub enum EventMaxLevelCli {
-    Info,
-    Verbose,
-    Debug,
-}
-
-impl std::fmt::Display for EventMaxLevelCli {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Info => f.write_str("info"),
-            Self::Verbose => f.write_str("verbose"),
-            Self::Debug => f.write_str("debug"),
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub enum EventsCommands {
     #[command(
         about = "Fetch a bounded page of stable event envelopes",
-        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, provenance metadata, and full event payloads. Use `--max-level` to page only events visible at the selected operator display level."
+        long_about = "Fetch a bounded page of stable runtime event envelopes.\n\nThe stable fields are the event envelope fields emitted by the API, including sequence, identity, timestamps, provenance metadata, and full event payloads. Display-level filtering belongs in clients; this command returns raw event envelopes."
     )]
     Tail {
         #[arg(long)]
@@ -636,8 +619,6 @@ pub enum EventsCommands {
         limit: usize,
         #[arg(long, value_enum, default_value_t = EventPageOrderCli::Desc)]
         order: EventPageOrderCli,
-        #[arg(long, value_enum)]
-        max_level: Option<EventMaxLevelCli>,
         #[arg(long)]
         agent: Option<String>,
         #[arg(

@@ -175,7 +175,6 @@ pub struct EventsQuery {
     pub(crate) after_seq: Option<u64>,
     pub(crate) limit: Option<usize>,
     pub(crate) order: Option<EventPageOrder>,
-    pub(crate) max_level: Option<OperatorDisplayMode>,
     pub(crate) event_kind: Option<String>,
 }
 

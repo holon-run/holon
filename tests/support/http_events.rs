@@ -733,7 +733,7 @@ pub async fn events_route_payload_includes_full_fields() -> Result<()> {
     Ok(())
 }
 
-pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Result<()> {
+pub async fn events_route_keeps_all_display_levels_with_bounded_pages() -> Result<()> {
     let (host, base, server) = spawn_server().await?;
     let runtime = host.default_runtime().await?;
     let client = reqwest::Client::new();
@@ -784,12 +784,12 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
 
     let page = fetch_events_page_until(
         &client,
-        format!("{base}/api/agents/default/events?limit=2&order=desc&max_level=info"),
+        format!("{base}/api/agents/default/events?limit=2&order=desc"),
         |page| {
             page["events"].as_array().is_some_and(|events| {
                 events.len() == 2
                     && events[0]["type"] == "brief_created"
-                    && events[1]["type"] == "message_enqueued"
+                    && events[1]["type"] == "callback_delivered"
             })
         },
     )
@@ -797,8 +797,8 @@ pub async fn events_route_max_level_filters_with_bounded_visible_pages() -> Resu
     let events = page["events"].as_array().expect("events");
     assert_eq!(events.len(), 2);
     assert_eq!(events[0]["type"], "brief_created");
-    assert_eq!(events[1]["type"], "message_enqueued");
-    assert_eq!(page["has_older"], false);
+    assert_eq!(events[1]["type"], "callback_delivered");
+    assert_eq!(page["has_older"], true);
     assert!(page["cursor_seq"].as_u64().is_some());
 
     let unfiltered: serde_json::Value = client
@@ -1650,7 +1650,7 @@ pub async fn filtered_event_page_does_not_claim_raw_continuity() -> Result<()> {
 
     let page: serde_json::Value = client
         .get(format!(
-            "{base}/api/agents/default/events?limit=10&order=desc&max_level=info"
+            "{base}/api/agents/default/events?limit=10&order=desc&event_kind=message_enqueued"
         ))
         .send()
         .await?

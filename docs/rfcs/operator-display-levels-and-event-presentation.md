@@ -36,13 +36,13 @@ Clarification:
 
 - "Compact activity view" describes the presentation density of `verbose`, not
   the event taxonomy and not the raw event kind names.
-- Event-based adapters and server event filters share one event-level contract:
+- Event-based clients share one event-level contract:
   `info | verbose | debug`.
 - Presentation reducers may render the same eligible activity differently at
   different display levels. For example, an ApplyPatch activity can be a compact
   file summary at `verbose` and a bounded diff with diagnostics at `debug`.
-- `/events?max_level=...` is an event eligibility filter over raw event
-  envelopes. It does not by itself produce compact presentation items.
+- `/events` returns raw event envelopes without display-level filtering.
+  Clients apply event eligibility and presentation rules locally.
 - Unfiltered raw trace inspection remains a separate surface.
 
 ## Problem
@@ -815,22 +815,18 @@ They should consume either:
 The first implementation can live in the TUI, but the rules should remain
 runtime-level and reusable.
 
-The HTTP event surface should distinguish raw-event eligibility from
-presentation rendering:
+The HTTP event surface keeps display-level eligibility and rendering in clients:
 
 - `/events` returns raw event envelopes for inspection.
-- `/events?max_level=info|verbose|debug` returns raw event envelopes whose
-  shared event level is eligible for the requested maximum level.
-- `/events?max_level=verbose` does not mean "return compact presentation
-  rows"; it means "return raw envelopes whose event level is no more detailed
-  than `verbose`."
+- `/events?event_kind=...` may select one raw event kind. It does not apply
+  operator display levels or return compact presentation rows.
 - Compact density is produced by a presentation reducer, either client-side in
   the TUI or through a future server-provided presentation endpoint.
-- Raw trace/audit inspection remains available by omitting `max_level` or by
-  using a dedicated trace/debug inspection surface.
+- Raw trace/audit inspection remains available through unfiltered event pages
+  and streams. The CLI event tail also returns raw envelopes.
 
-This preserves one level contract across server and TUI while allowing the TUI
-to render the same event group differently at `verbose` and `debug`.
+This preserves one client-side level contract across GUI and TUI while allowing
+each to render the same event group differently at `verbose` and `debug`.
 
 ## Compatibility
 
@@ -875,8 +871,8 @@ Raw event inspection remains available through trace surfaces.
 6. Hide provider rounds by default and attach useful provider telemetry to nearby
    items in `debug`.
 7. Render work item updates as deltas.
-8. Keep `/events` as the trace/raw event inspector, with `max_level` acting only
-   as raw-envelope eligibility filtering rather than presentation rendering.
+8. Keep `/events` as the trace/raw event inspector, with display-level
+   eligibility and presentation rendering confined to clients.
 9. Add snapshot tests for representative event sequences at each display mode.
 
 ## Initial Decisions

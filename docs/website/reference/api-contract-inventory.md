@@ -190,7 +190,7 @@ Default-agent aliases:
 
 | Method | Path | Inputs | Success response | Stability | Notes |
 |--------|------|--------|------------------|-----------|-------|
-| `GET` | `/api/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `max_level?`. | `EventsPageResponse` | Candidate stable route and envelope | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `max_level` filters event inclusion only. |
+| `GET` | `/api/agents/:agent_id/events` | Path `agent_id`; query `before_seq?`, `after_seq?`, `limit?`, `order?`, `event_kind?`. | `EventsPageResponse` | Candidate stable route and envelope | `limit` defaults to the event window and is clamped. `order` is `asc` or `desc`. `event_kind` selects one raw event kind; display-level filtering is client-side. |
 | `GET` | `/api/agents/:agent_id/events/stream` | Path `agent_id`; query `after_seq?`, `limit?`; `Accept: text/event-stream` recommended. | SSE frames with JSON `StreamEventEnvelope` data. | Candidate stable route and envelope | SSE `id` is `event_seq`; SSE `event` is the raw audit event kind. |
 
 Event page cursors are exclusive: `after_seq` returns records with higher
@@ -218,9 +218,8 @@ Stable `StreamEventEnvelope` fields:
 ```
 
 Event payloads are the protocol standard and are included in full. The events
-page may filter event inclusion with `max_level=info|verbose|debug`; filtering
-does not alter `payload`. The live event stream is raw and does not support
-level filtering.
+page may select an `event_kind`; filtering does not alter `payload`. Neither
+event pages nor the raw live stream apply display-level filtering.
 
 Breaking migration from the removed projection contract:
 
@@ -228,8 +227,9 @@ Breaking migration from the removed projection contract:
   stream requests
 - stop reading `StreamEventEnvelope.projection`; all envelopes now include the
   full standard payload
-- use `/api/agents/:id/events?max_level=info` for an operator-density historical
-  page and client-side filtering for the raw stream
+- remove server-side display-level query parameters; unsupported parameters
+  are rejected without a compatibility period
+- apply display-level filtering client-side to both raw history and streams
 
 ### Public ingress
 
@@ -392,9 +392,9 @@ execution.
    agent, event, and envelope responses are still represented broadly in the
    OpenAPI baseline and should become first-class typed components where they
    are stable client contracts.
-3. **Event level filtering needs more real-world coverage.** `max_level`
-   inclusion rules should be validated against real TUI/client sessions before
-   they are treated as final.
+3. **Client event presentation needs more real-world coverage.** Display-level
+   inclusion rules belong in clients and should be validated against real
+   TUI/GUI sessions; the server returns raw envelopes.
 4. **WorkItem mutation APIs now cover focus/update/complete.** HTTP can
    list/get/create/enqueue, pick focus, update objective/planning/blocker
    fields, and complete work items. Cancel/delete remains intentionally out of
@@ -421,7 +421,7 @@ milestone and tracked by
 |-------|-------|
 | [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | Move OpenAPI operation metadata closer to route and DTO definitions. |
 | [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | Replace selected generic JSON schemas with typed stable DTO schemas. |
-| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields. Event payloads are the protocol standard; `max_level` filters event inclusion only. |
+| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | Version/document stable event fields. Event payloads are the protocol standard; clients own display-level filtering. |
 
 ## Suggested next work
 

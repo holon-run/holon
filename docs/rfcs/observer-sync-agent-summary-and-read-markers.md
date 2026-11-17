@@ -285,8 +285,8 @@ The event ledger is the only incremental ordering domain used by Phase 3.
 Info, verbose, and debug views differ in presentation policy, not replay
 identity.
 
-A client stores one contiguous raw cursor per Agent. Display filters such as
-`max_level` may reduce a history response for a user-visible view, but the
+A client stores one contiguous raw cursor per Agent. Event-kind filters such as
+`event_kind` may reduce a history response, but the
 highest sequence in a filtered response must never be treated as proof that all
 raw events through that sequence were ingested.
 

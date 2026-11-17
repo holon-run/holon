@@ -183,7 +183,7 @@ order: 25
 
 | 方法 | 路径 | 输入 | 成功响应 | 稳定性 | 备注 |
 |--------|------|--------|------------------|-----------|-------|
-| `GET` | `/api/agents/:agent_id/events` | 路径 `agent_id`；查询 `before_seq?`、`after_seq?`、`limit?`、`order?`、`max_level?`。 | `EventsPageResponse` | 路由和信封为候选稳定 | `limit` 默认为事件窗口，并被钳制。`order` 为 `asc` 或 `desc`。`max_level` 只过滤事件是否被包含。 |
+| `GET` | `/api/agents/:agent_id/events` | 路径 `agent_id`；查询 `before_seq?`、`after_seq?`、`limit?`、`order?`、`event_kind?`。 | `EventsPageResponse` | 路由和信封为候选稳定 | `limit` 默认为事件窗口，并被钳制。`order` 为 `asc` 或 `desc`。`event_kind` 选择一种原始事件类型；展示级别过滤在客户端进行。 |
 | `GET` | `/api/agents/:agent_id/events/stream` | 路径 `agent_id`；查询 `after_seq?`、`limit?`；建议 `Accept: text/event-stream`。 | 带 JSON `StreamEventEnvelope` 数据的 SSE 帧。 | 路由和信封为候选稳定 | SSE `id` 是 `event_seq`；SSE `event` 是原始审计事件类型。 |
 
 事件分页游标是排他的：`after_seq` 返回 `event_seq` 更大的记录，`before_seq`
@@ -208,16 +208,15 @@ SSE 连接，而不是跨越隐藏的间隙继续；客户端从每个 agent 最
 }
 ```
 
-事件 payload 是协议标准，会完整包含。事件页可以用
-`max_level=info|verbose|debug` 过滤事件是否被包含；过滤不会改变 `payload`。
-实时事件流是原始的，不支持级别过滤。
+事件 payload 是协议标准，会完整包含。事件页可以用 `event_kind` 选择事件类型；
+过滤不会改变 `payload`。事件分页和原始实时流都不应用展示级别过滤。
 
 从已移除的 projection 契约迁移的破坏性变更：
 
 - 从事件分页和流请求中删除 `projection=operator` / `projection=local_debug`
 - 停止读取 `StreamEventEnvelope.projection`；现在所有信封都包含完整的标准 payload
-- 用 `/api/agents/:id/events?max_level=info` 获取 operator 密度的历史页面，
-  原始流则由客户端侧过滤
+- 移除服务端展示级别查询参数；不提供兼容期，不支持的参数会被拒绝
+- 原始历史分页和流的展示级别过滤均由客户端完成
 
 ### 公共入口
 
@@ -374,8 +373,8 @@ v0.38.0 迁移词汇保留。它们不是当前的公共 API 身份区分符。�
 2. **稳定 DTO schema 需要收紧。** 若干 task、work-item、timer、agent、event 和
    信封响应在 OpenAPI 基线中仍以宽泛形式表示；在它们成为稳定的客户端契约之处，
    应变成一等带类型组件。
-3. **事件级别过滤需要更多真实场景覆盖。** 在把 `max_level` 的包含规则当作最终
-   规则之前，应针对真实的 TUI/客户端会话进行验证。
+3. **客户端事件展示需要更多真实场景覆盖。** 展示级别纳入规则属于客户端，
+   应针对真实的 TUI/GUI 会话进行验证；服务端返回原始信封。
 4. **WorkItem 变更 API 现在覆盖 focus/update/complete。** HTTP 可以列出/读取/
    创建/入队工作项，拾取焦点，更新 objective/planning/blocker 字段，并完成工作项。
    在需要独立生命周期契约之前，取消/删除有意保持在范围外。
@@ -397,7 +396,7 @@ v0.38.0 迁移词汇保留。它们不是当前的公共 API 身份区分符。�
 |-------|-------|
 | [#1438](https://github.com/holon-run/holon/issues/1438) `api: migrate OpenAPI baseline to aide route/type metadata` | 把 OpenAPI 操作元数据移近路由和 DTO 定义。 |
 | [#1439](https://github.com/holon-run/holon/issues/1439) `api: tighten OpenAPI DTO schemas for stable read models` | 用带类型的稳定 DTO schema 替换选定的通用 JSON schema。 |
-| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | 为稳定事件字段定版本/写文档。事件 payload 是协议标准；`max_level` 只过滤事件是否被包含。 |
+| [#1443](https://github.com/holon-run/holon/issues/1443) `events: define stable operator-facing event payload subset` | 为稳定事件字段定版本/写文档。事件 payload 是协议标准；展示级别过滤属于客户端行为。 |
 
 ## 建议的后续工作
 

@@ -4563,7 +4563,6 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
             after_seq,
             limit,
             order,
-            max_level,
             agent,
             offline,
         } => {
@@ -4573,10 +4572,6 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
                         "--offline requires an explicit --agent when no configured default is available"
                     )
                 })?;
-                anyhow::ensure!(
-                    max_level.is_none(),
-                    "--max-level is not supported with --offline"
-                );
                 return print_json(&serde_json::to_value(offline_event_page(
                     config, &agent, before_seq, after_seq, limit, order,
                 )?)?);
@@ -4591,7 +4586,6 @@ async fn handle_events_command(config: &AppConfig, command: EventsCommands) -> R
                         after_seq,
                         limit: Some(limit),
                         order: Some(order.to_string()),
-                        max_level: max_level.map(|level| level.to_string()),
                     },
                 )
                 .await?;

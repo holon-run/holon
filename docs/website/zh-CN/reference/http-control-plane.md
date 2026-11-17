@@ -200,7 +200,7 @@ Web 端与移动客户端借此保持跨端未读标记与角标同步。
 | `after_seq` | 返回持久 `event_seq` 高于该值的事件 |
 | `limit` | 最多返回的事件数（默认 128） |
 | `order` | `asc` 或 `desc`（默认） |
-| `max_level` | 可选的纳入过滤：`info`、`verbose` 或 `debug` |
+| `event_kind` | 可选的事件类型精确纳入过滤 |
 
 JSON 响应是一个 `EventsPageResponse`：
 
@@ -250,8 +250,8 @@ SSE 流之前，路由返回 `404`，带 `code: cursor_not_found` 以及
 过滤行为：
 
 - 事件 payload 始终完整包含。
-- `/api/agents/:id/events` 可以用 `max_level` 过滤返回哪些事件。
-- `/api/agents/:id/events/stream` 是原始的，不支持 `max_level`。
+- `/api/agents/:id/events` 可以用 `event_kind` 选择一种原始事件类型。
+- 分页和流都不应用 operator 展示级别；客户端在本地过滤。
 
 迁移说明：
 
@@ -260,9 +260,9 @@ SSE 流之前，路由返回 `404`，带 `code: cursor_not_found` 以及
 - `StreamEventEnvelope.projection` 不再存在。检查过
   `projection.raw_payload_included` 的客户端应把所有事件信封视为
   完整 payload 信封。
-- 要复现旧的面向 operator 的页面密度，请请求
-  `/api/agents/:id/events?max_level=info`。流客户端应继续订阅
-  `/api/agents/:id/events/stream`，并在本地应用任何展示层过滤。
+- 移除服务端展示级别查询参数；不提供兼容期，不支持的查询参数会被拒绝。
+- 要复现面向 operator 的页面密度，请对分页和
+  `/api/agents/:id/events/stream` 在本地应用展示层过滤。
 
 **`GET /api/agents/:id/transcript`** — Turn 记录
 

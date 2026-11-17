@@ -93,7 +93,10 @@ Agent conversation uses:
 - `GET /agents/:id/state`
 - `GET /agents/:id/briefs?limit=5`
 - `GET /agents/:id/transcript?limit=40`
-- `GET /agents/:id/events?limit=20&order=desc&max_level=verbose`
+- `GET /agents/:id/events?limit=20&order=desc`
+
+Event pages and streams return raw envelopes. The GUI applies display-level
+filtering locally.
 
 No GUI-specific backend routes are introduced in this branch.
 

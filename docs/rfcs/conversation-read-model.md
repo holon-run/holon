@@ -307,8 +307,8 @@ The relevant existing layers are:
 
 The current conversation history/recovery path is built around a raw event
 ledger. Hiding historical activity in the DOM does not stop that path from
-fetching or hydrating it. Filtering `/events` by `max_level=info` is also not
-equivalent to a page of turn summaries.
+fetching or hydrating it. Client-side display-level filtering of `/events` is
+also not equivalent to a page of turn summaries.
 
 The existing raw-stream RFC places projection in first-party clients. This
 proposal adds a narrow server-side read projection for lightweight conversation

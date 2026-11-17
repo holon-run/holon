@@ -22,7 +22,7 @@ http_async_tests!(
     global_events_stream_closes_on_lag_and_recovers_per_agent,
     events_route_keeps_correlation_facts_in_payload,
     events_route_payload_includes_full_fields,
-    events_route_max_level_filters_with_bounded_visible_pages,
+    events_route_keeps_all_display_levels_with_bounded_pages,
     events_stream_includes_tool_payload,
     tool_execution_route_returns_canonical_output,
     tool_execution_artifact_route_reads_scoped_content,
