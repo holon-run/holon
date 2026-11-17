@@ -230,9 +230,24 @@ fn assert_single_delivered_result(
     settlement
 }
 
-#[tokio::test]
-async fn supervised_invocation_two_real_results_share_one_consumer() {
-    assert_real_batched_invocation(2).await;
+#[test]
+fn supervised_invocation_two_real_results_share_one_consumer() -> anyhow::Result<()> {
+    // Construct and drive the complete RuntimeHost future on a test-local stack.
+    let test_thread = std::thread::Builder::new()
+        .name("supervised-invocation-batched-results".into())
+        .stack_size(32 * 1024 * 1024)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(assert_real_batched_invocation(2));
+            Ok(())
+        })?;
+
+    match test_thread.join() {
+        Ok(result) => result,
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
 async fn assert_real_batched_invocation(result_count: usize) {
