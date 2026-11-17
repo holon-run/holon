@@ -1,0 +1,31 @@
+[package]
+name = "holon-agent-templates"
+version = "0.1.0"
+edition = "2021"
+description = "Agent template and skill discovery and installation for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1.0"
+holon-domain = { version = "0.1.0", path = "../holon-domain", features = ["error-sanitization"] }
+holon-github = { version = "0.1.0", path = "../holon-github" }
+reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tar = "0.4"
+tempfile = "3.14"
+tokio = { version = "1.43", features = ["rt"] }
+toml = "1.0"
+tracing = "0.1"
+uuid = { version = "1.11", features = ["v4"] }
+
+[dev-dependencies]
+holon-github = { version = "0.1.0", path = "../holon-github", features = ["test-support"] }
+tokio = { version = "1.43", features = ["macros"] }

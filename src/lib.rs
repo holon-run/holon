@@ -14,13 +14,14 @@
 )]
 
 pub mod agent_memory;
+mod agent_package_io;
 pub mod agent_template;
 pub mod agents_md;
 use holon_provider::auth;
 pub mod authentication;
 pub mod avatar;
 mod callbacks;
-pub(crate) use holon_github::{archive as github_archive, client as github};
+pub(crate) use holon_github::client as github;
 pub mod ids;
 pub mod startup;
 

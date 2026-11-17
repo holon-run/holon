@@ -550,6 +550,7 @@ jobs:
           }
           publish_if_needed holon-domain
           publish_if_needed holon-github
+          publish_if_needed holon-agent-templates
           publish_if_needed holon-system
           publish_if_needed holon-storage
           publish_if_needed holon-memory-index
