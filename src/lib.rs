@@ -20,8 +20,7 @@ use holon_provider::auth;
 pub mod authentication;
 pub mod avatar;
 mod callbacks;
-pub(crate) mod github;
-pub(crate) mod github_archive;
+pub(crate) use holon_github::{archive as github_archive, client as github};
 pub mod ids;
 pub mod startup;
 

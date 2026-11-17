@@ -15,7 +15,7 @@ use serde_json::Value as JsonValue;
 use tar::Archive;
 use tempfile::{NamedTempFile, TempDir};
 
-pub(crate) const DEFAULT_ARCHIVE_BASE: &str = "https://codeload.github.com";
+pub const DEFAULT_ARCHIVE_BASE: &str = "https://codeload.github.com";
 
 const MAX_ARCHIVE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_EXTRACTED_BYTES: u64 = 256 * 1024 * 1024;
@@ -29,7 +29,7 @@ const MAX_ARCHIVE_CACHE_BYTES: u64 = 512 * 1024 * 1024;
 const ARCHIVE_CACHE_MIN_AGE: Duration = Duration::from_secs(15 * 60);
 
 #[derive(Debug)]
-pub(crate) struct ArchiveHttpFailure {
+pub struct ArchiveHttpFailure {
     pub status: u16,
     pub retry_after: Option<DateTime<Utc>>,
 }
@@ -68,7 +68,7 @@ impl fmt::Display for ArchiveHttpFailure {
 impl std::error::Error for ArchiveHttpFailure {}
 
 #[derive(Debug)]
-pub(crate) struct GitHubArchive {
+pub struct GitHubArchive {
     #[allow(dead_code)]
     temp_dir: Option<TempDir>,
     root: PathBuf,
@@ -76,8 +76,9 @@ pub(crate) struct GitHubArchive {
 }
 
 impl GitHubArchive {
-    #[cfg(test)]
-    pub(crate) fn from_test_root(temp_dir: TempDir) -> Self {
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
+    pub fn from_test_root(temp_dir: TempDir) -> Self {
         let root = temp_dir.path().to_path_buf();
         Self {
             temp_dir: Some(temp_dir),
@@ -86,8 +87,8 @@ impl GitHubArchive {
         }
     }
 
-    pub(crate) async fn fetch(
-        client: &crate::github::AsyncClient,
+    pub async fn fetch(
+        client: &crate::client::AsyncClient,
         owner: &str,
         repo: &str,
         reference: &str,
@@ -133,8 +134,8 @@ impl GitHubArchive {
         Err(anyhow::Error::new(failure))
     }
 
-    pub(crate) fn fetch_blocking(
-        client: &crate::github::BlockingClient,
+    pub fn fetch_blocking(
+        client: &crate::client::BlockingClient,
         owner: &str,
         repo: &str,
         reference: &str,
@@ -164,11 +165,11 @@ impl GitHubArchive {
         Err(anyhow::Error::new(failure))
     }
 
-    pub(crate) fn root(&self) -> &Path {
+    pub fn root(&self) -> &Path {
         &self.root
     }
 
-    pub(crate) fn directory(&self, path: &str) -> anyhow::Result<PathBuf> {
+    pub fn directory(&self, path: &str) -> anyhow::Result<PathBuf> {
         let relative = checked_directory_path(path)?;
         if self
             .rejected_entries
@@ -278,8 +279,8 @@ impl GitHubArchive {
     /// cannot go stale. When resolution fails for a non-rate-limit reason the
     /// fetch proceeds without caching (previous behavior); a rate-limited
     /// resolution stops like any other GitHub rate limit.
-    pub(crate) fn fetch_blocking_cached(
-        client: &crate::github::BlockingClient,
+    pub fn fetch_blocking_cached(
+        client: &crate::client::BlockingClient,
         owner: &str,
         repo: &str,
         reference: &str,
@@ -292,7 +293,7 @@ impl GitHubArchive {
         let cache_key = format!("{owner}__{repo}__{commit_sha}");
         let cache_dir = cache_root.join(&cache_key);
         if cache_dir.is_dir() {
-            tracing::debug!(archive = %cache_key, "github_archive_cache_hit");
+            tracing::debug!(target: "holon::github_archive", archive = %cache_key, "github_archive_cache_hit");
             return Ok(Self::from_cache_root(cache_dir));
         }
         let archive = Self::fetch_blocking(client, owner, repo, &commit_sha, archive_base)?;
@@ -323,6 +324,7 @@ impl GitHubArchive {
             Ok(()) => {}
             Err(rename_error) if cache_dir.is_dir() => {
                 tracing::debug!(
+                    target: "holon::github_archive",
                     cache = %cache_dir.display(),
                     error = %rename_error,
                     "github_archive_cache_race: keeping existing entry"
@@ -563,7 +565,7 @@ fn http_failure(status: u16, headers: &reqwest::header::HeaderMap) -> ArchiveHtt
 }
 
 async fn async_http_error(
-    client: &crate::github::AsyncClient,
+    client: &crate::client::AsyncClient,
     response: reqwest::Response,
 ) -> anyhow::Error {
     let status = response.status().as_u16();
@@ -577,7 +579,7 @@ async fn async_http_error(
 }
 
 fn blocking_http_error(
-    client: &crate::github::BlockingClient,
+    client: &crate::client::BlockingClient,
     response: reqwest::blocking::Response,
 ) -> anyhow::Error {
     let status = response.status().as_u16();
@@ -599,7 +601,7 @@ fn parse_retry_after(value: &str) -> Option<DateTime<Utc>> {
         .map(|date| date.with_timezone(&Utc))
 }
 
-pub(crate) fn is_not_found(error: &anyhow::Error) -> bool {
+pub fn is_not_found(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         cause
             .downcast_ref::<ArchiveHttpFailure>()
@@ -607,7 +609,7 @@ pub(crate) fn is_not_found(error: &anyhow::Error) -> bool {
     })
 }
 
-pub(crate) fn is_directory_not_found(error: &anyhow::Error) -> bool {
+pub fn is_directory_not_found(error: &anyhow::Error) -> bool {
     error
         .chain()
         .any(|cause| cause.is::<ArchiveDirectoryNotFound>())
@@ -618,7 +620,7 @@ pub(crate) fn is_directory_not_found(error: &anyhow::Error) -> bool {
 /// reference cannot be resolved so callers can fall back to an uncached
 /// fetch instead of failing the install.
 fn resolve_commit_sha(
-    client: &crate::github::BlockingClient,
+    client: &crate::client::BlockingClient,
     owner: &str,
     repo: &str,
     reference: &str,
@@ -634,10 +636,11 @@ fn resolve_commit_sha(
         let error = blocking_http_error(client, response);
         // A rate-limited resolution must stop like any other GitHub rate
         // limit; unrelated failures fall back to an uncached fetch.
-        if error.downcast_ref::<crate::github::RateLimit>().is_some() {
+        if error.downcast_ref::<crate::client::RateLimit>().is_some() {
             return Err(error);
         }
         tracing::debug!(
+            target: "holon::github_archive",
             error = %format!("{error:#}"),
             "github archive sha resolution failed; fetching without cache"
         );
@@ -686,7 +689,7 @@ fn evict_archive_cache(cache_root: &Path) {
             // reading from them.
             break;
         }
-        tracing::debug!(cache = %path.display(), "evicting github archive cache entry");
+        tracing::debug!(target: "holon::github_archive", cache = %path.display(), "evicting github archive cache entry");
         if fs::remove_dir_all(&path).is_ok() {
             total = total.saturating_sub(size);
         }
@@ -733,7 +736,6 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -794,15 +796,15 @@ mod tests {
         }
     }
 
-    fn blocking_client(auth: Option<&str>, base: &str) -> crate::github::BlockingClient {
-        let auth = auth.map_or_else(crate::github::GitHubAuth::anonymous, |token| {
-            crate::github::GitHubAuth::from_token(
+    fn blocking_client(auth: Option<&str>, base: &str) -> crate::client::BlockingClient {
+        let auth = auth.map_or_else(crate::client::GitHubAuth::anonymous, |token| {
+            crate::client::GitHubAuth::from_token(
                 Some(token.to_owned()),
-                crate::github::AuthSource::Configured,
+                crate::client::AuthSource::Configured,
             )
             .unwrap()
         });
-        crate::github::BlockingClient::new(reqwest::blocking::Client::new(), auth, base).unwrap()
+        crate::client::BlockingClient::new(reqwest::blocking::Client::new(), auth, base).unwrap()
     }
 
     fn serve(
@@ -1237,9 +1239,9 @@ mod tests {
     async fn async_fetch_uses_same_archive_contract() {
         let body = archive(&[("root/file", tar::EntryType::Regular, b"ok")]);
         let (base, handle) = serve(vec![(200, vec![], body)]);
-        let client = crate::github::AsyncClient::new(
+        let client = crate::client::AsyncClient::new(
             reqwest::Client::new(),
-            crate::github::GitHubAuth::anonymous(),
+            crate::client::GitHubAuth::anonymous(),
             &base,
         )
         .unwrap();
