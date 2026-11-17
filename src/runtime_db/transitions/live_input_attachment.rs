@@ -8,6 +8,46 @@ use crate::types::{
     AgentMessageDeliveryOutcome, AgentMessagePrincipalKind, AgentStatus, AuthorityClass,
     LiveInputBatchRecord, MessageKind, Priority, TranscriptEntryKind, TurnOwner,
 };
+#[cfg(test)]
+use chrono::DateTime;
+
+#[cfg(test)]
+thread_local! {
+    static ORACLE_LIVE_TIME: std::cell::Cell<Option<DateTime<Utc>>> =
+        const { std::cell::Cell::new(None) };
+}
+
+/// Freeze writer-generated identity/time for paired, cloned-DB tests.
+#[cfg(test)]
+pub(crate) fn with_live_input_oracle<T>(at: DateTime<Utc>, run: impl FnOnce() -> T) -> T {
+    struct Restore(Option<DateTime<Utc>>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            ORACLE_LIVE_TIME.set(self.0);
+        }
+    }
+    let _restore = Restore(ORACLE_LIVE_TIME.replace(Some(at)));
+    run()
+}
+
+#[cfg(test)]
+fn oracle_transcript(mut entry: TranscriptEntry) -> TranscriptEntry {
+    if let Some(at) = ORACLE_LIVE_TIME.get() {
+        entry.id = format!(
+            "tr_oracle_{}",
+            entry.related_message_id.as_deref().expect("live source")
+        );
+        entry.created_at = at;
+    }
+    entry
+}
+
+#[cfg(test)]
+pub(super) fn oracle_audit_time(event: &mut AuditEvent) {
+    if let Some(at) = ORACLE_LIVE_TIME.get() {
+        event.created_at = at;
+    }
+}
 
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct LiveInputAttachmentCommand {
@@ -342,13 +382,17 @@ impl RuntimeTransitionRepository<'_> {
             }
             changed_results.insert(key);
         }
+        #[cfg(test)]
+        let recovered_at = ORACLE_LIVE_TIME.get().unwrap_or_else(Utc::now);
+        #[cfg(not(test))]
+        let recovered_at = Utc::now();
         if !crate::runtime_db::task_result_settlement::recover_live_task_results_tx(
             tx,
             agent_id,
             &prior.attempt_id,
             &expected_attempt.attempt_id,
             &identities,
-            Utc::now(),
+            recovered_at,
         )? {
             return Ok(TransitionCommit::default());
         }
@@ -363,6 +407,8 @@ impl RuntimeTransitionRepository<'_> {
             }),
         );
         recovered_event.id = audit_event_id.to_owned();
+        #[cfg(test)]
+        oracle_audit_time(&mut recovered_event);
         finish_transition_tx(
             tx,
             input_scope,
@@ -586,6 +632,8 @@ impl RuntimeTransitionRepository<'_> {
                     "activation_id": batch.activation_id,
                 }),
             );
+            #[cfg(test)]
+            let entry = oracle_transcript(entry);
             append_transcript_entry_tx(tx, &entry)?;
             transcript_entries.push(entry);
         }
@@ -603,6 +651,8 @@ impl RuntimeTransitionRepository<'_> {
             }),
         );
         attached_event.id = command.audit_event_id.clone();
+        #[cfg(test)]
+        oracle_audit_time(&mut attached_event);
         finish_transition_tx(
             tx,
             input_scope,

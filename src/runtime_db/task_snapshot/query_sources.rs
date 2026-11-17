@@ -136,16 +136,7 @@ pub(in crate::runtime_db) fn register_message_source_tx(
     );
     // An actual canonical update can remove old Task metadata as well as add it.
     // Raw late rows are never discovered here or by a normal reader.
-    let task_id = if matches!(message.origin, MessageOrigin::Task { .. }) {
-        message
-            .metadata
-            .as_ref()
-            .and_then(|v| v.get("task_id"))
-            .and_then(serde_json::Value::as_str)
-    } else {
-        None
-    };
-    let Some(task_id) = task_id else {
+    let Some(task_id) = message_source_task_id(message) else {
         tx.execute("DELETE FROM task_message_sources WHERE agent_id=?1 AND identity_incarnation=?2 AND source_id=?3",params![record.locator.scope.agent_id,record.locator.scope.identity_incarnation,message.id])?;
         return Ok(());
     };
@@ -165,6 +156,18 @@ pub(in crate::runtime_db) fn register_message_source_tx(
     tx.execute("INSERT INTO task_message_sources(agent_id,identity_incarnation,source_id,task_id,is_result,message_status,source_locator_json) VALUES(?1,?2,?3,?4,?5,?8,json_object('scope',json_object('agent_id',?1,'identity_incarnation',?2),'key',json_object('family','message','id',?3),'revision',?6,'content_digest',?7)) ON CONFLICT(agent_id,identity_incarnation,source_id) DO UPDATE SET task_id=excluded.task_id,is_result=excluded.is_result,message_status=excluded.message_status,source_locator_json=excluded.source_locator_json",
         params![record.locator.scope.agent_id,record.locator.scope.identity_incarnation,message.id,task_id,message.kind==MessageKind::TaskResult,record.locator.revision,record.locator.content_digest,status.as_str().context("Task Source status is not a string")?])?;
     Ok(())
+}
+
+pub(super) fn message_source_task_id(message: &crate::types::MessageEnvelope) -> Option<&str> {
+    if matches!(message.origin, MessageOrigin::Task { .. }) {
+        message
+            .metadata
+            .as_ref()
+            .and_then(|v| v.get("task_id"))
+            .and_then(serde_json::Value::as_str)
+    } else {
+        None
+    }
 }
 
 /// Finite normalized headers only. The original Task loader supplies actual

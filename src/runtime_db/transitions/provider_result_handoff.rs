@@ -275,6 +275,8 @@ impl RuntimeTransitionRepository<'_> {
             }),
         );
         transferred_event.id = audit_event_id.to_owned();
+        #[cfg(test)]
+        super::live_input_attachment::oracle_audit_time(&mut transferred_event);
         finish_transition_tx(
             tx,
             input_scope,

@@ -20,6 +20,10 @@ pub(crate) use execution_protocol_repository::{authority_fences_tx, persist_stat
 pub(crate) use live_input_attachment::{LiveInputAttachmentCommand, LiveInputRecoveryCommand};
 pub(crate) use provider_result_handoff::ProviderResultHandoffCommand;
 mod prepared_input;
+#[cfg(test)]
+pub(crate) use live_input_attachment::with_live_input_oracle;
+#[cfg(test)]
+pub(crate) use prepared_input::with_full_task_oracle;
 #[path = "transitions/prepared_task_result.rs"]
 mod prepared_task_result;
 #[cfg(holon_lib_test_shard = "b")]
