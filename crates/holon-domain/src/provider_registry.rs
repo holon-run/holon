@@ -545,4 +545,5 @@ pub const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
     ("step-5-preview", "default"),
     ("beam-free", "default"),
     ("iceman-contributor-free", "default"),
+    ("hy4-flash-free", "default"),
 ];

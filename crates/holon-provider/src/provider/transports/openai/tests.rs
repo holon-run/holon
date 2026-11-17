@@ -14,7 +14,7 @@ use super::{
     OpenAiChatCompletionsProvider, OpenAiCodexProvider, OpenAiCompactionPolicy,
     OpenAiContinuationState, OpenAiImagesDialect, OpenAiProvider, OpenAiProviderWindow,
     OpenAiRequestPlan, OpenAiRequestShape, OpenAiResponsesContinuationContract,
-    OpenAiResponsesTransportContract, ToolSchemaContract,
+    OpenAiResponsesRemoteCompactionContract, OpenAiResponsesTransportContract, ToolSchemaContract,
 };
 use crate::auth::CodexCliCredential;
 use crate::config::{
@@ -263,6 +263,57 @@ fn codex_coarse_quota_identity_prefers_profile_then_external_then_default() {
         profile_identity,
         openai_codex_coarse_quota_identity(&different_route)
     );
+}
+
+#[test]
+fn xiaomi_responses_contract_disables_remote_state_only_for_reviewed_endpoints() {
+    for (provider, endpoint, full_history) in [
+        ("xiaomi", "default", true),
+        ("xiaomi", "token-plan", true),
+        ("xiaomi", "other", false),
+        ("openai", "default", false),
+        ("tencent-tokenhub", "responses", true),
+    ] {
+        let mut config = test_openai_codex_config(None);
+        config.id = ProviderId::parse("custom-display-id").unwrap();
+        config.route_provider = ProviderId::parse(provider).unwrap();
+        config.route_endpoint = ProviderEndpointId::parse(endpoint).unwrap();
+        config.transport = ProviderTransportKind::OpenAiResponses;
+        config.auth = ProviderAuthConfig {
+            source: CredentialSource::None,
+            kind: CredentialKind::None,
+            ..Default::default()
+        };
+        let home = tempfile::tempdir().unwrap();
+        let runtime = OpenAiProvider::from_runtime_config(
+            &config,
+            "mimo-v2.6-flash",
+            131_072,
+            home.path(),
+            env!("CARGO_PKG_VERSION"),
+        )
+        .unwrap();
+        assert_eq!(
+            runtime.endpoint_contract.continuation,
+            if full_history {
+                OpenAiResponsesContinuationContract::FullHistoryOnly
+            } else {
+                OpenAiResponsesContinuationContract::Standard
+            }
+        );
+        assert_eq!(
+            runtime.endpoint_contract.remote_compaction,
+            if full_history {
+                OpenAiResponsesRemoteCompactionContract::Unsupported
+            } else {
+                OpenAiResponsesRemoteCompactionContract::Supported
+            }
+        );
+        assert_eq!(
+            runtime.endpoint_contract.transport,
+            OpenAiResponsesTransportContract::StandardJson
+        );
+    }
 }
 
 #[test]

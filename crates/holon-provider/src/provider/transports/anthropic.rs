@@ -361,6 +361,24 @@ fn anthropic_reasoning_controls<'a>(
             reasoning_effort.map(|effort| OutputConfigRequest { effort }),
         ));
     }
+    if route_provider == "dashscope" && matches!(model, "qwen4-max" | "qwen4-max-preview") {
+        let effort = match reasoning_effort {
+            None => None,
+            Some(effort) => Some(match (model, effort) {
+                (_, "low" | "xhigh") => effort,
+                ("qwen4-max", "medium" | "high") => "high",
+                ("qwen4-max-preview", "medium") => "medium",
+                ("qwen4-max-preview", "high") | (_, "max") => "xhigh",
+                _ => {
+                    return Err(anyhow!(
+                        "DashScope {model} reasoning effort must be low, medium, high, xhigh, or max"
+                    ));
+                }
+            }),
+        };
+        // Omission preserves each model's default; a manual budget is not an effort.
+        return Ok((None, effort.map(|effort| OutputConfigRequest { effort })));
+    }
     if route_provider == "dashscope" && model == "kimi-k3.1-pro" {
         if let Some(effort) = reasoning_effort {
             if !matches!(effort, "low" | "medium" | "high" | "max") {
@@ -5722,6 +5740,56 @@ mod tests {
         .unwrap();
         assert_eq!(thinking.unwrap().budget_tokens, 8192);
         assert!(output_config.is_none());
+    }
+
+    #[test]
+    fn dashscope_qwen4_reasoning_uses_exact_effort_without_manual_budget() {
+        for (model, effort, expected) in [
+            ("qwen4-max", "low", "low"),
+            ("qwen4-max", "medium", "high"),
+            ("qwen4-max", "high", "high"),
+            ("qwen4-max", "xhigh", "xhigh"),
+            ("qwen4-max", "max", "xhigh"),
+            ("qwen4-max-preview", "low", "low"),
+            ("qwen4-max-preview", "medium", "medium"),
+            ("qwen4-max-preview", "high", "xhigh"),
+            ("qwen4-max-preview", "xhigh", "xhigh"),
+            ("qwen4-max-preview", "max", "xhigh"),
+        ] {
+            let (thinking, output_config) =
+                anthropic_reasoning_controls("dashscope", model, true, Some(effort), 8192).unwrap();
+            assert!(thinking.is_none(), "{model}/{effort}");
+            assert_eq!(
+                serde_json::to_value(output_config).unwrap(),
+                json!({"effort": expected}),
+                "{model}/{effort}"
+            );
+        }
+        for model in ["qwen4-max", "qwen4-max-preview"] {
+            let (thinking, output_config) =
+                anthropic_reasoning_controls("dashscope", model, true, None, 8192).unwrap();
+            assert!(thinking.is_none());
+            assert!(output_config.is_none());
+            for effort in ["none", "minimal", "no_think", "unknown"] {
+                assert!(
+                    anthropic_reasoning_controls("dashscope", model, true, Some(effort), 8192)
+                        .is_err(),
+                    "{model}/{effort}"
+                );
+            }
+        }
+        for (provider, model) in [
+            ("dashscope", "qwen3.8-max"),
+            ("dashscope", "qwen4-max-unknown"),
+            ("dashscope", "qwen4-max-preview-unknown"),
+            ("anthropic", "qwen4-max"),
+            ("opencode-go", "qwen4-max"),
+        ] {
+            let (thinking, output_config) =
+                anthropic_reasoning_controls(provider, model, true, Some("high"), 8192).unwrap();
+            assert!(thinking.is_some(), "{provider}/{model}");
+            assert!(output_config.is_none());
+        }
     }
 
     #[test]

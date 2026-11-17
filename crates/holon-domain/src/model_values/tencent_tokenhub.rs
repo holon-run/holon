@@ -12,6 +12,7 @@ pub type TencentTokenHubModelSpec = (
 pub const TENCENT_TOKENHUB_MODELS: &[TencentTokenHubModelSpec] = &[
     ("hy3", "Hy3", Some(256_000), Some(128_000), true, false),
     ("hy4", "Hy4", None, None, true, true),
+    ("hy4-flash", "Hy4 Flash", None, None, true, true),
     ("hy-mt2-pro", "Hy-MT2-Pro", None, None, false, false),
     ("hy-mt2-plus", "Hy-MT2-Plus", None, None, false, false),
     ("hy-mt2-lite", "Hy-MT2-Lite", None, None, false, false),

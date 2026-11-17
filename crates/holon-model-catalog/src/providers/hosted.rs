@@ -152,7 +152,7 @@ pub(super) fn fireworks_model(
 pub(super) fn nvidia_model(
     model: &str,
     display_name: &str,
-    context_window_tokens: usize,
+    context_window_tokens: Option<usize>,
     supports_reasoning: bool,
     image_input: bool,
 ) -> BuiltInModelMetadata {
@@ -164,7 +164,7 @@ pub(super) fn nvidia_model(
         description: format!(
             "Holon conservative built-in metadata for the NVIDIA-hosted {model} model."
         ),
-        context_window_tokens: Some(context_window_tokens),
+        context_window_tokens,
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
         auto_compact_token_limit: None,
         default_max_output_tokens: None,
@@ -508,6 +508,13 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
             )
         },
         fireworks_model(
+            "accounts/fireworks/models/minimax-m3p1-flash",
+            "MiniMax M3.1 Flash",
+            Some(1_048_576),
+            true,
+            true,
+        ),
+        fireworks_model(
             "accounts/fireworks/models/kimi-k3p1-pro",
             "Kimi K3.1 Pro",
             Some(1_048_576),
@@ -816,23 +823,70 @@ pub(super) fn middle_entries() -> Vec<BuiltInModelMetadata> {
             true,
             true,
         ),
-        nvidia_model(
-            "nvidia/nemotron-3-super-120b-a12b",
-            "NVIDIA Nemotron 3 Super 120B",
-            1_000_000,
-            true,
-            false,
-        ),
-        nvidia_model("moonshotai/kimi-k2.6", "Kimi K2.6", 262_144, true, true),
-        nvidia_model(
-            "minimaxai/minimax-m2.7",
-            "MiniMax M2.7",
-            204_800,
-            true,
-            false,
-        ),
-        nvidia_model("minimaxai/minimax-m3", "MiniMax M3", 1_000_000, true, true),
-        nvidia_model("z-ai/glm-5.2", "GLM-5.2", 1_000_000, true, false),
+        BuiltInModelMetadata {
+            default_max_output_tokens: Some(16_384),
+            max_output_tokens_upper_limit: Some(32_768),
+            reasoning_effort_options: ["none", "low", "high"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            ..nvidia_model(
+                "nvidia/nemotron-3-super-120b-a12b",
+                "NVIDIA Nemotron 3 Super 120B",
+                Some(1_000_000),
+                true,
+                false,
+            )
+        },
+        BuiltInModelMetadata {
+            default_max_output_tokens: Some(16_384),
+            max_output_tokens_upper_limit: Some(65_536),
+            ..nvidia_model(
+                "moonshotai/kimi-k2.6",
+                "Kimi K2.6",
+                Some(262_144),
+                true,
+                true,
+            )
+        },
+        BuiltInModelMetadata {
+            default_max_output_tokens: Some(8_192),
+            max_output_tokens_upper_limit: Some(16_384),
+            ..nvidia_model(
+                "minimaxai/minimax-m2.7",
+                "MiniMax M2.7",
+                Some(204_800),
+                true,
+                false,
+            )
+        },
+        BuiltInModelMetadata {
+            default_max_output_tokens: Some(8_192),
+            max_output_tokens_upper_limit: Some(16_384),
+            ..nvidia_model(
+                "minimaxai/minimax-m3",
+                "MiniMax M3",
+                Some(1_000_000),
+                true,
+                true,
+            )
+        },
+        BuiltInModelMetadata {
+            default_max_output_tokens: Some(16_384),
+            max_output_tokens_upper_limit: Some(32_768),
+            ..nvidia_model("z-ai/glm-5.2", "GLM-5.2", Some(1_000_000), true, false)
+        },
+        BuiltInModelMetadata {
+            default_max_output_tokens: Some(16_384),
+            max_output_tokens_upper_limit: Some(65_536),
+            ..nvidia_model(
+                "minimaxai/minimax-m3.1-flash",
+                "MiniMax M3.1 Flash",
+                None,
+                true,
+                true,
+            )
+        },
     ]
 }
 
@@ -1069,6 +1123,60 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nvidia_request_limits_do_not_inherit_manufacturer_defaults() {
+        for catalog in [
+            BuiltInModelCatalog::from_legacy_definitions(),
+            BuiltInModelCatalog::new(),
+        ] {
+            for (id, default, ceiling) in [
+                ("nvidia/nemotron-3-super-120b-a12b", 16_384, 32_768),
+                ("z-ai/glm-5.2", 16_384, 32_768),
+                ("moonshotai/kimi-k2.6", 16_384, 65_536),
+                ("minimaxai/minimax-m2.7", 8_192, 16_384),
+                ("minimaxai/minimax-m3", 8_192, 16_384),
+                ("minimaxai/minimax-m3.1-flash", 16_384, 65_536),
+            ] {
+                let route = ModelRouteRef::parse(&format!("nvidia@default/{id}")).unwrap();
+                assert!(catalog.get_route(&route).is_some());
+                let metadata = catalog.get(&route.model_ref()).unwrap();
+                assert_eq!(metadata.default_max_output_tokens, Some(default));
+                assert_eq!(metadata.max_output_tokens_upper_limit, Some(ceiling));
+                if id == "nvidia/nemotron-3-super-120b-a12b" {
+                    assert_eq!(metadata.reasoning_effort_options, ["none", "low", "high"]);
+                }
+                if id == "minimaxai/minimax-m3.1-flash" {
+                    assert_eq!(metadata.context_window_tokens, None);
+                    assert_eq!(metadata.auto_compact_token_limit, None);
+                    assert!(metadata.reasoning_effort_options.is_empty());
+                    assert!(metadata.capabilities.image_input);
+                }
+            }
+            let fireworks = catalog
+                .get(
+                    &ModelRef::parse("fireworks/accounts/fireworks/models/minimax-m3p1-flash")
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(fireworks.context_window_tokens, Some(1_048_576));
+            assert_eq!(fireworks.default_max_output_tokens, None);
+            assert_eq!(fireworks.max_output_tokens_upper_limit, None);
+            assert!(fireworks.reasoning_effort_options.is_empty());
+            for (provider, id) in [
+                ("nvidia", "minimaxai/minimax-m3.1-flash"),
+                ("fireworks", "accounts/fireworks/models/minimax-m3p1-flash"),
+            ] {
+                for endpoint in ["messages", "responses"] {
+                    assert!(catalog
+                        .get_route(
+                            &ModelRouteRef::parse(&format!("{provider}@{endpoint}/{id}")).unwrap()
+                        )
+                        .is_none());
+                }
+            }
+        }
+    }
 
     #[test]
     fn fireworks_k31_uses_provider_context_without_inventing_output_or_effort() {

@@ -9438,6 +9438,86 @@
       "review": null
     },
     {
+      "route_ref": "dashscope@default/qwen4-max",
+      "facts": {
+        "context_window_tokens": 1000000,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": 262144,
+        "prompt_budget_estimated_tokens": 950000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "xhigh"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1000000,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 262144,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
       "route_ref": "dashscope@token-plan/MiniMax-M2.5",
       "facts": {
         "context_window_tokens": 196608,
@@ -11333,6 +11413,177 @@
       "review": null
     },
     {
+      "route_ref": "dashscope@token-plan/qwen4-max",
+      "facts": {
+        "context_window_tokens": 1000000,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": 262144,
+        "prompt_budget_estimated_tokens": 950000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "xhigh"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1000000,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 262144,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "xhigh"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
+      "route_ref": "dashscope@token-plan/qwen4-max-preview",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": 393216,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "medium",
+          "xhigh"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 393216,
+          "reasoning_effort_options": [
+            "low",
+            "medium",
+            "xhigh"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "known",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "dashscope@token-plan/qwen4-max-preview: Messages output defaults and Token Plan cache qualification remain unconfirmed; preview context has no exact integer. Formal and preview effort menus and endpoint eligibility are independent. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
+    },
+    {
       "route_ref": "deepseek@default/deepseek-flash",
       "facts": {
         "context_window_tokens": 1000000,
@@ -12364,6 +12615,88 @@
       "review": null
     },
     {
+      "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3p1-flash",
+      "facts": {
+        "context_window_tokens": 1048576,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 996147,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1048576,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "derived"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "fireworks@default/accounts/fireworks/models/minimax-m3p1-flash: Serverless context is endpoint-specific; output default/ceiling and custom effort menu remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
+    },
+    {
       "route_ref": "fireworks@default/accounts/fireworks/models/qwen3p6-plus",
       "facts": {
         "context_window_tokens": null,
@@ -13260,77 +13593,6 @@
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
             "reasoning_effort_options": "model_builtin"
-          }
-        }
-      },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
-    },
-    {
-      "route_ref": "gemini@default/gemini-3.5-live-translate-preview",
-      "facts": {
-        "context_window_tokens": 16384,
-        "default_max_output_tokens": 32768,
-        "max_output_tokens_upper_limit": 32768,
-        "prompt_budget_estimated_tokens": 15564,
-        "runtime_max_output_tokens": 32768,
-        "capabilities": {
-          "agent_turn": true,
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "agent_turn": true,
-        "decision_capable": false,
-        "reasoning_effort_options": []
-      },
-      "inputs": {
-        "model": {
-          "auto_compact_token_limit": 15564,
-          "capabilities": {
-            "agent_turn": true,
-            "image_generation": false,
-            "image_input": false,
-            "interactive_exec": false,
-            "parallel_tool_calls": false,
-            "supports_reasoning": false
-          },
-          "context_window_tokens": 16384,
-          "default_max_output_tokens": 32768,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 32768,
-          "tool_output_truncation_estimated_tokens": 2500
-        },
-        "route": {
-          "capabilities": {},
-          "effective_context_window_percent": null,
-          "reasoning_effort_options": null
-        },
-        "evidence": {
-          "fields": {
-            "display_name": "model_builtin",
-            "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
-            "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
-            "compaction_trigger_estimated_tokens": "derived",
-            "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
-            "verbosity": "derived",
-            "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
-            "agent_turn": "model_builtin",
-            "parallel_tool_calls": "model_builtin",
-            "image_input": "model_builtin",
-            "image_generation": "model_builtin",
-            "supports_reasoning": "model_builtin",
-            "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
           }
         }
       },
@@ -16949,8 +17211,8 @@
       "route_ref": "nvidia@default/minimaxai/minimax-m2.7",
       "facts": {
         "context_window_tokens": 204800,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 8192,
+        "max_output_tokens_upper_limit": 16384,
         "prompt_budget_estimated_tokens": 194560,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
@@ -16977,10 +17239,10 @@
             "supports_reasoning": true
           },
           "context_window_tokens": 204800,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 8192,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 16384,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -16998,10 +17260,10 @@
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -17013,25 +17275,15 @@
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "nvidia@default/minimaxai/minimax-m2.7: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
-        ]
-      }
+      "output_status": "known",
+      "review": null
     },
     {
       "route_ref": "nvidia@default/minimaxai/minimax-m3",
       "facts": {
         "context_window_tokens": 1000000,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 8192,
+        "max_output_tokens_upper_limit": 16384,
         "prompt_budget_estimated_tokens": 950000,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
@@ -17058,10 +17310,10 @@
             "supports_reasoning": true
           },
           "context_window_tokens": 1000000,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 8192,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 16384,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -17079,10 +17331,10 @@
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -17094,16 +17346,88 @@
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
+      "output_status": "known",
+      "review": null
+    },
+    {
+      "route_ref": "nvidia@default/minimaxai/minimax-m3.1-flash",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": 16384,
+        "max_output_tokens_upper_limit": 65536,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 16384,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": 16384,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 65536,
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "derived"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "known",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "nvidia@default/minimaxai/minimax-m3: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
+        "reviewed_at": "2026-11-17",
+        "reason": "nvidia@default/minimaxai/minimax-m3.1-flash: Output default/ceiling comes from the exact hosted schema; total context remains unconfirmed. Manufacturer limits do not qualify this endpoint. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
         "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -17111,10 +17435,10 @@
       "route_ref": "nvidia@default/moonshotai/kimi-k2.6",
       "facts": {
         "context_window_tokens": 262144,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 16384,
+        "max_output_tokens_upper_limit": 65536,
         "prompt_budget_estimated_tokens": 249036,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 16384,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -17139,10 +17463,10 @@
             "supports_reasoning": true
           },
           "context_window_tokens": 262144,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 16384,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 65536,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -17160,10 +17484,10 @@
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -17175,28 +17499,17 @@
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "nvidia@default/moonshotai/kimi-k2.6: Missing capacity is retained as unknown. Exact upstream candidate(s) nvidia/moonshotai/kimi-k2.6 require endpoint-specific review; no automatic backfill. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json",
-          "models.dev/snapshot.json"
-        ]
-      }
+      "output_status": "known",
+      "review": null
     },
     {
       "route_ref": "nvidia@default/nvidia/nemotron-3-super-120b-a12b",
       "facts": {
         "context_window_tokens": 1000000,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 16384,
+        "max_output_tokens_upper_limit": 32768,
         "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 16384,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -17207,7 +17520,11 @@
         },
         "agent_turn": true,
         "decision_capable": false,
-        "reasoning_effort_options": []
+        "reasoning_effort_options": [
+          "none",
+          "low",
+          "high"
+        ]
       },
       "inputs": {
         "model": {
@@ -17221,10 +17538,15 @@
             "supports_reasoning": true
           },
           "context_window_tokens": 1000000,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 16384,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 32768,
+          "reasoning_effort_options": [
+            "none",
+            "low",
+            "high"
+          ],
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -17242,42 +17564,32 @@
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
             "image_generation": "model_builtin",
             "supports_reasoning": "model_builtin",
             "interactive_exec": "model_builtin",
-            "reasoning_effort_options": "derived"
+            "reasoning_effort_options": "model_builtin"
           }
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "nvidia@default/nvidia/nemotron-3-super-120b-a12b: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
-        ]
-      }
+      "output_status": "known",
+      "review": null
     },
     {
       "route_ref": "nvidia@default/z-ai/glm-5.2",
       "facts": {
         "context_window_tokens": 1000000,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
+        "default_max_output_tokens": 16384,
+        "max_output_tokens_upper_limit": 32768,
         "prompt_budget_estimated_tokens": 950000,
-        "runtime_max_output_tokens": 8192,
+        "runtime_max_output_tokens": 16384,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -17302,10 +17614,10 @@
             "supports_reasoning": true
           },
           "context_window_tokens": 1000000,
-          "default_max_output_tokens": null,
+          "default_max_output_tokens": 16384,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": null,
+          "max_output_tokens_upper_limit": 32768,
           "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
@@ -17323,10 +17635,10 @@
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "runtime_default",
+            "runtime_max_output_tokens": "model_builtin",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "derived",
+            "max_output_tokens_upper_limit": "model_builtin",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -17338,18 +17650,8 @@
         }
       },
       "context_status": "known",
-      "output_status": "unknown",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-25",
-        "reason": "nvidia@default/z-ai/glm-5.2: Missing capacity is retained as unknown. No exact endpoint upstream capacity evidence is associated; generic API, other region, plan, or protocol limits are not borrowed. Existing known fields and local output policy are preserved, not newly vendor-verified.",
-        "recheck": "At the next exact endpoint model/catalog/documentation change or before increasing its local execution budget; verify support and each missing capacity independently.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json"
-        ]
-      }
+      "output_status": "known",
+      "review": null
     },
     {
       "route_ref": "openai-codex@default/gpt-5.6",
@@ -18137,14 +18439,14 @@
     {
       "route_ref": "openai-codex@default/gpt-daybreak-blue-latest",
       "facts": {
-        "context_window_tokens": 1050000,
-        "default_max_output_tokens": 128000,
-        "max_output_tokens_upper_limit": 128000,
-        "prompt_budget_estimated_tokens": 997500,
-        "runtime_max_output_tokens": 128000,
+        "context_window_tokens": 272000,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 258400,
+        "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
-          "parallel_tool_calls": false,
+          "parallel_tool_calls": true,
           "image_input": true,
           "image_generation": false,
           "supports_reasoning": true,
@@ -18153,7 +18455,6 @@
         "agent_turn": true,
         "decision_capable": false,
         "reasoning_effort_options": [
-          "none",
           "low",
           "medium",
           "high",
@@ -18163,22 +18464,21 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 997500,
+          "auto_compact_token_limit": null,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
             "image_input": true,
             "interactive_exec": false,
-            "parallel_tool_calls": false,
+            "parallel_tool_calls": true,
             "supports_reasoning": true
           },
-          "context_window_tokens": 1050000,
-          "default_max_output_tokens": 128000,
+          "context_window_tokens": 272000,
+          "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
+          "max_output_tokens_upper_limit": null,
           "reasoning_effort_options": [
-            "none",
             "low",
             "medium",
             "high",
@@ -18198,14 +18498,14 @@
             "description": "model_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
+            "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -18217,20 +18517,31 @@
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "openai-codex@default/gpt-daybreak-blue-latest: Default contexts come from the Codex bundle, not ordinary API or experimental maximums. Exact output default/ceiling and auto-compaction threshold remain unknown. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
     },
     {
       "route_ref": "openai-codex@default/gpt-daybreak-red-latest",
       "facts": {
-        "context_window_tokens": 400000,
-        "default_max_output_tokens": 128000,
-        "max_output_tokens_upper_limit": 128000,
-        "prompt_budget_estimated_tokens": 380000,
-        "runtime_max_output_tokens": 128000,
+        "context_window_tokens": 372000,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 353400,
+        "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
-          "parallel_tool_calls": false,
+          "parallel_tool_calls": true,
           "image_input": true,
           "image_generation": false,
           "supports_reasoning": true,
@@ -18239,7 +18550,6 @@
         "agent_turn": true,
         "decision_capable": false,
         "reasoning_effort_options": [
-          "none",
           "low",
           "medium",
           "high",
@@ -18249,22 +18559,21 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 380000,
+          "auto_compact_token_limit": null,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
             "image_input": true,
             "interactive_exec": false,
-            "parallel_tool_calls": false,
+            "parallel_tool_calls": true,
             "supports_reasoning": true
           },
-          "context_window_tokens": 400000,
-          "default_max_output_tokens": 128000,
+          "context_window_tokens": 372000,
+          "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 128000,
+          "max_output_tokens_upper_limit": null,
           "reasoning_effort_options": [
-            "none",
             "low",
             "medium",
             "high",
@@ -18284,14 +18593,14 @@
             "description": "model_builtin",
             "context_window_tokens": "model_builtin",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
+            "auto_compact_token_limit": "derived",
             "prompt_budget_estimated_tokens": "derived",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -18303,8 +18612,19 @@
         }
       },
       "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "openai-codex@default/gpt-daybreak-red-latest: Default contexts come from the Codex bundle, not ordinary API or experimental maximums. Exact output default/ceiling and auto-compaction threshold remain unknown. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
     },
     {
       "route_ref": "openai@default/gpt-5.3",
@@ -21138,6 +21458,84 @@
       "review": null
     },
     {
+      "route_ref": "opencode-go@default/hy4-flash-free",
+      "facts": {
+        "context_window_tokens": 1048576,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": 65536,
+        "prompt_budget_estimated_tokens": 996147,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "none",
+          "high"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1048576,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 65536,
+          "reasoning_effort_options": [
+            "none",
+            "high"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "model_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "derived",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "known",
+      "output_status": "known",
+      "review": null
+    },
+    {
       "route_ref": "opencode-go@default/hy4-preview",
       "facts": {
         "context_window_tokens": 1024000,
@@ -21444,7 +21842,7 @@
       "facts": {
         "context_window_tokens": 1048576,
         "default_max_output_tokens": 131072,
-        "max_output_tokens_upper_limit": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "prompt_budget_estimated_tokens": 996147,
         "runtime_max_output_tokens": 131072,
         "capabilities": {
@@ -21476,11 +21874,11 @@
           "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "max"
-          ]
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
           "capabilities": {},
@@ -21520,7 +21918,7 @@
       "facts": {
         "context_window_tokens": 1048576,
         "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": 131072,
+        "max_output_tokens_upper_limit": 1048576,
         "prompt_budget_estimated_tokens": 996147,
         "runtime_max_output_tokens": 8192,
         "capabilities": {
@@ -21554,13 +21952,13 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "low",
             "high",
             "max"
-          ]
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
           "capabilities": {},
@@ -21593,18 +21991,7 @@
       },
       "context_status": "known",
       "output_status": "known",
-      "review": {
-        "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-31",
-        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
-        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
-        "evidence": [
-          "models.dev/metadata-evidence.md",
-          "models.dev/endpoint-review.md",
-          "crates/holon-model-catalog/data/endpoint-mappings.json",
-          "https://opencode.ai/inference/go/v1/models"
-        ]
-      }
+      "review": null
     },
     {
       "route_ref": "opencode-go@default/longcat-2.0",
@@ -24671,6 +25058,127 @@
       }
     },
     {
+      "route_ref": "opencode-go@messages/hy4-flash-free",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": false,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1048576,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 65536,
+          "reasoning_effort_options": [
+            "none",
+            "high"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": false,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "agent_turn",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "opencode-go@messages/hy4-flash-free: Native Chat capacity is not transferred to translated Messages/Responses routes. Translated capacities/capabilities and the new native Flash output default remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
+    },
+    {
       "route_ref": "opencode-go@messages/hy4-preview",
       "facts": {
         "context_window_tokens": null,
@@ -25018,11 +25526,11 @@
           "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "max"
-          ]
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25084,13 +25592,14 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-31",
-        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
-        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "reviewed_at": "2026-11-17",
+        "reason": "opencode-go@messages/kimi-k3: Native Chat capacity is not transferred to translated Messages/Responses routes. Translated capacities/capabilities and the new native Flash output default remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
         "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md",
-          "https://opencode.ai/inference/go/v1/models"
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -25129,13 +25638,13 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "low",
             "high",
             "max"
-          ]
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -25197,13 +25706,14 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-31",
-        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
-        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "reviewed_at": "2026-11-17",
+        "reason": "opencode-go@messages/kimi-k3.1-pro: Native Chat capacity is not transferred to translated Messages/Responses routes. Translated capacities/capabilities and the new native Flash output default remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
         "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md",
-          "https://opencode.ai/inference/go/v1/models"
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -28330,6 +28840,127 @@
       }
     },
     {
+      "route_ref": "opencode-go@responses/hy4-flash-free",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": false,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": 1048576,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 65536,
+          "reasoning_effort_options": [
+            "none",
+            "high"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": false,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": false
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": null,
+          "max_output_tokens_upper_limit": null,
+          "reasoning_effort_options": []
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "route_builtin",
+            "context_window_tokens": "route_builtin",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "route_builtin",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "route_builtin",
+            "verbosity": "route_builtin",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "route_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          },
+          "constraints": [
+            {
+              "field": "agent_turn",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "image_input",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            },
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "opencode-go@responses/hy4-flash-free: Native Chat capacity is not transferred to translated Messages/Responses routes. Translated capacities/capabilities and the new native Flash output default remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
+    },
+    {
       "route_ref": "opencode-go@responses/hy4-preview",
       "facts": {
         "context_window_tokens": null,
@@ -28677,11 +29308,11 @@
           "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "max"
-          ]
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -28743,13 +29374,14 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-31",
-        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
-        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "reviewed_at": "2026-11-17",
+        "reason": "opencode-go@responses/kimi-k3: Native Chat capacity is not transferred to translated Messages/Responses routes. Translated capacities/capabilities and the new native Flash output default remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
         "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md",
-          "https://opencode.ai/inference/go/v1/models"
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -28788,13 +29420,13 @@
           "default_max_output_tokens": null,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 131072,
-          "tool_output_truncation_estimated_tokens": 2500,
+          "max_output_tokens_upper_limit": 1048576,
           "reasoning_effort_options": [
             "low",
             "high",
             "max"
-          ]
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
         },
         "route": {
           "auto_compact_token_limit": null,
@@ -28856,13 +29488,14 @@
       "output_status": "unknown",
       "review": {
         "owner": "holon-model-provider",
-        "reviewed_at": "2026-10-31",
-        "reason": "Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved.",
-        "recheck": "Recheck exact native API key, registered base URL, capacities, modalities and effort options when the Go listing changes.",
+        "reviewed_at": "2026-11-17",
+        "reason": "opencode-go@responses/kimi-k3.1-pro: Native Chat capacity is not transferred to translated Messages/Responses routes. Translated capacities/capabilities and the new native Flash output default remain unconfirmed. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
         "evidence": [
-          "models.dev/endpoint-review.md",
-          "models.dev/metadata-evidence.md",
-          "https://opencode.ai/inference/go/v1/models"
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -30977,6 +31610,97 @@
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
+        ]
+      }
+    },
+    {
+      "route_ref": "qianfan@default/ernie-light-dt-1.0",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": 65536,
+        "max_output_tokens_upper_limit": 131072,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 65536,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": true,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "low",
+          "high",
+          "max"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": false,
+            "interactive_exec": false,
+            "parallel_tool_calls": true,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": 65536,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": 131072,
+          "reasoning_effort_options": [
+            "low",
+            "high",
+            "max"
+          ],
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "model_builtin",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "model_builtin",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "model_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "known",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "qianfan@default/ernie-light-dt-1.0: Exact output default/ceiling and low/high/max efforts are established; the total context has no exact integer. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -35208,6 +35932,94 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@default/hy4-flash",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": true,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {},
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": [
+            "high",
+            "no_think"
+          ]
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "route_builtin"
+          }
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "tencent-tokenhub@default/hy4-flash: No exact context or output default/ceiling is established. Chat high/no_think is not advertised on Messages/Responses. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@default/hy4-preview",
       "facts": {
         "context_window_tokens": null,
@@ -38274,6 +39086,99 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@messages/hy4-flash",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {
+            "supports_reasoning": false
+          },
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "derived"
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "tencent-tokenhub@messages/hy4-flash: No exact context or output default/ceiling is established. Chat high/no_think is not advertised on Messages/Responses. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@messages/hy4-preview",
       "facts": {
         "context_window_tokens": null,
@@ -41052,6 +41957,99 @@
         "evidence": [
           "models.dev/endpoint-review.md",
           "models.dev/metadata-evidence.md"
+        ]
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/hy4-flash",
+      "facts": {
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
+        "capabilities": {
+          "agent_turn": true,
+          "parallel_tool_calls": false,
+          "image_input": true,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "agent_turn": true,
+        "decision_capable": false,
+        "reasoning_effort_options": []
+      },
+      "inputs": {
+        "model": {
+          "auto_compact_token_limit": null,
+          "capabilities": {
+            "agent_turn": true,
+            "image_generation": false,
+            "image_input": true,
+            "interactive_exec": false,
+            "parallel_tool_calls": false,
+            "supports_reasoning": true
+          },
+          "context_window_tokens": null,
+          "default_max_output_tokens": null,
+          "default_verbosity": null,
+          "effective_context_window_percent": 95,
+          "max_output_tokens_upper_limit": null,
+          "tool_output_truncation_estimated_tokens": 2500
+        },
+        "route": {
+          "capabilities": {
+            "supports_reasoning": false
+          },
+          "effective_context_window_percent": null,
+          "reasoning_effort_options": null
+        },
+        "evidence": {
+          "fields": {
+            "display_name": "model_builtin",
+            "description": "model_builtin",
+            "context_window_tokens": "derived",
+            "effective_context_window_percent": "model_builtin",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
+            "compaction_trigger_estimated_tokens": "derived",
+            "compaction_keep_recent_estimated_tokens": "derived",
+            "runtime_max_output_tokens": "runtime_default",
+            "verbosity": "derived",
+            "tool_output_truncation_estimated_tokens": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
+            "agent_turn": "model_builtin",
+            "parallel_tool_calls": "model_builtin",
+            "image_input": "model_builtin",
+            "image_generation": "model_builtin",
+            "supports_reasoning": "model_builtin",
+            "interactive_exec": "model_builtin",
+            "reasoning_effort_options": "derived"
+          },
+          "constraints": [
+            {
+              "field": "supports_reasoning",
+              "kind": "disabled",
+              "source": "endpoint_policy",
+              "requested": "true",
+              "effective": "false"
+            }
+          ]
+        }
+      },
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "tencent-tokenhub@responses/hy4-flash: No exact context or output default/ceiling is established. Chat high/no_think is not advertised on Messages/Responses. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
         ]
       }
     },
@@ -46140,10 +47138,10 @@
     {
       "route_ref": "volcengine@default/doubao-seed-2-1-pro-260628",
       "facts": {
-        "context_window_tokens": 256000,
+        "context_window_tokens": null,
         "default_max_output_tokens": 256000,
         "max_output_tokens_upper_limit": 256000,
-        "prompt_budget_estimated_tokens": 243200,
+        "prompt_budget_estimated_tokens": 128000,
         "runtime_max_output_tokens": 256000,
         "capabilities": {
           "agent_turn": true,
@@ -46167,7 +47165,7 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 243200,
+          "auto_compact_token_limit": null,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -46176,7 +47174,7 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 256000,
+          "context_window_tokens": null,
           "default_max_output_tokens": 256000,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
@@ -46201,10 +47199,10 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
             "runtime_max_output_tokens": "model_builtin",
@@ -46221,9 +47219,20 @@
           }
         }
       },
-      "context_status": "known",
+      "context_status": "unknown",
       "output_status": "known",
-      "review": null
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "volcengine@default/doubao-seed-2-1-pro-260628: The 260628 dated row gives 256K, not an exact integer; 1024K belongs to 260915 or the dotted Plan alias. Context/derived compaction remain unknown; output fields are preserved, not newly certified. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@default/doubao-seed-2-1-pro-260915",
@@ -47818,10 +48827,10 @@
     {
       "route_ref": "volcengine@plan/doubao-seed-2-1-pro-260628",
       "facts": {
-        "context_window_tokens": 256000,
+        "context_window_tokens": null,
         "default_max_output_tokens": 256000,
         "max_output_tokens_upper_limit": 256000,
-        "prompt_budget_estimated_tokens": 243200,
+        "prompt_budget_estimated_tokens": 128000,
         "runtime_max_output_tokens": 256000,
         "capabilities": {
           "agent_turn": true,
@@ -47845,7 +48854,7 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 243200,
+          "auto_compact_token_limit": null,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -47854,7 +48863,7 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 256000,
+          "context_window_tokens": null,
           "default_max_output_tokens": 256000,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
@@ -47879,10 +48888,10 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
             "runtime_max_output_tokens": "model_builtin",
@@ -47899,9 +48908,20 @@
           }
         }
       },
-      "context_status": "known",
+      "context_status": "unknown",
       "output_status": "known",
-      "review": null
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "volcengine@plan/doubao-seed-2-1-pro-260628: The 260628 dated row gives 256K, not an exact integer; 1024K belongs to 260915 or the dotted Plan alias. Context/derived compaction remain unknown; output fields are preserved, not newly certified. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@plan/doubao-seed-2-1-turbo-260628",
@@ -49942,10 +50962,10 @@
     {
       "route_ref": "xiaomi@default/mimo-v2.6-flash",
       "facts": {
-        "context_window_tokens": 1048576,
+        "context_window_tokens": null,
         "default_max_output_tokens": 131072,
         "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 996147,
+        "prompt_budget_estimated_tokens": 128000,
         "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
@@ -49966,7 +50986,7 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 996147,
+          "auto_compact_token_limit": null,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -49975,7 +50995,7 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 1048576,
+          "context_window_tokens": null,
           "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
@@ -49991,10 +51011,10 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
             "runtime_max_output_tokens": "model_builtin",
@@ -50011,9 +51031,20 @@
           }
         }
       },
-      "context_status": "known",
+      "context_status": "unknown",
       "output_status": "known",
-      "review": null
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "xiaomi@default/mimo-v2.6-flash: Exact Responses output default/ceiling is established; Flash context has no exact integer. Full input history is required and remote compaction is disabled. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
     },
     {
       "route_ref": "xiaomi@default/mimo-v2.6-pro",
@@ -50241,10 +51272,10 @@
     {
       "route_ref": "xiaomi@token-plan/mimo-v2.6-flash",
       "facts": {
-        "context_window_tokens": 1048576,
+        "context_window_tokens": null,
         "default_max_output_tokens": 131072,
         "max_output_tokens_upper_limit": 131072,
-        "prompt_budget_estimated_tokens": 996147,
+        "prompt_budget_estimated_tokens": 128000,
         "runtime_max_output_tokens": 131072,
         "capabilities": {
           "agent_turn": true,
@@ -50265,7 +51296,7 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 996147,
+          "auto_compact_token_limit": null,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -50274,7 +51305,7 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 1048576,
+          "context_window_tokens": null,
           "default_max_output_tokens": 131072,
           "default_verbosity": null,
           "effective_context_window_percent": 95,
@@ -50290,10 +51321,10 @@
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
             "runtime_max_output_tokens": "model_builtin",
@@ -50310,9 +51341,20 @@
           }
         }
       },
-      "context_status": "known",
+      "context_status": "unknown",
       "output_status": "known",
-      "review": null
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-17",
+        "reason": "xiaomi@token-plan/mimo-v2.6-flash: Exact Responses output default/ceiling is established; Flash context has no exact integer. Full input history is required and remote compaction is disabled. Public evidence is not an account entitlement or paid inference check.",
+        "recheck": "At the next exact endpoint contract/model change or before increasing local budgets; verify each unknown field and current account eligibility independently.",
+        "evidence": [
+          "models.dev/metadata-evidence.md#incremental-review-2026-11-17",
+          "models.dev/endpoint-review.md#2026-11-17-incremental-review",
+          "crates/holon-model-catalog/data/endpoint-mappings.json",
+          "models.dev/snapshot.json"
+        ]
+      }
     },
     {
       "route_ref": "xiaomi@token-plan/mimo-v2.6-pro",

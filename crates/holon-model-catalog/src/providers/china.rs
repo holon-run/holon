@@ -134,6 +134,14 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         None,
         None,
     ));
+    definitions.push(route_definition(
+        "xiaomi-token-plan",
+        "xiaomi",
+        "token-plan",
+        "mimo-v2.6-flash",
+        None,
+        None,
+    ));
     definitions.extend(
         [
             ("qwen3.7-max", None, None),
@@ -303,6 +311,22 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
         .into_iter()
         .map(|model| volcengine_route_definition("volcengine-agent", "plan", model, None)),
     );
+    // Append admissions without changing the existing preferred plan model.
+    for model in ["qwen4-max", "qwen4-max-preview"] {
+        let mut definition = route_definition(
+            "dashscope-token-plan",
+            "dashscope",
+            "token-plan",
+            model,
+            None,
+            None,
+        );
+        // Model support does not establish Token Plan cache-breakpoint support.
+        definition.policy.cache_capabilities = Some(ModelRouteCacheCapabilities {
+            cache_control: Some(false),
+        });
+        definitions.push(definition);
+    }
     definitions
 }
 
@@ -533,6 +557,17 @@ pub(super) fn early_entries() -> Vec<BuiltInModelMetadata> {
                 reviewed_qianfan_model(id, id, ceiling, reasoning, image)
             }),
     );
+    entries.push(BuiltInModelMetadata {
+        description: "Qianfan ERNIE Light DT 1.0 Chat; exact output default and ceiling are documented, while the abbreviated context remains unconfirmed.".into(),
+        default_max_output_tokens: Some(65_536),
+        capabilities: ModelCapabilityFlags {
+            parallel_tool_calls: true,
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
+        reasoning_effort_options: ["low", "high", "max"].into_iter().map(str::to_owned).collect(),
+        ..reviewed_qianfan_model("ernie-light-dt-1.0", "ERNIE Light DT 1.0", 131_072, true, false)
+    });
     entries
 }
 
@@ -646,7 +681,7 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
         BuiltInModelMetadata {
             model_ref: ModelRef::new(provider_id("xiaomi"), "mimo-v2.6-pro"),
             display_name: "MiMo-V2.6-Pro".into(),
-            description: "Xiaomi MiMo V2.6 Pro; token defaults follow official client configuration examples, not independently verified service hard limits.".into(),
+            description: "Xiaomi MiMo V2.6 Pro; context follows advisory client examples, while output default and ceiling follow the Responses contract.".into(),
             context_window_tokens: Some(1_048_576),
             effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
             auto_compact_token_limit: Some(996_147),
@@ -663,6 +698,26 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             },
             reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::BuiltInCatalog,
+            endpoint: Some(ProviderEndpointId::default_endpoint()),
+        },
+        BuiltInModelMetadata {
+            model_ref: ModelRef::new(provider_id("xiaomi"), "mimo-v2.6-flash"),
+            display_name: "MiMo-V2.6-Flash".into(),
+            description: "Xiaomi MiMo V2.6 Flash Responses; exact output default and ceiling are documented, while context and custom reasoning efforts remain unconfirmed.".into(),
+            context_window_tokens: None,
+            effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
+            auto_compact_token_limit: None,
+            default_max_output_tokens: Some(131_072),
+            max_output_tokens_upper_limit: Some(131_072),
+            default_verbosity: None,
+            tool_output_truncation_estimated_tokens: Some(DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS),
+            capabilities: ModelCapabilityFlags {
+                image_input: true,
+                supports_reasoning: true,
+                ..ModelCapabilityFlags::default()
+            },
+            reasoning_effort_options: Vec::new(),
+            source: ModelMetadataSource::ConservativeBuiltin,
             endpoint: Some(ProviderEndpointId::default_endpoint()),
         },
         BuiltInModelMetadata {
@@ -1437,6 +1492,34 @@ pub(super) fn late_entries() -> Vec<BuiltInModelMetadata> {
             endpoint: Some(ProviderEndpointId::default_endpoint()),
         }),
     );
+    for (model, endpoint, context, upper, efforts) in [
+        (
+            "qwen4-max",
+            "default",
+            Some(1_000_000),
+            262_144,
+            &["low", "high", "xhigh"][..],
+        ),
+        (
+            "qwen4-max-preview",
+            "token-plan",
+            None,
+            393_216,
+            &["low", "medium", "xhigh"][..],
+        ),
+    ] {
+        let mut entry =
+            reviewed_subscription_model("dashscope", endpoint, model, model, true, true);
+        entry.description = format!(
+            "DashScope {model} Messages model; max_tokens is required, \
+             not an omitted protocol default."
+        );
+        entry.context_window_tokens = context;
+        entry.max_output_tokens_upper_limit = Some(upper);
+        entry.reasoning_effort_options =
+            efforts.iter().map(|effort| (*effort).to_owned()).collect();
+        entries.push(entry);
+    }
     entries
 }
 
@@ -1845,6 +1928,58 @@ fn reviewed_kimi_k31_subscription_metadata_does_not_inherit_k3_tier_or_api_limit
 }
 
 #[test]
+fn qianfan_light_and_xiaomi_flash_use_only_exact_endpoint_contracts() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        let light = ModelRouteRef::parse("qianfan@default/ernie-light-dt-1.0").unwrap();
+        assert!(catalog.get_route(&light).is_some());
+        let metadata = catalog.get(&light.model_ref()).unwrap();
+        assert_eq!(metadata.context_window_tokens, None);
+        assert_eq!(metadata.auto_compact_token_limit, None);
+        assert_eq!(metadata.default_max_output_tokens, Some(65_536));
+        assert_eq!(metadata.max_output_tokens_upper_limit, Some(131_072));
+        assert!(metadata.capabilities.parallel_tool_calls);
+        assert!(metadata.capabilities.supports_reasoning);
+        assert!(!metadata.capabilities.image_input);
+        assert_eq!(metadata.reasoning_effort_options, ["low", "high", "max"]);
+        for endpoint in ["messages", "responses", "coding-plan"] {
+            assert!(catalog
+                .get_route(
+                    &ModelRouteRef::parse(&format!("qianfan@{endpoint}/ernie-light-dt-1.0"))
+                        .unwrap()
+                )
+                .is_none());
+        }
+        for endpoint in ["default", "token-plan"] {
+            let flash =
+                ModelRouteRef::parse(&format!("xiaomi@{endpoint}/mimo-v2.6-flash")).unwrap();
+            assert!(catalog.get_route(&flash).is_some());
+            let metadata = catalog.get(&flash.model_ref()).unwrap();
+            assert_eq!(metadata.context_window_tokens, None);
+            assert_eq!(metadata.auto_compact_token_limit, None);
+            assert_eq!(metadata.default_max_output_tokens, Some(131_072));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(131_072));
+            assert!(metadata.capabilities.image_input);
+            assert!(metadata.capabilities.supports_reasoning);
+            assert!(!metadata.capabilities.parallel_tool_calls);
+            assert!(metadata.reasoning_effort_options.is_empty());
+        }
+        for endpoint in ["coding-plan", "messages"] {
+            assert!(catalog
+                .get_route(
+                    &ModelRouteRef::parse(&format!("xiaomi@{endpoint}/mimo-v2.6-flash")).unwrap()
+                )
+                .is_none());
+        }
+        assert!(catalog
+            .get_route(&ModelRouteRef::parse("opencode-go@messages/qwen4-max").unwrap())
+            .is_none());
+    }
+}
+
+#[test]
 fn retired_qianfan_ids_do_not_leave_legacy_routes_or_defaults() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
     assert_eq!(
@@ -1960,6 +2095,86 @@ fn qianfan_ernie_abbreviated_context_does_not_keep_conflicting_exact_limits() {
             model_ref.model,
         );
         assert!(catalog.get_route(&route).is_some(), "{id}");
+    }
+}
+
+#[test]
+fn dashscope_qwen4_routes_keep_preview_and_messages_limits_separate() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for (model, endpoint, context, upper, efforts) in [
+            (
+                "qwen4-max",
+                "default",
+                Some(1_000_000),
+                262_144,
+                &["low", "high", "xhigh"][..],
+            ),
+            (
+                "qwen4-max",
+                "token-plan",
+                Some(1_000_000),
+                262_144,
+                &["low", "high", "xhigh"][..],
+            ),
+            (
+                "qwen4-max-preview",
+                "token-plan",
+                None,
+                393_216,
+                &["low", "medium", "xhigh"][..],
+            ),
+        ] {
+            let route = ModelRouteRef::parse(&format!("dashscope@{endpoint}/{model}")).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{}", route.as_string());
+            if endpoint == "token-plan" {
+                assert_eq!(
+                    catalog
+                        .get_route(&route)
+                        .unwrap()
+                        .cache_capabilities
+                        .as_ref()
+                        .unwrap()
+                        .cache_control,
+                    Some(false)
+                );
+            }
+            let policy = catalog.resolve_route_policy(
+                &route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &ContextConfig::default(),
+                8_192,
+            );
+            assert_eq!(policy.context_window_tokens, context);
+            assert_eq!(policy.max_output_tokens_upper_limit, Some(upper));
+            assert_eq!(policy.reasoning_effort_options, efforts);
+            assert!(policy.capabilities.agent_turn);
+            assert!(policy.capabilities.image_input);
+            assert!(policy.capabilities.supports_reasoning);
+            assert_eq!(
+                catalog
+                    .get(&route.model_ref())
+                    .unwrap()
+                    .default_max_output_tokens,
+                None
+            );
+            for effort in efforts {
+                policy.validate_reasoning_effort(effort).unwrap();
+            }
+            assert!(policy.validate_reasoning_effort("none").is_err());
+        }
+        for endpoint in ["coding-plan", "coding-plan-intl"] {
+            for model in ["qwen4-max", "qwen4-max-preview"] {
+                let route = ModelRouteRef::parse(&format!("dashscope@{endpoint}/{model}")).unwrap();
+                assert!(catalog.get_route(&route).is_none(), "{}", route.as_string());
+            }
+        }
+        let preview = ModelRouteRef::parse("dashscope@default/qwen4-max-preview").unwrap();
+        assert!(catalog.get_route(&preview).is_none());
     }
 }
 

@@ -1,5 +1,70 @@
 use super::super::*;
 
+fn codex_daybreak_model(model: &str, name: &str, context: usize) -> BuiltInModelMetadata {
+    BuiltInModelMetadata {
+        model_ref: ModelRef::new(ProviderId::openai_codex(), model),
+        display_name: name.into(),
+        description: "Codex default context reviewed independently of the API and experimental maximum context.".into(),
+        context_window_tokens: Some(context),
+        effective_context_window_percent: 95,
+        auto_compact_token_limit: None,
+        default_max_output_tokens: None,
+        max_output_tokens_upper_limit: None,
+        default_verbosity: None,
+        tool_output_truncation_estimated_tokens: Some(2_500),
+        capabilities: ModelCapabilityFlags {
+            parallel_tool_calls: true,
+            image_input: true,
+            supports_reasoning: true,
+            ..ModelCapabilityFlags::default()
+        },
+        // Keep Codex's delegation-enabled ultra mode outside these reviewed levels.
+        reasoning_effort_options: ["low", "medium", "high", "xhigh", "max"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+        source: ModelMetadataSource::BuiltInCatalog,
+        endpoint: None,
+    }
+}
+
+#[test]
+fn codex_daybreak_defaults_are_not_general_api_or_experimental_limits() {
+    for catalog in [
+        legacy_builtin_catalog().unwrap(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for (model, context) in [
+            ("gpt-daybreak-blue-latest", 272_000),
+            ("gpt-daybreak-red-latest", 372_000),
+        ] {
+            let model_ref = ModelRef::new(ProviderId::openai_codex(), model);
+            let metadata = catalog.get(&model_ref).unwrap();
+            assert_eq!(metadata.context_window_tokens, Some(context));
+            assert_eq!(metadata.auto_compact_token_limit, None);
+            assert_eq!(metadata.default_max_output_tokens, None);
+            assert_eq!(metadata.max_output_tokens_upper_limit, None);
+            assert!(metadata.capabilities.parallel_tool_calls);
+            assert!(metadata.capabilities.image_input);
+            assert_eq!(
+                metadata.reasoning_effort_options,
+                ["low", "medium", "high", "xhigh", "max"]
+            );
+        }
+    }
+    let catalog = BuiltInModelCatalog::new();
+    for (model, context) in [
+        ("gpt-daybreak-blue-latest", 1_050_000),
+        ("gpt-daybreak-red-latest", 400_000),
+    ] {
+        let api = catalog
+            .get(&ModelRef::new(ProviderId::openai(), model))
+            .unwrap();
+        assert_eq!(api.context_window_tokens, Some(context));
+        assert_eq!(api.max_output_tokens_upper_limit, Some(128_000));
+    }
+}
+
 pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
     vec![
         BuiltInModelMetadata {
@@ -263,6 +328,8 @@ pub(super) fn entries() -> Vec<BuiltInModelMetadata> {
             source: ModelMetadataSource::BuiltInCatalog,
             endpoint: None,
         },
+        codex_daybreak_model("gpt-daybreak-blue-latest", "Daybreak Blue (Codex)", 272_000),
+        codex_daybreak_model("gpt-daybreak-red-latest", "Daybreak Red (Codex)", 372_000),
         BuiltInModelMetadata {
             model_ref: ModelRef::new(ProviderId::openai(), "gpt-image-2"),
             display_name: "GPT Image 2".into(),

@@ -205,11 +205,16 @@ pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> Bui
 
     // Upstream reports `0` limits for some models; treat them as unknown
     // instead of projecting invalid token limits.
-    let context_window_tokens = model
-        .limit
-        .as_ref()
-        .and_then(|l| l.context)
-        .filter(|v| *v > 0);
+    let context_window_tokens = match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+        // The exact dated model is documented as 256K, not the newer 260915's
+        // 1024K. Neither abbreviation establishes a precise integer context.
+        ("volcengine", "doubao-seed-2-1-pro-260628") => None,
+        _ => model
+            .limit
+            .as_ref()
+            .and_then(|l| l.context)
+            .filter(|v| *v > 0),
+    };
     let max_output_tokens_upper_limit = model
         .limit
         .as_ref()
@@ -502,6 +507,31 @@ mod tests {
             "unknown-provider"
         );
         assert_eq!(result.unmapped[0].models_dev_model_id, "mystery-model");
+    }
+
+    #[test]
+    fn dated_seed_context_does_not_inherit_a_newer_versions_capacity() {
+        for (route, context) in [
+            ("volcengine/doubao-seed-2-1-pro-260628", None),
+            ("volcengine/doubao-seed-2-1-pro-260915", Some(1_024_000)),
+            ("openrouter/doubao-seed-2-1-pro-260628", Some(1_024_000)),
+        ] {
+            let model_ref = ModelRef::parse(route).unwrap();
+            let model: ModelsDevModel = serde_json::from_value(serde_json::json!({
+                "id": model_ref.model,
+                "limit": {"context": 1_024_000, "output": 256_000}
+            }))
+            .unwrap();
+            let metadata = project_model(&model_ref, &model);
+            assert_eq!(metadata.context_window_tokens, context, "{route}");
+            assert_eq!(
+                metadata.auto_compact_token_limit,
+                context
+                    .map(|value| value * DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT as usize / 100),
+                "{route}"
+            );
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(256_000));
+        }
     }
 
     #[test]
