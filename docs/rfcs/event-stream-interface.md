@@ -219,9 +219,10 @@ transport-local response sequence numbers.
 
 Runtime events should have clear, standard payload schemas that first-party
 clients and integrations can consume directly. Event payloads are the protocol
-standard and are included in full. Event pages may use `max_level` to filter
-which events are returned; live streams remain the raw event feed so clients can
-reconnect and maintain local state without losing lower-visibility events.
+standard and are included in full. Event pages may select an `event_kind`;
+display-level filtering belongs in clients. Unfiltered pages and live streams
+remain the raw event feed so clients can reconnect and maintain local state
+without losing lower-visibility events.
 
 ## Event Envelope
 

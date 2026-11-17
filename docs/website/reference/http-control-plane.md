@@ -232,7 +232,7 @@ Returns recent runtime events (turn entries, system events). Query parameters:
 | `after_seq` | Return events with durable `event_seq` higher than this value |
 | `limit` | Max events to return (default 128) |
 | `order` | `asc` or `desc` (default) |
-| `max_level` | Optional inclusion filter: `info`, `verbose`, or `debug` |
+| `event_kind` | Optional exact event-kind inclusion filter |
 
 The JSON response is an `EventsPageResponse`:
 
@@ -287,8 +287,8 @@ last contiguous `event_seq` before reopening the global stream.
 Filtering behavior:
 
 - Event payloads are always included in full.
-- `/api/agents/:id/events` may use `max_level` to filter which events are returned.
-- `/api/agents/:id/events/stream` is raw and does not support `max_level`.
+- `/api/agents/:id/events` may use `event_kind` to select one raw event kind.
+- Pages and streams do not apply operator display levels; clients filter locally.
 
 Migration note:
 
@@ -297,9 +297,10 @@ Migration note:
 - `StreamEventEnvelope.projection` is no longer present. Clients that checked
   `projection.raw_payload_included` should treat all event envelopes as
   full-payload envelopes.
-- To reproduce the old operator-facing page density, request
-  `/api/agents/:id/events?max_level=info`. Stream clients should keep subscribing
-  to `/api/agents/:id/events/stream` and apply any presentation filtering locally.
+- Remove server-side display-level query parameters. There is no compatibility
+  period; unsupported query parameters are rejected.
+- To reproduce operator-facing density, apply presentation filtering locally to
+  pages and to `/api/agents/:id/events/stream`.
 
 **`GET /api/agents/:id/transcript`** — Turn transcript
 

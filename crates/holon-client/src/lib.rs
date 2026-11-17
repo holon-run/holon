@@ -189,7 +189,6 @@ pub struct EventPageRequest {
     pub after_seq: Option<u64>,
     pub limit: Option<usize>,
     pub order: Option<String>,
-    pub max_level: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1830,9 +1829,6 @@ fn event_page_path(agent_id: &str, request: &EventPageRequest) -> Result<String>
         }
         if let Some(order) = request.order.as_deref() {
             query.append_pair("order", order);
-        }
-        if let Some(max_level) = request.max_level.as_deref() {
-            query.append_pair("max_level", max_level);
         }
     }
     let mut path = url.path().to_string();

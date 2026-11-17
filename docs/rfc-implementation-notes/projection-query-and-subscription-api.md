@@ -463,9 +463,9 @@ TUI raw event usage after migration:
 - Whether `projection_delta` should support fine-grained child operations or
   only whole-item replacement. Whole-item replacement is simpler and likely
   enough for the first version.
-- Whether raw event `max_level` filtering should share the same visibility enum
-  as projection items. The concepts are aligned, but replay authorization and
-  display visibility must stay separate.
+
+Raw event pages and streams do not apply display-level filtering. Clients own
+display visibility; replay authorization remains separate.
 
 ## Summary
 

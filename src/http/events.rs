@@ -13,7 +13,6 @@ pub async fn events(
     let order = query.order.unwrap_or(EventPageOrder::Desc);
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
     let emit_projection_effect = projection_effect_emission_enabled(&state);
-    let max_level = query.max_level;
     let event_kind = query.event_kind;
     let storage = state
         .host
@@ -40,24 +39,9 @@ pub async fn events(
                 order.into(),
                 &db,
                 &handle,
-                move |storage| {
-                    let filter_context = max_level
-                        .map(|_| event_filter_context(storage))
-                        .transpose()?;
+                move |_| {
                     Ok(move |event: &AuditEvent| {
-                        let level_matches = match (max_level, filter_context.as_ref()) {
-                            (Some(level), Some(filter_context)) => {
-                                is_operator_event_in_display_mode(
-                                    &event.kind,
-                                    &event.data,
-                                    &event_fallback_summary(event),
-                                    filter_context,
-                                    level,
-                                )
-                            }
-                            _ => true,
-                        };
-                        level_matches && event_kind.as_deref().is_none_or(|kind| event.kind == kind)
+                        event_kind.as_deref().is_none_or(|kind| event.kind == kind)
                     })
                 },
             ))
@@ -568,31 +552,6 @@ fn public_event_payload(payload: &Value) -> Value {
 fn projection_effect_emission_enabled(state: &AppState) -> bool {
     let verification = load_observer_sync_verification(state);
     advertised_observer_sync_capabilities(&verification).contains(&PROJECTION_EFFECT_CAPABILITY)
-}
-
-fn event_filter_context(
-    storage: &crate::storage::AppStorage,
-) -> Result<OperatorPresentationContext> {
-    let work_queue = storage.work_queue_read_model()?;
-    let completed_work_item_ids = storage
-        .latest_work_items()?
-        .into_iter()
-        .filter(|item| item.state == WorkItemState::Completed)
-        .map(|item| item.id)
-        .collect();
-    Ok(OperatorPresentationContext {
-        awaiting_operator_input: !work_queue.waiting_for_operator.is_empty(),
-        completed_work_item_ids,
-    })
-}
-
-fn event_fallback_summary(event: &AuditEvent) -> &str {
-    event
-        .data
-        .get("summary")
-        .and_then(Value::as_str)
-        .filter(|summary| !summary.trim().is_empty())
-        .unwrap_or(event.kind.as_str())
 }
 
 fn event_seq_not_found(

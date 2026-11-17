@@ -1724,17 +1724,6 @@
         "required": false
       },
       {
-        "long": "max-level",
-        "short": null,
-        "default_value": null,
-        "possible_values": [
-          "info",
-          "verbose",
-          "debug"
-        ],
-        "required": false
-      },
-      {
         "long": "offline",
         "short": null,
         "default_value": null,

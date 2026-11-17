@@ -417,13 +417,13 @@ holon timer cancel <TIMER_ID>
 
 ```bash
 holon events tail --limit 20
-holon events tail --order asc --max-level info
+holon events tail --order asc
 holon events tail --agent benchmark-run --order asc --offline
 holon events stream --after-seq 42 --max-events 100
 ```
 
 `events tail --offline` 会从本地运行时数据库读取同样稳定的事件信封，无需运行中
-的 daemon。离线分页不支持 `--max-level`。
+的 daemon。在线和离线分页都返回原始事件信封；展示级别过滤属于客户端行为。
 
 ### 终端 UI
 
