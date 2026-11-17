@@ -765,9 +765,6 @@ fn execution_work_status_name(
         crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. } => "in_flight",
         crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. } => "waiting",
         crate::domain::execution_protocol::WorkItemExecutionState::Paused { .. } => "paused",
-        crate::domain::execution_protocol::WorkItemExecutionState::NeedsRepair { .. } => {
-            "needs_repair"
-        }
         crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. } => "terminal",
     }
     .into()

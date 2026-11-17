@@ -244,9 +244,9 @@ async fn operator_claim_revision_race_scenario() {
         .load_execution_protocol_state_if_initialized("default")
         .unwrap()
         .unwrap();
-    assert!(!matches!(
+    assert!(matches!(
         execution.work_items[&work.id].state,
-        WorkItemExecutionState::NeedsRepair { .. }
+        WorkItemExecutionState::Runnable { .. }
     ));
     assert!(!runtime
         .storage()
@@ -1128,7 +1128,7 @@ async fn unsafe_pause_denial_scenario() {
                 "provider_dispatch_rejected",
                 "Local provider dispatch admission rejected this send before IO.",
             )
-            .with_safe_context("recovery_disposition", "needs_repair"),
+            .with_safe_context("recovery_disposition", "pause_requested"),
         );
         let summary = RuntimeHandle::concise_runtime_failure_text(&input, &error);
         let reason = match reason {
@@ -1139,7 +1139,7 @@ async fn unsafe_pause_denial_scenario() {
         };
         assert_eq!(
             summary,
-            format!("{reason} Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair.")
+            format!("{reason} Check the diagnostics for recovery status.")
         );
     }
     let mut clean = RequestState {
@@ -1386,36 +1386,16 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
         .unwrap();
     assert!(matches!(
         &protocol.work_items[&work.id].state,
-        WorkItemExecutionState::NeedsRepair { .. }
+        WorkItemExecutionState::Runnable {
+            recovery_ref: Some(recovery_ref),
+            ..
+        } if recovery_ref.starts_with("provider_dispatch_rejected")
     ));
     assert_ne!(
         protocol.attempts[&attempt_id].state,
         ExecutionAttemptState::Open
     );
-    let inspection = runtime.inspect_scheduler_repair().await.unwrap();
-    let assessment = inspection
-        .work_items
-        .iter()
-        .find(|assessment| assessment.work_item_id == work.id)
-        .expect("NeedsRepair must have an explicit repair assessment");
-    assert_eq!(
-        assessment.original_attempt_id.as_deref(),
-        Some(attempt_id.as_str())
-    );
-    assert_eq!(assessment.message_id.as_deref(), Some(input.id.as_str()));
-    assert!(!assessment.original_source_restorable);
-    assert!(assessment
-        .refusal_reasons
-        .iter()
-        .any(|reason| reason == "original_exact_wait_not_triggered"));
-    assert!(assessment
-        .refusal_reasons
-        .iter()
-        .any(|reason| { reason == "revision_only_gap_and_zero_side_effects_not_proven" }));
-    assert_eq!(
-        assessment.next_action,
-        "trusted_new_continuation_required_do_not_replay_original"
-    );
+    runtime.inspect_scheduler_repair().await.unwrap();
     assert_eq!(
         runtime
             .inner
@@ -1425,7 +1405,7 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
             .unwrap()
             .unwrap(),
         protocol,
-        "repair inspection must not unlock a lane or rewrite its original source"
+        "inspection must not unlock a lane or rewrite its original source"
     );
     let episode = runtime
         .inner
@@ -1452,7 +1432,7 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
         .unwrap();
     let turns = runtime.storage().read_recent_turns(20).unwrap();
     assert_eq!(turns.len(), 1);
-    let expected_summary = "A local safety check blocked this model send. Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair.";
+    let expected_summary = "A local safety check blocked this model send. The WorkItem re-enters the queue automatically after this pre-IO stop; persistent conflicts pause it until the blocker is cleared.";
     let last_failure = runtime
         .agent_state()
         .await
@@ -1499,17 +1479,73 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
             "provider_attempt_failed" | "provider_fallback" | "provider_recovery_enqueued"
         )
     }));
-    for _ in 0..5 {
+    // The outage only existed to shape the recorded admission failure; the
+    // re-entered attempt must genuinely succeed at the provider.
+    server
+        .healthy
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // The re-entered WorkItem re-queues from a fresh snapshot; its next
+    // attempt passes the guard and succeeds without replaying the input.
+    let mut requeued = None;
+    for _ in 0..30 {
         clock.advance(std::time::Duration::from_secs(2));
-        assert!(!matches!(
-            SchedulerDecisionExecutor::new(&runtime)
-                .poll()
-                .await
-                .unwrap(),
-            RunLoopPoll::Message(_)
-        ));
+        if let RunLoopPoll::Message(scheduled) = SchedulerDecisionExecutor::new(&runtime)
+            .poll()
+            .await
+            .unwrap()
+        {
+            let is_reentry = scheduled
+                .message
+                .metadata
+                .as_ref()
+                .and_then(|metadata| metadata.get("work_queue"))
+                .and_then(|work_queue| work_queue.get("work_item_id"))
+                .and_then(serde_json::Value::as_str)
+                == Some(work.id.as_str());
+            if is_reentry {
+                requeued = Some(scheduled);
+                break;
+            }
+        }
     }
-    assert_eq!(runtime.storage().read_recent_turns(20).unwrap().len(), 1);
+    let requeued = requeued.expect("the re-entered WorkItem must re-queue");
+    assert_ne!(
+        requeued.message.id, input.id,
+        "the retained input must not replay"
+    );
+    let restart_started = std::time::Instant::now();
+    let result = runtime
+        .process_message_with_plan_deferred(
+            requeued.message.clone(),
+            requeued.dispatch_plan,
+            &requeued.scheduler_decision,
+        )
+        .await;
+    assert!(result.is_ok(), "{result:?}");
+    runtime
+        .finish_scheduled_message_processing(
+            &requeued.message,
+            requeued.running_state.current_run_id.as_deref().unwrap(),
+            restart_started,
+            result,
+        )
+        .await
+        .unwrap();
+    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
+    let settled = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        &settled.work_items[&work.id].state,
+        WorkItemExecutionState::Runnable {
+            recovery_ref: None,
+            ..
+        }
+    ));
     assert!(runtime
         .storage()
         .read_message_by_id(&input.id)
@@ -1527,7 +1563,10 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
             .unwrap()
             .work_items[&work.id]
             .state,
-        WorkItemExecutionState::NeedsRepair { .. }
+        WorkItemExecutionState::Runnable {
+            recovery_ref: None,
+            ..
+        }
     ));
     assert!(!matches!(
         SchedulerDecisionExecutor::new(&restored)
@@ -1536,5 +1575,5 @@ async fn local_dispatch_rejection_scenario(with_timeline: bool) {
             .unwrap(),
         RunLoopPoll::Message(_)
     ));
-    assert_eq!(server.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(server.calls.load(Ordering::SeqCst), 1);
 }

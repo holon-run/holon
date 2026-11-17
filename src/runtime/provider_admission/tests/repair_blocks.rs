@@ -163,9 +163,9 @@ async fn repair_blocked_operator_sources_scenario() {
     crate::runtime::tests::support::seed_live_work_execution(
         &runtime,
         &stranded,
-        WorkItemExecutionState::NeedsRepair {
+        WorkItemExecutionState::Paused {
             generation: canonical_before.work_items[&work.id].generation(),
-            repair_id: "business-repair".into(),
+            reason: "business-repair".into(),
         },
     )
     .await;
@@ -190,7 +190,7 @@ async fn repair_blocked_operator_sources_scenario() {
         .unwrap();
     assert!(matches!(
         &protocol.work_items[&work.id].state,
-        WorkItemExecutionState::NeedsRepair { repair_id, .. } if repair_id == "business-repair"
+        WorkItemExecutionState::Paused { reason, .. } if reason == "business-repair"
     ));
     assert!(runtime.suppress_repair_blocked_source(&one).unwrap());
     assert!(!runtime.suppress_repair_blocked_source(&operator()).unwrap());

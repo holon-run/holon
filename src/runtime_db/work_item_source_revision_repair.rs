@@ -297,7 +297,6 @@ fn registration_state_label(state: &WorkItemExecutionState) -> String {
         WorkItemExecutionState::Waiting { .. } => "waiting".into(),
         WorkItemExecutionState::InFlight { .. } => "in_flight".into(),
         WorkItemExecutionState::Paused { .. } => "paused".into(),
-        WorkItemExecutionState::NeedsRepair { .. } => "needs_repair".into(),
         WorkItemExecutionState::Terminal { .. } => "terminal".into(),
     }
 }

@@ -93,21 +93,30 @@ impl WorkCommandRead {
         let mut parent_waits = self
             .active_waits_for(parent_work_item_id)?
             .into_iter()
-            .map(|wait| wait.id.clone())
-            .collect::<BTreeSet<_>>();
+            .map(|wait| (wait.id.clone(), wait.created_at))
+            .collect::<BTreeMap<String, chrono::DateTime<chrono::Utc>>>();
         for wait in projected_wait_conditions {
             parent_waits.remove(&wait.id);
             if wait.agent_id == self.state.id
                 && wait.work_item_id.as_deref() == Some(parent_work_item_id)
                 && wait.status == WaitConditionStatus::Active
             {
-                parent_waits.insert(wait.id.clone());
+                parent_waits.insert(wait.id.clone(), wait.created_at);
             }
         }
+        // When several waits are active, the latest admission owns the
+        // resume; (created_at, id) gives a total, deterministic order.
+        let latest_admitted_wait_id = parent_waits
+            .iter()
+            .max_by(|(left_id, left_at), (right_id, right_at)| {
+                (left_at, left_id.as_str()).cmp(&(right_at, right_id.as_str()))
+            })
+            .map(|(id, _)| id.clone());
         let source = WorkItemContinuationResumeSource {
             work_item_revision: parent.revision,
             blocked_by: parent.blocked_by.clone(),
-            active_wait_ids: parent_waits.into_iter().collect(),
+            active_wait_ids: parent_waits.into_keys().collect(),
+            latest_admitted_wait_id,
         };
         let outcome = continuation_resume_outcome(parent_work_item_id, &source)
             .map_err(|error| anyhow!(error))?;

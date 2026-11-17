@@ -183,10 +183,9 @@ pub(crate) use closure::runtime_error_active;
 pub(crate) use lifecycle::build_child_agent_observability_with_active_tasks;
 pub(crate) use lifecycle::LightweightAgentStateProjection;
 pub(crate) use repair::is_wake_only_message;
-pub(crate) use repair::work_item_repair_assessments;
 pub use repair::{
     SchedulerRepairInspection, SchedulerRepairOperation, SchedulerRepairRequest,
-    SchedulerRepairResult, WorkItemRepairAssessment,
+    SchedulerRepairResult,
 };
 pub(crate) use scheduler::include_scheduler_brief_window;
 pub(crate) use scheduler::is_terminal_task_status;

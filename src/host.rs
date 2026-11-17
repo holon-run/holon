@@ -4507,12 +4507,6 @@ impl RuntimeHost {
                 .runtime_db()
                 .source_revision_repair_assessments(agent_id)
                 .map_err(PublicAgentError::Runtime)?,
-            work_items: crate::runtime::work_item_repair_assessments(
-                &storage,
-                self.runtime_db(),
-                agent_id,
-            )
-            .map_err(PublicAgentError::Runtime)?,
             agent_id: agent_id.to_string(),
             active_waits,
             wake_only_queue_entries,
@@ -10648,6 +10642,7 @@ impl RuntimeHost {
                         }
                         ExecutionOutcome::WorkItem(
                             WorkItemOutcome::Continue
+                            | WorkItemOutcome::Reentry { .. }
                             | WorkItemOutcome::Wait { .. }
                             | WorkItemOutcome::Yield { .. },
                         ) => {
@@ -10682,17 +10677,6 @@ impl RuntimeHost {
                                 status: TaskStatus::Interrupted,
                                 text: format!(
                                     "agent invocation WorkItem was interrupted: {reason}"
-                                ),
-                                activation_id: Some(attempt.attempt_id),
-                                turn_id: attempt.turn_id,
-                                completion_ref: None,
-                            }));
-                        }
-                        ExecutionOutcome::WorkItem(WorkItemOutcome::NeedsRepair { repair_id }) => {
-                            return Ok(Some(InvocationTerminalEvidence {
-                                status: TaskStatus::Failed,
-                                text: format!(
-                                    "agent invocation WorkItem requires repair: {repair_id}"
                                 ),
                                 activation_id: Some(attempt.attempt_id),
                                 turn_id: attempt.turn_id,
@@ -10759,17 +10743,6 @@ impl RuntimeHost {
                                     turn_id: root_turn_id,
                                     completion_ref: Some(completion.clone()),
                                 }
-                            }));
-                        }
-                        WorkItemExecutionState::NeedsRepair { repair_id, .. } => {
-                            return Ok(Some(InvocationTerminalEvidence {
-                                status: TaskStatus::Failed,
-                                text: format!(
-                                    "agent invocation WorkItem requires repair: {repair_id}"
-                                ),
-                                activation_id: Some(root_activation_id),
-                                turn_id: root_turn_id,
-                                completion_ref: None,
                             }));
                         }
                         WorkItemExecutionState::Runnable { .. }

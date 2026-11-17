@@ -428,12 +428,6 @@ pub(super) fn synchronize_work_item_revisions_opt(
                     })?
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 let execution_state = match wait_ids.as_slice() {
-                    [wait_id] => WorkItemExecutionState::Waiting {
-                        generation: record.revision.max(1),
-                        wait: execution_protocol::WaitReference {
-                            wait_id: wait_id.clone(),
-                        },
-                    },
                     [] if record.blocked_by.is_some() => WorkItemExecutionState::Paused {
                         generation: record.revision.max(1),
                         reason: record
@@ -445,9 +439,16 @@ pub(super) fn synchronize_work_item_revisions_opt(
                         generation: record.revision.max(1),
                         recovery_ref: None,
                     },
-                    _ => WorkItemExecutionState::NeedsRepair {
+                    // Several active waits resolve deterministically to the
+                    // latest admission (created_at, wait_condition_id order).
+                    _ => WorkItemExecutionState::Waiting {
                         generation: record.revision.max(1),
-                        repair_id: format!("work_item_waits_ambiguous:{}", record.id),
+                        wait: execution_protocol::WaitReference {
+                            wait_id: wait_ids
+                                .last()
+                                .expect("active waits checked non-empty")
+                                .clone(),
+                        },
                     },
                 };
                 synchronized.commands.insert(
@@ -1304,33 +1305,46 @@ fn validate_resume_work_item_continuation(
             _ => None,
         })
         .unwrap_or(&durable_parent);
-    let mut active_wait_ids = {
+    let mut active_waits = {
         let mut statement = tx.prepare(
-            "SELECT wait_condition_id
+            "SELECT wait_condition_id, created_at
              FROM wait_conditions
              WHERE agent_id = ?1 AND work_item_id = ?2 AND status = 'active'
              ORDER BY wait_condition_id ASC",
         )?;
-        let wait_ids = statement
+        let wait_rows = statement
             .query_map([agent_id, command.work_item_id.as_str()], |row| {
-                row.get::<_, String>(0)
+                let created_at = chrono::DateTime::parse_from_rfc3339(&row.get::<_, String>(1)?)
+                    .map_err(|error| rusqlite::Error::ToSqlConversionFailure(Box::new(error)))?
+                    .with_timezone(&chrono::Utc);
+                Ok((row.get::<_, String>(0)?, created_at))
             })?
-            .collect::<std::result::Result<std::collections::BTreeSet<_>, _>>()?;
-        wait_ids
+            .collect::<std::result::Result<
+                std::collections::BTreeMap<String, chrono::DateTime<chrono::Utc>>,
+                _,
+            >>()?;
+        wait_rows
     };
     for wait in wait_conditions {
-        active_wait_ids.remove(&wait.id);
+        active_waits.remove(&wait.id);
         if wait.agent_id == agent_id
             && wait.work_item_id.as_deref() == Some(command.work_item_id.as_str())
             && wait.status == crate::types::WaitConditionStatus::Active
         {
-            active_wait_ids.insert(wait.id.clone());
+            active_waits.insert(wait.id.clone(), wait.created_at);
         }
     }
+    let latest_admitted_wait_id = active_waits
+        .iter()
+        .max_by(|(left_id, left_at), (right_id, right_at)| {
+            (left_at, left_id.as_str()).cmp(&(right_at, right_id.as_str()))
+        })
+        .map(|(id, _)| id.clone());
     let source = execution_protocol::WorkItemContinuationResumeSource {
         work_item_revision: parent.revision,
         blocked_by: parent.blocked_by.clone(),
-        active_wait_ids: active_wait_ids.into_iter().collect(),
+        active_wait_ids: active_waits.into_keys().collect(),
+        latest_admitted_wait_id,
     };
     if parent.agent_id != agent_id
         || parent.state != crate::types::WorkItemState::Open
@@ -1603,8 +1617,8 @@ impl RuntimeTransitionRepository<'_> {
         &self,
         agent_id: &str,
     ) -> Result<BTreeMap<String, crate::domain::execution_protocol::WorkItemExecutionRecord>> {
-        self.db.with_read(|connection| load_payload_map(connection,
-            "SELECT work_item_id, payload_json FROM execution_protocol_work_items WHERE agent_id=?1 AND lifecycle_state!='terminal' AND EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)", agent_id))
+        self.db.with_read(|connection| load_work_items_with_migration(connection, agent_id,
+            "SELECT work_item_id, payload_json FROM execution_protocol_work_items WHERE agent_id=?1 AND lifecycle_state!='terminal' AND EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)"))
     }
 
     pub(crate) fn load_execution_protocol_state_if_initialized(
@@ -2285,8 +2299,8 @@ mod tests {
                 WorkItemOutcome::Complete {
                     completion: "completed without model dispatch".into(),
                 },
-                WorkItemOutcome::NeedsRepair {
-                    repair_id: "repair-model-claim".into(),
+                WorkItemOutcome::Reentry {
+                    recovery_ref: "provider_dispatch_rejected:reentry-model-claim".into(),
                 },
             ] {
                 let home = tempdir()?;
@@ -2765,6 +2779,98 @@ mod tests {
         );
         Ok(())
     }
+
+    // #4217: legacy `needs_repair` rows retired by the storage migration
+    // re-evaluate when the repository loads protocol state: an aligned
+    // durable revision re-enters Runnable, a drifted one pauses with the
+    // original repair identifier as the pause reason.
+    #[test]
+    fn legacy_needs_repair_rows_reevaluate_on_repository_load() -> Result<()> {
+        use crate::domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
+
+        let temp_dir = tempdir()?;
+        let db = RuntimeDb::open_and_migrate(
+            temp_dir.path().join("state/runtime.sqlite"),
+            temp_dir.path().join("state/runtime.lock"),
+        )?;
+        let agent_id = "agent-legacy-needs-repair";
+        setup_agent(&db, agent_id)?;
+        let work = crate::types::WorkItemRecord::new(
+            agent_id,
+            "legacy needs_repair load",
+            crate::types::WorkItemState::Open,
+        );
+        assert!(db.work_items().insert_new(&work)?);
+        let legacy_payload = serde_json::json!({
+            "source_revision": 4,
+            "state": {
+                "state": "needs_repair",
+                "generation": 3,
+                "repair_id": "work_item_waits_ambiguous:work-legacy"
+            }
+        })
+        .to_string();
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = 4 WHERE agent_id = ?1 AND work_item_id = ?2",
+                rusqlite::params![agent_id, work.id],
+            )?;
+            tx.execute(
+                "INSERT INTO execution_protocol_partitions (agent_id, updated_at)
+                 VALUES (?1, ?2)",
+                rusqlite::params![agent_id, "2026-11-17T00:00:00Z"],
+            )?;
+            tx.execute(
+                "INSERT INTO execution_protocol_work_items
+                 (agent_id, work_item_id, source_revision, generation, lifecycle_state, payload_json)
+                 VALUES (?1, ?2, 4, 3, 'paused', ?3)",
+                rusqlite::params![agent_id, work.id, legacy_payload],
+            )?;
+            Ok(())
+        })?;
+
+        // Aligned durable revision: the repair fence is gone, so the record
+        // loads as Runnable again without any NeedsRepair surface.
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)?
+            .expect("partition is initialized");
+        assert_eq!(
+            state.work_items.get(&work.id),
+            Some(&WorkItemExecutionRecord {
+                source_revision: 4,
+                state: WorkItemExecutionState::Runnable {
+                    generation: 3,
+                    recovery_ref: None,
+                },
+            }),
+        );
+
+        // A drifted durable revision keeps the record paused, carrying the
+        // original repair identifier as the pause reason.
+        db.transaction(|tx| {
+            tx.execute(
+                "UPDATE work_items SET revision = 5 WHERE agent_id = ?1 AND work_item_id = ?2",
+                rusqlite::params![agent_id, work.id],
+            )?;
+            Ok(())
+        })?;
+        let state = db
+            .transitions()
+            .load_execution_protocol_state_if_initialized(agent_id)?
+            .expect("partition is initialized");
+        assert_eq!(
+            state.work_items.get(&work.id),
+            Some(&WorkItemExecutionRecord {
+                source_revision: 4,
+                state: WorkItemExecutionState::Paused {
+                    generation: 3,
+                    reason: "work_item_waits_ambiguous:work-legacy".into(),
+                },
+            }),
+        );
+        Ok(())
+    }
 }
 
 fn load_state_unchecked_on(
@@ -2779,19 +2885,70 @@ fn load_state_unchecked_on(
              FROM execution_protocol_attempts WHERE agent_id = ?1",
             agent_id,
         )?,
-        work_items: load_payload_map(
+        work_items: load_work_items_with_migration(
             connection,
+            agent_id,
             "SELECT work_item_id, payload_json
              FROM execution_protocol_work_items WHERE agent_id = ?1",
-            agent_id,
         )?,
-        outcomes: load_payload_map(
-            connection,
-            "SELECT outcome_id, payload_json
-             FROM execution_protocol_outcomes WHERE agent_id = ?1",
-            agent_id,
-        )?,
+        outcomes: load_outcomes_with_migration(connection, agent_id)?,
     })
+}
+
+fn load_work_items_with_migration(
+    tx: &Connection,
+    agent_id: &str,
+    sql: &str,
+) -> Result<BTreeMap<String, crate::domain::execution_protocol::WorkItemExecutionRecord>> {
+    let mut statement = tx.prepare(sql)?;
+    let mut rows = statement.query([agent_id])?;
+    let mut records = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
+        let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
+        let record = if payload.contains("\"needs_repair\"") {
+            let durable_revision = tx
+                .query_row(
+                    "SELECT revision FROM work_items
+                     WHERE agent_id = ?1 AND work_item_id = ?2",
+                    [agent_id, id.as_str()],
+                    |row| row.get::<_, i64>(0),
+                )
+                .optional()?
+                .map(|revision| u64::try_from(revision))
+                .transpose()
+                .context("work item revision is negative")?;
+            holon_storage::execution::decode_work_item_record_with_migration(
+                payload,
+                durable_revision,
+            )
+        } else {
+            serde_json::from_str(payload).map_err(anyhow::Error::from)
+        }
+        .with_context(|| format!("decoding execution protocol record {}", id))?;
+        records.insert(id, record);
+    }
+    Ok(records)
+}
+
+fn load_outcomes_with_migration(
+    tx: &Connection,
+    agent_id: &str,
+) -> Result<BTreeMap<String, crate::domain::execution_protocol::ExecutionOutcomeRecord>> {
+    let mut statement = tx.prepare(
+        "SELECT outcome_id, payload_json
+         FROM execution_protocol_outcomes WHERE agent_id = ?1",
+    )?;
+    let mut rows = statement.query([agent_id])?;
+    let mut records = BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
+        let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
+        let record = holon_storage::execution::decode_outcome_record_with_migration(payload)
+            .with_context(|| format!("decoding execution protocol record {}", id))?;
+        records.insert(id, record);
+    }
+    Ok(records)
 }
 
 pub(crate) fn context_execution_protocol_on(

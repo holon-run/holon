@@ -182,9 +182,82 @@ pub fn persist_state_rows_tx(
 }
 
 fn stored_outcome_matches(existing: &str, outcome: &ExecutionOutcomeRecord) -> Result<bool> {
-    let existing: ExecutionOutcomeRecord = serde_json::from_str(existing)
+    let existing: ExecutionOutcomeRecord = decode_outcome_record_with_migration(existing)
         .with_context(|| format!("decoding stored execution outcome {}", outcome.outcome_id))?;
     Ok(existing == *outcome)
+}
+
+/// Decode a stored WorkItemExecutionRecord, translating the removed
+/// `needs_repair` state at load time: when the execution source revision has
+/// caught up with the durable WorkItem revision the fence is gone and the
+/// WorkItem is Runnable again; otherwise it pauses with the original repair
+/// reason. `durable_revision` is the live `work_items.revision`, if any.
+pub fn decode_work_item_record_with_migration(
+    payload: &str,
+    durable_revision: Option<u64>,
+) -> Result<holon_domain::execution_protocol::WorkItemExecutionRecord> {
+    let value: serde_json::Value = serde_json::from_str(payload)?;
+    let legacy_state = value.get("state").filter(|state| {
+        state.get("state").and_then(serde_json::Value::as_str) == Some("needs_repair")
+    });
+    let Some(legacy_state) = legacy_state else {
+        return Ok(serde_json::from_value(value)?);
+    };
+    let source_revision = value
+        .get("source_revision")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("legacy needs_repair record lacks source_revision"))?;
+    let generation = legacy_state
+        .get("generation")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("legacy needs_repair record lacks generation"))?;
+    let repair_id = legacy_state
+        .get("repair_id")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow!("legacy needs_repair record lacks repair_id"))?
+        .to_owned();
+    let state = if durable_revision == Some(source_revision) {
+        WorkItemExecutionState::Runnable {
+            generation,
+            recovery_ref: None,
+        }
+    } else {
+        WorkItemExecutionState::Paused {
+            generation,
+            reason: repair_id,
+        }
+    };
+    Ok(holon_domain::execution_protocol::WorkItemExecutionRecord {
+        source_revision,
+        state,
+    })
+}
+
+/// Decode a stored execution outcome, translating the removed WorkItem
+/// `needs_repair` outcome into the closest surviving record: an interrupted
+/// attempt whose reason preserves the original repair identifier.
+pub fn decode_outcome_record_with_migration(payload: &str) -> Result<ExecutionOutcomeRecord> {
+    let mut value: serde_json::Value = serde_json::from_str(payload)?;
+    let legacy = value
+        .get("outcome")
+        .filter(|outcome| {
+            outcome.get("owner").and_then(serde_json::Value::as_str) == Some("work_item")
+        })
+        .and_then(|outcome| outcome.get("outcome"))
+        .filter(|inner| {
+            inner.get("kind").and_then(serde_json::Value::as_str) == Some("needs_repair")
+        });
+    if let Some(legacy) = legacy {
+        let repair_id = legacy
+            .get("repair_id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| anyhow!("legacy needs_repair outcome lacks repair_id"))?;
+        value["outcome"] = serde_json::json!({
+            "owner": "work_item",
+            "outcome": { "kind": "interrupted", "reason": repair_id },
+        });
+    }
+    Ok(serde_json::from_value(value)?)
 }
 
 fn work_item_state_token(state: &WorkItemExecutionState) -> &'static str {
@@ -193,7 +266,6 @@ fn work_item_state_token(state: &WorkItemExecutionState) -> &'static str {
         WorkItemExecutionState::InFlight { .. } => "in_flight",
         WorkItemExecutionState::Waiting { .. } => "waiting",
         WorkItemExecutionState::Paused { .. } => "paused",
-        WorkItemExecutionState::NeedsRepair { .. } => "needs_repair",
         WorkItemExecutionState::Terminal { .. } => "terminal",
     }
 }
@@ -221,6 +293,7 @@ pub(crate) fn persist_migrated_state_tx(
 mod tests {
     use super::*;
     use holon_domain::execution_protocol::{ExecutionOutcome, WaitReference, WorkItemOutcome};
+    use holon_domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState};
 
     fn wait_outcome(wait_id: &str) -> ExecutionOutcomeRecord {
         ExecutionOutcomeRecord {
@@ -254,5 +327,84 @@ mod tests {
         });
         assert!(stored_outcome_matches(&existing.to_string(), &wait_outcome("wait-1")).unwrap());
         assert!(!stored_outcome_matches(&existing.to_string(), &wait_outcome("wait-2")).unwrap());
+    }
+
+    #[test]
+    fn legacy_needs_repair_record_migrates_by_revision_alignment() {
+        let legacy = serde_json::json!({
+            "source_revision": 4,
+            "state": {
+                "state": "needs_repair",
+                "generation": 3,
+                "repair_id": "work_item_waits_ambiguous:work-a"
+            }
+        })
+        .to_string();
+        assert_eq!(
+            decode_work_item_record_with_migration(&legacy, Some(4)).unwrap(),
+            WorkItemExecutionRecord {
+                source_revision: 4,
+                state: WorkItemExecutionState::Runnable {
+                    generation: 3,
+                    recovery_ref: None
+                }
+            },
+            "an aligned revision means the fence is gone: Runnable again"
+        );
+        for unaligned in [Some(5u64), None] {
+            assert_eq!(
+                decode_work_item_record_with_migration(&legacy, unaligned).unwrap(),
+                WorkItemExecutionRecord {
+                    source_revision: 4,
+                    state: WorkItemExecutionState::Paused {
+                        generation: 3,
+                        reason: "work_item_waits_ambiguous:work-a".into()
+                    }
+                },
+                "unaligned or missing durable revision pauses with the original reason"
+            );
+        }
+        // Current records pass through unchanged; the migration is idempotent.
+        let current = WorkItemExecutionRecord {
+            source_revision: 2,
+            state: WorkItemExecutionState::Runnable {
+                generation: 1,
+                recovery_ref: Some("provider_dispatch_rejected:turn-1".into()),
+            },
+        };
+        let payload = serde_json::to_string(&current).unwrap();
+        assert_eq!(
+            decode_work_item_record_with_migration(&payload, None).unwrap(),
+            current
+        );
+    }
+
+    #[test]
+    fn legacy_needs_repair_outcome_migrates_to_interrupted() {
+        let legacy = serde_json::json!({
+            "outcome_id": "outcome-1",
+            "attempt_id": "attempt-1",
+            "outcome": {
+                "owner": "work_item",
+                "outcome": {
+                    "kind": "needs_repair",
+                    "repair_id": "provider_dispatch_rejected:turn-1"
+                }
+            },
+            "created_at": "2026-08-05T00:00:00Z"
+        });
+        let migrated = decode_outcome_record_with_migration(&legacy.to_string()).unwrap();
+        assert_eq!(
+            migrated.outcome,
+            ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
+                reason: "provider_dispatch_rejected:turn-1".into()
+            })
+        );
+        let wait = wait_outcome("wait-9");
+        let payload = serde_json::to_string(&wait).unwrap();
+        assert_eq!(
+            decode_outcome_record_with_migration(&payload).unwrap(),
+            wait
+        );
     }
 }

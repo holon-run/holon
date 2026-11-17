@@ -404,7 +404,6 @@ fn work_item_state_token(state: &WorkItemExecutionState) -> &'static str {
         WorkItemExecutionState::InFlight { .. } => "in_flight",
         WorkItemExecutionState::Waiting { .. } => "waiting",
         WorkItemExecutionState::Paused { .. } => "paused",
-        WorkItemExecutionState::NeedsRepair { .. } => "needs_repair",
         WorkItemExecutionState::Terminal { .. } => "terminal",
     }
 }

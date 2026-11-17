@@ -1581,10 +1581,6 @@ fn collect_live_episode_roots_with_schema(
                 WorkItemExecutionState::Waiting { wait, .. } => {
                     collector.reference("wait", &wait.wait_id)
                 }
-                // Repair identifiers can be diagnostic keys, not RuntimeRefs.
-                WorkItemExecutionState::NeedsRepair { repair_id, .. } => {
-                    collector.source_ref(&repair_id)
-                }
                 WorkItemExecutionState::Paused { .. } | WorkItemExecutionState::Terminal { .. } => {
                 }
             }

@@ -4456,6 +4456,44 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_active_recovery
         name: "turn_activation_attachments",
         sql: "",
     },
+    Migration {
+        version: 113,
+        name: "retire_work_item_needs_repair",
+        // SQLite cannot drop the retired `needs_repair` member from the
+        // lifecycle CHECK constraint in place, so the table is rebuilt.
+        // Legacy rows keep their payload; the load path re-evaluates them
+        // against the durable WorkItem revision.
+        sql: r#"
+CREATE TABLE execution_protocol_work_items_retired_needs_repair (
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN ('runnable', 'in_flight', 'waiting', 'paused', 'terminal')
+  ),
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, work_item_id)
+);
+
+INSERT INTO execution_protocol_work_items_retired_needs_repair (
+  agent_id, work_item_id, source_revision, generation, lifecycle_state, payload_json
+)
+SELECT
+  agent_id,
+  work_item_id,
+  source_revision,
+  generation,
+  CASE lifecycle_state WHEN 'needs_repair' THEN 'paused' ELSE lifecycle_state END,
+  payload_json
+FROM execution_protocol_work_items;
+
+DROP TABLE execution_protocol_work_items;
+
+ALTER TABLE execution_protocol_work_items_retired_needs_repair
+  RENAME TO execution_protocol_work_items;
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
