@@ -395,6 +395,116 @@ async fn oversized_batch_argument_rejects_round_before_item_parsing() {
 }
 
 #[tokio::test]
+async fn recovered_batches_reject_whole_round_without_command_task_or_control_effects() {
+    for encoding in 0..9 {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let marker = workspace.path().join("must-not-execute");
+        let cmd = format!("printf escaped >> '{}'", marker.display());
+        let items = serde_json::json!(vec![serde_json::json!({"cmd": cmd}); 12]);
+        let raw = serde_json::json!({"items": items});
+        let input = match encoding {
+            0 => raw.clone(),
+            1 | 6 => serde_json::json!({"items": items.to_string()}),
+            2 => serde_json::json!(raw.to_string()),
+            3 => serde_json::json!({"arguments": raw}),
+            4 => serde_json::json!({"input": raw.to_string()}),
+            5 => serde_json::json!({
+                "parameters": {"items": [{}]},
+                "items": items.to_string(),
+            }),
+            7 => serde_json::json!({
+                "items": vec![serde_json::json!({}); 13],
+                "stop_on_error": "invalid",
+            }),
+            8 => serde_json::json!({"input": serde_json::json!({
+                "items": vec![serde_json::json!({}); 13],
+                "stop_on_error": "invalid",
+            }).to_string()}),
+            _ => unreachable!(),
+        };
+        if encoding < 7 {
+            assert_eq!(
+                holon_tools::builtins::exec_command_batch::parse_batch_args(&input)
+                    .unwrap()
+                    .items
+                    .len(),
+                12,
+                "the expansion-rejected calls must otherwise be executable"
+            );
+        }
+        let mut blocks: Vec<_> = (0..6)
+            .map(|i| tool_use(&format!("batch-{i}"), "ExecCommandBatch", input.clone()))
+            .collect();
+        let control = tool_use(
+            "control",
+            "CreateWorkItem",
+            serde_json::json!({"objective": "must not be created"}),
+        );
+        let command = tool_use(
+            "task-command",
+            "ExecCommand",
+            serde_json::json!({"cmd": cmd, "yield_time_ms": 0}),
+        );
+        if encoding >= 6 {
+            // Even side-effecting calls before the violating batch must not
+            // run: the gate must reject the entire round, not just its tail.
+            blocks.insert(0, command);
+            blocks.insert(0, control);
+        } else {
+            blocks.extend([command, control]);
+        }
+        let provider = Arc::new(RoundAdmissionProvider::new(vec![blocks]));
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            provider.clone(),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        let message = drive_turn(&runtime, &provider).await;
+        assert_eq!(provider.calls(), 1, "no automatic retry");
+        let state = runtime.agent_state().await.unwrap();
+        assert_rejected_turn(
+            &state,
+            if encoding < 7 {
+                "quota=expanded_work_items"
+            } else {
+                "quota=batch_items"
+            },
+        );
+        assert!(
+            !marker.exists(),
+            "no command may execute, encoding={encoding}"
+        );
+        assert!(runtime.storage().read_recent_tasks(10).unwrap().is_empty());
+        assert!(runtime
+            .storage()
+            .read_recent_work_items(10)
+            .unwrap()
+            .is_empty());
+        assert!(turn_tool_executions(&runtime, &state).is_empty());
+        assert!(runtime
+            .storage()
+            .read_all_transcript()
+            .unwrap()
+            .iter()
+            .all(|entry| !matches!(
+                entry.kind,
+                crate::types::TranscriptEntryKind::AssistantRound
+                    | crate::types::TranscriptEntryKind::ToolResults
+            )));
+        assert_eq!(
+            queue_status_for(&runtime, &message),
+            QueueEntryStatus::Aborted
+        );
+    }
+}
+
+#[tokio::test]
 async fn oversized_single_argument_rejects_round_with_lower_bound_count() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

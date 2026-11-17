@@ -11,8 +11,6 @@
 
 use std::io;
 
-use serde_json::Value;
-
 use crate::provider::ModelBlock;
 use crate::runtime_error::{ProviderRoundLimitExceeded, ProviderRoundLimitQuota};
 
@@ -146,7 +144,7 @@ pub(crate) fn admit_provider_round(
                         round,
                         MAX_MANAGED_TOOL_CALLS_PER_ROUND as u64,
                         managed_tool_calls as u64,
-                        false,
+                        true,
                         managed_tool_calls,
                     ));
                 }
@@ -210,14 +208,12 @@ pub(crate) fn admit_provider_round(
                     ));
                 }
 
-                // Batch wrappers contribute their raw item count to the
-                // expanded work-item quota; a missing or non-array `items`
-                // keeps counting as one call and is rejected later by the
-                // existing bounded invalid_tool_input path.
+                // Raw byte quotas precede the shared, side-effect-free
+                // parser shape recovery. Only genuinely unrecoverable
+                // batches count as one and keep invalid_tool_input.
                 if name == holon_tools::builtins::exec_command_batch::NAME {
-                    match input.get("items").and_then(Value::as_array) {
-                        Some(items) => {
-                            let item_count = items.len();
+                    match holon_tools::builtins::exec_command_batch::batch_item_count(input) {
+                        Some(item_count) => {
                             if item_count > holon_tools::builtins::exec_command_batch::MAX_ITEMS {
                                 return Err(reject(
                                     ProviderRoundLimitQuota::BatchItems,
@@ -243,7 +239,7 @@ pub(crate) fn admit_provider_round(
                         round,
                         MAX_EXPANDED_MANAGED_WORK_ITEMS_PER_ROUND as u64,
                         expanded_work_items as u64,
-                        false,
+                        true,
                         managed_tool_calls,
                     ));
                 }
@@ -263,7 +259,7 @@ pub(crate) fn admit_provider_round(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use serde_json::{json, Value};
 
     fn tool_use(id: &str, name: &str, input: Value) -> ModelBlock {
         ModelBlock::ToolUse {
@@ -301,7 +297,7 @@ mod tests {
         assert_eq!(rejection.quota, ProviderRoundLimitQuota::ManagedToolCalls);
         assert_eq!(rejection.limit, 64);
         assert_eq!(rejection.observed, 65);
-        assert!(!rejection.count_is_lower_bound);
+        assert!(rejection.count_is_lower_bound);
         assert_eq!(rejection.managed_tool_calls, 65);
         assert_eq!(rejection.round, 2);
     }
@@ -502,5 +498,90 @@ mod tests {
         wrappers_over.push(batch(1));
         let rejection = admit_provider_round(0, &wrappers_over).unwrap_err();
         assert_eq!(rejection.quota, ProviderRoundLimitQuota::ManagedToolCalls);
+    }
+
+    #[test]
+    fn prefix_stop_counts_are_lower_bounds_with_unscanned_tail() {
+        let calls: Vec<_> = (0..9_412)
+            .map(|i| tool_use(&format!("t{i}"), "UnknownTool", json!({})))
+            .collect();
+        let rejection = admit_provider_round(0, &calls).unwrap_err();
+        assert_eq!(rejection.observed, 65);
+        assert_eq!(rejection.managed_tool_calls, 65);
+        assert!(rejection.count_is_lower_bound);
+
+        let calls: Vec<_> = (0..9).map(|_| batch(12)).collect();
+        let rejection = admit_provider_round(0, &calls).unwrap_err();
+        assert_eq!(rejection.quota, ProviderRoundLimitQuota::ExpandedWorkItems);
+        assert_eq!(rejection.observed, 72);
+        assert_eq!(rejection.managed_tool_calls, 6);
+        assert!(rejection.count_is_lower_bound);
+    }
+
+    fn recovered_batch_inputs(count: usize) -> Vec<Value> {
+        let items = json!(vec![json!({"cmd": "printf ok"}); count]);
+        let raw = json!({"items": items});
+        vec![
+            raw.clone(),
+            json!({"items": items.to_string()}),
+            json!(raw.to_string()),
+            json!({"arguments": raw}),
+            json!({"parameters": raw.to_string()}),
+            json!({"params": raw}),
+            json!({"input": raw}),
+            json!({
+                "arguments": {"items": vec![json!({}); 13]},
+                "items": items.to_string(),
+            }),
+        ]
+    }
+
+    #[test]
+    fn recovered_batches_obey_batch_and_expanded_boundaries() {
+        let name = holon_tools::builtins::exec_command_batch::NAME;
+        for input in recovered_batch_inputs(12) {
+            assert!(admit_provider_round(0, &[tool_use("b", name, input.clone())]).is_ok());
+            let calls: Vec<_> = (0..6)
+                .map(|i| tool_use(&format!("b{i}"), name, input.clone()))
+                .collect();
+            let rejection = admit_provider_round(0, &calls).unwrap_err();
+            assert_eq!(rejection.quota, ProviderRoundLimitQuota::ExpandedWorkItems);
+            assert_eq!(rejection.observed, 72);
+            assert!(rejection.count_is_lower_bound);
+
+            let mut mixed = calls[..5].to_vec();
+            mixed.extend((0..4).map(|i| tool_use(&format!("p{i}"), "Unknown", json!({}))));
+            assert!(admit_provider_round(0, &mixed).is_ok());
+            mixed.push(tool_use("extra", "Unknown", json!({})));
+            let rejection = admit_provider_round(0, &mixed).unwrap_err();
+            assert_eq!(rejection.quota, ProviderRoundLimitQuota::ExpandedWorkItems);
+            assert_eq!(rejection.observed, 65);
+            assert!(rejection.count_is_lower_bound);
+        }
+        for input in recovered_batch_inputs(13) {
+            let rejection = admit_provider_round(0, &[tool_use("b", name, input)]).unwrap_err();
+            assert_eq!(rejection.quota, ProviderRoundLimitQuota::BatchItems);
+            assert_eq!(rejection.observed, 13);
+            assert!(!rejection.count_is_lower_bound);
+        }
+    }
+
+    #[test]
+    fn raw_byte_quotas_precede_recovered_batch_shape() {
+        let input = json!({
+            "items": vec![json!({}); 13],
+            "workdir": "x".repeat(MAX_TOOL_CALL_INPUT_BYTES as usize),
+        });
+        let rejection = admit_provider_round(
+            0,
+            &[tool_use(
+                "b",
+                holon_tools::builtins::exec_command_batch::NAME,
+                input,
+            )],
+        )
+        .unwrap_err();
+        assert_eq!(rejection.quota, ProviderRoundLimitQuota::ToolCallInputBytes);
+        assert!(rejection.count_is_lower_bound);
     }
 }

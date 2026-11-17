@@ -2631,9 +2631,9 @@ impl RuntimeHandle {
                 )
             };
 
-            let assistant_blocks = response.blocks.clone();
-            super::round_admission::admit_provider_round(round, &assistant_blocks)
+            super::round_admission::admit_provider_round(round, &response.blocks)
                 .map_err(anyhow::Error::new)?;
+            let assistant_blocks = response.blocks.clone();
             let pending_checkpoint_metadata = checkpoint_state.pending.as_ref().map(|pending| {
                 (
                     pending.request_id.clone(),

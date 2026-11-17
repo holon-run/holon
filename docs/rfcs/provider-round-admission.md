@@ -59,26 +59,38 @@ measurement.
 ## Batch nesting boundary
 
 `ExecCommandBatch` keeps its existing 1–12 item contract, publishes the same
-array length constraint in its tool schema, and rejects oversized raw item
+array length constraint in its tool schema, and checks recovered item
 arrays before per-item typed parsing, recovery-hint scanning, or execution;
 empty objects count as items. Two independent round quotas govern batches:
 
 - the top-level managed call count still counts a batch wrapper as one call;
 - the expanded work item count counts a non-batch managed call as one and a
-  batch call as its raw `items` array length, with multiple batches merged.
+  batch call as its recovered `items` array length, with multiple batches merged.
 
 Both limits are 64, so sixty-four batches of twelve items are rejected by
-expansion while sixty-four ordinary calls still pass. A missing or non-array
-`items` value keeps the existing bounded `invalid_tool_input` failure and
-counts as one expanded item; admission never guesses or repairs arguments,
-and shell contents are never inspected to estimate inner work.
+expansion while sixty-four ordinary calls still pass. Admission and the batch
+parser share a pure shape parser using the same known field names, string-JSON
+recovery, and single-envelope recovery as execution. Outer fields retain
+precedence over envelope fields. Shape inspection skips typed command and default
+field parsing, so malformed defaults cannot hide an oversized array. It does
+not record input coercions; only execution records a successful
+envelope recovery. A missing or genuinely unrecoverable `items` value keeps the
+existing bounded `invalid_tool_input` failure and counts as one expanded item.
+Shell contents are never inspected to estimate inner work.
+
+The original provider input's compact-JSON byte quotas are checked **before**
+shape recovery, without changing their measurement to recovered arguments.
+The recovered array must contain 1–12 items before typed item parsing. Managed
+call and expanded-work-item scans stop at the first excess and report observed
+prefix counts as lower bounds; a fully measured batch length stays exact.
 
 ## Admission position and failure contract
 
 1. The gate runs at the shared response reception boundary for all managed
    tools: after the response is fully parsed, before any tool execution,
    command start, task creation, or control tool effect for the round, and
-   before the round is persisted as replayable assistant history or any
+   before deep-cloning the response blocks, before the round is persisted as
+   replayable assistant history or any
    per-call record is created.
 2. Any quota violation rejects the whole round with zero tool executions,
    including mixed responses that contain terminal control tools such as

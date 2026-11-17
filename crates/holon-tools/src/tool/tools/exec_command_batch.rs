@@ -2,6 +2,7 @@ use super::BuiltinToolDefinition;
 use crate::tool::helpers::command_preview;
 use crate::tool::helpers::invalid_tool_input;
 use crate::tool::helpers::parse_tool_args_with_recovery_hint;
+use crate::tool::helpers::prepare_tool_args;
 use crate::tool::spec::ToolOutcome;
 use crate::tool::spec::ToolResultStatus;
 use crate::types::ExecCommandBatchItemStatus;
@@ -12,6 +13,7 @@ use crate::types::ToolCapabilityFamily;
 use anyhow::anyhow;
 use anyhow::Result;
 use schemars::JsonSchema;
+use serde::de::IgnoredAny;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::json;
@@ -22,6 +24,9 @@ pub const NAME: &str = crate::tool::names::EXEC_COMMAND_BATCH;
 pub const MAX_ITEMS: usize = 12;
 
 pub const DEFAULT_BATCH_YIELD_TIME_MS: u64 = 30_000;
+
+#[cfg(test)]
+mod tests;
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -60,26 +65,47 @@ pub fn definition() -> Result<BuiltinToolDefinition> {
 }
 
 pub fn parse_batch_args(input: &Value) -> Result<ExecCommandBatchArgs> {
-    // Reject oversized raw item arrays before per-item typed parsing,
-    // recovery-hint scanning, or any execution work; empty arrays keep the
-    // existing validate_batch_shape error, and missing or non-array `items`
-    // keeps the existing typed parse failure.
-    if let Some(items) = input.get("items").and_then(Value::as_array) {
-        if items.len() > MAX_ITEMS {
-            return Err(invalid_tool_input(
-                NAME,
-                format!("{NAME} accepts at most {MAX_ITEMS} items"),
-                json!({
-                    "field": "items",
-                    "validation_error": "too_many_items",
-                    "max_items": MAX_ITEMS,
-                    "actual_items": items.len(),
-                }),
-                "split the command batch into smaller bounded batches",
-            ));
-        }
+    // Inspect the same recovered shape as round admission, without typed
+    // item parsing, recovery-hint scanning, or coercion recording.
+    if let Ok(shape) = parse_batch_shape(input) {
+        validate_batch_item_count(shape.items.len())?;
     }
     parse_tool_args_with_recovery_hint(NAME, input, || exec_command_batch_recovery_hint(input))
+}
+
+// Known names preserve envelope recovery, but malformed defaults must not
+// hide an oversized items array from the shared admission/parser gate.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BatchShape {
+    items: Vec<IgnoredAny>,
+    #[serde(rename = "stop_on_error")]
+    _stop_on_error: Option<IgnoredAny>,
+    #[serde(rename = "workdir")]
+    _workdir: Option<IgnoredAny>,
+    #[serde(rename = "shell")]
+    _shell: Option<IgnoredAny>,
+    #[serde(rename = "login")]
+    _login: Option<IgnoredAny>,
+    #[serde(rename = "yield_time_ms")]
+    _yield_time_ms: Option<IgnoredAny>,
+    #[serde(rename = "max_output_tokens")]
+    _max_output_tokens: Option<IgnoredAny>,
+}
+
+fn parse_batch_shape(input: &Value) -> Result<BatchShape> {
+    prepare_tool_args(NAME, input, || {
+        format!("provide input for {NAME} that matches the published tool schema")
+    })
+    .map(|(shape, _)| shape)
+}
+
+/// Count the recovered batch array without parsing individual command types
+/// or recording a tool-input coercion. Round admission must check the raw
+/// input byte budgets before calling this bounded shape inspection.
+/// Inputs without a recoverable batch shape keep the normal typed error path.
+pub fn batch_item_count(input: &Value) -> Option<usize> {
+    parse_batch_shape(input).ok().map(|shape| shape.items.len())
 }
 
 fn exec_command_batch_recovery_hint(input: &Value) -> String {
@@ -132,7 +158,11 @@ fn exec_command_batch_recovery_hint(input: &Value) -> String {
 }
 
 pub fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
-    if args.items.is_empty() {
+    validate_batch_item_count(args.items.len())
+}
+
+fn validate_batch_item_count(item_count: usize) -> Result<()> {
+    if item_count == 0 {
         return Err(invalid_tool_input(
             NAME,
             format!("{NAME} requires at least one item"),
@@ -143,7 +173,7 @@ pub fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
             "provide one or more ExecCommandBatch items",
         ));
     }
-    if args.items.len() > MAX_ITEMS {
+    if item_count > MAX_ITEMS {
         return Err(invalid_tool_input(
             NAME,
             format!("{NAME} accepts at most {MAX_ITEMS} items"),
@@ -151,7 +181,7 @@ pub fn validate_batch_shape(args: &ExecCommandBatchArgs) -> Result<()> {
                 "field": "items",
                 "validation_error": "too_many_items",
                 "max_items": MAX_ITEMS,
-                "actual_items": args.items.len(),
+                "actual_items": item_count,
             }),
             "split the command batch into smaller bounded batches",
         ));
