@@ -1535,6 +1535,7 @@ dependencies = [
  "flate2",
  "fs2",
  "futures-util",
+ "holon-agent-templates",
  "holon-client",
  "holon-config",
  "holon-context",
@@ -1582,6 +1583,27 @@ dependencies = [
  "uuid",
  "wreq",
  "wreq-util",
+]
+
+[[package]]
+name = "holon-agent-templates"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "flate2",
+ "holon-domain",
+ "holon-github",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]

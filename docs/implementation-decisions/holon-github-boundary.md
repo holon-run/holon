@@ -5,9 +5,9 @@ bounded extraction, and caching of repository archives. Its callers supply the
 HTTP clients, configured credential, environment variable names, and cache
 locations appropriate to their entry points.
 
-Holon owns agent template and skill discovery, selection, and installation,
-including how GitHub errors are rendered on the control surface. The Copilot
-model integration uses the provider crate.
+`holon-agent-templates` owns template and skill discovery, selection, and
+installation. The application renders GitHub errors on the control surface.
+The Copilot model integration uses the provider crate.
 
 The GitHub client and the application share the error redaction function
 exported by `holon-domain` through its `error-sanitization` feature. This keeps
