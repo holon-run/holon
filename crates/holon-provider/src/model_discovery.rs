@@ -2644,7 +2644,7 @@ mod tests {
 
     #[test]
     fn opencode_go_discovery_accepts_reviewed_text_ids_without_inventing_capabilities() {
-        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 33);
+        assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 34);
         let mut data = OPENCODE_GO_TEXT_MODELS
             .iter()
             .map(|(id, _)| serde_json::json!({"id": id}))
@@ -2661,7 +2661,7 @@ mod tests {
             serde_json::from_value(serde_json::json!({"data": data})).unwrap();
         let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
         // Discovery is model-keyed, not route-keyed: retain one preferred record.
-        assert_eq!(models.len(), 33);
+        assert_eq!(models.len(), OPENCODE_GO_TEXT_MODELS.len());
         assert!(models
             .windows(2)
             .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));

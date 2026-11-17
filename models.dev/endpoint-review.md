@@ -9,6 +9,146 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-17 incremental review
+
+Baseline main is `3841ea0f`. The fixed models.dev payload was sampled on
+November 16 at **22:35:28 UTC** (November 17 Beijing cycle), SHA256
+`82eb03a35fac1b36ca09218a3c64126dbf8f1bc08ddd879c5f59fd1987780282`.
+The complete upstream inventory changed 2,019 model objects across 223
+providers; unmapped providers and unrelated prices/temperature declarations
+do not grant new runtime routes or subscription eligibility.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-17)
+separates endpoint contracts from upstream advisory data.
+
+### Endpoint-specific changes
+
+- Register `dashscope@default/qwen4-max` and the two Token Plan routes
+  `qwen4-max` / `qwen4-max-preview`. Preview is not a general API or Coding
+  Plan entitlement. Formal and preview Messages controls use their own
+  `output_config.effort` values, not a percentage-based `budget_tokens`.
+  Both Messages output defaults remain unknown. Token Plan explicit cache
+  qualification remains unconfirmed and disabled. Existing preferences stay.
+- Promote the two existing Daybreak Codex models out of the generic
+  supplement: Blue/Red default contexts are **272,000 / 372,000**, not the
+  ordinary API values or Blue's experimental maximum. Codex output limits
+  and auto-compaction thresholds remain unknown; do not enable delegation
+  `ultra`. The ordinary API models retain their independent metadata.
+- Keep `doubao-seed-2-1-pro-260628` context/derived auto-compaction unknown
+  on native and Plan routes. The exact dated row says **256K**; **1024K**
+  belongs to `260915` or the Plan dotted alias. Neither proves an exact
+  integer for `260628`; block the upstream `1,024,000 / 972,800` propagation.
+- Add Go native Chat `hy4-flash-free` and correct only the native K3/K3.1
+  output ceilings to **1,048,576**. Preserve their respective existing
+  output defaults and all translated-route limits. The new Flash
+  translations remain ineligible for agent turns until independently reviewed.
+- Add TokenHub `hy4-flash` on Chat, Messages and Responses: unknown capacities,
+  independently documented vision on all three, Chat effort `high/no_think`.
+  Do not advertise Chat reasoning controls on the other two protocols.
+- Add Qianfan Chat `ernie-light-dt-1.0` with its exact output contract and
+  `low/high/max` efforts. Context stays unknown; omit optional `thinking`
+  to preserve its documented enabled default rather than inventing a budget.
+- Add Xiaomi `mimo-v2.6-flash` on the existing default and Token Plan
+  Responses hosts. Context stays unknown, output default/ceiling is
+  **131,072**, and no independent custom effort levels are advertised.
+  Both existing Xiaomi Responses endpoint contracts require full input
+  history and disable remote compaction: the service rejects or ignores
+  `previous_response_id` / `context_management`, not just on the new model.
+- Review NVIDIA output defaults/ceilings from each exact hosted OpenAPI
+  schema, not manufacturer limits; add hosted M3.1 with unknown total context.
+  Fireworks M3.1 is separately confirmed serverless with context **1,048,576**;
+  its output default/ceiling and effort menu remain unknown.
+- Reject the exact native `gemini-3.5-live-translate-preview` supplement
+  candidate in both drafting and retention. Audio/transcript on Live API
+  is not an agent text route for Holon's GenerateContent transport. This
+  does not remove aggregator routes or claim that Live itself is unsupported.
+
+### Special-endpoint sweep and retained boundaries
+
+Each prefix below was checked against endpoint-specific public material.
+This is not a paid inference run, account entitlement check, or all-field
+recertification. A readable page or unchanged object alone is not acceptance
+evidence. Precise changes above supersede older gap statements below.
+
+| Exact endpoint | This cycle's decision / remaining boundary |
+|---|---|
+| `dashscope@default` | Formal Qwen4 only; no preview entitlement inferred. |
+| `dashscope@token-plan` | Formal + preview separately listed; explicit cache/default output unknown. |
+| `dashscope@coding-plan` | No Qwen4 transfer from API/Token Plan; existing reviewed set retained. |
+| `dashscope@coding-plan-intl` | No effective new page body; fresh all-field confirmation remains open. |
+| `volcengine@default` | Block exact Seed version capacity conflation; output facts not recertified by that decision. |
+| `volcengine@coding` | Existing reviewed aliases retained; ordinary API limits not copied. |
+| `volcengine@plan` | Dotted Seed alias does not establish the dated model's capacity. |
+| `tencent-tokenhub@default` | Hy4 Flash Chat eligible; capacities and explicit cache TTLs unknown. |
+| `tencent-tokenhub@messages` | Hy4 Flash vision independently confirmed; reasoning controls conservative. |
+| `tencent-tokenhub@responses` | Independent matrix permits Hy4 Flash; no Chat effort inheritance. |
+| `qianfan@default` | Light admitted; ERNIE 5.5 Flash deferred pending safe fixed-high request handling, not missing tools evidence. |
+| `bigmodel@default` | Existing routes retained; quota/region/account and unconfirmed defaults remain open. |
+| `zai@default` | Independent international evidence; no domestic limits or membership inferred. |
+| `xiaomi@default` | Flash on Responses, not Chat; unknown context; full-history-only contract. |
+| `xiaomi@token-plan` | Flash separately listed for Chinese subscription host; dedicated Key and quota boundaries retained. |
+| `minimax@default` | November **18** M2.5/M2.7 pay-as-you-go retirement is not November 17 deletion. Recommended output is not an omitted-parameter default. |
+| `minimax@m-plan` | Subscription aliases/Preview forwarding retained independently of API retirement. |
+| `minimax-cn@default` | Domestic schema/lifecycle sampled independently; same future retirement boundary. |
+| `minimax-cn@m-plan` | Domestic dedicated subscription evidence; Preview limits/account rights remain unknown. |
+| `moonshot@default` | Existing K3 facts retained; K2.x new-user restrictions are not universal immediate retirement. |
+| `moonshot-cn@default` | Independent domestic contract; zero static objects retained, not copied from international. |
+| `kimi@default` | Coding IDs are not native `kimi-k3*` IDs; dynamic configuration/qualification remains open. |
+| `kimi@coding` | Six public IDs/tier details now known, but high-vs-max default conflict and exact output limits remain open; no static additions. |
+| `qwen-portal@default` | OAuth requires Qwen Plus/Pro per official Qwen Code material; dynamic exact models/limits remain unknown. |
+| `nvidia@default` | Hosted schema values reviewed separately; no manufacturer retirement/cache/effort inheritance. |
+| `opencode-go@default` | Flash and Kimi native capacity changes only; free label is not unconditional external-client access. |
+| `opencode-go@messages` | Qwen4 existence/limits confirmed, but request controls not; defer admission rather than send invented budget percentages. |
+| `opencode-go@responses` | Existing native table retained; no Google/Zen Hydrogen transfer. |
+| `fireworks@default` | M3.1 independently serverless; implicit prompt caching is not explicit TTL support. |
+| `xiaomi@responses` | Public protocol material readable, but this separately tracked prefix still has zero static objects; not a new registered endpoint. |
+| `openai-codex@default` | Current official bundle reviewed; two Daybreak defaults corrected independently of ordinary API, experiments and delegation. |
+
+The Qwen4 preview entitlement runs **November 11, 2026 10:00 through
+November 25, 2026 24:00 UTC+8** (the latter is November 26 00:00).
+The current Token Plan page advertises Credits as low as 20%, with another
+40% nighttime multiplier at 22:00–08:00, subject to adjustment. This is
+temporary subscription evidence, not a permanent API price entry. Formal
+Beijing API RMB 10/30 per million input/output tokens is a different contract.
+
+### Verification
+
+The fixed refresh and validate completed. Explicit before/after assertions
+cover all 636 baseline routes: 12 additions, one native Live-only removal,
+19 existing runtime-object changes, three upstream-candidate-only changes,
+and 613 completely unchanged objects, leaving 647 routes. Five new aliases
+are individually checked; existing preferred models/routes remain unchanged.
+Only 29 review records were updated and the removed route's record deleted;
+the other 618 records are byte-value equivalent. The real 647-route
+`coverage --check` passes.
+
+Final isolated-target gates passed 198 catalog tests (one ignored), 328
+provider tests, 48 domain tests, and 11 + 11 + 1 adapter/coverage/capacity
+integration tests. Fixed refresh, validate, the real 647-route coverage check,
+complete-object assertions, formatting, and warning-denying all-targets
+checks for the main crate (all shards), catalog and provider passed.
+
+The full main-crate lib-c run was **1196 passed, six failed, eight ignored**,
+not green. Two failures were local IPv6 listener/network restrictions; the
+other four were daemon startup stability (`sleep` spawn NotFound), zombie
+liveness (`sleep` spawn NotFound), authentication reader checkout
+(Disconnected), and projection preflight (RecvError). Each of those four
+tests subsequently passed twice under exact serial filters, without code
+changes or skips. These eight passes do not replace the original full-run
+failures or establish a root cause for them.
+
+The final fixed-input refresh completed; its artifact fetch timestamp is
+November 17, 2026 01:39:57 UTC. The artifact differs only in that actual fetch
+timestamp; the summary now reflects the approved review notes, 54 retained
+supplement models and 190 deferred candidates. Runtime and review-record
+assertions and all eight exact reruns passed after that refresh.
+Independent read-only review covered 14 Rust files / 50 production hunks,
+1086 generated complete objects and two test corrections, with no confirmed
+finding within those scopes. The final metadata/runtime and summary/document
+delta review remains pending; this is not full vendor/account certification.
+Earlier Qwen/Live 192/327 passes and failed promoted-supplement loading
+attempts are not substitutes for these gates. Strict loading checks were
+retained while promoted Daybreak/Xiaomi records and their routes migrated.
+
 ## 2026-11-13 incremental review
 
 Baseline main is `5685f66f`. The fixed models.dev payload was sampled on

@@ -395,10 +395,15 @@ impl OpenAiProvider {
                     continuation: OpenAiResponsesContinuationContract::FullHistoryOnly,
                     remote_compaction: OpenAiResponsesRemoteCompactionContract::Unsupported,
                 }
-            } else if provider_config.route_provider.as_str() == "tencent-tokenhub"
-                && provider_config.route_endpoint.as_str() == "responses"
+            } else if (provider_config.route_provider.as_str() == "tencent-tokenhub"
+                && provider_config.route_endpoint.as_str() == "responses")
+                || (provider_config.route_provider.as_str() == "xiaomi"
+                    && matches!(
+                        provider_config.route_endpoint.as_str(),
+                        "default" | "token-plan"
+                    ))
             {
-                // The compatibility subset requires complete input history.
+                // These compatibility contracts require full history and no remote compaction.
                 OpenAiResponsesEndpointContract {
                     transport: OpenAiResponsesTransportContract::StandardJson,
                     continuation: OpenAiResponsesContinuationContract::FullHistoryOnly,

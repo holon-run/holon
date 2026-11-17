@@ -53,6 +53,7 @@ const TENCENT_TOKENHUB_RESPONSES_MODEL_IDS: &[&str] = &[
     "hy4-preview",
     "hy3",
     "hy4",
+    "hy4-flash",
     "deepseek/deepseek-flash",
     "deepseek-v4-flash-202605",
     "deepseek/deepseek-v4-flash-0731",
@@ -91,6 +92,7 @@ fn reviewed_chat_capabilities(id: &str) -> (bool, bool) {
     let reasoning = matches!(
         id,
         "hy4"
+            | "hy4-flash"
             | "hy4-preview"
             | "deepseek/deepseek-flash"
             | "deepseek-v4-flash-202605"
@@ -114,6 +116,7 @@ fn reviewed_chat_capabilities(id: &str) -> (bool, bool) {
     let image = matches!(
         id,
         "hy4"
+            | "hy4-flash"
             | "glm-5.3-flash"
             | "glm-5.3-flashx"
             | "kimi-k3"
@@ -136,7 +139,7 @@ fn reviewed_chat_policy(id: &str) -> BuiltInModelRoutePolicy {
         _ => (None, None),
     };
     let effort: &[&str] = match id {
-        "hy4" | "hy4-preview" => &["high", "no_think"],
+        "hy4" | "hy4-flash" | "hy4-preview" => &["high", "no_think"],
         "hy3" => &["low", "high", "no_think"],
         "deepseek-v4-pro" => &["low", "high", "max", "none"],
         "deepseek-v4.1-flash"
@@ -169,7 +172,7 @@ fn unreviewed_protocol_policy(id: &str) -> BuiltInModelRoutePolicy {
         capabilities: ModelCapabilityOverride {
             supports_reasoning: reasoning.then_some(false),
             // Hy4 vision is independently documented for all three protocols.
-            image_input: (image && id != "hy4").then_some(false),
+            image_input: (image && !matches!(id, "hy4" | "hy4-flash")).then_some(false),
             ..ModelCapabilityOverride::default()
         },
         ..BuiltInModelRoutePolicy::default()
@@ -232,6 +235,50 @@ pub(super) fn route_definitions() -> Vec<BuiltInModelRouteDefinition> {
                 }),
         )
         .collect()
+}
+
+#[test]
+fn tokenhub_hy4_flash_keeps_protocol_specific_reasoning_and_unknown_limits() {
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        for endpoint in ["default", "messages", "responses"] {
+            let route =
+                ModelRouteRef::parse(&format!("tencent-tokenhub@{endpoint}/hy4-flash")).unwrap();
+            assert!(catalog.get_route(&route).is_some());
+            let policy = catalog.resolve_route_policy(
+                &route,
+                &HashMap::new(),
+                &HashMap::new(),
+                None,
+                &ContextConfig::default(),
+                8_192,
+            );
+            assert!(policy.agent_turn);
+            assert!(policy.capabilities.image_input);
+            assert!(!policy.capabilities.parallel_tool_calls);
+            assert_eq!(policy.context_window_tokens, None);
+            assert_eq!(
+                catalog
+                    .get(&route.model_ref())
+                    .unwrap()
+                    .default_max_output_tokens,
+                None
+            );
+            assert_eq!(policy.runtime_max_output_tokens, 8_192);
+            assert_eq!(policy.max_output_tokens_upper_limit, None);
+            assert_eq!(
+                policy.capabilities.supports_reasoning,
+                endpoint == "default"
+            );
+            if endpoint == "default" {
+                assert_eq!(policy.reasoning_effort_options, ["high", "no_think"]);
+            } else {
+                assert!(policy.reasoning_effort_options.is_empty());
+            }
+        }
+    }
 }
 
 #[test]
@@ -334,7 +381,7 @@ fn tokenhub_retirements_and_v41_chat_efforts_follow_exact_endpoint_evidence() {
 #[test]
 fn tokenhub_responses_routes_follow_the_independent_protocol_matrix() {
     let catalog = BuiltInModelCatalog::from_legacy_definitions();
-    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 28);
+    assert_eq!(TENCENT_TOKENHUB_RESPONSES_MODEL_IDS.len(), 29);
     for id in TENCENT_TOKENHUB_MODELS
         .iter()
         .map(|model| model.0)

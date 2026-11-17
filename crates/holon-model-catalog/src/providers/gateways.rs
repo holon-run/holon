@@ -111,7 +111,6 @@ fn opencode_go_models_dev_entries() -> Vec<BuiltInModelMetadata> {
         ("claude-haiku-5-5", "Claude Haiku 5.5", 1_000_000, 128_000, true, Some("messages")),
         ("glm-5.3-flash", "GLM-5.3-Flash", 1_000_000, 131_072, true, None),
         ("glm-5.3", "GLM-5.3", 1_000_000, 131_072, false, None),
-        ("kimi-k3", "Kimi K3", 1_048_576, 131_072, true, None),
         ("longcat-2.0", "LongCat-2.0", 1_000_000, 131_072, false, None),
         ("deepseek-v4.1-flash", "DeepSeek V4.1 Flash", 1_000_000, 384_000, true, None),
         ("mimo-v2.6-flash", "MiMo-V2.6-Flash", 1_048_576, 131_072, true, None),
@@ -301,6 +300,16 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         ..opencode_go_model("hy4", "Hy4", 1_048_576, Some(65_536), true, true, None)
     });
     entries.push(BuiltInModelMetadata {
+        description: "OpenCode Go native Chat Hy4 Flash Free; capacity, vision and effort follow the official Go listing; output default and account eligibility remain unconfirmed.".into(),
+        default_max_output_tokens: None,
+        ..opencode_go_model("hy4-flash-free", "Hy4 Flash Free", 1_048_576, Some(65_536), true, true, None)
+    });
+    entries.push(BuiltInModelMetadata {
+        description: "OpenCode Go native Chat Kimi K3; the official output ceiling does not replace the existing conservative output default.".into(),
+        max_output_tokens_upper_limit: Some(1_048_576),
+        ..opencode_go_model("kimi-k3", "Kimi K3", 1_048_576, Some(131_072), true, true, None)
+    });
+    entries.push(BuiltInModelMetadata {
         model_ref: ModelRef::new(provider_id("opencode-go"), "kimi-k3.1-pro"),
         display_name: "Kimi K3.1 Pro".into(),
         description: "OpenCode Go and Go Plus native Chat route; capacity, modalities, and reasoning controls follow the official Go model listing.".into(),
@@ -308,7 +317,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
         effective_context_window_percent: DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT,
         auto_compact_token_limit: None,
         default_max_output_tokens: None,
-        max_output_tokens_upper_limit: Some(131_072),
+        max_output_tokens_upper_limit: Some(1_048_576),
         default_verbosity: None,
         tool_output_truncation_estimated_tokens: Some(
             DEFAULT_TOOL_OUTPUT_TRUNCATION_ESTIMATED_TOKENS,
@@ -403,7 +412,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             }
             "deepseek-v4-pro" | "glm-5.2" => &["high", "max"],
             "hy3" => &["none", "low", "high"],
-            "hy4" | "hy4-preview" => &["none", "high"],
+            "hy4" | "hy4-preview" | "hy4-flash-free" => &["none", "high"],
             "kimi-k3" => &["max"],
             "minimax-m3.1-flash" | "beam-free" | "claude-haiku-5-5" => {
                 &["low", "medium", "high", "xhigh", "max"]
@@ -426,6 +435,43 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn opencode_go_flash_and_kimi_capacities_remain_native_only() {
+        for catalog in [
+            BuiltInModelCatalog::from_legacy_definitions(),
+            BuiltInModelCatalog::new(),
+        ] {
+            for (id, default, ceiling) in [
+                ("hy4-flash-free", None, 65_536),
+                ("kimi-k3", Some(131_072), 1_048_576),
+                ("kimi-k3.1-pro", None, 1_048_576),
+            ] {
+                let native = ModelRouteRef::parse(&format!("opencode-go@default/{id}")).unwrap();
+                assert!(catalog.get_route(&native).is_some());
+                let metadata = catalog.get(&native.model_ref()).unwrap();
+                assert_eq!(metadata.context_window_tokens, Some(1_048_576));
+                assert_eq!(metadata.default_max_output_tokens, default);
+                assert_eq!(metadata.max_output_tokens_upper_limit, Some(ceiling));
+                if id == "hy4-flash-free" {
+                    assert_eq!(metadata.reasoning_effort_options, ["none", "high"]);
+                }
+                for endpoint in ["messages", "responses"] {
+                    let translated =
+                        ModelRouteRef::parse(&format!("opencode-go@{endpoint}/{id}")).unwrap();
+                    let policy = catalog.get_route(&translated).unwrap();
+                    assert_eq!(policy.context_window_tokens, Some(None));
+                    assert_eq!(policy.default_max_output_tokens, Some(None));
+                    assert_eq!(policy.max_output_tokens_upper_limit, Some(None));
+                    assert_eq!(policy.capabilities.image_input, Some(false));
+                    assert_eq!(policy.capabilities.supports_reasoning, Some(false));
+                    if id == "hy4-flash-free" {
+                        assert_eq!(policy.capabilities.agent_turn, Some(false));
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn opencode_go_hy4_native_metadata_does_not_certify_translation() {
@@ -558,7 +604,7 @@ mod tests {
                 .unwrap()
         };
         for (id, context, output, image) in [
-            ("kimi-k3.1-pro", 1_048_576, 131_072, true),
+            ("kimi-k3.1-pro", 1_048_576, 1_048_576, true),
             ("iceman-contributor-free", 262_144, 131_072, false),
             ("minimax-m3", 1_000_000, 131_072, true),
         ] {

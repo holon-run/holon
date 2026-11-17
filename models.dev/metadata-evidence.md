@@ -5,6 +5,47 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-17
+
+Pinned models.dev SHA256
+`82eb03a35fac1b36ca09218a3c64126dbf8f1bc08ddd879c5f59fd1987780282`,
+sampled **November 16, 2026 22:35:28 UTC**, against main `3841ea0f`.
+This is the November 17 Beijing cycle. Public material was sampled separately
+for all 30 special prefixes and Codex; account qualification was not exercised.
+Existing unchanged fields are preserved, not newly certified.
+
+| Exact route / field | Reviewed contract and boundary | Primary evidence sampled November 16 UTC |
+|---|---|---|
+| `dashscope@default/qwen4-max`; `dashscope@token-plan/qwen4-max` | Context 1,000,000; thinking output ceiling 262,144; image/tools; efforts low/high/xhigh. Messages output default unknown. Medium maps to high and runtime max to xhigh only for this exact DashScope model. | [Formal model](https://help.aliyun.com/zh/model-studio/qwen4-max), 22:37:24, SHA256 `762d7ff7fbc3f2441f284e0f60fb54c5ed9d98d46ced4d30e2ab72aa89765c79`; current Messages/deep-thinking references linked there. |
+| `dashscope@token-plan/qwen4-max-preview` | Exact context unknown ("1M"); output ceiling 393,216, default unknown; low/medium/xhigh. Runtime high/max map to xhigh. Preview stays out of default/Coding endpoints; explicit Token Plan cache disabled. | [Preview model](https://help.aliyun.com/zh/model-studio/qwen4-max-preview), 22:37:25, SHA256 `68eda18f3b6fd8e6a91236d806f07082cb7d57d54e524ee2d9c647c81be1d11c`; [personal Token Plan](https://help.aliyun.com/zh/model-studio/token-plan-personal-overview), 22:36:10, `6033bb6128d0a28765f2c9de802e7a795882474071aaadffec226aab56b21d32`. |
+| Both exact Qwen4 DashScope Messages models | Send `output_config.effort`, not `thinking.budget_tokens`; omission preserves distinct service defaults. This source does not certify Go's request fields. | [Messages API](https://help.aliyun.com/zh/model-studio/anthropic-api-messages), current model-specific controls plus the two model pages above. |
+| `openai-codex@default/gpt-daybreak-blue-latest`, `gpt-daybreak-red-latest` | Default contexts 272,000 / 372,000; output default/ceiling and auto-compaction unknown; parallel tools, image and ordinary low/medium/high/xhigh/max supported. Blue experimental 872,000 maximum is not the default; delegation ultra excluded. Ordinary API metadata unchanged. | [Official Codex immutable models blob](https://api.github.com/repos/openai/codex/git/blobs/489ebe3f2483348641a16160ce8491dd077eabca), 22:59:06, SHA256 `1384625c0b6b3e67d3c60da29becea2b017f2c283fc1e2d05b8edafb4698eb10`; Git blob SHA1 independently checked. |
+| `volcengine@default/doubao-seed-2-1-pro-260628`, `@plan` | Clear exact context/derived auto-compaction rather than accept 1,024,000/972,800. The dated model row says 256K, not an exact integer; 1024K is another version or dotted Plan alias. No output-default recertification. | [Dated model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md), [Agent Plan](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md), sampled and re-fetched at 22:56–22:57 with unchanged SHA256. |
+| `opencode-go@default/hy4-flash-free` | Native Chat context 1,048,576, output ceiling 65,536; default unknown; image/tools and top-level reasoning_effort none/high. Native API/reasoning objects match existing Hy4; no Messages/Responses capability transfer. | [Go model listing](https://opencode.ai/inference/go/v1/models), 22:37:58; [Go endpoint table](https://opencode.ai/v2/docs/console/go/). |
+| Go native `kimi-k3`, `kimi-k3.1-pro` | Output ceiling 1,048,576; keep defaults 131,072 / unknown and existing effort options. Translated route limits/defaults unchanged. | The same exact Go listing objects, not Zen or native Moonshot fields. |
+| `opencode-go@messages/qwen4-max` (deferred) | Listing establishes context 1,000,000, ceiling 262,144, effort labels low/high/xhigh, toggle/budget labels, 5m/1h cache. It does not identify serialized thinking controls; neither enabled/budget_tokens nor output_config.effort is certified. No route added. | Go listing/table and [official Inference docs source](https://raw.githubusercontent.com/anomalyco/opencode/dev/services/site/src/docs/content/console/api/inference.mdx); supplementary official SDK inspection distinguishes the two serialization shapes but does not prove backend acceptance. |
+| `tencent-tokenhub@default,messages,responses/hy4-flash` | All three eligible with independent vision evidence. Unknown context/default/ceiling. Only Chat advertises high/no_think; other protocol reasoning remains conservative, not declared impossible. | [Hy guide](https://cloud.tencent.com/document/product/1823/132252), [thinking](https://cloud.tencent.com/document/product/1823/131208), 22:38:40; independent protocol matrix and model table. |
+| `qianfan@default/ernie-light-dt-1.0` | Default output 65,536, ceiling 131,072, context unknown; tools/parallel; low/high/max. Optional thinking defaults enabled; unsupported thinking_budget omitted. | [Exact model parameter table](https://cloud.baidu.com/doc/qianfan/s/6mh4stoyf), 22:47:44, SHA256 `07341a44f58804be82972b8b1b969129dd93077033f4d0986bcf1a1e9007599f`. |
+| `qianfan@default/ernie-5.5-flash-preview` (deferred) | Tools/parallel and always-on reasoning confirmed; effort is fixed high, not an adjustable menu. Abbreviated context/default/ceiling do not establish exact integers. Generic unrestricted effort handling not admitted. | Same model-specific parameter table and current function-calling model lists. |
+| `xiaomi@default/mimo-v2.6-flash`; `xiaomi@token-plan/mimo-v2.6-flash` | Existing Responses hosts only. Default/ceiling 131,072; context unknown; vision/tools/reasoning; no distinct effort menu. Pro's context remains advisory client configuration, but its output fields now have direct schema evidence. | [Responses contract](https://mimo.mi.com/docs/en-US/api/chat/responses), 22:38:48, SHA256 `b6caf7f3627cf019050b241e688b7655f4a227829c41b54c55cc3466f8ee6ccf`; independent model and subscription pages. |
+| Xiaomi existing default/Token Plan Responses transport | `background`, `previous_response_id`, `context_management` unsupported. Use full history; disable remote compaction. Standard request already omits background. Exact canonical provider/endpoint matching, not model-prefix stripping. | Same Responses compatibility limitations; real paid backend exercise remains outside this review. |
+| `nvidia@default/nvidia/nemotron-3-super-120b-a12b` | Exact hosted max_tokens default 16,384 / ceiling 32,768; reasoning_effort none/low/high. Existing context not newly certified by this schema. | [Exact hosted schema](https://docs.api.nvidia.com/nim/reference/nvidia-nemotron-3-super-120b-a12b-infer). |
+| `nvidia@default/z-ai/glm-5.2`; `moonshotai/kimi-k2.6` | Hosted default/ceiling 16,384/32,768 and 16,384/65,536 respectively. No Nemotron effort inheritance. | Each model's embedded NVIDIA OpenAPI; Kimi's raw schema includes the default even when the HTML parameter view omits it. |
+| NVIDIA `minimaxai/minimax-m2.7`, `minimaxai/minimax-m3` | Hosted default/ceiling 8,192/16,384 each; not manufacturer limits or manufacturer retirement scope. | Exact model-specific NVIDIA OpenAPI, sources independently sampled in this cycle. |
+| `nvidia@default/minimaxai/minimax-m3.1-flash` | Hosted default/ceiling 16,384/65,536, image/tools/reasoning; total context and standard effort menu unknown. Published input-sequence length 1,000,000 does not certify an input+output total window. | Exact NVIDIA model card and OpenAPI, not a claim that this model was first released this cycle. |
+| `fireworks@default/accounts/fireworks/models/minimax-m3p1-flash` | Ready, Serverless, function tools/image/reasoning; integer context 1,048,576 from the same model's index entry. Output default/ceiling and effort menu unknown. | [Exact service model](https://fireworks.ai/models/fireworks/minimax-m3p1-flash), [official model index](https://fireworks.ai/models); do not convert display "1040k"/"1M" or inherit manufacturer 1,000,000/524,288. |
+| `gemini@default/gemini-3.5-live-translate-preview` (not admitted) | Live audio input and audio/transcript output are not a GenerateContent agent text route. Block both new drafting and previous-supplement retention; do not generalize this filter to aggregators. | [Exact Live model card](https://aistudio.google.com/docs/models/gemini-3.5-live-translate-preview), 22:51:11, SHA256 `578390c7351f29a7946b5116a5a9857aa7b9fd949055510771ba8b0f2eeea23b`. |
+
+The [endpoint sweep](endpoint-review.md#special-endpoint-sweep-and-retained-boundaries)
+records independently reviewed subscription, domestic/international, retirement,
+and dynamic-only boundaries. In particular, MiniMax's November 18 API retirement
+does not remove November 17 subscription/aggregator routes. Kimi Coding's
+high-versus-max default effort contradiction remains unresolved. The preview
+discount's exact expiry is recorded there, not turned into permanent pricing.
+
+Verification and complete-object delta approval are still pending; the earlier
+192/327 passing crate totals cover only the earlier Qwen/Live patch stage.
+
 ## Incremental review: 2026-11-13
 
 Pinned models.dev payload:

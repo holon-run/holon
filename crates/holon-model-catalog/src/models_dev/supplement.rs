@@ -561,6 +561,11 @@ fn supplement_model_supported_by_provider(
     model_id: &str,
     model: &ModelsDevModel,
 ) -> bool {
+    // Audio-only Live API transcripts are not GenerateContent text turns.
+    // https://ai.google.dev/gemini-api/docs/models/gemini-3.5-live-translate-preview
+    if provider == "gemini" && model_id == "gemini-3.5-live-translate-preview" {
+        return false;
+    }
     // Every supplement model implies a default API route. These EOS dates do
     // not retire independently registered coding/plan or hosted offerings.
     // https://ark.volcengine.com/region:cn-beijing/docs/model-deprecation-notice.md
@@ -1509,6 +1514,68 @@ mod tests {
     }
 
     #[test]
+    fn gemini_live_translation_is_not_drafted_or_retained_as_a_generate_content_route() {
+        let parsed: ModelsDevSnapshot = serde_json::from_str(
+            r#"{
+                "google": {
+                    "id": "google",
+                    "models": {
+                        "gemini-3.5-live-translate-preview": {
+                            "id": "gemini-3.5-live-translate-preview",
+                            "name": "Live translation",
+                            "release_date": "2026-11-16",
+                            "limit": {"context": 16384, "output": 16384},
+                            "modalities": {"input": ["audio"], "output": ["audio", "text"]}
+                        }
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        for retained in [false, true] {
+            let mut previous = ModelsDevSupplement::empty();
+            if retained {
+                previous.models.push(supplement_metadata(
+                    "gemini/gemini-3.5-live-translate-preview",
+                    "Live translation",
+                ));
+                previous.routes.push(
+                    ModelRouteRef::parse("gemini@default/gemini-3.5-live-translate-preview")
+                        .unwrap(),
+                );
+            }
+            let update = generate(
+                &parsed,
+                Some(&previous),
+                &legacy(),
+                "2026-11-17",
+                "rev",
+                "ver",
+            )
+            .unwrap();
+            assert!(update.supplement.models.is_empty());
+            assert!(update.supplement.routes.is_empty());
+            if retained {
+                assert_eq!(
+                    update.removed[0].reason,
+                    RemovalReason::UnsupportedByProvider
+                );
+            } else {
+                assert_eq!(
+                    update.deferred[0].reason,
+                    DeferredReason::UnsupportedByProvider
+                );
+            }
+        }
+        let live = &parsed.providers["google"].models["gemini-3.5-live-translate-preview"];
+        assert!(supplement_model_supported_by_provider(
+            "openrouter",
+            "gemini-3.5-live-translate-preview",
+            live
+        ));
+    }
+
+    #[test]
     fn excludes_audio_models_from_the_openai_codex_projection() {
         let parsed: ModelsDevSnapshot = serde_json::from_str(
             r#"{
@@ -1685,6 +1752,8 @@ mod tests {
         let mut prev = previous();
         let metadata = supplement_metadata("xai/grok-4.3", "Grok 4.3");
         prev.models.push(metadata);
+        prev.routes
+            .push(ModelRouteRef::parse("xai@plan/grok-4.3").unwrap());
         let update = generate(&parsed, Some(&prev), &legacy(), "2026-05-05", "rev", "ver").unwrap();
         assert!(update.removed.iter().any(|removed| {
             removed.model_ref == "xai/grok-4.3" && removed.reason == RemovalReason::PromotedToLegacy
@@ -1694,6 +1763,12 @@ mod tests {
             .models
             .iter()
             .any(|model| model.model_ref.as_string() == "xai/grok-4.3"));
+        assert!(!update
+            .supplement
+            .routes
+            .iter()
+            .any(|route| { route.model_ref().as_string() == "xai/grok-4.3" }));
+        update.supplement.validate().unwrap();
     }
 
     #[test]

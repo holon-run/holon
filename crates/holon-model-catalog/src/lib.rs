@@ -1705,7 +1705,7 @@ fn built_in_route_definitions() -> Vec<BuiltInModelRouteDefinition> {
                         image_generation: Some(false),
                         supports_reasoning: Some(false),
                         interactive_exec: Some(false),
-                        agent_turn: matches!(id, "hy4" | "crouton-alpha-free" | "longcat-2.5-free")
+                        agent_turn: matches!(id, "hy4" | "hy4-flash-free" | "crouton-alpha-free" | "longcat-2.5-free")
                             .then_some(false),
                         ..ModelCapabilityOverride::default()
                     },
@@ -2844,14 +2844,19 @@ mod tests {
     fn nvidia_catalog_tracks_the_public_hosted_model_directory() {
         let catalog = curated_catalog();
         let expected = [
-            ("nvidia/nemotron-3-super-120b-a12b", 1_000_000, false),
-            ("moonshotai/kimi-k2.6", 262_144, true),
-            ("minimaxai/minimax-m2.7", 204_800, false),
-            ("minimaxai/minimax-m3", 1_000_000, true),
-            ("z-ai/glm-5.2", 1_000_000, false),
+            (
+                "nvidia/nemotron-3-super-120b-a12b",
+                1_000_000,
+                false,
+                32_768,
+            ),
+            ("moonshotai/kimi-k2.6", 262_144, true, 65_536),
+            ("minimaxai/minimax-m2.7", 204_800, false, 16_384),
+            ("minimaxai/minimax-m3", 1_000_000, true, 16_384),
+            ("z-ai/glm-5.2", 1_000_000, false, 32_768),
         ];
 
-        for (model, context_window, image_input) in expected {
+        for (model, context_window, image_input, output_ceiling) in expected {
             let metadata = catalog
                 .get(&ModelRef::parse(&format!("nvidia/{model}")).unwrap())
                 .unwrap_or_else(|| panic!("{model} should be registered"));
@@ -2862,7 +2867,11 @@ mod tests {
             );
             assert_eq!(metadata.capabilities.image_input, image_input, "{model}");
             assert!(metadata.capabilities.supports_reasoning, "{model}");
-            assert!(metadata.max_output_tokens_upper_limit.is_none(), "{model}");
+            assert_eq!(
+                metadata.max_output_tokens_upper_limit,
+                Some(output_ceiling),
+                "{model}"
+            );
             assert_eq!(metadata.source, ModelMetadataSource::ConservativeBuiltin);
         }
 
@@ -3564,6 +3573,7 @@ mod tests {
                 "deepseek-v4.1-flash-1017",
                 "ernie-5.0-thinking-exp",
                 "ernie-5.1",
+                "ernie-light-dt-1.0",
                 "glm-5.1",
                 "glm-5.2",
                 "glm-5.3",
@@ -5160,7 +5170,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 45);
+        assert_eq!(models.len(), 46);
         for model in &models {
             assert_eq!(
                 catalog
@@ -5183,7 +5193,7 @@ mod tests {
                 .iter()
                 .filter(|model| !model.reasoning_effort_options.is_empty())
                 .count(),
-            22
+            23
         );
 
         for model in [
@@ -5323,7 +5333,7 @@ mod tests {
             let metadata = catalog.get(&route.model_ref()).unwrap();
             assert_eq!(metadata.context_window_tokens, Some(1_048_576));
             assert_eq!(metadata.default_max_output_tokens, None);
-            assert_eq!(metadata.max_output_tokens_upper_limit, Some(131_072));
+            assert_eq!(metadata.max_output_tokens_upper_limit, Some(1_048_576));
             assert_eq!(metadata.auto_compact_token_limit, None);
             assert!(metadata.capabilities.image_input);
             assert!(metadata.capabilities.supports_reasoning);
@@ -5438,7 +5448,6 @@ mod tests {
             ("claude-haiku-5-5", 1_000_000, 128_000, true),
             ("glm-5.3-flash", 1_000_000, 131_072, true),
             ("glm-5.3", 1_000_000, 131_072, false),
-            ("kimi-k3", 1_048_576, 131_072, true),
             ("longcat-2.0", 1_000_000, 131_072, false),
             ("deepseek-v4.1-flash", 1_000_000, 384_000, true),
             ("mimo-v2.6-flash", 1_048_576, 131_072, true),
@@ -5538,7 +5547,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 39);
+        assert_eq!(models.len(), 40);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());

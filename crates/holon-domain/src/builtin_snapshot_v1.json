@@ -2172,6 +2172,58 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "dashscope/qwen4-max",
+      "display_name": "qwen4-max",
+      "description": "DashScope qwen4-max Messages model; max_tokens is required, not an omitted protocol default.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 262144,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "xhigh"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "dashscope/qwen4-max-preview",
+      "display_name": "qwen4-max-preview",
+      "description": "DashScope qwen4-max-preview Messages model; max_tokens is required, not an omitted protocol default.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 393216,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "xhigh"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "deepseek/deepseek-flash",
       "display_name": "DeepSeek Flash",
       "description": "DeepSeek Flash with image input through the Responses API; conservative reviewed ceilings, not the native API's full binary-unit limits.",
@@ -2348,6 +2400,27 @@
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
       "max_output_tokens_upper_limit": 512000,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "fireworks/accounts/fireworks/models/minimax-m3p1-flash",
+      "display_name": "MiniMax M3.1 Flash",
+      "description": "Holon conservative built-in metadata for the Fireworks serverless accounts/fireworks/models/minimax-m3p1-flash model.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3177,8 +3250,8 @@
       "context_window_tokens": 204800,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 16384,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3198,8 +3271,29 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "default_max_output_tokens": 8192,
+      "max_output_tokens_upper_limit": 16384,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "nvidia/minimaxai/minimax-m3.1-flash",
+      "display_name": "MiniMax M3.1 Flash",
+      "description": "Holon conservative built-in metadata for the NVIDIA-hosted minimaxai/minimax-m3.1-flash model.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3219,8 +3313,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 65536,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3240,8 +3334,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3252,6 +3346,11 @@
         "supports_reasoning": true,
         "interactive_exec": false
       },
+      "reasoning_effort_options": [
+        "none",
+        "low",
+        "high"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -3261,8 +3360,8 @@
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
-      "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": null,
+      "default_max_output_tokens": 16384,
+      "max_output_tokens_upper_limit": 32768,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -3441,6 +3540,62 @@
         "supports_reasoning": true,
         "interactive_exec": true
       },
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "openai-codex/gpt-daybreak-blue-latest",
+      "display_name": "Daybreak Blue (Codex)",
+      "description": "Codex default context reviewed independently of the API and experimental maximum context.",
+      "context_window_tokens": 272000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
+      "source": "built_in_catalog"
+    },
+    {
+      "model_ref": "openai-codex/gpt-daybreak-red-latest",
+      "display_name": "Daybreak Red (Codex)",
+      "description": "Codex default context reviewed independently of the API and experimental maximum context.",
+      "context_window_tokens": 372000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "source": "built_in_catalog"
     },
     {
@@ -4024,6 +4179,31 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/hy4-flash-free",
+      "display_name": "Hy4 Flash Free",
+      "description": "OpenCode Go native Chat Hy4 Flash Free; capacity, vision and effort follow the official Go listing; output default and account eligibility remain unconfirmed.",
+      "context_window_tokens": 1048576,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 65536,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "none",
+        "high"
+      ],
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/hy4-preview",
       "display_name": "Hy4 preview",
       "description": "OpenCode Go hy4-preview route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
@@ -4114,12 +4294,12 @@
     {
       "model_ref": "opencode-go/kimi-k3",
       "display_name": "Kimi K3",
-      "description": "OpenCode Go kimi-k3 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
+      "description": "OpenCode Go native Chat Kimi K3; the official output ceiling does not replace the existing conservative output default.",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
+      "max_output_tokens_upper_limit": 1048576,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4143,7 +4323,7 @@
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
       "default_max_output_tokens": null,
-      "max_output_tokens_upper_limit": 131072,
+      "max_output_tokens_upper_limit": 1048576,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -4825,6 +5005,32 @@
         "supports_reasoning": false,
         "interactive_exec": false
       },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "qianfan/ernie-light-dt-1.0",
+      "display_name": "ERNIE Light DT 1.0",
+      "description": "Qianfan ERNIE Light DT 1.0 Chat; exact output default and ceiling are documented, while the abbreviated context remains unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 65536,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": true,
+        "image_input": false,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "reasoning_effort_options": [
+        "low",
+        "high",
+        "max"
+      ],
       "source": "conservative_builtin"
     },
     {
@@ -5818,6 +6024,27 @@
       "model_ref": "tencent-tokenhub/hy4",
       "display_name": "Hy4",
       "description": "Holon conservative built-in metadata for the Tencent TokenHub hy4 model.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
+      "model_ref": "tencent-tokenhub/hy4-flash",
+      "display_name": "Hy4 Flash",
+      "description": "Holon conservative built-in metadata for the Tencent TokenHub hy4-flash model.",
       "context_window_tokens": null,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": null,
@@ -7421,9 +7648,30 @@
       "source": "built_in_catalog"
     },
     {
+      "model_ref": "xiaomi/mimo-v2.6-flash",
+      "display_name": "MiMo-V2.6-Flash",
+      "description": "Xiaomi MiMo V2.6 Flash Responses; exact output default and ceiling are documented, while context and custom reasoning efforts remain unconfirmed.",
+      "context_window_tokens": null,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "xiaomi/mimo-v2.6-pro",
       "display_name": "MiMo-V2.6-Pro",
-      "description": "Xiaomi MiMo V2.6 Pro; token defaults follow official client configuration examples, not independently verified service hard limits.",
+      "description": "Xiaomi MiMo V2.6 Pro; context follows advisory client examples, while output default and ceiling follow the Responses contract.",
       "context_window_tokens": 1048576,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 996147,
@@ -9061,6 +9309,16 @@
       }
     },
     {
+      "route_ref": "dashscope@default/qwen4-max",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "dashscope@token-plan/MiniMax-M2.5",
       "policy": {
         "display_name": null,
@@ -9318,6 +9576,32 @@
       }
     },
     {
+      "route_ref": "dashscope@token-plan/qwen4-max",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "dashscope@token-plan/qwen4-max-preview",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "deepseek@default/deepseek-v4-flash",
       "policy": {
         "display_name": null,
@@ -9419,6 +9703,16 @@
     },
     {
       "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3p1-flash",
       "policy": {
         "display_name": null,
         "description": null,
@@ -9862,6 +10156,16 @@
       }
     },
     {
+      "route_ref": "nvidia@default/minimaxai/minimax-m3.1-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "nvidia@default/moonshotai/kimi-k2.6",
       "policy": {
         "display_name": null,
@@ -9963,6 +10267,26 @@
     },
     {
       "route_ref": "openai-codex@default/gpt-6.1-terra",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "openai-codex@default/gpt-daybreak-blue-latest",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "openai-codex@default/gpt-daybreak-red-latest",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10274,6 +10598,16 @@
     },
     {
       "route_ref": "opencode-go@default/hy4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "opencode-go@default/hy4-flash-free",
       "policy": {
         "display_name": null,
         "description": null,
@@ -10907,6 +11241,31 @@
     },
     {
       "route_ref": "opencode-go@messages/hy4",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
+      "route_ref": "opencode-go@messages/hy4-flash-free",
       "policy": {
         "cache_capabilities": {
           "cache_control": false
@@ -11653,6 +12012,31 @@
       }
     },
     {
+      "route_ref": "opencode-go@responses/hy4-flash-free",
+      "policy": {
+        "cache_capabilities": {
+          "cache_control": false
+        },
+        "display_name": null,
+        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
+        "context_window_tokens": null,
+        "effective_context_window_percent": null,
+        "auto_compact_token_limit": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "default_verbosity": null,
+        "capabilities": {
+          "agent_turn": false,
+          "parallel_tool_calls": false,
+          "image_input": false,
+          "image_generation": false,
+          "supports_reasoning": false,
+          "interactive_exec": false
+        },
+        "reasoning_effort_options": []
+      }
+    },
+    {
       "route_ref": "opencode-go@responses/hy4-preview",
       "policy": {
         "cache_capabilities": {
@@ -12153,6 +12537,16 @@
     },
     {
       "route_ref": "qianfan@default/ernie-5.1",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "qianfan@default/ernie-light-dt-1.0",
       "policy": {
         "display_name": null,
         "description": null,
@@ -12712,6 +13106,19 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@default/hy4-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": [
+          "high",
+          "no_think"
+        ]
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@default/hy4-preview",
       "policy": {
         "display_name": null,
@@ -13132,6 +13539,18 @@
       }
     },
     {
+      "route_ref": "tencent-tokenhub@messages/hy4-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {
+          "supports_reasoning": false
+        },
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "tencent-tokenhub@messages/hy4-preview",
       "policy": {
         "display_name": null,
@@ -13487,6 +13906,18 @@
     },
     {
       "route_ref": "tencent-tokenhub@responses/hy4",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {
+          "supports_reasoning": false
+        },
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "tencent-tokenhub@responses/hy4-flash",
       "policy": {
         "display_name": null,
         "description": null,
@@ -14442,7 +14873,27 @@
       }
     },
     {
+      "route_ref": "xiaomi@default/mimo-v2.6-flash",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "xiaomi@default/mimo-v2.6-pro",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
+      "route_ref": "xiaomi@token-plan/mimo-v2.6-flash",
       "policy": {
         "display_name": null,
         "description": null,
@@ -14830,6 +15281,14 @@
       "target": "dashscope/qwen3.8-max-preview"
     },
     {
+      "alias": "dashscope-token-plan/qwen4-max",
+      "target": "dashscope/qwen4-max"
+    },
+    {
+      "alias": "dashscope-token-plan/qwen4-max-preview",
+      "target": "dashscope/qwen4-max-preview"
+    },
+    {
       "alias": "dashscope/qwen-3.7",
       "target": "dashscope/qwen3.7-max"
     },
@@ -14966,6 +15425,10 @@
       "target": "tencent-tokenhub/hy4"
     },
     {
+      "alias": "tencent-tokenhub-messages/hy4-flash",
+      "target": "tencent-tokenhub/hy4-flash"
+    },
+    {
       "alias": "tencent-tokenhub-messages/hy4-preview",
       "target": "tencent-tokenhub/hy4-preview"
     },
@@ -15092,6 +15555,10 @@
     {
       "alias": "tencent-tokenhub-responses/hy4",
       "target": "tencent-tokenhub/hy4"
+    },
+    {
+      "alias": "tencent-tokenhub-responses/hy4-flash",
+      "target": "tencent-tokenhub/hy4-flash"
     },
     {
       "alias": "tencent-tokenhub-responses/hy4-preview",
@@ -15268,6 +15735,10 @@
     {
       "alias": "volcengine-image-openai/doubao-seedream-5.0-lite",
       "target": "volcengine/doubao-seedream-5.0-lite"
+    },
+    {
+      "alias": "xiaomi-token-plan/mimo-v2.6-flash",
+      "target": "xiaomi/mimo-v2.6-flash"
     },
     {
       "alias": "xiaomi-token-plan/mimo-v2.6-pro",
@@ -16036,6 +16507,14 @@
       "route_ref": "dashscope@default/qwen3.8-max-preview"
     },
     {
+      "model_ref": "dashscope/qwen4-max",
+      "route_ref": "dashscope@default/qwen4-max"
+    },
+    {
+      "model_ref": "dashscope/qwen4-max-preview",
+      "route_ref": "dashscope@token-plan/qwen4-max-preview"
+    },
+    {
       "model_ref": "deepseek/deepseek-flash",
       "route_ref": "deepseek@responses/deepseek-flash"
     },
@@ -16070,6 +16549,10 @@
     {
       "model_ref": "fireworks/accounts/fireworks/models/minimax-m3",
       "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3"
+    },
+    {
+      "model_ref": "fireworks/accounts/fireworks/models/minimax-m3p1-flash",
+      "route_ref": "fireworks@default/accounts/fireworks/models/minimax-m3p1-flash"
     },
     {
       "model_ref": "fireworks/accounts/fireworks/models/qwen3p6-plus",
@@ -16228,6 +16711,10 @@
       "route_ref": "nvidia@default/minimaxai/minimax-m3"
     },
     {
+      "model_ref": "nvidia/minimaxai/minimax-m3.1-flash",
+      "route_ref": "nvidia@default/minimaxai/minimax-m3.1-flash"
+    },
+    {
       "model_ref": "nvidia/moonshotai/kimi-k2.6",
       "route_ref": "nvidia@default/moonshotai/kimi-k2.6"
     },
@@ -16270,6 +16757,14 @@
     {
       "model_ref": "openai-codex/gpt-6.1-terra",
       "route_ref": "openai-codex@default/gpt-6.1-terra"
+    },
+    {
+      "model_ref": "openai-codex/gpt-daybreak-blue-latest",
+      "route_ref": "openai-codex@default/gpt-daybreak-blue-latest"
+    },
+    {
+      "model_ref": "openai-codex/gpt-daybreak-red-latest",
+      "route_ref": "openai-codex@default/gpt-daybreak-red-latest"
     },
     {
       "model_ref": "openai/gpt-5.3",
@@ -16366,6 +16861,10 @@
     {
       "model_ref": "opencode-go/hy4",
       "route_ref": "opencode-go@default/hy4"
+    },
+    {
+      "model_ref": "opencode-go/hy4-flash-free",
+      "route_ref": "opencode-go@default/hy4-flash-free"
     },
     {
       "model_ref": "opencode-go/hy4-preview",
@@ -16510,6 +17009,10 @@
     {
       "model_ref": "qianfan/ernie-5.1",
       "route_ref": "qianfan@default/ernie-5.1"
+    },
+    {
+      "model_ref": "qianfan/ernie-light-dt-1.0",
+      "route_ref": "qianfan@default/ernie-light-dt-1.0"
     },
     {
       "model_ref": "qianfan/glm-5.1",
@@ -16702,6 +17205,10 @@
     {
       "model_ref": "tencent-tokenhub/hy4",
       "route_ref": "tencent-tokenhub@default/hy4"
+    },
+    {
+      "model_ref": "tencent-tokenhub/hy4-flash",
+      "route_ref": "tencent-tokenhub@default/hy4-flash"
     },
     {
       "model_ref": "tencent-tokenhub/hy4-preview",
@@ -16994,6 +17501,10 @@
     {
       "model_ref": "xai/grok-imagine-image-quality",
       "route_ref": "xai@default/grok-imagine-image-quality"
+    },
+    {
+      "model_ref": "xiaomi/mimo-v2.6-flash",
+      "route_ref": "xiaomi@default/mimo-v2.6-flash"
     },
     {
       "model_ref": "xiaomi/mimo-v2.6-pro",
