@@ -36,12 +36,15 @@ pub(crate) use timer_writes::{PreparedTimerTransition, TimerMutationOutcome};
 pub(crate) use trigger_writes::{
     ExternalTriggerMutationOutcome, PreparedExternalTriggerTransition,
 };
+#[path = "prepared_task_baselines.rs"]
+mod task_baselines;
 #[path = "prepared_task_stop.rs"]
 mod task_stop;
 #[path = "prepared_task_stop_phase.rs"]
 mod task_stop_phase;
 #[path = "prepared_input_task_writes.rs"]
 mod task_writes;
+pub(crate) use task_baselines::PreparedTaskBaselines;
 pub(crate) use task_stop_phase::worktree_receipt_exists_tx;
 #[path = "prepared_current_writes.rs"]
 mod current_writes;
@@ -401,6 +404,40 @@ impl InputTransitionCommand {
     }
 }
 
+#[derive(Debug)]
+struct PreparedTaskBaseline {
+    resident: std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>,
+    coverage_json: String,
+    unpublished: bool,
+    _guard: std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
+}
+
+impl PreparedTaskBaseline {
+    fn new(
+        resident: std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        use crate::runtime::input_evidence_budget::{
+            serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
+        };
+        let bytes = serialized_bytes(resident.coverage())?;
+        let guard = ledger.register_owned_bytes(
+            resident.scope(),
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: bytes,
+            },
+        )?;
+        Ok(Self {
+            coverage_json: serde_json::to_string(resident.coverage())?,
+            resident,
+            unpublished: false,
+            _guard: guard,
+        })
+    }
+}
+
 /// Deliberately not Clone: the owned command is not copied into its receipt or
 /// witness. The witness retains only descriptor + original-attempt completion.
 #[derive(Debug)]
@@ -412,7 +449,7 @@ pub(crate) struct PreparedInputTransition {
     ended_memory: Option<crate::runtime::ended_dispatch::EndedDispatchAuthorization>,
     original_dispatch_claim: Option<crate::runtime::started_dispatch::OriginalDispatchClaim>,
     auto_base_descriptor: Option<PreparedInputMutation>,
-    defer_task_base: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
+    task_bases: Vec<PreparedTaskBaseline>,
 }
 impl PreparedInputTransition {
     /// Only the original typed Queue ACK can carry this read-only observation.
@@ -841,7 +878,7 @@ impl PreparedInputTransition {
             ended_memory: None,
             original_dispatch_claim: None,
             auto_base_descriptor: None,
-            defer_task_base: None,
+            task_bases: Vec::new(),
         })
     }
     pub(crate) fn with_original_dispatch_claim(
@@ -878,14 +915,23 @@ impl PreparedInputTransition {
         )
     }
 
-    pub(crate) fn with_defer_task_base(
+    #[cfg(test)]
+    pub(crate) fn with_task_bases(
         mut self,
-        tasks: Option<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
-    ) -> Self {
-        if self.is_task_result_defer() {
-            self.defer_task_base = tasks;
-        }
-        self
+        tasks: Vec<std::sync::Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        self.task_bases = tasks
+            .into_iter()
+            .map(|resident| PreparedTaskBaseline::new(resident, ledger))
+            .collect::<Result<_>>()?;
+        Ok(self)
+    }
+
+    fn task_base(&self, scope: &InputEvidenceScope) -> Option<&PreparedTaskBaseline> {
+        self.task_bases
+            .iter()
+            .find(|tasks| tasks.resident.scope() == scope)
     }
 
     pub(crate) fn owned_payload_bytes(&self) -> Result<u64> {
@@ -2380,6 +2426,26 @@ impl RuntimeTransitionRepository<'_> {
             &timer_writes::default_request(work_request),
         )
     }
+
+    /// The original owner keeps its witness and frozen capsule across named
+    /// Task preparation. This never retries OCC or an uncertain business write.
+    pub(crate) fn commit_prepared_transition_with_task_preparation(
+        &self,
+        prepared: &PreparedInputTransition,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        task_bases: &mut PreparedTaskBaselines,
+    ) -> Result<InputMutationExecution<TransitionCommit>> {
+        self.commit_prepared_transition_with_task_domains_and_preparation(
+            prepared,
+            work_request,
+            memory_ledger,
+            task_request,
+            &timer_writes::default_request(work_request),
+            task_bases,
+        )
+    }
     pub(crate) fn commit_prepared_transition_with_domain_requests(
         &self,
         prepared: &PreparedInputTransition,
@@ -2388,17 +2454,62 @@ impl RuntimeTransitionRepository<'_> {
         task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
         scheduling_request: &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest,
     ) -> Result<InputMutationExecution<TransitionCommit>> {
-        self.commit_prepared_transition_with_domains_and_input_query(
+        let mut task_bases = PreparedTaskBaselines::default();
+        self.commit_prepared_transition_with_task_domains_and_preparation(
             prepared,
             work_request,
             memory_ledger,
             task_request,
             scheduling_request,
-            None,
-            None,
+            &mut task_bases,
         )
     }
 
+    fn commit_prepared_transition_with_task_domains_and_preparation(
+        &self,
+        prepared: &PreparedInputTransition,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        scheduling_request: &crate::runtime_db::scheduling_snapshot::SchedulingDomainLoadRequest,
+        task_bases: &mut PreparedTaskBaselines,
+    ) -> Result<InputMutationExecution<TransitionCommit>> {
+        let attempts = prepared.descriptor.scopes().len().saturating_mul(3).max(3);
+        for attempt in 0..attempts {
+            let result = self.commit_prepared_transition_with_domains_and_input_query(
+                prepared,
+                work_request,
+                memory_ledger,
+                task_request,
+                scheduling_request,
+                None,
+                None,
+                Some(task_bases),
+            );
+            let error = match result {
+                Ok(execution) => return Ok(execution),
+                Err(error) => error,
+            };
+            let Some(stale) =
+                error.downcast_ref::<crate::runtime_db::task_snapshot::TaskWriteBaselineStale>()
+            else {
+                return Err(error);
+            };
+            if attempt + 1 == attempts {
+                return Err(error);
+            }
+            if let Err(preparation) = task_bases.reprepare(self.db, stale, memory_ledger) {
+                // The failed business preflight is still definitely uncommitted;
+                // a qualification attempt cannot change its original certainty.
+                return Err(
+                    error.context(format!("Task baseline preparation failed: {preparation:#}"))
+                );
+            }
+        }
+        unreachable!("bounded Task preparation returns its last original attempt")
+    }
+
+    #[cfg(test)]
     pub(crate) fn commit_prepared_transition_with_input_query(
         &self,
         prepared: &PreparedInputTransition,
@@ -2420,6 +2531,33 @@ impl RuntimeTransitionRepository<'_> {
             &timer_writes::default_request(work_request),
             input_query_source,
             current_query_source,
+            None,
+        )
+    }
+
+    pub(crate) fn commit_prepared_transition_with_input_query_and_task_bases(
+        &self,
+        prepared: &PreparedInputTransition,
+        work_request: &crate::runtime_db::work_snapshot::WorkDomainLoadRequest,
+        memory_ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        task_request: &crate::runtime_db::task_snapshot::TaskDomainLoadRequest,
+        input_query_source: Option<
+            &crate::runtime::resident_input_evidence::OriginalInputQuerySource,
+        >,
+        current_query_source: Option<
+            &std::sync::Arc<crate::runtime_db::current_query::CurrentQuerySource>,
+        >,
+        task_bases: &PreparedTaskBaselines,
+    ) -> Result<InputMutationExecution<TransitionCommit>> {
+        self.commit_prepared_transition_with_domains_and_input_query(
+            prepared,
+            work_request,
+            memory_ledger,
+            task_request,
+            &timer_writes::default_request(work_request),
+            input_query_source,
+            current_query_source,
+            Some(task_bases),
         )
     }
 
@@ -2664,6 +2802,7 @@ impl RuntimeTransitionRepository<'_> {
         deleting: bool,
         child_entry: Option<child_terminal::ChildCurrentEntryMaterial>,
         context: &mut PreparedTransitionContext<'tx, 'connection, 'command>,
+        task_bases: Option<&PreparedTaskBaselines>,
     ) -> Result<()> {
         let PreparedTransitionContext {
             memory_budget,
@@ -2691,6 +2830,7 @@ impl RuntimeTransitionRepository<'_> {
             task_request,
             memory_ledger,
             memory_budget.as_mut(),
+            task_bases,
         )?;
         *task_transaction = if let Some(entry) = child_entry {
             task_writes::prepare_child_task_transaction_tx(
@@ -2702,6 +2842,7 @@ impl RuntimeTransitionRepository<'_> {
                 memory_ledger,
                 memory_budget.as_mut(),
                 entry,
+                task_bases,
             )?
         } else {
             task_writes::prepare_task_transaction_tx(
@@ -2712,6 +2853,7 @@ impl RuntimeTransitionRepository<'_> {
                 task_request,
                 memory_ledger,
                 memory_budget.as_mut(),
+                task_bases,
             )?
         };
         *_creation_material = if let InputTransitionCommand::Task(task) = prepared.command.as_ref()
@@ -3003,6 +3145,7 @@ impl RuntimeTransitionRepository<'_> {
         current_query_source: Option<
             &'tx std::sync::Arc<crate::runtime_db::current_query::CurrentQuerySource>,
         >,
+        task_bases: Option<&PreparedTaskBaselines>,
     ) -> Result<PreparedTransitionPreflight<'tx, 'connection, 'command>> {
         let validation = Self::preflight_validate_tx(
             tx,
@@ -3050,6 +3193,7 @@ impl RuntimeTransitionRepository<'_> {
             deleting,
             child_entry,
             context.as_mut(),
+            task_bases,
         )?;
         Self::preflight_memory_and_current_tx(
             tx,
@@ -3076,6 +3220,7 @@ impl RuntimeTransitionRepository<'_> {
         current_query_source: Option<
             &std::sync::Arc<crate::runtime_db::current_query::CurrentQuerySource>,
         >,
+        task_bases: Option<&PreparedTaskBaselines>,
     ) -> Result<InputMutationExecution<TransitionCommit>> {
         let scope = self
             .input_scope
@@ -3117,6 +3262,7 @@ impl RuntimeTransitionRepository<'_> {
         });
         let measure_queue = queue.is_some();
         let commit = |tx: &Transaction<'_>| {
+            let _task_writer = tracing::trace_span!("prepared_task_writer").entered();
             if let InputTransitionCommand::ExternalTrigger(command) = prepared.command.as_ref() {
                 return trigger_writes::commit_tx(
                     tx,
@@ -3201,6 +3347,7 @@ impl RuntimeTransitionRepository<'_> {
                 scheduling_request,
                 input_query_source,
                 current_query_source,
+                task_bases,
             );
             drop((defer_preflight, queue_preflight));
             let mut preflight = match preflight? {

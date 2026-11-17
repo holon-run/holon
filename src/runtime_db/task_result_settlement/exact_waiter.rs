@@ -285,11 +285,11 @@ fn wait_triggered_by_source_tx(
         "SELECT wait_condition_id,agent_id,work_item_id,status,kind,source,subject_ref,
          waiting_for,created_at,updated_at,expires_at,resolved_at,cancelled_at,last_turn_id,
          trigger_message_id,triggered_at,wake_sources_json,continuation_json FROM wait_conditions
-         WHERE agent_id = ?1 AND work_item_id IS ?2
+         WHERE agent_id = ?1 AND trigger_message_id = ?2 AND work_item_id IS ?3
          ORDER BY wait_condition_id ASC",
     )?;
     let rows = statement.query_map(
-        params![source.agent_id, source.work_item_id],
+        params![source.agent_id, source.id, source.work_item_id],
         decode_canonical_wait,
     )?;
     for wait in rows {

@@ -196,7 +196,7 @@ fn pending(
 fn result_defer_records_callback_phases_and_preserves_receipt_replay() -> Result<()> {
     use crate::diagnostics::attribution;
 
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let (source, _) = pending(&f, &ledger, false)?;
     let request = request();
@@ -258,9 +258,106 @@ fn result_defer_records_callback_phases_and_preserves_receipt_replay() -> Result
 }
 
 #[test]
+fn result_defer_ack_installs_the_actual_unpublished_reader_baseline() -> Result<()> {
+    for mode in ["same revision", "revision drift", "noop"] {
+        let f = Fixture::new_task_ready()?;
+        let ledger = ledger()?;
+        let (source, _) = pending(&f, &ledger, false)?;
+        let extra_key = TaskKey::new(TaskFamily::Task, "result:previously-unselected");
+        qualify_task(&f, terminal_task(&f, &extra_key.id, &source, None), &ledger)?;
+        let mut request = request();
+        request.capture.terminal_limit = 0;
+        let operation = || TaskResultOperation::Defer {
+            message_id: source.id.clone(),
+            reason: "original frozen deferral".into(),
+            at: f.at + chrono::Duration::seconds(2),
+            deadline: f.at + chrono::Duration::seconds(32),
+        };
+        if mode == "noop" {
+            let original = freeze_result(&f, "baseline:original", operation())?;
+            drop(execute(&f, &original, &request, &ledger)?);
+        }
+        let base =
+            std::sync::Arc::new(f.db.transaction(|tx| {
+                Ok(tasks::prepare_task_domain_snapshot_with_budget_tx(
+                    tx, &f.scope, &request, &ledger,
+                )?
+                .require_current()?
+                .resident)
+            })?);
+        assert!(!base
+            .selected_install_records()
+            .iter()
+            .any(|record| record.locator.key == extra_key));
+        if mode == "revision drift" {
+            let advance = freeze_result(
+                &f,
+                "baseline:advance",
+                TaskResultOperation::Defer {
+                    message_id: source.id.clone(),
+                    reason: "another original deferral".into(),
+                    at: f.at + chrono::Duration::seconds(1),
+                    deadline: f.at + chrono::Duration::seconds(31),
+                },
+            )?;
+            drop(execute(&f, &advance, &request, &ledger)?);
+        }
+        request.capture.required_keys.insert(extra_key.clone());
+        let prepared = freeze_result(&f, "baseline:new-selection", operation())?
+            .with_task_bases(vec![std::sync::Arc::clone(&base)], &ledger)?;
+        let InputMutationExecution::Committed { value, .. } =
+            execute(&f, &prepared, &request, &ledger)?
+        else {
+            panic!("{mode}: the original receipt must commit")
+        };
+        let delta = value
+            .effects
+            .task_delta
+            .as_ref()
+            .context("the ACK must install its newly prepared selection even on noop")?;
+        assert!(delta.prepared_base.is_some());
+        let mut wrong_base = delta.clone();
+        wrong_base.base_revision += 1;
+        assert!(base.with_committed(&wrong_base).is_err());
+        let mut wrong_scope = delta.clone();
+        wrong_scope.scope.identity_incarnation += 1;
+        assert!(base.with_committed(&wrong_scope).is_err());
+        drop((wrong_base, wrong_scope));
+        // The caller has only its actual old root and this committed ACK.
+        let installed = base.with_committed(delta)?;
+        if mode != "noop" {
+            assert!(
+                installed.with_committed(delta).is_err(),
+                "a prepared ACK cannot replace a newer installed revision"
+            );
+        }
+        let oracle = f.db.read_for_preparation(|tx| {
+            Ok(
+                tasks::load_task_domain_snapshot_with_budget_tx(tx, &f.scope, &request, &ledger)?
+                    .require_current()?
+                    .resident,
+            )
+        })?;
+        assert_eq!(installed.coverage(), oracle.coverage(), "{mode}");
+        assert_eq!(
+            installed.selected_install_records(),
+            oracle.selected_install_records(),
+            "{mode}"
+        );
+        assert!(installed
+            .selected_install_records()
+            .iter()
+            .any(|record| record.locator.key == extra_key));
+        drop((installed, oracle, value, prepared, base));
+        assert_eq!(ledger.report()?.observed_bytes, 0, "{mode}");
+    }
+    Ok(())
+}
+
+#[test]
 fn result_defer_rebuilds_selection_when_resident_base_cannot_be_reused() -> Result<()> {
     for mismatch in ["revision", "durable coverage", "requested keys"] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let (source, result_id) = pending(&f, &ledger, false)?;
         let mut request = request();
@@ -318,19 +415,21 @@ fn result_defer_rebuilds_selection_when_resident_base_cannot_be_reused() -> Resu
             }
             _ => unreachable!(),
         };
-        let p = defer("result:fallback", 2)?.with_defer_task_base(Some(base));
+        let p = defer("result:fallback", 2)?.with_task_bases(vec![base], &ledger)?;
         let InputMutationExecution::Committed { value, receipt } =
             execute(&f, &p, &request, &ledger)?
         else {
             panic!("{mismatch}: original Defer must commit");
         };
         let delta = value.effects.task_delta.as_ref().unwrap();
+        assert_eq!(delta.base_revision, durable_base.coverage().revision);
         assert!(
             delta
                 .records
                 .iter()
-                .any(|fact| fact.locator.key == task_key),
-            "{mismatch}: expected a full Task snapshot"
+                .any(|fact| fact.locator.key
+                    == TaskKey::new(TaskFamily::ResultSettlement, &result_id)),
+            "{mismatch}: original Defer must publish its changed Result"
         );
         let published = durable_base.with_committed(delta)?;
         let durable = read(&request)?;
@@ -361,7 +460,7 @@ fn result_defer_rebuilds_selection_when_resident_base_cannot_be_reused() -> Resu
 
 #[test]
 fn result_successful_empty_returns_have_original_receipts_before_later_rows() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let operations = vec![
         TaskResultOperation::EnsurePending {
@@ -466,7 +565,7 @@ fn result_successful_empty_returns_have_original_receipts_before_later_rows() ->
 
 #[test]
 fn result_admit_defer_wake_and_settle_once_finalizer_preserves_original_return() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let (source, id) = pending(&f, &ledger, true)?;
     let operations = vec![
@@ -554,7 +653,7 @@ fn result_admit_defer_wake_and_settle_once_finalizer_preserves_original_return()
 fn result_finalizer_and_receipt_faults_rollback_actual_row_and_allow_original_retry() -> Result<()>
 {
     for receipt_fault in [false, true] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let (source, _) = pending(&f, &ledger, false)?;
         let before =
@@ -571,6 +670,16 @@ fn result_finalizer_and_receipt_faults_rollback_actual_row_and_allow_original_re
                 deadline: f.at + chrono::Duration::seconds(5),
             },
         )?;
+        // Keep qualification outside the faulted original Result transaction.
+        let baseline = f.db.read_for_preparation(|tx| {
+            Ok(
+                tasks::load_task_domain_snapshot_with_budget_tx(tx, &f.scope, &request(), &ledger)?
+                    .require_current()?
+                    .resident,
+            )
+        })?;
+        let p = p.with_task_bases(vec![std::sync::Arc::new(baseline)], &ledger)?;
+        let retained_bytes = ledger.report()?.observed_bytes;
         let sql = if receipt_fault {
             "CREATE TRIGGER result_fault BEFORE INSERT ON input_mutation_receipts BEGIN SELECT RAISE(ABORT,'result-receipt-fault'); END;"
         } else {
@@ -592,20 +701,23 @@ fn result_finalizer_and_receipt_faults_rollback_actual_row_and_allow_original_re
             before
         );
         assert_eq!(f.receipt_count()?, count);
-        assert_eq!(ledger.report()?.observed_bytes, 0);
+        drop(error);
+        assert_eq!(ledger.report()?.observed_bytes, retained_bytes);
         f.db.connection()?
             .execute_batch("DROP TRIGGER result_fault")?;
         assert!(matches!(
             execute(&f, &p, &request(), &ledger)?,
             InputMutationExecution::Committed { .. }
         ));
+        drop(p);
+        assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     Ok(())
 }
 
 #[test]
 fn result_receipt_budget_precedes_corrupt_prior_outcome_decode() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let p = freeze_result(
         &f,
@@ -662,7 +774,7 @@ fn result_receipt_budget_precedes_corrupt_prior_outcome_decode() -> Result<()> {
 #[test]
 fn ensure_pending_cannot_grant_raw_task_or_raw_source_qualification() -> Result<()> {
     for raw_task in [false, true] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let source = if raw_task {
             original_source(&f, "raw:source", "raw:task", None, &ledger)?
@@ -728,7 +840,7 @@ fn ensure_pending_cannot_grant_raw_task_or_raw_source_qualification() -> Result<
 
 #[test]
 fn prepared_result_projection_validates_original_before_writing_a_receipt() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let (source, _) = pending(&f, &ledger, false)?;
     let projection = crate::runtime::input_consumption::projection::project_item(
@@ -783,7 +895,7 @@ fn prepared_result_projection_validates_original_before_writing_a_receipt() -> R
 #[test]
 fn original_admit_token_shares_remaining_material_allowance_and_rolls_back_before_business(
 ) -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let (source, _) = pending(&f, &ledger, false)?;
     let deferred = freeze_result(
@@ -870,7 +982,7 @@ fn result_receipt_all_normalized_columns_are_bounded_before_direct_and_fresh_dec
         "committed_at",
         "result_digest",
     ] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let prepared = freeze_result(
             &f,

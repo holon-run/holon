@@ -119,6 +119,7 @@ pub(crate) fn register_task_source_metadata_tx(
         CommittedTaskDelta {
             scope: scope.clone(),
             base_revision,
+            prepared_base: None,
             revision: coverage.revision,
             coverage,
             records: Vec::new(),

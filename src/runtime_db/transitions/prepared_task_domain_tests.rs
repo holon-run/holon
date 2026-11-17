@@ -22,6 +22,21 @@ fn load_request() -> tasks::TaskDomainLoadRequest {
 fn ledger() -> Result<InputEvidenceBudgetLedger> {
     Ok(InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?)
 }
+fn initialized_task_fixture() -> Result<Fixture> {
+    let f = Fixture::new()?;
+    // A real owner publishes Ready only after the cold Task namespace exists.
+    f.db.transaction(|tx| {
+        tasks::prepare_task_domain_snapshot_with_budget_tx(
+            tx,
+            &f.scope,
+            &load_request(),
+            &ledger()?,
+        )?
+        .require_current()?;
+        Ok(())
+    })?;
+    Ok(f)
+}
 fn command(f: &Fixture, id: &str, status: TaskStatus) -> TaskTransitionCommand {
     TaskTransitionCommand {
         agent_id: f.scope.agent_id.clone(),
@@ -109,8 +124,268 @@ fn original_command_creation(f: &Fixture, id: &str) -> Result<PreparedInputTrans
 }
 
 #[test]
+fn original_task_writer_uses_prepared_baseline_without_reloading_active_bodies() -> Result<()> {
+    let f = initialized_task_fixture()?;
+    let ledger = ledger()?;
+    let mut large = command(&f, "command:large-baseline", TaskStatus::Queued);
+    large.task.detail = Some(serde_json::json!({
+        "rejoin_obligation_id":large.task.id,
+        "rejoin_generation":1,
+        "cmd":"true",
+        "padding":"x".repeat(64 * 1024),
+    }));
+    let creation = std::sync::Arc::new(
+        crate::runtime_db::command_task_creation::OriginalCommandTaskCreation::new(
+            f.scope.clone(),
+            large.task.clone(),
+        )?,
+    );
+    large.task = creation.task().clone();
+    let seed = PreparedInputTransition::task(
+        f.scope.clone(),
+        "create:large-baseline".into(),
+        f.at,
+        PreparedTaskTransition::new(large, Default::default(), true, None, None)?
+            .with_original_command_creation(creation)?,
+    )?;
+    drop(execute(&f, &seed, &load_request(), &ledger)?);
+    let baseline = f.db.transaction(|tx| {
+        tasks::prepare_task_domain_snapshot_with_budget_tx(tx, &f.scope, &load_request(), &ledger)?
+            .require_current()
+    })?;
+    let large_before_cold = baseline
+        .resident
+        .selected_install_records()
+        .into_iter()
+        .find(|record| record.locator.key.id == "command:large-baseline")
+        .context("large baseline fact missing")?;
+    let mut request = load_request();
+    request.byte_limit = 32 * 1024;
+    let cold = original_command_creation(&f, "command:cold-baseline-control")?;
+    let InputMutationExecution::Committed { value, .. } = execute(&f, &cold, &request, &ledger)?
+    else {
+        panic!("cold control must execute its original command")
+    };
+    let cold_delta = value.effects.task_delta.context("cold Task ACK missing")?;
+    let cold_large = cold_delta
+        .records
+        .iter()
+        .find(|record| record.locator.key.id == "command:large-baseline")
+        .context("cold ACK large fact missing")?;
+    assert!(!std::sync::Arc::ptr_eq(&large_before_cold, cold_large));
+
+    let baseline = f.db.transaction(|tx| {
+        tasks::prepare_task_domain_snapshot_with_budget_tx(tx, &f.scope, &load_request(), &ledger)?
+            .require_current()
+    })?;
+    let large_before_hot = baseline
+        .resident
+        .selected_install_records()
+        .into_iter()
+        .find(|record| record.locator.key.id == "command:large-baseline")
+        .context("large prepared fact missing")?;
+    let prepared = original_command_creation(&f, "command:small-after-baseline")?;
+    let receipts = f.receipt_count()?;
+    let prepared =
+        prepared.with_task_bases(vec![std::sync::Arc::new(baseline.resident)], &ledger)?;
+    let InputMutationExecution::Committed { value, .. } =
+        execute(&f, &prepared, &request, &ledger)?
+    else {
+        panic!("prepared Task baseline must execute its original command")
+    };
+    assert!(value.applied);
+    let delta = value.effects.task_delta.context("Task ACK missing")?;
+    let hot_large = delta
+        .records
+        .iter()
+        .find(|record| record.locator.key.id == "command:large-baseline")
+        .context("prepared ACK large fact missing")?;
+    // Ledger views can account for the same Arc more than once. Pointer identity
+    // directly proves that the original writer retained the qualified body.
+    assert!(std::sync::Arc::ptr_eq(&large_before_hot, hot_large));
+    assert!(delta
+        .coverage
+        .active_task_ids
+        .contains("command:large-baseline"));
+    assert!(delta
+        .coverage
+        .active_task_ids
+        .contains("command:small-after-baseline"));
+    assert_eq!(f.receipt_count()?, receipts + 1);
+    Ok(())
+}
+
+#[test]
+fn deferred_task_roots_preserve_exact_replay_without_encoding() -> Result<()> {
+    let f = initialized_task_fixture()?;
+    let prepared = original_command_creation(&f, "command:deferred-replay")?;
+    assert_deferred_task_roots_preserve_replay(&f, &prepared)
+}
+
+#[test]
+fn deferred_task_roots_preserve_non_task_replay_without_encoding() -> Result<()> {
+    let f = initialized_task_fixture()?;
+    let prepared = PreparedInputTransition::queue(
+        f.scope.clone(),
+        "queue:deferred-replay".into(),
+        f.at,
+        f.queue()?,
+    )?;
+    assert_deferred_task_roots_preserve_replay(&f, &prepared)
+}
+
+fn assert_deferred_task_roots_preserve_replay(
+    f: &Fixture,
+    prepared: &PreparedInputTransition,
+) -> Result<()> {
+    use crate::diagnostics::resource_io::ResourceReadMaterial;
+    use std::sync::Arc;
+
+    let ledger = ledger()?;
+    assert!(matches!(
+        execute(f, prepared, &load_request(), &ledger)?,
+        InputMutationExecution::Committed { .. }
+    ));
+    let root = Arc::new(f.db.transaction(|tx| {
+        Ok(tasks::prepare_task_domain_snapshot_with_budget_tx(
+            tx,
+            &f.scope,
+            &load_request(),
+            &ledger,
+        )?
+        .require_current()?
+        .resident)
+    })?);
+    let header = ResourceReadMaterial::new(&ledger, &f.scope)?.finish()?;
+    let eager = ResourceReadMaterial::with_test_limits(&ledger, &f.scope, header.0, header.1)?;
+    {
+        let _entry = eager.enter();
+        assert!(PreparedTaskBaselines::new(vec![Arc::clone(&root)], &ledger).is_err());
+    }
+    let deferred = ResourceReadMaterial::with_test_limits(&ledger, &f.scope, header.0, header.1)?;
+    let mut bases = PreparedTaskBaselines::default();
+    {
+        let _entry = deferred.enter();
+        bases.defer_roots(vec![Arc::clone(&root)]);
+    }
+    assert_eq!(deferred.finish()?, header);
+    assert!(bases.task_base(&f.scope).is_none());
+    let replay = |bases: &PreparedTaskBaselines| {
+        f.db.transitions_in_scope(&f.scope)
+            .commit_prepared_transition_with_input_query_and_task_bases(
+                prepared,
+                &crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+                    capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 4 * 1024 * 1024,
+                },
+                &ledger,
+                &load_request(),
+                None,
+                None,
+                bases,
+            )
+    };
+    // Measure the actual writer's exact replay without any baseline. Borrowing
+    // roots must also fit that exact allowance, not merely a generous phase.
+    let measured = ResourceReadMaterial::new(&ledger, &f.scope)?;
+    {
+        let _entry = measured.enter();
+        assert!(matches!(
+            replay(&PreparedTaskBaselines::default())?,
+            InputMutationExecution::Replayed { .. }
+        ));
+    }
+    let allowance = measured.finish()?;
+    let tight =
+        ResourceReadMaterial::with_test_limits(&ledger, &f.scope, allowance.0, allowance.1)?;
+    let replay = {
+        let _entry = tight.enter();
+        bases.defer_roots(vec![root]);
+        replay(&bases)?
+    };
+    assert!(matches!(replay, InputMutationExecution::Replayed { .. }));
+    assert_eq!(tight.finish()?, allowance);
+    assert!(bases.task_base(&f.scope).is_none());
+    Ok(())
+}
+
+#[test]
+fn task_sidecar_replacement_cannot_shadow_the_reloaded_root() -> Result<()> {
+    use std::sync::Arc;
+
+    let f = initialized_task_fixture()?;
+    let ledger = ledger()?;
+    let read_root = || {
+        f.db.transaction(|tx| {
+            Ok(Arc::new(
+                tasks::load_task_domain_snapshot_with_budget_tx(
+                    tx,
+                    &f.scope,
+                    &load_request(),
+                    &ledger,
+                )?
+                .require_current()?
+                .resident,
+            ))
+        })
+    };
+    let first = read_root()?;
+    let mut bases = PreparedTaskBaselines::default();
+    bases.defer_roots(vec![Arc::clone(&first)]);
+    let stale = tasks::TaskWriteBaselineStale::new(&f.scope, &load_request(), &ledger)?;
+    bases.reprepare(&f.db, &stale, &ledger)?;
+    bases.defer_roots(vec![Arc::clone(&first)]);
+    assert!(Arc::ptr_eq(
+        &bases.task_base(&f.scope).unwrap().resident,
+        &first
+    ));
+    let replacement = read_root()?;
+    assert!(!Arc::ptr_eq(&first, &replacement));
+    bases.defer_roots(vec![Arc::clone(&replacement)]);
+    assert!(bases.task_base(&f.scope).is_none());
+    bases.reprepare(&f.db, &stale, &ledger)?;
+    assert!(Arc::ptr_eq(
+        &bases.task_base(&f.scope).unwrap().resident,
+        &replacement
+    ));
+    Ok(())
+}
+
+#[test]
+fn task_sidecar_preparation_rejects_successor_before_decoding_state() -> Result<()> {
+    let f = initialized_task_fixture()?;
+    let ledger = ledger()?;
+    let stale = tasks::TaskWriteBaselineStale::new(&f.scope, &load_request(), &ledger)?;
+    let mut identity = f.db.agent_identities().latest(&f.scope.agent_id)?.unwrap();
+    identity.incarnation += 1;
+    identity.updated_at += chrono::Duration::seconds(1);
+    f.db.transaction(|tx| {
+        upsert_agent_identity_tx(tx, &identity)?;
+        tx.execute(
+            "UPDATE agent_states SET payload_json='poisoned-successor-state' WHERE agent_id=?1",
+            [&f.scope.agent_id],
+        )?;
+        Ok(())
+    })?;
+    let receipts = f.receipt_count()?;
+    let mut bases = PreparedTaskBaselines::new(Vec::new(), &ledger)?;
+    bases.reprepare(&f.db, &stale, &ledger)?;
+    assert_eq!(f.receipt_count()?, receipts);
+    assert_eq!(
+        f.db.connection()?.query_row(
+            "SELECT payload_json FROM agent_states WHERE agent_id=?1",
+            [&f.scope.agent_id],
+            |row| row.get::<_, String>(0),
+        )?,
+        "poisoned-successor-state",
+    );
+    Ok(())
+}
+
+#[test]
 fn original_creator_proof_reuses_holder_across_preparation_retries() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let id = "command:creator-retry";
     let mut command = command(&f, id, TaskStatus::Queued);
@@ -154,7 +429,7 @@ fn original_creator_proof_reuses_holder_across_preparation_retries() -> Result<(
 
 #[test]
 fn original_creator_transaction_persists_source_and_replays_without_reconstruction() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let id = "command:creator-api";
     let prepared = original_command_creation(&f, id)?;
@@ -202,7 +477,7 @@ fn original_creator_transaction_persists_source_and_replays_without_reconstructi
 
 #[test]
 fn creator_finalizer_failure_rolls_back_origin_task_and_receipt() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let id = "command:creator-atomic-api";
     let prepared = original_command_creation(&f, id)?;
@@ -236,7 +511,7 @@ fn creator_finalizer_failure_rolls_back_origin_task_and_receipt() -> Result<()> 
 
 #[test]
 fn original_task_whole_ack_installs_exact_fact_and_noop_replays_without_latest() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let command = command(&f, "task:whole-qualified", TaskStatus::Running);
     let original = freeze(&f, "task:whole-qualified:first", command.clone())?;
@@ -300,7 +575,7 @@ fn original_task_whole_ack_installs_exact_fact_and_noop_replays_without_latest()
 
 #[test]
 fn task_finalizer_fault_rolls_back_business_qualification_and_whole_receipt() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let p = freeze(
         &f,
@@ -329,7 +604,7 @@ fn task_finalizer_fault_rolls_back_business_qualification_and_whole_receipt() ->
 
 #[test]
 fn original_task_raw_cleanup_and_new_incarnation_collision_never_adopt() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let raw = command(&f, "task:raw-cleanup", TaskStatus::Running);
     f.db.transaction(|tx| {
@@ -408,6 +683,16 @@ fn original_task_raw_cleanup_and_new_incarnation_collision_never_adopt() -> Resu
         )?,
         0
     );
+    f.db.transaction(|tx| {
+        tasks::prepare_task_domain_snapshot_with_budget_tx(
+            tx,
+            &successor,
+            &load_request(),
+            &ledger,
+        )?
+        .require_current()?;
+        Ok(())
+    })?;
     let mut first = first;
     first.expected_owner_incarnation = successor.identity_incarnation;
     let prepared = PreparedInputTransition::task(
@@ -445,7 +730,7 @@ fn original_task_raw_cleanup_and_new_incarnation_collision_never_adopt() -> Resu
 
 #[test]
 fn task_proof_budget_precedes_decode_and_original_business_sql() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let raw = command(&f, "task:oversize-before", TaskStatus::Running);
     f.db.transaction(|tx| {
@@ -480,7 +765,7 @@ fn task_proof_budget_precedes_decode_and_original_business_sql() -> Result<()> {
 
 #[test]
 fn original_queue_result_settlement_qualifies_actual_ids_once_and_preserves_replay() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let mut queue = f.queue()?;
     let source = &mut queue.command.message_evidence[0];
@@ -584,7 +869,7 @@ fn original_protocol_only_change_reobserves_result_activation_without_task_row_w
         ExecutionProtocolCommand, ExecutionProtocolState, ExecutionProvenance, ExecutionSource,
         ExecutionSourceIdentity, ExecutionTrust, InterruptExecution,
     };
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let mut queue = f.queue()?;
     let source = &mut queue.command.message_evidence[0];
@@ -715,6 +1000,11 @@ fn original_protocol_only_change_reobserves_result_activation_without_task_row_w
             None,
         )?,
     )?;
+    let baseline = f.db.transaction(|tx| {
+        tasks::prepare_task_domain_snapshot_with_budget_tx(tx, &f.scope, &load_request(), &ledger)?
+            .require_current()
+    })?;
+    let p = p.with_task_bases(vec![std::sync::Arc::new(baseline.resident)], &ledger)?;
     let before: String = f.db.connection()?.query_row(
         "SELECT payload_json FROM task_result_settlements WHERE result_identity=?1",
         [&result.result_identity],
@@ -728,6 +1018,7 @@ fn original_protocol_only_change_reobserves_result_activation_without_task_row_w
             false,
             &load_request(),
             &ledger,
+            None,
             None,
         )?
         .context("activation omitted Task finalizer")?;
@@ -754,6 +1045,7 @@ fn original_protocol_only_change_reobserves_result_activation_without_task_row_w
     })?;
     assert!(ledger.report()?.observed_bytes > 0);
     drop(value);
+    drop(p);
     assert_eq!(ledger.report()?.observed_bytes, 0);
     Ok(())
 }

@@ -86,6 +86,7 @@ fn source_with_signal(
     with_work: bool,
     signal: stops::TaskStopSignal,
 ) -> Result<Source> {
+    f.bootstrap_task_for_ready()?;
     if with_work {
         let p = PreparedInputTransition::work(
             f.scope.clone(),

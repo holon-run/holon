@@ -127,11 +127,8 @@ impl TaskResultSettlementRepository<'_> {
                 return Ok(Some(turn.turn_id));
             }
             let has_attachment: bool = tx.query_row(
-                "SELECT EXISTS(SELECT 1 FROM turn_records
-                 WHERE agent_id = ?1 AND (
-                   EXISTS(SELECT 1 FROM json_each(payload_json, '$.live_input_batches') batch
-                     WHERE json_extract(batch.value, '$.activation_id') = ?2)
-                   OR json_extract(payload_json, '$.idle_input_batch.activation_id') = ?2))",
+                "SELECT EXISTS(SELECT 1 FROM turn_activation_attachments
+                 WHERE agent_id = ?1 AND activation_id = ?2)",
                 params![agent_id, activation_id],
                 |row| row.get(0),
             )?;
@@ -464,11 +461,8 @@ pub(crate) fn recovery_turn_for_activation_tx(
         .query_row(
             "SELECT payload_json FROM turn_records WHERE agent_id = ?1 AND turn_id = ?2
              AND NOT EXISTS (
-               SELECT 1 FROM turn_records AS attached WHERE attached.agent_id = ?1 AND (
-                 EXISTS (
-                   SELECT 1 FROM json_each(attached.payload_json, '$.live_input_batches') batch
-                   WHERE json_extract(batch.value, '$.activation_id') = ?3)
-                 OR json_extract(attached.payload_json, '$.idle_input_batch.activation_id') = ?3))",
+               SELECT 1 FROM turn_activation_attachments
+               WHERE agent_id = ?1 AND activation_id = ?3)",
             params![attempt.agent_id, replay.source_turn_id, attempt.attempt_id],
             |row| row.get(0),
         )
@@ -512,25 +506,13 @@ pub(in crate::runtime_db) fn unique_interrupted_turn_attachments_tx(
     agent_id: &str,
 ) -> Result<Vec<(String, String)>> {
     let mut statement = tx.prepare(
-        "WITH attachments AS (
-            SELECT a.attempt_id, t.turn_id
-            FROM turn_records t
-            CROSS JOIN json_each(t.payload_json, '$.live_input_batches') batch
-            CROSS JOIN execution_protocol_attempts a
-              ON a.agent_id = t.agent_id
-             AND a.attempt_id = json_extract(batch.value, '$.activation_id')
-            WHERE t.agent_id = ?1 AND json_extract(a.payload_json, '$.state') = 'interrupted'
-            UNION ALL
-            SELECT a.attempt_id, t.turn_id
-            FROM turn_records t
-            CROSS JOIN execution_protocol_attempts a
-              ON a.agent_id = t.agent_id
-             AND a.attempt_id = json_extract(t.payload_json, '$.idle_input_batch.activation_id')
-            WHERE t.agent_id = ?1 AND json_extract(a.payload_json, '$.state') = 'interrupted'
-         )
-         SELECT attempt_id, MIN(turn_id) FROM attachments
-         GROUP BY attempt_id HAVING MIN(turn_id) = MAX(turn_id)
-         ORDER BY attempt_id",
+        "SELECT attached.activation_id, MIN(attached.turn_id)
+         FROM turn_activation_attachments attached
+         JOIN execution_protocol_attempts a
+           ON a.agent_id = attached.agent_id AND a.attempt_id = attached.activation_id
+         WHERE attached.agent_id = ?1 AND json_extract(a.payload_json, '$.state') = 'interrupted'
+         GROUP BY attached.activation_id HAVING MIN(attached.turn_id) = MAX(attached.turn_id)
+         ORDER BY attached.activation_id",
     )?;
     let rows = statement
         .query_map([agent_id], |row| Ok((row.get(0)?, row.get(1)?)))?
@@ -561,11 +543,8 @@ fn attached_turn_for_activation_read(
     read.validate_cut(read.tx, &attempt.agent_id)?;
     let tx = read.tx;
     let mut statement = tx.prepare(
-        "SELECT turn_id FROM turn_records
-         WHERE agent_id = ?1 AND (EXISTS(
-           SELECT 1 FROM json_each(turn_records.payload_json, '$.live_input_batches') batch
-           WHERE json_extract(batch.value, '$.activation_id') = ?2)
-           OR (?3 AND json_extract(payload_json, '$.idle_input_batch.activation_id') = ?2))
+        "SELECT turn_id FROM turn_activation_attachments
+         WHERE agent_id = ?1 AND activation_id = ?2 AND (has_live = 1 OR (?3 AND has_idle = 1))
          LIMIT 2",
     )?;
     let mut rows = statement.query(params![attempt.agent_id, attempt.attempt_id, include_idle])?;

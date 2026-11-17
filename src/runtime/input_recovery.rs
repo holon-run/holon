@@ -16,8 +16,7 @@ use crate::{
     runtime_db::{
         context_inputs::ContextDurableRead,
         input_mutation_receipts::{
-            with_fresh_input_mutation_preparation_and_preflight, InputMutationEvidenceFamily,
-            InputMutationResolution, InputMutationResult,
+            InputMutationEvidenceFamily, InputMutationResolution, InputMutationResult,
         },
         input_preparation::prepare_original_input_recovery_with_queries_tx,
         RuntimeDb,
@@ -27,6 +26,7 @@ use crate::{
 
 mod child_monitor_binding;
 mod child_task_terminal;
+mod task_current;
 mod task_status_metadata;
 mod task_stop_partial;
 pub(in crate::runtime) use child_monitor_binding::ChildMonitorBindingKnown;
@@ -261,9 +261,14 @@ pub(crate) fn resolve_input_recovery_with_queries(
             }
         }
         let mut readonly_proofs = Vec::new();
-        let current = with_fresh_input_mutation_preparation_and_preflight(
+        let current = task_current::with_preparation(
             db,
             attempt,
+            witness,
+            reservations,
+            &task_load,
+            budget,
+            live,
             |tx| {
                 use crate::runtime_db::{
                     input_mutation_receipts::InputMutationFamily,
@@ -298,7 +303,8 @@ pub(crate) fn resolve_input_recovery_with_queries(
                 };
                 task_result_receipt_budget_tx(tx, prepared, &scope, &request, budget).map(Some)
             },
-            |tx, result| {
+            |tx, result, task_preparation| {
+                readonly_proofs.clear();
                 let InputMutationResolution::Present(receipt) = result else {
                     return Ok(None);
                 };
@@ -343,6 +349,29 @@ pub(crate) fn resolve_input_recovery_with_queries(
                         known.push(facts);
                         readonly_proofs.push(Arc::new(proof));
                         continue;
+                    }
+                    if task_preparation.is_some() {
+                        let identity =
+                            ContextDurableRead::new(tx, &scope.agent_id).identity_fact()?;
+                        if !identity.as_ref().is_some_and(|identity| {
+                            identity.agent_id == scope.agent_id
+                                && identity.incarnation == scope.identity_incarnation
+                                && matches!(
+                                    identity.status,
+                                    AgentRegistryStatus::Active | AgentRegistryStatus::Deleting
+                                )
+                        }) {
+                            ensure!(
+                                original_running.is_none(),
+                                "Running whole ACK cannot degrade to a retired install"
+                            );
+                            budget.install_actual_pending(scope, &[])?;
+                            known.push(KnownCommit::Metadata(Arc::new(IdentityMutationFacts {
+                                identity: identity.map(Arc::new),
+                                state: None,
+                            })));
+                            continue;
+                        }
                     }
                     let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
                     if original_running.is_some() {
@@ -486,19 +515,35 @@ pub(crate) fn resolve_input_recovery_with_queries(
                                 )
                             }),
                     );
-                    let current = prepare_original_input_recovery_with_queries_tx(
-                        tx,
-                        scope,
-                        state,
-                        &request,
-                        context.recent_episode_candidates,
-                        budget,
-                        &work_request,
-                        &task_request,
-                        live_roles.and_then(|queries| {
-                            queries.selection_for(scope, reservation.owner_epoch())
-                        }),
-                    )?;
+                    let task_query = live_roles.and_then(|queries| {
+                        queries.selection_for(scope, reservation.owner_epoch())
+                    });
+                    let current = if let Some(preparation) = task_preparation.as_mut() {
+                        crate::runtime_db::input_preparation::prepare_original_input_recovery_with_task_candidate_tx(
+                            tx,
+                            scope,
+                            state,
+                            &request,
+                            context.recent_episode_candidates,
+                            budget,
+                            &work_request,
+                            &task_request,
+                            task_query,
+                            preparation.take(scope)?,
+                        )?
+                    } else {
+                        prepare_original_input_recovery_with_queries_tx(
+                            tx,
+                            scope,
+                            state,
+                            &request,
+                            context.recent_episode_candidates,
+                            budget,
+                            &work_request,
+                            &task_request,
+                            task_query,
+                        )?
+                    };
                     let work = current
                         .work
                         .context("input recovery omitted current Work domain")?;

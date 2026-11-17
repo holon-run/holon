@@ -1,6 +1,9 @@
 //! Owner-held joint recovery prepares only the original qualified Task namespace.
 //! Old receipt selectors select current Task facts; they never authorize adoption.
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use anyhow::{ensure, Context, Result};
 use rusqlite::{OptionalExtension, Transaction};
@@ -31,6 +34,364 @@ pub(crate) struct PreparedTaskDomains {
     // The finite predicate observation owns its actual predecode guards until
     // all joint Work/Input dependency preparation has completed.
     _result_dependencies: Vec<task_snapshot::PreparedTaskResultDependency>,
+}
+
+/// An advisory reader result, usable only after the original recovery writer
+/// rechecks the exact positive receipt and its original attempt.
+pub(crate) struct TaskRecoveryCandidate {
+    candidate: task_snapshot::candidate::TaskPreparationCandidate,
+    qualification: task_snapshot::candidate::TaskRecoveryQualification,
+    request: task_snapshot::TaskDomainLoadRequest,
+    current_task_keys: BTreeSet<TaskKey>,
+    selector_guards: Vec<Arc<BudgetViewGuard>>,
+    result_sources: BTreeMap<String, Option<String>>,
+    result_dependencies: Vec<task_snapshot::PreparedTaskResultDependency>,
+}
+
+struct RecoveryRequest {
+    request: task_snapshot::TaskDomainLoadRequest,
+    current_task_keys: BTreeSet<TaskKey>,
+    selector_guards: Vec<Arc<BudgetViewGuard>>,
+    result_sources: BTreeMap<String, Option<String>>,
+    result_dependencies: Vec<task_snapshot::PreparedTaskResultDependency>,
+}
+
+pub(crate) fn prepare_task_recovery_candidate_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    selectors: &TaskCaptureRequest,
+    pending: &[MessageEnvelope],
+    record_limit: usize,
+    byte_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+) -> Result<TaskRecoveryCandidate> {
+    let RecoveryRequest {
+        request,
+        current_task_keys,
+        selector_guards,
+        result_sources,
+        result_dependencies,
+    } = recovery_candidate_request_tx(
+        tx,
+        scope,
+        state,
+        selectors,
+        pending,
+        record_limit,
+        byte_limit,
+        budget,
+        query,
+        None,
+    )?;
+    let candidate =
+        task_snapshot::prepare_task_candidate_tx(tx, scope, state, &request, budget)?
+            .context("Task receipt recovery reader gate: domain not initialized before Ready")?;
+    let qualification = task_snapshot::candidate::prepare_recovery_task_qualification_tx(
+        tx, scope, &candidate, &request, budget,
+    )?;
+    Ok(TaskRecoveryCandidate {
+        candidate,
+        qualification,
+        request,
+        current_task_keys,
+        selector_guards,
+        result_sources,
+        result_dependencies,
+    })
+}
+
+pub(crate) fn commit_task_recovery_candidate_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    selectors: &TaskCaptureRequest,
+    pending: &[MessageEnvelope],
+    record_limit: usize,
+    byte_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    candidate: TaskRecoveryCandidate,
+) -> Result<PreparedTaskDomains> {
+    let RecoveryRequest {
+        request,
+        current_task_keys,
+        mut selector_guards,
+        result_sources,
+        ..
+    } = recovery_candidate_request_tx(
+        tx,
+        scope,
+        state,
+        selectors,
+        pending,
+        record_limit,
+        byte_limit,
+        budget,
+        query,
+        Some(&candidate),
+    )?;
+    ensure!(
+        request.capture.required_keys == candidate.request.capture.required_keys
+            && request.capture.include_active == candidate.request.capture.include_active
+            && request.capture.include_unsettled == candidate.request.capture.include_unsettled
+            && request.capture.terminal_limit == candidate.request.capture.terminal_limit
+            && request.query == candidate.request.query
+            && current_task_keys == candidate.current_task_keys
+            && result_sources == candidate.result_sources,
+        task_snapshot::TaskPreparationCandidateStale("recovery current selectors")
+    );
+    let snapshot = task_snapshot::candidate::commit_recovery_task_candidate_tx(
+        tx,
+        scope,
+        candidate.candidate,
+        candidate.qualification,
+        &request,
+        budget,
+    )?;
+    for dependency in &candidate.result_dependencies {
+        ensure!(
+            snapshot
+                .resident
+                .coverage()
+                .result_dependencies
+                .get(&dependency.observation.result.key.id)
+                == Some(&dependency.observation),
+            task_snapshot::TaskPreparationCandidateStale("recovery pending Result relation")
+        );
+    }
+    let (input_roots, work_roots, dependency_budget_view) = current_dependencies(
+        &snapshot.resident,
+        current_task_keys,
+        budget,
+        record_limit,
+        byte_limit,
+        None,
+    )?;
+    selector_guards.extend(candidate.selector_guards);
+    Ok(PreparedTaskDomains {
+        resident: Arc::new(snapshot.resident),
+        input_roots,
+        work_roots,
+        _dependency_budget_view: dependency_budget_view,
+        _selector_budget_views: selector_guards,
+        _result_dependencies: candidate.result_dependencies,
+    })
+}
+
+/// Result bodies are acquired only by the reader. The final writer repeats the
+/// unique Message/result lookup and retains the reader's qualified relation.
+fn recovery_candidate_request_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    selectors: &TaskCaptureRequest,
+    pending: &[MessageEnvelope],
+    record_limit: usize,
+    byte_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    prepared: Option<&TaskRecoveryCandidate>,
+) -> Result<RecoveryRequest> {
+    ensure!(
+        selectors.recovery_source_ids.is_empty(),
+        "Task receipt recovery reader gate: scheduler recovery sources require frozen Wait/replay qualification"
+    );
+    let mut material = TaskSelectorMaterial::new(scope, budget, record_limit, byte_limit, None);
+    for key in &selectors.required_keys {
+        material.charge_key(&key.id)?;
+    }
+    if let Some(query) = query {
+        for key in &query.required_keys {
+            material.charge_key(&key.id)?;
+        }
+        for id in query
+            .output_task_ids
+            .iter()
+            .chain(&query.reply_message_ids)
+            .chain(&query.parent_turn_ids)
+        {
+            material.charge_key(id)?;
+        }
+    }
+    let mut capture = selectors.clone();
+    capture.required_keys = match prepared {
+        Some(prepared) => task_snapshot::candidate::qualified_recovery_selectors_tx(
+            tx,
+            scope,
+            &capture.required_keys,
+            &prepared.candidate,
+        )?,
+        None => {
+            task_snapshot::qualified_task_recovery_selectors_tx(tx, scope, &capture.required_keys)?
+        }
+    };
+    if let Some(query) = query {
+        // Historical cleanup IDs are filtered; a live query is strict even
+        // outside active metadata and the bounded terminal window.
+        capture
+            .required_keys
+            .extend(query.required_keys.iter().cloned());
+        capture.required_keys.extend(
+            query
+                .output_task_ids
+                .iter()
+                .map(|id| TaskKey::new(TaskFamily::Task, id)),
+        );
+    }
+    let mut current = BTreeSet::new();
+    let mut result_sources = BTreeMap::new();
+    let mut result_dependencies = Vec::new();
+    let relation_request = task_snapshot::TaskDomainLoadRequest {
+        recovery_at: None,
+        query: Default::default(),
+        capture: TaskCaptureRequest::current(),
+        record_limit,
+        byte_limit,
+    };
+    for message in pending {
+        ensure!(
+            message.agent_id == scope.agent_id,
+            "Task recovery pending scope differs"
+        );
+        if matches!(
+            message.kind,
+            MessageKind::TaskResult | MessageKind::TaskStatus
+        ) {
+            if let MessageOrigin::Task { task_id } = &message.origin {
+                if message.task_id.as_deref() == Some(task_id.as_str()) {
+                    material.charge_key(task_id)?;
+                    let acquired = if message.kind == MessageKind::TaskResult && prepared.is_none()
+                    {
+                        task_snapshot::prepare_pending_task_result_dependency_tx(
+                            tx,
+                            scope,
+                            &message.id,
+                            task_id,
+                            &relation_request,
+                            budget,
+                        )?
+                    } else {
+                        None
+                    };
+                    let dependency = if message.kind == MessageKind::TaskResult {
+                        material.charge_key(&message.id)?;
+                        if let Some(prepared) = prepared {
+                            let result_id =
+                                current_result_id_tx(tx, scope, &message.id, &mut material)?;
+                            ensure!(
+                                prepared.result_sources.get(&message.id) == Some(&result_id),
+                                task_snapshot::TaskPreparationCandidateStale(
+                                    "recovery pending Result address"
+                                )
+                            );
+                            result_sources.insert(message.id.clone(), result_id.clone());
+                            result_id
+                                .as_ref()
+                                .map(|id| {
+                                    prepared
+                                        .result_dependencies
+                                        .iter()
+                                        .find(|dependency| {
+                                            dependency.observation.result.key.id == *id
+                                        })
+                                        .context("Task recovery Result observation missing")
+                                })
+                                .transpose()?
+                        } else {
+                            result_sources.insert(
+                                message.id.clone(),
+                                acquired
+                                    .as_ref()
+                                    .map(|dependency| dependency.observation.result.key.id.clone()),
+                            );
+                            acquired.as_ref()
+                        }
+                    } else {
+                        None
+                    };
+                    match dependency {
+                        Some(dependency) => {
+                            material.charge_key(&dependency.observation.result.key.id)?;
+                            current.insert(dependency.observation.result.key.clone());
+                            if matches!(
+                                &dependency.observation.relation,
+                                TaskResultDependencyRelation::QualifiedCurrent { .. }
+                            ) {
+                                current.insert(TaskKey::new(TaskFamily::Task, task_id));
+                            }
+                        }
+                        None => {
+                            current.insert(TaskKey::new(TaskFamily::Task, task_id));
+                        }
+                    }
+                    if let Some(acquired) = acquired {
+                        result_dependencies.push(acquired);
+                    }
+                }
+            }
+        }
+    }
+    if let Some(binding) = &state.current_execution_binding {
+        let (id, agent, kind, payload_id, payload_agent, task_id, origin_task) =
+            current_source_header_tx(tx, &binding.source_message_id, &mut material)?
+                .context("current Task binding source is missing")?;
+        ensure!(
+            id == binding.source_message_id
+                && agent == scope.agent_id
+                && payload_id.as_deref() == Some(id.as_str())
+                && payload_agent.as_deref() == Some(agent.as_str()),
+            "current Task binding source normalized scope differs"
+        );
+        if matches!(kind.as_str(), "task_result" | "task_status") {
+            if let Some(task_id) = origin_task.filter(|id| task_id.as_deref() == Some(id.as_str()))
+            {
+                material.charge_key(&task_id)?;
+                current.insert(TaskKey::new(TaskFamily::Task, task_id));
+            }
+        }
+    }
+    capture.required_keys.extend(current.iter().cloned());
+    Ok(RecoveryRequest {
+        request: task_snapshot::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: query.cloned().unwrap_or_default(),
+            capture,
+            record_limit,
+            byte_limit,
+        },
+        current_task_keys: current,
+        selector_guards: material.guards,
+        result_sources,
+        result_dependencies,
+    })
+}
+
+fn current_result_id_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    source: &str,
+    material: &mut TaskSelectorMaterial<'_, '_, '_>,
+) -> Result<Option<String>> {
+    let bytes: Option<usize> = tx.query_row(
+        "SELECT length(CAST(result_identity AS BLOB)) FROM task_result_settlements WHERE agent_id=?1 AND message_id=?2",
+        rusqlite::params![scope.agent_id, source], |row| row.get(0),
+    ).optional()?;
+    let Some(bytes) = bytes else { return Ok(None) };
+    material.charge(
+        bytes
+            .checked_add(source.len() + 256)
+            .context("Result address overflow")?,
+        1,
+    )?;
+    tx.query_row(
+        "SELECT result_identity FROM task_result_settlements WHERE agent_id=?1 AND message_id=?2",
+        rusqlite::params![scope.agent_id, source],
+        |row| row.get(0),
+    )
+    .optional()
+    .map_err(Into::into)
 }
 
 /// These selectors coexist with the R1 body loader, rather than borrowing its

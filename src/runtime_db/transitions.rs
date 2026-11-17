@@ -48,8 +48,8 @@ impl OriginalChildTaskWriteProof<'_, '_, '_, '_> {
 pub(crate) use prepared_input::{
     ExternalTriggerMutationOutcome, InputMutationExecution, OriginalChildStatusSelection,
     OriginalTaskCleanupView, PreparedExternalTriggerTransition, PreparedInputTransition,
-    PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskTransition,
-    PreparedTimerTransition, TimerMutationOutcome,
+    PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskBaselines,
+    PreparedTaskTransition, PreparedTimerTransition, TimerMutationOutcome,
 };
 pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
 pub(crate) use prepared_task_result::{
@@ -9085,6 +9085,25 @@ mod tests {
             .upsert_for_fixture(&AgentState::new("agent-a"))?;
         db.agent_identities().upsert(&active_agent("agent-a"))?;
         let open = work_item("work-claim-wait");
+        // A Ready owner has bootstrapped Task before accepting result sources.
+        db.transaction(|tx| {
+            crate::runtime_db::task_snapshot::prepare_task_domain_snapshot_with_budget_tx(
+                tx,
+                &scope,
+                &crate::runtime_db::task_snapshot::TaskDomainLoadRequest {
+                    recovery_at: None,
+                    query: Default::default(),
+                    capture: crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 4 * 1024 * 1024,
+                },
+                &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+                    crate::config::StateMemoryLimits::default(),
+                )?,
+            )?
+            .require_current()?;
+            Ok(())
+        })?;
         // Fixture Work must be qualified before the scoped queue claim reads it.
         let insert = PreparedInputTransition::work(
             scope.clone(),

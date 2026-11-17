@@ -137,6 +137,89 @@ pub(super) fn eligible_digest(
     }
     Ok(None)
 }
+
+/// Reader-owned fixed inventory authority. The original writer compares only
+/// the bounded capture markers and exact inventory/member metadata, not roots.
+#[derive(Default)]
+pub(super) struct CandidateFixedQualification {
+    captures: Vec<(String, String)>,
+    inventory: Option<task_checkpoint::queries::TaskQueryInventory>,
+}
+
+impl CandidateFixedQualification {
+    pub(super) fn prepare(
+        tx: &Transaction<'_>,
+        seed: Option<&str>,
+        fixed: &[TaskContinuityCheckpoint],
+    ) -> Result<Self> {
+        let Some(seed) = seed else {
+            return Ok(Self::default());
+        };
+        let captures = Self::captures(tx, seed)?;
+        Ok(Self {
+            captures,
+            inventory: fixed
+                .iter()
+                .rev()
+                .find_map(|fixed| fixed.query_inventory.clone()),
+        })
+    }
+
+    fn captures(tx: &Transaction<'_>, seed: &str) -> Result<Vec<(String, String)>> {
+        let count: usize = tx.query_row(
+            "SELECT COUNT(*) FROM task_domain_captures WHERE seed_id=?1",
+            [seed],
+            |row| row.get(0),
+        )?;
+        ensure!(count <= 3, "fixed Task capture phase count changed");
+        let malformed: bool = tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM task_domain_captures WHERE seed_id=?1 AND (capture_phase NOT IN ('upgrade','legacy_import','first_import') OR COALESCE(length(CAST(metadata_digest AS BLOB))!=64,1)))",
+            [seed], |row| row.get(0),
+        )?;
+        ensure!(!malformed, "fixed Task capture metadata changed");
+        let mut query = tx.prepare_cached(
+            "SELECT capture_phase,metadata_digest FROM task_domain_captures WHERE seed_id=?1 ORDER BY capture_phase",
+        )?;
+        let rows = query
+            .query_map([seed], |row| Ok((row.get(0)?, row.get(1)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub(super) fn validate(&self, tx: &Transaction<'_>, seed: Option<&str>) -> Result<()> {
+        let actual = match seed {
+            Some(seed) => Self::captures(tx, seed)?,
+            None => Vec::new(),
+        };
+        ensure!(
+            actual == self.captures,
+            super::candidate::TaskPreparationCandidateStale("fixed capture metadata")
+        );
+        if let Some(inventory) = &self.inventory {
+            task_checkpoint::queries::validate(tx, inventory)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn eligible_digest(
+        &self,
+        tx: &Transaction<'_>,
+        seed: Option<&str>,
+        key: &TaskKey,
+    ) -> Result<Option<(String, String)>> {
+        let Some(seed) = seed else { return Ok(None) };
+        if let Some(current) = seed_maintenance::current_seed_digest_tx(tx, seed, key)? {
+            return Ok(Some(current));
+        }
+        if let Some(fixed) = fixed_eligible_digest(tx, seed, key)? {
+            return Ok(Some(fixed));
+        }
+        match &self.inventory {
+            Some(inventory) => task_checkpoint::queries::fact_digest(tx, inventory, key),
+            None => Ok(None),
+        }
+    }
+}
 /// SQL byte lengths precede either digest String allocation, including damaged
 /// present rows. Unavailable membership remains distinct from malformed present.
 pub(super) fn fixed_eligible_digest(

@@ -404,6 +404,85 @@ mod tests {
     }
 
     #[test]
+    fn initialized_cold_parent_uses_reader_baseline_for_original_admission() -> Result<()> {
+        use super::super::{InputMutationExecution, PreparedTaskBaselines};
+        use crate::runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger, resident_task::TaskCaptureRequest,
+            resident_work::WorkCaptureRequest,
+        };
+        use crate::runtime_db::{task_snapshot as tasks, work_snapshot::WorkDomainLoadRequest};
+        let (_dir, db, task, command) = fixture_with_native_task(true)?;
+        let prepared = prepared_admission(command.clone(), &task, "cold-parent-admit")?;
+        let child = prepared
+            .descriptor()
+            .scopes()
+            .iter()
+            .find(|scope| scope.agent_id == command.agent_id)
+            .context("child scope missing")?
+            .clone();
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let work = WorkDomainLoadRequest {
+            capture: WorkCaptureRequest::current(),
+            record_limit: 4096,
+            byte_limit: 4 * 1024 * 1024,
+        };
+        let request = tasks::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture: TaskCaptureRequest::current(),
+            record_limit: 4096,
+            byte_limit: 4 * 1024 * 1024,
+        };
+        let mut bases = PreparedTaskBaselines::new(Vec::new(), &ledger)?;
+        let execute = |bases: &PreparedTaskBaselines| {
+            db.transitions_in_scope(&child)
+                .commit_prepared_transition_with_input_query_and_task_bases(
+                    &prepared, &work, &ledger, &request, None, None, bases,
+                )
+        };
+        let error = execute(&bases).unwrap_err();
+        let stale = error
+            .downcast_ref::<tasks::TaskWriteBaselineStale>()
+            .context("cold parent must request preparation before business SQL")?;
+        assert_eq!(stale.scope.agent_id, task.agent_id);
+        let oracle_request = stale.request.clone();
+        assert_eq!(db.tasks().latest(&task.id)?, Some(task.clone()));
+        assert!(db
+            .messages()
+            .by_id(Some(&child.agent_id), &command.message_evidence[0].id)?
+            .is_none());
+        bases.reprepare(&db, stale, &ledger)?;
+        let InputMutationExecution::Committed { value, receipt } = execute(&bases)? else {
+            anyhow::bail!("prepared cold parent must commit its original admission")
+        };
+        assert!(value.applied);
+        assert_eq!(value.effects.related_task_deltas.len(), 1);
+        let delta = &value.effects.related_task_deltas[0];
+        let oracle = db.transaction(|tx| {
+            tasks::prepare_task_domain_snapshot_with_budget_tx(
+                tx,
+                &delta.scope,
+                &oracle_request,
+                &ledger,
+            )?
+            .require_current()
+        })?;
+        assert_eq!(&delta.coverage, oracle.resident.coverage());
+        let records = oracle.resident.selected_install_records();
+        assert_eq!(delta.records.len(), records.len());
+        for (actual, expected) in delta.records.iter().zip(&records) {
+            assert_eq!(actual.locator, expected.locator);
+            assert_eq!(actual.fact, expected.fact);
+        }
+        assert_eq!(receipt.prepared, *prepared.descriptor());
+        assert!(matches!(
+            execute(&bases)?,
+            InputMutationExecution::Replayed { .. }
+        ));
+        Ok(())
+    }
+
+    #[test]
     fn prepared_supervised_admission_keeps_parent_delta_and_receipt_in_parent_scope() -> Result<()>
     {
         use super::super::InputMutationExecution;

@@ -550,6 +550,13 @@ impl RuntimeMutationBaseline {
             current_run_abort: candidate.current_run_abort.clone(),
         }
     }
+
+    fn restore(&self, candidate: &mut RuntimeAgent) {
+        candidate.state = self.state.as_ref().clone();
+        candidate.queue = self.queue.clone();
+        candidate._queue_budget_view = self.queue_budget_view.clone();
+        candidate.current_run_abort = self.current_run_abort.clone();
+    }
 }
 
 impl RuntimeMutation {
@@ -564,10 +571,7 @@ impl RuntimeMutation {
     }
 
     fn restore_candidate(&mut self) {
-        self.candidate.state = self.base.state.as_ref().clone();
-        self.candidate.queue = self.base.queue.clone();
-        self.candidate._queue_budget_view = self.base.queue_budget_view.clone();
-        self.candidate.current_run_abort = self.base.current_run_abort.clone();
+        self.base.restore(&mut self.candidate);
     }
 }
 
@@ -1301,6 +1305,18 @@ impl RuntimeMutation {
         Box::pin(self.commit_transition_inner(operation_id, None, move || commit(&scope)))
     }
 
+    #[inline(never)]
+    fn commit_transition_with_witness<'a>(
+        &'a mut self,
+        operation_id: String,
+        witness: super::mutation_witness::MutationWitness,
+        commit: impl FnOnce() -> Result<TransitionCommit> + Send + 'a,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TransitionCommit>> + Send + 'a>>
+    {
+        // Keep the transaction future out of the prepared-input retry poll frame.
+        Box::pin(self.commit_transition_inner(operation_id, Some(witness), commit))
+    }
+
     // Do not retain the queue commit future inline in the scheduler's poll frame.
     #[inline(never)]
     pub(super) fn commit_prepared_queue(
@@ -1722,9 +1738,7 @@ impl RuntimeMutation {
                 },
             )
             .collect::<Vec<_>>();
-        let prepared = prepared
-            .with_scope_group(scopes)?
-            .with_defer_task_base(self.tasks.clone());
+        let prepared = prepared.with_scope_group(scopes)?;
         self.validate_initial_readonly_stop(&prepared)?;
         let prepared = self.attach_actual_dispatch_memory(prepared)?;
         let _owned = self
@@ -1739,171 +1753,251 @@ impl RuntimeMutation {
                     metadata_estimate_bytes: 0,
                 },
             )?;
-        let mut saved_runtime = vec![Arc::new(self.facts(Default::default()))];
-        for (index, reservation) in self.reservations.iter().enumerate() {
-            if index == self.primary_index {
-                continue;
+        let mut supplemental_task_bases =
+            crate::runtime_db::transitions::PreparedTaskBaselines::default();
+        let retry_candidate =
+            RuntimeMutationBaseline::new(Arc::new(self.state.clone()), &self.candidate);
+        let retry_deferred_abort = self.deferred_abort.clone();
+        let retry_control_cancellation = self.control_cancellation.clone();
+        let mut task_preparation_attempts = 0;
+        loop {
+            task_preparation_attempts += 1;
+            let mut saved_runtime = vec![Arc::new(self.facts(Default::default()))];
+            for (index, reservation) in self.reservations.iter().enumerate() {
+                if index == self.primary_index {
+                    continue;
+                }
+                if let Some(member) = self
+                    .task_stop_readonly
+                    .iter()
+                    .find(|member| member.target().scope.agent_id == reservation.agent_id())
+                {
+                    if let Some(facts) = member.runtime() {
+                        saved_runtime.push(facts.clone());
+                    }
+                    continue;
+                }
+                if let Some(bridge) = &self.runtime.inner.host_bridge {
+                    if let Some(runtime) = bridge.runtime_for_mutation(reservation).await? {
+                        let state = self.metadata[index]
+                            .as_ref()
+                            .and_then(|facts| facts.state.clone())
+                            .context("related loaded runtime has no State")?;
+                        saved_runtime.push(Arc::new(
+                            runtime
+                                .prepare_external_input_facts(
+                                    reservation,
+                                    state,
+                                    reservation.prepared_episodes_for_state_only_commit()?,
+                                    reservation.prepared_inputs_for_state_only_commit()?,
+                                )
+                                .await?,
+                        ));
+                    }
+                }
             }
-            if let Some(member) = self
-                .task_stop_readonly
+            let mut task_bases = saved_runtime
                 .iter()
-                .find(|member| member.target().scope.agent_id == reservation.agent_id())
-            {
-                if let Some(facts) = member.runtime() {
-                    saved_runtime.push(facts.clone());
+                .filter_map(|facts| facts.tasks.clone())
+                .collect::<Vec<_>>();
+            for reservation in &self.reservations {
+                if self
+                    .task_stop_readonly
+                    .iter()
+                    .any(|member| member.target().scope.agent_id == reservation.agent_id())
+                {
+                    continue;
                 }
-                continue;
-            }
-            if let Some(bridge) = &self.runtime.inner.host_bridge {
-                if let Some(runtime) = bridge.runtime_for_mutation(reservation).await? {
-                    let state = self.metadata[index]
-                        .as_ref()
-                        .and_then(|facts| facts.state.clone())
-                        .context("related loaded runtime has no State")?;
-                    saved_runtime.push(Arc::new(
-                        runtime
-                            .prepare_external_input_facts(
-                                reservation,
-                                state,
-                                reservation.prepared_episodes_for_state_only_commit()?,
-                                reservation.prepared_inputs_for_state_only_commit()?,
-                            )
-                            .await?,
-                    ));
+                if let Some(tasks) = reservation.prepared_tasks_for_state_only_commit()? {
+                    if !task_bases.iter().any(|base| base.scope() == tasks.scope()) {
+                        task_bases.push(tasks);
+                    }
                 }
             }
-        }
-        let work_request = self.owner_work_load_request()?;
-        let (task_request, _task_request_budget) = self.owner_task_load_request()?;
-        let ledger = self.runtime.inner.input_evidence_budget.clone();
-        let input_query_source = self.owner_input_query_source()?;
-        let current_query_source = self.owner_current_query_source()?;
-        let mut pending = Vec::new();
-        for message in prepared.pending_messages()? {
-            match ledger.reserve_pending(
-                &self.input_evidence_scope(),
-                &message.id,
-                serialized_bytes(&message.body)?,
-            ) {
-                Ok(PendingAdmission::Reserved(ticket)) => pending.push((ledger.clone(), ticket)),
-                Ok(PendingAdmission::ExistingAccepted) => {}
+            if task_preparation_attempts == 1 {
+                supplemental_task_bases.defer_roots(task_bases);
+            }
+            let work_request = self.owner_work_load_request()?;
+            let (task_request, _task_request_budget) = self.owner_task_load_request()?;
+            let ledger = self.runtime.inner.input_evidence_budget.clone();
+            let input_query_source = self.owner_input_query_source()?;
+            let current_query_source = self.owner_current_query_source()?;
+            let mut pending = Vec::new();
+            for message in prepared.pending_messages()? {
+                match ledger.reserve_pending(
+                    &self.input_evidence_scope(),
+                    &message.id,
+                    serialized_bytes(&message.body)?,
+                ) {
+                    Ok(PendingAdmission::Reserved(ticket)) => {
+                        pending.push((ledger.clone(), ticket))
+                    }
+                    Ok(PendingAdmission::ExistingAccepted) => {}
+                    Err(error) => {
+                        for (ledger, ticket) in &pending {
+                            ledger.definitely_not_committed(ticket)?;
+                        }
+                        return Err(error.into());
+                    }
+                }
+            }
+            let operation_id = prepared.descriptor().command_nonce().to_owned();
+            let pending_cleanup = pending.clone();
+            let witness = match super::mutation_witness::MutationWitness::input_mutation(
+                operation_id.clone(),
+                OriginalInputMutationAttempt::new(prepared.descriptor().clone()),
+                pending,
+            )
+            .and_then(|witness| witness.with_input_runtime(saved_runtime))
+            .and_then(|witness| {
+                witness.with_initial_task_stop_readonly(self.task_stop_readonly.clone())
+            }) {
+                Ok(witness) => witness,
                 Err(error) => {
-                    for (ledger, ticket) in &pending {
+                    for (ledger, ticket) in &pending_cleanup {
                         ledger.definitely_not_committed(ticket)?;
                     }
-                    return Err(error.into());
+                    return Err(error);
+                }
+            };
+            let db = self.runtime.inner.runtime_db.clone();
+            let scope = self.input_evidence_scope();
+            let replay_observation = witness.clone();
+            let mut original_result = None;
+            let mut original_material_views = Vec::new();
+            let measure_defer = prepared.is_task_result_defer();
+            let mut defer_publication = None;
+            let result = self
+                .commit_transition_with_witness(operation_id, witness, || {
+                    match db
+                        .transitions_in_scope(&scope)
+                        .commit_prepared_transition_with_input_query_and_task_bases(
+                            &prepared,
+                            &work_request,
+                            &ledger,
+                            &task_request,
+                            input_query_source.as_ref(),
+                            current_query_source.as_ref(),
+                            &supplemental_task_bases,
+                        )? {
+                        InputMutationExecution::Committed { value, receipt } => {
+                            defer_publication = measure_defer.then(|| {
+                                crate::diagnostics::attribution::TASK_RESULT_DEFER_PUBLICATION
+                                    .start()
+                            });
+                            replay_observation
+                                .mark_original_input_receipt_pending(&receipt, false)?;
+                            original_material_views
+                                .extend(value.effects.task_material_budget_views.iter().cloned());
+                            original_material_views.extend(
+                                value
+                                    .effects
+                                    .scheduling_material_budget_views
+                                    .iter()
+                                    .cloned(),
+                            );
+                            original_result = Some(receipt.outcome.result);
+                            Ok(value)
+                        }
+                        InputMutationExecution::Replayed {
+                            receipt,
+                            _material_budget_views,
+                        } => {
+                            replay_observation.mark_input_storage_replayed()?;
+                            Err(PreparedInputReplay(receipt, _material_budget_views).into())
+                        }
+                    }
+                })
+                .await;
+            drop(defer_publication);
+            if let Err(error) = &result {
+                if let Some(stale) =
+                    error.downcast_ref::<crate::runtime_db::task_snapshot::TaskWriteBaselineStale>()
+                {
+                    if task_preparation_attempts < 3
+                        && persistence_certainty(error)
+                            == Some(PersistenceCertainty::DefinitelyNotCommitted)
+                    {
+                        // The preflight aborted before business SQL and released
+                        // its witness. The command, timestamp and nonce stay frozen.
+                        let primary_writer = stale.scope == self.input_evidence_scope();
+                        let related_writer = self.reservations.iter().any(|reservation| {
+                            reservation.agent_id() == stale.scope.agent_id
+                                && reservation.identity_incarnation()
+                                    == stale.scope.identity_incarnation
+                        }) && !self
+                            .task_stop_readonly
+                            .iter()
+                            .any(|member| member.target().scope == stale.scope);
+                        if primary_writer || related_writer {
+                            if primary_writer
+                                && supplemental_task_bases.has_prepared_scope(&stale.scope)
+                            {
+                                self.reload_owner_task_domain_request(&stale.request)
+                                    .await?;
+                                supplemental_task_bases
+                                    .defer_roots(self.tasks.iter().cloned().collect());
+                            }
+                            supplemental_task_bases.reprepare(
+                                &self.runtime.inner.runtime_db,
+                                stale,
+                                &self.runtime.inner.input_evidence_budget,
+                            )?;
+                            // Qualification publishes only committed facts. Restore
+                            // the frozen business intent after that publication.
+                            retry_candidate.restore(&mut self.candidate);
+                            self.deferred_abort = retry_deferred_abort.clone();
+                            self.control_cancellation = retry_control_cancellation.clone();
+                            continue;
+                        }
+                    }
                 }
             }
-        }
-        let operation_id = prepared.descriptor().command_nonce().to_owned();
-        let pending_cleanup = pending.clone();
-        let witness = match super::mutation_witness::MutationWitness::input_mutation(
-            operation_id.clone(),
-            OriginalInputMutationAttempt::new(prepared.descriptor().clone()),
-            pending,
-        )
-        .and_then(|witness| witness.with_input_runtime(saved_runtime))
-        .and_then(|witness| {
-            witness.with_initial_task_stop_readonly(self.task_stop_readonly.clone())
-        }) {
-            Ok(witness) => witness,
-            Err(error) => {
-                for (ledger, ticket) in &pending_cleanup {
-                    ledger.definitely_not_committed(ticket)?;
-                }
-                return Err(error);
-            }
-        };
-        let db = self.runtime.inner.runtime_db.clone();
-        let scope = self.input_evidence_scope();
-        let replay_observation = witness.clone();
-        let mut original_result = None;
-        let mut original_material_views = Vec::new();
-        let measure_defer = prepared.is_task_result_defer();
-        let mut defer_publication = None;
-        let result = self
-            .commit_transition_inner(operation_id, Some(witness), || {
-                match db
-                    .transitions_in_scope(&scope)
-                    .commit_prepared_transition_with_input_query(
-                        &prepared,
-                        &work_request,
-                        &ledger,
-                        &task_request,
-                        input_query_source.as_ref(),
-                        current_query_source.as_ref(),
-                    )? {
-                    InputMutationExecution::Committed { value, receipt } => {
-                        defer_publication = measure_defer.then(|| {
-                            crate::diagnostics::attribution::TASK_RESULT_DEFER_PUBLICATION.start()
-                        });
-                        replay_observation.mark_original_input_receipt_pending(&receipt, false)?;
-                        original_material_views
-                            .extend(value.effects.task_material_budget_views.iter().cloned());
-                        original_material_views.extend(
-                            value
-                                .effects
-                                .scheduling_material_budget_views
-                                .iter()
-                                .cloned(),
-                        );
-                        original_result = Some(receipt.outcome.result);
-                        Ok(value)
-                    }
-                    InputMutationExecution::Replayed {
-                        receipt,
-                        _material_budget_views,
-                    } => {
-                        replay_observation.mark_input_storage_replayed()?;
-                        Err(PreparedInputReplay(receipt, _material_budget_views).into())
-                    }
-                }
-            })
-            .await;
-        drop(defer_publication);
-        match result {
-            Err(error) if error.downcast_ref::<PreparedInputReplay>().is_some() => {
-                let replay = error
-                    .downcast::<PreparedInputReplay>()
-                    .expect("checked replay");
-                let PreparedInputReplay(receipt, replay_material) = replay;
-                self.runtime
-                    .reconcile_reserved_mutations(&mut self.reservations)
-                    .await?;
-                self.candidate = Box::new(self.runtime.inner.agent.lock().await.clone());
-                self.refresh_baseline()?;
-                let root = self.runtime.inner.mutation_owner.capture()?;
-                self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
-                self.input_evidence = root.as_ref().and_then(|root| root.input_evidence.clone());
-                self.work = root.as_ref().and_then(|root| root.work.clone());
-                self.scheduling = root.as_ref().and_then(|root| root.scheduling.clone());
-                self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
-                self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
-                self.tasks = root.and_then(|root| root.tasks.clone());
-                self.deferred_abort = None;
-                Ok((
-                    TransitionCommit {
-                        applied: receipt.outcome.applied,
-                        delivery_receipt: receipt.outcome.delivery_receipt,
-                        effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
-                            task_material_budget_views: replay_material,
+            return match result {
+                Err(error) if error.downcast_ref::<PreparedInputReplay>().is_some() => {
+                    let replay = error
+                        .downcast::<PreparedInputReplay>()
+                        .expect("checked replay");
+                    let PreparedInputReplay(receipt, replay_material) = replay;
+                    self.runtime
+                        .reconcile_reserved_mutations(&mut self.reservations)
+                        .await?;
+                    self.candidate = Box::new(self.runtime.inner.agent.lock().await.clone());
+                    self.refresh_baseline()?;
+                    let root = self.runtime.inner.mutation_owner.capture()?;
+                    self.episodes = root.as_ref().and_then(|root| root.episodes.clone());
+                    self.input_evidence =
+                        root.as_ref().and_then(|root| root.input_evidence.clone());
+                    self.work = root.as_ref().and_then(|root| root.work.clone());
+                    self.scheduling = root.as_ref().and_then(|root| root.scheduling.clone());
+                    self.queue_posture = root.as_ref().and_then(|root| root.queue_posture);
+                    self.scheduler_events = root.as_ref().and_then(|root| root.scheduler_events);
+                    self.tasks = root.and_then(|root| root.tasks.clone());
+                    self.deferred_abort = None;
+                    Ok((
+                        TransitionCommit {
+                            applied: receipt.outcome.applied,
+                            delivery_receipt: receipt.outcome.delivery_receipt,
+                            effects: Box::new(crate::runtime_db::transitions::PostCommitEffects {
+                                task_material_budget_views: replay_material,
+                                ..Default::default()
+                            }),
                             ..Default::default()
-                        }),
-                        ..Default::default()
-                    },
-                    receipt.outcome.result,
-                ))
-            }
-            result => result.and_then(|mut commit| {
-                commit
-                    .effects
-                    .task_material_budget_views
-                    .extend(original_material_views);
-                Ok((
-                    commit,
-                    original_result.context("input transaction omitted its original result")?,
-                ))
-            }),
+                        },
+                        receipt.outcome.result,
+                    ))
+                }
+                result => result.and_then(|mut commit| {
+                    commit
+                        .effects
+                        .task_material_budget_views
+                        .extend(original_material_views);
+                    Ok((
+                        commit,
+                        original_result.context("input transaction omitted its original result")?,
+                    ))
+                }),
+            };
         }
     }
 
@@ -2685,12 +2779,14 @@ impl RuntimeMutation {
                             .as_ref();
                         let mut tasks = prior.and_then(|root| root.tasks.clone());
                         for delta in deltas {
-                            if tasks.as_ref().is_some_and(|tasks| {
-                                resident_behind_committed_delta(
-                                    tasks.coverage().revision,
-                                    delta.base_revision,
-                                )
-                            }) {
+                            if delta.prepared_base.is_none()
+                                && tasks.as_ref().is_some_and(|tasks| {
+                                    resident_behind_committed_delta(
+                                        tasks.coverage().revision,
+                                        delta.base_revision,
+                                    )
+                                })
+                            {
                                 // A concurrent committed write advanced this
                                 // related Task domain past the frozen
                                 // publication. SQL is already committed truth,

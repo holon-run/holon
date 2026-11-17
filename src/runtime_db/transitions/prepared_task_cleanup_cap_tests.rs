@@ -36,6 +36,20 @@ fn cleanup(f: &Fixture, id: &str) -> Result<(TaskTransitionCommand, PreparedInpu
     )?;
     final_command.message_evidence.push(message);
     let p = freeze(f, &format!("{id}:cleanup"), final_command.clone())?;
+    let baseline_ledger = ledger()?;
+    let baseline = f.db.transaction(|tx| {
+        tasks::prepare_task_domain_snapshot_with_budget_tx(
+            tx,
+            &f.scope,
+            &load_request(),
+            &baseline_ledger,
+        )?
+        .require_current()
+    })?;
+    let p = p.with_task_bases(
+        vec![std::sync::Arc::new(baseline.resident)],
+        &baseline_ledger,
+    )?;
     let mut identity = f.db.agent_identities().latest(&f.scope.agent_id)?.unwrap();
     identity.status = crate::types::AgentRegistryStatus::Deleting;
     identity.updated_at += chrono::Duration::seconds(1);
@@ -46,13 +60,13 @@ fn cleanup(f: &Fixture, id: &str) -> Result<(TaskTransitionCommand, PreparedInpu
 #[test]
 fn deleting_result_cap_joins_original_task_inner_and_once_finalizer_without_input_grant(
 ) -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let (command, p) = cleanup(&f, "task:deleting-original")?;
     let result = command.task_result_settlement.as_ref().unwrap();
     let value=f.db.transaction(|tx| {
         let mut task=super::super::super::task_writes::prepare_task_transaction_tx(tx,&p,&f.scope,
-            true,&load_request(),&ledger,None)?.context("missing original Task preparation")?;
+            true,&load_request(),&ledger,None,None)?.context("missing original Task preparation")?;
         let pending=task.take_result();
         // Original offline/cfgtest adapter intentionally has no Input scope.
         // Production keeps its D3 proof gate; M2 alone cannot grant Message/Queue.
@@ -81,7 +95,7 @@ fn deleting_result_cap_joins_original_task_inner_and_once_finalizer_without_inpu
 #[test]
 fn deleting_result_cap_rejects_other_commands_and_scoped_input_without_d3() -> Result<()> {
     for case in 0..5 {
-        let f = Fixture::new()?;
+        let f = initialized_task_fixture()?;
         let ledger = ledger()?;
         let (mut command, prepared) = cleanup(&f, &format!("task:cap-boundary-{case}"))?;
         match case {
@@ -116,6 +130,7 @@ fn deleting_result_cap_rejects_other_commands_and_scoped_input_without_d3() -> R
                     true,
                     &load_request(),
                     &ledger,
+                    None,
                     None,
                 )?
                 .context("missing original Task preparation")?;
@@ -172,7 +187,7 @@ fn deleting_result_cap_rejects_other_commands_and_scoped_input_without_d3() -> R
 
 #[test]
 fn task_writer_complete_path_rejects_no_state_and_preserves_sparse_responsibility() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let (command, p) = cleanup(&f, "task:no-state-original")?;
     f.db.connection()?.execute(
@@ -187,6 +202,7 @@ fn task_writer_complete_path_rejects_no_state_and_preserves_sparse_responsibilit
             true,
             &load_request(),
             &ledger,
+            None,
             None,
         ) {
             Ok(_) => panic!("NoState cannot enter complete Task finalizer"),

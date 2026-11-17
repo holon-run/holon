@@ -52,6 +52,7 @@ pub(in crate::runtime_db) fn read_status_metadata_using_material_tx(
         return Ok(CommittedTaskDelta {
             scope: scope.clone(),
             base_revision: before.revision,
+            prepared_base: None,
             revision: before.revision,
             coverage: current,
             records: Vec::new(),
@@ -120,6 +121,7 @@ pub(in crate::runtime_db) fn read_status_metadata_using_material_tx(
     Ok(CommittedTaskDelta {
         scope: scope.clone(),
         base_revision: before.revision,
+        prepared_base: None,
         revision: current.revision,
         coverage: current,
         records: Vec::new(),

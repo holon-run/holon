@@ -4451,6 +4451,11 @@ CREATE INDEX IF NOT EXISTS idx_queue_entries_active_recovery
         name: "current_run_abort_intents",
         sql: schema::CURRENT_RUN_ABORT_SCHEMA,
     },
+    Migration {
+        version: 112,
+        name: "turn_activation_attachments",
+        sql: "",
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4641,6 +4646,8 @@ fn build_release_baseline_final_schema() -> Result<Vec<String>> {
 
 #[cfg(test)]
 mod release_baseline_schema_tests;
+#[cfg(test)]
+mod turn_activation_attachments_tests;
 
 fn schema_object_keys(connection: &Connection) -> Result<BTreeSet<(String, String)>> {
     let mut statement = connection.prepare(
@@ -4924,6 +4931,9 @@ fn apply_migration_transaction(
     if migration.name == "index_startup_recovery_sources" {
         migrate_startup_recovery_indexes(transaction)?;
     }
+    if migration.name == "turn_activation_attachments" {
+        migrate_task_preparation_indexes(transaction)?;
+    }
     if migration.name == "current_run_abort_intents"
         && table_exists_tx(transaction, "turn_records")?
     {
@@ -4938,6 +4948,36 @@ fn apply_migration_transaction(
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
+    Ok(())
+}
+
+fn migrate_task_preparation_indexes(transaction: &Transaction<'_>) -> Result<()> {
+    // Sparse historical schemas may omit a canonical source; never invent it.
+    if table_exists_tx(transaction, "turn_records")? {
+        transaction.execute_batch(schema::TURN_ACTIVATION_ATTACHMENTS_SCHEMA)?;
+    }
+    for (table, sql) in [
+        (
+            "wait_conditions",
+            // An exact waiter successor is a rowid range within this owner.
+            "CREATE INDEX IF NOT EXISTS idx_wait_conditions_agent_owner
+             ON wait_conditions(agent_id, work_item_id);",
+        ),
+        (
+            "task_domain_records",
+            // Absence checks name one Task key, including foreign scopes.
+            "CREATE INDEX IF NOT EXISTS idx_task_domain_records_known_key
+             ON task_domain_records(family, record_id) WHERE availability != 'absent';",
+        ),
+        (
+            "task_stop_effects",
+            schema::TASK_STOP_PENDING_FRONTIER_SCHEMA,
+        ),
+    ] {
+        if table_exists_tx(transaction, table)? {
+            transaction.execute_batch(sql)?;
+        }
+    }
     Ok(())
 }
 

@@ -211,6 +211,65 @@ fn observe_delegation(
     })
 }
 
+/// Other parents can change a selected child's latest delegation without
+/// changing this owner's Task lane. Recheck the admitted head, not its body.
+pub(super) fn delegation_heads_match_tx(
+    tx: &Transaction<'_>,
+    selected: &[Arc<QualifiedTaskFact>],
+    coverage: &TaskStatusProjectionCoverage,
+) -> Result<bool> {
+    let mut delegation_complete = None;
+    for record in selected {
+        let CanonicalTaskFact::Task(task) = &record.fact else {
+            continue;
+        };
+        let Some(child) = child_id(task) else {
+            continue;
+        };
+        let complete = match delegation_complete {
+            Some(value) => value,
+            None => {
+                let value: bool = tx.query_row(
+                    "SELECT delegation_observed FROM task_status_source_inventory WHERE singleton=1 AND sealed=1 AND length(metadata_digest)=64",
+                    [],
+                    |row| row.get(0),
+                )?;
+                delegation_complete = Some(value);
+                value
+            }
+        };
+        let head = coverage
+            .heads
+            .get(&task.id)
+            .context("selected Task lacks its status observation")?;
+        let latest = match (&head.delegation, complete) {
+            (TaskDelegationObservation::Unavailable, false) => continue,
+            (TaskDelegationObservation::Observed { latest }, true) => latest.as_ref(),
+            _ => return Ok(false),
+        };
+        // Compare inside SQLite: a replacement's strings need not be loaded
+        // or admitted to the reader's material budget on the writer.
+        let matches: Option<bool> = tx
+            .query_row(
+                "SELECT parent_work_item_id IS ?2 AND child_work_item_id IS ?3 AND delegation_id IS ?4
+                 FROM task_status_delegation_sources WHERE child_agent_id=?1
+                 ORDER BY updated_at DESC,created_at DESC,delegation_id ASC LIMIT 1",
+                params![
+                    child,
+                    latest.map(|value| value.parent_work_item_id.as_str()),
+                    latest.map(|value| value.child_work_item_id.as_str()),
+                    latest.map(|value| value.delegation_id.as_str()),
+                ],
+                |row| row.get(0),
+            )
+            .optional()?;
+        if matches != latest.map(|_| true) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Discovery only. Exact aliases and the current owner still authorize actors.
 pub(in crate::runtime_db) fn sync_child_observers_tx(
     tx: &Transaction<'_>,

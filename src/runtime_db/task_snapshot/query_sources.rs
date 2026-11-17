@@ -91,6 +91,18 @@ pub(super) fn initialize_source_inventory_tx(
     Ok(())
 }
 
+/// A sealed unavailable historical Message table is initialized, but cannot
+/// assert complete Output coverage. Do not turn that legal legacy state cold.
+pub(super) fn source_inventory_initialized_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+) -> Result<bool> {
+    tx.query_row(
+        "SELECT EXISTS(SELECT 1 FROM task_message_source_inventory i WHERE i.agent_id=?1 AND i.identity_incarnation=?2 AND (i.origin='fresh_empty' OR EXISTS(SELECT 1 FROM task_query_fixed_manifests f WHERE f.inventory_id=i.query_inventory_id AND f.agent_id=i.agent_id AND f.sealed=1)))",
+        params![scope.agent_id,scope.identity_incarnation], |row| row.get(0),
+    ).map_err(Into::into)
+}
+
 /// A historical unavailable table is not an observed empty namespace.
 pub(super) fn source_inventory_complete_tx(
     tx: &Transaction<'_>,

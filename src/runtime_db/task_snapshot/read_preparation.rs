@@ -12,6 +12,15 @@ pub(crate) fn qualified_task_recovery_selectors_tx(
     scope: &InputEvidenceScope,
     keys: &BTreeSet<TaskKey>,
 ) -> Result<BTreeSet<TaskKey>> {
+    qualified_task_recovery_selectors_with_fixed_tx(tx, scope, keys, None)
+}
+
+pub(super) fn qualified_task_recovery_selectors_with_fixed_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    keys: &BTreeSet<TaskKey>,
+    fixed: Option<&qualification::CandidateFixedQualification>,
+) -> Result<BTreeSet<TaskKey>> {
     ensure!(
         scope_facts(tx, scope, true)?.is_some(),
         TaskSnapshotError::RetiredScope
@@ -32,10 +41,15 @@ pub(crate) fn qualified_task_recovery_selectors_tx(
                 return Err(TaskSnapshotError::NeedsPreparation(key.clone()).into());
             }
             Some(_) => {}
-            None if qualification::eligible_digest(tx, seed.as_deref(), key)?.is_some() => {
-                qualified.insert(key.clone());
+            None => {
+                let eligible = match fixed {
+                    Some(fixed) => fixed.eligible_digest(tx, seed.as_deref(), key)?,
+                    None => qualification::eligible_digest(tx, seed.as_deref(), key)?,
+                };
+                if eligible.is_some() {
+                    qualified.insert(key.clone());
+                }
             }
-            None => {}
         }
     }
     Ok(qualified)

@@ -3,7 +3,7 @@ use super::*;
 
 #[test]
 fn task_message_existing_body_is_reserved_before_duplicate_validation() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let mut queue = f.queue()?;
     queue.command.message_evidence[0].body = MessageBody::Text {
@@ -50,7 +50,7 @@ fn original_message_id() -> String {
 
 #[test]
 fn task_new_message_frozen_body_is_reserved_before_any_original_insert() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let mut queue = f.queue()?;
     let mut source = queue.command.message_evidence.remove(0);
@@ -77,7 +77,7 @@ fn task_new_message_frozen_body_is_reserved_before_any_original_insert() -> Resu
 
 #[test]
 fn task_message_actual_assignment_length_is_reserved_before_projection_read() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let queue = f.queue()?;
     let source = queue.command.message_evidence[0].clone();
@@ -121,7 +121,7 @@ fn task_message_actual_assignment_length_is_reserved_before_projection_read() ->
 
 #[test]
 fn task_message_canonical_id_length_survives_normalized_message_id_drift() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let mut queue = f.queue()?;
     queue.command.message_evidence[0].body = MessageBody::Text {

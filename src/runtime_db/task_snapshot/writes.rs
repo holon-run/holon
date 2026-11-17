@@ -1,5 +1,47 @@
 use super::*;
 use loader::{current_coverage, current_revision, load_original, persist_coverage};
+#[path = "write_delta.rs"]
+mod write_delta;
+
+/// No business SQL ran. Reprepare outside the writer, keeping the command frozen.
+#[derive(Debug, thiserror::Error)]
+#[error("prepared Task write baseline is stale")]
+pub(crate) struct TaskWriteBaselineStale {
+    pub(crate) scope: InputEvidenceScope,
+    pub(crate) request: TaskDomainLoadRequest,
+    _guard: Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
+}
+
+impl TaskWriteBaselineStale {
+    pub(in crate::runtime_db) fn new(
+        scope: &InputEvidenceScope,
+        request: &TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    ) -> Result<Self> {
+        use crate::runtime::input_evidence_budget::{
+            serialized_bytes, InputMemoryCategory, OwnedBytesEstimate,
+        };
+        let guard = ledger.register_owned_bytes(
+            scope,
+            InputMemoryCategory::Candidate,
+            OwnedBytesEstimate {
+                payload_bytes: 0,
+                metadata_estimate_bytes: serialized_bytes(&(
+                    scope,
+                    &request.query,
+                    &request.capture.required_keys,
+                    &request.capture.recovery_source_ids,
+                ))? + 256,
+            },
+        )?;
+        Ok(Self {
+            scope: scope.clone(),
+            request: request.clone(),
+            _guard: guard,
+        })
+    }
+}
+
 /// Freezes only this original transaction's finite Task/result footprint.
 /// Qualification is not a substitute for Task/rejoin/State business OCC.
 pub(crate) struct TaskWriteProof {
@@ -234,6 +276,7 @@ impl PreparedTaskDefer {
         Ok(Some(CommittedTaskDelta {
             scope: proof.scope.clone(),
             base_revision: proof.base_revision,
+            prepared_base: None,
             revision,
             records: vec![fact],
             stop_records: Vec::new(),
@@ -364,6 +407,78 @@ pub(crate) fn preflight_task_write_snapshot_with_memory_budget_tx(
     }
 }
 
+/// Dynamic short re-verification for a prepared reader baseline. Adoption
+/// re-checks only bounded semantic facts — scope identity, the revision
+/// fence, persisted coverage equality, and capture satisfaction — and never
+/// decodes a Task body. Ineligible or cold inputs return None so the caller
+/// keeps its explicit full preflight.
+pub(crate) fn adopt_task_write_baseline_tx(
+    tx: &Transaction<'_>,
+    proof: &TaskWriteProof,
+    request: &TaskDomainLoadRequest,
+    resident: &ResidentTaskDomain,
+    coverage_json: &str,
+) -> Result<Option<TaskCurrentSnapshot>> {
+    if resident.scope() != &proof.scope {
+        return Ok(None);
+    }
+    if request.recovery_at.is_some() || !request.capture.recovery_source_ids.is_empty() {
+        return Ok(None);
+    }
+    let published = resident.coverage();
+    if !published.active_complete || !published.unsettled_complete {
+        return Ok(None);
+    }
+    if let Err(error) = resident
+        .capture_query(&request.query)
+        .and_then(|_| resident.capture(&request.capture))
+    {
+        match error.downcast_ref::<TaskReadError>() {
+            // A domain read error is plain ineligibility, not writer failure.
+            Some(_) => return Ok(None),
+            None => return Err(error),
+        }
+    }
+    if published.revision != proof.base_revision {
+        return Ok(None);
+    }
+    let same_coverage = tx
+        .query_row(
+            "SELECT coverage_json=?3 FROM task_domain_current WHERE agent_id=?1 AND identity_incarnation=?2",
+            params![proof.scope.agent_id, proof.scope.identity_incarnation, coverage_json],
+            |row| row.get::<_, bool>(0),
+        )
+        .optional()?
+        .unwrap_or(false);
+    if !same_coverage {
+        return Ok(None);
+    }
+    let Some(facts) = scope_facts(tx, &proof.scope, proof.original_recovery)? else {
+        return Ok(None);
+    };
+    // Roots and the qualified namespace are re-observed from the actual write
+    // set by the incremental finalizer; an adopted baseline carries neither.
+    Ok(Some(TaskCurrentSnapshot {
+        facts,
+        // A same-revision empty delta preserves body Arcs and the domain's
+        // limits/budget contract while allocating an independently owned view.
+        resident: resident.with_committed(&CommittedTaskDelta {
+            scope: proof.scope.clone(),
+            base_revision: published.revision,
+            prepared_base: None,
+            revision: published.revision,
+            records: Vec::new(),
+            stop_records: Vec::new(),
+            removals: BTreeMap::new(),
+            coverage: published.clone(),
+        })?,
+        input_roots: BTreeSet::new(),
+        #[cfg(test)]
+        turnless_parent_turns: BTreeSet::new(),
+        work_roots: BTreeSet::new(),
+    }))
+}
+
 #[cfg(test)]
 pub(crate) fn register_task_writes_tx(
     tx: &Transaction<'_>,
@@ -378,6 +493,7 @@ pub(crate) fn register_task_writes_tx(
         actual_final_keys,
         final_state,
         request,
+        None,
         None,
         None,
         None,
@@ -405,41 +521,12 @@ pub(crate) fn register_task_writes_with_budget_tx(
         None,
         None,
         None,
+        None,
     )
 }
-/// Original Memory command shares its combined allowance through final readback.
-pub(crate) fn register_task_writes_with_memory_budget_tx(
-    tx: &Transaction<'_>,
-    proof: &TaskWriteProof,
-    actual_final_keys: &BTreeSet<TaskKey>,
-    final_state: &AgentState,
-    request: &TaskDomainLoadRequest,
-    budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
-    memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
-) -> Result<CommittedTaskFacts> {
-    match memory_budget {
-        Some(memory) => register_task_writes_inner(
-            tx,
-            proof,
-            actual_final_keys,
-            final_state,
-            request,
-            Some(budget),
-            Some(memory),
-            None,
-            None,
-            None,
-        ),
-        None => register_task_writes_with_budget_tx(
-            tx,
-            proof,
-            actual_final_keys,
-            final_state,
-            request,
-            budget,
-        ),
-    }
-}
+/// Test-only original writer: production stop observation now registers the
+/// actual write delta instead of re-loading the full domain.
+#[cfg(test)]
 pub(crate) fn register_task_writes_with_stop_observation_tx(
     tx: &Transaction<'_>,
     proof: &TaskWriteProof,
@@ -460,6 +547,7 @@ pub(crate) fn register_task_writes_with_stop_observation_tx(
         Some(budget),
         memory_budget,
         Some(inserted),
+        None,
         None,
         None,
     )
@@ -493,6 +581,7 @@ pub(crate) fn register_task_writes_with_stop_result_observation_tx(
         None,
         Some(result),
         None,
+        None,
     )
 }
 
@@ -519,7 +608,41 @@ pub(in crate::runtime_db) fn register_original_task_writes_using_material_tx(
         None,
         None,
         Some(material),
+        None,
     )
+}
+
+impl TaskWriteProof {
+    /// The pre-SQL selection is observation material, never write authority.
+    pub(in crate::runtime_db) fn register_incremental_tx(
+        &self,
+        tx: &Transaction<'_>,
+        baseline: TaskCurrentSnapshot,
+        actual: &BTreeSet<TaskKey>,
+        state: &AgentState,
+        request: &TaskDomainLoadRequest,
+        ledger: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+        material: &mut read_preparation::TaskReadMaterial<'_>,
+        inserted: Option<&crate::runtime_db::task_stop::TaskStopInsertedObservation<'_, '_>>,
+    ) -> Result<CommittedTaskFacts> {
+        material.validate_original_allowance(self.scope(), request, ledger)?;
+        if let Some(inserted) = inserted {
+            inserted.validate_scope_tx(tx, self.scope())?;
+        }
+        register_task_writes_inner(
+            tx,
+            self,
+            actual,
+            state,
+            request,
+            Some(ledger),
+            None,
+            inserted,
+            None,
+            Some(material),
+            Some(baseline),
+        )
+    }
 }
 
 fn register_task_writes_inner(
@@ -532,8 +655,11 @@ fn register_task_writes_inner(
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     inserted: Option<&crate::runtime_db::task_stop::TaskStopInsertedObservation<'_, '_>>,
     result: Option<&crate::runtime_db::task_stop::TaskStopResultObservation<'_, '_>>,
-    material: Option<&mut read_preparation::TaskReadMaterial<'_>>,
+    mut material: Option<&mut read_preparation::TaskReadMaterial<'_>>,
+    baseline: Option<TaskCurrentSnapshot>,
 ) -> Result<CommittedTaskFacts> {
+    let mut finalize_stage = crate::diagnostics::attribution::TASK_WRITE_DELTA_FINALIZE.start();
+    finalize_stage.rows(actual_final_keys.len());
     let facts = scope_facts(tx, &proof.scope, proof.original_recovery)?
         .context("Task finalizer scope retired")?;
     ensure!(
@@ -554,6 +680,7 @@ fn register_task_writes_inner(
     lengths(tx, actual_final_keys, Some(request))?;
     let mut changed = false;
     let mut removals = BTreeMap::new();
+    let mut replacements = BTreeMap::new();
     let revision = proof
         .base_revision
         .checked_add(1)
@@ -561,6 +688,17 @@ fn register_task_writes_inner(
     let seed = binding(tx, &proof.scope)?;
     for key in actual_final_keys {
         let before = proof.before.get(key).expect("proof keys checked");
+        if baseline.is_some() {
+            // Replacements bypass the selected-body loader, so admit their
+            // original completion material before reading canonical bodies.
+            material
+                .as_deref_mut()
+                .context("incremental Task finalizer requires original material")?
+                .charge_record(
+                    key,
+                    checkpoint_material_size_on(tx, key)?.unwrap_or_default(),
+                )?;
+        }
         let after = stored_on(tx, &proof.scope.agent_id, key)?;
         match after {
             Some(after) => {
@@ -592,6 +730,12 @@ fn register_task_writes_inner(
                         before.is_none(),
                     )?;
                 }
+                if baseline.is_some() {
+                    replacements.insert(
+                        key.clone(),
+                        Some(after.qualified(&proof.scope, record_revision)?),
+                    );
+                }
             }
             None => {
                 ensure!(
@@ -611,6 +755,9 @@ fn register_task_writes_inner(
                     },
                 )?;
                 removals.insert(key.clone(), TaskAvailability::Pruned);
+                if baseline.is_some() {
+                    replacements.insert(key.clone(), None);
+                }
             }
         }
     }
@@ -626,7 +773,19 @@ fn register_task_writes_inner(
         base.revision = revision;
         persist_coverage(tx, &proof.scope, &base)?;
     }
-    let snapshot = if let Some(material) = material {
+    let snapshot = if let Some(baseline) = baseline {
+        write_delta::finish_snapshot_tx(
+            tx,
+            proof,
+            baseline,
+            replacements,
+            request,
+            material.context("incremental Task finalizer requires original material")?,
+            budget,
+            inserted,
+            result,
+        )?
+    } else if let Some(material) = material {
         loader::load_selected_using_material(
             tx,
             &proof.scope,
@@ -695,6 +854,7 @@ fn register_task_writes_inner(
         delta: CommittedTaskDelta {
             scope: proof.scope.clone(),
             base_revision: proof.base_revision,
+            prepared_base: None,
             revision: final_revision,
             records: resident_records,
             stop_records,

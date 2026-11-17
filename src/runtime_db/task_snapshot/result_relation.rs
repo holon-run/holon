@@ -135,7 +135,8 @@ pub(super) fn observe_result_dependency_tx(
         content_digest: item.digest(),
         projection_digest: item.projection_digest.clone(),
     };
-    let (relation, _, _) = observe_task_predicate_tx(tx, scope, seed, result, request, material)?;
+    let (relation, _, _) =
+        observe_task_predicate_tx(tx, scope, seed, result, None, request, material)?;
     Ok(TaskResultDependencyObservation {
         result: result_locator,
         relation,
@@ -147,6 +148,7 @@ pub(super) fn observe_task_predicate_tx(
     scope: &InputEvidenceScope,
     seed: Option<&str>,
     result: &super::super::task_result_settlement::TaskResultSettlementRecord,
+    prepared_task: Option<&TaskFactLocator>,
     request: &TaskDomainLoadRequest,
     material: &mut read_preparation::TaskReadMaterial<'_>,
 ) -> Result<(
@@ -256,7 +258,34 @@ pub(super) fn observe_task_predicate_tx(
     let (owner, normalized_revision, matches) = evaluate_predicate(&raw, result)?;
     // A qualified member must validate its complete locator even when the
     // current predicate is false. Small tuple observation cannot mask drift.
-    let qualified_revision = if current
+    let qualified_task = if let Some(task) = prepared_task {
+        // The original-transaction delta already owns this qualified body.
+        // Recheck its membership without acquiring another canonical copy.
+        ensure!(
+            task.scope == *scope && task.key == key,
+            "prepared Result Task locator scope/key mismatch"
+        );
+        let (revision, content, projection) = match &current {
+            Some(alias) => (
+                alias.revision,
+                alias.digest.as_deref(),
+                alias.projection_digest.as_deref(),
+            ),
+            None => {
+                let (content, projection) = fixed
+                    .as_ref()
+                    .ok_or_else(|| TaskSnapshotError::NeedsPreparation(key.clone()))?;
+                (1, Some(content.as_str()), Some(projection.as_str()))
+            }
+        };
+        if revision != task.revision
+            || content != Some(task.content_digest.as_str())
+            || projection != Some(task.projection_digest.as_str())
+        {
+            return Err(TaskSnapshotError::CanonicalChanged(key.clone()).into());
+        }
+        Some(task.clone())
+    } else if current
         .as_ref()
         .is_some_and(|a| a.availability == TaskAvailability::Present)
         || fixed.is_some()
@@ -271,22 +300,16 @@ pub(super) fn observe_task_predicate_tx(
         )?;
         material.charge_record(&key, n)?;
         let stored = stored_on(tx, &scope.agent_id, &key)?.context("qualified Task missing")?;
-        Some((
-            qualification::validate_member(tx, scope, seed, &key, &stored)?,
-            stored,
-        ))
+        Some(TaskFactLocator {
+            scope: scope.clone(),
+            key: key.clone(),
+            revision: qualification::validate_member(tx, scope, seed, &key, &stored)?,
+            content_digest: stored.digest(),
+            projection_digest: stored.projection_digest,
+        })
     } else {
         None
     };
-    let qualified_task = qualified_revision
-        .as_ref()
-        .map(|(revision, stored)| TaskFactLocator {
-            scope: scope.clone(),
-            key: key.clone(),
-            revision: *revision,
-            content_digest: stored.digest(),
-            projection_digest: stored.projection_digest.clone(),
-        });
     if !matches {
         return Ok((
             invalid(

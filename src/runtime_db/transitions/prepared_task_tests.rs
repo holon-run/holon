@@ -136,7 +136,7 @@ fn original_deletion(receipt: &InputMutationReceipt) -> &InputTaskDeletionResult
 
 #[test]
 fn task_child_whole_receipt_returns_exact_ack_and_replay_keeps_later_identity() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let child = create_child(&f)?;
     let prepared = child_bundle(&f, child.clone(), "task-original", task_command(&f))?;
     assert_eq!(prepared.descriptor().scopes().len(), 2);
@@ -220,7 +220,7 @@ fn task_child_whole_receipt_returns_exact_ack_and_replay_keeps_later_identity() 
 
 #[test]
 fn task_child_fault_rolls_back_parent_queue_work_child_job_audit_and_receipt() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let child = create_child(&f)?;
     commit_original_wait(&f, "task-rollback-active-wait")?;
     let queue = f.queue()?;
@@ -325,7 +325,7 @@ fn task_group_child_incarnation_and_pending_body_are_frozen_before_sql() -> Resu
 
 #[test]
 fn task_idempotent_child_result_is_still_a_new_receipt_and_group_authorization() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let child = create_child(&f)?;
     let original = child_bundle(&f, child.clone(), "first-task", task_command(&f))?;
     let InputMutationExecution::Committed { receipt: first, .. } =
@@ -363,7 +363,7 @@ fn task_idempotent_child_result_is_still_a_new_receipt_and_group_authorization()
 #[test]
 fn task_final_wait_footprint_and_trigger_audit_are_in_the_same_original_receipt() -> Result<()> {
     use crate::runtime::resident_work::{CanonicalWorkRecord, WorkFamily, WorkKey};
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let mut original = original_wait_command(&f, None)?;
     original.wait_conditions[0].id = "task-old-wait".into();
     original.wait_conditions[0].wake_sources = vec![crate::types::WakeSource::OperatorInput];
@@ -453,7 +453,7 @@ fn task_final_wait_footprint_and_trigger_audit_are_in_the_same_original_receipt(
 
 #[test]
 fn deleting_parent_can_finish_existing_task_but_cannot_admit_new_task() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let mut command = task_command(&f);
     command.task.status = TaskStatus::Running;
     let prepared = PreparedInputTransition::task(

@@ -95,6 +95,11 @@ impl RuntimeHostBridge {
         }
         let prepared = pending.as_ref().context("Running capsule absent")?;
         prepared.validate_original_child_running(source)?;
+        let mut task_bases =
+            crate::runtime_db::transitions::PreparedTaskBaselines::from_reservations(
+                &reservations,
+                ledger,
+            )?;
         let mut tickets = Vec::new();
         for message in prepared.pending_messages()? {
             match ledger.reserve_pending(scope, &message.id, serialized_bytes(&message.body)?) {
@@ -147,8 +152,12 @@ impl RuntimeHostBridge {
         let execution = host
             .runtime_db()
             .transitions_in_scope(scope)
-            .commit_prepared_transition_with_work_request_and_memory_budget(
-                prepared, &work, ledger, &request,
+            .commit_prepared_transition_with_task_preparation(
+                prepared,
+                &work,
+                ledger,
+                &request,
+                &mut task_bases,
             );
         if matches!(&execution, Ok(InputMutationExecution::Replayed { .. })) {
             witness.mark_input_storage_replayed()?;

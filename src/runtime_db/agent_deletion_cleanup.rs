@@ -184,6 +184,7 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     ("artifact_metadata", "agent_id"),
     ("briefs", "agent_id"),
     ("messages", "agent_id"),
+    ("turn_activation_attachments", "agent_id"),
     ("turn_records", "agent_id"),
     ("audit_events", "agent_id"),
     // Callback messages/audits use agent_id; capabilities use target_agent_id.

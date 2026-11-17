@@ -5,10 +5,7 @@ use crate::{
     runtime::resident_task::{
         CapturedTasks, CommittedTaskDelta, TaskCaptureRequest, TaskReadError,
     },
-    runtime_db::{
-        context_inputs::ContextDurableRead,
-        task_snapshot::{self, TaskDomainLoadRequest},
-    },
+    runtime_db::task_snapshot::{self, TaskDomainLoadRequest},
 };
 
 pub(in crate::runtime) struct OwnerTaskRequestMaterial {
@@ -192,7 +189,7 @@ impl RuntimeMutation {
             self.reservations[self.primary_index].owner_epoch(),
         )?;
         let (load, _material) = self.owner_task_load_request()?;
-        self.prepare_owner_task_domain_request_inner(&load, "query")
+        self.prepare_owner_task_domain_request_inner(&load, "query", true)
             .await
     }
 
@@ -207,7 +204,9 @@ impl RuntimeMutation {
         // A delta has no authority to establish missing completeness or bodies.
         // Even a full-looking ACK needs explicit preparation when the old domain is absent.
         if let Some(tasks) = &self.tasks {
-            if resident_behind_committed_delta(tasks.coverage().revision, delta.base_revision) {
+            if delta.prepared_base.is_none()
+                && resident_behind_committed_delta(tasks.coverage().revision, delta.base_revision)
+            {
                 // A concurrent committed write advanced the Task domain past
                 // this owner's projection. SQL is already committed truth, so
                 // drop the stale resident; a named full preparation
@@ -276,7 +275,7 @@ impl RuntimeMutation {
             record_limit,
             byte_limit,
         };
-        self.prepare_owner_task_domain_request_inner(&load, "owner")
+        self.prepare_owner_task_domain_request_inner(&load, "owner", true)
             .await
     }
 
@@ -324,7 +323,7 @@ impl RuntimeMutation {
             .required_keys
             .extend(request.required_keys.iter().cloned());
         let _stage = crate::diagnostics::attribution::TASK_RESULT_RECOVERY_TASK_PREPARE.start();
-        self.prepare_owner_task_domain_request_inner(&load, "recovery")
+        self.prepare_owner_task_domain_request_inner(&load, "recovery", true)
             .await
     }
 
@@ -350,7 +349,7 @@ impl RuntimeMutation {
                     .as_ref()
                     .map_or(0, |tasks| tasks.coverage().terminal.limit),
             );
-            self.prepare_owner_task_domain_request_inner(&load, "dispatch")
+            self.prepare_owner_task_domain_request_inner(&load, "dispatch", true)
                 .await
         })
     }
@@ -360,13 +359,21 @@ impl RuntimeMutation {
         &'a mut self,
         load: &'a TaskDomainLoadRequest,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
-        Box::pin(self.prepare_owner_task_domain_request_inner(load, "explicit"))
+        Box::pin(self.prepare_owner_task_domain_request_inner(load, "explicit", true))
+    }
+
+    pub(in crate::runtime) fn reload_owner_task_domain_request<'a>(
+        &'a mut self,
+        load: &'a TaskDomainLoadRequest,
+    ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(self.prepare_owner_task_domain_request_inner(load, "stale_baseline", false))
     }
 
     async fn prepare_owner_task_domain_request_inner(
         &mut self,
         load: &TaskDomainLoadRequest,
         caller: &'static str,
+        reuse_published: bool,
     ) -> Result<()> {
         use crate::diagnostics::attribution;
 
@@ -379,88 +386,88 @@ impl RuntimeMutation {
             load.capture.recovery_source_ids.is_empty() || load.recovery_at.is_some(),
             "Task recovery selectors require a frozen recovery_at"
         );
-        let mut miss = "domain";
+        let mut miss = if reuse_published {
+            "domain"
+        } else {
+            "stale_baseline"
+        };
         if let Some(tasks) = &root.tasks {
             anyhow::ensure!(tasks.scope() == &scope, "published Task scope differs");
-            match tasks
-                .coverage()
-                .recovery_sources_prepared_at(&load.capture.recovery_source_ids, load.recovery_at)
-                .and_then(|_| tasks.capture_query(&load.query))
-                .and_then(|_| tasks.capture(&load.capture))
-            {
-                Ok(_) => {
-                    let _reuse = attribution::TASK_PREPARE_REUSE.start();
-                    tracing::trace!(target: "holon::performance", caller, outcome = "reuse",
+            if reuse_published {
+                match tasks
+                    .coverage()
+                    .recovery_sources_prepared_at(
+                        &load.capture.recovery_source_ids,
+                        load.recovery_at,
+                    )
+                    .and_then(|_| tasks.capture_query(&load.query))
+                    .and_then(|_| tasks.capture(&load.capture))
+                {
+                    Ok(_) => {
+                        let _reuse = attribution::TASK_PREPARE_REUSE.start();
+                        tracing::trace!(target: "holon::performance", caller, outcome = "reuse",
                         "Task preparation");
-                    return Ok(());
+                        return Ok(());
+                    }
+                    Err(error) => match error.downcast_ref::<TaskReadError>() {
+                        Some(TaskReadError::RecoveryTimeNotPrepared(_)) => {
+                            miss = "recovery_time";
+                        }
+                        Some(_) => {
+                            miss = "coverage";
+                        }
+                        None => return Err(error),
+                    },
                 }
-                Err(error) => match error.downcast_ref::<TaskReadError>() {
-                    Some(TaskReadError::RecoveryTimeNotPrepared(_)) => {
-                        miss = "recovery_time";
-                    }
-                    Some(_) => {
-                        miss = "coverage";
-                    }
-                    None => return Err(error),
-                },
             }
         }
         let _miss = match miss {
             "domain" => attribution::TASK_PREPARE_MISS_DOMAIN.start(),
-            "coverage" => attribution::TASK_PREPARE_MISS_COVERAGE.start(),
+            "coverage" | "stale_baseline" => attribution::TASK_PREPARE_MISS_COVERAGE.start(),
             _ => attribution::TASK_PREPARE_MISS_RECOVERY_TIME.start(),
         };
         tracing::trace!(target: "holon::performance", caller, miss, outcome = "load",
             "Task preparation");
-        let tasks = self.runtime.inner.runtime_db.transaction(|tx| {
-            let _span = tracing::trace_span!(
-                "task_domain_prepare",
-                agent_id = %scope.agent_id,
-                terminal_limit = load.capture.terminal_limit,
-                required_keys = load.capture.required_keys.len(),
-                recovery_sources = load.capture.recovery_source_ids.len(),
-            )
-            .entered();
-            let _stage = crate::diagnostics::attribution::TASK_DOMAIN_PREPARE.start();
-            let facts = ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?;
-            anyhow::ensure!(
-                facts.state.as_deref() == Some(root.state.as_ref())
-                    && facts.control_revision.is_some(),
-                "Task preparation canonical State differs from published root"
-            );
-            let identity = facts
-                .identity
-                .as_ref()
-                .context("Task preparation identity missing")?;
-            anyhow::ensure!(
-                identity.agent_id == scope.agent_id
-                    && identity.incarnation == scope.identity_incarnation,
-                "Task preparation incarnation differs"
-            );
-            let prepared = if identity.status == crate::types::AgentRegistryStatus::Deleting {
-                task_snapshot::prepare_original_task_recovery_snapshot_with_budget_tx(
+        // Named re-preparation decodes on the preparation reader pool. The
+        // original writer re-verifies the candidate's semantic dependencies by
+        // exact key, then commits qualification without rebuilding the resident
+        // domain. A changed dependency re-reads the candidate on the pool.
+        // Bootstrap must initialize the domain before Ready publication.
+        let _stage = crate::diagnostics::attribution::TASK_DOMAIN_PREPARE.start();
+        let mut attempts = 0u8;
+        let tasks = loop {
+            attempts += 1;
+            let candidate = self.runtime.inner.runtime_db.read_for_preparation(|tx| {
+                task_snapshot::prepare_task_candidate_tx(
                     tx,
                     &scope,
+                    root.state.as_ref(),
                     load,
                     &self.runtime.inner.input_evidence_budget,
-                )?
-            } else {
-                task_snapshot::prepare_task_domain_snapshot_with_budget_tx(
-                    tx,
-                    &scope,
-                    load,
-                    &self.runtime.inner.input_evidence_budget,
-                )?
+                )
+            })?;
+            let candidate = candidate.context(
+                "Task preparation requires domain initialization before Ready publication",
+            )?;
+            match self.runtime.inner.runtime_db.transaction_once(|tx| {
+                task_snapshot::commit_task_candidate_tx(tx, &scope, candidate)
+            }) {
+                Ok(tasks) => break tasks,
+                Err(error)
+                    if attempts < 3
+                        && error
+                            .downcast_ref::<task_snapshot::TaskPreparationCandidateStale>()
+                            .is_some() =>
+                {
+                    tracing::trace!(
+                        target: "holon::performance",
+                        attempts,
+                        "Task preparation candidate stale; re-reading"
+                    );
+                }
+                Err(error) => return Err(error),
             }
-            .require_current()?;
-            anyhow::ensure!(
-                prepared.facts.identity == facts.identity
-                    && prepared.facts.state == facts.state
-                    && prepared.facts.control_revision == facts.control_revision,
-                "Task preparation domains differ from the same read view"
-            );
-            Ok(prepared.resident)
-        })?;
+        };
         let current = self.reservations[self.primary_index]
             .capture_ready_snapshot()?
             .context("Task preparation lost its published root")?;

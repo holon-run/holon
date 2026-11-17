@@ -4,7 +4,8 @@ use crate::{
     runtime::mutation_owner::MutationOwnerError,
     types::{
         AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
-        AgentVisibility, TaskKind, TaskStatus,
+        AgentVisibility, AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority,
+        TaskKind, TaskStatus,
     },
 };
 use tempfile::{tempdir, TempDir};
@@ -33,6 +34,32 @@ impl Fixture {
             _workspace: workspace,
         })
     }
+    async fn claim(&self) -> Result<crate::runtime::scheduler_executor::ScheduledMessage> {
+        self.runtime
+            .enqueue(MessageEnvelope::new(
+                "default",
+                MessageKind::OperatorPrompt,
+                MessageOrigin::Operator {
+                    actor_id: None,
+                    actor_display_name: None,
+                },
+                AuthorityClass::OperatorInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "original Task retry run".into(),
+                },
+            ))
+            .await?;
+        let crate::runtime::scheduler_executor::RunLoopPoll::Message(scheduled) =
+            crate::runtime::scheduler_executor::SchedulerDecisionExecutor::new(&self.runtime)
+                .poll()
+                .await?
+        else {
+            anyhow::bail!("expected an actual claimed run")
+        };
+        Ok(scheduled)
+    }
+
     fn child(&self) -> Result<AgentIdentityRecord> {
         let mut identity = AgentIdentityRecord::new(
             "child:runtime-task",
@@ -108,6 +135,228 @@ impl Fixture {
             fault,
         }
     }
+}
+
+#[tokio::test]
+async fn task_stale_baseline_reprepares_and_retries_only_the_frozen_command() -> Result<()> {
+    use crate::runtime::resident_task::{TaskFamily, TaskKey};
+    use crate::runtime_db::{
+        repositories::upsert_task_tx,
+        task_snapshot::{self as tasks, TaskWriteBaselineStale},
+    };
+    use std::collections::BTreeSet;
+    let f = Fixture::new()?;
+    let scheduled = f.claim().await?;
+    let mut mutation = f.runtime.begin_mutation().await?;
+    let original_run = mutation
+        .current_run_abort
+        .as_ref()
+        .context("original run handle missing")?
+        .clone();
+    let lease = f
+        .runtime
+        .inner
+        .control_cancellations
+        .run_for(&original_run.run_id)
+        .context("original completion lease missing")?;
+    let (load, _material) = mutation.owner_task_load_request()?;
+    mutation.prepare_owner_task_domain_request(&load).await?;
+    mutation.defer_abort_current_run("abort after frozen Task retry");
+    let scope = mutation.input_evidence_scope();
+    let command = f.command(false, None);
+    let original = command.task.clone();
+    let prepared = PreparedInputTransition::task(
+        scope.clone(),
+        "runtime-task-stale-baseline".into(),
+        original.updated_at,
+        PreparedTaskTransition::new(command, Default::default(), true, None, None)?,
+    )?
+    .with_task_bases(
+        vec![mutation.tasks.as_ref().context("baseline missing")?.clone()],
+        &f.runtime.inner.input_evidence_budget,
+    )?;
+    let descriptor = prepared.descriptor().clone();
+    let mut rival = f.command(false, None).task;
+    rival.id = "task:rival-baseline".into();
+    rival.status = TaskStatus::Running;
+    let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &rival.id)]);
+    let db = f.runtime.runtime_db();
+    db.transaction(|tx| {
+        let proof = tasks::prepare_task_write_tx(tx, &scope, &keys)?;
+        upsert_task_tx(tx, &rival)?;
+        tasks::register_task_writes_with_budget_tx(
+            tx,
+            &proof,
+            &keys,
+            mutation.committed_state(),
+            &load,
+            &f.runtime.inner.input_evidence_budget,
+        )?;
+        Ok(())
+    })?;
+    let error = db
+        .transitions_in_scope(&scope)
+        .commit_prepared_transition_with_input_query_and_task_bases(
+            &prepared,
+            &mutation.owner_work_load_request()?,
+            &f.runtime.inner.input_evidence_budget,
+            &load,
+            None,
+            None,
+            &Default::default(),
+        )
+        .unwrap_err();
+    assert!(
+        error.downcast_ref::<TaskWriteBaselineStale>().is_some(),
+        "{error:#}"
+    );
+    assert!(db.tasks().latest(&original.id)?.is_none());
+    assert!(!original_run.token.is_cancelled());
+    let receipts = || -> Result<i64> {
+        Ok(db.connection()?.query_row(
+            "SELECT COUNT(*) FROM input_mutation_receipts WHERE command_nonce=?1",
+            [descriptor.command_nonce()],
+            |row| row.get(0),
+        )?)
+    };
+    assert_eq!(receipts()?, 0);
+    let stale_baseline = mutation.tasks.as_ref().context("baseline missing")?.clone();
+    mutation.prepare_owner_task_domain_request(&load).await?;
+    assert!(Arc::ptr_eq(
+        mutation.tasks.as_ref().context("baseline missing")?,
+        &stale_baseline
+    ));
+    assert!(!stale_baseline
+        .coverage()
+        .active_task_ids
+        .contains(&rival.id));
+    drop(error);
+    let (commit, _) = mutation.commit_prepared_input_with_result(prepared).await?;
+    assert!(commit.applied);
+    assert_eq!(db.tasks().latest(&original.id)?, Some(original));
+    assert_eq!(receipts()?, 1);
+    assert!(!Arc::ptr_eq(
+        mutation
+            .tasks
+            .as_ref()
+            .context("Task publication missing")?,
+        &stale_baseline
+    ));
+    assert!(mutation
+        .reservations
+        .iter()
+        .all(|reservation| reservation.recovery().unwrap().is_none()));
+    let coverage = mutation
+        .tasks
+        .as_ref()
+        .context("Task publication missing")?
+        .coverage();
+    assert!(coverage.active_task_ids.contains(&rival.id));
+    let current_run = mutation
+        .current_run_abort
+        .as_ref()
+        .context("Task retry lost the original run handle")?;
+    assert_eq!(current_run.run_id, original_run.run_id);
+    assert!(Arc::ptr_eq(&current_run.reason, &original_run.reason));
+    assert!(original_run.token.is_cancelled());
+    assert_eq!(
+        *original_run.reason.lock().unwrap(),
+        "abort after frozen Task retry"
+    );
+    assert!(!lease.is_complete());
+    drop(mutation);
+    drop(scheduled);
+    assert!(lease.is_complete());
+    Ok(())
+}
+
+#[tokio::test]
+async fn task_baseline_retry_does_not_apply_deferred_abort_after_business_rollback() -> Result<()> {
+    use crate::runtime::resident_task::{TaskFamily, TaskKey};
+    use crate::runtime_db::{repositories::upsert_task_tx, task_snapshot as tasks};
+    use std::collections::BTreeSet;
+
+    let f = Fixture::new()?;
+    let scheduled = f.claim().await?;
+    let mut mutation = f.runtime.begin_mutation().await?;
+    let (load, _material) = mutation.owner_task_load_request()?;
+    mutation.prepare_owner_task_domain_request(&load).await?;
+    let committed_state = mutation.committed_state().clone();
+    let original_run = mutation
+        .current_run_abort
+        .as_ref()
+        .context("original run handle missing")?
+        .clone();
+    let private_run = CurrentRunAbortHandle {
+        run_id: "uncommitted-private-run".into(),
+        token: tokio_util::sync::CancellationToken::new(),
+        reason: Arc::new(std::sync::Mutex::new(String::new())),
+    };
+    mutation.state.current_run_id = Some(private_run.run_id.clone());
+    mutation.current_run_abort = Some(private_run.clone());
+    mutation.defer_abort_current_run("must not cancel after rollback");
+    let command = f.command(false, Some(TransitionFaultPoint::BeforeCommit));
+    let task_id = command.task.id.clone();
+    let prepared = PreparedInputTransition::task(
+        mutation.input_evidence_scope(),
+        "runtime-task-retry-rollback".into(),
+        command.task.updated_at,
+        PreparedTaskTransition::new(command, Default::default(), true, None, None)?,
+    )?
+    .with_task_bases(
+        vec![mutation.tasks.as_ref().context("baseline missing")?.clone()],
+        &f.runtime.inner.input_evidence_budget,
+    )?;
+    let stale_baseline = mutation.tasks.as_ref().unwrap().clone();
+    let scope = mutation.input_evidence_scope();
+    let mut rival = f.command(false, None).task;
+    rival.id = "task:rival-rollback-baseline".into();
+    rival.status = TaskStatus::Running;
+    let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &rival.id)]);
+    f.runtime.runtime_db().transaction(|tx| {
+        let proof = tasks::prepare_task_write_tx(tx, &scope, &keys)?;
+        upsert_task_tx(tx, &rival)?;
+        tasks::register_task_writes_with_budget_tx(
+            tx,
+            &proof,
+            &keys,
+            &committed_state,
+            &load,
+            &f.runtime.inner.input_evidence_budget,
+        )?;
+        Ok(())
+    })?;
+    let error = mutation
+        .commit_prepared_input_with_result(prepared)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        persistence_certainty(&error),
+        Some(PersistenceCertainty::DefinitelyNotCommitted)
+    );
+    assert!(f.runtime.runtime_db().tasks().latest(&task_id)?.is_none());
+    assert!(!original_run.token.is_cancelled());
+    assert!(!private_run.token.is_cancelled());
+    assert!(mutation.deferred_abort.is_none());
+    assert_eq!(mutation.state, committed_state);
+    let published = f.runtime.inner.mutation_owner.capture()?.unwrap();
+    assert_eq!(published.state.as_ref(), &committed_state);
+    assert!(!Arc::ptr_eq(
+        published
+            .tasks
+            .as_ref()
+            .context("new Task baseline missing")?,
+        &stale_baseline
+    ));
+    let current_run = mutation
+        .current_run_abort
+        .as_ref()
+        .context("rollback lost the original committed run handle")?;
+    assert_eq!(current_run.run_id, original_run.run_id);
+    assert!(Arc::ptr_eq(&current_run.reason, &original_run.reason));
+    drop(mutation);
+    drop(scheduled);
+    Ok(())
 }
 
 #[tokio::test]

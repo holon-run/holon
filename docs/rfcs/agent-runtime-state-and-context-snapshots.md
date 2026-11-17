@@ -1238,6 +1238,102 @@ Task qualification compares payload-derived fields only against the matching
 normalized columns. Its complete SQL fingerprint also retains SQL-only recovery
 bindings, so a valid payload does not conceal changes to those bindings.
 
+Recovery locates persisted input attachments through
+`turn_activation_attachments`, a derived index of each Turn's live and idle batch
+activation IDs. The Task's creation Turn and the Attempt's ingress Turn are not
+substitutes for this relation. Migration backfills the index once; Turn row
+insert/update/delete triggers maintain it in the original transaction. Ordinary
+reads never rediscover attachments by scanning Turn JSON history.
+Sparse historical schemas install only the indexes whose canonical source
+tables exist; migration never invents a missing source or authorizes late data.
+Malformed canonical JSON and non-object batch elements contribute no derived
+edge; indexing neither rewrites their bytes nor replaces the original reader's
+validation. Updating a malformed Turn removes its prior edges atomically.
+
+The index preserves every edge, including terminal and ambiguous attachments.
+Multiple batches on one Turn count once; multiple Turns remain ambiguous.
+Lookup does not grant source, owner, lifecycle, or consumption authority: the
+original exact Turn and Attempt validation still runs after direct location.
+Dynamic admission and consumption eligibility are rechecked separately from the
+stable persisted input evidence. No selector generation is introduced.
+
+Named Task re-preparation selects and decodes on the protected preparation
+reader pool. Its owned candidate retains the original scope, lane revision,
+coverage bytes, continuity binding, selected canonical revisions and indexed
+negative observations. The qualification writer checks those dependencies by
+exact key, without replaying a loader or recovery selector. A stale candidate
+is rebuilt on the reader pool. Invalid Result targets remain dependencies even
+when they are not selected Task members: their bounded predicate digest and exact
+qualification/absence observations must still match at commit. A millisecond
+canonical revision alone cannot distinguish legitimate same-timestamp updates.
+Selected child TaskStatus observations also depend on the global latest-for-child
+delegation header, including an observed absence. Another parent's original
+delegation writer need not advance this owner's Task lane. Before qualification
+is saved, the writer compares the selected child's latest metadata against the
+reader-owned status head by indexed boolean lookup, without loading delegation
+or Task bodies. Unrelated child updates do not invalidate the candidate.
+Missing source
+inventory requires the named
+bootstrap boundary before Ready; it is not permission to adopt canonical
+history during an ordinary preparation miss.
+
+The original Task transaction receives its prepared resident baseline and
+pre-serialized coverage, with candidate memory charged before allocation.
+Per-attempt baseline evidence is separate from the frozen producer capsule:
+refreshing an initialized cold or stale owner does not replace the command,
+nonce, source proof or original attempt. Only actual Task writer scopes are
+prepared; preserving a readonly member never grants State or Task write authority.
+Exact receipt recovery and sparse NoState/Retired outcomes precede preparation.
+For an original readonly Stop member, the reader does not load State or build a
+Task candidate; the writer validates that member's original readonly proof.
+Both ordinary mutations and producer actors borrow Ready Task roots into the
+sidecar without serializing coverage or registering another owned view. Only an
+authorized typed preparation miss encodes the baseline. Reusing the same root
+Arc keeps its prepared entry; replacing that root invalidates the old entry so
+it cannot shadow a freshly reloaded owner baseline.
+If reader re-preparation selects a baseline not yet installed by the caller,
+the original ACK retains that qualified resident Arc, bound to its base revision.
+An existing same-scope domain installs this baseline before applying the delta,
+including on a business no-op; warm borrowed roots retain their narrow ACK.
+This is ephemeral installation evidence, not a persisted delta, missing-domain
+bootstrap capability, or mutation proof.
+The reader checks the original identity and incarnation before loading State,
+so a stale producer cannot decode its successor. Baseline-only preparation
+retries do not consume the actor's business OCC retry allowance.
+Adoption retains the original W1, source and scope proofs and compares persisted
+coverage without decoding it again. After the original reducer, the finalizer
+uses the actual write set to update records, active/unsettled membership,
+reverse dependencies, query roles, bounded terminal lookahead and recovery
+observations. Unchanged bodies keep their qualified Arcs. The complete ACK must
+match the full-loader oracle; qualification, business writes and the original
+whole-command receipt remain atomic. Candidates never authorize replaying the
+business callback or replacing an uncertain original attempt.
+When an attached baseline no longer qualifies, preflight returns before business
+SQL instead of rebuilding the domain inside the writer. Only a definitely
+not-committed result may trigger bounded owner-held re-preparation and another
+attempt with the same frozen command, timestamp and nonce. This stale path
+explicitly reloads on the reader pool rather than reusing a published baseline
+whose capture coverage still matches but whose persisted revision has changed.
+An internal preparation retry retains the original private State/Queue candidate,
+queue ownership guard, run handle and deferred cancellation intent. Re-preparation
+publishes only committed qualification facts before restoring that private intent;
+it must neither discard the original run nor publish uncommitted business State.
+A final business rollback still discards the intent and cannot cancel the run.
+An uncertain commit
+still requires authoritative receipt recovery. A Deleting identity can adopt
+only through its original same-incarnation cleanup proof, with existing-key and
+actual-write-subset checks unchanged.
+An Invalid Result can contribute only a partial reverse index for an unselected
+Task. If that Task later enters the selected window, the finalizer loads its
+complete Result namespace instead of treating the partial index as a closure.
+
+Content-free diagnostics separate `db.task.candidate.read` (selection, decoding
+and qualification), `.validate` and `.apply`, and
+`db.task.write.delta_finalize`. Their row counters describe selected qualified
+records, applied aliases and actual write-set keys, not independent decode
+counts. These stages may nest inside existing preparation/transaction timers;
+their durations must not be added together as disjoint latency.
+
 ### Fenced deletion of immutable private captures
 
 Immutable Scheduling and Task captures remain protected during ordinary runtime
