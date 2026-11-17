@@ -1,5 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use std::time::Duration;
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct PerformanceDiagnosticsSnapshot {
@@ -9,6 +10,11 @@ pub struct PerformanceDiagnosticsSnapshot {
     pub projections: Vec<MetricSnapshot>,
     pub projection_gate: ProjectionGateDiagnosticsSnapshot,
     pub db: Vec<MetricSnapshot>,
+    /// Process-lifetime reader-pool diagnostics for the `runtime_db` resource
+    /// scope, aggregated across every connected owner. Older snapshots omit
+    /// this field and deserialize as empty.
+    #[serde(default)]
+    pub reader_pools: Vec<ReaderPoolDiagnosticsSnapshot>,
     #[serde(default)]
     pub runtime_db_wal: RuntimeDbWalCheckpointDiagnostics,
     #[serde(default)]
@@ -245,5 +251,168 @@ impl From<&RecentTrace> for RecentTraceSummary {
             dropped_spans: trace.dropped_spans,
             error_count: trace.error_count,
         }
+    }
+}
+
+/// Fixed reader-pool role dimension.
+///
+/// Roles are the only permitted role label values in exported metrics;
+/// runtime code must not invent additional roles or free-form owner labels.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ReaderPoolRole {
+    #[default]
+    Ordinary,
+    Preparation,
+}
+
+/// Outcome of one finished reader-pool checkout attempt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderPoolOutcome {
+    Success,
+    Timeout,
+    Cancelled,
+    Failed,
+}
+
+/// One reader-pool lifecycle observation.
+///
+/// This is the narrow event contract between the storage adapter and the
+/// observability accumulator. It carries no owner identity, path, SQL, or
+/// business value, so it cannot create unbounded label cardinality.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReaderPoolEvent {
+    /// A shared pool facade was created successfully; `capacity` is its
+    /// configured maximum.
+    Created { capacity: u32 },
+    /// The last facade for a pool was dropped; `capacity` matches `Created`.
+    Dropped { capacity: u32 },
+    /// A configured connection will be returned to r2d2.
+    ConnectionOpened,
+    /// SQLite actually closed a connection.
+    ConnectionClosed,
+    /// A public sync/async read entry started waiting for a lease.
+    CheckoutStarted,
+    /// A lease was obtained, or the attempt failed/timed out/was cancelled
+    /// before that point. `elapsed` covers admission, scheduling, and queueing,
+    /// not query execution.
+    CheckoutFinished {
+        elapsed: Duration,
+        outcome: ReaderPoolOutcome,
+    },
+    /// A checked-out lease became owned by an application job.
+    LeaseStarted,
+    /// A lease was returned or released after business work, decoding, and
+    /// cleanup finished.
+    LeaseFinished { elapsed: Duration },
+    /// One `manager.connect` attempt started.
+    ConnectStarted,
+    /// One `manager.connect` attempt finished. Attempts and failures are
+    /// counted separately.
+    ConnectFinished { elapsed: Duration, success: bool },
+}
+
+/// Fixed-bucket latency distribution.
+///
+/// `buckets` is cumulative: each entry counts observations at or below its
+/// upper bound, and the last entry is `+Inf`. Bounds are the shared fixed
+/// millisecond bounds, so they never depend on the workload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderPoolDurationSnapshot {
+    pub count: u64,
+    pub total_ns: u64,
+    pub max_ns: u64,
+    pub buckets: Vec<ReaderPoolBucketSnapshot>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderPoolBucketSnapshot {
+    /// Inclusive upper bound in milliseconds; `None` denotes `+Inf`.
+    pub upper_bound_ms: Option<u64>,
+    /// Cumulative observation count at or below `upper_bound_ms`.
+    pub count: u64,
+}
+
+/// Reader-pool diagnostics for one fixed role within `resource_scope=runtime_db`.
+///
+/// Gauge-like fields are current lifecycle values and fall back when a pool is
+/// dropped. `*_created`/`*_opened`/`*_started`/`*_finished` counters are
+/// process-lifetime totals and never decrease. `idle` is derived as live
+/// connections minus application lease holders; it is a non-transactional
+/// snapshot, so concurrent connect/teardown transitions may show transient
+/// combinations.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ReaderPoolDiagnosticsSnapshot {
+    pub role: ReaderPoolRole,
+    /// Live pool facades (`Created` minus `Dropped`).
+    pub instances: u64,
+    /// Sum of live pools' configured capacities.
+    pub configured_capacity: u64,
+    /// Live configured connections (`ConnectionOpened` minus `ConnectionClosed`).
+    pub connections: u64,
+    /// Live application lease holders (`LeaseStarted` minus `LeaseFinished`).
+    pub in_use: u64,
+    /// `connections` minus `in_use`, floored at zero.
+    pub idle: u64,
+    /// Checkouts that started and have not finished yet. Execution time is not
+    /// part of checkout waiting.
+    pub waiting: u64,
+    pub instances_created: u64,
+    pub instances_dropped: u64,
+    pub connections_opened: u64,
+    pub connections_closed: u64,
+    pub checkouts_started: u64,
+    pub checkouts_succeeded: u64,
+    pub checkouts_timed_out: u64,
+    pub checkouts_cancelled: u64,
+    pub checkouts_failed: u64,
+    pub checkout_duration: ReaderPoolDurationSnapshot,
+    pub leases_started: u64,
+    pub leases_finished: u64,
+    pub lease_duration: ReaderPoolDurationSnapshot,
+    pub connects_started: u64,
+    pub connects_succeeded: u64,
+    pub connects_failed: u64,
+    pub connect_duration: ReaderPoolDurationSnapshot,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn performance_snapshot_without_reader_pools_deserializes() {
+        let legacy = r#"{
+            "captured_at": "2026-01-01T00:00:00+00:00",
+            "process_uptime_ms": 1,
+            "http": [],
+            "projections": [],
+            "projection_gate": {
+                "leaders": 0, "joined_waiters": 0, "cache_hits": 0,
+                "cache_misses": 0, "rejected": 0, "failed": 0, "cancelled": 0,
+                "stale_served": 0, "stale_expired": 0, "active_permits": 0,
+                "max_active_permits": 0
+            },
+            "db": [],
+            "scheduler": [],
+            "turn": [],
+            "provider": []
+        }"#;
+        let snapshot: PerformanceDiagnosticsSnapshot =
+            serde_json::from_str(legacy).expect("legacy snapshot without reader_pools");
+        assert!(snapshot.reader_pools.is_empty());
+    }
+
+    #[test]
+    fn reader_pool_roles_serialize_as_fixed_names() {
+        assert_eq!(
+            serde_json::to_string(&ReaderPoolRole::Ordinary).unwrap(),
+            "\"ordinary\""
+        );
+        assert_eq!(
+            serde_json::to_string(&ReaderPoolRole::Preparation).unwrap(),
+            "\"preparation\""
+        );
+        assert_eq!(ReaderPoolRole::default(), ReaderPoolRole::Ordinary);
     }
 }

@@ -1994,7 +1994,7 @@ export interface paths {
         };
         /**
          * Runtime OpenMetrics
-         * @description Return a bounded, label-free OpenMetrics snapshot for runtime performance and diagnostics.
+         * @description Return a bounded, low-cardinality OpenMetrics snapshot for runtime performance and diagnostics; reader pools use only fixed labels.
          */
         get: operations["runtimeMetrics"];
         put?: never;
@@ -2014,7 +2014,7 @@ export interface paths {
         };
         /**
          * Runtime performance diagnostics
-         * @description Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.
+         * @description Return bounded in-process performance diagnostics for HTTP, projections, DB, reader pools, and scheduler activity.
          */
         get: operations["runtimePerformance"];
         put?: never;
@@ -6465,6 +6465,162 @@ export interface components {
                 total_bytes?: number | null;
                 /** Format: uint64 */
                 total_ms: number;
+            }[];
+            /**
+             * @description Process-lifetime reader-pool diagnostics for the `runtime_db` resource
+             *      scope, aggregated across every connected owner. Older snapshots omit
+             *      this field and deserialize as empty.
+             * @default []
+             */
+            reader_pools: {
+                /**
+                 * @description Fixed-bucket latency distribution.
+                 *
+                 *      `buckets` is cumulative: each entry counts observations at or below its
+                 *      upper bound, and the last entry is `+Inf`. Bounds are the shared fixed
+                 *      millisecond bounds, so they never depend on the workload.
+                 */
+                checkout_duration: {
+                    buckets: {
+                        /**
+                         * Format: uint64
+                         * @description Cumulative observation count at or below `upper_bound_ms`.
+                         */
+                        count: number;
+                        /**
+                         * Format: uint64
+                         * @description Inclusive upper bound in milliseconds; `None` denotes `+Inf`.
+                         */
+                        upper_bound_ms?: number | null;
+                    }[];
+                    /** Format: uint64 */
+                    count: number;
+                    /** Format: uint64 */
+                    max_ns: number;
+                    /** Format: uint64 */
+                    total_ns: number;
+                };
+                /** Format: uint64 */
+                checkouts_cancelled: number;
+                /** Format: uint64 */
+                checkouts_failed: number;
+                /** Format: uint64 */
+                checkouts_started: number;
+                /** Format: uint64 */
+                checkouts_succeeded: number;
+                /** Format: uint64 */
+                checkouts_timed_out: number;
+                /**
+                 * Format: uint64
+                 * @description Sum of live pools' configured capacities.
+                 */
+                configured_capacity: number;
+                /**
+                 * @description Fixed-bucket latency distribution.
+                 *
+                 *      `buckets` is cumulative: each entry counts observations at or below its
+                 *      upper bound, and the last entry is `+Inf`. Bounds are the shared fixed
+                 *      millisecond bounds, so they never depend on the workload.
+                 */
+                connect_duration: {
+                    buckets: {
+                        /**
+                         * Format: uint64
+                         * @description Cumulative observation count at or below `upper_bound_ms`.
+                         */
+                        count: number;
+                        /**
+                         * Format: uint64
+                         * @description Inclusive upper bound in milliseconds; `None` denotes `+Inf`.
+                         */
+                        upper_bound_ms?: number | null;
+                    }[];
+                    /** Format: uint64 */
+                    count: number;
+                    /** Format: uint64 */
+                    max_ns: number;
+                    /** Format: uint64 */
+                    total_ns: number;
+                };
+                /**
+                 * Format: uint64
+                 * @description Live configured connections (`ConnectionOpened` minus `ConnectionClosed`).
+                 */
+                connections: number;
+                /** Format: uint64 */
+                connections_closed: number;
+                /** Format: uint64 */
+                connections_opened: number;
+                /** Format: uint64 */
+                connects_failed: number;
+                /** Format: uint64 */
+                connects_started: number;
+                /** Format: uint64 */
+                connects_succeeded: number;
+                /**
+                 * Format: uint64
+                 * @description `connections` minus `in_use`, floored at zero.
+                 */
+                idle: number;
+                /**
+                 * Format: uint64
+                 * @description Live application lease holders (`LeaseStarted` minus `LeaseFinished`).
+                 */
+                in_use: number;
+                /**
+                 * Format: uint64
+                 * @description Live pool facades (`Created` minus `Dropped`).
+                 */
+                instances: number;
+                /** Format: uint64 */
+                instances_created: number;
+                /** Format: uint64 */
+                instances_dropped: number;
+                /**
+                 * @description Fixed-bucket latency distribution.
+                 *
+                 *      `buckets` is cumulative: each entry counts observations at or below its
+                 *      upper bound, and the last entry is `+Inf`. Bounds are the shared fixed
+                 *      millisecond bounds, so they never depend on the workload.
+                 */
+                lease_duration: {
+                    buckets: {
+                        /**
+                         * Format: uint64
+                         * @description Cumulative observation count at or below `upper_bound_ms`.
+                         */
+                        count: number;
+                        /**
+                         * Format: uint64
+                         * @description Inclusive upper bound in milliseconds; `None` denotes `+Inf`.
+                         */
+                        upper_bound_ms?: number | null;
+                    }[];
+                    /** Format: uint64 */
+                    count: number;
+                    /** Format: uint64 */
+                    max_ns: number;
+                    /** Format: uint64 */
+                    total_ns: number;
+                };
+                /** Format: uint64 */
+                leases_finished: number;
+                /** Format: uint64 */
+                leases_started: number;
+                /**
+                 * @description Fixed reader-pool role dimension.
+                 *
+                 *      Roles are the only permitted role label values in exported metrics;
+                 *      runtime code must not invent additional roles or free-form owner labels.
+                 * @enum {string}
+                 */
+                role: "ordinary" | "preparation";
+                /**
+                 * Format: uint64
+                 * @description Checkouts that started and have not finished yet. Execution time is not
+                 *      part of checkout waiting.
+                 */
+                waiting: number;
             }[];
             /**
              * @default {

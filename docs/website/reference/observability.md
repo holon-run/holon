@@ -16,7 +16,9 @@ Holon keeps telemetry work bounded:
 - selected slow, failed, cancelled, or sampled traces may be retained in
   `diagnostics.sqlite`;
 - optional OTLP export uses a bounded non-blocking queue;
-- OpenMetrics exposes a fixed set of label-free `holon_*` series.
+- OpenMetrics exposes a fixed set of `holon_*` series; they are label-free
+  except for the RuntimeDb reader-pool group, which uses only fixed
+  `resource_scope`, `role`, and histogram `le` labels.
 
 Exporter or collector failure does not block turns, tools, persistence, or
 delivery. Exporter drop and failure counters identify degraded telemetry.

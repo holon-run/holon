@@ -4,6 +4,8 @@ use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
 
+pub use holon_domain::diagnostics::{ReaderPoolEvent, ReaderPoolOutcome, ReaderPoolRole};
+
 #[derive(Clone, Copy)]
 pub enum StorageStage {
     Connection,
@@ -24,6 +26,7 @@ pub struct StorageDiagnostics {
     pub record_open_duration: fn(Duration),
     pub record_sidecar_scan: fn(Duration),
     pub record_stage: fn(StorageStage, Duration),
+    pub reader_pool: fn(ReaderPoolRole, ReaderPoolEvent),
 }
 
 pub static NO_DIAGNOSTICS: StorageDiagnostics = StorageDiagnostics {
@@ -32,6 +35,7 @@ pub static NO_DIAGNOSTICS: StorageDiagnostics = StorageDiagnostics {
     record_open_duration: |_| {},
     record_sidecar_scan: |_| {},
     record_stage: |_, _| {},
+    reader_pool: |_, _| {},
 };
 
 impl StorageDiagnostics {

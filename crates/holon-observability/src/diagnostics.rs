@@ -1,8 +1,9 @@
 pub use holon_domain::diagnostics::{
     ConversationDiagnosticsSnapshot, ConversationResetDiagnosticsSnapshot,
     MemoryIndexWriterDiagnosticsSnapshot, MemoryIndexWriterOperationSnapshot, MetricSnapshot,
-    PerformanceDiagnosticsSnapshot, ProjectionGateDiagnosticsSnapshot,
-    RuntimeDbWalCheckpointDiagnostics,
+    PerformanceDiagnosticsSnapshot, ProjectionGateDiagnosticsSnapshot, ReaderPoolBucketSnapshot,
+    ReaderPoolDiagnosticsSnapshot, ReaderPoolDurationSnapshot, ReaderPoolEvent, ReaderPoolOutcome,
+    ReaderPoolRole, RuntimeDbWalCheckpointDiagnostics,
 };
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,6 +13,9 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 
 pub mod attribution;
+pub mod reader_pools;
+
+pub use reader_pools::record_reader_pool_event;
 
 const HISTOGRAM_UPPER_BOUNDS_MS: [u64; 27] = [
     0,
@@ -851,6 +855,7 @@ pub fn performance_snapshot() -> PerformanceDiagnosticsSnapshot {
             DB_SIDECAR_CONSISTENCY_SCAN.snapshot(false),
             RUNTIME_DB_WAL_CHECKPOINT.snapshot(false),
         ],
+        reader_pools: reader_pools::snapshot(),
         runtime_db_wal: LAST_RUNTIME_DB_WAL_CHECKPOINT
             .lock()
             .ok()
