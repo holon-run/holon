@@ -1050,6 +1050,60 @@ fn original_protocol_only_change_reobserves_result_activation_without_task_row_w
     Ok(())
 }
 
+#[test]
+fn bounded_task_preparation_exhaustion_alerts_once_without_failure_warns() -> Result<()> {
+    use crate::runtime_db::write_log_probe::WriteLogProbe;
+
+    // A reader that keeps resolving preparation without refreshing the
+    // baseline leaves every attempt stale, so the bounded budget must
+    // exhaust and alert exactly once.
+    let f = initialized_task_fixture()?;
+    let prepared = freeze(
+        &f,
+        "reprepare-exhausted",
+        command(&f, "exhausted", TaskStatus::Queued),
+    )?;
+    let ledger = ledger()?;
+    let request = load_request();
+    let work = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
+        capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
+        record_limit: 4096,
+        byte_limit: 4 * 1024 * 1024,
+    };
+    let mut bases = PreparedTaskBaselines::new(Vec::new(), &ledger)?;
+    bases.silent_reprepare = true;
+    let probe = WriteLogProbe::default();
+    let error = probe
+        .capture(|| {
+            f.db.transitions_in_scope(&f.scope)
+                .commit_prepared_transition_with_task_preparation(
+                    &prepared, &work, &ledger, &request, &mut bases,
+                )
+        })
+        .unwrap_err();
+    assert!(
+        error
+            .downcast_ref::<tasks::TaskWriteBaselineStale>()
+            .is_some(),
+        "{error:#}"
+    );
+    assert_eq!(
+        probe.write_failure_warns(),
+        0,
+        "intermediate reprepare attempts must not surface as failure WARNs"
+    );
+    assert!(
+        probe.deferred_reprepare_events() >= 1,
+        "at least one intermediate attempt must leave a reader_reprepare event"
+    );
+    assert_eq!(
+        probe.terminal_alerts("reprepare attempts exhausted"),
+        1,
+        "budget exhaustion must alert exactly once"
+    );
+    Ok(())
+}
+
 #[path = "prepared_task_cleanup_cap_tests.rs"]
 mod cleanup_cap_tests;
 

@@ -9,6 +9,11 @@ mod write_delta;
 pub(crate) struct TaskWriteBaselineStale {
     pub(crate) scope: InputEvidenceScope,
     pub(crate) request: TaskDomainLoadRequest,
+    /// Storage-visible classification: lets the transaction logger tell the
+    /// reprepare control flow apart from real write failures without
+    /// depending on this runtime type.
+    #[source]
+    reader_reprepare: holon_storage::ReaderReprepareRequested,
     _guard: Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>,
 }
 
@@ -37,6 +42,7 @@ impl TaskWriteBaselineStale {
         Ok(Self {
             scope: scope.clone(),
             request: request.clone(),
+            reader_reprepare: holon_storage::ReaderReprepareRequested::new("task"),
             _guard: guard,
         })
     }

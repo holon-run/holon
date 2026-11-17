@@ -1938,11 +1938,20 @@ impl RuntimeMutation {
                                 supplemental_task_bases
                                     .defer_roots(self.tasks.iter().cloned().collect());
                             }
-                            supplemental_task_bases.reprepare(
+                            if let Err(preparation) = supplemental_task_bases.reprepare(
                                 &self.runtime.inner.runtime_db,
                                 stale,
                                 &self.runtime.inner.input_evidence_budget,
-                            )?;
+                            ) {
+                                tracing::warn!(
+                                    reader_reprepare_failed = true,
+                                    attempts = task_preparation_attempts,
+                                    agent_id = %stale.scope.agent_id,
+                                    error = %preparation,
+                                    "Task write baseline reprepare failed"
+                                );
+                                return Err(preparation);
+                            }
                             // Qualification publishes only committed facts. Restore
                             // the frozen business intent after that publication.
                             retry_candidate.restore(&mut self.candidate);
@@ -1950,6 +1959,16 @@ impl RuntimeMutation {
                             self.control_cancellation = retry_control_cancellation.clone();
                             continue;
                         }
+                    } else if task_preparation_attempts >= 3
+                        && persistence_certainty(error)
+                            == Some(PersistenceCertainty::DefinitelyNotCommitted)
+                    {
+                        tracing::warn!(
+                            reader_reprepare_exhausted = true,
+                            attempts = task_preparation_attempts,
+                            agent_id = %stale.scope.agent_id,
+                            "Task write baseline reprepare attempts exhausted"
+                        );
                     }
                 }
             }

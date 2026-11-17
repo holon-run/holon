@@ -216,3 +216,36 @@ impl fmt::Display for RuntimeStateTransitionConflict {
 }
 
 impl StdError for RuntimeStateTransitionConflict {}
+
+/// A write callback asked the caller to reprepare shared read state on a
+/// reader and re-enter before any business SQL ran. This is control flow, not
+/// a write failure: the transaction rolled back definitely-uncommitted and
+/// the writer was released. The layer that owns the bounded reprepare
+/// attempts decides whether the attempt is intermediate (quiet retry) or
+/// terminal (explicit alert); storage only classifies the outcome.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReaderReprepareRequested {
+    domain: &'static str,
+}
+
+impl ReaderReprepareRequested {
+    pub fn new(domain: &'static str) -> Self {
+        Self { domain }
+    }
+
+    pub fn domain(&self) -> &'static str {
+        self.domain
+    }
+}
+
+impl fmt::Display for ReaderReprepareRequested {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{} write baseline requires reader reprepare before business SQL",
+            self.domain
+        )
+    }
+}
+
+impl StdError for ReaderReprepareRequested {}
