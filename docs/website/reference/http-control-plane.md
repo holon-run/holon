@@ -238,10 +238,11 @@ The JSON response is an `EventsPageResponse`:
 
 | Field | Contract |
 |-------|----------|
-| `events` | Array of full-payload `StreamEventEnvelope` records matching the requested level filter |
+| `events` | Array of full-payload `StreamEventEnvelope` records matching the optional `event_kind` filter |
 | `oldest_seq` / `newest_seq` | Lowest/highest durable `event_seq` in the returned page, or `null` for an empty page |
+| `next_before_seq` / `next_after_seq` | Exclusive scan continuation: last consumed candidate for descending/ascending pages respectively, only when the corresponding `has_older` / `has_newer` is true and the scan advanced; otherwise `null` |
 | `cursor_seq` | Raw event-log high-watermark captured while serving the page; clients can start the raw stream after this cursor |
-| `has_older` / `has_newer` | Whether more matching records are available before/after the returned window |
+| `has_older` / `has_newer` | Whether more records remain before/after the page; in the scan direction, a budget-limited scan may conservatively report more candidates |
 | `order` | Echoes the requested order |
 | `limit` | Effective limit after server clamping |
 
@@ -249,6 +250,32 @@ The JSON response is an `EventsPageResponse`:
 page contains events where `after_seq < event_seq < before_seq`. Event pages are
 loaded from the durable event log, so an unknown cursor can yield an empty page
 rather than a cursor error.
+
+The scan and payload budgets can produce short or empty pages with a non-null
+continuation. For `order=desc`, continue with `before_seq=next_before_seq`; for
+`order=asc`, use `after_seq=next_after_seq`. Preserve the filter, order, and the
+other bound. These cursors reflect consumed candidates, not returned event
+boundaries or unconsumed lookahead. Do not stop solely because `events` is empty,
+or substitute `oldest_seq`, `newest_seq`, or the SSE `cursor_seq`. Reject a
+non-advancing continuation to avoid loops. The opposite-direction continuation
+is always `null`; this does not imply its `has_*` flag is false. The
+scan-direction continuation is `null` on exhaustion. Older responses may omit
+these additive nullable fields.
+
+Each page consumes at most **256 candidates** after safe kind selection and
+**8 MiB** of canonical JSON's original UTF-8 input bytes, admitted before
+hashing, JSON node traversal, and decoding. Exactly 8 MiB is allowed.
+Legacy/mismatched candidates still require canonical verification and count
+even if they do not match. A candidate that cannot fit the remaining budget is
+not consumed; a single unconsumed lookahead never advances continuation.
+These budgets do not bound total memory or wall-clock time.
+
+If the first candidate exceeds the entire 8 MiB budget, the request fails with
+HTTP **500**, `code=event_page_resource_exhausted`, `domain=runtime`, and
+`retryable=false`, using the existing error envelope without event content or
+successful-page continuation. Do not automatically retry the same cursor.
+Earlier pages can succeed, but that oversized record cannot currently be read
+through this interface; it is not skipped, truncated, or admitted over budget.
 
 **`GET /api/agents/:id/events/stream`** — Server-sent events
 

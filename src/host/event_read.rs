@@ -2,10 +2,13 @@
 use super::*;
 use crate::{
     diagnostics::resource_io::{self, ResourceReadMaterial},
-    runtime_db::current_query::{prepare_event_page, PreparedEventPage},
+    runtime_db::current_query::{prepare_event_page_with_scan, EventPageScan, PreparedEventPage},
     storage::EventLogPageOrder,
     types::AuditEvent,
 };
+
+#[cfg(test)]
+use crate::runtime_db::current_query::prepare_event_page;
 
 struct EventPageMaterial {
     page: PreparedEventPage,
@@ -76,6 +79,7 @@ impl RuntimeHost {
         after_seq: Option<u64>,
         limit: usize,
         order: EventLogPageOrder,
+        scan: Option<EventPageScan<'_>>,
         db: &RuntimeDb,
         handle: &tokio::runtime::Handle,
         prepare_filter: impl FnOnce(&AppStorage) -> Result<F>,
@@ -106,7 +110,7 @@ impl RuntimeHost {
                 db.with_read(|connection| {
                     let tx = connection
                         .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
-                    let page = prepare_event_page(
+                    let page = prepare_event_page_with_scan(
                         &tx,
                         &scope,
                         &self.inner.input_evidence_budget,
@@ -114,6 +118,7 @@ impl RuntimeHost {
                         after_seq,
                         limit,
                         order,
+                        scan,
                         &mut filter,
                     )?;
                     tx.commit()?;

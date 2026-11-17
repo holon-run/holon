@@ -539,7 +539,7 @@ def wait_for_turn_after(
             after_seq=event_poll_cursor,
         )
         events = batch["events"]
-        event_poll_cursor = int(batch["newest_seq"])
+        event_poll_cursor = int(batch["resume_after_seq"])
         target_turn_ids.update(
             event["payload"].get("turn_id")
             for event in events

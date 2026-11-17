@@ -206,16 +206,36 @@ JSON 响应是一个 `EventsPageResponse`：
 
 | 字段 | 契约 |
 |-------|----------|
-| `events` | 匹配所请求级别过滤的完整 payload `StreamEventEnvelope` 记录数组 |
+| `events` | 匹配可选 `event_kind` 过滤的完整 payload `StreamEventEnvelope` 记录数组 |
 | `oldest_seq` / `newest_seq` | 返回页中最低/最高的持久 `event_seq`；空页时为 `null` |
+| `next_before_seq` / `next_after_seq` | 排他扫描续页游标：分别用于降序/升序，指向最后已消费候选；仅对应的 `has_older` / `has_newer` 为 true 且扫描已推进时非空，否则为 `null` |
 | `cursor_seq` | 在服务该页时捕获的原始事件日志高水位；客户端可在此游标之后开始原始流 |
-| `has_older` / `has_newer` | 在返回窗口之前/之后是否还有更多匹配记录 |
+| `has_older` / `has_newer` | 页面之前/之后是否还有记录；扫描方向受预算限制时可能保守地表示还有候选 |
 | `order` | 回显所请求的 order |
 | `limit` | 服务端钳制后的有效 limit |
 
 `before_seq` 和 `after_seq` 是排他游标。两者都提供时，页面包含满足
 `after_seq < event_seq < before_seq` 的事件。事件页从持久事件日志加载，因此未知游标
 可能得到空页，而不是游标错误。
+
+扫描和 payload 预算可能使短页或空页仍带有非空续页游标。`order=desc` 时使用
+`before_seq=next_before_seq` 续页；`order=asc` 时使用 `after_seq=next_after_seq`。
+保持过滤条件、排序及另一侧边界不变。这些游标表示已消费的候选，不是返回事件的边界，
+也不包含未消费的前瞻候选。不要仅因 `events` 为空就停止，也不要用 `oldest_seq`、
+`newest_seq` 或 SSE 的 `cursor_seq` 替代；游标不推进时应报错，避免循环。
+非扫描方向的续页游标始终为 `null`，但不代表该方向的 `has_*` 为 false。
+扫描方向耗尽时续页游标为 `null`。旧版本响应可能省略这两个新增的可空字段。
+
+安全 kind 筛选后，每页最多消费 **256 条候选**及 **8 MiB** canonical JSON 原始
+UTF-8 输入字节；在 hash、JSON 节点遍历和解码前准入，等于 8 MiB 可接纳。
+legacy 或 normalized/canonical 不一致的候选仍须验证，即使不匹配也计入预算。
+下一候选放不进剩余预算时不消费；至多一条未消费前瞻不推进续页水位。
+这些预算不是总内存或墙钟硬上限。
+
+若首条候选本身超过整页 8 MiB 预算，请求沿现有错误 envelope 返回 **HTTP 500**、
+`code=event_page_resource_exhausted`、`domain=runtime`、`retryable=false`，
+不携带事件正文或成功页续页游标。客户端不得自动重试同一游标。
+先前页面可成功，但该超大记录当前无法经此接口读取；不会跳过、截断或放宽预算。
 
 **`GET /api/agents/:id/events/stream`** — 服务端发送事件
 

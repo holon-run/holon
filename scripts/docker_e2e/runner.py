@@ -1380,27 +1380,29 @@ class CaseHarness:
     ) -> dict[str, Any]:
         events: list[dict[str, Any]] = []
         cursor = after_seq
-        final_cursor = after_seq
+        newest_seq = after_seq
         while True:
             page = self.request(
                 "GET",
                 self.agent_path(f"events?limit={limit}&order=asc&after_seq={cursor}"),
             )
             events.extend(page["events"])
-            newest_seq = page.get("newest_seq")
-            if isinstance(newest_seq, int):
-                final_cursor = newest_seq
+            page_newest_seq = page.get("newest_seq")
+            if type(page_newest_seq) is int:
+                newest_seq = max(newest_seq, page_newest_seq)
             if not page.get("has_newer"):
                 break
+            next_after_seq = page.get("next_after_seq")
             require(
-                isinstance(newest_seq, int) and newest_seq > cursor,
+                type(next_after_seq) is int and next_after_seq > cursor,
                 f"event pagination did not advance after {cursor}: {page}",
             )
-            cursor = newest_seq
+            cursor = next_after_seq
         batch = {
             "events": events,
             "after_seq": after_seq,
-            "newest_seq": final_cursor,
+            "newest_seq": newest_seq,
+            "resume_after_seq": max(cursor, newest_seq),
         }
         write_json(self.evidence / f"{label}-events.json", batch)
         return batch
@@ -1482,7 +1484,7 @@ class CaseHarness:
                 after_seq=event_poll_cursor,
             )
             phase_events = page["events"]
-            event_poll_cursor = int(page["newest_seq"])
+            event_poll_cursor = int(page["resume_after_seq"])
             for event in phase_events:
                 payload = event.get("payload", {})
                 if (
