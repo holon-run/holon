@@ -257,6 +257,7 @@ mod tests {
                     env: None,
                     profile: Some("xai".into()),
                     external: None,
+                    client_id: None,
                 },
                 credential: Some(credential),
                 credential_store_path: None,

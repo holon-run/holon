@@ -214,8 +214,9 @@ impl holon_client::wire::RuntimeConfigSource for AppConfig {
                     id: provider.id.as_str().to_string(),
                     transport: provider.transport.as_str().to_string(),
                     base_url: provider.base_url.clone(),
-                    oauth_supported: crate::auth::oauth_provider_config(provider.id.as_str())
-                        .is_some(),
+                    oauth_supported: crate::auth::provider_supports_oauth_device_login(
+                        provider.id.as_str(),
+                    ),
                     api_key_supported: provider.auth.kind != crate::config::CredentialKind::None
                         && provider.transport.as_str() != "openai_codex_responses",
                     credential_source: provider.auth.source.as_str().to_string(),

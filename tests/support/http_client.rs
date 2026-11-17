@@ -568,6 +568,7 @@ pub async fn explicit_model_refresh_discovers_credential_free_ollama_models() ->
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             headers: Default::default(),
             credential: None,

@@ -18,7 +18,8 @@ use std::{
 use crate::{
     auth::{
         load_codex_cli_credential, load_codex_oauth_profile_credential,
-        load_oauth_profile_credential, oauth_provider_config, refresh_codex_oauth_profile_material,
+        load_oauth_profile_credential, oauth_profile_material_credential,
+        oauth_provider_config_for_material, refresh_codex_oauth_profile_material,
         refresh_oauth_profile_material, CodexCliCredential, CodexOAuthRefreshFailure,
         OAuthCredential,
     },
@@ -154,6 +155,9 @@ pub struct OpenAiProvider {
 pub struct OpenAiBearerAuth {
     client: Client,
     provider_id: String,
+    /// OAuth protocol selection key; follows the route provider so a plan
+    /// alias still resolves its parent provider's OAuth configuration.
+    oauth_provider_key: String,
     api_key: Option<String>,
     credential_profile: Option<String>,
     credential_material: Option<String>,
@@ -194,6 +198,9 @@ pub struct OpenAiChatCompletionsProvider {
     request_headers: ProviderRequestHeaders,
     provider_id: String,
     route_provider: String,
+    /// OAuth credential source for providers that authenticate with a
+    /// Holon-managed OAuth profile instead of a static API key.
+    auth: Option<OpenAiBearerAuth>,
     quota_identity: Option<ProviderQuotaIdentity>,
     trace_home_dir: PathBuf,
     continuation: Arc<Mutex<OpenAiContinuationState>>,
@@ -463,8 +470,30 @@ impl OpenAiChatCompletionsProvider {
         holon_version: &'static str,
     ) -> Result<Self> {
         let client = build_http_client()?;
+        let oauth_profile = matches!(
+            (provider_config.auth.source, provider_config.auth.kind),
+            (CredentialSource::AuthProfile, CredentialKind::OAuth)
+        );
+        // A credential profile may hold a Holon OAuth material document or an
+        // opaque token written before OAuth profiles existed. Only the
+        // material document can be refreshed, so the opaque form keeps its
+        // previous bearer-token behaviour.
+        let oauth_material = oauth_profile
+            .then(|| provider_config.credential.clone())
+            .flatten();
+        let oauth_backed = if let Some(material) = oauth_material.as_deref() {
+            let profile = provider_config
+                .auth
+                .profile
+                .as_deref()
+                .unwrap_or_else(|| provider_config.id.as_str());
+            oauth_profile_material_credential(material, profile)?.is_some()
+        } else {
+            false
+        };
         let api_key = match (provider_config.auth.source, provider_config.auth.kind) {
             (CredentialSource::None, CredentialKind::None) => None,
+            (CredentialSource::AuthProfile, CredentialKind::OAuth) if oauth_backed => None,
             _ => Some(
                 provider_config
                     .credential
@@ -482,12 +511,23 @@ impl OpenAiChatCompletionsProvider {
                     })?,
             ),
         };
+        let auth = if oauth_backed {
+            Some(OpenAiBearerAuth::from_runtime_config(
+                provider_config,
+                build_oauth_http_client()?,
+            )?)
+        } else {
+            None
+        };
         Ok(Self {
             transport: ChatProvider::new(
                 client,
                 ChatCompletionsConfig {
                     base_url: provider_config.base_url.clone(),
                     api_key,
+                    // The route provider identifies the endpoint shape; the
+                    // display id may be a plan alias.
+                    provider: Some(provider_config.route_provider.as_str().to_string()),
                     model: model.to_string(),
                     max_output_tokens: resolved_max_output_tokens,
                     context_window_tokens,
@@ -502,10 +542,55 @@ impl OpenAiChatCompletionsProvider {
             provider_id: provider_config.id.as_str().to_string(),
             route_provider: provider_config.route_provider.as_str().to_string(),
             request_headers: ProviderRequestHeaders::new(provider_config, holon_version),
+            auth,
             quota_identity: ProviderQuotaIdentity::for_api_credential(provider_config),
             trace_home_dir: trace_home_dir.to_path_buf(),
             continuation: Arc::new(Mutex::new(OpenAiContinuationState::default())),
         })
+    }
+
+    /// Resolve the request headers, using the OAuth credential profile when
+    /// the provider authenticates with one.
+    async fn resolve_auth_headers(
+        &self,
+        session: Option<&crate::provider::ProviderSessionId>,
+    ) -> Result<Vec<(&str, String)>> {
+        let auth_headers = match self.auth.as_ref() {
+            Some(auth) => auth.resolve_auth_headers().await?,
+            None => self.transport.authorization_headers(),
+        };
+        Ok(self.request_headers.compose(auth_headers, session)?)
+    }
+
+    /// Force an OAuth refresh and rebuild the headers after an auth failure.
+    ///
+    /// Returns `None` when the provider does not use a Holon-managed OAuth
+    /// profile or the failure was not an authentication failure, so the
+    /// caller keeps the original error.
+    async fn refresh_auth_headers_after_failure(
+        &self,
+        error: &anyhow::Error,
+        session: Option<&crate::provider::ProviderSessionId>,
+    ) -> Result<Option<Vec<(&str, String)>>> {
+        let Some(auth) = self.auth.as_ref() else {
+            return Ok(None);
+        };
+        if !error
+            .downcast_ref::<ProviderTransportError>()
+            .is_some_and(|error| {
+                error.classification.kind == ProviderFailureKind::AuthError
+                    && error.status == Some(401)
+            })
+        {
+            return Ok(None);
+        }
+        let refreshed = auth.refresh_auth_headers().await?.ok_or_else(|| {
+            anyhow::anyhow!(
+                "provider {} rejected its OAuth credential and the refresh produced no new token",
+                self.provider_id
+            )
+        })?;
+        Ok(Some(self.request_headers.compose(refreshed, session)?))
     }
 }
 
@@ -1338,17 +1423,16 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
                 let mut sent_diagnostics = plan.diagnostics.clone();
                 sent_diagnostics.reasoning_effort =
                     self.transport.reasoning_effort().map(str::to_owned);
-                let headers = self.request_headers.compose(
-                    self.transport.authorization_headers(),
-                    request.provider_session_id.as_ref(),
-                )?;
+                let mut headers = self
+                    .resolve_auth_headers(request.provider_session_id.as_ref())
+                    .await?;
                 let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
 
                 // Send to /v1/chat/completions endpoint
                 let parsed = match send_chat_completion_request_with_material(
                     &self.transport,
-                    body,
-                    headers,
+                    body.clone(),
+                    headers.clone(),
                     trace.as_ref(),
                     request_agent_id(&request),
                     request.dispatch_guard.as_deref(),
@@ -1358,12 +1442,45 @@ impl AgentProvider for OpenAiChatCompletionsProvider {
                 {
                     Ok(parsed) => parsed,
                     Err(error) => {
-                        invalidate_openai_continuation_after_failure(
-                            &self.continuation,
-                            plan.scope.as_ref(),
-                            &error,
-                        );
-                        return Err(error);
+                        // A rejected OAuth credential is recoverable in-turn:
+                        // force one refresh and replay the request once.
+                        if let Some(refreshed) = self
+                            .refresh_auth_headers_after_failure(
+                                &error,
+                                request.provider_session_id.as_ref(),
+                            )
+                            .await?
+                        {
+                            headers = refreshed;
+                            match send_chat_completion_request_with_material(
+                                &self.transport,
+                                body.clone(),
+                                headers.clone(),
+                                trace.as_ref(),
+                                request_agent_id(&request),
+                                request.dispatch_guard.as_deref(),
+                                &material,
+                            )
+                            .await
+                            {
+                                Ok(parsed) => parsed,
+                                Err(error) => {
+                                    invalidate_openai_continuation_after_failure(
+                                        &self.continuation,
+                                        plan.scope.as_ref(),
+                                        &error,
+                                    );
+                                    return Err(error);
+                                }
+                            }
+                        } else {
+                            invalidate_openai_continuation_after_failure(
+                                &self.continuation,
+                                plan.scope.as_ref(),
+                                &error,
+                            );
+                            return Err(error);
+                        }
                     }
                 };
 

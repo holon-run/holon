@@ -701,10 +701,10 @@ pub(super) async fn create_template_remote_source_sync_job(
 pub(super) fn create_oauth_device_login_job(
     state: Arc<AppState>,
     oauth_config: crate::auth::OAuthProviderConfig,
+    profile: String,
     device_code: crate::auth::CodexDeviceCode,
 ) -> JobSnapshot {
     let provider_id = oauth_config.provider_id;
-    let profile = oauth_config.profile_name;
     let provider_label = if provider_id == crate::config::ProviderId::OPENAI_CODEX {
         "OpenAI Codex"
     } else {
@@ -769,7 +769,7 @@ pub(super) fn create_oauth_device_login_job(
                 let credential_path = credential_store_path(&config.home_dir);
                 match set_credential_profile_at(
                     &credential_path,
-                    profile,
+                    &profile,
                     CredentialKind::OAuth,
                     login.material,
                 ) {

@@ -20,7 +20,8 @@ use crate::auth::CodexCliCredential;
 use crate::config::{
     load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
     CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderEndpointId, ProviderId,
-    ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
+    ProviderRuntimeConfig, ProviderTransportKind, GITHUB_COPILOT_CREDENTIAL_PROFILE,
+    OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 use crate::provider::budget::effective_output_tokens;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
@@ -196,6 +197,7 @@ fn test_openai_codex_config(credential: Option<String>) -> ProviderRuntimeConfig
             env: None,
             profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         credential,
         credential_store_path: None,
@@ -222,6 +224,7 @@ fn test_xai_oauth_config(credential: String) -> ProviderRuntimeConfig {
             env: None,
             profile: Some("xai".into()),
             external: None,
+            client_id: None,
         },
         credential: Some(credential),
         credential_store_path: None,
@@ -340,6 +343,301 @@ fn chat_completions_resolved_runtime_config_does_not_resolve_metadata_again() {
 }
 
 #[tokio::test]
+async fn github_copilot_chat_uses_the_copilot_endpoint_for_plan_aliases() {
+    use crate::provider::AgentProvider;
+    use axum::{routing::post, Json, Router};
+
+    let captured = Arc::new(Mutex::new(Vec::<String>::new()));
+    let requests = captured.clone();
+    let server = Router::new().route(
+        "/chat/completions",
+        post(move |uri: axum::http::Uri| {
+            let requests = requests.clone();
+            async move {
+                requests.lock().unwrap().push(uri.path().to_string());
+                Json(json!({
+                    "choices": [{
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop"
+                    }]
+                }))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+
+    let mut config = test_openai_codex_config(Some("local-test-only".into()));
+    config.id = ProviderId::parse("github-copilot-example").unwrap();
+    config.route_provider = ProviderId::parse("github-copilot").unwrap();
+    config.route_endpoint = ProviderEndpointId::parse("default").unwrap();
+    config.base_url = format!("http://{addr}");
+    let home = tempfile::tempdir().unwrap();
+
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "gpt-5",
+        1024,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("hi".into())],
+        vec![],
+    );
+    provider.complete_turn(request).await.unwrap();
+    assert_eq!(captured.lock().unwrap().as_slice(), ["/chat/completions"]);
+    handle.abort();
+}
+
+#[test]
+fn chat_completions_keeps_opaque_oauth_profile_tokens_as_bearer_values() {
+    // A credential profile may hold an opaque token instead of a Holon OAuth
+    // material document; that form keeps its previous bearer behaviour.
+    let mut config = test_openai_codex_config(Some("opaque-token".into()));
+    config.route_provider = ProviderId::parse("local-custom").unwrap();
+    config.route_endpoint = ProviderEndpointId::default_endpoint();
+    config.base_url = "https://gateway.example.invalid/v1".into();
+    let home = tempfile::tempdir().unwrap();
+
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "model",
+        1024,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    assert_eq!(
+        provider.transport.authorization_headers(),
+        vec![("authorization", "Bearer opaque-token".to_string())]
+    );
+}
+
+#[test]
+fn chat_completions_rejects_malformed_oauth_material_before_sending_credentials() {
+    let home = tempfile::tempdir().unwrap();
+    for material in [
+        r#"{"tokens":"refresh-secret"}"#,
+        r#"{"tokens":"{\"access_token\":\"access-secret\",\"refresh_token\":\"refresh-secret\",\"id_token\":\"id-secret\"}"}"#,
+        r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret","id_token":"id-secret"},"expires_at":"not-a-date"}"#,
+        r#"{"tokens":{"refresh_token":"refresh-secret","id_token":"id-secret"}}"#,
+        r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret"}"#,
+        "[]",
+    ] {
+        let config = test_openai_codex_config(Some(material.into()));
+        let result =
+            OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+                &config,
+                "model",
+                1024,
+                None,
+                home.path(),
+                env!("CARGO_PKG_VERSION"),
+            );
+        let error = result
+            .err()
+            .expect("malformed OAuth material must fail closed");
+        let rendered = format!("{error:#}");
+        assert!(!rendered.contains("access-secret"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(!rendered.contains("id-secret"));
+    }
+}
+
+#[tokio::test]
+async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provider() {
+    check_chat_completions_oauth_refresh(axum::http::StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn chat_completions_oauth_401_rotation_survives_two_turns() {
+    check_chat_completions_oauth_refresh(axum::http::StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn chat_completions_oauth_403_preserves_denial_without_refresh() {
+    check_chat_completions_oauth_refresh(axum::http::StatusCode::FORBIDDEN).await;
+}
+
+async fn check_chat_completions_oauth_refresh(initial_status: axum::http::StatusCode) {
+    // A plan alias resolves its OAuth configuration through the route
+    // provider, so an expiring credential refreshes with the client id
+    // recorded in the material instead of failing with "no OAuth
+    // configuration".
+    use crate::provider::AgentProvider;
+    use axum::{routing::post, Json, Router};
+
+    let token_forms: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let chat_bearers: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let token_forms_capture = token_forms.clone();
+    let chat_bearers_capture = chat_bearers.clone();
+    let server = Router::new()
+        .route(
+            "/oauth/token",
+            post(move |body: String| {
+                let captured = token_forms_capture.clone();
+                async move {
+                    captured.lock().unwrap().push(body);
+                    Json(json!({
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "expires_in": 28800
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/chat/completions",
+            post(move |headers: axum::http::HeaderMap| {
+                let captured = chat_bearers_capture.clone();
+                async move {
+                    let bearer = headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    captured.lock().unwrap().push(bearer.clone());
+                    let status = if bearer == "Bearer old-access" {
+                        initial_status
+                    } else {
+                        axum::http::StatusCode::OK
+                    };
+                    (
+                        status,
+                        Json(json!({
+                            "choices": [{
+                                "message": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop"
+                            }]
+                        })),
+                    )
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let _env_lock = crate::auth::GITHUB_TOKEN_URL_TEST_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "GITHUB_TOKEN_URL_OVERRIDE",
+        format!("http://{addr}/oauth/token"),
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let credential_store_path = home.path().join("credentials.json");
+    let expiring_material = json!({
+        "tokens": {
+            "access_token": "old-access",
+            "refresh_token": if initial_status == axum::http::StatusCode::FORBIDDEN {
+                ""
+            } else {
+                "old-refresh"
+            }
+        },
+        "oauth_client_id": "Iv1.material-client",
+        "expires_at": if initial_status.is_success() {
+            Some(Utc::now() + chrono::Duration::minutes(30))
+        } else if initial_status == axum::http::StatusCode::UNAUTHORIZED {
+            Some(Utc::now() + chrono::Duration::hours(8))
+        } else {
+            None
+        }
+    })
+    .to_string();
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        GITHUB_COPILOT_CREDENTIAL_PROFILE.to_string(),
+        CredentialProfileFile {
+            kind: CredentialKind::OAuth,
+            material: expiring_material.clone(),
+        },
+    );
+    save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
+
+    let mut config = test_openai_codex_config(Some(expiring_material.clone()));
+    config.id = ProviderId::parse("github-copilot-example").unwrap();
+    config.route_provider = ProviderId::parse("github-copilot").unwrap();
+    config.route_endpoint = ProviderEndpointId::default_endpoint();
+    config.auth.profile = Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into());
+    config.auth.external = None;
+    config.base_url = format!("http://{addr}");
+    config.credential_store_path = Some(credential_store_path.clone());
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "gpt-5",
+        1024,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("hi".into())],
+        vec![],
+    );
+    if initial_status == axum::http::StatusCode::FORBIDDEN {
+        let error = provider.complete_turn(request).await.unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<ProviderTransportError>()
+                .unwrap()
+                .status,
+            Some(403)
+        );
+        assert_eq!(
+            chat_bearers.lock().unwrap().as_slice(),
+            ["Bearer old-access"]
+        );
+        assert!(token_forms.lock().unwrap().is_empty());
+        let store = load_credential_store_at(&credential_store_path).unwrap();
+        assert_eq!(
+            store.profiles[GITHUB_COPILOT_CREDENTIAL_PROFILE].material,
+            expiring_material
+        );
+        handle.abort();
+        return;
+    }
+    provider.complete_turn(request.clone()).await.unwrap();
+    if initial_status == axum::http::StatusCode::UNAUTHORIZED {
+        provider.complete_turn(request).await.unwrap();
+    }
+    let expected = if initial_status == axum::http::StatusCode::UNAUTHORIZED {
+        vec![
+            "Bearer old-access",
+            "Bearer rotated-access",
+            "Bearer rotated-access",
+        ]
+    } else {
+        vec!["Bearer rotated-access"]
+    };
+    assert_eq!(chat_bearers.lock().unwrap().as_slice(), expected);
+    let token_forms = token_forms.lock().unwrap();
+    assert_eq!(token_forms.len(), 1);
+    assert!(token_forms[0].contains("client_id=Iv1.material-client"));
+    assert!(token_forms[0].contains("grant_type=refresh_token"));
+    drop(token_forms);
+    let store = load_credential_store_at(&credential_store_path).unwrap();
+    let material = &store.profiles[GITHUB_COPILOT_CREDENTIAL_PROFILE].material;
+    assert!(material.contains("rotated-refresh"));
+    assert!(!material.contains("old-refresh"));
+    handle.abort();
+}
+
+#[tokio::test]
 async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget() {
     use crate::provider::AgentProvider;
     use axum::{routing::post, Json, Router};
@@ -410,6 +708,13 @@ async fn tokenhub_k3_chat_uses_exact_output_parameter_and_clips_the_wire_budget(
     ] {
         for (configured, context) in [(131_072, None), (1_024, None), (131_072, Some(8_192))] {
             let mut config = test_openai_codex_config(Some("local-test-only".into()));
+            // This test covers the wire output limit, not credentials: use a
+            // static API key so the OAuth profile path stays out of scope.
+            config.auth.source = CredentialSource::Env;
+            config.auth.kind = CredentialKind::ApiKey;
+            config.auth.env = Some("TOKENHUB_TEST_KEY".into());
+            config.auth.profile = None;
+            config.auth.external = None;
             config.route_provider = ProviderId::parse(provider).unwrap();
             config.route_endpoint = ProviderEndpointId::parse(endpoint).unwrap();
             config.base_url = base_url.clone();
@@ -827,7 +1132,7 @@ async fn openai_codex_refresh_fails_without_access_token() {
     assert!(
         error
             .to_string()
-            .contains("refresh response did not include an access token"),
+            .contains("OAuth refresh failed: invalid refresh response"),
         "{error}"
     );
     let store = load_credential_store_at(&credential_store_path).unwrap();
@@ -1184,6 +1489,7 @@ fn image_dialect_uses_canonical_provider_not_endpoint_display_id() {
     runtime.auth = ProviderAuthConfig {
         source: CredentialSource::None,
         kind: CredentialKind::None,
+        client_id: None,
         ..Default::default()
     };
     let home = std::path::Path::new(".");

@@ -6,8 +6,8 @@ generated: auto-generated from holon source — do not edit directly
 
 # Supported Models
 
-Holon includes built-in configuration for **36 provider accounts**
-across **49 endpoints** and **423 models**.
+Holon includes built-in configuration for **37 provider accounts**
+across **50 endpoints** and **423 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](../../../crates/holon-model-catalog/src/lib.rs) and
@@ -45,6 +45,7 @@ used in existing `provider/model` refs and config shortcuts.
 | `deepseek` | `default` | `deepseek` | Anthropic Messages | `https://api.deepseek.com/anthropic` | `DEEPSEEK_API_KEY` |
 | `fireworks` | `default` | `fireworks` | OpenAI Chat Completions | `https://api.fireworks.ai/inference/v1` | `FIREWORKS_API_KEY` |
 | `gemini` | `default` | `gemini` | Gemini Generate Content | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
+| `github-copilot` | `default` | `github-copilot` | OpenAI Chat Completions | `https://api.githubcopilot.com` | `—` |
 | `huggingface` | `default` | `huggingface` | OpenAI Chat Completions | `https://router.huggingface.co/v1` | `HUGGINGFACE_API_KEY or HF_TOKEN` |
 | `kilocode` | `default` | `kilocode` | OpenAI Chat Completions | `https://api.kilo.ai/api/gateway` | `KILOCODE_API_KEY` |
 | `litellm` | `default` | `litellm` | OpenAI Chat Completions | `http://localhost:4000` | `LITELLM_API_KEY` |

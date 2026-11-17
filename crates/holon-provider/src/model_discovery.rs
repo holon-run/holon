@@ -9,7 +9,11 @@ use anyhow::{anyhow, Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::config::{ProviderEndpointId, ProviderId, ProviderRuntimeConfig, ProviderTransportKind};
+use crate::config::{
+    CredentialKind, CredentialSource, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
+    ProviderTransportKind,
+};
+use crate::provider::{transports::build_oauth_http_client, OpenAiBearerAuth};
 use holon_domain::model_values::{
     provider_definition, tencent_tokenhub::is_tencent_tokenhub_model_id, BuiltInModelMetadata,
     ModelCapabilityFlags, ModelDiscoveryAuth, ModelDiscoveryDecoder, ModelDiscoveryDefinition,
@@ -230,17 +234,35 @@ pub async fn refresh_provider_models(
     if discovery.decoder == ModelDiscoveryDecoder::Ollama {
         return refresh_ollama_models(provider, cache_path, source_url).await;
     }
-    let response = provider_models_request(provider, discovery, &source_url)?
+    let mut response = provider_models_request(provider, discovery, &source_url)
+        .await?
         .send()
         .await
-        .with_context(|| format!("{} model discovery request failed", provider.id.as_str()))?
-        .error_for_status()
-        .with_context(|| {
-            format!(
-                "{} model discovery returned an error status",
-                provider.id.as_str()
-            )
-        })?;
+        .with_context(|| format!("{} model discovery request failed", provider.id.as_str()))?;
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED
+        && discovery.auth != ModelDiscoveryAuth::Public
+    {
+        if let Some(auth) = discovery_oauth_auth(provider)? {
+            let authorization = auth
+                .refresh_authorization_header()
+                .await?
+                .context("OAuth model discovery refresh produced no authorization")?;
+            response = provider_models_request_with_authorization(
+                provider,
+                &source_url,
+                Some(authorization),
+            )?
+            .send()
+            .await
+            .with_context(|| format!("{} model discovery request failed", provider.id.as_str()))?;
+        }
+    }
+    let response = response.error_for_status().with_context(|| {
+        format!(
+            "{} model discovery returned an error status",
+            provider.id.as_str()
+        )
+    })?;
     let raw = response.bytes().await.with_context(|| {
         format!(
             "failed to read {} model discovery response",
@@ -319,26 +341,72 @@ pub async fn refresh_provider_models(
     })
 }
 
-fn provider_models_request(
+async fn provider_models_request(
     provider: &ProviderRuntimeConfig,
     discovery: &ModelDiscoveryDefinition,
     source_url: &str,
 ) -> Result<reqwest::RequestBuilder> {
-    let request = reqwest::Client::builder()
+    let authorization = match discovery.auth {
+        ModelDiscoveryAuth::Public => None,
+        ModelDiscoveryAuth::Required | ModelDiscoveryAuth::Optional => {
+            if let Some(auth) = discovery_oauth_auth(provider)? {
+                auth.resolve_authorization_header().await?
+            } else {
+                provider
+                    .credential
+                    .as_ref()
+                    .map(|value| format!("Bearer {value}"))
+            }
+        }
+    };
+    provider_models_request_with_authorization(provider, source_url, authorization)
+}
+
+fn provider_models_request_with_authorization(
+    provider: &ProviderRuntimeConfig,
+    source_url: &str,
+    authorization: Option<String>,
+) -> Result<reqwest::RequestBuilder> {
+    let mut request = reqwest::Client::builder()
         .user_agent("holon-model-discovery")
         .build()
         .context("failed to build model discovery HTTP client")?
         .get(source_url);
-    match discovery.auth {
-        ModelDiscoveryAuth::Public => Ok(request),
-        ModelDiscoveryAuth::Required | ModelDiscoveryAuth::Optional => {
-            Ok(if let Some(credential) = provider.credential.as_deref() {
-                request.bearer_auth(credential)
-            } else {
-                request
-            })
-        }
+    // Discovery is part of the same provider request, so the configured
+    // provider headers apply here too (for example the Copilot integration
+    // identity).
+    for (name, value) in provider.headers.iter() {
+        request = request.header(name, value);
     }
+    if let Some(authorization) = authorization {
+        request = request.header(reqwest::header::AUTHORIZATION, authorization);
+    }
+    Ok(request)
+}
+
+/// Discovery shares chat's refresh-and-persist lifecycle for managed OAuth
+/// profiles; legacy opaque credentials keep their static bearer behavior.
+fn discovery_oauth_auth(provider: &ProviderRuntimeConfig) -> Result<Option<OpenAiBearerAuth>> {
+    let Some(credential) = provider.credential.as_deref() else {
+        return Ok(None);
+    };
+    if !matches!(
+        (provider.auth.source, provider.auth.kind),
+        (CredentialSource::AuthProfile, CredentialKind::OAuth)
+    ) {
+        return Ok(None);
+    }
+    let profile = provider
+        .auth
+        .profile
+        .as_deref()
+        .unwrap_or_else(|| provider.id.as_str());
+    // Only legacy opaque tokens may bypass material parsing. Malformed
+    // structured documents fail closed before any credential is sent.
+    let Some(_) = crate::auth::oauth_profile_material_credential(credential, profile)? else {
+        return Ok(None);
+    };
+    OpenAiBearerAuth::from_runtime_config(provider, build_oauth_http_client()?).map(Some)
 }
 
 #[doc(hidden)]
@@ -1705,6 +1773,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1730,6 +1799,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: Some("test-key".into()),
             credential_store_path: None,
@@ -1755,6 +1825,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1780,6 +1851,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1805,6 +1877,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1830,6 +1903,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1855,6 +1929,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1880,6 +1955,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1905,6 +1981,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1930,6 +2007,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1955,6 +2033,7 @@ mod tests {
                 env: None,
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -2923,8 +3002,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn public_model_discovery_request_omits_custom_gateway_credentials() {
+    #[tokio::test]
+    async fn public_model_discovery_request_omits_custom_gateway_credentials() {
         let mut provider = opencode_go_provider();
         provider.base_url = "https://gateway.example.invalid/openai/v1".into();
         provider.credential = Some("test-only-gateway-credential".into());
@@ -2934,6 +3013,7 @@ mod tests {
             discovery,
             &provider_models_url(&provider).unwrap(),
         )
+        .await
         .unwrap()
         .build()
         .unwrap();
@@ -2951,8 +3031,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn authenticated_model_discovery_request_preserves_required_and_optional_credentials() {
+    #[tokio::test]
+    async fn authenticated_model_discovery_request_preserves_required_and_optional_credentials() {
         for mut provider in [
             arcee_provider(),
             openrouter_provider(),
@@ -2965,6 +3045,7 @@ mod tests {
                 discovery,
                 &provider_models_url(&provider).unwrap(),
             )
+            .await
             .unwrap()
             .build()
             .unwrap();
@@ -2976,8 +3057,342 @@ mod tests {
         }
     }
 
-    #[test]
-    fn optional_model_discovery_request_allows_missing_credentials() {
+    #[tokio::test]
+    async fn oauth_discovery_refreshes_expired_credentials() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::Expired).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_reloads_rotated_credentials() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::Rotated).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_recovers_once_from_401() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::Unauthorized).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_does_not_repeat_401_recovery() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::UnauthorizedAlways).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_preserves_403_without_refresh() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::Forbidden).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_redacts_expired_refresh_failure() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::ExpiredRefreshRejected).await;
+    }
+
+    #[tokio::test]
+    async fn oauth_discovery_redacts_401_refresh_failure() {
+        check_oauth_discovery_lifecycle(OAuthDiscoveryCase::UnauthorizedRefreshRejected).await;
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum OAuthDiscoveryCase {
+        Expired,
+        Rotated,
+        Unauthorized,
+        UnauthorizedAlways,
+        Forbidden,
+        ExpiredRefreshRejected,
+        UnauthorizedRefreshRejected,
+    }
+
+    async fn check_oauth_discovery_lifecycle(case: OAuthDiscoveryCase) {
+        use crate::config::{save_credential_store_at, CredentialProfileFile, CredentialStoreFile};
+        use axum::{
+            http::StatusCode,
+            routing::{get, post},
+            Json, Router,
+        };
+        use std::sync::{Arc, Mutex};
+
+        let bearers = Arc::new(Mutex::new(Vec::new()));
+        let forms = Arc::new(Mutex::new(Vec::new()));
+        let model_bearers = bearers.clone();
+        let token_forms = forms.clone();
+        let server = Router::new()
+            .route(
+                "/models",
+                get(move |headers: axum::http::HeaderMap| {
+                    let bearers = model_bearers.clone();
+                    async move {
+                        let bearer = headers["authorization"].to_str().unwrap().to_string();
+                        bearers.lock().unwrap().push(bearer.clone());
+                        let status = match case {
+                            OAuthDiscoveryCase::Forbidden => StatusCode::FORBIDDEN,
+                            OAuthDiscoveryCase::UnauthorizedAlways => StatusCode::UNAUTHORIZED,
+                            OAuthDiscoveryCase::Unauthorized
+                            | OAuthDiscoveryCase::UnauthorizedRefreshRejected
+                                if bearer == "Bearer old-access" =>
+                            {
+                                StatusCode::UNAUTHORIZED
+                            }
+                            _ => StatusCode::OK,
+                        };
+                        (
+                            status,
+                            Json(serde_json::json!({"data": [{"id": "discovered"}]})),
+                        )
+                    }
+                }),
+            )
+            .route(
+                "/token",
+                post(move |body: String| {
+                    let forms = token_forms.clone();
+                    async move {
+                        forms.lock().unwrap().push(body);
+                        if matches!(
+                            case,
+                            OAuthDiscoveryCase::ExpiredRefreshRejected
+                                | OAuthDiscoveryCase::UnauthorizedRefreshRejected
+                        ) {
+                            (
+                                StatusCode::BAD_REQUEST,
+                                Json(serde_json::json!({"error_description": "refresh-secret"})),
+                            )
+                        } else {
+                            (
+                                StatusCode::OK,
+                                Json(serde_json::json!({
+                                    "access_token": "rotated-access",
+                                    "refresh_token": "rotated-refresh",
+                                    "expires_in": 28800
+                                })),
+                            )
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move { axum::serve(listener, server).await.unwrap() });
+        let _lock = crate::auth::GITHUB_TOKEN_URL_TEST_ENV_LOCK.lock().unwrap();
+        struct TokenUrlGuard(Option<std::ffi::OsString>);
+        impl Drop for TokenUrlGuard {
+            fn drop(&mut self) {
+                match &self.0 {
+                    Some(previous) => std::env::set_var("GITHUB_TOKEN_URL_OVERRIDE", previous),
+                    None => std::env::remove_var("GITHUB_TOKEN_URL_OVERRIDE"),
+                }
+            }
+        }
+        let _guard = TokenUrlGuard(std::env::var_os("GITHUB_TOKEN_URL_OVERRIDE"));
+        std::env::set_var("GITHUB_TOKEN_URL_OVERRIDE", format!("http://{addr}/token"));
+        let home = tempfile::tempdir().unwrap();
+        let store_path = home.path().join("credentials.json");
+        let cache_path = home.path().join("models.json");
+        let material = serde_json::json!({
+            "tokens": {
+                "access_token": "old-access",
+                "refresh_token": if case == OAuthDiscoveryCase::Forbidden { "" } else { "old-refresh" }
+            },
+            "oauth_client_id": "Iv1.discovery-client",
+            "expires_at": if matches!(
+                case, OAuthDiscoveryCase::Expired | OAuthDiscoveryCase::ExpiredRefreshRejected
+            ) {
+                Utc::now() - chrono::Duration::minutes(1)
+            } else {
+                Utc::now() + chrono::Duration::hours(8)
+            }
+        });
+        let mut stored = material.clone();
+        if case == OAuthDiscoveryCase::Rotated {
+            stored["tokens"]["access_token"] = "rotated-access".into();
+        }
+        let mut store = CredentialStoreFile::default();
+        store.profiles.insert(
+            "copilot-work".into(),
+            CredentialProfileFile {
+                kind: CredentialKind::OAuth,
+                material: stored.to_string(),
+            },
+        );
+        save_credential_store_at(&store_path, &store).unwrap();
+        let mut provider = custom_openai_provider(format!("http://{addr}"));
+        provider.id = ProviderId::parse("copilot-plan").unwrap();
+        provider.route_provider = ProviderId::parse("github-copilot").unwrap();
+        provider.auth.source = CredentialSource::AuthProfile;
+        provider.auth.kind = CredentialKind::OAuth;
+        provider.auth.profile = Some("copilot-work".into());
+        provider.credential = Some(material.to_string());
+        provider.credential_store_path = Some(store_path.clone());
+        let result = refresh_provider_models(&provider, &cache_path).await;
+        let refresh_rejected = matches!(
+            case,
+            OAuthDiscoveryCase::ExpiredRefreshRejected
+                | OAuthDiscoveryCase::UnauthorizedRefreshRejected
+        );
+        if refresh_rejected {
+            let error = result.unwrap_err();
+            for rendered in [format!("{error:#}"), format!("{error:?}")] {
+                for secret in ["refresh-secret", "old-access", "old-refresh"] {
+                    assert!(!rendered.contains(secret));
+                }
+                assert!(rendered.contains("400"));
+            }
+            assert!(!cache_path.exists());
+            let store = crate::config::load_credential_store_at(&store_path).unwrap();
+            assert_eq!(store.profiles["copilot-work"].material, stored.to_string());
+        } else if matches!(
+            case,
+            OAuthDiscoveryCase::Forbidden | OAuthDiscoveryCase::UnauthorizedAlways
+        ) {
+            let error = result.unwrap_err();
+            assert_eq!(
+                error.downcast_ref::<reqwest::Error>().unwrap().status(),
+                Some(if case == OAuthDiscoveryCase::Forbidden {
+                    StatusCode::FORBIDDEN
+                } else {
+                    StatusCode::UNAUTHORIZED
+                })
+            );
+            assert!(!cache_path.exists());
+        } else {
+            assert_eq!(result.unwrap().model_count, 1);
+        }
+        let expected = match case {
+            OAuthDiscoveryCase::ExpiredRefreshRejected => vec![],
+            OAuthDiscoveryCase::UnauthorizedRefreshRejected => vec!["Bearer old-access"],
+            OAuthDiscoveryCase::Forbidden => vec!["Bearer old-access"],
+            OAuthDiscoveryCase::Unauthorized | OAuthDiscoveryCase::UnauthorizedAlways => {
+                vec!["Bearer old-access", "Bearer rotated-access"]
+            }
+            _ => vec!["Bearer rotated-access"],
+        };
+        assert_eq!(*bearers.lock().unwrap(), expected);
+        let should_refresh = matches!(
+            case,
+            OAuthDiscoveryCase::Expired
+                | OAuthDiscoveryCase::Unauthorized
+                | OAuthDiscoveryCase::UnauthorizedAlways
+                | OAuthDiscoveryCase::ExpiredRefreshRejected
+                | OAuthDiscoveryCase::UnauthorizedRefreshRejected
+        );
+        let forms = forms.lock().unwrap();
+        assert_eq!(forms.len(), usize::from(should_refresh));
+        if should_refresh {
+            assert!(forms[0].contains("client_id=Iv1.discovery-client"));
+            assert!(forms[0].contains("grant_type=refresh_token"));
+            if !refresh_rejected {
+                let store = crate::config::load_credential_store_at(&store_path).unwrap();
+                assert!(store.profiles["copilot-work"]
+                    .material
+                    .contains("rotated-refresh"));
+            }
+        }
+        handle.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_model_discovery_request_uses_the_profile_access_token() {
+        let mut provider = custom_openai_provider("https://api.githubcopilot.com".into());
+        provider.auth.source = CredentialSource::AuthProfile;
+        provider.auth.kind = CredentialKind::OAuth;
+        provider.auth.profile = Some("github-copilot".into());
+        provider.credential = Some(
+            serde_json::json!({
+                "tokens": {
+                    "access_token": "gho_test_access",
+                    "refresh_token": "ghr_test_refresh"
+                },
+                "oauth_client_id": "Iv1.test-client",
+                "last_refresh": "2026-01-01T00:00:00Z"
+            })
+            .to_string(),
+        );
+        let discovery = provider_discovery_definition(&provider).unwrap();
+        let request = provider_models_request(
+            &provider,
+            discovery,
+            &provider_models_url(&provider).unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer gho_test_access"
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_model_discovery_rejects_malformed_material_before_sending_credentials() {
+        let mut provider = custom_openai_provider("https://api.githubcopilot.com".into());
+        provider.auth.source = CredentialSource::AuthProfile;
+        provider.auth.kind = CredentialKind::OAuth;
+        provider.auth.profile = Some("github-copilot".into());
+        for material in [
+            r#"{"tokens":"refresh-secret"}"#,
+            r#"{"tokens":"{\"access_token\":\"access-secret\",\"refresh_token\":\"refresh-secret\",\"id_token\":\"id-secret\"}"}"#,
+            r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret","id_token":"id-secret"},"expires_at":"not-a-date"}"#,
+            r#"{"tokens":{"refresh_token":"refresh-secret","id_token":"id-secret"}}"#,
+            r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret"}"#,
+            "[]",
+        ] {
+            provider.credential = Some(material.into());
+            let error = provider_models_request(
+                &provider,
+                provider_discovery_definition(&provider).unwrap(),
+                &provider_models_url(&provider).unwrap(),
+            )
+            .await
+            .err()
+            .expect("malformed OAuth material must fail before request construction");
+            let rendered = format!("{error:#}");
+            assert!(!rendered.contains("access-secret"));
+            assert!(!rendered.contains("refresh-secret"));
+            assert!(!rendered.contains("id-secret"));
+        }
+
+        provider.credential = Some("legacy-opaque-token".into());
+        let request = provider_models_request(
+            &provider,
+            provider_discovery_definition(&provider).unwrap(),
+            &provider_models_url(&provider).unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer legacy-opaque-token"
+        );
+    }
+
+    #[tokio::test]
+    async fn model_discovery_request_sends_the_configured_provider_headers() {
+        let mut provider = custom_openai_provider("https://api.githubcopilot.com".into());
+        provider.headers = crate::config::ProviderHeaders::new([(
+            "Copilot-Integration-Id".to_string(),
+            "holon".to_string(),
+        )])
+        .unwrap();
+        let discovery = provider_discovery_definition(&provider).unwrap();
+        let request = provider_models_request(
+            &provider,
+            discovery,
+            &provider_models_url(&provider).unwrap(),
+        )
+        .await
+        .unwrap()
+        .build()
+        .unwrap();
+
+        assert_eq!(request.headers()["copilot-integration-id"], "holon");
+    }
+
+    #[tokio::test]
+    async fn optional_model_discovery_request_allows_missing_credentials() {
         let provider = custom_openai_provider("https://gateway.example.invalid/v1".into());
         let discovery = provider_discovery_definition(&provider).unwrap();
         let request = provider_models_request(
@@ -2985,6 +3400,7 @@ mod tests {
             discovery,
             &provider_models_url(&provider).unwrap(),
         )
+        .await
         .unwrap()
         .build()
         .unwrap();

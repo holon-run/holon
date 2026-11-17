@@ -952,7 +952,7 @@ export interface paths {
         put?: never;
         /**
          * Start OAuth device login
-         * @description Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex and xai.
+         * @description Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex, xai, and github-copilot (which requires the user's own GitHub OAuth app client id).
          */
         post: operations["startOAuthDeviceLogin"];
         delete?: never;

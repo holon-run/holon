@@ -44,7 +44,7 @@ fn build_http_client() -> Result<Client> {
     build_provider_http_client(Some(http_timeouts().connect))
 }
 
-fn build_oauth_http_client() -> Result<Client> {
+pub(crate) fn build_oauth_http_client() -> Result<Client> {
     // Refresh previously shared only the optional legacy total cap.
     build_provider_http_client(None)
 }

@@ -29,9 +29,23 @@ impl OpenAiBearerAuth {
                     })?,
             ),
         };
+        // OAuth protocol selection follows the route provider so a plan
+        // alias (for example github-copilot-<plan>) still resolves the
+        // parent provider's OAuth configuration; the display id stays for
+        // diagnostics and lock ownership.
+        let oauth_provider_key = {
+            let route = provider_config.route_provider.as_str();
+            if route.is_empty() {
+                provider_config.id.as_str()
+            } else {
+                route
+            }
+        }
+        .to_string();
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),
+            oauth_provider_key,
             api_key,
             credential_profile: oauth_profile.then(|| {
                 provider_config
@@ -51,6 +65,18 @@ impl OpenAiBearerAuth {
         let Some(profile) = self.credential_profile.as_deref() else {
             return Ok(None);
         };
+        if let Some(store_path) = self.credential_store_path.as_deref() {
+            // Reload on every dispatch so rotation and logout take effect
+            // without rebuilding the provider.
+            let store = load_credential_store_at(store_path)?;
+            let entry = store.profiles.get(profile).ok_or_else(|| {
+                anyhow::anyhow!("Holon credential profile {profile} is unavailable")
+            })?;
+            if entry.kind != CredentialKind::OAuth {
+                anyhow::bail!("Holon credential profile {profile} is not an OAuth credential");
+            }
+            return load_oauth_profile_credential(&entry.material, profile).map(Some);
+        }
         let material = self
             .credential_material
             .as_deref()
@@ -91,9 +117,6 @@ impl OpenAiBearerAuth {
             .credential_profile
             .as_deref()
             .context("provider does not use an OAuth credential profile")?;
-        let config = oauth_provider_config(&self.provider_id).ok_or_else(|| {
-            anyhow::anyhow!("provider {} has no OAuth configuration", self.provider_id)
-        })?;
         let store_path = self.credential_store_path.as_ref().ok_or_else(|| {
             anyhow::anyhow!(
                 "Holon-managed OAuth profile {profile} cannot refresh because the credential store path is unavailable"
@@ -112,6 +135,16 @@ impl OpenAiBearerAuth {
                 entry.kind.as_str()
             );
         }
+        // The client id for a user-owned OAuth app lives in the profile
+        // material, so a refresh does not depend on the environment or the
+        // user configuration still carrying it.
+        let config = oauth_provider_config_for_material(&self.oauth_provider_key, &entry.material)?
+            .ok_or_else(|| {
+                anyhow::anyhow!(
+                    "provider {} has no OAuth configuration",
+                    self.oauth_provider_key
+                )
+            })?;
         let current = load_oauth_profile_credential(&entry.material, profile)?;
         if !force
             && !current
@@ -548,9 +581,8 @@ fn codex_refresh_error(
             source_chain: vec![failure.safe_summary()],
         }),
         format!(
-            "{provider} OAuth refresh failed for Holon credential profile {profile}: {} ({})",
-            failure.message,
-            failure.kind.as_str()
+            "{provider} Holon credential profile {profile}: {}",
+            failure.safe_summary()
         ),
     )
 }

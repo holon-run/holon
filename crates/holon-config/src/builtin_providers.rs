@@ -205,6 +205,16 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.client_id") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .and_then(|auth| auth.client_id.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
     if let Some((id, plan)) = provider_plan_key(rest, ".endpoint") {
         return Ok(config
             .providers
@@ -263,6 +273,14 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .providers
             .get(&ProviderId::parse(id)?)
             .and_then(|provider| provider.auth.external.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.client_id") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.auth.client_id.as_ref())
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
@@ -340,6 +358,13 @@ pub(crate) fn set_provider_config_key(
             .external = (!value.is_empty()).then(|| value.to_string());
         return Ok(());
     }
+    if key.ends_with(".auth.client_id") {
+        let value = raw_value.trim();
+        persisted_provider_config_mut(config, key, ".auth.client_id")?
+            .auth
+            .client_id = (!value.is_empty()).then(|| value.to_string());
+        return Ok(());
+    }
     if key.ends_with(".cache_capabilities.cache_control") {
         let value =
             parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?;
@@ -375,6 +400,12 @@ pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str)
         persisted_provider_config_mut(config, key, ".auth.external")?
             .auth
             .external = None;
+        return Ok(());
+    }
+    if key.ends_with(".auth.client_id") {
+        persisted_provider_config_mut(config, key, ".auth.client_id")?
+            .auth
+            .client_id = None;
         return Ok(());
     }
     if key.ends_with(".cache_capabilities.cache_control") {
@@ -478,6 +509,20 @@ fn set_provider_endpoint_config_key(
             .external = (!value.is_empty()).then(|| value.to_string());
         return Ok(true);
     }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.client_id") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        let inherited_auth = provider_config_for_default_endpoint(provider).auth;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert(inherited_auth)
+            .client_id = (!value.is_empty()).then(|| value.to_string());
+        return Ok(true);
+    }
     Ok(false)
 }
 
@@ -550,7 +595,12 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
         }
         return Ok(true);
     }
-    for suffix in [".auth.env", ".auth.profile", ".auth.external"] {
+    for suffix in [
+        ".auth.env",
+        ".auth.profile",
+        ".auth.external",
+        ".auth.client_id",
+    ] {
         if let Some((id, endpoint_id)) = provider_endpoint_key(rest, suffix) {
             let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
             let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
@@ -563,6 +613,7 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
                     ".auth.env" => auth.env = None,
                     ".auth.profile" => auth.profile = None,
                     ".auth.external" => auth.external = None,
+                    ".auth.client_id" => auth.client_id = None,
                     _ => {}
                 }
             }
@@ -604,7 +655,12 @@ pub fn built_in_provider_default_config_with_settings(
         .map(|provider| ProviderConfigFile {
             transport: provider.transport,
             base_url: provider.base_url.clone(),
-            auth: ProviderAuthConfig::default(),
+            // Copilot onboarding needs its OAuth profile before a credential exists.
+            auth: if provider_id.as_str() == "github-copilot" {
+                provider.auth.clone()
+            } else {
+                ProviderAuthConfig::default()
+            },
             headers: ProviderHeaders::default(),
             reasoning_effort: None,
             builtin_web_search: None,
@@ -639,6 +695,12 @@ pub fn resolve_provider_registry(
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
     let mut registry = built_in_provider_registry_with_settings(settings_env)?;
+    // Template headers before any user configuration is merged; plan
+    // endpoint aliases recompute their header layering from these defaults.
+    let builtin_headers: HashMap<ProviderId, ProviderHeaders> = registry
+        .values()
+        .map(|provider| (provider.id.clone(), provider.headers.clone()))
+        .collect();
     for provider in registry.values_mut() {
         provider.credential = None;
     }
@@ -677,6 +739,7 @@ pub fn resolve_provider_registry(
                 endpoint_id,
                 provider_config,
                 base_runtime.clone(),
+                builtin_headers.get(id).cloned().unwrap_or_default(),
                 settings_env,
                 credential_store,
             )?;
@@ -690,7 +753,10 @@ pub fn resolve_provider_registry(
             .get(&provider.id)
             .or_else(|| stored_config.providers.get(&provider.route_provider))
         {
-            provider.headers = effective_provider_headers(config, &provider.route_endpoint)?;
+            let configured_headers = effective_provider_headers(config, &provider.route_endpoint)?;
+            // Built-in defaults stay when the user configures no headers;
+            // explicit user headers win per name.
+            provider.headers = provider.headers.merged(&configured_headers)?;
             provider_headers::validate_headers_for_provider(
                 &provider.headers,
                 &provider.route_provider,
@@ -719,10 +785,16 @@ fn materialize_provider_endpoint_config(
     endpoint_id: &ProviderEndpointId,
     provider_config: &ProviderConfigFile,
     mut runtime: ProviderRuntimeConfig,
+    template_headers: ProviderHeaders,
     settings_env: &HashMap<String, String>,
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRuntimeConfig> {
-    runtime.headers = effective_provider_headers(provider_config, endpoint_id)?;
+    // Recompute the endpoint headers from the built-in template plus the
+    // provider-level and selected-endpoint layers. The incoming runtime
+    // already carries the default endpoint's header layer, which must not
+    // leak to an alias that routes to a different base URL.
+    runtime.headers =
+        template_headers.merged(&effective_provider_headers(provider_config, endpoint_id)?)?;
     if let Some(endpoint_config) = provider_config.endpoints.get(endpoint_id) {
         if let Some(transport) = endpoint_config.transport {
             runtime.transport = transport;
@@ -872,6 +944,9 @@ pub(crate) fn populate_built_in_provider_catalog(
             ProviderMaterializer::VercelAiGateway => {
                 insert_vercel_ai_gateway_provider(catalog, definition, settings_env)?
             }
+            ProviderMaterializer::GitHubCopilot => {
+                insert_github_copilot_provider(catalog, definition, settings_env)?
+            }
             ProviderMaterializer::AliasOnly => {}
         }
     }
@@ -920,6 +995,7 @@ fn insert_openai_codex_provider(
                 env: None,
                 profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -932,6 +1008,47 @@ fn insert_openai_codex_provider(
             reasoning_effort,
             context_management: Default::default(),
             builtin_web_search: Some(openai_codex_builtin_web_search_config()),
+        },
+    )
+}
+
+fn insert_github_copilot_provider(
+    catalog: &mut BuiltInProviderCatalog,
+    definition: &ProviderDefinition,
+    settings_env: &HashMap<String, String>,
+) -> Result<()> {
+    let id = ProviderId::parse(definition.legacy_provider)?;
+    // Real integration identity only: no editor/IDE mimicry headers.
+    let headers = holon_provider::config::ProviderHeaders::new([(
+        "Copilot-Integration-Id".to_string(),
+        "holon".to_string(),
+    )])?;
+    insert_definition_runtime(
+        catalog,
+        definition,
+        ProviderRuntimeConfig {
+            headers,
+            id,
+            route_provider: ProviderId::parse(definition.route_provider)?,
+            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
+            transport: definition.transport,
+            base_url: get_config_value("HOLON_GITHUB_COPILOT_BASE_URL", None, settings_env)
+                .unwrap_or_else(|| definition.default_base_url.to_string()),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                external: None,
+                client_id: None,
+            },
+            credential: None,
+            credential_store_path: None,
+            codex_home: None,
+            originator: None,
+            reasoning_effort: None,
+            context_management: Default::default(),
+            builtin_web_search: None,
         },
     )
 }
@@ -960,6 +1077,7 @@ fn insert_openai_provider(
                 env: Some("OPENAI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: env::var("OPENAI_API_KEY").ok(),
             credential_store_path: None,
@@ -995,6 +1113,7 @@ fn insert_anthropic_provider(
                 env: Some("ANTHROPIC_AUTH_TOKEN".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: get_config_value("ANTHROPIC_AUTH_TOKEN", None, settings_env),
             credential_store_path: None,
@@ -1030,6 +1149,7 @@ fn insert_gemini_provider(
                 env: Some("GEMINI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: get_config_value("GEMINI_API_KEY", None, settings_env),
             credential_store_path: None,
@@ -1139,6 +1259,7 @@ pub(crate) fn insert_vercel_ai_gateway_provider(
                 env: Some(env_name),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential,
             credential_store_path: None,
@@ -1197,6 +1318,7 @@ fn insert_builtin_http_provider_with_context_management(
                     env: Some(env.clone()),
                     profile: None,
                     external: None,
+                    client_id: None,
                 })
                 .unwrap_or_default(),
             credential: credential.map(|resolution| resolution.value),
@@ -1340,8 +1462,11 @@ pub fn materialize_provider_config(
     runtime.transport = effective_provider_config.transport;
     runtime.base_url = effective_provider_config.base_url;
     runtime.auth = effective_provider_config.auth;
-    runtime.headers =
+    let configured_headers =
         effective_provider_headers(&provider_config, &ProviderEndpointId::default_endpoint())?;
+    // Built-in default headers (e.g. Copilot-Integration-Id) survive absent
+    // user headers; explicit user headers win per name.
+    runtime.headers = runtime.headers.merged(&configured_headers)?;
     runtime.credential = credential;
     if provider_config.reasoning_effort.is_some() {
         runtime.reasoning_effort = provider_config.reasoning_effort;
@@ -1366,6 +1491,166 @@ pub(crate) fn validate_openai_reasoning_effort(value: &str) -> Result<()> {
             "invalid OpenAI Codex reasoning_effort '{value}'; \
              must be one of none, low, medium, high, xhigh, max"
         )),
+    }
+}
+
+#[cfg(test)]
+mod oauth_client_id_tests {
+    use super::*;
+
+    fn assert_copilot_oauth_auth(auth: &ProviderAuthConfig, profile: &str, client_id: &str) {
+        assert_eq!(auth.source, CredentialSource::AuthProfile);
+        assert_eq!(auth.kind, CredentialKind::OAuth);
+        assert_eq!(auth.profile.as_deref(), Some(profile));
+        assert_eq!(auth.client_id.as_deref(), Some(client_id));
+    }
+
+    #[test]
+    fn fresh_github_copilot_client_id_preserves_builtin_oauth_auth() {
+        let mut config = HolonConfigFile::default();
+        set_provider_config_key(
+            &mut config,
+            "providers.github-copilot.auth.client_id",
+            "Iv1.root-client",
+        )
+        .unwrap();
+        let id = ProviderId::parse("github-copilot").unwrap();
+        assert_copilot_oauth_auth(
+            &config.providers[&id].auth,
+            GITHUB_COPILOT_CREDENTIAL_PROFILE,
+            "Iv1.root-client",
+        );
+        let registry =
+            resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+                .unwrap();
+        assert_copilot_oauth_auth(
+            &registry[&id].auth,
+            GITHUB_COPILOT_CREDENTIAL_PROFILE,
+            "Iv1.root-client",
+        );
+    }
+
+    #[test]
+    fn github_copilot_endpoint_client_id_inherits_oauth_auth() {
+        for (endpoint, profile) in [
+            ("default", GITHUB_COPILOT_CREDENTIAL_PROFILE),
+            ("coding", GITHUB_COPILOT_CREDENTIAL_PROFILE),
+            ("default", "copilot-work"),
+            ("coding", "copilot-work"),
+        ] {
+            let mut config = HolonConfigFile::default();
+            if profile != GITHUB_COPILOT_CREDENTIAL_PROFILE {
+                set_provider_config_key(
+                    &mut config,
+                    "providers.github-copilot.auth.profile",
+                    profile,
+                )
+                .unwrap();
+            }
+            set_provider_config_key(
+                &mut config,
+                &format!("providers.github-copilot.endpoints.{endpoint}.auth.client_id"),
+                "Iv1.endpoint-client",
+            )
+            .unwrap();
+            let id = ProviderId::parse("github-copilot").unwrap();
+            let endpoint_id = ProviderEndpointId::parse(endpoint).unwrap();
+            assert_copilot_oauth_auth(
+                config.providers[&id].endpoints[&endpoint_id]
+                    .auth
+                    .as_ref()
+                    .unwrap(),
+                profile,
+                "Iv1.endpoint-client",
+            );
+            config.providers.get_mut(&id).unwrap().plans.insert(
+                "selected".into(),
+                ProviderPlanConfigFile {
+                    endpoint: Some(endpoint_id),
+                },
+            );
+            let registry = resolve_provider_registry(
+                &config,
+                &HashMap::new(),
+                &CredentialStoreFile::default(),
+            )
+            .unwrap();
+            assert_copilot_oauth_auth(
+                &registry[&ProviderId::parse("github-copilot-selected").unwrap()].auth,
+                profile,
+                "Iv1.endpoint-client",
+            );
+        }
+    }
+
+    #[test]
+    fn named_endpoint_client_id_inherits_default_endpoint_auth() {
+        let mut config = HolonConfigFile::default();
+        set_provider_config_key(
+            &mut config,
+            "providers.github-copilot.auth.client_id",
+            "Iv1.root-client",
+        )
+        .unwrap();
+        let id = ProviderId::parse("github-copilot").unwrap();
+        let provider = config.providers.get_mut(&id).unwrap();
+        let mut default_auth = provider.auth.clone();
+        default_auth.profile = Some("copilot-work".into());
+        provider
+            .endpoints
+            .entry(ProviderEndpointId::default_endpoint())
+            .or_default()
+            .auth = Some(default_auth);
+        set_provider_config_key(
+            &mut config,
+            "providers.github-copilot.endpoints.coding.auth.client_id",
+            "Iv1.coding-client",
+        )
+        .unwrap();
+        let endpoint_id = ProviderEndpointId::parse("coding").unwrap();
+        assert_copilot_oauth_auth(
+            config.providers[&id].endpoints[&endpoint_id]
+                .auth
+                .as_ref()
+                .unwrap(),
+            "copilot-work",
+            "Iv1.coding-client",
+        );
+    }
+
+    #[test]
+    fn endpoint_client_id_preserves_existing_auth() {
+        let mut config = HolonConfigFile::default();
+        set_provider_config_key(
+            &mut config,
+            "providers.github-copilot.auth.client_id",
+            "Iv1.root-client",
+        )
+        .unwrap();
+        let id = ProviderId::parse("github-copilot").unwrap();
+        let endpoint_id = ProviderEndpointId::parse("coding").unwrap();
+        let provider = config.providers.get_mut(&id).unwrap();
+        let mut endpoint_auth = provider.auth.clone();
+        endpoint_auth.profile = Some("copilot-personal".into());
+        provider
+            .endpoints
+            .entry(endpoint_id.clone())
+            .or_default()
+            .auth = Some(endpoint_auth);
+        set_provider_config_key(
+            &mut config,
+            "providers.github-copilot.endpoints.coding.auth.client_id",
+            "Iv1.updated-client",
+        )
+        .unwrap();
+        assert_copilot_oauth_auth(
+            config.providers[&id].endpoints[&endpoint_id]
+                .auth
+                .as_ref()
+                .unwrap(),
+            "copilot-personal",
+            "Iv1.updated-client",
+        );
     }
 }
 
@@ -1669,6 +1954,7 @@ pub fn provider_registry_for_tests(
                 env: None,
                 profile: Some(OPENAI_CODEX_CREDENTIAL_PROFILE.into()),
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1695,6 +1981,7 @@ pub fn provider_registry_for_tests(
                 env: Some("OPENAI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: openai_key.map(ToString::to_string),
             credential_store_path: None,
@@ -1721,6 +2008,7 @@ pub fn provider_registry_for_tests(
                 env: Some("ANTHROPIC_AUTH_TOKEN".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: anthropic_token.map(ToString::to_string),
             credential_store_path: None,
@@ -1747,6 +2035,7 @@ pub fn provider_registry_for_tests(
                 env: Some("GEMINI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1773,6 +2062,7 @@ pub fn provider_registry_for_tests(
                 env: Some("TYPESAFE_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,

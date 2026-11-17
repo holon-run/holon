@@ -65,6 +65,30 @@ When you need advanced cloud reasoning models, use Holon's interactive onboardin
    holon config set model.default "deepseek@default/deepseek-chat"
    ```
 
+#### GitHub Copilot (experimental)
+
+Register your own GitHub OAuth app and enable its device flow. Configure its
+**client ID**, not its app ID or a first-party editor's client ID:
+
+```bash
+holon config set providers.github-copilot.auth.client_id "<your-client-id>"
+holon onboard
+```
+
+Select `github-copilot` and complete the OAuth device login. Alternatively,
+set `GITHUB_COPILOT_CLIENT_ID` in the login process's environment. Holon stores
+the resulting credential and client ID in its own `github-copilot` profile;
+it does not read IDE credentials or require a client secret.
+
+This direct provider is experimental: successful GitHub login does not
+confirm Copilot entitlement, app/integration admission, or model access.
+Discover the models available to your account and select a returned
+`github-copilot@default/<model-id>` route; there is no static model list.
+Holon sends `Copilot-Integration-Id: holon`, never an editor impersonation.
+GitHub controls the accepted identities, models, policies, and usage limits.
+Removing a local credential does not revoke its authorization at GitHub;
+revoke the app in GitHub settings when access should end.
+
 ### Scenario 3: Verify Active Models in Chat & Override Per-Agent
 
 In multi-agent systems, you may want your primary agent running on a cost-effective daily model while assigning a heavier reasoning model to a specialized code reviewer.

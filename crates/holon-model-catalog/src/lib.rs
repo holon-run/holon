@@ -1851,7 +1851,10 @@ mod tests {
                 ),
                 ProviderCatalogPolicy::DiscoveryOnly => {
                     assert!(definition.discovery.is_some());
-                    assert_eq!(definition.materializer, ProviderMaterializer::Generic);
+                    assert!(matches!(
+                        definition.materializer,
+                        ProviderMaterializer::Generic | ProviderMaterializer::GitHubCopilot
+                    ));
                 }
                 ProviderCatalogPolicy::StaticOnly => {}
             }

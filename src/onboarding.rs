@@ -221,6 +221,9 @@ pub fn onboarding_provider_choices(config: &AppConfig) -> Vec<OnboardingProvider
                     .unwrap_or_else(|| provider.id.as_str().to_string()),
                 credential_configured: provider_credential_configured(provider),
                 codex_home: provider.codex_home.clone(),
+                // Runtime auth already folds the default endpoint layer in,
+                // so this covers both root and endpoint client_id config.
+                oauth_client_id: provider.auth.client_id.clone(),
                 configured: config.stored_config.providers.contains_key(&provider.id),
             }
         })
@@ -460,6 +463,8 @@ pub fn apply_onboarding_wizard_draft(
                 env: None,
                 profile: Some(draft.credential_profile.clone()),
                 external: provider_config.auth.external.clone(),
+                // Keep the configured OAuth client id for later logins.
+                client_id: provider_config.auth.client_id.clone(),
             };
             set_credential_profile_at(
                 &credential_store_path(&config.home_dir),
@@ -1243,6 +1248,7 @@ mod tests {
                     env: None,
                     profile: None,
                     external: None,
+                    client_id: None,
                 },
                 credential: None,
                 credential_store_path: None,
@@ -1299,6 +1305,7 @@ mod tests {
                     env: Some("OPENAI_API_KEY".into()),
                     profile: None,
                     external: None,
+                    client_id: None,
                 },
                 reasoning_effort: None,
                 builtin_web_search: None,
@@ -1369,6 +1376,7 @@ mod tests {
                 env: Some("CUSTOM_OPENAI_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,
@@ -1409,6 +1417,7 @@ mod tests {
                 env: Some("DEEPSEEK_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: None,
             credential_store_path: None,

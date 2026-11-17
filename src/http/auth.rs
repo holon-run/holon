@@ -15,6 +15,114 @@ pub struct NativeOidcStartQuery {
     pub code_challenge_method: Option<String>,
 }
 
+fn oauth_device_login_config(
+    provider: &str,
+    auth: Option<&crate::config::ProviderAuthConfig>,
+) -> anyhow::Result<(crate::auth::OAuthProviderConfig, String)> {
+    let config = crate::auth::resolve_oauth_provider_config(
+        provider,
+        auth.and_then(|auth| auth.client_id.as_deref()),
+    )?
+    .ok_or_else(|| anyhow::anyhow!("provider {provider} does not support OAuth device login"))?;
+    let profile = auth
+        .and_then(|auth| auth.profile.clone())
+        .unwrap_or_else(|| config.profile_name.to_string());
+    Ok((config, profile))
+}
+
+#[cfg(holon_lib_test_shard = "c")]
+#[cfg(test)]
+mod oauth_device_login_tests {
+    use super::*;
+
+    #[test]
+    fn custom_profile_and_client_id_are_used_together() {
+        let auth = crate::config::ProviderAuthConfig {
+            profile: Some("copilot-work".into()),
+            client_id: Some("own-oauth-app".into()),
+            ..Default::default()
+        };
+        let (config, profile) = oauth_device_login_config("github-copilot", Some(&auth)).unwrap();
+        assert_eq!(config.client_id, "own-oauth-app");
+        assert_eq!(profile, "copilot-work");
+    }
+
+    #[test]
+    fn codex_custom_profile_and_builtin_fallback_are_preserved() {
+        let auth = crate::config::ProviderAuthConfig {
+            profile: Some("codex-work".into()),
+            ..Default::default()
+        };
+        assert_eq!(
+            oauth_device_login_config("openai-codex", Some(&auth))
+                .unwrap()
+                .1,
+            "codex-work"
+        );
+        let (config, profile) = oauth_device_login_config("openai-codex", None).unwrap();
+        assert_eq!(profile, config.profile_name);
+    }
+
+    #[test]
+    fn copilot_without_profile_uses_builtin_default() {
+        let auth = crate::config::ProviderAuthConfig {
+            client_id: Some("own-oauth-app".into()),
+            ..Default::default()
+        };
+        let (config, profile) = oauth_device_login_config("github-copilot", Some(&auth)).unwrap();
+        assert_eq!(profile, config.profile_name);
+    }
+
+    #[test]
+    fn unsupported_provider_is_rejected() {
+        assert!(oauth_device_login_config("anthropic", None).is_err());
+    }
+
+    #[test]
+    fn resolved_default_endpoint_auth_is_used_for_device_login() {
+        for provider in ["github-copilot", "openai-codex"] {
+            for root_override in [false, true] {
+                let mut stored = crate::config::HolonConfigFile::default();
+                crate::config::set_config_key(
+                    &mut stored,
+                    &format!("providers.{provider}.auth.client_id"),
+                    "root-client",
+                )
+                .unwrap();
+                let id = crate::config::ProviderId::parse(provider).unwrap();
+                let configured = stored.providers.get_mut(&id).unwrap();
+                if root_override {
+                    configured.auth.profile = Some("root-profile".into());
+                } else {
+                    configured.auth.client_id = None;
+                }
+                let mut endpoint_auth = configured.auth.clone();
+                endpoint_auth.client_id = Some("endpoint-client".into());
+                endpoint_auth.profile = Some("endpoint-profile".into());
+                configured.endpoints.insert(
+                    crate::config::ProviderEndpointId::default_endpoint(),
+                    crate::config::ProviderEndpointConfigFile {
+                        auth: Some(endpoint_auth),
+                        ..Default::default()
+                    },
+                );
+                let registry = crate::config::resolve_provider_registry(
+                    &stored,
+                    &HashMap::new(),
+                    &crate::config::CredentialStoreFile::default(),
+                )
+                .unwrap();
+                let (config, profile) =
+                    oauth_device_login_config(provider, Some(&registry[&id].auth)).unwrap();
+                assert_eq!(profile, "endpoint-profile");
+                if provider == "github-copilot" {
+                    assert_eq!(config.client_id, "endpoint-client");
+                }
+            }
+        }
+    }
+}
+
 fn validate_native_pkce_method(method: Option<&str>) -> Result<(), (StatusCode, Json<Value>)> {
     if method.is_some_and(|method| method != "S256") {
         return Err(bad_request("native login only supports S256"));
@@ -632,14 +740,18 @@ pub async fn start_codex_device_login(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let app_config = state.host.config();
+    let auth = app_config
+        .providers
+        .get(&crate::config::ProviderId::openai_codex())
+        .map(|provider| &provider.auth);
+    let (config, profile) =
+        oauth_device_login_config(crate::config::ProviderId::OPENAI_CODEX, auth)
+            .map_err(error_response)?;
     let device_code = crate::auth::request_codex_device_code()
         .await
         .map_err(error_response)?;
-    let job = jobs::create_oauth_device_login_job(
-        state,
-        crate::auth::OAuthProviderConfig::codex(),
-        device_code.clone(),
-    );
+    let job = jobs::create_oauth_device_login_job(state, config, profile, device_code.clone());
     Ok((
         StatusCode::ACCEPTED,
         Json(OAuthDeviceStartResponse {
@@ -741,15 +853,18 @@ pub async fn start_oauth_device_login(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
-    let config = crate::auth::oauth_provider_config(&provider).ok_or_else(|| {
-        error_response(anyhow::anyhow!(
-            "provider {provider} does not support OAuth device login"
-        ))
-    })?;
+    // Use the same resolved default-endpoint auth as onboarding, including
+    // the selected endpoint's override of provider-level configuration.
+    let app_config = state.host.config();
+    let auth = crate::config::ProviderId::parse(&provider)
+        .ok()
+        .and_then(|provider_id| app_config.providers.get(&provider_id))
+        .map(|provider| &provider.auth);
+    let (config, profile) = oauth_device_login_config(&provider, auth).map_err(error_response)?;
     let device_code = crate::auth::request_oauth_device_code(&config)
         .await
         .map_err(error_response)?;
-    let job = jobs::create_oauth_device_login_job(state, config, device_code.clone());
+    let job = jobs::create_oauth_device_login_job(state, config, profile, device_code.clone());
     Ok((
         StatusCode::ACCEPTED,
         Json(OAuthDeviceStartResponse {

@@ -7948,6 +7948,7 @@ async fn handle_config_providers_command(command: ConfigProviderCommands) -> Res
                     env: credential_env,
                     profile: credential_profile.map(|value| value.trim().to_string()),
                     external: credential_external,
+                    client_id: None,
                 },
                 reasoning_effort: None,
                 builtin_web_search: None,

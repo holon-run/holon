@@ -90,6 +90,349 @@ fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
 }
 
 #[test]
+fn built_in_github_copilot_defaults_to_oauth_profile() {
+    let settings_env = HashMap::new();
+    let registry = built_in_provider_registry_with_settings(&settings_env).unwrap();
+    let github_copilot = registry
+        .get(&ProviderId::parse("github-copilot").unwrap())
+        .unwrap();
+
+    assert_eq!(
+        github_copilot.transport,
+        ProviderTransportKind::OpenAiChatCompletions
+    );
+    assert_eq!(github_copilot.base_url, "https://api.githubcopilot.com");
+    assert_eq!(github_copilot.auth.source, CredentialSource::AuthProfile);
+    assert_eq!(github_copilot.auth.kind, CredentialKind::OAuth);
+    assert_eq!(
+        github_copilot.auth.profile.as_deref(),
+        Some(GITHUB_COPILOT_CREDENTIAL_PROFILE)
+    );
+    assert!(github_copilot.credential.is_none());
+    let integration_id = github_copilot
+        .headers
+        .iter()
+        .find(|(name, _)| *name == "copilot-integration-id")
+        .map(|(_, value)| value.to_string());
+    assert_eq!(integration_id.as_deref(), Some("holon"));
+}
+
+#[test]
+fn github_copilot_catalog_is_discovery_only() {
+    use holon_domain::model_values::{
+        provider_definition, ModelDiscoveryAuth, ModelDiscoveryRoute, ProviderCatalogPolicy,
+    };
+    let definition = provider_definition("github-copilot").unwrap();
+    assert_eq!(
+        definition.catalog_policy,
+        ProviderCatalogPolicy::DiscoveryOnly
+    );
+    let discovery = definition.discovery.unwrap();
+    assert_eq!(discovery.auth, ModelDiscoveryAuth::Optional);
+    assert_eq!(discovery.route, ModelDiscoveryRoute::OpenAiCompatible);
+}
+
+#[test]
+fn provider_auth_config_client_id_round_trip() {
+    let auth: ProviderAuthConfig = serde_json::from_str(
+        r#"{"source":"credential_profile","kind":"o_auth","profile":"github-copilot","client_id":"Iv1.client"}"#,
+    )
+    .unwrap();
+    assert_eq!(auth.client_id.as_deref(), Some("Iv1.client"));
+    assert_eq!(
+        serde_json::to_value(&auth).unwrap().get("client_id"),
+        Some(&json!("Iv1.client"))
+    );
+
+    let without: ProviderAuthConfig = serde_json::from_str(
+        r#"{"source":"credential_profile","kind":"o_auth","profile":"github-copilot"}"#,
+    )
+    .unwrap();
+    assert!(without.client_id.is_none());
+    assert!(serde_json::to_value(&without)
+        .unwrap()
+        .get("client_id")
+        .is_none());
+}
+
+#[test]
+fn github_copilot_configured_headers_keep_builtin_integration_id() {
+    let mut config = HolonConfigFile::default();
+    let id = ProviderId::parse("github-copilot").unwrap();
+    config.providers.insert(
+        id.clone(),
+        ProviderConfigFile {
+            headers: Default::default(),
+            cache_capabilities: None,
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.githubcopilot.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                external: None,
+                client_id: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
+        },
+    );
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    let runtime = registry.get(&id).unwrap();
+    assert_eq!(
+        runtime
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "copilot-integration-id")
+            .map(|(_, value)| value),
+        Some("holon")
+    );
+
+    let mut with_override = config;
+    with_override.providers.get_mut(&id).unwrap().headers =
+        ProviderHeaders::new([("X-Copilot-Test".to_string(), "1".to_string())]).unwrap();
+    let registry = resolve_provider_registry(
+        &with_override,
+        &HashMap::new(),
+        &CredentialStoreFile::default(),
+    )
+    .unwrap();
+    let runtime = registry.get(&id).unwrap();
+    assert_eq!(
+        runtime
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "copilot-integration-id")
+            .map(|(_, value)| value),
+        Some("holon")
+    );
+    assert_eq!(
+        runtime
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-copilot-test")
+            .map(|(_, value)| value),
+        Some("1")
+    );
+}
+
+#[test]
+fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
+    let mut config = HolonConfigFile::default();
+    let id = ProviderId::parse("github-copilot").unwrap();
+    let mut endpoints = BTreeMap::new();
+    endpoints.insert(
+        ProviderEndpointId::parse("default").unwrap(),
+        ProviderEndpointConfigFile {
+            transport: None,
+            base_url: None,
+            auth: None,
+            headers: ProviderHeaders::new([(
+                "x-default-only".to_string(),
+                "default-layer".to_string(),
+            )])
+            .unwrap(),
+        },
+    );
+    endpoints.insert(
+        ProviderEndpointId::parse("coding").unwrap(),
+        ProviderEndpointConfigFile {
+            transport: None,
+            base_url: Some("https://api.githubcopilot.com".to_string()),
+            auth: None,
+            headers: ProviderHeaders::new([("x-coding".to_string(), "coding-layer".to_string())])
+                .unwrap(),
+        },
+    );
+    let mut plans = BTreeMap::new();
+    plans.insert(
+        "coding".to_string(),
+        ProviderPlanConfigFile {
+            endpoint: Some(ProviderEndpointId::parse("coding").unwrap()),
+        },
+    );
+    config.providers.insert(
+        id.clone(),
+        ProviderConfigFile {
+            headers: ProviderHeaders::new([(
+                "x-provider".to_string(),
+                "provider-layer".to_string(),
+            )])
+            .unwrap(),
+            cache_capabilities: None,
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.githubcopilot.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                external: None,
+                client_id: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: None,
+            endpoints,
+            plans,
+        },
+    );
+
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    let alias = registry
+        .get(&ProviderId::parse("github-copilot-coding").unwrap())
+        .unwrap();
+    assert_eq!(alias.route_endpoint.as_str(), "coding");
+    // The built-in identity header and the provider-level header survive.
+    assert_eq!(
+        alias
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "copilot-integration-id")
+            .map(|(_, value)| value),
+        Some("holon")
+    );
+    assert_eq!(
+        alias
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-provider")
+            .map(|(_, value)| value),
+        Some("provider-layer")
+    );
+    // The selected endpoint layer applies...
+    assert_eq!(
+        alias
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-coding")
+            .map(|(_, value)| value),
+        Some("coding-layer")
+    );
+    // ...and the default endpoint's own layer does not leak to the alias.
+    assert_eq!(
+        alias
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-default-only")
+            .map(|(_, value)| value),
+        None
+    );
+
+    // The canonical default endpoint keeps its own header layer.
+    let canonical = registry.get(&id).unwrap();
+    assert_eq!(canonical.route_endpoint.as_str(), "default");
+    assert_eq!(
+        canonical
+            .headers
+            .iter()
+            .find(|(name, _)| *name == "x-default-only")
+            .map(|(_, value)| value),
+        Some("default-layer")
+    );
+}
+
+#[test]
+fn provider_auth_client_id_config_keys_round_trip() {
+    let mut config = HolonConfigFile::default();
+    let id = ProviderId::parse("github-copilot").unwrap();
+    config.providers.insert(
+        id.clone(),
+        ProviderConfigFile {
+            headers: Default::default(),
+            cache_capabilities: None,
+            transport: ProviderTransportKind::OpenAiChatCompletions,
+            base_url: "https://api.githubcopilot.com".into(),
+            auth: ProviderAuthConfig {
+                source: CredentialSource::AuthProfile,
+                kind: CredentialKind::OAuth,
+                env: None,
+                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                external: None,
+                client_id: None,
+            },
+            reasoning_effort: None,
+            builtin_web_search: None,
+            endpoints: BTreeMap::new(),
+            plans: BTreeMap::new(),
+        },
+    );
+
+    set_provider_config_key(
+        &mut config,
+        "providers.github-copilot.auth.client_id",
+        "Iv1.root-client",
+    )
+    .unwrap();
+    assert_eq!(
+        get_provider_config_key(&config, "providers.github-copilot.auth.client_id").unwrap(),
+        serde_json::json!("Iv1.root-client")
+    );
+
+    set_provider_config_key(
+        &mut config,
+        "providers.github-copilot.endpoints.default.auth.client_id",
+        "Iv1.endpoint-client",
+    )
+    .unwrap();
+    assert_eq!(
+        config.providers[&id].endpoints[&ProviderEndpointId::parse("default").unwrap()]
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.client_id.as_deref()),
+        Some("Iv1.endpoint-client")
+    );
+    assert_eq!(
+        get_provider_config_key(
+            &config,
+            "providers.github-copilot.endpoints.default.auth.client_id"
+        )
+        .unwrap(),
+        serde_json::json!("Iv1.endpoint-client")
+    );
+    // HTTP login and onboarding both read this resolved runtime auth.
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    assert_eq!(
+        registry.get(&id).unwrap().auth.client_id.as_deref(),
+        Some("Iv1.endpoint-client")
+    );
+
+    unset_provider_config_key(&mut config, "providers.github-copilot.auth.client_id").unwrap();
+    assert_eq!(
+        get_provider_config_key(&config, "providers.github-copilot.auth.client_id").unwrap(),
+        serde_json::Value::Null
+    );
+    unset_provider_config_key(
+        &mut config,
+        "providers.github-copilot.endpoints.default.auth.client_id",
+    )
+    .unwrap();
+    assert_eq!(
+        get_provider_config_key(
+            &config,
+            "providers.github-copilot.endpoints.default.auth.client_id"
+        )
+        .unwrap(),
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        config.providers[&id].endpoints[&ProviderEndpointId::parse("default").unwrap()]
+            .auth
+            .as_ref()
+            .and_then(|auth| auth.client_id.as_deref()),
+        None
+    );
+}
+
+#[test]
 fn opencode_go_registers_messages_and_legacy_chat_but_not_responses() {
     let entries = built_in_provider_doc_entries().unwrap();
     let mut endpoints = entries
@@ -862,6 +1205,7 @@ fn custom_provider_auth_requires_explicit_contract() {
         env: None,
         profile: None,
         external: None,
+        client_id: None,
     };
     let err = super::validate_provider_auth(&id, &auth).unwrap_err();
     assert!(err.to_string().contains("requires auth.env"));
@@ -881,6 +1225,7 @@ fn provider_builtin_web_search_rejects_empty_tool_metadata() {
             env: Some("CUSTOM_API_KEY".into()),
             profile: None,
             external: None,
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -912,6 +1257,7 @@ fn provider_builtin_web_search_rejects_transport_kind_mismatch() {
             env: Some("CUSTOM_API_KEY".into()),
             profile: None,
             external: None,
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -942,6 +1288,7 @@ fn provider_builtin_web_search_rejects_wrong_tool_type() {
             env: Some("CUSTOM_API_KEY".into()),
             profile: None,
             external: None,
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -972,6 +1319,7 @@ fn provider_builtin_web_search_accepts_codex_tool_type() {
             env: None,
             profile: None,
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -1001,6 +1349,7 @@ fn provider_builtin_web_search_rejects_wrong_codex_tool_type() {
             env: None,
             profile: None,
             external: Some("codex_cli".into()),
+            client_id: None,
         },
         reasoning_effort: None,
         builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -1039,6 +1388,7 @@ fn materialize_provider_config_can_disable_builtin_web_search_for_builtin_provid
                 env: None,
                 profile: None,
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: Some(ProviderBuiltinWebSearchConfig {
@@ -1166,6 +1516,7 @@ fn materialize_provider_config_resolves_env_credentials_from_settings() {
                 env: Some("OPENROUTER_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: None,
@@ -1258,6 +1609,7 @@ fn materialize_provider_config_resolves_credential_profile() {
                 env: None,
                 profile: Some(" openrouter:default ".into()),
                 external: None,
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: None,
@@ -1342,6 +1694,7 @@ fn materialize_provider_config_preserves_builtin_runtime_fields() {
                 env: None,
                 profile: None,
                 external: Some("codex_cli".into()),
+                client_id: None,
             },
             reasoning_effort: None,
             builtin_web_search: None,
@@ -1535,6 +1888,7 @@ fn model_selection_derives_custom_provider_from_catalog_override() {
                 env: Some("CUSTOM_API_KEY".into()),
                 profile: None,
                 external: None,
+                client_id: None,
             },
             credential: Some("custom-key".into()),
             credential_store_path: None,

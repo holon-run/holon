@@ -15,6 +15,9 @@ use crate::budget::effective_output_tokens;
 pub struct ChatCompletionsConfig {
     pub base_url: String,
     pub api_key: Option<String>,
+    /// Provider id used for endpoint-shape decisions that are not derivable
+    /// from the base URL alone.
+    pub provider: Option<String>,
     pub model: String,
     pub max_output_tokens: u32,
     pub max_output_tokens_parameter: &'static str,
@@ -27,6 +30,7 @@ pub struct OpenAiChatCompletionsProvider {
     client: Client,
     base_url: String,
     api_key: Option<String>,
+    provider: Option<String>,
     model: String,
     max_output_tokens: u32,
     max_output_tokens_parameter: &'static str,
@@ -41,6 +45,7 @@ impl OpenAiChatCompletionsProvider {
             client,
             base_url: config.base_url.trim_end_matches('/').into(),
             api_key: config.api_key,
+            provider: config.provider,
             model: config.model,
             max_output_tokens: config.max_output_tokens,
             max_output_tokens_parameter: config.max_output_tokens_parameter,
@@ -129,8 +134,19 @@ impl OpenAiChatCompletionsProvider {
         headers: Vec<(&str, String)>,
         transport: &T,
     ) -> Result<T::Output> {
-        let url = chat_completions_url(&self.base_url);
+        let url = self.chat_completions_url();
         complete_chat_request(&self.client, &url, body, headers, transport).await
+    }
+
+    /// Resolve the chat-completions endpoint for this provider.
+    ///
+    /// GitHub Copilot serves the OpenAI-compatible chat surface at the API
+    /// root, so it must not receive the generic `/v1` prefix.
+    fn chat_completions_url(&self) -> String {
+        if self.provider.as_deref() == Some(crate::config::GITHUB_COPILOT_PROVIDER_ID) {
+            return format!("{}/chat/completions", self.base_url);
+        }
+        chat_completions_url(&self.base_url)
     }
 }
 
@@ -311,6 +327,7 @@ mod tests {
             ChatCompletionsConfig {
                 base_url: "https://model.example/v1".into(),
                 api_key: None,
+                provider: None,
                 model: "kimi-k3".into(),
                 max_output_tokens: 512,
                 max_output_tokens_parameter: output_limit_parameter(
@@ -387,6 +404,46 @@ mod tests {
         assert_eq!(
             chat_completions_url("https://proxy.example/chat/completions"),
             "https://proxy.example/chat/completions"
+        );
+    }
+
+    #[test]
+    fn github_copilot_chat_url_omits_the_generic_v1_prefix() {
+        let provider = OpenAiChatCompletionsProvider::new(
+            reqwest::Client::new(),
+            ChatCompletionsConfig {
+                base_url: "https://api.githubcopilot.com".into(),
+                api_key: None,
+                provider: Some(crate::config::GITHUB_COPILOT_PROVIDER_ID.to_string()),
+                model: "gpt-5".into(),
+                max_output_tokens: 1024,
+                max_output_tokens_parameter: "max_tokens",
+                context_window_tokens: None,
+                reasoning_effort: None,
+            },
+        );
+        assert_eq!(
+            provider.chat_completions_url(),
+            "https://api.githubcopilot.com/chat/completions"
+        );
+
+        // Other providers keep the generic OpenAI-compatible shape.
+        let generic = OpenAiChatCompletionsProvider::new(
+            reqwest::Client::new(),
+            ChatCompletionsConfig {
+                base_url: "https://api.example.com".into(),
+                api_key: None,
+                provider: Some("example".into()),
+                model: "m".into(),
+                max_output_tokens: 16,
+                max_output_tokens_parameter: "max_tokens",
+                context_window_tokens: None,
+                reasoning_effort: None,
+            },
+        );
+        assert_eq!(
+            generic.chat_completions_url(),
+            "https://api.example.com/v1/chat/completions"
         );
     }
 }
