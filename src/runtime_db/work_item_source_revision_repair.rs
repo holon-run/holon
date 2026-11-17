@@ -753,8 +753,8 @@ mod tests {
         let (dir, db) = runtime_db()?;
         drifted_fixture(&db, "batch-1", true)?;
         drifted_fixture(&db, "batch-2", true)?;
-        let _guard = crate::runtime_db::verified_backup::test_hooks::install(
-            crate::runtime_db::verified_backup::test_hooks::Faults {
+        let _guard = holon_storage::maintenance::test_hooks::install(
+            holon_storage::maintenance::test_hooks::Faults {
                 vacuum_failure: Some(std::io::Error::new(
                     std::io::ErrorKind::Other,
                     "injected vacuum failure",

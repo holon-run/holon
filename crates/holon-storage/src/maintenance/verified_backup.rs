@@ -7,23 +7,106 @@
 //! SQLite shared-memory I/O error, and the unverified artifact created by
 //! this run must be removed instead of left behind.
 
-use std::io;
 use std::path::{Path, PathBuf};
+use std::{fs::File, io};
 
 use anyhow::{bail, Context, Result};
+use chrono::Utc;
+use rusqlite::Connection;
 
-/// Conservative lower bound for a `VACUUM INTO` backup of `db_path`: the
-/// current database file plus the existing WAL sidecar. `VACUUM INTO` may
-/// compact smaller, but planning for the uncompacted size keeps the
-/// preflight honest without depending on SQLite internals.
-pub(crate) fn backup_required_lower_bound(db_path: &Path) -> u64 {
-    file_len(db_path).saturating_add(file_len(&wal_sidecar_path(db_path)))
+use crate::{
+    connection::{open_connection, runtime_db_sidecar_file_path},
+    diagnostics::StorageDiagnostics,
+};
+
+/// Create and verify a fresh backup. Acquire the caller's protected connection
+/// after checking the destination and available space.
+pub fn create_verified_backup(
+    db_path: &Path,
+    label: &str,
+    open_source: impl FnOnce() -> Result<Connection>,
+    diagnostics: &StorageDiagnostics,
+) -> Result<PathBuf> {
+    let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
+    let file_name = db_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("runtime.sqlite");
+    let backup_path = db_path.with_file_name(format!("{file_name}.{label}.{timestamp}.bak"));
+    if backup_path.exists() {
+        bail!(
+            "runtime database backup already exists: {}",
+            backup_path.display()
+        );
+    }
+    ensure_sufficient_backup_space(db_path, &backup_path)?;
+    if let Err(error) = write_verified_backup(&backup_path, open_source, diagnostics) {
+        // The path was verified absent above and carries a fresh
+        // nanosecond timestamp, so any file there now is this run's
+        // unverified artifact. Pre-existing backups are never touched.
+        let _ = std::fs::remove_file(&backup_path);
+        if error_chain_indicates_disk_full(&error) {
+            return Err(error.context(format!(
+                "disk full while writing runtime database backup {} (the space preflight \
+                 passed, but concurrent disk use can still exhaust space)",
+                backup_path.display()
+            )));
+        }
+        return Err(error);
+    }
+    Ok(backup_path)
 }
 
-pub(crate) fn wal_sidecar_path(db_path: &Path) -> PathBuf {
-    let mut wal = db_path.as_os_str().to_os_string();
-    wal.push("-wal");
-    PathBuf::from(wal)
+fn write_verified_backup(
+    backup_path: &Path,
+    open_source: impl FnOnce() -> Result<Connection>,
+    diagnostics: &StorageDiagnostics,
+) -> Result<()> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Some(failure) = test_hooks::vacuum_failure() {
+            return Err(
+                anyhow::Error::new(failure).context("runtime database backup vacuum failed")
+            );
+        }
+    }
+    let backup_path_text = backup_path.to_string_lossy().into_owned();
+    open_source()?
+        .execute("VACUUM INTO ?1", [&backup_path_text])
+        .with_context(|| format!("creating runtime database backup {}", backup_path.display()))?;
+    File::open(backup_path)?.sync_all()?;
+    let integrity: String = verified_backup_integrity(backup_path, diagnostics)?;
+    if integrity != "ok" {
+        bail!(
+            "runtime database backup {} failed integrity check: {integrity}",
+            backup_path.display()
+        );
+    }
+    Ok(())
+}
+
+fn verified_backup_integrity(
+    backup_path: &Path,
+    diagnostics: &StorageDiagnostics,
+) -> Result<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    {
+        if let Some(injected) = test_hooks::integrity_result() {
+            return Ok(injected);
+        }
+    }
+    Ok(open_connection(backup_path, diagnostics)?.query_row(
+        "PRAGMA integrity_check",
+        [],
+        |row| row.get(0),
+    )?)
+}
+
+/// Conservative lower bound for a `VACUUM INTO` backup. The database
+/// may compact smaller, but planning for the current file and WAL size
+/// keeps the preflight independent of SQLite internals.
+fn backup_required_lower_bound(db_path: &Path) -> u64 {
+    file_len(db_path).saturating_add(file_len(&runtime_db_sidecar_file_path(db_path, "-wal")))
 }
 
 fn file_len(path: &Path) -> u64 {
@@ -33,7 +116,7 @@ fn file_len(path: &Path) -> u64 {
 /// Fails fast when the backup target's filesystem cannot hold the
 /// conservative lower bound. Never touches the database and creates no
 /// files, so a rejected backup leaves business state untouched.
-pub(crate) fn ensure_sufficient_backup_space(db_path: &Path, backup_path: &Path) -> Result<()> {
+fn ensure_sufficient_backup_space(db_path: &Path, backup_path: &Path) -> Result<()> {
     let required = backup_required_lower_bound(db_path);
     let available = backup_available_space(backup_path)?;
     if let Some(message) = backup_space_error(required, available, backup_path) {
@@ -43,7 +126,7 @@ pub(crate) fn ensure_sufficient_backup_space(db_path: &Path, backup_path: &Path)
 }
 
 /// Pure decision: `None` when there is room for the lower bound.
-pub(crate) fn backup_space_error(required: u64, available: u64, target: &Path) -> Option<String> {
+fn backup_space_error(required: u64, available: u64, target: &Path) -> Option<String> {
     (available < required).then(|| {
         format!(
             "insufficient disk space for runtime database backup {}: requires at least {} \
@@ -74,11 +157,11 @@ fn backup_available_space(backup_path: &Path) -> Result<u64> {
 }
 
 fn test_free_space_override() -> Option<u64> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     {
-        return test_hooks::free_space_override();
+        test_hooks::free_space_override()
     }
-    #[cfg(not(test))]
+    #[cfg(not(any(test, feature = "test-support")))]
     {
         None
     }
@@ -88,7 +171,7 @@ fn test_free_space_override() -> Option<u64> {
 /// (ENOSPC or `SQLITE_FULL`). Other SQLite I/O failures, notably the
 /// `xShmMap` errors that appear *after* a disk-full backup attempt, are
 /// deliberately not reclassified as disk full.
-pub(crate) fn error_chain_indicates_disk_full(error: &anyhow::Error) -> bool {
+fn error_chain_indicates_disk_full(error: &anyhow::Error) -> bool {
     error.chain().any(|cause| {
         if let Some(io_error) = cause.downcast_ref::<io::Error>() {
             if io_error_is_disk_full(io_error) {
@@ -117,16 +200,17 @@ fn io_error_is_disk_full(error: &io::Error) -> bool {
 /// live in thread-local state so parallel tests cannot overwrite each
 /// other's installed faults, and they reset when the guard drops so a
 /// failed assertion cannot leak state into later tests on the same thread.
-#[cfg(test)]
-pub(crate) mod test_hooks {
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
+pub mod test_hooks {
     use std::cell::RefCell;
     use std::io;
 
     #[derive(Default)]
-    pub(crate) struct Faults {
-        pub(crate) free_space_override: Option<u64>,
-        pub(crate) vacuum_failure: Option<io::Error>,
-        pub(crate) integrity_result: Option<String>,
+    pub struct Faults {
+        pub free_space_override: Option<u64>,
+        pub vacuum_failure: Option<io::Error>,
+        pub integrity_result: Option<String>,
     }
 
     impl Faults {
@@ -143,7 +227,7 @@ pub(crate) mod test_hooks {
         static FAULTS: RefCell<Faults> = RefCell::new(Faults::empty());
     }
 
-    pub(crate) struct FaultGuard {
+    pub struct FaultGuard {
         _private: (),
     }
 
@@ -154,7 +238,7 @@ pub(crate) mod test_hooks {
     }
 
     /// Installs overrides for the current test; they reset on drop.
-    pub(crate) fn install(faults: Faults) -> FaultGuard {
+    pub fn install(faults: Faults) -> FaultGuard {
         FAULTS.with(|cell| *cell.borrow_mut() = faults);
         FaultGuard { _private: () }
     }
@@ -179,7 +263,6 @@ pub(crate) mod test_hooks {
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,13 +300,14 @@ mod tests {
         assert!(error_chain_indicates_disk_full(&textual));
     }
 
-    fn backup_fixture() -> anyhow::Result<(tempfile::TempDir, crate::runtime_db::RuntimeDb)> {
+    fn backup_fixture() -> Result<(tempfile::TempDir, PathBuf)> {
         let dir = tempfile::tempdir()?;
-        let db = crate::runtime_db::RuntimeDb::open_and_migrate(
-            dir.path().join("state/runtime.sqlite"),
-            dir.path().join("state/runtime.lock"),
+        let path = dir.path().join("state/runtime.sqlite");
+        let db = open_connection(&path, &crate::diagnostics::NO_DIAGNOSTICS)?;
+        db.execute_batch(
+            "CREATE TABLE example (id INTEGER PRIMARY KEY); INSERT INTO example VALUES (1);",
         )?;
-        Ok((dir, db))
+        Ok((dir, path))
     }
 
     fn backup_artifacts(dir: &tempfile::TempDir) -> usize {
@@ -239,14 +323,18 @@ mod tests {
 
     #[test]
     fn create_verified_backup_fails_fast_when_space_insufficient() -> anyhow::Result<()> {
-        let (dir, db) = backup_fixture()?;
+        let (dir, path) = backup_fixture()?;
         let _guard = test_hooks::install(test_hooks::Faults {
             free_space_override: Some(1),
             ..Default::default()
         });
-        let error = db
-            .create_verified_backup("space-preflight")
-            .expect_err("preflight must reject the backup");
+        let error = create_verified_backup(
+            &path,
+            "space-preflight",
+            || panic!("insufficient space must prevent opening the source database"),
+            &crate::diagnostics::NO_DIAGNOSTICS,
+        )
+        .expect_err("preflight must reject the backup");
         let message = format!("{error:#}");
         assert!(message.contains("insufficient disk space"));
         assert!(message.contains("requires at least"));
@@ -257,14 +345,18 @@ mod tests {
 
     #[test]
     fn create_verified_backup_attributes_disk_full_and_cleans_up() -> anyhow::Result<()> {
-        let (dir, db) = backup_fixture()?;
+        let (dir, path) = backup_fixture()?;
         let _guard = test_hooks::install(test_hooks::Faults {
             vacuum_failure: Some(io::Error::from_raw_os_error(28)),
             ..Default::default()
         });
-        let error = db
-            .create_verified_backup("disk-full")
-            .expect_err("vacuum failure must propagate");
+        let error = create_verified_backup(
+            &path,
+            "disk-full",
+            || open_connection(&path, &crate::diagnostics::NO_DIAGNOSTICS),
+            &crate::diagnostics::NO_DIAGNOSTICS,
+        )
+        .expect_err("vacuum failure must propagate");
         let message = format!("{error:#}");
         assert!(message.contains("disk full while writing runtime database backup"));
         // The underlying ENOSPC reason stays visible instead of an opaque
@@ -276,14 +368,18 @@ mod tests {
 
     #[test]
     fn create_verified_backup_removes_artifact_when_integrity_fails() -> anyhow::Result<()> {
-        let (dir, db) = backup_fixture()?;
+        let (dir, path) = backup_fixture()?;
         let _guard = test_hooks::install(test_hooks::Faults {
             integrity_result: Some("main database is corrupt".to_string()),
             ..Default::default()
         });
-        let error = db
-            .create_verified_backup("bad-integrity")
-            .expect_err("integrity failure must propagate");
+        let error = create_verified_backup(
+            &path,
+            "bad-integrity",
+            || open_connection(&path, &crate::diagnostics::NO_DIAGNOSTICS),
+            &crate::diagnostics::NO_DIAGNOSTICS,
+        )
+        .expect_err("integrity failure must propagate");
         assert!(format!("{error:#}").contains("failed integrity check"));
         assert_eq!(backup_artifacts(&dir), 0);
         Ok(())
@@ -291,12 +387,17 @@ mod tests {
 
     #[test]
     fn create_verified_backup_succeeds_when_space_sufficient() -> anyhow::Result<()> {
-        let (dir, db) = backup_fixture()?;
+        let (dir, path) = backup_fixture()?;
         let _guard = test_hooks::install(test_hooks::Faults {
             free_space_override: Some(u64::MAX),
             ..Default::default()
         });
-        let backup = db.create_verified_backup("happy-path")?;
+        let backup = create_verified_backup(
+            &path,
+            "happy-path",
+            || open_connection(&path, &crate::diagnostics::NO_DIAGNOSTICS),
+            &crate::diagnostics::NO_DIAGNOSTICS,
+        )?;
         assert!(backup.is_file());
         assert!(backup.metadata()?.len() > 0);
         assert_eq!(backup_artifacts(&dir), 1);

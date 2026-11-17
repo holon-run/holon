@@ -76,7 +76,6 @@ pub(crate) mod task_status_metadata;
 pub(crate) mod task_stop;
 pub mod types;
 pub mod unread;
-pub(crate) mod verified_backup;
 pub mod work_item_source_revision_repair;
 pub(crate) mod work_snapshot;
 pub(crate) mod workspace_context;
@@ -168,7 +167,6 @@ use std::{
 };
 
 use anyhow::{anyhow, bail, Context, Result};
-use chrono::Utc;
 pub(crate) use holon_storage::read_block;
 use holon_storage::{blocking, reader_pool};
 use rusqlite::{Connection, OptionalExtension, Transaction};
@@ -843,74 +841,12 @@ impl RuntimeDb {
     }
 
     pub(crate) fn create_verified_backup(&self, label: &str) -> Result<PathBuf> {
-        let timestamp = Utc::now().format("%Y%m%dT%H%M%S%.9fZ");
-        let file_name = self
-            .path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("runtime.sqlite");
-        let backup_path = self
-            .path
-            .with_file_name(format!("{file_name}.{label}.{timestamp}.bak"));
-        if backup_path.exists() {
-            bail!(
-                "runtime database backup already exists: {}",
-                backup_path.display()
-            );
-        }
-        verified_backup::ensure_sufficient_backup_space(&self.path, &backup_path)?;
-        if let Err(error) = self.write_verified_backup(&backup_path) {
-            // The path was verified absent above and carries a fresh
-            // nanosecond timestamp, so any file there now is this run's
-            // unverified artifact. Pre-existing backups are never touched.
-            let _ = std::fs::remove_file(&backup_path);
-            if verified_backup::error_chain_indicates_disk_full(&error) {
-                return Err(error.context(format!(
-                    "disk full while writing runtime database backup {} (the space preflight \
-                     passed, but concurrent disk use can still exhaust space)",
-                    backup_path.display()
-                )));
-            }
-            return Err(error);
-        }
-        Ok(backup_path)
-    }
-
-    fn write_verified_backup(&self, backup_path: &Path) -> Result<()> {
-        #[cfg(test)]
-        {
-            if let Some(failure) = verified_backup::test_hooks::vacuum_failure() {
-                return Err(
-                    anyhow::Error::new(failure).context("runtime database backup vacuum failed")
-                );
-            }
-        }
-        let backup_path_text = backup_path.to_string_lossy().into_owned();
-        self.connection()?
-            .execute("VACUUM INTO ?1", [&backup_path_text])
-            .with_context(|| {
-                format!("creating runtime database backup {}", backup_path.display())
-            })?;
-        File::open(backup_path)?.sync_all()?;
-        let integrity: String = Self::verified_backup_integrity(backup_path)?;
-        if integrity != "ok" {
-            bail!(
-                "runtime database backup {} failed integrity check: {integrity}",
-                backup_path.display()
-            );
-        }
-        Ok(())
-    }
-
-    fn verified_backup_integrity(backup_path: &Path) -> Result<String> {
-        #[cfg(test)]
-        {
-            if let Some(injected) = verified_backup::test_hooks::integrity_result() {
-                return Ok(injected);
-            }
-        }
-        Ok(open_connection(backup_path)?
-            .query_row("PRAGMA integrity_check", [], |row| row.get(0))?)
+        holon_storage::maintenance::create_verified_backup(
+            self.path(),
+            label,
+            || self.connection(),
+            &storage_diagnostics::DIAGNOSTICS,
+        )
     }
 
     pub fn create_scheduler_recovery_backup(&self) -> Result<PathBuf> {
