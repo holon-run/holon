@@ -2,7 +2,7 @@
 
 ## Decision
 
-Holon supports GitHub Copilot as an optional bring-your-own-credential
+Holon exposes GitHub Copilot as an experimental bring-your-own-credential
 provider (`github-copilot@default`) that authenticates with the user's own
 GitHub OAuth app through the official GitHub device flow, and calls the
 official `api.githubcopilot.com` chat surface. Holon does not embed the
@@ -11,11 +11,11 @@ first-party client, and does not expose Copilot as a resold subscription proxy.
 
 ## Evidence
 
-- GitHub documents `api.githubcopilot.com` as the OpenAI-compatible model and
-  chat surface for third-party clients, metered against the user's own Copilot
-  subscription and AI credits. There is no completion-level API, and model
-  availability for third-party OAuth apps is governed separately from the
-  first-party Copilot surfaces.
+- Official GitHub and Microsoft implementations use `api.githubcopilot.com`
+  for OpenAI-compatible model and chat requests. This is implementation
+  evidence, not a complete public HTTP contract or an assurance that GitHub
+  admits every user-owned app. Holon does not implement a code-completion API
+  or guarantee the same models as first-party Copilot surfaces.
 - The official device flow contract lives at fixed endpoints
   (`https://github.com/login/device/code` and
   `https://github.com/login/oauth/access_token`), requires no client secret,
@@ -25,9 +25,11 @@ first-party client, and does not expose Copilot as a resold subscription proxy.
 - The Copilot chat and model endpoints live at the API root
   (`/chat/completions`, `/models`), not under a `/v1` prefix. Holon's generic
   OpenAI-compatible URL builder therefore does not apply to this provider.
-- A user-owned OAuth app token is accepted directly as the Copilot bearer.
-  The internal `copilot_internal` token exchange is a first-party IDE path
-  with no public contract for third-party apps, so Holon does not use it.
+- The official implementations send a GitHub user token directly as the
+  Copilot bearer. Holon follows that request shape, but has not verified
+  admission for a user-owned app or the `holon` integration identity.
+  The internal `copilot_internal` token exchange has no public contract for
+  third-party apps, so Holon does not use it.
 - Copilot treats the integration identity header as a routing input rather
   than decoration, and third-party OAuth app identities are reported to see a
   narrower model set than first-party surfaces. Holon sends its own identity
@@ -37,6 +39,12 @@ first-party client, and does not expose Copilot as a resold subscription proxy.
   one reaches, is server-side behaviour that Holon does not verify; the
   narrow model list reported for third-party OAuth apps is documented as a
   known condition, not as a defect Holon can fix.
+
+Sources: [GitHub device flow](https://docs.github.com/en/apps/oauth-apps/building-oauth-apps/authorizing-oauth-apps),
+[GitHub's authentication matrix](https://github.com/github/gh-aw-firewall/blob/main/docs/auth-matrix.md),
+and [VS Code's Copilot request implementation](https://github.com/microsoft/vscode/blob/main/src/vs/platform/agentHost/node/shared/copilotApiService.ts).
+The SDK's support for user-owned tokens and named partner integrations does
+not establish a general direct-HTTP API admission contract for Holon.
 
 ## Preserved boundary
 
@@ -59,4 +67,5 @@ the server rejects ends the turn with the credential error.
 Holon verifies the request shape, the credential lifecycle, and the failure
 handling with deterministic tests. It does not verify a live Copilot account,
 so the accepted identities, the reachable model set, and the subscription and
-quota behaviour remain unverified server-side conditions.
+quota behaviour remain unverified server-side conditions. Successful device
+login confirms GitHub authorization, not Copilot entitlement or model access.

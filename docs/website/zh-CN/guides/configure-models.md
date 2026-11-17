@@ -65,6 +65,27 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
    holon config set model.default "deepseek@default/deepseek-chat"
    ```
 
+#### GitHub Copilot（实验性）
+
+注册自己的 GitHub OAuth App 并开启设备流，配置它的 **client ID**，
+不要使用 App ID 或第一方编辑器的 client ID：
+
+```bash
+holon config set providers.github-copilot.auth.client_id "<your-client-id>"
+holon onboard
+```
+
+选择 `github-copilot` 并完成 OAuth 设备登录。也可以在执行登录的进程环境中
+设置 `GITHUB_COPILOT_CLIENT_ID`。Holon 将凭据和 client ID 存入自己的
+`github-copilot` profile，不读取 IDE 凭据，也不需要 client secret。
+
+此直连 provider 属于实验性支持：GitHub 登录成功不代表 Copilot 订阅权益、
+App／integration 准入或模型访问已验证。发现当前账户可用的模型后，选择返回的
+`github-copilot@default/<model-id>` 路由；Holon 不提供静态模型清单。
+请求使用真实身份 `Copilot-Integration-Id: holon`，不冒充编辑器。
+可接受的身份、模型、策略与用量限制由 GitHub 决定。删除本地凭据不会撤销
+GitHub 上的授权；停止访问时，还应在 GitHub 设置中撤销 App 授权。
+
 ### 场景三：在对话中自检实际模型与为特定 Agent 单独设模
 
 在多 Agent 协作体系中，你通常希望主 Agent 使用通用高性价比模型，而让专门的代码审查员使用高级推理模型。
