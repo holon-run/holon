@@ -611,6 +611,213 @@ describe("credential mutations", () => {
   });
 });
 
+describe("device login model discovery", () => {
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function installLoginFetch(providerId: string) {
+    const control = {
+      completedGeneration: 1,
+      reloadState: "applying",
+      lastError: undefined as string | undefined,
+      catalogFails: false,
+      credentialsFail: false,
+      configFailsAfter: undefined as number | undefined,
+      refreshes: 0,
+      configReads: 0,
+      jobReads: 0,
+    };
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/handshake")) {
+        return jsonResponse({ capabilities: OBSERVER_SYNC_CAPABILITIES });
+      }
+      if (url.endsWith("/agents/list")) return jsonResponse([]);
+      if (url.endsWith("/agents/snapshot")) {
+        return jsonResponse({
+          contract_version: 1,
+          runtime_id: "runtime-1",
+          event_log_epoch: "epoch-1",
+          visibility_scope_id: "scope-1",
+          agents: [],
+        });
+      }
+      if (url.endsWith(`/auth/${providerId}/device/start`)) {
+        return jsonResponse({ ok: true, job: { id: "login-job" }, user_code: "TEST-CODE", interval: 3 });
+      }
+      if (url.endsWith("/jobs/login-job")) {
+        control.jobReads += 1;
+        return jsonResponse({
+          job: { id: "login-job", status: "completed", result: { reload_generation: 5 } },
+        });
+      }
+      if (url.endsWith("/control/runtime/credentials")) {
+        if (control.credentialsFail) {
+          return new Response(JSON.stringify({ error: "credentials unavailable" }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return jsonResponse({ profiles: [{ profile: providerId, kind: "oauth", configured: true }] });
+      }
+      if (url.endsWith("/control/runtime/config")) {
+        control.configReads += 1;
+        if (control.configFailsAfter !== undefined && control.configReads > control.configFailsAfter) {
+          return new Response(JSON.stringify({ error: "configuration unavailable" }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return jsonResponse({
+          runtime_surface: {},
+          reload: {
+            requested_generation: 5,
+            completed_generation: control.completedGeneration,
+            state: control.reloadState,
+            last_error: control.lastError,
+          },
+        });
+      }
+      if (url.endsWith("/models/refresh")) {
+        control.refreshes += 1;
+        if (control.catalogFails) {
+          return new Response(JSON.stringify({ error: "model discovery unavailable" }), {
+            status: 500,
+            headers: { "content-type": "application/json" },
+          });
+        }
+        return jsonResponse({ available_models: [`${providerId}/gpt-4o`] });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    }));
+    return control;
+  }
+
+  it.each([
+    { providerId: "github-copilot", reloadState: "applying" },
+    { providerId: "github-copilot", reloadState: "completed" },
+    { providerId: "openai-codex", reloadState: "applying" },
+  ])("waits for the login generation: $providerId, $reloadState", async ({ providerId, reloadState }) => {
+    const previous = useRuntimeStore.getState();
+    const control = installLoginFetch(providerId);
+    control.reloadState = reloadState;
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    vi.useFakeTimers();
+    try {
+      await useRuntimeStore.getState().startCodexDeviceLogin(providerId);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(control.configReads).toBeGreaterThan(0);
+      expect(control.refreshes).toBe(0);
+
+      control.completedGeneration = 5;
+      control.reloadState = "completed";
+      await vi.advanceTimersByTimeAsync(100);
+      expect(control.refreshes).toBe(1);
+      expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
+      expect(useRuntimeStore.getState().modelCatalog.options).toEqual([
+        expect.objectContaining({ model: `${providerId}/gpt-4o` }),
+      ]);
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it.each(["failed", "applying"])("does not refresh when reload state is %s", async (reloadState) => {
+    const previous = useRuntimeStore.getState();
+    const control = installLoginFetch("github-copilot");
+    control.reloadState = reloadState;
+    control.lastError = reloadState === "failed" ? "reload rejected" : undefined;
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    vi.useFakeTimers();
+    try {
+      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(control.refreshes).toBe(0);
+      expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
+      expect(useRuntimeStore.getState().runtimeConfigError).toBe(
+        control.lastError ?? "OAuth credentials were saved, but the configuration reload has not completed.",
+      );
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it.each(["config", "credentials"])("reports %s read errors without polling a completed login again", async (failure) => {
+    const previous = useRuntimeStore.getState();
+    const control = installLoginFetch("github-copilot");
+    control.credentialsFail = failure === "credentials";
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    vi.useFakeTimers();
+    try {
+      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(control.configReads).toBeGreaterThan(0);
+      expect(control.refreshes).toBe(0);
+      if (failure === "config") {
+        control.configFailsAfter = control.configReads;
+      } else {
+        control.completedGeneration = 5;
+        control.reloadState = "completed";
+      }
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(control.jobReads).toBe(1);
+      expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
+      if (failure === "config") {
+        expect(control.refreshes).toBe(0);
+        expect(useRuntimeStore.getState().runtimeConfigError).toContain("configuration unavailable");
+        expect(useRuntimeStore.getState().credentialStoreError).toBeUndefined();
+      } else {
+        expect(control.refreshes).toBe(1);
+        expect(useRuntimeStore.getState().credentialStoreError).toContain("credentials unavailable");
+        expect(useRuntimeStore.getState().runtimeConfigError).toBeUndefined();
+      }
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("reports catalog errors without polling an already completed login again", async () => {
+    const previous = useRuntimeStore.getState();
+    const control = installLoginFetch("github-copilot");
+    control.completedGeneration = 5;
+    control.reloadState = "completed";
+    control.catalogFails = true;
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    vi.useFakeTimers();
+    try {
+      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(control.refreshes).toBe(1);
+      expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
+      expect(useRuntimeStore.getState().modelCatalogError).toContain("model discovery unavailable");
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("does not publish a login cleared while its reload was pending", async () => {
+    const previous = useRuntimeStore.getState();
+    const control = installLoginFetch("github-copilot");
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    vi.useFakeTimers();
+    try {
+      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await vi.advanceTimersByTimeAsync(3_000);
+      useRuntimeStore.getState().clearCodexDeviceLogin();
+      control.completedGeneration = 5;
+      control.reloadState = "completed";
+      await vi.advanceTimersByTimeAsync(100);
+      expect(control.refreshes).toBe(0);
+      expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("idle");
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+});
+
 describe("runtime config save ownership", () => {
   afterEach(() => {
     vi.unstubAllGlobals();

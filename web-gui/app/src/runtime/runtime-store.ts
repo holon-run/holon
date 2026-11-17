@@ -3048,23 +3048,57 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
           const job = await request.client.getJob(jobId);
           if (!isCurrentClientRequest(request)) return;
           if (job.status === "completed") {
-            const [credentialStore, runtimeConfig, fetchedModelCatalog] = await Promise.all([
+            const reloadGeneration = job.result?.reload_generation ?? 0;
+            const [credentialResult, configResult] = await Promise.allSettled([
               request.client.listCredentials(),
-              request.client.getRuntimeConfig(),
-              request.client.refreshModels(),
+              observeRuntimeConfigReload(request, reloadGeneration),
             ]);
             if (!isCurrentClientRequest(request)) return;
-            const modelCatalog = freshModelCatalog(fetchedModelCatalog);
+            const current = get().codexDeviceLogin;
+            if (current.status !== "waiting" || current.jobId !== jobId) return;
+            set({ codexDeviceLogin: { status: "completed" } });
+            if (credentialResult.status === "fulfilled") {
+              set({
+                credentialStore: credentialResult.value,
+                credentialStoreError: credentialResult.value.error,
+              });
+            } else {
+              set({
+                credentialStoreError: credentialResult.reason instanceof Error
+                  ? credentialResult.reason.message
+                  : String(credentialResult.reason),
+              });
+            }
+            if (configResult.status === "rejected") {
+              set({
+                runtimeConfigError: configResult.reason instanceof Error
+                  ? configResult.reason.message
+                  : String(configResult.reason),
+              });
+              return;
+            }
+            const runtimeConfig = configResult.value;
+            const reload = runtimeConfig.reload;
+            const reloadError = runtimeConfig.error ?? (
+              reload && (reload.state === "failed" || reload.completedGeneration < reloadGeneration)
+                ? reload.lastError ?? "OAuth credentials were saved, but the configuration reload has not completed."
+                : undefined
+            );
             set({
-              codexDeviceLogin: { status: "completed" },
-              credentialStore,
-              credentialStoreError: undefined,
               runtimeConfig,
-              runtimeConfigError: runtimeConfig.error,
-              modelCatalog,
-              modelCatalogError: modelCatalog.error,
+              runtimeConfigError: reloadError,
             });
-            persistModelCatalog(runtimeConnectionConfig, modelCatalog);
+            if (reloadError) return;
+            try {
+              const modelCatalog = freshModelCatalog(await request.client.refreshModels());
+              if (!isCurrentClientRequest(request)) return;
+              set({ modelCatalog, modelCatalogError: modelCatalog.error });
+              persistModelCatalog(runtimeConnectionConfig, modelCatalog);
+            } catch (error) {
+              if (isCurrentClientRequest(request)) {
+                set({ modelCatalogError: error instanceof Error ? error.message : String(error) });
+              }
+            }
             return;
           }
           if (job.status === "failed") {

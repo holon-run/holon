@@ -65,7 +65,14 @@ replays the request once after an authentication failure, and a refresh that
 the server rejects ends the turn with the credential error.
 
 Holon verifies the request shape, the credential lifecycle, and the failure
-handling with deterministic tests. It does not verify a live Copilot account,
-so the accepted identities, the reachable model set, and the subscription and
-quota behaviour remain unverified server-side conditions. Successful device
-login confirms GitHub authorization, not Copilot entitlement or model access.
+handling with deterministic tests. After device login, the web client waits for
+the credential reload generation before refreshing the discovered model list.
+Reload errors and model-catalog refresh HTTP errors remain visible without
+restarting the completed authorization poll. Individual provider discovery
+failures still follow the model-catalog endpoint's existing error handling.
+
+A limited live check with a user-owned OAuth app completed device authorization
+and retrieved `/models` using Holon's integration identity. This verifies only
+the tested app/account combination, not general Copilot entitlement, chat or
+tool-call access, subscription quotas, or a guaranteed model set. Successful
+device login alone confirms GitHub authorization, not Copilot model access.

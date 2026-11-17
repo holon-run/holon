@@ -716,6 +716,7 @@ interface JobDto {
   phase?: string;
   summary?: string;
   error?: string | null;
+  result?: { reload_generation?: number } | null;
 }
 
 interface WorkspaceDirectoryEntryDto {
