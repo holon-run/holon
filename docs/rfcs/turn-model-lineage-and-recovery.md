@@ -405,6 +405,17 @@ or absence of an authoritative deadline is an explicit stop, not an invented
 retain their failure floor; repeated parking within an epoch does not restart
 that floor.
 
+Candidate exhaustion is distinct from a missing availability deadline. If all
+effective candidates were attempted and the current epoch contains a settled
+recovery failure with no unresolved requests or successful settlement, expiry of
+the scope cooldowns does not terminate recovery: selection parks using the
+existing failed-epoch floor. Excluded candidates and cumulative request counts
+are not evidence of exhaustion. Zero-send epochs, unknown dispatch outcomes,
+and canonical execution denials cannot use this failed-epoch exit.
+Selection runs after canonical eligibility planning but before the execution
+claim commits, so the settlement check does not require the planned attempt to
+already exist. The atomic before-send gate still validates execution authority.
+
 Runtime model requests carry an explicit dispatch guard through transport
 lowering. Local prompt, payload, header, and HTTP-request construction complete
 before the guard charges IO; SDK retries and redirects cannot silently bypass

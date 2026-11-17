@@ -772,6 +772,42 @@ impl RuntimeDb {
         })
     }
 
+    /// Distinguish settled recovery failure from unknown IO and zero-send denial.
+    pub fn provider_recovery_epoch_has_settled_failure(
+        &self,
+        expected: &ProviderRecoveryEpisode,
+    ) -> Result<bool> {
+        self.transaction(|tx| {
+            let episode =
+                read_episode(tx, &expected.key)?.context("provider recovery episode missing")?;
+            ensure!(
+                episode.epoch == expected.epoch && episode.revision == expected.revision,
+                "stale provider recovery episode"
+            );
+            if episode.state != ProviderRecoveryBudgetState::Ready || episode.request_count == 0 {
+                return Ok(false);
+            }
+            // Selection precedes the canonical claim, so its planned attempt
+            // need not exist yet. Dispatch authority is checked before IO.
+            // Attempted scopes also include charged requests with unknown IO.
+            // Only a fully settled failed epoch may supply a missing deadline.
+            Ok(tx.query_row(
+                "SELECT
+                    EXISTS(SELECT 1 FROM provider_recovery_requests
+                        WHERE episode_key = ?1 AND epoch = ?2
+                          AND settled_at IS NOT NULL
+                          AND outcome IN ('network_failure', 'rate_limited', 'payment_required',
+                                          'auth_failure', 'contract_failure'))
+                    AND NOT EXISTS(SELECT 1 FROM provider_recovery_requests
+                        WHERE episode_key = ?1 AND epoch = ?2
+                          AND (settled_at IS NULL OR outcome IS NULL
+                               OR outcome = 'available_response'))",
+                params![episode.key, episode.epoch],
+                |row| row.get(0),
+            )?)
+        })
+    }
+
     /// Screen candidates without reserving admission or changing recovery budgets.
     pub fn provider_recovery_candidate_attempted(
         &self,
