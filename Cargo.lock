@@ -1539,6 +1539,7 @@ dependencies = [
  "holon-config",
  "holon-context",
  "holon-domain",
+ "holon-github",
  "holon-memory-index",
  "holon-model-catalog",
  "holon-observability",
@@ -1652,6 +1653,25 @@ dependencies = [
  "sha2",
  "thiserror 2.0.18",
  "unicode-casefold",
+ "url",
+ "uuid",
+]
+
+[[package]]
+name = "holon-github"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "flate2",
+ "holon-domain",
+ "libc",
+ "reqwest",
+ "serde_json",
+ "tar",
+ "tempfile",
+ "tokio",
+ "tracing",
  "uuid",
 ]
 

@@ -23,6 +23,8 @@ pub mod agent_records;
 mod audit;
 mod brief;
 mod context_config;
+#[cfg(feature = "error-sanitization")]
+mod error_sanitization;
 mod image_contract;
 mod input;
 mod instructions;
@@ -57,6 +59,8 @@ pub use agent_records::*;
 pub use audit::*;
 pub use brief::*;
 pub use context_config::{ContextBudgetOverrides, ContextConfig};
+#[cfg(feature = "error-sanitization")]
+pub use error_sanitization::sanitize_runtime_error_text;
 pub use input::*;
 pub use instructions::*;
 pub use memory::*;

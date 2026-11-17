@@ -30,7 +30,7 @@ impl fmt::Debug for GitHubAuth {
 }
 
 impl GitHubAuth {
-    pub(crate) fn anonymous() -> Self {
+    pub fn anonymous() -> Self {
         Self {
             token: None,
             source: AuthSource::Anonymous,
@@ -351,7 +351,7 @@ impl Policy {
         } else {
             text.into_owned()
         };
-        let diagnostic: String = crate::runtime_error::sanitize_runtime_error_text(&text)
+        let diagnostic: String = holon_domain::sanitize_runtime_error_text(&text)
             .chars()
             .take(BODY_LIMIT)
             .collect();
@@ -474,10 +474,19 @@ fn map_api_url(api_base: &Url, url: &str) -> anyhow::Result<String> {
     Ok(target.into())
 }
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests {
+    use std::sync::{Mutex, MutexGuard};
+
     use super::*;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn lock_env() -> MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     #[test]
     fn blocking_api_url_only_maps_github_api_origin() {
@@ -626,7 +635,7 @@ mod tests {
 
     #[test]
     fn configured_environment_priority_and_debug() {
-        let _lock = crate::test_env::lock_env();
+        let _lock = lock_env();
         let key = "HOLON_GITHUB_UNIT_TEST_TOKEN";
         let old = std::env::var_os(key);
         std::env::set_var(key, "env-secret");
@@ -655,7 +664,7 @@ mod tests {
     #[test]
     fn fake_gh_fixed_arguments_failures_and_timeout_reaping() {
         use std::os::unix::fs::PermissionsExt;
-        let _lock = crate::test_env::lock_env();
+        let _lock = lock_env();
         let directory = tempfile::tempdir().unwrap();
         let executable = directory.path().join("gh");
         let old_path = std::env::var_os("PATH");
