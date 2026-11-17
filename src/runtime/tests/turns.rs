@@ -3487,7 +3487,7 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
 
     let mut prompt = test_effective_prompt();
     prompt.system_sections = vec![PromptSection {
-        layout: holon_context::PromptLayout::ScopedSuffix,
+        layout: holon_context::PromptLayout::SharedPrefix,
         name: "stable_system".into(),
         id: "stable_system".into(),
         content: "Keep runtime boundaries explicit.".into(),
@@ -3542,6 +3542,15 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
             .iter()
             .all(|request| serde_json::to_value(&request.tools).unwrap() == first_tool_schema),
         "resolved route tool order and schema must remain stable across rounds"
+    );
+    let initial_system_blocks = &requests[0].prompt_frame.system_blocks;
+    assert_eq!(initial_system_blocks.len(), 1);
+    assert!(initial_system_blocks[0].cache_breakpoint);
+    assert!(
+        requests
+            .iter()
+            .all(|request| &request.prompt_frame.system_blocks == initial_system_blocks),
+        "shared system bytes and cache markers must survive every continuation"
     );
     let cache = continuation_request
         .prompt_frame
