@@ -165,6 +165,7 @@ pub(in crate::runtime) fn dispatch_rejection_work_item_outcome(
 /// between attempts comes from the queued-available no-progress policy.
 pub(in crate::runtime) const PROVIDER_DISPATCH_REENTRY_LIMIT: usize = 3;
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod reentry_tests {
     use super::*;
