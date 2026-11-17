@@ -69,10 +69,28 @@ where
     T: DeserializeOwned,
     F: FnOnce() -> String,
 {
+    let (args, coercion) = prepare_tool_args(tool_name, input, recovery_hint)?;
+    if let Some(coercion) = coercion {
+        record_tool_input_coercion(coercion);
+    }
+    Ok(args)
+}
+
+/// Pure parsing/recovery, also used by bounded batch shape inspection.
+/// Only the execution-facing wrapper records a successful envelope recovery.
+pub(crate) fn prepare_tool_args<T, F>(
+    tool_name: &str,
+    input: &Value,
+    recovery_hint: F,
+) -> Result<(T, Option<ToolInputCoercion>)>
+where
+    T: DeserializeOwned,
+    F: FnOnce() -> String,
+{
     let coercion = coerce_string_scalars_with_diagnostics(input);
     let input = coercion.value.as_ref().unwrap_or(input);
     let first_error = match serde_json::from_value(input.clone()) {
-        Ok(args) => return Ok(args),
+        Ok(args) => return Ok((args, None)),
         Err(error) => error,
     };
 
@@ -87,8 +105,7 @@ where
                 let ToolInputCoercion::UnwrapToolInputEnvelope { envelope_key, .. } = &coercion;
                 if envelope_key == unknown_field {
                     if let Ok(args) = serde_json::from_value(candidate) {
-                        record_tool_input_coercion(coercion);
-                        return Ok(args);
+                        return Ok((args, Some(coercion)));
                     }
                 }
             }
