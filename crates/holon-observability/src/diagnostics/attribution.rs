@@ -114,6 +114,28 @@ stages! {
     INPUT_PREPARE_SCHEDULING => "db.input.prepare.scheduling",
     INPUT_PREPARE_RECORDS => "db.input.prepare.records",
     INPUT_PREPARE_CURRENT => "db.input.prepare.current",
+    INPUT_PREPARE_SOURCE_OWNER_CHANGE => "db.input.prepare.source.owner_change",
+    INPUT_PREPARE_SOURCE_VALIDATED_RECOVERY => "db.input.prepare.source.validated_recovery",
+    INPUT_PREPARE_SOURCE_CONTEXT => "db.input.prepare.source.context",
+    INPUT_PREPARE_SOURCE_GENERIC => "db.input.prepare.source.generic",
+    INPUT_PREPARE_CLOSURE_ROOTS => "db.input.prepare.closure.roots",
+    INPUT_PREPARE_CLOSURE_RECORDS => "db.input.prepare.closure.records",
+    INPUT_PREPARE_CLOSURE_EDGES => "db.input.prepare.closure.edges",
+    INPUT_PREPARE_CLOSURE_DUP_EDGES => "db.input.prepare.closure.duplicate_edges",
+    INPUT_PREPARE_FAMILY_MESSAGE => "db.input.prepare.family.message",
+    INPUT_PREPARE_FAMILY_TURN => "db.input.prepare.family.turn",
+    INPUT_PREPARE_FAMILY_TOOL_EXECUTION => "db.input.prepare.family.tool_execution",
+    INPUT_PREPARE_FAMILY_BRIEF => "db.input.prepare.family.brief",
+    INPUT_PREPARE_FAMILY_TRANSCRIPT => "db.input.prepare.family.transcript",
+    INPUT_PREPARE_FAMILY_ATTEMPT => "db.input.prepare.family.attempt",
+    INPUT_PREPARE_FAMILY_OUTCOME => "db.input.prepare.family.outcome",
+    INPUT_PREPARE_FAMILY_WORK_EXECUTION => "db.input.prepare.family.work_execution",
+    INPUT_PREPARE_ALIAS_READ => "db.input.prepare.op.alias_read",
+    INPUT_PREPARE_FINGERPRINT_READ => "db.input.prepare.op.fingerprint_read",
+    INPUT_PREPARE_DECODE => "db.input.prepare.op.decode",
+    INPUT_PREPARE_HASH => "db.input.prepare.op.hash",
+    INPUT_PREPARE_SIZING => "db.input.prepare.op.sizing",
+    INPUT_PREPARE_QUALIFY_REREAD => "db.input.prepare.op.qualification_reread",
     CURRENT_QUERY_PREPARE => "db.current.query.prepare",
     TASK_RESULT_RECOVERY_QUEUE => "db.task_result.recovery.queue_observation",
     QUEUE_INPUT_PREFLIGHT => "db.queue.input.preflight",
@@ -207,6 +229,50 @@ mod tests {
                 .filter(|stage| stage.name.starts_with("workspace.state."))
                 .count(),
             stages.len()
+        );
+    }
+
+    #[test]
+    fn input_prepare_attribution_stages_are_fixed_and_unique() {
+        let stages = snapshot()
+            .into_iter()
+            .filter(|stage| stage.name.starts_with("db.input.prepare."))
+            .map(|stage| stage.name)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            stages,
+            [
+                "db.input.prepare.queue",
+                "db.input.prepare.episodes",
+                "db.input.prepare.scheduling",
+                "db.input.prepare.records",
+                "db.input.prepare.current",
+                "db.input.prepare.source.owner_change",
+                "db.input.prepare.source.validated_recovery",
+                "db.input.prepare.source.context",
+                "db.input.prepare.source.generic",
+                "db.input.prepare.closure.roots",
+                "db.input.prepare.closure.records",
+                "db.input.prepare.closure.edges",
+                "db.input.prepare.closure.duplicate_edges",
+                "db.input.prepare.family.message",
+                "db.input.prepare.family.turn",
+                "db.input.prepare.family.tool_execution",
+                "db.input.prepare.family.brief",
+                "db.input.prepare.family.transcript",
+                "db.input.prepare.family.attempt",
+                "db.input.prepare.family.outcome",
+                "db.input.prepare.family.work_execution",
+                "db.input.prepare.op.alias_read",
+                "db.input.prepare.op.fingerprint_read",
+                "db.input.prepare.op.decode",
+                "db.input.prepare.op.hash",
+                "db.input.prepare.op.sizing",
+                "db.input.prepare.op.qualification_reread",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
         );
     }
 

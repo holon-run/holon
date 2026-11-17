@@ -1232,7 +1232,15 @@ pub(crate) fn prepare_input_evidence_snapshot_tx(
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_tx(tx, scope, request, true, false, None)
+    snapshot_tx(
+        tx,
+        scope,
+        request,
+        true,
+        false,
+        None,
+        prepare_attribution::Source::OwnerChange,
+    )
 }
 /// A fresh coherent read transaction, requiring previously prepared membership.
 #[cfg(test)]
@@ -1241,7 +1249,15 @@ pub(crate) fn load_input_evidence_snapshot_tx(
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_tx(tx, scope, request, false, false, None)
+    snapshot_tx(
+        tx,
+        scope,
+        request,
+        false,
+        false,
+        None,
+        prepare_attribution::Source::OwnerChange,
+    )
 }
 /// Only a positive original receipt resolver may prepare a Deleting scope.
 /// This reads existing qualification; it cannot adopt an unrelated incarnation.
@@ -1251,7 +1267,15 @@ pub(crate) fn prepare_original_input_recovery_snapshot_tx(
     scope: &InputEvidenceScope,
     request: &InputEvidenceLoadRequest,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
-    snapshot_tx(tx, scope, request, true, true, None)
+    snapshot_tx(
+        tx,
+        scope,
+        request,
+        true,
+        true,
+        None,
+        prepare_attribution::Source::ValidatedRecovery,
+    )
 }
 pub(crate) fn prepare_input_evidence_with_scope_read_tx(
     tx: &Transaction<'_>,
@@ -1260,6 +1284,11 @@ pub(crate) fn prepare_input_evidence_with_scope_read_tx(
     original_recovery: bool,
     read: ContextScopeRead<'_>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
+    let source = if original_recovery {
+        prepare_attribution::Source::ValidatedRecovery
+    } else {
+        prepare_attribution::Source::Generic
+    };
     snapshot_request_tx(
         tx,
         scope,
@@ -1267,6 +1296,7 @@ pub(crate) fn prepare_input_evidence_with_scope_read_tx(
         QualificationMode::Write,
         original_recovery,
         Some(read),
+        source,
     )
 }
 pub(crate) fn load_input_evidence_with_scope_read_tx(
@@ -1282,6 +1312,7 @@ pub(crate) fn load_input_evidence_with_scope_read_tx(
         QualificationMode::Read,
         false,
         Some(read),
+        prepare_attribution::Source::Generic,
     )
 }
 
@@ -1292,6 +1323,11 @@ pub(crate) fn load_or_plan_input_qualification_with_scope_read_tx(
     original_recovery: bool,
     read: ContextScopeRead<'_>,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
+    let source = if original_recovery {
+        prepare_attribution::Source::ValidatedRecovery
+    } else {
+        prepare_attribution::Source::Generic
+    };
     snapshot_request_tx(
         tx,
         scope,
@@ -1299,6 +1335,7 @@ pub(crate) fn load_or_plan_input_qualification_with_scope_read_tx(
         QualificationMode::Plan,
         original_recovery,
         Some(read),
+        source,
     )
 }
 
@@ -1309,6 +1346,7 @@ fn snapshot_tx(
     prepare: bool,
     original_recovery: bool,
     scope_read: Option<ContextScopeRead<'_>>,
+    source: prepare_attribution::Source,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
     snapshot_request_tx(
         tx,
@@ -1321,6 +1359,7 @@ fn snapshot_tx(
         },
         original_recovery,
         scope_read,
+        source,
     )
 }
 fn snapshot_request_tx(
@@ -1330,6 +1369,7 @@ fn snapshot_request_tx(
     qualification: QualificationMode,
     original_recovery: bool,
     scope_read: Option<ContextScopeRead<'_>>,
+    source: prepare_attribution::Source,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
     let acquisition = request
         .query
@@ -1351,6 +1391,7 @@ fn snapshot_request_tx(
                 original_recovery,
                 acquisition.clone(),
                 scope_read,
+                source,
             )
         })
     } else {
@@ -1362,6 +1403,7 @@ fn snapshot_request_tx(
             original_recovery,
             None,
             scope_read,
+            source,
         )
     }
 }
@@ -1373,6 +1415,7 @@ fn snapshot_inner_tx(
     original_recovery: bool,
     acquisition: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
     scope_read: Option<ContextScopeRead<'_>>,
+    source: prepare_attribution::Source,
 ) -> Result<InputEvidenceBootstrapSnapshot> {
     let decoded = if scope_read.is_none() {
         Some(ContextDurableRead::new(tx, &scope.agent_id).scope_facts()?)
@@ -1407,6 +1450,7 @@ fn snapshot_inner_tx(
         acquisition,
         scope_read.as_ref(),
         true,
+        source,
     )?;
     let facts = match scope_read {
         Some(read) => read.into_facts(tx, scope)?,
@@ -1452,6 +1496,7 @@ pub(crate) fn prepare_named_input_evidence_tx(
         None,
         Some(read),
         false,
+        prepare_attribution::Source::Context,
     )
 }
 
@@ -1549,7 +1594,7 @@ fn observe_input_qualification_tx(
         Some(payload_on(tx, &scope.agent_id, key)?.context("prepared evidence disappeared")?)
     };
     let actual_digest = match payload.as_ref() {
-        Some(payload) => bytes_digest(payload.as_bytes()),
+        Some(payload) => prepare_attribution::hash(payload.as_bytes()),
         None => normalized_payload_digest(
             fingerprint
                 .content_hash
@@ -1647,8 +1692,11 @@ fn prepare_input_records_tx(
     acquisition: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
     scope_read: Option<&ContextScopeRead<'_>>,
     include_live_protocol: bool,
+    source: prepare_attribution::Source,
 ) -> Result<ResidentInputEvidence> {
     let mut timer = crate::diagnostics::attribution::INPUT_PREPARE_RECORDS.start();
+    let mut source_timer = source.stage().start();
+    prepare_attribution::begin_run(source.label());
     let binding = binding_on(tx, scope)?;
     let query = request
         .query
@@ -1755,6 +1803,10 @@ fn prepare_input_records_tx(
     mandatory_roots.extend(execution_bodies.iter().cloned());
     selected.extend(execution_bodies);
     use crate::runtime::completion_sources::{completion_references, CompletionInputPath};
+    // Attribution roots: the strict selection before the closure walk.
+    let attribution_roots = selected.len() as u64;
+    let mut attribution_edges = 0u64;
+    let mut attribution_duplicate_edges = 0u64;
     let mut pending = VecDeque::from_iter(selected.iter().cloned().map(|key| {
         let path = if key.family == Family::Brief
             && request.selected_completion_brief_ids.contains(&key.id)
@@ -1795,6 +1847,7 @@ fn prepare_input_records_tx(
     let mut expanded_provider_sources = BTreeSet::new();
     let mut bytes = 0usize;
     loop {
+        attribution_edges = attribution_edges.saturating_add(1);
         let Some((key, depth, path)) = pending.pop_front() else {
             for window in windows
                 .iter_mut()
@@ -1837,6 +1890,7 @@ fn prepare_input_records_tx(
             continue;
         };
         if !expanded_paths.insert((key.clone(), path.clone())) {
+            attribution_duplicate_edges = attribution_duplicate_edges.saturating_add(1);
             continue;
         }
 
@@ -1911,8 +1965,9 @@ fn prepare_input_records_tx(
             fingerprint,
             qualification != QualificationMode::Read,
         )?;
-        let revision = if observed.needs_qualification && qualification == QualificationMode::Write
-        {
+        let attribution_backfilled =
+            observed.needs_qualification && qualification == QualificationMode::Write;
+        let revision = if attribution_backfilled {
             observed.qualify_tx(tx, scope, &binding, &key)?
         } else {
             if observed.needs_qualification {
@@ -1928,6 +1983,15 @@ fn prepare_input_records_tx(
             ..
         } = observed;
         let record = prepare_record_on(tx, &scope.agent_id, &key, canonical)?;
+        if attribution_backfilled {
+            // Body load that immediately follows an in-invocation
+            // qualification backfill.
+            prepare_attribution::count(
+                &crate::diagnostics::attribution::INPUT_PREPARE_QUALIFY_REREAD,
+                1,
+            );
+            prepare_attribution::record_qualification_backfill();
+        }
         let qualified = Arc::new(qualified(
             scope,
             key.clone(),
@@ -2187,6 +2251,32 @@ fn prepare_input_records_tx(
         }
     }
     timer.rows(records.len());
+    source_timer.rows(records.len());
+    prepare_attribution::count(
+        &crate::diagnostics::attribution::INPUT_PREPARE_CLOSURE_ROOTS,
+        attribution_roots,
+    );
+    prepare_attribution::count(
+        &crate::diagnostics::attribution::INPUT_PREPARE_CLOSURE_RECORDS,
+        records.len() as u64,
+    );
+    prepare_attribution::count(
+        &crate::diagnostics::attribution::INPUT_PREPARE_CLOSURE_EDGES,
+        attribution_edges,
+    );
+    prepare_attribution::count(
+        &crate::diagnostics::attribution::INPUT_PREPARE_CLOSURE_DUP_EDGES,
+        attribution_duplicate_edges,
+    );
+    prepare_attribution::finish_run(prepare_attribution::RunStats {
+        source: source.label(),
+        roots: attribution_roots,
+        records: records.len() as u64,
+        edges: attribution_edges,
+        duplicate_edges: attribution_duplicate_edges,
+        resident_bytes: bytes as u64,
+        ..Default::default()
+    });
     InputQualificationPlan::defer(scope, &mut missing_qualifications)?;
     let (query, query_guards) = query
         .map(|query| (Some(query.coverage), query.guards))
@@ -2317,6 +2407,195 @@ fn recovery_source_children_tx(
     ))
 }
 
+/// Metadata-only attribution for Input reference-closure preparation.
+/// Counters are content-free (counts, bytes, nanoseconds); stage timers
+/// follow the shared attribution contract (attempts include errors).
+mod prepare_attribution {
+    use super::Family;
+    use crate::diagnostics::attribution::{self, Stage};
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+    use std::time::Duration;
+
+    /// Entry surface that triggered a preparation pass.
+    #[derive(Clone, Copy)]
+    pub(super) enum Source {
+        OwnerChange,
+        ValidatedRecovery,
+        Context,
+        Generic,
+    }
+
+    impl Source {
+        pub(super) fn stage(self) -> &'static Stage {
+            match self {
+                Source::OwnerChange => &attribution::INPUT_PREPARE_SOURCE_OWNER_CHANGE,
+                Source::ValidatedRecovery => &attribution::INPUT_PREPARE_SOURCE_VALIDATED_RECOVERY,
+                Source::Context => &attribution::INPUT_PREPARE_SOURCE_CONTEXT,
+                Source::Generic => &attribution::INPUT_PREPARE_SOURCE_GENERIC,
+            }
+        }
+    }
+
+    pub(super) fn family_stage(family: Family) -> &'static Stage {
+        match family {
+            Family::Message => &attribution::INPUT_PREPARE_FAMILY_MESSAGE,
+            Family::Turn => &attribution::INPUT_PREPARE_FAMILY_TURN,
+            Family::ToolExecution => &attribution::INPUT_PREPARE_FAMILY_TOOL_EXECUTION,
+            Family::Brief => &attribution::INPUT_PREPARE_FAMILY_BRIEF,
+            Family::Transcript => &attribution::INPUT_PREPARE_FAMILY_TRANSCRIPT,
+            Family::Attempt => &attribution::INPUT_PREPARE_FAMILY_ATTEMPT,
+            Family::Outcome => &attribution::INPUT_PREPARE_FAMILY_OUTCOME,
+            Family::WorkExecution => &attribution::INPUT_PREPARE_FAMILY_WORK_EXECUTION,
+        }
+    }
+
+    /// Count a metadata-only value without a timing dimension.
+    pub(super) fn count(stage: &'static Stage, value: u64) {
+        stage.record(Duration::ZERO, value);
+    }
+
+    /// One preparation run's metadata-only summary. Content-free: counts,
+    /// bytes, and family/source labels only.
+    #[derive(Debug, Default, Clone)]
+    pub(super) struct RunStats {
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(super) source: &'static str,
+        pub(super) roots: u64,
+        pub(super) records: u64,
+        pub(super) edges: u64,
+        pub(super) duplicate_edges: u64,
+        pub(super) qualification_backfills: u64,
+        pub(super) resident_bytes: u64,
+        pub(super) family_records: BTreeMap<&'static str, u64>,
+        pub(super) family_payload_bytes: BTreeMap<&'static str, u64>,
+    }
+
+    impl RunStats {
+        /// Family holding the strictly largest payload bytes; `None` when no
+        /// family loaded or the evidence ties (the report says unknown).
+        #[cfg_attr(not(test), allow(dead_code))]
+        pub(super) fn dominant_family(&self) -> Option<&'static str> {
+            let mut best_bytes = 0u64;
+            let mut best: Option<&'static str> = None;
+            let mut tie = false;
+            for (family, bytes) in &self.family_payload_bytes {
+                let bytes = *bytes;
+                if bytes == 0 {
+                    continue;
+                }
+                match best {
+                    Some(_) if bytes > best_bytes => {
+                        best_bytes = bytes;
+                        best = Some(*family);
+                        tie = false;
+                    }
+                    Some(_) if bytes == best_bytes => tie = true,
+                    None => {
+                        best_bytes = bytes;
+                        best = Some(*family);
+                    }
+                    Some(_) => {}
+                }
+            }
+            if tie {
+                None
+            } else {
+                best
+            }
+        }
+    }
+
+    impl Source {
+        pub(super) fn label(self) -> &'static str {
+            match self {
+                Source::OwnerChange => "owner_change",
+                Source::ValidatedRecovery => "validated_recovery",
+                Source::Context => "context",
+                Source::Generic => "generic",
+            }
+        }
+    }
+
+    pub(super) fn family_label(family: Family) -> &'static str {
+        match family {
+            Family::Message => "message",
+            Family::Turn => "turn",
+            Family::ToolExecution => "tool_execution",
+            Family::Brief => "brief",
+            Family::Transcript => "transcript",
+            Family::Attempt => "attempt",
+            Family::Outcome => "outcome",
+            Family::WorkExecution => "work_execution",
+        }
+    }
+
+    thread_local! {
+        static CURRENT_RUN: RefCell<Option<RunStats>> = const { RefCell::new(None) };
+        static LAST_RUN: RefCell<Option<RunStats>> = const { RefCell::new(None) };
+    }
+
+    /// Begin a run; a previous unfinished (failed) run is discarded.
+    pub(super) fn begin_run(source: &'static str) {
+        CURRENT_RUN.with(|slot| {
+            *slot.borrow_mut() = Some(RunStats {
+                source,
+                ..RunStats::default()
+            });
+        });
+    }
+
+    /// Publish the finished run, keeping what CURRENT_RUN accumulated.
+    /// Walk totals come from the caller; per-record observations already
+    /// accumulated in CURRENT_RUN win over the fallback literal.
+    pub(super) fn finish_run(stats: RunStats) {
+        let finished = match CURRENT_RUN.with(|slot| slot.borrow_mut().take()) {
+            Some(mut run) => {
+                run.roots = stats.roots;
+                run.records = stats.records;
+                run.edges = stats.edges;
+                run.duplicate_edges = stats.duplicate_edges;
+                run.resident_bytes = stats.resident_bytes;
+                run
+            }
+            None => stats,
+        };
+        LAST_RUN.with(|slot| *slot.borrow_mut() = Some(finished));
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn take_last_run() -> Option<RunStats> {
+        LAST_RUN.with(|slot| slot.borrow_mut().take())
+    }
+
+    pub(super) fn record_family_load(family: Family, payload_bytes: u64) {
+        CURRENT_RUN.with(|slot| {
+            if let Some(run) = slot.borrow_mut().as_mut() {
+                *run.family_records.entry(family_label(family)).or_default() += 1;
+                *run.family_payload_bytes
+                    .entry(family_label(family))
+                    .or_default() += payload_bytes;
+            }
+        });
+    }
+
+    pub(super) fn record_qualification_backfill() {
+        CURRENT_RUN.with(|slot| {
+            if let Some(run) = slot.borrow_mut().as_mut() {
+                run.qualification_backfills += 1;
+            }
+        });
+    }
+
+    /// Time one reader-side digest computation. `bytes_digest` stays the
+    /// shared primitive; only validation/read paths route through here.
+    pub(super) fn hash(bytes: &[u8]) -> String {
+        let mut timer = attribution::INPUT_PREPARE_HASH.start();
+        timer.rows(bytes.len());
+        super::bytes_digest(bytes)
+    }
+}
+
 fn qualified(
     scope: &InputEvidenceScope,
     key: Key,
@@ -2326,6 +2605,7 @@ fn qualified(
     record: PreparedInputEvidence,
     attempt_turn_proof: Option<AttemptTurnProof>,
 ) -> Result<QualifiedInputEvidence> {
+    let mut sizing_timer = crate::diagnostics::attribution::INPUT_PREPARE_SIZING.start();
     ensure!(
         record.key() == key,
         "prepared evidence key projection mismatch"
@@ -2338,6 +2618,7 @@ fn qualified(
     let resident_bytes = serde_json::to_vec(&record)?
         .len()
         .saturating_add(serde_json::to_vec(&attempt_turn_keys)?.len());
+    sizing_timer.rows(resident_bytes);
 
     if let PreparedInputEvidence::Transcript(entry) = &record {
         ensure!(
@@ -2489,7 +2770,7 @@ fn require_eligible(
             |row| row.get(0),
         )?;
         let payload = bounded_body_payload(tx, &agent, key, current)?;
-        let digest = bytes_digest(payload.as_bytes());
+        let digest = prepare_attribution::hash(payload.as_bytes());
         legacy_brief::validate_payload_digest(tx, &agent, key, current, &payload, &digest)?;
         if requires_frozen_body_digest(key, current) {
             validate_fixed_body_digest(key, &digests, &digest)?;
@@ -2503,7 +2784,7 @@ fn bounded_body_digest(
     key: &Key,
     fingerprint: &Fingerprint,
 ) -> Result<String> {
-    Ok(bytes_digest(
+    Ok(prepare_attribution::hash(
         bounded_body_payload(tx, agent, key, fingerprint)?.as_bytes(),
     ))
 }
@@ -2523,7 +2804,7 @@ fn validate_alias_body(
     expected: Option<&str>,
 ) -> Result<()> {
     let payload = bounded_body_payload(tx, agent, key, fingerprint)?;
-    let actual = bytes_digest(payload.as_bytes());
+    let actual = prepare_attribution::hash(payload.as_bytes());
     legacy_brief::validate_payload_digest(tx, agent, key, fingerprint, &payload, &actual)?;
     if expected != Some(actual.as_str()) {
         return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
@@ -2561,7 +2842,7 @@ pub(super) fn validate_completion_payload_hash_tx(
         key,
         &fingerprint,
         payload,
-        &bytes_digest(payload.as_bytes()),
+        &prepare_attribution::hash(payload.as_bytes()),
     )
     .context("completion source canonical hash differs from its body")
 }
@@ -2609,8 +2890,9 @@ pub(crate) fn optional_turn_present_tx(
 }
 
 fn alias_on(tx: &Transaction<'_>, scope: &InputEvidenceScope, key: &Key) -> Result<Option<Alias>> {
+    let mut timer = crate::diagnostics::attribution::INPUT_PREPARE_ALIAS_READ.start();
     let mut statement = tx.prepare_cached("SELECT revision,content_digest,fingerprint_json,availability,attempt_turn_proof_json FROM input_evidence_current WHERE agent_id=?1 AND identity_incarnation=?2 AND family=?3 AND record_id=?4")?;
-    statement
+    let alias: Result<Option<Alias>> = statement
         .query_row(
             params![
                 scope.agent_id,
@@ -2638,7 +2920,11 @@ fn alias_on(tx: &Transaction<'_>, scope: &InputEvidenceScope, key: &Key) -> Resu
                 attempt_turn_proof: proof.map(|json| serde_json::from_str(&json)).transpose()?,
             })
         })
-        .transpose()
+        .transpose();
+    if matches!(&alias, Ok(Some(_))) {
+        timer.rows(1);
+    }
+    alias
 }
 fn upsert_alias_tx(
     tx: &Transaction<'_>,
@@ -2750,7 +3036,7 @@ pub(crate) fn qualified_source_body_matches_tx(
     let Some(row) = rows.next()? else {
         return Ok(false);
     };
-    let actual = bytes_digest(row.get_ref(0)?.as_str()?.as_bytes());
+    let actual = prepare_attribution::hash(row.get_ref(0)?.as_str()?.as_bytes());
     let hash = row.get_ref(1)?;
     let canonical = match hash {
         rusqlite::types::ValueRef::Null => true,
@@ -2798,7 +3084,7 @@ pub(crate) fn qualified_tool_body_on(
     crate::diagnostics::resource_io::admit_json_payload(payload)?;
     crate::diagnostics::resource_io::charge_owned_metadata(128, 2)?;
     ensure!(
-        bytes_digest(payload.as_bytes()) == locator.content_digest,
+        prepare_attribution::hash(payload.as_bytes()) == locator.content_digest,
         "RunOnce accepted Tool body digest changed"
     );
     let record: ToolExecutionRecord = serde_json::from_str(payload)?;
@@ -2823,13 +3109,24 @@ fn table(family: Family) -> (&'static str, &'static str) {
 }
 fn payload_on(tx: &rusqlite::Connection, agent: &str, key: &Key) -> Result<Option<String>> {
     let (table, id) = table(key.family);
-    Ok(tx
+    let payload: Option<String> = tx
         .query_row(
             &format!("SELECT payload_json FROM {table} WHERE agent_id=?1 AND {id}=?2"),
             params![agent, key.id],
             |r| r.get(0),
         )
-        .optional()?)
+        .optional()?;
+    if let Some(payload) = &payload {
+        // Family attribution: one body load and its byte size. The Tool
+        // family never materializes bodies here; it is counted at its
+        // bounded projection site instead.
+        prepare_attribution::count(
+            prepare_attribution::family_stage(key.family),
+            payload.len() as u64,
+        );
+        prepare_attribution::record_family_load(key.family, payload.len() as u64);
+    }
+    Ok(payload)
 }
 /// Original fixed actor only. This freezes a source header/body version; it
 /// does not mint a current alias or ordinary read authority.
@@ -2868,6 +3165,7 @@ fn fingerprint_on(
     agent: &str,
     key: &Key,
 ) -> Result<Option<Fingerprint>> {
+    let mut timer = crate::diagnostics::attribution::INPUT_PREPARE_FINGERPRINT_READ.start();
     let (table, id) = table(key.family);
     let (hash,seq,index,created,owner_kind,owner_id,revision)=match key.family {
  Family::Turn=>("NULL","NULL","r.turn_index","r.created_at","r.owner_kind","r.owner_id","'canonical_body'"),
@@ -2885,47 +3183,52 @@ fn fingerprint_on(
         _ => "NULL",
     };
     let sql=format!("SELECT {hash},{seq},{index},{created},{owner_kind},{owner_id},{revision},length(CAST(r.payload_json AS BLOB)),{related_turn} FROM {table} r WHERE r.agent_id=?1 AND r.{id}=?2");
-    tx.query_row(&sql, params![agent, key.id], |r| {
-        Ok((
-            r.get::<_, Option<String>>(0)?,
-            r.get::<_, Option<i64>>(1)?,
-            r.get::<_, Option<i64>>(2)?,
-            r.get::<_, String>(3)?,
-            r.get::<_, Option<String>>(4)?,
-            r.get::<_, Option<String>>(5)?,
-            r.get::<_, String>(6)?,
-            r.get::<_, i64>(7)?,
-            r.get::<_, Option<String>>(8)?,
-        ))
-    })
-    .optional()?
-    .map(
-        |(
-            content_hash,
-            sequence,
-            turn_index,
-            created_at,
-            owner_kind,
-            owner_id,
-            revision_marker,
-            payload_bytes,
-            related_turn_id,
-        )| {
-            Ok(Fingerprint {
+    let fingerprint: Result<Option<Fingerprint>> = tx
+        .query_row(&sql, params![agent, key.id], |r| {
+            Ok((
+                r.get::<_, Option<String>>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+                r.get::<_, String>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, Option<String>>(5)?,
+                r.get::<_, String>(6)?,
+                r.get::<_, i64>(7)?,
+                r.get::<_, Option<String>>(8)?,
+            ))
+        })
+        .optional()?
+        .map(
+            |(
                 content_hash,
-                sequence: sequence.map(u64::try_from).transpose()?,
-                turn_index: turn_index.map(u64::try_from).transpose()?,
+                sequence,
+                turn_index,
                 created_at,
                 owner_kind,
                 owner_id,
                 revision_marker,
-                payload_bytes: usize::try_from(payload_bytes)?,
+                payload_bytes,
                 related_turn_id,
-                frozen_payload_digest: None,
-            })
-        },
-    )
-    .transpose()
+            )| {
+                Ok(Fingerprint {
+                    content_hash,
+                    sequence: sequence.map(u64::try_from).transpose()?,
+                    turn_index: turn_index.map(u64::try_from).transpose()?,
+                    created_at,
+                    owner_kind,
+                    owner_id,
+                    revision_marker,
+                    payload_bytes: usize::try_from(payload_bytes)?,
+                    related_turn_id,
+                    frozen_payload_digest: None,
+                })
+            },
+        )
+        .transpose();
+    if matches!(&fingerprint, Ok(Some(_))) {
+        timer.rows(1);
+    }
+    fingerprint
 }
 fn window_query(
     selector: &InputWindowSelector,
@@ -3411,6 +3714,8 @@ fn metadata_closure(
     Ok(result)
 }
 fn decode_canonical(key: &Key, payload: &str) -> Result<CanonicalInputEvidence> {
+    let mut decode_timer = crate::diagnostics::attribution::INPUT_PREPARE_DECODE.start();
+    decode_timer.rows(payload.len());
     Ok(match key.family {
         Family::Message => CanonicalInputEvidence::Message(serde_json::from_str(payload)?),
         Family::Turn => CanonicalInputEvidence::Turn(serde_json::from_str(payload)?),
@@ -3445,6 +3750,9 @@ fn prepare_record_on(
             Some(_) => anyhow::bail!("wrong canonical Tool family"),
             None => tool_projection_on(tx, agent, &key.id)?,
         };
+        // Tool bodies stay projected; count the family without body bytes.
+        prepare_attribution::count(prepare_attribution::family_stage(Family::ToolExecution), 0);
+        prepare_attribution::record_family_load(Family::ToolExecution, 0);
         return Ok(PreparedInputEvidence::ToolExecution(projected));
     }
     let canonical = match canonical {
