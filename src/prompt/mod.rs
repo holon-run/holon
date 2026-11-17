@@ -10,11 +10,12 @@ pub mod tools;
 use holon_context::fingerprint::{
     prompt_cache_key, prompt_cache_scope_diagnostics, prompt_cache_scope_fingerprint,
     prompt_cache_scope_fingerprint_for_agent, prompt_context_fingerprint,
-    reprojected_context_fingerprint,
+    reprojected_context_fingerprint, shared_prefix_fingerprint,
 };
 pub(crate) use holon_context::section;
 pub use holon_context::{
-    render_section, time, PromptCacheIdentity, PromptCacheScopeDiagnostics, PromptSection,
+    render_section, shared_prefix_len, time, PromptCacheIdentity, PromptCacheScopeDiagnostics,
+    PromptLayout, PromptSection,
 };
 use holon_context::{
     render_sections,
@@ -186,11 +187,19 @@ impl EffectivePrompt {
         }
         self.system_sections
             .retain(|section| section.name != "media_tool_defaults");
-        self.system_sections.push(section(
-            "media_tool_defaults",
-            PromptStability::AgentScoped,
-            lines.join("\n"),
-        ));
+        let footer = self
+            .system_sections
+            .iter()
+            .position(|section| section.name == "response_language")
+            .unwrap_or(self.system_sections.len());
+        self.system_sections.insert(
+            footer,
+            section(
+                "media_tool_defaults",
+                PromptStability::AgentScoped,
+                lines.join("\n"),
+            ),
+        );
         self.rendered_system_prompt = render_sections(&self.system_sections);
         let scope = prompt_cache_scope_fingerprint_for_agent(
             &self.cache_identity.agent_id,
@@ -433,6 +442,15 @@ impl EffectivePrompt {
         output.push("Section inventory:".to_string());
         append_section_inventory(&mut output, "system", &self.system_sections);
         append_section_inventory(&mut output, "context", &self.context_sections);
+        let shared_sections = shared_prefix_len(&self.system_sections);
+        output.push(format!(
+            "Shared system prefix: sections={}, chars={}, fingerprint={}",
+            shared_sections,
+            render_sections(&self.system_sections[..shared_sections])
+                .chars()
+                .count(),
+            shared_prefix_fingerprint(&self.system_sections)
+        ));
         output.push(format!(
             "Rendered system chars: {}",
             self.rendered_system_prompt.chars().count()
@@ -570,15 +588,15 @@ impl EffectivePrompt {
         output.push("== System Sections ==".to_string());
         for section in &self.system_sections {
             output.push(format!(
-                "[{}][id: {}][{:?}]\n{}",
-                section.name, section.id, section.stability, section.content
+                "[{}][id: {}][{:?}][{:?}]\n{}",
+                section.name, section.id, section.stability, section.layout, section.content
             ));
         }
         output.push("== Context Sections ==".to_string());
         for section in &self.context_sections {
             output.push(format!(
-                "[{}][id: {}][{:?}]\n{}",
-                section.name, section.id, section.stability, section.content
+                "[{}][id: {}][{:?}][{:?}]\n{}",
+                section.name, section.id, section.stability, section.layout, section.content
             ));
         }
         output.push("== Rendered System Prompt ==".to_string());
@@ -1128,12 +1146,14 @@ mod tests {
                 id: "test-stable-id-123".to_string(),
                 content: "Test content here".to_string(),
                 stability: PromptStability::Stable,
+                layout: PromptLayout::SharedPrefix,
             }],
             context_sections: vec![PromptSection {
                 name: "context_section".to_string(),
                 id: "ctx-id-456".to_string(),
                 content: "Context content".to_string(),
                 stability: PromptStability::AgentScoped,
+                layout: PromptLayout::ScopedSuffix,
             }],
             rendered_system_prompt: "rendered system".to_string(),
             rendered_context_attachment: "rendered context".to_string(),
@@ -1189,8 +1209,9 @@ mod tests {
         assert!(dump.contains(
             "[context_section] section=context_section outcome=truncated reason=truncated_to_remaining_budget requested=40 minimum=10 allocated=20"
         ));
-        assert!(dump.contains("[test_section][id: test-stable-id-123][Stable]"));
-        assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped]"));
+        assert!(dump.contains("Shared system prefix: sections=1, chars="));
+        assert!(dump.contains("[test_section][id: test-stable-id-123][Stable][SharedPrefix]"));
+        assert!(dump.contains("[context_section][id: ctx-id-456][AgentScoped][ScopedSuffix]"));
     }
 
     #[test]
@@ -1323,6 +1344,34 @@ mod tests {
                 repeated.cache_identity.prompt_cache_key
             );
         }
+        let mut canonical = prompt;
+        canonical.system_sections = build_system_sections(
+            &sample_identity(),
+            &sample_message(),
+            Path::new("/repo"),
+            &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
+            &SkillsRuntimeView::default(),
+            &media_tools,
+            ToolPromptContext::default(),
+        );
+        let prefix = shared_prefix_fingerprint(&canonical.system_sections);
+        let updated = canonical.with_media_tool_defaults(&defaults, &media_tools);
+        assert_eq!(
+            updated.system_sections.last().unwrap().name,
+            "response_language"
+        );
+        assert_eq!(prefix, shared_prefix_fingerprint(&updated.system_sections));
+        let media = updated
+            .system_sections
+            .iter()
+            .find(|section| section.name == "media_tool_defaults")
+            .unwrap();
+        assert_eq!(media.layout, PromptLayout::ScopedSuffix);
+        assert_eq!(
+            updated.rendered_system_prompt,
+            render_sections(&updated.system_sections)
+        );
     }
 
     #[test]
@@ -1394,12 +1443,14 @@ mod tests {
                 id: "constrained_repair".to_string(),
                 content: "limit edits to src/prompt/mod.rs".to_string(),
                 stability: PromptStability::TurnScoped,
+                layout: PromptLayout::ScopedSuffix,
             }],
             context_sections: vec![PromptSection {
                 name: "current_input".to_string(),
                 id: "current_input".to_string(),
                 content: "inspect prompt assembly".to_string(),
                 stability: PromptStability::TurnScoped,
+                layout: PromptLayout::ScopedSuffix,
             }],
             rendered_system_prompt: "rendered turn system".to_string(),
             rendered_context_attachment: "rendered turn context".to_string(),
@@ -1421,6 +1472,7 @@ mod tests {
 
         assert!(dump.contains("  - system: total=1, stable=0, agent_scoped=0, turn_scoped=1"));
         assert!(dump.contains("  - context: total=1, stable=0, agent_scoped=0, turn_scoped=1"));
+        assert!(dump.contains("Shared system prefix: sections=0, chars=0, fingerprint="));
         assert!(dump.contains(
             "#1 [constrained_repair] (id: constrained_repair, stability: TurnScoped, cache scope: turn-only"
         ));
@@ -1467,6 +1519,7 @@ mod tests {
                 id: "agent_agents_md".to_string(),
                 content: "very secret agent guidance".to_string(),
                 stability: PromptStability::Stable,
+                layout: PromptLayout::ScopedSuffix,
             }],
             context_sections: vec![],
             rendered_system_prompt: "very secret agent guidance".to_string(),

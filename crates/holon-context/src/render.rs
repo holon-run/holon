@@ -1,7 +1,7 @@
 //! Generic message/body/header rendering helpers and label functions.
 
 use super::budget::{estimate_text_tokens, truncate_section_content};
-use crate::{PromptSection, PromptStability};
+use crate::{PromptLayout, PromptSection, PromptStability};
 use holon_domain::{
     AdmissionContext, AgentMessageRoutingContext, AuthorityClass, MessageBody,
     MessageDeliverySurface, MessageEnvelope, MessageOrigin,
@@ -15,6 +15,7 @@ pub fn section(name: &'static str, content: String) -> PromptSection {
         id: name.to_string(),
         content,
         stability: PromptStability::AgentScoped,
+        layout: PromptLayout::ScopedSuffix,
     }
 }
 
@@ -97,6 +98,7 @@ pub fn turn_section(name: &'static str, content: String) -> PromptSection {
         id: name.to_string(),
         content,
         stability: PromptStability::TurnScoped,
+        layout: PromptLayout::ScopedSuffix,
     }
 }
 

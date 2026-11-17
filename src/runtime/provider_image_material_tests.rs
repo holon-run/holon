@@ -17,6 +17,7 @@ fn image_prompt() -> anyhow::Result<(tempfile::TempDir, EffectivePrompt)> {
     prompt.execution.execution_root = workspace.path().into();
     prompt.execution.cwd = workspace.path().into();
     prompt.context_sections = vec![PromptSection {
+        layout: holon_context::PromptLayout::ScopedSuffix,
         name: "current_input".into(),
         id: "current_input".into(),
         content: "Inspect ![Chart](workspace://ws_image/image.png).".into(),

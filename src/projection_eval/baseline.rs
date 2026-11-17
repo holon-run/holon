@@ -178,6 +178,7 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
         allocated += allocated_tokens;
 
         let section = PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: ev.reference.clone(),
             id: ev.reference.clone(),
             content,
@@ -220,6 +221,7 @@ pub fn build_baseline_prompt(spec: &BaselineCaseSpec, budget: usize) -> Effectiv
     };
 
     let system_section = PromptSection {
+        layout: holon_context::PromptLayout::ScopedSuffix,
         name: "identity".into(),
         id: "identity".into(),
         content: "Baseline system prompt for projection-eval.".into(),

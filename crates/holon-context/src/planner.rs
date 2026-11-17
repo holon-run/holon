@@ -387,7 +387,7 @@ fn selection_order(left: &ContextCandidate, right: &ContextCandidate) -> std::cm
 
 #[cfg(test)]
 mod tests {
-    use crate::{PromptSection, PromptStability};
+    use crate::{PromptLayout, PromptSection, PromptStability};
 
     use super::*;
 
@@ -397,6 +397,7 @@ mod tests {
             id: id.to_string(),
             content: body.to_string(),
             stability: PromptStability::TurnScoped,
+            layout: PromptLayout::ScopedSuffix,
         }
     }
 

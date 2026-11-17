@@ -45,6 +45,83 @@ use std::sync::{Arc, Mutex};
 static CODEX_REFRESH_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[test]
+fn system_wire_keeps_shared_prefix_and_scoped_cache_identity() {
+    use crate::provider::{PromptContentBlock, ProviderPromptCache, ProviderPromptFrame};
+    use holon_domain::PromptStability;
+
+    let shared = "## identity\nfixed role\n\n## tool_contract\nfixed tools\n\n";
+    for agent in ["agent-a", "agent-b"] {
+        let suffix = format!("## workspace\n/{agent}/task");
+        let rendered = format!("{shared}{suffix}");
+        let mut request = ProviderTurnRequest::plain(
+            &rendered,
+            vec![ConversationMessage::UserText(format!("task for {agent}"))],
+            vec![],
+        );
+        request.prompt_frame = ProviderPromptFrame::structured(
+            &rendered,
+            vec![
+                PromptContentBlock {
+                    text: shared.into(),
+                    stability: PromptStability::Stable,
+                    cache_breakpoint: true,
+                },
+                PromptContentBlock {
+                    text: suffix,
+                    stability: PromptStability::AgentScoped,
+                    cache_breakpoint: true,
+                },
+            ],
+            vec![],
+            Some(ProviderPromptCache {
+                agent_id: agent.into(),
+                prompt_cache_key: agent.into(),
+                context_fingerprint: format!("fingerprint-{agent}"),
+                compression_epoch: 0,
+            }),
+        );
+        for structured in [true, false] {
+            if !structured {
+                request.prompt_frame.system_blocks.clear();
+            }
+            let chat = super::build_chat_completion_request(
+                "gpt-test",
+                64,
+                &request,
+                ToolSchemaContract::Strict,
+                false,
+                None,
+                "max_tokens",
+            )
+            .unwrap();
+            assert_eq!(chat["messages"][0]["content"], rendered);
+            assert_eq!(chat["prompt_cache_key"], agent);
+            for contract in [
+                OpenAiResponsesTransportContract::StandardJson,
+                OpenAiResponsesTransportContract::CodexStreaming,
+            ] {
+                let responses = build_openai_responses_request(
+                    "gpt-test",
+                    64,
+                    &request,
+                    contract,
+                    ToolSchemaContract::Strict,
+                    None,
+                    None,
+                )
+                .unwrap();
+                assert_eq!(responses["instructions"], rendered);
+                assert_eq!(responses["prompt_cache_key"], agent);
+                assert!(responses["instructions"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(shared));
+            }
+        }
+    }
+}
+
+#[test]
 fn inference_time_remains_after_input_for_chat_and_responses() {
     use crate::provider::{PromptContentBlock, ProviderPromptCache};
     use holon_domain::PromptStability;

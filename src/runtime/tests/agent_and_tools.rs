@@ -1835,6 +1835,7 @@ fn current_input_summary_extracts_body_from_context_section() {
         },
         system_sections: vec![],
         context_sections: vec![PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: "current_input".into(),
             id: "current_input".into(),
             content:

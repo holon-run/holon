@@ -3487,12 +3487,14 @@ async fn turn_local_compaction_rewrites_older_rounds_into_runtime_recap() {
 
     let mut prompt = test_effective_prompt();
     prompt.system_sections = vec![PromptSection {
+        layout: holon_context::PromptLayout::ScopedSuffix,
         name: "stable_system".into(),
         id: "stable_system".into(),
         content: "Keep runtime boundaries explicit.".into(),
         stability: PromptStability::Stable,
     }];
     prompt.context_sections = vec![PromptSection {
+        layout: holon_context::PromptLayout::ScopedSuffix,
         name: "active_context".into(),
         id: "active_context".into(),
         content: "Preserve Anthropic prompt cache anchors across continuations.".into(),

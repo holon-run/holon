@@ -3,7 +3,8 @@
 //! This module provides registry-style organization for tool usage guidance.
 //! Each tool section is emitted only when that tool is available.
 
-use super::{section, PromptSection, PromptStability};
+// This registry emits only fixed guidance conditioned on the actual tool surface.
+use super::{shared_section as section, PromptSection, PromptStability};
 use holon_domain::tool_names as tn;
 use holon_domain::{ApplyPatchSurface, ToolSpec};
 

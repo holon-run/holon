@@ -14,6 +14,140 @@ use crate::{
     render::{message_header, render_current_input_section},
 };
 
+#[test]
+fn prompt_layout_defaults_conservatively_for_constructors_and_historical_sections() {
+    use crate::{section, shared_prefix_len, PromptLayout, PromptSection, PromptStability};
+
+    let stable = section(
+        "future_runtime_contract",
+        PromptStability::Stable,
+        "fixed".into(),
+    );
+    assert_eq!(stable.layout, PromptLayout::ScopedSuffix);
+    assert_eq!(shared_prefix_len(&[stable]), 0);
+    assert_eq!(
+        crate::render::section("agent", String::new()).layout,
+        PromptLayout::ScopedSuffix
+    );
+    assert_eq!(
+        crate::render::turn_section("turn", String::new()).layout,
+        PromptLayout::ScopedSuffix
+    );
+    let historical: PromptSection = serde_json::from_value(json!({
+        "name": "legacy",
+        "id": "legacy",
+        "content": "stable does not imply shared",
+        "stability": "stable"
+    }))
+    .unwrap();
+    assert_eq!(historical.layout, PromptLayout::ScopedSuffix);
+    assert_eq!(shared_prefix_len(&[historical]), 0);
+    assert!(serde_json::from_value::<PromptSection>(json!({
+        "name": "unknown",
+        "id": "unknown",
+        "content": "",
+        "stability": "stable",
+        "layout": "unknown_future_layout"
+    }))
+    .is_err());
+}
+
+#[test]
+fn shared_boundary_is_contiguous_and_independent_of_stability_or_empty_content() {
+    use crate::{section, shared_prefix_len, PromptLayout, PromptStability};
+
+    let mut shared = section("shared", PromptStability::AgentScoped, String::new());
+    shared.layout = PromptLayout::SharedPrefix;
+    let scoped = section("scoped", PromptStability::Stable, String::new());
+    assert_eq!(shared_prefix_len(&[]), 0);
+    assert_eq!(shared_prefix_len(&[shared.clone()]), 1);
+    assert_eq!(
+        shared_prefix_len(&[shared.clone(), scoped.clone(), shared.clone()]),
+        1
+    );
+    assert_eq!(shared_prefix_len(&[scoped, shared]), 0);
+}
+
+#[test]
+fn section_rendering_preserves_empty_sections_and_exact_separator_bytes() {
+    use crate::{render_section, render_section_blocks, render_sections, section, PromptStability};
+
+    let sections = vec![
+        section("empty", PromptStability::Stable, String::new()),
+        section("body", PromptStability::AgentScoped, "\nbody\n".into()),
+        section("last", PromptStability::TurnScoped, String::new()),
+    ];
+    assert!(render_section_blocks(&[]).is_empty());
+    assert_eq!(render_sections(&[]), "");
+    assert_eq!(render_sections(&sections[..1]), "## empty\n");
+    assert_eq!(
+        render_sections(&sections),
+        "## empty\n\n\n## body\n\nbody\n\n\n## last\n"
+    );
+    assert_eq!(
+        sections
+            .iter()
+            .map(render_section)
+            .collect::<Vec<_>>()
+            .join("\n\n"),
+        render_sections(&sections)
+    );
+    assert_eq!(
+        render_section_blocks(&sections).concat(),
+        render_sections(&sections)
+    );
+}
+
+#[test]
+fn shared_render_blocks_keep_identical_separator_bytes_with_or_without_suffix() {
+    use crate::{render_section_blocks, render_sections, section, shared_section, PromptStability};
+
+    let prefix = vec![
+        shared_section("empty", PromptStability::Stable, String::new()),
+        shared_section("body", PromptStability::Stable, "\nbody\n".into()),
+    ];
+    assert_eq!(
+        render_section_blocks(&prefix),
+        vec!["## empty\n\n\n", "## body\n\nbody\n\n\n"]
+    );
+    let suffix = vec![
+        section("scoped", PromptStability::AgentScoped, String::new()),
+        section("turn", PromptStability::TurnScoped, "input".into()),
+    ];
+    for prefix_len in 1..=prefix.len() {
+        let prefix_blocks = render_section_blocks(&prefix[..prefix_len]);
+        let mut complete = prefix[..prefix_len].to_vec();
+        complete.extend(suffix.clone());
+        let complete_blocks = render_section_blocks(&complete);
+        assert_eq!(prefix_blocks, complete_blocks[..prefix_len]);
+        assert_eq!(
+            render_sections(&prefix[..prefix_len]),
+            prefix_blocks.concat()
+        );
+        assert_eq!(render_sections(&complete), complete_blocks.concat());
+    }
+}
+
+#[test]
+fn later_shared_layout_does_not_create_a_shared_rendering_boundary() {
+    use crate::{
+        render_section, render_section_blocks, render_sections, section, shared_section,
+        PromptStability,
+    };
+
+    let sections = vec![
+        section("scoped", PromptStability::Stable, String::new()),
+        shared_section("late", PromptStability::Stable, String::new()),
+    ];
+    let legacy_rendering = sections
+        .iter()
+        .map(render_section)
+        .collect::<Vec<_>>()
+        .join("\n\n");
+    assert_eq!(render_sections(&sections), legacy_rendering);
+    assert_eq!(render_section_blocks(&sections)[1], "## late\n");
+}
+
 #[cfg(test)]
 fn turn_record_matches_message(record: &TurnRecord, message: &MessageEnvelope) -> bool {
     turn_record_owns_object(record, message.turn_id.as_deref())
