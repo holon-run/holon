@@ -26,6 +26,9 @@ mod recent_tools_window_tests;
 #[path = "input_evidence_turn_transcript_tests.rs"]
 mod turn_transcript_tests;
 
+#[path = "input_prepare_attribution_tests.rs"]
+mod prepare_attribution_tests;
+
 fn time() -> DateTime<Utc> {
     "2026-10-12T00:00:00Z".parse().unwrap()
 }
