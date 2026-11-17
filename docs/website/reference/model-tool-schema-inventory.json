@@ -5937,6 +5937,7 @@
         "additionalProperties": false,
         "properties": {
           "items": {
+            "description": "One to twelve sequential commands; every array entry (including an\n empty object) counts toward the batch limit.",
             "items": {
               "additionalProperties": false,
               "properties": {
@@ -5983,6 +5984,8 @@
               ],
               "type": "object"
             },
+            "maxItems": 12,
+            "minItems": 1,
             "type": "array"
           },
           "login": {

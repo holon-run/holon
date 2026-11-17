@@ -16,8 +16,12 @@ const SOURCE_CHAIN_MAX_ENTRIES: usize = 8;
 const ERROR_TEXT_MAX_CHARS: usize = 512;
 
 mod idle_input_recovery;
+mod round_limit;
 pub(crate) use idle_input_recovery::safe_recovery_id as safe_runtime_evidence_id;
 pub(crate) use idle_input_recovery::{IdleInputRecoveryPredicate, IdleInputRecoveryRejection};
+pub(crate) use round_limit::{
+    ProviderRoundLimitExceeded, ProviderRoundLimitQuota, PROVIDER_ROUND_LIMIT_EXCEEDED_CODE,
+};
 
 #[derive(Debug, Clone)]
 pub struct RuntimeError {
@@ -94,6 +98,36 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
     if let Some(rejection) = error.downcast_ref::<IdleInputRecoveryRejection>() {
         // Do not copy outer error contexts that may contain rejected evidence.
         return rejection.descriptor();
+    }
+    if let Some(rejection) = error.downcast_ref::<ProviderRoundLimitExceeded>() {
+        // Only the typed enum and bounded numeric evidence are safe here;
+        // the rejected response itself must not be echoed anywhere.
+        let safe_context = BTreeMap::from([
+            ("stage".to_string(), "provider_round_admission".to_string()),
+            ("quota".to_string(), rejection.quota.as_str().to_string()),
+            ("limit".to_string(), rejection.limit.to_string()),
+            ("observed".to_string(), rejection.observed.to_string()),
+            (
+                "count_complete".to_string(),
+                (!rejection.count_is_lower_bound).to_string(),
+            ),
+            ("round".to_string(), rejection.round.to_string()),
+            (
+                "managed_tool_calls".to_string(),
+                rejection.managed_tool_calls.to_string(),
+            ),
+        ]);
+        return RuntimeErrorDescriptor {
+            domain: RuntimeErrorDomain::Provider,
+            code: PROVIDER_ROUND_LIMIT_EXCEEDED_CODE.to_string(),
+            retryable: false,
+            operator_message: sanitize_runtime_error_text(&rejection.to_string()),
+            recovery_hint: Some(sanitize_runtime_error_text(
+                "reduce the number or size of tool calls in a single response; the limits are fixed defaults",
+            )),
+            safe_context,
+            source_chain: Vec::new(),
+        };
     }
     if let Some(crate::context::ContextPlanningError::PinnedMinimumOverBudget {
         budget_estimated_tokens,
@@ -707,6 +741,12 @@ fn is_safe_context_key(key: &str) -> bool {
             | "batch_activation_id"
             | "io_kind"
             | "os_error"
+            | "quota"
+            | "limit"
+            | "observed"
+            | "count_complete"
+            | "round"
+            | "managed_tool_calls"
     )
 }
 
