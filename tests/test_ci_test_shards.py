@@ -1,5 +1,7 @@
+import io
 import re
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
 
@@ -235,6 +237,109 @@ class CiTestShardsTests(unittest.TestCase):
                 run.return_value.returncode = 1
                 with self.assertRaises(ci_test_shards.subprocess.CalledProcessError):
                     ci_test_shards.run_lib_shard("lib-a")
+                self.assertEqual(run.call_count, 3)
+
+    def test_task_fixture_modules_are_explicit_and_not_full_ci_shards(self):
+        self.assertEqual(ci_test_shards.TASK_FIXTURE_MODULES, (
+            "runtime_db::test_support::task_fixture_tests",
+            "runtime_db::control_transition::tests::task_write_tests",
+            "runtime_db::control_transition::tests::status_metadata_actor_tests",
+        ))
+        self.assertNotIn("task-fixtures", ci_test_shards.SUITES)
+        self.assertEqual(ci_test_shards.LIB_COMPILE_GROUPS,
+                         {"lib-a": ("a", "c"), "lib-b": ("b", "d")})
+        text = MAKEFILE.read_text()
+        self.assertRegex(text, r"(?m)^\.PHONY:.*\btest-task-fixtures\b")
+        self.assertRegex(
+            text,
+            r"(?m)^test-task-fixtures:.*\n\tpython3 scripts/ci_test_shards.py task-fixtures$",
+        )
+
+    def test_task_fixture_command_selects_group_b_and_reports_real_commands(self):
+        modules = ci_test_shards.TASK_FIXTURE_MODULES
+        names = [f"{module}::one" for module in modules]
+        names += [f"{modules[0]}::two", f"{modules[0]}_unrelated::one"]
+        output = io.StringIO()
+        with mock.patch.object(ci_test_shards, "lib_test_names", return_value=names) as listing, \
+             mock.patch.object(ci_test_shards.subprocess, "run") as run, \
+             redirect_stderr(output):
+            run.return_value.returncode = 0
+            args = ci_test_shards.build_parser().parse_args(["task-fixtures"])
+            args.func(args)
+        listing.assert_called_once_with("b")
+        self.assertEqual(run.call_count, 3)
+        for module, count, call in zip(modules, (2, 1, 1), run.call_args_list):
+            command = [
+                "cargo", "test", "--lib", f"{module}::",
+                "--", "--test-threads=2",
+            ]
+            self.assertEqual(call.args[0], command)
+            self.assertEqual(call.kwargs["cwd"], ci_test_shards.REPO_ROOT)
+            self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], "b")
+            self.assertIn(f"module {module}: {count} tests", output.getvalue())
+            self.assertIn(
+                f"$ HOLON_LIB_TEST_SHARD=b {' '.join(command)}", output.getvalue()
+            )
+
+    def test_task_fixture_zero_matches_fail_before_any_test_runs(self):
+        modules = ci_test_shards.TASK_FIXTURE_MODULES
+        for missing in modules:
+            names = [f"{module}::one" for module in modules if module != missing]
+            names.append(f"{missing}_unrelated::one")
+            with self.subTest(missing=missing), \
+                 mock.patch.object(ci_test_shards, "lib_test_names", return_value=names), \
+                 mock.patch.object(ci_test_shards.subprocess, "run") as run:
+                with self.assertRaisesRegex(ValueError, f"{missing} has no tests"):
+                    ci_test_shards.command_task_fixtures(None)
+                run.assert_not_called()
+
+    def test_task_fixture_duplicate_enumeration_fails_before_any_test_runs(self):
+        names = [f"{module}::one" for module in ci_test_shards.TASK_FIXTURE_MODULES]
+        with mock.patch.object(ci_test_shards, "lib_test_names", return_value=names + names[:1]), \
+             mock.patch.object(ci_test_shards.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "duplicate tests"):
+                ci_test_shards.command_task_fixtures(None)
+            run.assert_not_called()
+
+    def test_task_fixture_overlapping_modules_are_rejected(self):
+        module = ci_test_shards.TASK_FIXTURE_MODULES[0]
+        with mock.patch.object(ci_test_shards, "TASK_FIXTURE_MODULES",
+                               (module, f"{module}::nested")), \
+             mock.patch.object(ci_test_shards, "lib_test_names",
+                               return_value=[f"{module}::nested::one"]), \
+             mock.patch.object(ci_test_shards.subprocess, "run") as run:
+            with self.assertRaisesRegex(ValueError, "duplicate tests"):
+                ci_test_shards.command_task_fixtures(None)
+            run.assert_not_called()
+
+    def test_task_fixture_enumeration_failure_is_propagated(self):
+        failure = ci_test_shards.subprocess.CalledProcessError(7, ["cargo", "test"])
+        with mock.patch.object(ci_test_shards, "lib_test_names", side_effect=failure), \
+             mock.patch.object(ci_test_shards.subprocess, "run") as run:
+            with self.assertRaises(ci_test_shards.subprocess.CalledProcessError) as raised:
+                ci_test_shards.command_task_fixtures(None)
+            self.assertEqual(raised.exception.returncode, 7)
+            run.assert_not_called()
+
+    def test_task_fixture_failure_is_propagated_after_all_modules_run(self):
+        names = [f"{module}::one" for module in ci_test_shards.TASK_FIXTURE_MODULES]
+        for failed in range(3):
+            completed = [
+                ci_test_shards.subprocess.CompletedProcess(
+                    ["cargo", "test", "--lib", f"{module}::",
+                     "--", "--test-threads=2"],
+                    7 if index == failed else 0,
+                )
+                for index, module in enumerate(ci_test_shards.TASK_FIXTURE_MODULES)
+            ]
+            with self.subTest(failed=failed), \
+                 mock.patch.object(ci_test_shards, "lib_test_names", return_value=names), \
+                 mock.patch.object(ci_test_shards.subprocess, "run", side_effect=completed) as run, \
+                 redirect_stderr(io.StringIO()):
+                with self.assertRaises(ci_test_shards.subprocess.CalledProcessError) as raised:
+                    ci_test_shards.command_task_fixtures(None)
+                self.assertEqual(raised.exception.returncode, 7)
+                self.assertEqual(raised.exception.cmd, completed[failed].args)
                 self.assertEqual(run.call_count, 3)
 
 

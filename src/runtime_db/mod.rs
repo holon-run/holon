@@ -156,6 +156,8 @@ mod brief_latest_tests;
 #[cfg(holon_lib_test_shard = "b")]
 #[cfg(test)]
 mod current_run_abort_tests;
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
 

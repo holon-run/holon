@@ -9,7 +9,10 @@ use crate::{
         },
         resident_work::WorkCaptureRequest,
     },
-    runtime_db::{task_snapshot as tasks, work_snapshot::WorkDomainLoadRequest},
+    runtime_db::{
+        task_snapshot as tasks, test_support::prepare_current_task_fixture_tx,
+        work_snapshot::WorkDomainLoadRequest,
+    },
 };
 use std::collections::BTreeMap;
 
@@ -59,8 +62,13 @@ fn seed_task(
     ledger: &InputEvidenceBudgetLedger,
 ) -> Result<ResidentTaskDomain> {
     f.db.transaction(|tx| {
-        tasks::prepare_task_domain_snapshot_with_budget_tx(tx, &scope(f), &task_request(), ledger)?
-            .require_current()?;
+        prepare_current_task_fixture_tx(
+            tx,
+            "seed_task before write",
+            &scope(f),
+            &task_request(),
+            ledger,
+        )?;
         if qualified {
             let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]);
             let proof = tasks::prepare_task_write_tx(tx, &scope(f), &keys)?;
@@ -76,13 +84,13 @@ fn seed_task(
         } else {
             upsert_task_tx(tx, task)?;
         }
-        Ok(tasks::prepare_task_domain_snapshot_with_budget_tx(
+        Ok(prepare_current_task_fixture_tx(
             tx,
+            "seed_task after write",
             &scope(f),
             &task_request(),
             ledger,
         )?
-        .require_current()?
         .resident)
     })
 }
@@ -468,13 +476,13 @@ fn control_interrupt_reobserves_activation_metadata_without_task_or_result_write
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
     let terminal = f.task_result(&running(&f, "already-terminal-task"));
     let (before, result_id) = f.db.transaction(|tx| {
-        tasks::prepare_task_domain_snapshot_with_budget_tx(
+        prepare_current_task_fixture_tx(
             tx,
+            "control_interrupt before result write",
             &scope(&f),
             &task_request(),
             &ledger,
-        )?
-        .require_current()?;
+        )?;
         let record = TaskResultSettlementRecord::pending(
             &terminal.task,
             &terminal.message,
@@ -522,13 +530,13 @@ fn control_interrupt_reobserves_activation_metadata_without_task_or_result_write
             &task_request(),
             &ledger,
         )?;
-        let current = tasks::prepare_task_domain_snapshot_with_budget_tx(
+        let current = prepare_current_task_fixture_tx(
             tx,
+            "control_interrupt after result write",
             &scope(&f),
             &task_request(),
             &ledger,
         )?
-        .require_current()?
         .resident;
         Ok((current, record.result_identity))
     })?;
@@ -578,10 +586,14 @@ fn control_ack_keeps_fresh_stop_arcs_observed_until_root_or_drop() -> Result<()>
         let scope = scope(&f);
         let request = task_request();
         let key = TaskKey::new(TaskFamily::Task, "pending-stop-control");
-        let resident =
-            tasks::prepare_task_domain_snapshot_with_budget_tx(tx, &scope, &request, &ledger)?
-                .require_current()?
-                .resident;
+        let resident = prepare_current_task_fixture_tx(
+            tx,
+            "control_ack before stop",
+            &scope,
+            &request,
+            &ledger,
+        )?
+        .resident;
         let captured = resident.capture(&TaskCaptureRequest::current())?;
         let task = captured.lookup(&key)?.context("original Task missing")?;
         let CanonicalTaskFact::Task(before) = &task.fact else {

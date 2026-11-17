@@ -168,6 +168,10 @@ test: ## Run serial integration-test targets (concurrent-proven binaries exclude
 test-shard: ## Run one CI test shard (SHARD=lib-a|lib-b|control|cli|misc); lib shards use 2 test threads
 	python3 scripts/ci_test_shards.py run $(SHARD)
 
+.PHONY: test-task-fixtures
+test-task-fixtures: ## Run the three task fixture regression modules (compile group b; 2 test threads)
+	python3 scripts/ci_test_shards.py task-fixtures
+
 test-resource-lint: ## Audit permanent test temp directories against the reasoned allowlist
 	python3 scripts/check-test-temp-resources.py
 
