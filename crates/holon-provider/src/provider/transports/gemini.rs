@@ -482,14 +482,18 @@ fn gemini_preflight_error(
 }
 
 fn build_system_instruction(request: &ProviderTurnRequest) -> GeminiContent {
-    let mut text = String::new();
-    if request.prompt_frame.has_structured_system_blocks() {
-        for block in &request.prompt_frame.system_blocks {
-            append_text_block(&mut text, &block.text);
-        }
+    let text = if request.prompt_frame.has_structured_system_blocks() {
+        // Canonical blocks already own their separators. Adding delimiters
+        // here makes Gemini's wire prompt differ from the rendered prompt.
+        request
+            .prompt_frame
+            .system_blocks
+            .iter()
+            .map(|block| block.text.as_str())
+            .collect()
     } else {
-        text = request.prompt_frame.system_prompt.clone();
-    }
+        request.prompt_frame.system_prompt.clone()
+    };
     GeminiContent {
         role: "user".to_string(),
         parts: vec![GeminiPart {
@@ -500,16 +504,6 @@ fn build_system_instruction(request: &ProviderTurnRequest) -> GeminiContent {
             thought_signature: None,
         }],
     }
-}
-
-fn append_text_block(target: &mut String, text: &str) {
-    if text.trim().is_empty() {
-        return;
-    }
-    if !target.trim().is_empty() {
-        target.push_str("\n\n");
-    }
-    target.push_str(text);
 }
 
 fn build_gemini_contents(request: &ProviderTurnRequest) -> Vec<GeminiContent> {
@@ -1010,6 +1004,48 @@ fn gemini_function_response_name(tool_use_id: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_wire_preserves_canonical_shared_prefix_and_plain_fallback() {
+        use crate::provider::{PromptContentBlock, PromptStability, ProviderPromptFrame};
+
+        let shared = "## identity\nfixed role\n\n## tool_contract\nfixed tools\n\n";
+        for suffix in [
+            "## workspace\n/agent-a/task-a",
+            "## workspace\n/agent-b/task-b",
+        ] {
+            let rendered = format!("{shared}{suffix}");
+            let mut request = ProviderTurnRequest::plain(&rendered, vec![], vec![]);
+            for structured in [false, true] {
+                if structured {
+                    request.prompt_frame = ProviderPromptFrame::structured(
+                        &rendered,
+                        vec![
+                            PromptContentBlock {
+                                text: shared.into(),
+                                stability: PromptStability::Stable,
+                                cache_breakpoint: true,
+                            },
+                            PromptContentBlock {
+                                text: suffix.into(),
+                                stability: PromptStability::AgentScoped,
+                                cache_breakpoint: true,
+                            },
+                        ],
+                        vec![],
+                        None,
+                    );
+                }
+                let wire = serde_json::to_value(build_system_instruction(&request)).unwrap();
+                assert_eq!(wire["parts"][0]["text"], rendered);
+                assert!(wire["parts"][0]["text"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with(shared));
+                assert!(!wire.to_string().contains("cache_control"));
+            }
+        }
+    }
 
     #[test]
     fn gemini_refusals_fail_closed_with_usage() {

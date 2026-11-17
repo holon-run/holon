@@ -1277,6 +1277,51 @@ mod tests {
     }
 
     #[test]
+    fn model_attempt_hint_keeps_plain_and_structured_system_bytes_equal() {
+        for base in ["", "  ", "base\n"] {
+            for (active, hint) in [
+                ("gemini/test", "Runtime: active_model=gemini/test"),
+                (
+                    "openai/fallback",
+                    "Runtime: active_model=openai/fallback requested_model=gemini/test",
+                ),
+            ] {
+                let separator = if base.trim().is_empty() { "" } else { "\n\n" };
+                let expected = format!("{base}{separator}{hint}");
+                for structured in [false, true] {
+                    let mut request = ProviderTurnRequest::plain(base, Vec::new(), Vec::new());
+                    if structured {
+                        request.prompt_frame.system_blocks.push(PromptContentBlock {
+                            text: base.into(),
+                            stability: PromptStability::Stable,
+                            cache_breakpoint: true,
+                        });
+                    }
+                    let attempt = request_for_model_attempt(&request, "gemini/test", active);
+                    assert_eq!(attempt.prompt_frame.system_prompt, expected);
+                    if structured {
+                        assert_eq!(
+                            attempt
+                                .prompt_frame
+                                .system_blocks
+                                .iter()
+                                .map(|block| block.text.as_str())
+                                .collect::<String>(),
+                            expected
+                        );
+                        assert_eq!(
+                            attempt.prompt_frame.system_blocks[0],
+                            request.prompt_frame.system_blocks[0]
+                        );
+                    } else {
+                        assert!(attempt.prompt_frame.system_blocks.is_empty());
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn context_management_policy_requires_full_policy_match() {
         let provider = FallbackProvider {
             record_retry: |_| {},
@@ -1603,6 +1648,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fallback_wrapped_gemini_preserves_rendered_system_text() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let captured = Arc::new(Mutex::new(Vec::new()));
+        let observed = captured.clone();
+        let app = Router::new().fallback(post(move |Json(body): Json<serde_json::Value>| {
+            let observed = observed.clone();
+            async move {
+                observed.lock().await.push(body);
+                Json(serde_json::json!({
+                    "candidates": [{
+                        "finishReason": "STOP",
+                        "content": {"parts": [{"text": "ok"}]}
+                    }]
+                }))
+            }
+        }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let home = tempfile::tempdir().unwrap();
+        let provider = FallbackProvider {
+            record_retry: |_| {},
+            candidates: vec![
+                http_candidate(
+                    &base_url,
+                    home.path(),
+                    ProviderTransportKind::GeminiGenerateContent,
+                ),
+                scripted_candidate("openai/fallback", vec![ScriptedFailure::Succeed]),
+            ],
+        };
+        let shared = "## identity\nfixed role\n\n";
+        let suffix = "## response_language\nUse the operator's language.";
+        let rendered = format!("{shared}{suffix}");
+        for structured in [false, true] {
+            let mut request = ProviderTurnRequest::plain(&rendered, Vec::new(), Vec::new());
+            if structured {
+                request.prompt_frame.system_blocks = vec![
+                    PromptContentBlock {
+                        text: shared.into(),
+                        stability: PromptStability::Stable,
+                        cache_breakpoint: true,
+                    },
+                    PromptContentBlock {
+                        text: suffix.into(),
+                        stability: PromptStability::AgentScoped,
+                        cache_breakpoint: true,
+                    },
+                ];
+            }
+            provider.complete_turn(request).await.unwrap();
+        }
+        server.abort();
+        let captured = captured.lock().await;
+        assert_eq!(captured.len(), 2);
+        for body in captured.iter() {
+            assert_eq!(
+                body["systemInstruction"]["parts"][0]["text"],
+                format!("{rendered}\n\nRuntime: active_model=gemini/test")
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn model_visible_hint_preserves_structured_system_shape_and_marks_cache_breakpoint() {
         let prompts = Arc::new(Mutex::new(Vec::new()));
         let system_blocks = Arc::new(Mutex::new(Vec::new()));
@@ -1626,7 +1734,7 @@ mod tests {
             material: Default::default(),
             continuation_scope_id: None,
             prompt_frame: ProviderPromptFrame::structured(
-                "base",
+                "existing",
                 vec![PromptContentBlock {
                     text: "existing".into(),
                     stability: PromptStability::Stable,
@@ -1649,9 +1757,16 @@ mod tests {
         let recorded_blocks = system_blocks.lock().await;
         assert_eq!(recorded_blocks[0].len(), 2);
         let hint = recorded_blocks[0].last().expect("runtime hint block");
-        assert_eq!(hint.text, "Runtime: active_model=openai/gpt-5.4");
+        assert_eq!(hint.text, "\n\nRuntime: active_model=openai/gpt-5.4");
         assert_eq!(hint.stability, PromptStability::TurnScoped);
         assert!(hint.cache_breakpoint);
+        assert_eq!(
+            recorded_blocks[0]
+                .iter()
+                .map(|block| block.text.as_str())
+                .collect::<String>(),
+            prompts.lock().await[0].strip_prefix("primary:").unwrap()
+        );
     }
 }
 
@@ -2113,10 +2228,11 @@ fn request_for_model_attempt(
 ) -> ProviderTurnRequest {
     let mut request = request.clone();
     let hint = runtime_model_hint(requested_model_ref, active_model_ref);
-
-    if !request.prompt_frame.system_prompt.trim().is_empty() {
-        request.prompt_frame.system_prompt.push_str("\n\n");
-    }
+    let hint = if request.prompt_frame.system_prompt.trim().is_empty() {
+        hint
+    } else {
+        format!("\n\n{hint}")
+    };
     request.prompt_frame.system_prompt.push_str(&hint);
     if !request.prompt_frame.system_blocks.is_empty() {
         request.prompt_frame.system_blocks.push(PromptContentBlock {

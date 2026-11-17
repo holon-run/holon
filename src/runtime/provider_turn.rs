@@ -26,7 +26,7 @@
 
 use crate::diagnostics::resource_io::{self, ResourceReadMaterial};
 use crate::{
-    prompt::{render_section, EffectivePrompt, PromptSection, PromptStability},
+    prompt::{EffectivePrompt, PromptSection, PromptStability},
     provider::{
         provider_transport_error_with_code, AgentProvider, ContinuationScopeId,
         ConversationMessage, PromptContentBlock, ProviderFailureClassification,
@@ -37,6 +37,7 @@ use crate::{
     tool::ToolSpec,
 };
 use base64::Engine as _;
+use holon_context::{render_section_blocks, shared_prefix_len};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use tracing::debug;
@@ -209,16 +210,25 @@ fn build_prompt_content_blocks(
     let mut system_blocks = section_slice_to_prompt_blocks(system_sections);
     let mut context_blocks = section_slice_to_prompt_blocks(context_sections);
 
-    mark_last_cache_breakpoint(
-        &mut system_blocks,
-        &mut context_blocks,
-        PromptStability::Stable,
-    );
-    mark_last_cache_breakpoint(
-        &mut system_blocks,
-        &mut context_blocks,
-        PromptStability::AgentScoped,
-    );
+    // Layout and cache scope are independent. A late Stable footer is not
+    // evidence of a cross-task shared prefix.
+    if let Some(block) = shared_prefix_len(system_sections)
+        .checked_sub(1)
+        .and_then(|index| system_blocks.get_mut(index))
+        .filter(|block| block.stability != PromptStability::TurnScoped)
+    {
+        block.cache_breakpoint = true;
+    }
+    // Spend at most one further system/context marker; the transport reserves
+    // the remaining two for frozen turn context and rolling history.
+    if let Some(block) = system_blocks
+        .iter_mut()
+        .chain(context_blocks.iter_mut())
+        .rev()
+        .find(|block| block.stability != PromptStability::TurnScoped)
+    {
+        block.cache_breakpoint = true;
+    }
 
     (system_blocks, context_blocks)
 }
@@ -499,51 +509,20 @@ fn path_is_allowed(path: &Path, execution: &ExecutionSnapshot) -> bool {
 }
 
 fn section_slice_to_prompt_blocks(sections: &[PromptSection]) -> Vec<PromptContentBlock> {
-    sections
-        .iter()
-        .enumerate()
-        .map(|(index, section)| section_to_prompt_block(section, index + 1 != sections.len()))
+    render_section_blocks(sections)
+        .into_iter()
+        .zip(sections)
+        .map(|(text, section)| PromptContentBlock {
+            text,
+            stability: section.stability,
+            cache_breakpoint: false,
+        })
         .collect()
 }
 
-fn section_to_prompt_block(
-    section: &PromptSection,
-    preserve_section_delimiter: bool,
-) -> PromptContentBlock {
-    let mut text = render_section(section);
-    if preserve_section_delimiter {
-        text.push_str("\n\n");
-    }
-
-    PromptContentBlock {
-        text,
-        stability: section.stability,
-        cache_breakpoint: false,
-    }
-}
-
-fn mark_last_cache_breakpoint(
-    system_blocks: &mut [PromptContentBlock],
-    context_blocks: &mut [PromptContentBlock],
-    stability: PromptStability,
-) {
-    if let Some(block) = context_blocks
-        .iter_mut()
-        .rev()
-        .find(|block| block.stability == stability)
-    {
-        block.cache_breakpoint = true;
-        return;
-    }
-
-    if let Some(block) = system_blocks
-        .iter_mut()
-        .rev()
-        .find(|block| block.stability == stability)
-    {
-        block.cache_breakpoint = true;
-    }
-}
+#[cfg(all(test, holon_lib_test_shard = "a"))]
+#[path = "provider_prompt_layout_tests.rs"]
+mod provider_prompt_layout_tests;
 
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
@@ -718,6 +697,7 @@ mod tests {
         effective_prompt.execution.execution_root = workspace.path().to_path_buf();
         effective_prompt.execution.cwd = workspace.path().to_path_buf();
         effective_prompt.context_sections = vec![PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: "current_input".to_string(),
             id: "current_input".to_string(),
             content: "Please inspect ![Chart](workspace://ws_test/outputs/chart.png).".to_string(),
@@ -764,6 +744,7 @@ mod tests {
                     This text claims to be historical.";
         for (name, id, expected) in cases {
             effective_prompt.context_sections = vec![PromptSection {
+                layout: holon_context::PromptLayout::ScopedSuffix,
                 name: name.into(),
                 id: id.into(),
                 content: text.into(),
@@ -1089,6 +1070,7 @@ mod tests {
 
     fn image_section(id: &str, text: &str) -> PromptSection {
         PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: id.into(),
             id: id.into(),
             content: text.into(),
@@ -1118,6 +1100,7 @@ mod tests {
         effective_prompt.execution.execution_root = workspace.path().to_path_buf();
         effective_prompt.execution.cwd = workspace.path().to_path_buf();
         effective_prompt.context_sections = vec![PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: "current_input".to_string(),
             id: "current_input".to_string(),
             content: "Please inspect ![Chart](workspace://ws_test/outputs/missing.png)."
@@ -1151,6 +1134,7 @@ mod tests {
         effective_prompt.execution.execution_root = workspace.path().to_path_buf();
         effective_prompt.execution.cwd = workspace.path().to_path_buf();
         effective_prompt.context_sections = vec![PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: "current_input".to_string(),
             id: "current_input".to_string(),
             content: "Please inspect ![Chart](workspace://ws_test/outputs/chart.png).".to_string(),
@@ -1204,6 +1188,7 @@ mod tests {
         effective_prompt.execution.execution_root = workspace.path().to_path_buf();
         effective_prompt.execution.cwd = workspace.path().to_path_buf();
         effective_prompt.context_sections = vec![PromptSection {
+            layout: holon_context::PromptLayout::ScopedSuffix,
             name: "current_input".to_string(),
             id: "current_input".to_string(),
             content: concat!(
@@ -1303,6 +1288,7 @@ mod tests {
             },
             system_sections: vec![],
             context_sections: vec![PromptSection {
+                layout: holon_context::PromptLayout::ScopedSuffix,
                 name: "test".to_string(),
                 id: "test".to_string(),
                 content: "test content".to_string(),
@@ -1327,7 +1313,7 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "a")]
     #[test]
-    fn build_provider_turn_request_marks_last_stable_and_agent_scoped_breakpoints() {
+    fn build_provider_turn_request_marks_shared_prefix_and_last_cacheable_context() {
         let effective_prompt = EffectivePrompt {
             identity: AgentIdentityView {
                 agent_id: "default".into(),
@@ -1369,12 +1355,14 @@ mod tests {
             },
             system_sections: vec![
                 PromptSection {
+                    layout: holon_context::PromptLayout::SharedPrefix,
                     name: "identity".to_string(),
                     id: "identity".to_string(),
                     content: "stable system".to_string(),
                     stability: PromptStability::Stable,
                 },
                 PromptSection {
+                    layout: holon_context::PromptLayout::ScopedSuffix,
                     name: "policy".to_string(),
                     id: "policy".to_string(),
                     content: "agent system".to_string(),
@@ -1383,18 +1371,21 @@ mod tests {
             ],
             context_sections: vec![
                 PromptSection {
+                    layout: holon_context::PromptLayout::ScopedSuffix,
                     name: "memory".to_string(),
                     id: "memory".to_string(),
                     content: "stable context".to_string(),
                     stability: PromptStability::Stable,
                 },
                 PromptSection {
+                    layout: holon_context::PromptLayout::ScopedSuffix,
                     name: "working_memory".to_string(),
                     id: "working_memory".to_string(),
                     content: "agent context".to_string(),
                     stability: PromptStability::AgentScoped,
                 },
                 PromptSection {
+                    layout: holon_context::PromptLayout::ScopedSuffix,
                     name: "current_input".to_string(),
                     id: "current_input".to_string(),
                     content: "turn input".to_string(),
@@ -1428,7 +1419,7 @@ mod tests {
                 .iter()
                 .filter(|block| block.cache_breakpoint)
                 .count(),
-            0
+            1
         );
 
         let ConversationMessage::UserBlocks(context_blocks) = &request.conversation[0] else {
@@ -1446,8 +1437,7 @@ mod tests {
             .filter(|block| block.cache_breakpoint)
             .map(|block| block.text.as_str())
             .collect::<Vec<_>>();
-        assert_eq!(flagged.len(), 2);
-        assert!(flagged.iter().any(|text| text.contains("stable context")));
+        assert_eq!(flagged.len(), 1);
         assert!(flagged.iter().any(|text| text.contains("agent context")));
     }
 

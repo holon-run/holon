@@ -3927,6 +3927,72 @@ mod tests {
     }
 
     #[test]
+    fn shared_system_boundary_survives_both_cache_strategies_and_context_layouts() {
+        let shared = "## identity\nfixed role\n\n## tool_contract\nfixed tools\n\n";
+        for strategy in [
+            AnthropicCacheStrategy::MessagesNative,
+            AnthropicCacheStrategy::ClaudeCodePromptCache,
+        ] {
+            for enabled in [false, true] {
+                for materialized in [false, true] {
+                    for agent in ["agent-a", "agent-b"] {
+                        let mut request = turn_scoped_tail_request();
+                        let suffix = format!("## workspace\n/{agent}/task");
+                        request.prompt_frame.system_prompt = format!("{shared}{suffix}");
+                        request.prompt_frame.system_blocks = vec![
+                            PromptContentBlock {
+                                text: shared.into(),
+                                stability: PromptStability::Stable,
+                                cache_breakpoint: true,
+                            },
+                            PromptContentBlock {
+                                text: suffix.clone(),
+                                stability: PromptStability::Stable,
+                                cache_breakpoint: false,
+                            },
+                        ];
+                        if !materialized {
+                            request.conversation.remove(0);
+                        }
+                        let system = build_anthropic_system(&request, strategy, enabled);
+                        let system_blocks = system.as_array().unwrap();
+                        let offset = usize::from(
+                            enabled && strategy == AnthropicCacheStrategy::ClaudeCodePromptCache,
+                        );
+                        assert_eq!(system_blocks[offset]["text"], shared);
+                        assert_eq!(system_blocks[offset + 1]["text"], suffix);
+                        assert_eq!(
+                            system_blocks[offset].get("cache_control").is_some(),
+                            enabled,
+                        );
+                        assert!(system_blocks[offset + 1].get("cache_control").is_none());
+                        // No instance-dependent text precedes the shared content.
+                        if offset == 1 {
+                            assert_eq!(
+                                system_blocks[0]["text"],
+                                "x-anthropic-billing-header: holon"
+                            );
+                        }
+                        let conversation = build_anthropic_wire_conversation(
+                            &request,
+                            can_mark_turn_scoped_context(&system, enabled),
+                        );
+                        let marker =
+                            rolling_conversation_cache_marker(&conversation, strategy, enabled);
+                        let messages = build_anthropic_messages(&conversation, marker, enabled);
+                        let payload = json!({ "system": system, "messages": messages });
+                        assert_eq!(
+                            count_payload_cache_controls(&payload),
+                            if enabled { (2, 2) } else { (0, 0) },
+                        );
+                        assert_eq!(payload.to_string().matches("current turn").count(), 1);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
     fn inference_time_is_after_history_and_outside_cache_boundary() {
         for strategy in [
             AnthropicCacheStrategy::MessagesNative,

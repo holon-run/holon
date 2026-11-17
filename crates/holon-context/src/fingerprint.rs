@@ -1,6 +1,9 @@
-//! Borrow section text while preserving the legacy JSON Value key order.
+//! Borrow section text while preserving canonical JSON Value key order.
 
-use crate::{PromptCacheIdentity, PromptCacheScopeDiagnostics, PromptSection, PromptStability};
+use crate::{
+    render_sections, shared_prefix_len, PromptCacheIdentity, PromptCacheScopeDiagnostics,
+    PromptLayout, PromptSection, PromptStability,
+};
 use holon_domain::{execution_types::ExecutionSnapshot, AgentState, ToolSpec};
 use serde::{ser::SerializeSeq, Serialize, Serializer};
 use serde_json::{json, Value};
@@ -10,6 +13,7 @@ use sha2::{Digest, Sha256};
 struct CanonicalSection<'a> {
     content: &'a str,
     id: &'a str,
+    layout: PromptLayout,
     name: &'a str,
     stability: PromptStability,
 }
@@ -29,6 +33,7 @@ impl Serialize for Sections<'_> {
             sequence.serialize_element(&CanonicalSection {
                 content: &section.content,
                 id: &section.id,
+                layout: section.layout,
                 name: &section.name,
                 stability: section.stability,
             })?;
@@ -126,6 +131,11 @@ pub fn digest(value: &impl Serialize) -> String {
     format!("{:x}", writer.0.finalize())
 }
 
+/// Observability only: this digest never replaces an agent-scoped cache identity.
+pub fn shared_prefix_fingerprint(sections: &[PromptSection]) -> String {
+    digest(&render_sections(&sections[..shared_prefix_len(sections)]))
+}
+
 pub fn prompt_cache_scope_fingerprint(
     session: &AgentState,
     execution: &ExecutionSnapshot,
@@ -199,16 +209,22 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn borrowed_sections_preserve_legacy_json_bytes_and_stability_filter() {
+    fn borrowed_sections_preserve_canonical_json_bytes_and_stability_filter() {
         let sections = [
             PromptStability::Stable,
             PromptStability::AgentScoped,
             PromptStability::TurnScoped,
         ]
         .into_iter()
-        .map(|stability| PromptSection {
+        .enumerate()
+        .map(|(index, stability)| PromptSection {
             content: "\"\\\n\t\u{0000}中文🙂".into(),
             id: "id".into(),
+            layout: if index == 0 {
+                PromptLayout::SharedPrefix
+            } else {
+                PromptLayout::ScopedSuffix
+            },
             name: "name".into(),
             stability,
         })
@@ -256,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn streamed_fingerprints_match_legacy_canonical_payloads() {
+    fn streamed_fingerprints_match_canonical_payloads() {
         use sha2::{Digest, Sha256};
 
         for (index, text) in [
@@ -350,6 +366,58 @@ mod tests {
                 )
             );
         }
+    }
+
+    #[test]
+    fn layout_and_tool_schema_changes_invalidate_full_and_scoped_identity() {
+        let execution = sample_execution_snapshot();
+        let system = vec![
+            crate::shared_section(
+                "contract",
+                PromptStability::Stable,
+                "same rendered bytes".into(),
+            ),
+            crate::section(
+                "agent",
+                PromptStability::AgentScoped,
+                "same scoped suffix".into(),
+            ),
+        ];
+        let tool = ToolSpec {
+            name: "ExecCommand".into(),
+            description: "Run a command".into(),
+            input_schema: json!({"type": "object"}),
+            freeform_grammar: None,
+        };
+        let tools = vec![tool.clone()];
+        let original_context = context("agent-one", 0, &execution, &system, &[], &tools);
+        let original_scope = scope("agent-one", &execution, &system, &[], &tools);
+        let mut scoped_layout = system.clone();
+        scoped_layout[0].layout = PromptLayout::ScopedSuffix;
+        assert_eq!(render_sections(&system), render_sections(&scoped_layout));
+        assert_ne!(
+            original_context,
+            context("agent-one", 0, &execution, &scoped_layout, &[], &tools)
+        );
+        assert_ne!(
+            original_scope,
+            scope("agent-one", &execution, &scoped_layout, &[], &tools)
+        );
+        let mut changed_tool = tool;
+        changed_tool.input_schema = json!({"type": "object", "required": ["cmd"]});
+        let changed_tools = vec![changed_tool];
+        assert_ne!(
+            original_context,
+            context("agent-one", 0, &execution, &system, &[], &changed_tools)
+        );
+        assert_ne!(
+            original_scope,
+            scope("agent-one", &execution, &system, &[], &changed_tools)
+        );
+        assert_ne!(
+            original_scope,
+            scope("agent-two", &execution, &system, &[], &tools)
+        );
     }
 
     #[test]
