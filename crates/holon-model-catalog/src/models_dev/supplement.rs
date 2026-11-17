@@ -1277,6 +1277,8 @@ mod tests {
             "kimi-k2.5",
             "mimo-v2.5-pro",
             "minimax-m2.5",
+            "minimax-m2.7",
+            "minimax-m-2-7",
             "qwen3.5-flash",
             "qwen3.5-plus",
             "youtu-vita",
@@ -1285,6 +1287,8 @@ mod tests {
             "deepseek-v4-flash",
             "deepseek-v4-flash-0731",
             "mimo-v2.5-pro",
+            "minimax-m2.7",
+            "minimax-m-2-7",
             "qwen3.5-flash",
             "qwen3.5-plus",
         ];
@@ -1319,7 +1323,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(previous.routes.len(), 33);
+        assert_eq!(previous.routes.len(), 39);
         // Gateway catalogs cannot auto-admit models, including retained entries.
         assert!(!AUTO_SUPPLEMENT_PROVIDERS.contains(&"tencent-tokenhub"));
         for previous in [None, Some(&previous)] {

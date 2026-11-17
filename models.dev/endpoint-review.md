@@ -9,6 +9,90 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-18 incremental review
+
+Baseline main is `6198b476`. The fixed models.dev payload was sampled on
+November 17 at **20:35:16 UTC** (November 18 Beijing cycle), SHA256
+`3a6ced626e1b3e47270eb82c15ed55ab967ae74948634d46e6f7b3c7a0e4c4de`.
+The upstream delta covers 458 complete model objects across 26 providers;
+it does not authorize every upstream model or subscription endpoint.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-18)
+records the endpoint-specific contracts.
+
+### Endpoint-specific changes
+
+- Add ordinary API `gpt-6.2-sol` / `gpt-6.2-astra` independently of Codex:
+  both API models have **1,050,000** context and **128,000** output ceilings.
+- Add the two exact Codex IDs with default contexts **500,000 / 272,000**.
+  Change only the existing Codex `gpt-6.1-sol` default context to **500,000**.
+  The official Codex **872,000** maximum is not a default. Output defaults,
+  output ceilings, and explicit auto-compaction thresholds remain unknown.
+  New entries expose `low` through `max`, not delegation-enabled `ultra`;
+  existing model preferences and existing reasoning modes are unchanged.
+- Remove TokenHub `minimax-m2.7` from default, Messages, and Responses.
+  The official TokenHub/CloudBase retirement took effect at **November 17,
+  2026 23:59:59 UTC+8** (15:59:59 UTC), before this sample. The alternate
+  `minimax-m-2-7` spelling remains absent. Account-dependent automatic M3
+  migration does not keep either old ID available and is not a universal
+  M3 entitlement. This notice does not retire other providers' routes.
+- Keep Qwen4 formal and preview contracts separate. Token Plan preview's
+  stated window remains November 11, 10:00 through November 25, 24:00
+  UTC+8 (November 26, 00:00). The personal page still lists the additional
+  22:00–08:00 discount; the team page no longer lists that preview-specific
+  discount. Neither is a permanent API price or another plan's entitlement.
+  The formal API's new Batch support does not enable a Holon batch transport.
+
+### Special-endpoint sweep and retained boundaries
+
+All 30 tracked prefixes were separately reviewed against public material:
+four DashScope prefixes above, eleven Chinese-service prefixes, and fifteen
+other prefixes below. This is not all-field recertification, account-access
+testing, or a claim that every upstream model object was unchanged.
+
+| Exact endpoint(s) | This cycle's decision / remaining boundary |
+|---|---|
+| `volcengine@default`, `@coding`, `@plan` | Keep version/protocol/plan boundaries separate. Seed `260628` exact integer context remains unknown; dotted Plan aliases do not prove dated API capacity. Do not pre-retire K3 before November 25, 14:00 UTC+8. |
+| `tencent-tokenhub@default`, `@messages`, `@responses` | Remove only M2.7 and its translated aliases. Hy4 Flash protocol eligibility remains distinct from Chat effort controls; exact capacities/output defaults remain unknown. |
+| `qianfan@default` | Light's existing contract is preserved. Flash's fixed-high, mandatory-thinking public contract is now established, but admission remains deferred until exact-route request enforcement and real construction-path tests reject incompatible configured efforts. This is an implementation gap, not missing model/tool evidence. |
+| `bigmodel@default`, `zai@default` | Review domestic/international Messages and key/plan qualification independently. No new Legal/FlashX entitlement or exact omitted-output limit is inferred from a generic model card. |
+| `xiaomi@default`, `@token-plan` | Keep existing Responses full-history/no-remote-compaction contracts. No new Token Plan ultraspeed admission; historical entitlement gaps are not removals. |
+| `minimax@default`, `minimax-cn@default`, `minimax@m-plan`, `minimax-cn@m-plan` | The ordinary API notice gives November 18 but no hour/timezone. The historical retired-table/date conflict was already known; it is not fresh proof of execution at this UTC November 17 sample. Retain the four international API IDs for now; domestic catalog has no matching four entries to remove. Do not transfer ordinary API retirement to M Plan compatibility names. |
+| `moonshot@default`, `moonshot-cn@default`, `kimi@default`, `kimi@coding` | Preserve independent API, Code, and Coding contracts. Existing Coding default-effort documentation conflicts and account qualification remain unresolved. |
+| `qwen-portal@default`, `nvidia@default` | No new admission. Portal dynamic/OAuth qualification and per-hosted-model NVIDIA limits stay separate from manufacturer limits. |
+| `opencode-go@default`, `@messages`, `@responses` | Qwen4 Messages remains deferred specifically for missing executable reasoning-control request fields, not missing existence/tool/image/capacity evidence. Capability menus do not establish `budget_tokens` or DashScope's `output_config`. Historical IDs missing from a list are not automatically retired. |
+| `fireworks@default`, independently tracked `xiaomi@responses` | Preserve reviewed serverless/hosted bounds and unresolved Fireworks M3 image evidence. Xiaomi Responses is the existing default protocol, not a new separately registered endpoint. |
+
+### Verification
+
+Both targeted regressions failed before the fixes. The catalog, domain, and
+provider suites then passed **199 / 51 / 360** tests, respectively (catalog:
+one ignored snapshot-regeneration test). Strict comparison against all 647
+baseline routes admits exactly four additions, three removals, and one
+existing Codex context change; the other **643 complete objects** are unchanged.
+Snapshot aliases and per-model route selectors change only for these IDs;
+provider defaults/preferences remain unchanged. Only the four new review
+records and the changed Sol record are approved, with three retired records
+removed and the other 643 records preserved.
+
+The final pinned refresh, validation, **648-route coverage check**, strict
+complete-object comparison, 23 related integration tests, formatting, and both
+`-D warnings` all-targets checks passed. Cargo still reports existing root
+manifest warnings for redundant `package.homepage` and unused `rpassword`.
+
+The complete local root lib-c run was **1081 passed / 4 failed / 7 ignored**,
+not all green. Two unchanged IPv6 listener tests failed with
+`AddrNotAvailable` / `NetworkUnreachable`. The other failures were
+`cookie_only_reader_checkout_failure_remains_storage_error` (`Disconnected`)
+and `capability_read_and_build_share_the_callers_absolute_deadline`
+(`RecvError`); each subsequently passed two separate exact reruns. Those reruns
+do not replace the original complete-run failures.
+
+Independent review of the 13-file frozen change (61 hunks), runtime delta,
+generated data, and review-record delta found no confirmed P1/P2/P3 finding.
+The subsequent review-status-only documentation edits were checked separately
+before publication; neither review certifies every external field or account
+entitlement.
+
 ## 2026-11-17 incremental review
 
 Baseline main is `3841ea0f`. The fixed models.dev payload was sampled on

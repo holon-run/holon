@@ -1937,7 +1937,12 @@ mod tests {
             ] {
                 let model_ref = ModelRef::new(ProviderId::openai_codex(), model);
                 let metadata = catalog.get(&model_ref).unwrap();
-                assert_eq!(metadata.context_window_tokens, Some(272_000), "{model}");
+                let context = if model == "gpt-6.1-sol" {
+                    500_000
+                } else {
+                    272_000
+                };
+                assert_eq!(metadata.context_window_tokens, Some(context), "{model}");
                 assert_eq!(metadata.default_max_output_tokens, None, "{model}");
                 assert_eq!(metadata.max_output_tokens_upper_limit, None, "{model}");
                 assert_eq!(metadata.effective_context_window_percent, 95, "{model}");
@@ -1955,7 +1960,14 @@ mod tests {
                 &base_context(),
                 8192,
             );
-            assert_eq!(policy.prompt_budget_estimated_tokens, 258_400);
+            assert_eq!(
+                policy.prompt_budget_estimated_tokens,
+                if model == "gpt-6.1-sol" {
+                    475_000
+                } else {
+                    258_400
+                }
+            );
             assert_eq!(policy.runtime_max_output_tokens, 8192);
             assert!(policy.capabilities.parallel_tool_calls);
             assert!(policy.capabilities.image_input);
@@ -5550,7 +5562,7 @@ mod tests {
             .filter(|model| model.model_ref.provider == provider)
             .collect::<Vec<_>>();
 
-        assert_eq!(models.len(), 40);
+        assert_eq!(models.len(), 39);
         for model in &models {
             assert_eq!(model.source, ModelMetadataSource::ConservativeBuiltin);
             assert!(model.reasoning_effort_options.is_empty());
