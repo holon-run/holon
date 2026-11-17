@@ -2801,6 +2801,11 @@ impl MemoryIndex {
 
 #[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
+#[path = "index_workspace_tests.rs"]
+mod tests_workspace;
+
+#[cfg(holon_lib_test_shard = "c")]
+#[cfg(test)]
 mod tests {
 
     use holon_memory_index::MEMORY_INDEX_BACKFILL_CURSOR;
