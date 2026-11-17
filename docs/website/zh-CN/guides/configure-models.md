@@ -67,16 +67,22 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
 
 #### GitHub Copilot（实验性）
 
-注册自己的 GitHub OAuth App 并开启设备流，配置它的 **client ID**，
-不要使用 App ID 或第一方编辑器的 client ID：
+Holon 已内置默认 OAuth App，无需填写 client ID：
 
 ```bash
-holon config set providers.github-copilot.auth.client_id "<your-client-id>"
 holon onboard
 ```
 
-选择 `github-copilot` 并完成 OAuth 设备登录。也可以在执行登录的进程环境中
-设置 `GITHUB_COPILOT_CLIENT_ID`。Holon 将凭据和 client ID 存入自己的
+选择 `github-copilot` 并完成 OAuth 设备登录。如需使用自己的 GitHub OAuth App，
+开启该 App 的设备流后配置它的 **client ID**，不要使用 App ID 或第一方编辑器的 client ID：
+
+```bash
+holon config set providers.github-copilot.auth.client_id "<your-client-id>"
+```
+
+也可以在执行登录的进程环境中设置 `GITHUB_COPILOT_CLIENT_ID`。
+优先级依次为显式配置、环境变量、内置默认值；空白覆盖值会被忽略。
+Holon 将凭据和 client ID 存入自己的
 `github-copilot` profile，不读取 IDE 凭据，也不需要 client secret。
 
 此直连 provider 属于实验性支持：GitHub 登录成功不代表 Copilot 订阅权益、

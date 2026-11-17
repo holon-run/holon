@@ -3,8 +3,8 @@
 ## Decision
 
 Holon exposes GitHub Copilot as an experimental bring-your-own-credential
-provider (`github-copilot@default`) that authenticates with the user's own
-GitHub OAuth app through the official GitHub device flow, and calls the
+provider (`github-copilot@default`) that authenticates with Holon's GitHub
+OAuth app by default through the official GitHub device flow, and calls the
 official `api.githubcopilot.com` chat surface. Holon does not embed the
 Copilot SDK, does not reuse IDE credential stores, does not impersonate a
 first-party client, and does not expose Copilot as a resold subscription proxy.
@@ -48,12 +48,14 @@ not establish a general direct-HTTP API admission contract for Holon.
 
 ## Preserved boundary
 
-The OAuth client id belongs to the user's own GitHub OAuth app. Holon reads it
-from `providers.github-copilot.auth.client_id` (or the
-`GITHUB_COPILOT_CLIENT_ID` environment variable), records it in the Holon
-credential profile so refresh works without ambient configuration, and never
-ships a bundled client id. Without a client id, login fails with an explicit
-message instead of silently falling back to a first-party identity.
+Holon bundles the public client id `Ov23lioel2hHZITYyzwB` for its OAuth app,
+with the app owner's authorization, so users do not need to register or enter
+an app id before login. Users can override it with their own GitHub OAuth app:
+`providers.github-copilot.auth.client_id` takes precedence over the
+`GITHUB_COPILOT_CLIENT_ID` environment variable, then the bundled default.
+Blank overrides are ignored. Holon records the selected client id in its
+credential profile so refresh works without ambient configuration. No client
+secret or user token is bundled, and no first-party client identity is used.
 
 The model list is discovered from the account rather than declared in Holon's
 catalog, so Holon does not claim which models a given subscription can reach.

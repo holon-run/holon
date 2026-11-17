@@ -952,7 +952,7 @@ export interface paths {
         put?: never;
         /**
          * Start OAuth device login
-         * @description Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex, xai, and github-copilot (which requires the user's own GitHub OAuth app client id).
+         * @description Request a provider OAuth device code and start a background job that persists the OAuth credential profile after user authorization. Supported providers include openai-codex, xai, and github-copilot (which uses Holon's built-in OAuth app by default, with optional client id overrides).
          */
         post: operations["startOAuthDeviceLogin"];
         delete?: never;
