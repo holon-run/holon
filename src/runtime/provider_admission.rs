@@ -124,7 +124,8 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
     ) {
         return Some(
             "The input was received, but this model send was blocked by a local source revision fault. \
-             Repair is required; inspect scheduler-repair diagnostics. Retained inputs are not automatically replayed."
+             The WorkItem re-enters the queue automatically from a fresh snapshot; \
+             persistent faults pause it until the blocker is cleared."
                 .into(),
         );
     }
@@ -142,14 +143,14 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
         // Legacy diagnostics cannot prove a reason or whether this send occurred.
         None => "The model request could not continue.",
     };
-    let needs_repair = descriptor
+    let execution_reentry = descriptor
         .safe_context
         .get("recovery_disposition")
-        .is_some_and(|disposition| disposition == "needs_repair");
-    Some(if needs_repair {
+        .is_some_and(|disposition| disposition == "execution_reentry");
+    Some(if execution_reentry {
         format!(
-            "{base} Automatic recovery has stopped; input retained. \
-             Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair."
+            "{base} The WorkItem re-enters the queue automatically after this pre-IO stop; \
+             persistent conflicts pause it until the blocker is cleared."
         )
     } else {
         format!("{base} Check the diagnostics for recovery status.")
@@ -1067,7 +1068,7 @@ impl RuntimeHandle {
             // This is a local send result, not the final turn disposition.
             "continuation_pending"
         } else {
-            "needs_repair"
+            "execution_reentry"
         };
         // The marker describes only this send. Earlier requests remain charged
         // and their diagnostics stay attached to the original error chain.
@@ -1104,7 +1105,7 @@ impl RuntimeHandle {
             .with_safe_context("predicate", category)
             .with_safe_context("recovery_disposition", disposition)
             .with_recovery_hint(
-                "Run `holon debug scheduler-recovery --agent <id> --json` to inspect retained input; repair requires separate explicit authorization.",
+                "The WorkItem re-enters the queue automatically; persistent conflicts pause it until its blocker is cleared. Run `holon debug scheduler-recovery --agent <id> --json` to inspect retained input.",
             ),
         )
     }

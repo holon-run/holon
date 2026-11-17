@@ -521,10 +521,6 @@ pub enum WorkItemExecutionState {
         generation: u64,
         reason: String,
     },
-    NeedsRepair {
-        generation: u64,
-        repair_id: String,
-    },
     Terminal {
         generation: u64,
         completion: String,
@@ -538,7 +534,6 @@ impl WorkItemExecutionState {
             | Self::InFlight { generation, .. }
             | Self::Waiting { generation, .. }
             | Self::Paused { generation, .. }
-            | Self::NeedsRepair { generation, .. }
             | Self::Terminal { generation, .. } => *generation,
         }
     }
@@ -589,14 +584,32 @@ pub enum ConversationOutcome {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkItemOutcome {
     Continue,
-    Wait { wait: WaitReference },
-    Complete { completion: String },
-    Pause { reason: String },
-    Yield { target_work_item_id: String },
-    Failed { policy: String },
-    Interrupted { reason: String },
-    Aborted { reason: String },
-    NeedsRepair { repair_id: String },
+    Wait {
+        wait: WaitReference,
+    },
+    Complete {
+        completion: String,
+    },
+    Pause {
+        reason: String,
+    },
+    Yield {
+        target_work_item_id: String,
+    },
+    Failed {
+        policy: String,
+    },
+    Interrupted {
+        reason: String,
+    },
+    Aborted {
+        reason: String,
+    },
+    /// The attempt stopped before any provider IO or side effect; the
+    /// WorkItem re-enters Runnable with `recovery_ref` recording why.
+    Reentry {
+        recovery_ref: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -705,6 +718,10 @@ pub struct WorkItemContinuationResumeSource {
     pub work_item_revision: u64,
     pub blocked_by: Option<String>,
     pub active_wait_ids: Vec<String>,
+    /// The most recently admitted active wait, by (created_at, id) order.
+    /// Disambiguates which wait owns the resume when several are active.
+    #[serde(default)]
+    pub latest_admitted_wait_id: Option<String>,
 }
 
 pub fn continuation_resume_outcome(
@@ -727,6 +744,22 @@ pub fn continuation_resume_outcome(
                 wait_id: wait_id.clone(),
             },
         },
+        // Multiple active waits are adjudicated deterministically: the latest
+        // admission owns the resume; any other answer is a fence violation.
+        _ if source
+            .latest_admitted_wait_id
+            .as_ref()
+            .is_some_and(|latest| source.active_wait_ids.contains(latest)) =>
+        {
+            WorkItemOutcome::Wait {
+                wait: WaitReference {
+                    wait_id: source
+                        .latest_admitted_wait_id
+                        .clone()
+                        .expect("latest admitted wait checked above"),
+                },
+            }
+        }
         [] if source.blocked_by.is_some() => WorkItemOutcome::Pause {
             reason: source
                 .blocked_by
@@ -734,8 +767,8 @@ pub fn continuation_resume_outcome(
                 .expect("continuation resume blocker checked above"),
         },
         [] => WorkItemOutcome::Continue,
-        _ => WorkItemOutcome::NeedsRepair {
-            repair_id: format!("work_item_waits_ambiguous:{work_item_id}"),
+        _ => WorkItemOutcome::Pause {
+            reason: format!("work_item_waits_ambiguous:{work_item_id}"),
         },
     })
 }
@@ -1652,9 +1685,9 @@ fn plan_work_item_outcome(
                 reason: reason.clone(),
             })
         }
-        WorkItemOutcome::NeedsRepair { repair_id } => Ok(WorkItemExecutionState::NeedsRepair {
+        WorkItemOutcome::Reentry { recovery_ref } => Ok(WorkItemExecutionState::Runnable {
             generation: next_generation,
-            repair_id: repair_id.clone(),
+            recovery_ref: Some(recovery_ref.clone()),
         }),
         WorkItemOutcome::Complete { completion } => Ok(WorkItemExecutionState::Terminal {
             generation: next_generation,
@@ -1809,6 +1842,26 @@ mod abort_tests {
             )
             .unwrap(),
             conversation,
+        );
+    }
+
+    #[test]
+    fn reentry_outcome_maps_to_runnable_with_a_recovery_reference() {
+        let outcome = WorkItemOutcome::Reentry {
+            recovery_ref: "provider_dispatch_rejected:turn-1".into(),
+        };
+        assert_eq!(
+            plan_work_item_outcome(7, &outcome).unwrap(),
+            WorkItemExecutionState::Runnable {
+                generation: 8,
+                recovery_ref: Some("provider_dispatch_rejected:turn-1".into()),
+            }
+        );
+        let wire = serde_json::to_value(&outcome).unwrap();
+        assert_eq!(wire["kind"], "reentry");
+        assert_eq!(
+            serde_json::from_value::<WorkItemOutcome>(wire).unwrap(),
+            outcome
         );
     }
 }

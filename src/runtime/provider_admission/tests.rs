@@ -58,7 +58,7 @@ fn exact_timer_wait_interrupted_recovery_replay_preserves_wait() {
 fn exact_timer_wait_provider_recovery_rejects_changed_authority() {
     for change in [
         RecoveryAuthorityChange::Paused,
-        RecoveryAuthorityChange::NeedsRepair,
+        RecoveryAuthorityChange::Runnable,
         RecoveryAuthorityChange::Terminal,
         RecoveryAuthorityChange::ReplacedWait,
     ] {
@@ -686,7 +686,7 @@ enum ContinuationDispatchFault {
 #[derive(Clone, Copy, Debug)]
 enum RecoveryAuthorityChange {
     Paused,
-    NeedsRepair,
+    Runnable,
     Terminal,
     ReplacedWait,
 }
@@ -1443,10 +1443,17 @@ async fn continuation_dispatch_scenario(
             .load_execution_protocol_state_if_initialized("default")
             .unwrap()
             .unwrap();
-        assert!(matches!(
-            protocol.work_items[&waiter.id].state,
-            WorkItemExecutionState::NeedsRepair { .. }
-        ));
+        assert!(
+            matches!(
+                &protocol.work_items[&waiter.id].state,
+                WorkItemExecutionState::Runnable {
+                    recovery_ref: Some(recovery_ref),
+                    ..
+                } if recovery_ref.starts_with("provider_dispatch_rejected")
+            ),
+            "pre-IO admission conflict must re-enter Runnable, not strand the waiter: {:?}",
+            protocol.work_items[&waiter.id].state
+        );
         let settlement = runtime
             .inner
             .runtime_db
@@ -1743,9 +1750,9 @@ async fn continuation_dispatch_scenario(
                     generation,
                     reason: "operator paused after provider failure".into(),
                 },
-                RecoveryAuthorityChange::NeedsRepair => WorkItemExecutionState::NeedsRepair {
+                RecoveryAuthorityChange::Runnable => WorkItemExecutionState::Runnable {
                     generation,
-                    repair_id: "repair-after-provider-failure".into(),
+                    recovery_ref: Some("reentry-after-provider-failure".into()),
                 },
                 RecoveryAuthorityChange::Terminal => WorkItemExecutionState::Terminal {
                     generation,

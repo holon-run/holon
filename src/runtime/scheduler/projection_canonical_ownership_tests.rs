@@ -25,10 +25,6 @@ pub(super) fn execution() -> ExecutionProtocolState {
             generation: 3,
             reason: "discarded pause".into(),
         },
-        WorkItemExecutionState::NeedsRepair {
-            generation: 4,
-            repair_id: "discarded repair".into(),
-        },
         WorkItemExecutionState::Terminal {
             generation: 5,
             completion: "discarded completion".into(),

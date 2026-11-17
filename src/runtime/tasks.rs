@@ -3440,18 +3440,15 @@ impl RuntimeHandle {
         if readiness_mutation.is_some()
             && matches!(
                 authoritative.state,
-                WorkItemExecutionState::InFlight { .. }
-                    | WorkItemExecutionState::Waiting { .. }
-                    | WorkItemExecutionState::NeedsRepair { .. }
+                WorkItemExecutionState::InFlight { .. } | WorkItemExecutionState::Waiting { .. }
             )
         {
             return Err(anyhow!(
-                "cannot change WorkItem readiness while canonical execution state is active or requires repair"
+                "cannot change WorkItem readiness while canonical execution state is active"
             ));
         }
         let next_state = match (&authoritative.state, readiness_mutation) {
             (WorkItemExecutionState::InFlight { .. }, _)
-            | (WorkItemExecutionState::NeedsRepair { .. }, _)
             | (WorkItemExecutionState::Waiting { .. }, None)
             | (WorkItemExecutionState::Waiting { .. }, Some(WorkItemReadinessMutation::Pause(_)))
             | (WorkItemExecutionState::Waiting { .. }, Some(WorkItemReadinessMutation::Resume))
@@ -3600,10 +3597,7 @@ impl RuntimeHandle {
                     },
                 })),
             ),
-            WorkItemExecutionState::InFlight { .. }
-            | WorkItemExecutionState::NeedsRepair { .. }
-                if revision_changed =>
-            {
+            WorkItemExecutionState::InFlight { .. } if revision_changed => {
                 Some(ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
                     AdvanceWorkItemSourceRevision {
                         command_id: format!(
@@ -3665,6 +3659,66 @@ impl RuntimeHandle {
                 expected: authoritative.clone(),
             }),
         )))
+    }
+
+    /// Deterministic multi-wait adjudication for a resumed WorkItem: the
+    /// latest admitted wait owns the resume and every other active wait is
+    /// cancelled in the same transition, with an audit event. Waits already
+    /// mutated by this transition keep their own disposition.
+    fn plan_superseded_wait_cancellations(
+        &self,
+        agent_id: &str,
+        suspended_work_item_id: &str,
+        projected_wait_conditions: &[WaitConditionRecord],
+        read: &WorkCommandRead,
+    ) -> Result<(Vec<WaitConditionRecord>, Option<AuditEvent>)> {
+        let mut active: Vec<&WaitConditionRecord> = read
+            .active_waits_for(suspended_work_item_id)?
+            .into_iter()
+            .filter(|condition| {
+                !projected_wait_conditions
+                    .iter()
+                    .any(|projected| projected.id == condition.id)
+            })
+            .collect();
+        if active.len() < 2 {
+            return Ok((Vec::new(), None));
+        }
+        let latest = (**active
+            .iter()
+            .max_by(|left, right| {
+                (&left.created_at, left.id.as_str()).cmp(&(&right.created_at, right.id.as_str()))
+            })
+            .expect("active waits checked non-empty"))
+        .clone();
+        let now = self.now();
+        let mut cancellations = Vec::new();
+        let mut cancelled_ids = Vec::new();
+        for condition in active.drain(..) {
+            if condition.id == latest.id {
+                continue;
+            }
+            let mut cancelled = condition.clone();
+            cancelled.status = WaitConditionStatus::Cancelled;
+            cancelled.updated_at = now;
+            cancelled.cancelled_at = Some(now);
+            cancelled_ids.push(condition.id.clone());
+            cancellations.push(cancelled);
+        }
+        if cancellations.is_empty() {
+            return Ok((Vec::new(), None));
+        }
+        let audit = AuditEvent::legacy(
+            "wait_conditions_cancelled",
+            serde_json::json!({
+                "agent_id": agent_id,
+                "work_item_id": suspended_work_item_id,
+                "reason": "work_item_wait_superseded",
+                "superseded_by": latest.id,
+                "wait_condition_ids": cancelled_ids,
+            }),
+        );
+        Ok((cancellations, Some(audit)))
     }
 
     fn plan_work_item_execution_continuation_resume(
@@ -3775,7 +3829,7 @@ impl RuntimeHandle {
         let WorkItemBlockerClearance {
             work_item,
             expected_revision,
-            wait_conditions,
+            mut wait_conditions,
             mut audit_events,
             index_changes,
             blocker_cleared,
@@ -4042,6 +4096,17 @@ impl RuntimeHandle {
                 WorkItemContinuationState::Cancelled => "cancel",
                 WorkItemContinuationState::Active => unreachable!(),
             };
+            let (superseded_cancellations, superseded_audit) = self
+                .plan_superseded_wait_cancellations(
+                    &agent_id,
+                    &continuation.suspended_work_item_id,
+                    &wait_conditions,
+                    &read,
+                )?;
+            wait_conditions.extend(superseded_cancellations);
+            if let Some(superseded_audit) = superseded_audit {
+                audit_events.push(superseded_audit);
+            }
             if let Some(command) = self.plan_work_item_execution_continuation_resume(
                 continuation,
                 command_reason,
@@ -4895,26 +4960,6 @@ impl RuntimeHandle {
     ) -> Result<WorkItemCompletionSettlement> {
         let state = read.state.as_ref();
         let protocol_state = read.protocol.as_ref();
-        if protocol_state.as_ref().is_some_and(|protocol| {
-            protocol.work_items.get(&existing.id).is_some_and(|record| {
-                matches!(
-                    record.state,
-                    crate::domain::execution_protocol::WorkItemExecutionState::NeedsRepair { .. }
-                )
-            })
-        }) {
-            return Err(RuntimeError::new(
-                RuntimeErrorDomain::Conflict,
-                "work_item_execution_needs_repair",
-                format!(
-                    "work item {} execution state requires repair before completion",
-                    existing.id
-                ),
-            )
-            .with_safe_context("work_item_id", existing.id.clone())
-            .with_recovery_hint("repair the WorkItem execution state before retrying completion")
-            .into());
-        }
         let active_execution = state.status == AgentStatus::AwakeRunning
             && state.current_run_id.is_some()
             && state.current_execution_binding.is_some();
@@ -5380,19 +5425,9 @@ impl RuntimeHandle {
                     WaitReference, WorkItemExecutionRecord, WorkItemExecutionState,
                 };
 
-                let active_wait_ids = read
-                    .active_waits_for(&existing.id)?
-                    .into_iter()
-                    .map(|condition| condition.id.clone())
-                    .collect::<Vec<_>>();
                 let generation = existing.revision.max(1);
-                let state = match active_wait_ids.as_slice() {
-                    [wait_id] => WorkItemExecutionState::Waiting {
-                        generation,
-                        wait: WaitReference {
-                            wait_id: wait_id.clone(),
-                        },
-                    },
+                let active_waits = read.active_waits_for(&existing.id)?;
+                let state = match active_waits.as_slice() {
                     [] if existing.blocked_by.is_some() => WorkItemExecutionState::Paused {
                         generation,
                         reason: existing
@@ -5404,9 +5439,22 @@ impl RuntimeHandle {
                         generation,
                         recovery_ref: None,
                     },
-                    _ => WorkItemExecutionState::NeedsRepair {
+                    // Several active waits resolve deterministically to the
+                    // latest admission; superseded waits are cancelled when
+                    // the resume itself is planned.
+                    _ => WorkItemExecutionState::Waiting {
                         generation,
-                        repair_id: format!("work_item_waits_ambiguous:{}", existing.id),
+                        wait: WaitReference {
+                            wait_id: active_waits
+                                .iter()
+                                .max_by(|left, right| {
+                                    (&left.created_at, left.id.as_str())
+                                        .cmp(&(&right.created_at, right.id.as_str()))
+                                })
+                                .expect("active waits checked non-empty")
+                                .id
+                                .clone(),
+                        },
                     },
                 };
                 Ok::<_, anyhow::Error>(WorkItemExecutionRecord {
@@ -5665,6 +5713,17 @@ impl RuntimeHandle {
                 Some(suspended)
                     if suspended.agent_id == agent_id && suspended.state == WorkItemState::Open =>
                 {
+                    let (superseded_cancellations, superseded_audit) = self
+                        .plan_superseded_wait_cancellations(
+                            &agent_id,
+                            &frame.suspended_work_item_id,
+                            &wait_conditions,
+                            &read,
+                        )?;
+                    wait_conditions.extend(superseded_cancellations);
+                    if let Some(superseded_audit) = superseded_audit {
+                        audit_events.push(superseded_audit);
+                    }
                     continuation_resumes.insert(
                         frame.id.clone(),
                         read.continuation_resume_source(

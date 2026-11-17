@@ -435,11 +435,24 @@ pub(super) fn assert_source_parked(
         ExecutionAttemptState::Interrupted
     );
     assert!(
-        !matches!(
+        matches!(
             protocol.work_items[waiter_id].state,
-            WorkItemExecutionState::NeedsRepair { .. }
+            WorkItemExecutionState::Waiting { .. }
+        ) || matches!(
+            &protocol.work_items[waiter_id].state,
+            WorkItemExecutionState::Runnable {
+                recovery_ref: Some(recovery_ref),
+                ..
+            } if recovery_ref == "interrupted"
+        ) || matches!(
+            &protocol.work_items[waiter_id].state,
+            WorkItemExecutionState::Paused { reason, .. }
+                if reason == "independent business blocker"
         ),
-        "availability staleness must not permanently pause the continuation for repair"
+        "availability staleness must keep the continuation waiting on its wait, \
+         re-enterable via the parked replay, or parked on its manual business \
+         blocker -- never paused for repair; actual={:?}",
+        protocol.work_items[waiter_id].state
     );
     if let Some(settlement) = runtime
         .runtime_db()

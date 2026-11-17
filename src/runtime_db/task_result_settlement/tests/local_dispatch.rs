@@ -297,8 +297,8 @@ fn exact_root_fixture_with_source(
     let ExecutionProtocolCommand::Settle(settlement) = &mut execution.commands[0] else {
         unreachable!()
     };
-    settlement.outcome.outcome = ExecutionOutcome::WorkItem(WorkItemOutcome::NeedsRepair {
-        repair_id: "provider_dispatch_rejected:rejected-turn".into(),
+    settlement.outcome.outcome = ExecutionOutcome::WorkItem(WorkItemOutcome::Reentry {
+        recovery_ref: "provider_dispatch_rejected:rejected-turn".into(),
     });
     (dir, db, record, command, execution)
 }
@@ -595,10 +595,17 @@ fn batchless_exact_waiter_local_stop_parks_original_grant_across_restart() {
         protocol.attempts["rejected-attempt"].state,
         ExecutionAttemptState::Settled,
     );
-    assert!(matches!(
-        protocol.work_items["work-b"].state,
-        WorkItemExecutionState::NeedsRepair { .. }
-    ));
+    assert!(
+        matches!(
+            &protocol.work_items["work-b"].state,
+            WorkItemExecutionState::Runnable {
+                recovery_ref: Some(recovery_ref),
+                ..
+            } if recovery_ref == "provider_dispatch_rejected:rejected-turn"
+        ),
+        "a pre-IO rejection outcome must settle the WorkItem back to Runnable: {:?}",
+        protocol.work_items["work-b"].state
+    );
     drop(db);
     let db = RuntimeDb::open_and_migrate(
         dir.path().join("state/runtime.sqlite"),

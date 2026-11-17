@@ -116,7 +116,6 @@ Runnable(g)
 InFlight(g, attempt_id)
 Waiting(g, wait_id)
 Paused(g, reason)
-NeedsRepair(g, repair_id)
 Terminal(g, completion)
 ```
 
@@ -131,7 +130,6 @@ InFlight(g, attempt) -> Runnable(g + 1)
 InFlight(g, attempt) -> Runnable(g + 1, recovery_ref)
 InFlight(g, attempt) -> Waiting(g + 1, wait_id)
 InFlight(g, attempt) -> Paused(g + 1, reason)
-InFlight(g, attempt) -> NeedsRepair(g + 1, repair)
 InFlight(g, attempt) -> Terminal(g + 1, completion)
 
 Paused(g) -> Runnable(g + 1)
@@ -143,13 +141,19 @@ Terminal transition resolves owned waits and continuation obligations and
 removes scheduler eligibility. Focus may be cleared or restored in the same
 transaction, but it does not grant eligibility.
 
-`NeedsRepair` is not an ordinary readiness toggle. Timer ticks, focus changes,
-and blocker clearing cannot reopen it. Authenticated scheduler repair inspection
-reports the original source/wait and revision fences, but does not manufacture
-proof of a revision-only writer gap or zero side effects. Settled attempts and
-resolved exact waits remain terminal. When existing evidence cannot authorize
-an expectation-fenced original-source repair, restoration is explicitly refused;
-a separately trusted new root is not replay of that source. See
+`NeedsRepair` has been retired. A pre-IO admission conflict settles the
+still-owned WorkItem lane back to `Runnable(g + 1, recovery_ref)` for bounded
+reentry; exhausting the reentry budget, or a true invariant violation
+(ancestry cycle, missing owner, provenance mismatch), settles directly to
+`Paused(g + 1, reason)` for explicit blocker clearance. Timer ticks, focus
+changes, and blocker clearing cannot reopen a `Paused` lane. A continuation
+resume with multiple active waits resolves deterministically: the latest
+admitted wait wins, superseded waits are cancelled with audit evidence, and
+only undecidable evidence settles to `Paused`. Legacy rows stored as
+`needs_repair` are re-evaluated once on load: rows whose fence reason no
+longer holds return to `Runnable`, the rest load as `Paused` with the
+recorded repair reason. Settled attempts and resolved exact waits remain
+terminal; a separately trusted new root is not replay of that source. See
 [Atomic Wake Writer Contract](atomic-wake-writer-contract.md#revision-rejection-and-historical-repair).
 
 Provider lineage recovery is the only runtime-owned admission that may claim a
@@ -163,7 +167,7 @@ generation fences, records `RuntimeRecovery(recovery_id)` as the execution
 source, and leaves the `WaitCondition` unresolved. Settlement projects the
 WorkItem back to `Waiting` when that wait remains Active or was Triggered while
 recovery owned the lane, so the exact queued wake can consume it next. Provider
-recovery does not admit `Paused`, `NeedsRepair`, `Terminal`, or already
+recovery does not admit `Paused`, `Terminal`, or already
 `InFlight` WorkItems, and it does not clear blockers or waits.
 
 Task-result handling obligations do not weaken these admission gates. A valid
@@ -367,7 +371,7 @@ publish terminal effects outside that transaction.
 A WorkItem-bound provider turn that ends without a WorkItem outcome closes the
 attempt as `ProtocolViolation` and normally returns the WorkItem to
 `Runnable(g + 1, recovery_ref)`. Repeated violations without new durable
-progress may move that WorkItem to `NeedsRepair`; they do not reserve the
+progress move that WorkItem to `Paused` with an explicit reason; they do not reserve the
 agent lane.
 
 ## Interruption And Restart
@@ -462,7 +466,7 @@ writes audit evidence in the same transaction.
 | temporarily inadmissible candidate | keep source eligible and try bounded alternatives |
 | terminal or paused target | quarantine that candidate; continue unrelated work |
 | owner or binding conflict | isolate the source/WorkItem; keep operator and unrelated work available |
-| repeated protocol violation | move the affected WorkItem to `NeedsRepair` |
+| repeated protocol violation | move the affected WorkItem to `Paused` with a recorded reason |
 | corrupt primary partition | stop that partition; keep other agents and read APIs available |
 
 A normal typed conflict must not cause an unbounded queue-head retry, agent
@@ -470,7 +474,9 @@ restart loop, or lane reservation leak.
 
 A final provider dispatch guard refusal is a local execution conflict, not a
 remote-provider failure. An aborted turn with typed local-dispatch evidence
-settles its still-owned WorkItem lane to `NeedsRepair`; lifecycle/conversation
+settles its still-owned WorkItem lane back to `Runnable(g + 1, recovery_ref)`
+for bounded reentry, escalating to `Paused` when the reentry budget is
+exhausted or the refusal proves an invariant violation; lifecycle/conversation
 attempts pause. A proven availability refusal instead persists queue parking
 at the original provider deadline and interrupts the same source for canonical
 replay, preserving its recovery root and budget. Other refusals must not take

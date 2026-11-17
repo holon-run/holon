@@ -17,7 +17,7 @@ fn rejection(denial: Option<LocalDispatchDenial>, disposition: &str) -> anyhow::
 }
 
 #[test]
-fn revision_dispatch_failure_has_explicit_receipt_and_no_replay_promise() {
+fn revision_dispatch_failure_has_explicit_receipt_and_reentry_exit() {
     use crate::runtime_db::provider_admission::ProviderDispatchRejection;
     for reason in [
         ProviderDispatchRejection::WorkItemRevisionMismatch,
@@ -27,14 +27,15 @@ fn revision_dispatch_failure_has_explicit_receipt_and_no_replay_promise() {
             Some(LocalDispatchDenial::Dispatch(
                 ProviderRecoveryDispatchDenial::StaleExecution(reason),
             )),
-            "needs_repair",
+            "execution_reentry",
         );
         let before = serde_json::to_value(describe_runtime_error(&error)).unwrap();
         let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
         assert!(summary.contains("input was received"));
         assert!(summary.contains("local source revision fault"));
-        assert!(summary.contains("scheduler-repair"));
-        assert!(summary.contains("not automatically replayed"));
+        assert!(summary.contains("re-enters the queue"));
+        assert!(summary.contains("pause it until the blocker is cleared"));
+        assert!(!summary.contains("Automatic recovery has stopped"));
         assert_eq!(
             serde_json::to_value(describe_runtime_error(&error)).unwrap(),
             before
@@ -65,14 +66,17 @@ fn local_dispatch_failure_messages_use_typed_reasons_without_changing_diagnostic
             "A local safety check blocked this model send.",
         ),
     ] {
-        let error = rejection(Some(denial), "needs_repair").context("private diagnostic detail");
+        let error =
+            rejection(Some(denial), "execution_reentry").context("private diagnostic detail");
         let before = serde_json::to_value(describe_runtime_error(&error)).unwrap();
         let mut message = operator();
         message.kind = MessageKind::TaskResult;
         let summary = RuntimeHandle::concise_runtime_failure_text(&message, &error);
         assert_eq!(
             summary,
-            format!("{reason} Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair.")
+            format!(
+                "{reason} The WorkItem re-enters the queue automatically after this pre-IO stop; persistent conflicts pause it until the blocker is cleared."
+            )
         );
         assert!(!summary.contains("task_result"));
         assert!(!summary.contains("before IO"));
@@ -107,23 +111,23 @@ fn local_dispatch_failure_messages_do_not_promise_uncommitted_recovery() {
 }
 
 #[test]
-fn unknown_dispatch_requires_explicit_diagnosis() {
+fn unknown_dispatch_failure_promises_only_work_item_reentry() {
     for denial in [LocalDispatchDenial::UnknownDispatch] {
-        let error = rejection(Some(denial), "needs_repair");
+        let error = rejection(Some(denial), "execution_reentry");
         let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
-        assert!(summary.contains("Automatic recovery has stopped"));
-        assert!(summary.contains("input retained"));
-        assert!(summary.contains("holon debug scheduler-recovery --agent <id> --json"));
-        assert!(!summary.contains("automatically replayed"));
+        assert!(summary.contains("unknown outcome"));
+        assert!(summary.contains("re-enters the queue"));
+        assert!(summary.contains("blocker is cleared"));
+        assert!(!summary.contains("Automatic recovery has stopped"));
     }
 }
 
 #[test]
 fn local_dispatch_failure_messages_without_typed_evidence_are_conservative() {
-    for disposition in ["needs_repair", "pause_requested", "", "unknown"] {
+    for disposition in ["execution_reentry", "pause_requested", "", "unknown"] {
         let error = rejection(None, disposition);
-        let expected = if disposition == "needs_repair" {
-            "The model request could not continue. Automatic recovery has stopped; input retained. Run `holon debug scheduler-recovery --agent <id> --json` before explicitly authorized repair."
+        let expected = if disposition == "execution_reentry" {
+            "The model request could not continue. The WorkItem re-enters the queue automatically after this pre-IO stop; persistent conflicts pause it until the blocker is cleared."
         } else {
             "The model request could not continue. Check the diagnostics for recovery status."
         };

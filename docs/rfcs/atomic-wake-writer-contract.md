@@ -109,18 +109,19 @@ and attempt/message/WorkItem identities from the rejecting transaction. Missing,
 zero, future, and durable/source drift are distinct diagnostic details under
 the existing `WorkItemRevisionMismatch` reason; none grants dispatch authority.
 
-`GET /control/agents/{agent_id}/scheduler-repair` exposes read-only assessments
-for `NeedsRepair` WorkItems through the existing authenticated control boundary.
-An assessment is not a prepared repair or an authorization token. Revision
-numbers alone do not prove which writer caused a gap. In particular,
-`dispatch_occurred=false` describes one send, not the absence of earlier
-requests, tools, or input consumption in the attempt.
+`GET /control/agents/{agent_id}/scheduler-repair` remains a read-only
+diagnostic surface through the existing authenticated control boundary; the
+per-WorkItem `NeedsRepair` assessment payload was removed together with the
+state. It is not a prepared repair or an authorization token, and revision
+numbers alone do not prove which writer caused a gap.
 
 A settled source or a resolved/dropped exact wait cannot be rearmed. Where the
 current ledgers cannot prove a revision-only gap, zero side effects, and a
 still-replayable original source/exact wait, inspection explicitly refuses
-original-source restoration. This change does not add a generic successful
-`NeedsRepair` unlock operation. A separately authorized new continuation/root
+original-source restoration. No generic `NeedsRepair` unlock operation exists:
+the state itself is retired, and legacy `needs_repair` rows are re-evaluated
+once on load (fence reason gone -> `Runnable`, otherwise -> `Paused` with the
+recorded reason). A separately authorized new continuation/root
 is new input, not restoration or replay of the old input; operators must not
 edit revision, generation, or pending rows to simulate that authority.
 
@@ -150,8 +151,8 @@ ineligible for automatic replay. Shared consumption transactions also fence
 retained sources: a new turn must not attach an old operator interject or batched
 agent-message follower merely because the revision drift has disappeared.
 Selection filters alone are not a consumption authority boundary.
-Existing `NeedsRepair` states, wait
-obligations, consumption, and business blockers remain unchanged. These records
+Existing wait obligations, consumption, and business blockers remain
+unchanged. These records
 are diagnostics and failure feedback, never online reconcile authority.
 
 ### Terminal timer obligations

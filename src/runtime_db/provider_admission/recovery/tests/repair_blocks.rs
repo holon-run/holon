@@ -243,7 +243,7 @@ fn repair_blocks_publication_failure_rolls_back_episode_and_source() -> Result<(
 }
 
 #[test]
-fn repair_blocks_revalidate_drift_without_reviving_retained_or_needs_repair_owner() -> Result<()> {
+fn repair_blocks_revalidate_drift_without_reviving_retained_or_paused_owner() -> Result<()> {
     let (_dir, db) = database()?;
     canonical_root(&db)?;
     strand(&db, 2)?;
@@ -254,9 +254,9 @@ fn repair_blocks_revalidate_drift_without_reviving_retained_or_needs_repair_owne
     db.transaction(|tx| {
         let execution = WorkItemExecutionRecord {
             source_revision: 2,
-            state: WorkItemExecutionState::NeedsRepair {
+            state: WorkItemExecutionState::Paused {
                 generation: 1,
-                repair_id: "real-business-repair".into(),
+                reason: "real-business-repair".into(),
             },
         };
         tx.execute(
@@ -358,9 +358,9 @@ fn repair_blocks_incarnation_and_generation_are_separate_expectations() -> Resul
     db.transaction(|tx| {
         let execution = WorkItemExecutionRecord {
             source_revision: 1,
-            state: WorkItemExecutionState::NeedsRepair {
+            state: WorkItemExecutionState::Paused {
                 generation: 2,
-                repair_id: "next".into(),
+                reason: "next".into(),
             },
         };
         tx.execute(
@@ -460,5 +460,103 @@ fn repair_blocks_preserve_prior_io_side_effects_and_terminal_source_fences() -> 
         assert_eq!(current.total_requests, 1);
         assert!(current.side_effect_boundary);
     }
+    Ok(())
+}
+
+#[test]
+fn legacy_needs_repair_rows_reevaluate_when_loaded() -> Result<()> {
+    let (_dir, db) = database()?;
+    let attempt = canonical_root(&db)?;
+    let legacy = serde_json::json!({
+        "source_revision": 2,
+        "state": {
+            "state": "needs_repair",
+            "generation": 1,
+            "repair_id": "work_item_waits_ambiguous:work-a"
+        }
+    });
+    db.transaction(|tx| {
+        // A stored needs_repair row always pairs with the attempt that was
+        // settled by the repair outcome; the fixture keeps that pairing so
+        // loading must migrate both sides coherently.
+        tx.execute(
+            "UPDATE execution_protocol_work_items
+             SET payload_json = ?1, source_revision = 2, generation = 1,
+                 lifecycle_state = 'paused'
+             WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
+            params![legacy.to_string()],
+        )?;
+        let mut attempt_payload: serde_json::Value = serde_json::from_str(&tx.query_row(
+            "SELECT payload_json FROM execution_protocol_attempts
+                 WHERE agent_id = 'agent-a' AND attempt_id = ?1",
+            params![attempt.attempt_id],
+            |row| row.get::<_, String>(0),
+        )?)?;
+        attempt_payload["state"] = serde_json::json!("settled");
+        attempt_payload["terminal_outcome_id"] = serde_json::json!("outcome-legacy-repair");
+        attempt_payload["terminal_at"] = serde_json::json!("2026-11-17T00:00:01Z");
+        tx.execute(
+            "UPDATE execution_protocol_attempts SET payload_json = ?1
+             WHERE agent_id = 'agent-a' AND attempt_id = ?2",
+            params![attempt_payload.to_string(), attempt.attempt_id],
+        )?;
+        tx.execute(
+            "INSERT INTO execution_protocol_outcomes
+             (agent_id, outcome_id, attempt_id, payload_json)
+             VALUES ('agent-a', 'outcome-legacy-repair', ?1, ?2)",
+            params![
+                attempt.attempt_id,
+                serde_json::json!({
+                    "outcome_id": "outcome-legacy-repair",
+                    "attempt_id": attempt.attempt_id,
+                    "outcome": {
+                        "owner": "work_item",
+                        "outcome": {
+                            "kind": "needs_repair",
+                            "repair_id": "provider_dispatch_rejected:turn-legacy"
+                        }
+                    },
+                    "created_at": "2026-11-17T00:00:01Z"
+                })
+                .to_string()
+            ],
+        )?;
+        Ok(())
+    })?;
+    strand(&db, 2)?;
+    let protocol = db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("agent-a")?
+        .expect("protocol must stay initialized");
+    assert_eq!(
+        protocol.work_items["work-a"].state,
+        WorkItemExecutionState::Runnable {
+            generation: 1,
+            recovery_ref: None,
+        },
+        "an aligned durable revision means the fence is gone: Runnable again"
+    );
+    assert_eq!(
+        protocol.outcomes["outcome-legacy-repair"].outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted {
+                reason: "provider_dispatch_rejected:turn-legacy".into()
+            }
+        ),
+        "the paired legacy outcome migrates to interrupted with its repair reason"
+    );
+    strand(&db, 3)?;
+    let protocol = db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("agent-a")?
+        .expect("protocol must stay initialized");
+    assert_eq!(
+        protocol.work_items["work-a"].state,
+        WorkItemExecutionState::Paused {
+            generation: 1,
+            reason: "work_item_waits_ambiguous:work-a".into(),
+        },
+        "unaligned revisions pause with the original repair reason"
+    );
     Ok(())
 }

@@ -286,6 +286,7 @@ mod tests {
                     work_item_revision: 1,
                     blocked_by: None,
                     active_wait_ids: Vec::new(),
+                    latest_admitted_wait_id: None,
                 },
                 outcome: WorkItemOutcome::Continue,
             },
@@ -309,12 +310,72 @@ mod tests {
                 work_item_revision: 1,
                 blocked_by: None,
                 active_wait_ids: Vec::new(),
+                latest_admitted_wait_id: None,
             },
             outcome: WorkItemOutcome::Continue,
         };
         assert!(resume_work_item_continuation(&resumed.state, &stale)
             .unwrap_err()
             .contains("stale"));
+    }
+
+    #[test]
+    fn continuation_resume_adjudicates_multiple_waits_to_the_latest_admission() {
+        let source = WorkItemContinuationResumeSource {
+            work_item_revision: 1,
+            blocked_by: None,
+            active_wait_ids: vec!["wait-early".into(), "wait-late".into()],
+            latest_admitted_wait_id: Some("wait-late".into()),
+        };
+        assert_eq!(
+            continuation_resume_outcome("work-a", &source).unwrap(),
+            WorkItemOutcome::Wait {
+                wait: WaitReference {
+                    wait_id: "wait-late".into(),
+                },
+            },
+            "the latest admitted wait owns the resume"
+        );
+        let single = WorkItemContinuationResumeSource {
+            active_wait_ids: vec!["wait-only".into()],
+            latest_admitted_wait_id: None,
+            ..source
+        };
+        assert_eq!(
+            continuation_resume_outcome("work-a", &single).unwrap(),
+            WorkItemOutcome::Wait {
+                wait: WaitReference {
+                    wait_id: "wait-only".into(),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn continuation_resume_pauses_when_the_latest_admission_is_undeterminable() {
+        let source = WorkItemContinuationResumeSource {
+            work_item_revision: 1,
+            blocked_by: None,
+            active_wait_ids: vec!["wait-a".into(), "wait-b".into()],
+            latest_admitted_wait_id: None,
+        };
+        assert_eq!(
+            continuation_resume_outcome("work-a", &source).unwrap(),
+            WorkItemOutcome::Pause {
+                reason: "work_item_waits_ambiguous:work-a".into(),
+            }
+        );
+        let dangling = WorkItemContinuationResumeSource {
+            latest_admitted_wait_id: Some("wait-gone".into()),
+            ..source
+        };
+        assert_eq!(
+            continuation_resume_outcome("work-a", &dangling).unwrap(),
+            WorkItemOutcome::Pause {
+                reason: "work_item_waits_ambiguous:work-a".into(),
+            },
+            "a latest admission outside the active set cannot adjudicate"
+        );
     }
 
     #[test]

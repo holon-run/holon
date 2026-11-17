@@ -6023,7 +6023,7 @@ mod tests {
         )
         .with_safe_context("stage", "before_dispatch")
         .with_safe_context("predicate", "stale_execution")
-        .with_safe_context("recovery_disposition", "needs_repair")
+        .with_safe_context("recovery_disposition", "execution_reentry")
         .with_recovery_hint("Recheck the canonical execution.");
         let expected = anyhow!("dispatch guard rejected").context(expected);
         let descriptor = describe_runtime_error(&expected);
