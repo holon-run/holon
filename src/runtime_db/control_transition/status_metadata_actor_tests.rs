@@ -10,6 +10,7 @@ use crate::runtime_db::{
     task_status_metadata::{
         FrozenControlWorktreeCompletion, TaskStatusMetadataInstallMode, TaskStatusMetadataSelection,
     },
+    test_support::prepare_current_task_fixture_tx,
     transitions::{InputMutationExecution, PreparedInputTransition, TransitionFaultPoint},
 };
 
@@ -61,8 +62,13 @@ fn original_with_artifact(artifact: Option<serde_json::Value>) -> Result<Origina
         task.detail.as_mut().unwrap()["worktree"] = artifact;
     }
     f.db.transaction(|tx| {
-        tasks::prepare_task_domain_snapshot_with_budget_tx(tx, &scope, &request(), &ledger)?
-            .require_current()?;
+        prepare_current_task_fixture_tx(
+            tx,
+            "original_with_artifact before write",
+            &scope,
+            &request(),
+            &ledger,
+        )?;
         let keys = BTreeSet::from([TaskKey::new(TaskFamily::Task, &task.id)]);
         let proof = tasks::prepare_task_write_tx(tx, &scope, &keys)?;
         upsert_task_tx(tx, &task)?;

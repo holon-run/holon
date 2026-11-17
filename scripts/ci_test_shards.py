@@ -82,6 +82,11 @@ SUITES = (
 # Two CI jobs each build two smaller libtest binaries, serially.
 LIB_SHARDS = ("lib-a", "lib-b")
 LIB_COMPILE_GROUPS = {"lib-a": ("a", "c"), "lib-b": ("b", "d")}
+TASK_FIXTURE_MODULES = (
+    "runtime_db::test_support::task_fixture_tests",
+    "runtime_db::control_transition::tests::task_write_tests",
+    "runtime_db::control_transition::tests::status_metadata_actor_tests",
+)
 LIB_C_OWNERS = frozenset(
     {
         "agent_template", "auth", "calendar", "client", "cloudflare_tunnel",
@@ -282,6 +287,41 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
         raise subprocess.CalledProcessError(failures[0].returncode, failures[0].args)
 
 
+def command_task_fixtures(_: argparse.Namespace) -> None:
+    """Run the focused fixture regressions without weakening full shard gates."""
+    names = lib_test_names("b")
+    validate_lib_group(names, "b")
+    selections = []
+    for module in TASK_FIXTURE_MODULES:
+        selected = [name for name in names if name.startswith(f"{module}::")]
+        if not selected:
+            raise ValueError(f"task fixture module {module} has no tests")
+        selections.append(selected)
+    duplicates = [
+        name for name, count in Counter(
+            name for selected in selections for name in selected
+        ).items() if count > 1
+    ]
+    if duplicates:
+        raise ValueError(f"task fixture modules contain duplicate tests: {duplicates}")
+
+    failures = []
+    for module, selected in zip(TASK_FIXTURE_MODULES, selections):
+        command = [
+            "cargo", "test", "--lib", f"{module}::",
+            "--", "--test-threads=2",
+        ]
+        print(f"task fixture module {module}: {len(selected)} tests", file=sys.stderr)
+        print(f"$ HOLON_LIB_TEST_SHARD=b {' '.join(command)}", file=sys.stderr)
+        completed = subprocess.run(
+            command, cwd=REPO_ROOT, env=lib_group_environment("b"),
+        )
+        if completed.returncode:
+            failures.append(completed)
+    if failures:
+        raise subprocess.CalledProcessError(failures[0].returncode, failures[0].args)
+
+
 def suite_commands(
     suite: str, all_targets: list[str], test_threads: str | None
 ) -> list[list[str]]:
@@ -381,6 +421,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate = subparsers.add_parser("validate")
     validate.set_defaults(func=command_validate)
+    task_fixtures = subparsers.add_parser("task-fixtures")
+    task_fixtures.set_defaults(func=command_task_fixtures)
     verify = subparsers.add_parser("verify-lib-lists")
     verify.add_argument("--baseline", type=Path, required=True)
     verify.add_argument("--directory", type=Path, required=True)
