@@ -86,6 +86,9 @@ internal class HolonViewModel(
             isCurrent = { activeAvatarLease(state.value, repository.sessions.current) === lease },
             isNetworkAllowed = { state.value.online && state.value.rosterState == AgentRosterState.Synced },
             onAuthenticationFailure = { error -> handleRuntimeFailure(error, lease) },
+            diskCache = repository.avatarCache.scope(lease.session.scopeKey) {
+                activeAvatarLease(state.value, repository.sessions.current) === lease
+            },
         )
 
     internal fun isRuntimeBrowserLeaseCurrent(lease: SessionLease): Boolean =
