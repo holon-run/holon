@@ -105,8 +105,8 @@ on:
       - "scripts/validate-agent-templates*.py"
   workflow_dispatch:
   schedule:
-    # Nightly full-sweep safety net: path-tiered main pushes skip
-    # macOS, so every enabled tier still runs once a day.
+    # Nightly full-sweep safety net: PRs and main pushes skip Apple jobs,
+    # so every enabled tier still runs once a day.
     - cron: "40 2 * * *"
 
 concurrency:
@@ -323,11 +323,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     needs: changes
-    # Data-structure tier: Swift wire drift plus mock-based SDK tests (type
-    # check included) without a daemon or simulator. Swift wire paths and
-    # Rust-base changes (ios_compat) both land here; Rust-base changes also
-    # run the real-daemon contract probe in the ios-app job.
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.swift_sdk == 'true' || needs.changes.outputs.ios_compat == 'true'
+    # Nightly/manual data-structure tier: Swift wire drift plus mock-based
+    # SDK tests (type check included) without a daemon or simulator.
+    if: needs.changes.outputs.full_sweep == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Set up Node.js
@@ -355,15 +353,9 @@ jobs:
     # run short before the step-level bound can report anything useful.
     timeout-minutes: 130
     needs: changes
-    # Tiered iOS gating: iOS-relevant paths (ios_app) and full sweeps run
-    # every gate below except the UI sweep; Rust-base changes (ios_compat)
-    # run only the real-daemon contract probe — the compatibility surface
-    # Rust code can actually break — and skip the simulator, app and UI
-    # gates. The simulator UI sweep is an on-demand tier (workflow_dispatch
-    # or nightly full sweep): it is the slowest and least deterministic
-    # iOS gate. App changes keep build, unit and daemon-contract gates. Changes
-    # that touch none of these surfaces skip this job entirely.
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.ios_app == 'true' || needs.changes.outputs.ios_compat == 'true'
+    # Nightly/manual full sweeps run every gate, including simulator UI.
+    # PRs and main pushes skip this job before requesting an Apple runner.
+    if: needs.changes.outputs.full_sweep == 'true'
     steps:
       - uses: actions/checkout@v4
       - name: Require Xcode and an available iOS 18+ simulator
@@ -417,8 +409,7 @@ jobs:
         # tail while still ending a hung sweep far sooner than the job
         # bound.
         timeout-minutes: 90
-        # On-demand tier: workflow_dispatch and the nightly full sweep run
-        # this step; ordinary PR and push runs keep the non-UI gates.
+        # Keep the UI sweep in every nightly/manual full sweep.
         if: needs.changes.outputs.full_sweep == 'true'
         run: make ios-ui-test
         env:
@@ -557,11 +548,9 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     needs: changes
-    # PR-level darwin gate for the native runtime tests. The cross-target
-    # `cargo check` pair runs in its own job so this native build does not
-    # wait for it. Main pushes skip it (PRs and nightly/dispatch sweeps cover
-    # it).
-    if: needs.changes.outputs.full_sweep == 'true' || (github.event_name == 'pull_request' && needs.changes.outputs.macos_rust_check == 'true')
+    # Nightly/manual darwin gate for the native runtime tests. Cross-target
+    # checks run in their own job so this native build does not wait for them.
+    if: needs.changes.outputs.full_sweep == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -594,7 +583,7 @@ jobs:
     needs: changes
     # The cross-target checks use their own build directories, so they run on
     # a separate runner instead of extending the native macOS test job.
-    if: needs.changes.outputs.full_sweep == 'true' || (github.event_name == 'pull_request' && needs.changes.outputs.macos_rust_check == 'true')
+    if: needs.changes.outputs.full_sweep == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -630,9 +619,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     needs: changes
-    # Main pushes run this only for macOS-specific changes; rust-tier main
-    # pushes skip it (PRs and nightly/dispatch full sweeps cover it).
-    if: needs.changes.outputs.full_sweep == 'true' || (github.event_name == 'pull_request' && needs.changes.outputs.macos_app == 'true') || (github.event_name == 'push' && needs.changes.outputs.macos_app == 'true' && needs.changes.outputs.rust != 'true')
+    # Nightly/manual packaging gate; PRs and main pushes skip Apple runners.
+    if: needs.changes.outputs.full_sweep == 'true'
     steps:
       - uses: actions/checkout@v4
 
