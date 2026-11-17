@@ -65,6 +65,18 @@ impl OpenAiBearerAuth {
         let Some(profile) = self.credential_profile.as_deref() else {
             return Ok(None);
         };
+        if let Some(store_path) = self.credential_store_path.as_deref() {
+            // Reload on every dispatch so rotation and logout take effect
+            // without rebuilding the provider.
+            let store = load_credential_store_at(store_path)?;
+            let entry = store.profiles.get(profile).ok_or_else(|| {
+                anyhow::anyhow!("Holon credential profile {profile} is unavailable")
+            })?;
+            if entry.kind != CredentialKind::OAuth {
+                anyhow::bail!("Holon credential profile {profile} is not an OAuth credential");
+            }
+            return load_oauth_profile_credential(&entry.material, profile).map(Some);
+        }
         let material = self
             .credential_material
             .as_deref()
@@ -569,9 +581,8 @@ fn codex_refresh_error(
             source_chain: vec![failure.safe_summary()],
         }),
         format!(
-            "{provider} OAuth refresh failed for Holon credential profile {profile}: {} ({})",
-            failure.message,
-            failure.kind.as_str()
+            "{provider} Holon credential profile {profile}: {}",
+            failure.safe_summary()
         ),
     )
 }

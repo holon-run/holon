@@ -405,6 +405,20 @@ fn chat_completions_rejects_malformed_oauth_material_before_sending_credentials(
 
 #[tokio::test]
 async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provider() {
+    check_chat_completions_oauth_refresh(axum::http::StatusCode::OK).await;
+}
+
+#[tokio::test]
+async fn chat_completions_oauth_401_rotation_survives_two_turns() {
+    check_chat_completions_oauth_refresh(axum::http::StatusCode::UNAUTHORIZED).await;
+}
+
+#[tokio::test]
+async fn chat_completions_oauth_403_preserves_denial_without_refresh() {
+    check_chat_completions_oauth_refresh(axum::http::StatusCode::FORBIDDEN).await;
+}
+
+async fn check_chat_completions_oauth_refresh(initial_status: axum::http::StatusCode) {
     // A plan alias resolves its OAuth configuration through the route
     // provider, so an expiring credential refreshes with the client id
     // recorded in the material instead of failing with "no OAuth
@@ -436,19 +450,26 @@ async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provi
             post(move |headers: axum::http::HeaderMap| {
                 let captured = chat_bearers_capture.clone();
                 async move {
-                    captured.lock().unwrap().push(
-                        headers
-                            .get("authorization")
-                            .and_then(|value| value.to_str().ok())
-                            .unwrap_or_default()
-                            .to_string(),
-                    );
-                    Json(json!({
-                        "choices": [{
-                            "message": {"role": "assistant", "content": "ok"},
-                            "finish_reason": "stop"
-                        }]
-                    }))
+                    let bearer = headers
+                        .get("authorization")
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or_default()
+                        .to_string();
+                    captured.lock().unwrap().push(bearer.clone());
+                    let status = if bearer == "Bearer old-access" {
+                        initial_status
+                    } else {
+                        axum::http::StatusCode::OK
+                    };
+                    (
+                        status,
+                        Json(json!({
+                            "choices": [{
+                                "message": {"role": "assistant", "content": "ok"},
+                                "finish_reason": "stop"
+                            }]
+                        })),
+                    )
                 }
             }),
         );
@@ -468,10 +489,20 @@ async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provi
     let expiring_material = json!({
         "tokens": {
             "access_token": "old-access",
-            "refresh_token": "old-refresh"
+            "refresh_token": if initial_status == axum::http::StatusCode::FORBIDDEN {
+                ""
+            } else {
+                "old-refresh"
+            }
         },
         "oauth_client_id": "Iv1.material-client",
-        "expires_at": Utc::now() + chrono::Duration::minutes(30)
+        "expires_at": if initial_status.is_success() {
+            Some(Utc::now() + chrono::Duration::minutes(30))
+        } else if initial_status == axum::http::StatusCode::UNAUTHORIZED {
+            Some(Utc::now() + chrono::Duration::hours(8))
+        } else {
+            None
+        }
     })
     .to_string();
     let mut profiles = BTreeMap::new();
@@ -484,7 +515,7 @@ async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provi
     );
     save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
 
-    let mut config = test_openai_codex_config(Some(expiring_material));
+    let mut config = test_openai_codex_config(Some(expiring_material.clone()));
     config.id = ProviderId::parse("github-copilot-example").unwrap();
     config.route_provider = ProviderId::parse("github-copilot").unwrap();
     config.route_endpoint = ProviderEndpointId::default_endpoint();
@@ -507,11 +538,42 @@ async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provi
         vec![ConversationMessage::UserText("hi".into())],
         vec![],
     );
-    provider.complete_turn(request).await.unwrap();
-    assert_eq!(
-        chat_bearers.lock().unwrap().as_slice(),
-        ["Bearer rotated-access".to_string()]
-    );
+    if initial_status == axum::http::StatusCode::FORBIDDEN {
+        let error = provider.complete_turn(request).await.unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<ProviderTransportError>()
+                .unwrap()
+                .status,
+            Some(403)
+        );
+        assert_eq!(
+            chat_bearers.lock().unwrap().as_slice(),
+            ["Bearer old-access"]
+        );
+        assert!(token_forms.lock().unwrap().is_empty());
+        let store = load_credential_store_at(&credential_store_path).unwrap();
+        assert_eq!(
+            store.profiles[GITHUB_COPILOT_CREDENTIAL_PROFILE].material,
+            expiring_material
+        );
+        handle.abort();
+        return;
+    }
+    provider.complete_turn(request.clone()).await.unwrap();
+    if initial_status == axum::http::StatusCode::UNAUTHORIZED {
+        provider.complete_turn(request).await.unwrap();
+    }
+    let expected = if initial_status == axum::http::StatusCode::UNAUTHORIZED {
+        vec![
+            "Bearer old-access",
+            "Bearer rotated-access",
+            "Bearer rotated-access",
+        ]
+    } else {
+        vec!["Bearer rotated-access"]
+    };
+    assert_eq!(chat_bearers.lock().unwrap().as_slice(), expected);
     let token_forms = token_forms.lock().unwrap();
     assert_eq!(token_forms.len(), 1);
     assert!(token_forms[0].contains("client_id=Iv1.material-client"));
@@ -1019,7 +1081,7 @@ async fn openai_codex_refresh_fails_without_access_token() {
     assert!(
         error
             .to_string()
-            .contains("refresh response did not include an access token"),
+            .contains("OAuth refresh failed: invalid refresh response"),
         "{error}"
     );
     let store = load_credential_store_at(&credential_store_path).unwrap();

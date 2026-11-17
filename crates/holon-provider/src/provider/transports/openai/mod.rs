@@ -570,7 +570,13 @@ impl OpenAiChatCompletionsProvider {
         let Some(auth) = self.auth.as_ref() else {
             return Ok(None);
         };
-        if !is_openai_codex_auth_status_error(error) {
+        if !error
+            .downcast_ref::<ProviderTransportError>()
+            .is_some_and(|error| {
+                error.classification.kind == ProviderFailureKind::AuthError
+                    && error.status == Some(401)
+            })
+        {
             return Ok(None);
         }
         let refreshed = auth.refresh_auth_headers().await?.ok_or_else(|| {
