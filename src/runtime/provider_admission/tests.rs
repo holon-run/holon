@@ -1,6 +1,7 @@
 mod auxiliary_dispatch;
 mod candidate_reselection;
 mod cooldown_wait;
+mod exhausted_epoch;
 mod failure_messages;
 mod local_dispatch;
 mod payment_required;

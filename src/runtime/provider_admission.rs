@@ -63,6 +63,7 @@ pub(super) enum ProviderTurnGate {
 
 enum ProviderCandidateSelection {
     Granted(Arc<ProviderTurnAdmission>),
+    Exhausted,
     Cooling {
         not_before: DateTime<Utc>,
         untried: bool,
@@ -1341,42 +1342,44 @@ impl RuntimeHandle {
         episode: &ProviderRecoveryEpisode,
         excluded: &std::collections::BTreeSet<String>,
     ) -> Result<ProviderTurnGate> {
-        match self.available_provider_turn_candidate(
+        let (not_before, untried) = match self.available_provider_turn_candidate(
             message, attempt, inputs, protocol, chain, episode, excluded,
         )? {
             ProviderCandidateSelection::Granted(admission) => {
                 self.inner
                     .runtime_db
                     .clear_provider_queue_parking(&message.agent_id, &message.id)?;
-                Ok(ProviderTurnGate::Granted(admission))
+                return Ok(ProviderTurnGate::Granted(admission));
             }
             ProviderCandidateSelection::Cooling {
                 not_before,
                 untried,
-            } => {
-                self.inner.runtime_db.park_provider_recovery_episode(
-                    episode,
-                    not_before,
-                    untried,
-                    self.now(),
-                )?;
-                let parked = self
-                    .inner
-                    .runtime_db
-                    .provider_recovery_episode(episode.key())?
-                    .context("parked provider episode missing")?;
-                let parked = self.persist_provider_queue_parking(
-                    message,
-                    chain,
-                    &parked,
-                    parked
-                        .not_before
-                        .context("parked provider deadline missing")?,
-                    parked.state == ProviderRecoveryBudgetState::BudgetExhausted,
-                )?;
-                Ok(ProviderTurnGate::Parked(parked))
-            }
-        }
+            } => (not_before, untried),
+            // No scope deadline remains; the existing failed-epoch floor owns
+            // the pause. This is not a synthetic scope cooldown.
+            ProviderCandidateSelection::Exhausted => (self.now(), false),
+        };
+        self.inner.runtime_db.park_provider_recovery_episode(
+            episode,
+            not_before,
+            untried,
+            self.now(),
+        )?;
+        let parked = self
+            .inner
+            .runtime_db
+            .provider_recovery_episode(episode.key())?
+            .context("parked provider episode missing")?;
+        let parked = self.persist_provider_queue_parking(
+            message,
+            chain,
+            &parked,
+            parked
+                .not_before
+                .context("parked provider deadline missing")?,
+            parked.state == ProviderRecoveryBudgetState::BudgetExhausted,
+        )?;
+        Ok(ProviderTurnGate::Parked(parked))
     }
 
     fn available_provider_turn_candidate(
@@ -1435,6 +1438,7 @@ impl RuntimeHandle {
         }
         let mut earliest: Option<DateTime<Utc>> = None;
         let mut untried = false;
+        let mut attempted_candidates = 0;
         let mut pending_forward = false;
         for index in order {
             let candidate = &chain.candidates[index];
@@ -1457,6 +1461,7 @@ impl RuntimeHandle {
                 .runtime_db
                 .provider_recovery_candidate_attempted(&episode, &candidate.scopes)?
             {
+                attempted_candidates += 1;
                 if requested == Some(&candidate.model) {
                     reselection_reason = Some("requested_candidate_already_attempted");
                 }
@@ -1524,15 +1529,21 @@ impl RuntimeHandle {
                 }
             }
         }
-        Ok(ProviderCandidateSelection::Cooling {
-            not_before: earliest.or(episode.not_before).ok_or_else(|| {
-                anyhow::Error::new(DispatchDeferred(
-                    LocalDispatchDenial::NoEligibleCandidate,
-                    None,
-                ))
-            })?,
-            untried,
-        })
+        if let Some(not_before) = earliest.or(episode.not_before) {
+            return Ok(ProviderCandidateSelection::Cooling {
+                not_before,
+                untried,
+            });
+        }
+        if attempted_candidates == len
+            && self
+                .inner
+                .runtime_db
+                .provider_recovery_epoch_has_settled_failure(episode)?
+        {
+            return Ok(ProviderCandidateSelection::Exhausted);
+        }
+        Err(DispatchDeferred(LocalDispatchDenial::NoEligibleCandidate, None).into())
     }
 
     /// Replan an unsent candidate cooldown, never execution or budget fences.
@@ -1646,6 +1657,10 @@ impl RuntimeHandle {
                         .not_before
                         .map_or(not_before, |floor| floor.max(not_before)),
                 ))
+            }
+            // Local replan exclusions are not a failed-epoch exhaustion proof.
+            ProviderCandidateSelection::Exhausted => {
+                Err(DispatchDeferred(LocalDispatchDenial::NoEligibleCandidate, None).into())
             }
         }
     }
