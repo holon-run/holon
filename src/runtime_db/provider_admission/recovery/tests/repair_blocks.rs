@@ -492,7 +492,7 @@ fn legacy_needs_repair_rows_reevaluate_when_loaded() -> Result<()> {
             params![attempt.attempt_id],
             |row| row.get::<_, String>(0),
         )?)?;
-        attempt_payload["state"] = serde_json::json!("Settled");
+        attempt_payload["state"] = serde_json::json!("settled");
         attempt_payload["terminal_outcome_id"] = serde_json::json!("outcome-legacy-repair");
         attempt_payload["terminal_at"] = serde_json::json!("2026-11-17T00:00:01Z");
         tx.execute(
