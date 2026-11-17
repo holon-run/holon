@@ -304,8 +304,7 @@ impl OnboardingTuiApp {
             .selected_provider
             .as_mut()
             .context("provider not selected")?;
-        // GitHub Copilot needs the user's own OAuth app client id, which
-        // comes from the environment or the provider configuration.
+        // Resolve optional client ID overrides before using the built-in app.
         let oauth_config = if provider.id.is_openai_codex() {
             None
         } else {

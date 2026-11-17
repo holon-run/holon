@@ -67,16 +67,23 @@ When you need advanced cloud reasoning models, use Holon's interactive onboardin
 
 #### GitHub Copilot (experimental)
 
-Register your own GitHub OAuth app and enable its device flow. Configure its
-**client ID**, not its app ID or a first-party editor's client ID:
+Holon includes a default OAuth app, so no client ID configuration is required:
 
 ```bash
-holon config set providers.github-copilot.auth.client_id "<your-client-id>"
 holon onboard
 ```
 
-Select `github-copilot` and complete the OAuth device login. Alternatively,
-set `GITHUB_COPILOT_CLIENT_ID` in the login process's environment. Holon stores
+Select `github-copilot` and complete the OAuth device login. To use your own
+GitHub OAuth app instead, enable its device flow and set its **client ID**
+(not its app ID or a first-party editor's client ID):
+
+```bash
+holon config set providers.github-copilot.auth.client_id "<your-client-id>"
+```
+
+Alternatively, set `GITHUB_COPILOT_CLIENT_ID` in the login process's environment.
+Explicit configuration takes precedence over the environment variable, then
+the built-in default; blank overrides are ignored. Holon stores
 the resulting credential and client ID in its own `github-copilot` profile;
 it does not read IDE credentials or require a client secret.
 

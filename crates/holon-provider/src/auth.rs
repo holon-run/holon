@@ -240,8 +240,8 @@ impl OAuthProviderConfig {
         }
     }
 
-    /// GitHub Copilot uses the user's own OAuth app, so the client ID is
-    /// installation-specific rather than compiled in.
+    /// GitHub Copilot uses Holon's OAuth app by default, with optional
+    /// installation-specific client ID overrides.
     pub fn github_copilot(client_id: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         Self {
             provider_id: GITHUB_COPILOT_PROVIDER_ID,
@@ -258,19 +258,20 @@ pub fn oauth_provider_config(provider_id: &str) -> Option<OAuthProviderConfig> {
     match provider_id {
         "openai-codex" | "codex" => Some(OAuthProviderConfig::codex()),
         "xai" => Some(OAuthProviderConfig::xai()),
-        // github-copilot needs the user's own client ID; use
-        // resolve_oauth_provider_config instead.
+        GITHUB_COPILOT_PROVIDER_ID => Some(OAuthProviderConfig::github_copilot(
+            GITHUB_COPILOT_OAUTH_CLIENT_ID,
+        )),
         _ => None,
     }
 }
 
-/// Resolves the OAuth configuration for a provider, including the
-/// user-supplied client ID that GitHub Copilot device login requires.
+/// Resolves the OAuth configuration for a provider, including optional
+/// GitHub Copilot client ID overrides.
 ///
 /// `client_id_hint` is consulted before the `GITHUB_COPILOT_CLIENT_ID`
-/// environment variable for GitHub Copilot; the winning value is persisted in
-/// the credential profile so later refreshes do not depend on ambient
-/// configuration.
+/// environment variable for GitHub Copilot, falling back to Holon's OAuth app.
+/// The winning value is persisted in the credential profile so later refreshes
+/// do not depend on ambient configuration.
 pub fn resolve_oauth_provider_config(
     provider_id: &str,
     client_id_hint: Option<&str>,
@@ -281,30 +282,20 @@ pub fn resolve_oauth_provider_config(
             .filter(|value| !value.is_empty())
             .map(str::to_owned)
             .or_else(|| env_client_id(GITHUB_COPILOT_CLIENT_ID_ENV_VAR))
-            .ok_or_else(|| {
-                anyhow!(
-                    "GitHub Copilot login requires the client ID of your own GitHub OAuth app; \
-                     set providers.github-copilot.auth.client_id or {}",
-                    GITHUB_COPILOT_CLIENT_ID_ENV_VAR
-                )
-            })?;
+            .unwrap_or_else(|| GITHUB_COPILOT_OAUTH_CLIENT_ID.to_owned());
         return Ok(Some(OAuthProviderConfig::github_copilot(client_id)));
     }
     Ok(oauth_provider_config(provider_id))
 }
 
 /// Whether a provider supports Holon's OAuth device login flow.
-///
-/// GitHub Copilot supports the flow with the user's own OAuth app, so it is
-/// reported as supported even though the client id must come from the user
-/// configuration or the environment.
 pub fn provider_supports_oauth_device_login(provider_id: &str) -> bool {
-    provider_id == GITHUB_COPILOT_PROVIDER_ID || oauth_provider_config(provider_id).is_some()
+    oauth_provider_config(provider_id).is_some()
 }
 
 /// Read the OAuth client id recorded in a Holon credential profile.
 ///
-/// GitHub Copilot stores the user's own OAuth app client id in the profile
+/// GitHub Copilot stores the selected OAuth app client id in the profile
 /// material so that a later refresh works without ambient configuration.
 pub fn oauth_client_id_from_material(material: &str) -> Option<String> {
     let auth: AuthDotJson = serde_json::from_str(material).ok()?;
@@ -582,6 +573,8 @@ const CODEX_OAUTH_CALLBACK_PORT: u16 = 1455;
 const CODEX_OAUTH_CALLBACK_FALLBACK_PORT: u16 = 1457;
 const CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS: i64 = 15 * 60;
 
+// Public client ID for Holon's OAuth app, not a first-party Copilot client.
+const GITHUB_COPILOT_OAUTH_CLIENT_ID: &str = "Ov23lioel2hHZITYyzwB";
 const GITHUB_COPILOT_CLIENT_ID_ENV_VAR: &str = "GITHUB_COPILOT_CLIENT_ID";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
@@ -2440,24 +2433,42 @@ mod tests {
     }
 
     #[test]
-    fn github_copilot_is_not_a_static_oauth_provider() {
-        // The client id is user-owned, so the static lookup must not claim
-        // GitHub Copilot support without one.
-        assert!(oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID).is_none());
+    fn github_copilot_static_config_uses_holon_oauth_app() {
+        let config = oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID)
+            .expect("GitHub Copilot has a built-in OAuth app");
+        assert_eq!(config.client_id, "Ov23lioel2hHZITYyzwB");
+        assert!(provider_supports_oauth_device_login(
+            GITHUB_COPILOT_PROVIDER_ID
+        ));
     }
 
     #[test]
-    fn github_copilot_resolution_requires_a_client_id() {
-        let error = resolve_oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID, None)
-            .expect_err("GitHub Copilot must not resolve without a client id");
-        assert!(
-            error.to_string().contains("client ID"),
-            "unexpected error: {error}"
-        );
+    fn github_copilot_client_id_resolution_preserves_override_precedence() {
+        let _env = EnvVarGuard::set(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, "");
+        std::env::remove_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR);
+        let resolve = |hint| {
+            resolve_oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID, hint)
+                .expect("GitHub Copilot configuration should resolve")
+                .expect("GitHub Copilot supports OAuth")
+                .client_id
+        };
 
-        let resolved = resolve_oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID, Some("  "))
-            .expect_err("a blank client id must not resolve");
-        assert!(resolved.to_string().contains("client ID"));
+        assert_eq!(resolve(None), "Ov23lioel2hHZITYyzwB");
+        assert_eq!(resolve(Some("  ")), "Ov23lioel2hHZITYyzwB");
+        for value in ["", "  "] {
+            std::env::set_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, value);
+            assert_eq!(resolve(None), "Ov23lioel2hHZITYyzwB");
+        }
+        std::env::set_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, "  Iv1.env-client  ");
+        assert_eq!(resolve(None), "Iv1.env-client");
+        assert_eq!(resolve(Some("  ")), "Iv1.env-client");
+        assert_eq!(resolve(Some("  Iv1.config-client  ")), "Iv1.config-client");
+
+        let stored = r#"{"oauth_client_id":"Iv1.stored-client"}"#;
+        let config = oauth_provider_config_for_material(GITHUB_COPILOT_PROVIDER_ID, stored)
+            .expect("stored configuration should resolve")
+            .expect("GitHub Copilot supports OAuth");
+        assert_eq!(config.client_id, "Iv1.stored-client");
     }
 
     #[test]

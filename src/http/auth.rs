@@ -74,6 +74,14 @@ mod oauth_device_login_tests {
     }
 
     #[test]
+    fn copilot_without_auth_configuration_can_start_device_login() {
+        let (config, profile) = oauth_device_login_config("github-copilot", None)
+            .expect("GitHub Copilot login does not require client ID configuration");
+        assert!(!config.client_id.is_empty());
+        assert_eq!(profile, "github-copilot");
+    }
+
+    #[test]
     fn unsupported_provider_is_rejected() {
         assert!(oauth_device_login_config("anthropic", None).is_err());
     }
