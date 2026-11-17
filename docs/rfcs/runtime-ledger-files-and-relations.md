@@ -194,8 +194,12 @@ Implementation-level observations:
   monotonic sequence assignment in `AppStorage`; most other ledgers rely on
   record ids, revisions, timestamps, or append history.
 - Appending briefs, tasks, work items, selected command tool executions,
-  context episodes, and workspace entries marks the memory index dirty because
-  memory search/projection may need to rebuild from those ledgers.
+  context episodes, and workspace entries commits the matching memory-index
+  outbox changes in the same transaction, and the index consumes those changes
+  incrementally. The dirty marker is a fallback for a failed enqueue and for
+  missing backfill checkpoints, not the normal propagation path. Workspace
+  activation and projection switches append no index source, so they must not
+  invalidate the whole agent index.
 - `waiting_intents.jsonl` is already a compatibility layer in code:
   `append_waiting_intent` writes the legacy intent and mirrors a derived
   `WaitConditionRecord`.

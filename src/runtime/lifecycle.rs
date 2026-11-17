@@ -1840,7 +1840,6 @@ impl RuntimeHandle {
             guard.state.active_workspace_entry = Some(entry);
             guard.state.worktree_session = None;
             guard.persist_state(&self.inner.storage).await?;
-            self.inner.storage.mark_memory_index_dirty()?;
         }
         if let Some(occupancy_id) = previous_occupancy_id.as_deref() {
             let _ = self.release_workspace_occupancy(occupancy_id).await?;
@@ -2030,7 +2029,6 @@ impl RuntimeHandle {
             }
             return Err(error);
         }
-        self.inner.storage.mark_memory_index_dirty()?;
         if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
             if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
                 let _ = self
@@ -2210,7 +2208,6 @@ impl RuntimeHandle {
             }
             return Err(error);
         }
-        self.inner.storage.mark_memory_index_dirty()?;
         if let Some(previous_occupancy_id) = previous_occupancy_id.as_deref() {
             if new_occupancy_id.as_deref() != Some(previous_occupancy_id) {
                 let _ = self
