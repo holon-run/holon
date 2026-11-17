@@ -15,7 +15,7 @@ use crate::diagnostics::{ReaderPoolEvent, ReaderPoolOutcome, ReaderPoolRole, Sto
 /// Clones share one linearization point, so the async entry can classify an
 /// aborted queued read from the caller side while the blocking task still owns
 /// a clone. Exactly one `CheckoutFinished` is emitted; an observation dropped
-/// without an explicit outcome is reported as `Failed` rather than guessed.
+/// without an explicit outcome is reported as `Failed` when its last owner drops.
 #[derive(Clone)]
 pub(super) struct CheckoutObservation {
     state: Arc<CheckoutState>,
@@ -46,25 +46,30 @@ impl CheckoutObservation {
     }
 
     pub(super) fn finish(&self, outcome: ReaderPoolOutcome) {
+        self.state.finish(outcome);
+    }
+}
+
+impl CheckoutState {
+    fn finish(&self, outcome: ReaderPoolOutcome) {
         if self
-            .state
             .finished
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_err()
         {
             return;
         }
-        (self.state.diagnostics.reader_pool)(
-            self.state.role,
+        (self.diagnostics.reader_pool)(
+            self.role,
             ReaderPoolEvent::CheckoutFinished {
-                elapsed: self.state.started.elapsed(),
+                elapsed: self.started.elapsed(),
                 outcome,
             },
         );
     }
 }
 
-impl Drop for CheckoutObservation {
+impl Drop for CheckoutState {
     fn drop(&mut self) {
         self.finish(ReaderPoolOutcome::Failed);
     }

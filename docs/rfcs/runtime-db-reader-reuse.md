@@ -256,10 +256,12 @@ Timing boundaries:
   SQLite close.
 - `CheckoutStarted` covers public sync/async read entry points and fixture
   warmup, which acquires the full capacity. `CheckoutFinished` records success,
-  timeout, cancellation, or failure with the elapsed wait. r2d2's internal
-  creation polling is not reported as a logical timeout. A scope rejected at
-  entry with an exhausted deadline is classified as timeout, even if its
-  cancellation token is also cancelled.
+  timeout, cancellation, or failure with the elapsed wait. Warmup finishes only
+  after the full loop; an async caller dropping does not finish a checkout
+  still owned by a running blocking worker. r2d2's internal creation polling is
+  not reported as a logical timeout. An exhausted scope deadline is classified
+  as timeout, including during blocking admission, even if its cancellation
+  token is also cancelled.
 - `LeaseStarted`/`LeaseFinished` span acquisition through connection return or
   close, including application decoding and cleanup (and fixture warmup
   holders), so lease duration is not pure SQL time.

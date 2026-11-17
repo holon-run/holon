@@ -245,17 +245,20 @@ impl RuntimeDbReaderPool {
             self.shared.control.writer.diagnostics,
             self.shared.control.role(),
         );
+        let scope = self.effective_scope();
         for _ in 0..capacity {
-            self.check_read_scope()?;
+            self.shared.control.ensure_protected()?;
+            self.check_scope_observed(&scope, &checkout)?;
             let mut reader = self.checkout_connection(
                 &pool,
                 deadline,
-                &self.effective_scope(),
+                &scope,
                 read_block::ReadOrigin::UNKNOWN,
                 "warmup",
                 &checkout,
             )?;
-            self.check_read_scope()?;
+            self.shared.control.ensure_protected()?;
+            self.check_scope_observed(&scope, &checkout)?;
             if let Err(error) = reader
                 .connection
                 .connection
@@ -266,7 +269,8 @@ impl RuntimeDbReaderPool {
                 reader.connection.broken = true;
                 return Err(error.into());
             }
-            self.check_read_scope()?;
+            self.shared.control.ensure_protected()?;
+            self.check_scope_observed(&scope, &checkout)?;
             readers.push(reader);
         }
         checkout.finish(ReaderPoolOutcome::Success);
@@ -316,7 +320,6 @@ impl RuntimeDbReaderPool {
                 remaining.map_or(CHECK_INTERVAL, |remaining| remaining.min(CHECK_INTERVAL));
             match pool.get_timeout(interval) {
                 Ok(connection) => {
-                    observation.finish(ReaderPoolOutcome::Success);
                     return Ok(ReadLease::new(connection));
                 }
                 Err(error) => {
@@ -471,6 +474,7 @@ impl RuntimeDbReaderPool {
             .ok_or_else(|| anyhow!("runtime db reader pool is closed"))?;
         let lease =
             self.checkout_connection(&pool, deadline, &scope, origin, "checkout", checkout)?;
+        checkout.finish(ReaderPoolOutcome::Success);
         drop(checkout_stage);
         let checkout_elapsed = checkout.elapsed();
         // Declare the timer first so the lease is returned before it stops.
@@ -646,7 +650,9 @@ impl RuntimeDbReaderPool {
                     .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
-                    let outcome = if scope.as_ref().is_some_and(RuntimeDbReadScope::is_cancelled) {
+                    let outcome = if scope.as_ref().is_some_and(|scope| {
+                        scope.is_cancelled() && Instant::now() < scope.deadline()
+                    }) {
                         ReaderPoolOutcome::Cancelled
                     } else {
                         ReaderPoolOutcome::Timeout
@@ -1538,6 +1544,16 @@ mod tests {
             .clone()
     }
 
+    fn recorded_checkout_outcomes() -> Vec<ReaderPoolOutcome> {
+        recorded_events()
+            .iter()
+            .filter_map(|(_, event)| match event {
+                ReaderPoolEvent::CheckoutFinished { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn recording_fixture(
         capacity: u32,
         budget: Duration,
@@ -1677,6 +1693,181 @@ mod tests {
                     ReaderPoolEvent::ConnectFinished { success: false, .. }
                 )));
         assert!(!events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionOpened)));
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_checkout_lives_until_last_owner() {
+        let _guard = diagnostics_guard();
+        for outcome in [ReaderPoolOutcome::Success, ReaderPoolOutcome::Failed] {
+            clear_recorded();
+            let caller =
+                CheckoutObservation::start(recording_diagnostics(), ReaderPoolRole::Ordinary);
+            let worker = caller.clone();
+            drop(caller);
+            assert!(recorded_checkout_outcomes().is_empty());
+            if outcome == ReaderPoolOutcome::Success {
+                worker.finish(outcome);
+            }
+            drop(worker);
+            assert_eq!(recorded_checkout_outcomes(), vec![outcome]);
+        }
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_warmup_observes_all_readers() -> Result<()> {
+        let _guard = diagnostics_guard();
+        for outcome in [
+            ReaderPoolOutcome::Success,
+            ReaderPoolOutcome::Timeout,
+            ReaderPoolOutcome::Cancelled,
+        ] {
+            clear_recorded();
+            let budget = if outcome == ReaderPoolOutcome::Timeout {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(2)
+            };
+            let (_directory, db) = recording_fixture(2, budget)?;
+            let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+            let cancel = scope.clone();
+            let attempts = Arc::new(AtomicU64::new(0));
+            let hook_attempts = Arc::clone(&attempts);
+            install_hook(&db.readers, move |event, _writer| {
+                if event == ReaderTestEvent::BeforeOpen {
+                    let attempt = hook_attempts.fetch_add(1, Ordering::Relaxed);
+                    if attempt == 1 {
+                        // The first reader is held while the second is acquired.
+                        assert!(recorded_events()
+                            .iter()
+                            .any(|(_, event)| matches!(event, ReaderPoolEvent::LeaseStarted)));
+                        assert!(recorded_checkout_outcomes().is_empty());
+                    }
+                    if attempt >= 1 {
+                        match outcome {
+                            ReaderPoolOutcome::Timeout => bail!("second reader cannot connect"),
+                            ReaderPoolOutcome::Cancelled => cancel.cancel(),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(())
+            });
+            let result = db.readers.with_scope(scope).warm_for_fixture();
+            assert!(attempts.load(Ordering::Relaxed) >= 2);
+            if outcome == ReaderPoolOutcome::Success {
+                assert_eq!(result?, 2);
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(recorded_checkout_outcomes(), vec![outcome]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_detached_worker_keeps_checkout_open() -> Result<()> {
+        let _guard = diagnostics_guard();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(5))?;
+        let raw_pool = db.readers.shared.pool.lock().unwrap().clone().unwrap();
+        let held = raw_pool.get_timeout(Duration::from_secs(5))?;
+        clear_recorded();
+        runtime.block_on(async {
+            let reader = db.readers.clone();
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let caller = tokio::spawn(async move {
+                reader
+                    .with_read_async_at(read_block::ReadOrigin::UNKNOWN, move |_| {
+                        let _ = done_tx.send(());
+                        Ok(())
+                    })
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while db.readers.stats().checkout_attempts == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert!(recorded_checkout_outcomes().is_empty());
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), done_rx).await??;
+            assert_eq!(
+                recorded_checkout_outcomes(),
+                vec![ReaderPoolOutcome::Success]
+            );
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_classify_scoped_blocking_queue_exit() -> Result<()> {
+        use std::future::Future;
+        use std::task::Poll;
+
+        let _guard = diagnostics_guard();
+        for explicit_cancel in [false, true] {
+            clear_recorded();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .max_blocking_threads(1)
+                .build()?;
+            let (_directory, db) = recording_fixture(1, Duration::from_secs(30))?;
+            let (started_tx, started_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            runtime.block_on(async {
+                let blocker = tokio::task::spawn_blocking(move || {
+                    let _ = started_tx.send(());
+                    let _ = release_rx.recv();
+                });
+                started_rx.recv_timeout(Duration::from_secs(5))?;
+                let allowance = if explicit_cancel {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(250)
+                };
+                let scope = RuntimeDbReadScope::new(Instant::now() + allowance);
+                let pool = db.readers.with_scope(scope.clone());
+                let ran = Arc::new(AtomicBool::new(false));
+                let task_ran = Arc::clone(&ran);
+                let read = pool.with_read_async_at(read_block::ReadOrigin::UNKNOWN, move |_| {
+                    task_ran.store(true, Ordering::Relaxed);
+                    Ok(())
+                });
+                tokio::pin!(read);
+                // Poll into spawn_blocking while the sole worker is held.
+                std::future::poll_fn(|cx| {
+                    assert!(read.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                assert_eq!(pool.stats().available_admission, 0);
+                assert_eq!(pool.stats().checkout_attempts, 0);
+                if explicit_cancel {
+                    scope.cancel();
+                }
+                let result = tokio::time::timeout(Duration::from_secs(5), read).await?;
+                drop(release_tx);
+                blocker.await?;
+                assert!(result.is_err());
+                assert!(!ran.load(Ordering::Relaxed));
+                assert_eq!(
+                    recorded_checkout_outcomes(),
+                    vec![if explicit_cancel {
+                        ReaderPoolOutcome::Cancelled
+                    } else {
+                        ReaderPoolOutcome::Timeout
+                    }]
+                );
+                Ok::<_, anyhow::Error>(())
+            })?;
+        }
         Ok(())
     }
 
