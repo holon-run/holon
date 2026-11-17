@@ -13,12 +13,23 @@ struct ReplyGateProvider {
 #[derive(Clone)]
 struct SharedReplyGateProvider(Arc<ReplyGateProvider>);
 
+struct ReplyGateReleaseGuard(Arc<ReplyGateProvider>);
+
+impl Drop for ReplyGateReleaseGuard {
+    fn drop(&mut self) {
+        self.0.release.notify_one();
+        self.0.recovery_release.notify_one();
+    }
+}
+
 #[async_trait]
 impl AgentProvider for SharedReplyGateProvider {
     async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         if !self.0.first.swap(true, Ordering::SeqCst) {
             self.0.started.notify_one();
-            self.0.release.notified().await;
+            tokio::time::timeout(Duration::from_secs(30), self.0.release.notified())
+                .await
+                .context("reply provider completion gate was not released")?;
             if self.0.recover {
                 return crate::runtime::tests::support::DeferredFallbackProvider
                     .complete_turn(request)
@@ -48,7 +59,9 @@ material: Default::default(),
             }
         } else if self.0.recover {
             self.0.recovery_started.notify_one();
-            self.0.recovery_release.notified().await;
+            tokio::time::timeout(Duration::from_secs(30), self.0.recovery_release.notified())
+                .await
+                .context("reply provider recovery gate was not released")?;
         }
         StubProvider::new(self.0.answer).complete_turn(request).await
     }
@@ -89,6 +102,36 @@ async fn reply_gate_recovery_fixture(
     Arc<ReplyGateProvider>,
     crate::types::AgentInvocationReceipt,
 ) {
+    let (home, host, parent, peer, provider) = reply_gate_host(answer, wait, recover).await;
+    let receipt = parent
+        .agent_invocation_service()
+        .invoke(InvokeAgentRequest {
+            target: InvokeAgentTarget::ExistingAgent {
+                agent_id: "reply-gate-peer".into(),
+                reply_timeout_ms: Some(timeout_ms),
+            },
+            message: "return the answer for this exact request".into(),
+            authority_class: AuthorityClass::OperatorInstruction,
+        })
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(10), provider.started.notified())
+        .await
+        .unwrap();
+    (home, host, parent, peer, provider, receipt)
+}
+
+async fn reply_gate_host(
+    answer: &'static str,
+    wait: bool,
+    recover: bool,
+) -> (
+    tempfile::TempDir,
+    RuntimeHost,
+    RuntimeHandle,
+    RuntimeHandle,
+    Arc<ReplyGateProvider>,
+) {
     let home = tempdir().unwrap();
     write_test_model_config(home.path());
     let mut config = AppConfig::load_with_home(Some(home.path().to_path_buf())).unwrap();
@@ -120,23 +163,8 @@ async fn reply_gate_recovery_fixture(
         })
         .await
         .unwrap();
-    let receipt = parent
-        .agent_invocation_service()
-        .invoke(InvokeAgentRequest {
-            target: InvokeAgentTarget::ExistingAgent {
-                agent_id: "reply-gate-peer".into(),
-                reply_timeout_ms: Some(timeout_ms),
-            },
-            message: "return the answer for this exact request".into(),
-            authority_class: AuthorityClass::OperatorInstruction,
-        })
-        .await
-        .unwrap();
-    tokio::time::timeout(Duration::from_secs(10), provider.started.notified())
-        .await
-        .unwrap();
     let peer = host.get_public_agent("reply-gate-peer").await.unwrap();
-    (home, host, parent, peer, provider, receipt)
+    (home, host, parent, peer, provider)
 }
 
 #[cfg(holon_lib_test_shard = "d")]
@@ -308,6 +336,84 @@ fn reply_result_count(host: &RuntimeHost, task_id: &str) -> usize {
             )?)
         })
         .unwrap()
+}
+
+fn reply_outcome(host: &RuntimeHost, task_id: &str) -> serde_json::Value {
+    let payload: String = host
+        .runtime_db()
+        .with_read(|connection| {
+            Ok(connection.query_row(
+                "SELECT payload_json FROM agent_message_wait_outcomes WHERE task_id = ?1",
+                [task_id],
+                |row| row.get(0),
+            )?)
+        })
+        .unwrap();
+    serde_json::from_str(&payload).unwrap()
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn agent_message_wait_committed_fallback_survives_a_late_explicit_reply() {
+    let (_home, host, parent, peer, gate, receipt) =
+        reply_gate_fixture(0, "committed fallback", false).await;
+    let _gate_guard = ReplyGateReleaseGuard(gate.clone());
+    gate.release.notify_one();
+    wait_for_agent_inputs_settled(&peer).await;
+    let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+    assert_eq!(terminal.status, TaskStatus::Completed);
+    let detail = terminal.detail.as_ref().unwrap();
+    assert_eq!(detail["reply_content_source"], "runtime_derived_final_brief");
+    assert_eq!(detail["message_wait_satisfied"], true);
+    assert!(detail["response_delivery_id"].is_null());
+    let outcome = reply_outcome(&host, &terminal.id);
+    assert_eq!(outcome["reply"]["kind"], "final_brief");
+    assert_eq!(outcome["reply"]["message_id"], detail["message_id"]);
+    let Some(crate::types::TaskRecoverySpec::AgentMessageWait {
+        delivery_id: Some(request_delivery_id),
+        ..
+    }) = terminal.recovery.as_ref() else {
+        panic!("completed fallback must retain its exact request binding");
+    };
+    assert_eq!(outcome["request_delivery_id"], *request_delivery_id);
+    assert_eq!(detail["request_delivery_id"], *request_delivery_id);
+    let request = host
+        .runtime_db()
+        .agent_message_deliveries()
+        .latest(request_delivery_id)
+        .unwrap()
+        .unwrap();
+    let message = parent
+        .storage()
+        .read_message_by_id(detail["message_id"].as_str().unwrap())
+        .unwrap()
+        .unwrap();
+    assert_eq!(message.source_refs["request_delivery_id"], *request_delivery_id);
+    assert_eq!(message.source_refs["request_message_id"], request.message_id.unwrap());
+    assert_eq!(message.source_refs["source_agent_id"], receipt.agent_id);
+    assert_eq!(reply_result_count(&host, &terminal.id), 1);
+
+    let late = send_agent_message(&peer, "default", "after-fallback", "late explicit reply").await;
+    assert_eq!(late.outcome, crate::types::AgentMessageDeliveryOutcome::Accepted);
+    let delivered = host
+        .runtime_db()
+        .agent_message_deliveries()
+        .latest(&late.delivery_id)
+        .unwrap()
+        .unwrap();
+    assert!(parent
+        .storage()
+        .read_message_by_id(delivered.message_id.as_ref().unwrap())
+        .unwrap()
+        .is_some());
+    wait_for_agent_inputs_settled(&parent).await;
+    let settled = parent.storage().latest_task_record(&terminal.id).unwrap().unwrap();
+    assert_eq!(settled.status, TaskStatus::Completed);
+    assert_eq!(settled.detail, terminal.detail);
+    assert_eq!(reply_outcome(&host, &terminal.id), outcome);
+    assert_eq!(reply_outcome_count(&host, &terminal.id), 1);
+    assert_eq!(reply_result_count(&host, &terminal.id), 1);
+    host.shutdown().await.unwrap();
 }
 
 #[cfg(holon_lib_test_shard = "d")]
