@@ -60,9 +60,14 @@ internal fun AgentAvatar(agent: AgentSummary, modifier: Modifier = Modifier, siz
     val expression = agent.statusPresentation(current).expression
     val pixels = avatarPixels(size.value, LocalDensity.current.density)
     val request = AgentAvatarKey(agent.id, expression, pixels)
-    key(repository, request, agent.incarnation, current) {
-        val bitmap by produceState<ImageBitmap?>(null) {
-            val bytes = repository?.image(request, allowNetwork = current, retry = true) ?: return@produceState
+    key(repository, agent.id, agent.incarnation, pixels, current) {
+        // Keep this agent's last expression visible while its next cached expression decodes.
+        val bitmap by produceState<ImageBitmap?>(null, request) {
+            val bytes = repository?.image(request, allowNetwork = current, retry = true)
+            if (bytes == null) {
+                value = null
+                return@produceState
+            }
             val decoded = withContext(Dispatchers.Default) {
                 if (!validAvatarPng(bytes, pixels)) null
                 else BitmapFactory.decodeByteArray(bytes, 0, bytes.size)?.takeIf {

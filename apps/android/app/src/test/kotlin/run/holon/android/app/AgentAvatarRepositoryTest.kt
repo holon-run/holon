@@ -1,6 +1,7 @@
 package run.holon.android.app
 
 import java.io.IOException
+import java.io.File
 import java.nio.ByteBuffer
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -25,17 +26,138 @@ import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
+import org.junit.Rule
+import org.junit.rules.TemporaryFolder
 import run.holon.android.sdk.HolonAvatarExpression
 import run.holon.android.sdk.HolonHttpException
 
 @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
 class AgentAvatarRepositoryTest {
+    @get:Rule val temporary = TemporaryFolder()
+
     private fun key(id: String = "agent", expression: HolonAvatarExpression = HolonAvatarExpression.Neutral) =
         AgentAvatarKey(id, expression, 64)
 
     private fun png(pixels: Int = 64): ByteArray =
         ByteBuffer.allocate(33).put(byteArrayOf(0x89.toByte(), 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a))
             .putInt(13).putInt(0x49484452).putInt(pixels).putInt(pixels).array()
+
+    @Test fun `recreated repository serves persisted images offline without another download`() = runTest {
+        val root = File(temporary.root, "avatars")
+        var calls = 0
+        fun repository(cache: AgentAvatarDiskCache) = AgentAvatarRepository(
+            read = { calls++; png() }, isCurrent = { true }, onAuthenticationFailure = {},
+            dispatcher = StandardTestDispatcher(testScheduler),
+            diskCache = cache.scope("server|user|visibility") { true },
+        )
+        repository(AgentAvatarDiskCache(root)).let { first ->
+            try {
+                val results = listOf(async { first.image(key(), true) }, async { first.image(key(), true) })
+                results.awaitAll().forEach { assertContentEquals(png(), it) }
+            } finally { first.close() }
+        }
+        val restored = repository(AgentAvatarDiskCache(root))
+        try {
+            assertContentEquals(png(), restored.image(key(), false))
+            assertNull(restored.image(key(expression = HolonAvatarExpression.Sleeping), false))
+            assertEquals(1, calls)
+        } finally { restored.close() }
+    }
+
+    @Test fun `disk images remain available when network is dynamically paused`() = runTest {
+        val cache = AgentAvatarDiskCache(File(temporary.root, "avatars"))
+        val scope = cache.scope("A") { true }
+        scope.write(key(), png())
+        val repository = AgentAvatarRepository(
+            read = { error("Offline avatar must not use network") },
+            isCurrent = { true }, onAuthenticationFailure = {},
+            dispatcher = StandardTestDispatcher(testScheduler), isNetworkAllowed = { false }, diskCache = scope,
+        )
+        try {
+            assertContentEquals(png(), repository.image(key(), true))
+            assertNull(repository.image(key("missing"), true, retry = true))
+        } finally { repository.close() }
+    }
+
+    @Test fun `corrupt disk data falls back to network and is replaced with validated bytes`() = runTest {
+        val root = File(temporary.root, "avatars")
+        val scope = AgentAvatarDiskCache(root).scope("A") { true }
+        scope.write(key(), png())
+        root.walkTopDown().single { it.isFile }.writeBytes(png(128))
+        var calls = 0
+        val repository = AgentAvatarRepository(
+            read = { calls++; png() }, isCurrent = { true }, onAuthenticationFailure = {},
+            dispatcher = StandardTestDispatcher(testScheduler), diskCache = scope,
+        )
+        try {
+            assertContentEquals(png(), repository.image(key(), true))
+            assertEquals(1, calls)
+            assertContentEquals(png(), scope.read(key()))
+            repository.reject(key())
+            assertNull(scope.read(key()))
+            assertNull(repository.image(key(), false))
+        } finally { repository.close() }
+    }
+
+    @Test fun `unavailable disk does not discard a successful network image`() = runTest {
+        val root = File(temporary.root, "avatars").apply { writeText("not a directory") }
+        val repository = AgentAvatarRepository(
+            read = { png() }, isCurrent = { true }, onAuthenticationFailure = {},
+            dispatcher = StandardTestDispatcher(testScheduler),
+            diskCache = AgentAvatarDiskCache(root).scope("A") { true },
+        )
+        try {
+            assertContentEquals(png(), repository.image(key(), true))
+            assertContentEquals(png(), repository.image(key(), false))
+        } finally { repository.close() }
+    }
+
+    @Test fun `active authentication failure purges disk images and fences the old scope`() = runTest {
+        for (status in listOf(401, 403)) {
+            val cache = AgentAvatarDiskCache(File(temporary.root, "$status"))
+            val scope = cache.scope("A") { true }
+            scope.write(key("cached"), png())
+            val other = cache.scope("B") { true }.also { it.write(key("cached"), png()) }
+            var failed = false
+            val repository = AgentAvatarRepository(
+                read = { throw HolonHttpException(status, null) },
+                isCurrent = { true }, onAuthenticationFailure = { failed = true },
+                dispatcher = StandardTestDispatcher(testScheduler), diskCache = scope,
+            )
+            assertFailsWith<CancellationException> { repository.image(key(), true) }
+            assertTrue(failed)
+            assertFalse(repository.isActive())
+            scope.write(key("late"), png())
+            val replacement = cache.scope("A") { true }
+            assertNull(replacement.read(key("cached")))
+            assertNull(replacement.read(key("late")))
+            assertNotNull(other.read(key("cached")))
+        }
+    }
+
+    @Test fun `late network bytes and auth errors never write or clear a replacement disk scope`() = runTest {
+        for (authError in listOf(false, true)) {
+            val cache = AgentAvatarDiskCache(File(temporary.root, "$authError"))
+            var current = true
+            val scope = cache.scope("A") { current }
+            scope.write(key("cached"), png())
+            val repository = AgentAvatarRepository(
+                read = {
+                    current = false
+                    if (authError) throw HolonHttpException(401, null)
+                    png()
+                },
+                isCurrent = { current }, onAuthenticationFailure = { error("Retired lease") },
+                dispatcher = StandardTestDispatcher(testScheduler), diskCache = scope,
+            )
+            try {
+                assertNull(repository.image(key(), true))
+                val replacement = cache.scope("A") { true }
+                assertNull(replacement.read(key()))
+                assertNotNull(replacement.read(key("cached")))
+            } finally { repository.close() }
+        }
+    }
 
     @Test fun `requests coalesce and offline reads never fetch uncached expressions`() = runTest {
         var calls = 0

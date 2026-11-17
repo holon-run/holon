@@ -168,6 +168,7 @@ internal class HolonRepository(
     private val client: HolonHttpClient? get() = sessions.current?.client
     private val outboxDelivery = DurableOutbox(OutboxStore(dao::putOutbox), OutboxSender(::sendOutbox))
     private val files = FilesRepository(context, sessions)
+    internal val avatarCache = AgentAvatarDiskCache(File(context.cacheDir, "agent-avatars"))
     private val work = WorkRepository(sessions)
 
     /** Only a profile-scoped CookieManager receives the opaque session, never UI state. */
@@ -1074,6 +1075,7 @@ internal class HolonRepository(
 
 
     private suspend fun clearLocalState(scopeKey: String) {
+        avatarCache.clear(scopeKey)
         val removed = dao.attachmentPayloads(scopeKey).flatMap(::attachmentPaths).toSet()
         dao.clearScope(scopeKey)
         val retained = dao.attachmentPayloads().flatMap(::attachmentPaths).toSet()

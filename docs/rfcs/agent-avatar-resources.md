@@ -103,6 +103,18 @@ may be evicted; live object URLs are not evicted to admit another image.
 When admission fails, the component keeps the local renderer. These bounds
 describe retained resources, not the browser's total networking or decode memory.
 
+Android additionally retains validated PNG drawing bytes in its private cache
+directory, bounded globally across connection/login scopes by 512 files and
+16 MiB with least-recently-used eviction. Scope and resource names are hashed;
+keys include the fixed public renderer version, Agent ID, expression, and pixel
+size. This immutable version does not need a freshness timer. A newly authenticated
+lease for the same scope can reuse those bytes without downloading them again,
+including cache-only offline reads. This is not an authorization or roster cache:
+the current authenticated lease and advertised capability still gate every use.
+Logout, identity cleanup, or active avatar authentication failure invalidates and
+removes that scope; retired handles cannot repopulate it. Missing, corrupt, or
+unavailable cache files fall back to the existing bounded network/fallback path.
+
 ## Verification and exclusions
 
 Cross-language fixtures freeze identity and exact SVG bytes for Unicode,
