@@ -18,9 +18,10 @@ use std::{
 use crate::{
     auth::{
         load_codex_cli_credential, load_codex_oauth_profile_credential,
-        load_oauth_profile_credential, oauth_provider_config_for_material,
-        refresh_codex_oauth_profile_material, refresh_oauth_profile_material, CodexCliCredential,
-        CodexOAuthRefreshFailure, OAuthCredential,
+        load_oauth_profile_credential, oauth_profile_material_credential,
+        oauth_provider_config_for_material, refresh_codex_oauth_profile_material,
+        refresh_oauth_profile_material, CodexCliCredential, CodexOAuthRefreshFailure,
+        OAuthCredential,
     },
     config::{
         load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
@@ -154,6 +155,9 @@ pub struct OpenAiProvider {
 pub struct OpenAiBearerAuth {
     client: Client,
     provider_id: String,
+    /// OAuth protocol selection key; follows the route provider so a plan
+    /// alias still resolves its parent provider's OAuth configuration.
+    oauth_provider_key: String,
     api_key: Option<String>,
     credential_profile: Option<String>,
     credential_material: Option<String>,
@@ -472,14 +476,16 @@ impl OpenAiChatCompletionsProvider {
         let oauth_material = oauth_profile
             .then(|| provider_config.credential.clone())
             .flatten();
-        let oauth_backed = oauth_material.as_deref().is_some_and(|material| {
+        let oauth_backed = if let Some(material) = oauth_material.as_deref() {
             let profile = provider_config
                 .auth
                 .profile
                 .as_deref()
                 .unwrap_or_else(|| provider_config.id.as_str());
-            load_oauth_profile_credential(material, profile).is_ok()
-        });
+            oauth_profile_material_credential(material, profile)?.is_some()
+        } else {
+            false
+        };
         let api_key = match (provider_config.auth.source, provider_config.auth.kind) {
             (CredentialSource::None, CredentialKind::None) => None,
             (CredentialSource::AuthProfile, CredentialKind::OAuth) if oauth_backed => None,

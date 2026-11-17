@@ -369,9 +369,9 @@ fn discovery_bearer_credential(provider: &ProviderRuntimeConfig) -> Result<Optio
         .profile
         .as_deref()
         .unwrap_or_else(|| provider.id.as_str());
-    // A profile may hold an opaque token instead of a Holon OAuth material
-    // document; that form is used as the bearer value directly.
-    let Ok(oauth) = crate::auth::load_oauth_profile_credential(credential, profile) else {
+    // Only legacy opaque tokens may bypass material parsing. Malformed
+    // structured documents fail closed before any credential is sent.
+    let Some(oauth) = crate::auth::oauth_profile_material_credential(credential, profile)? else {
         return Ok(Some(credential.to_string()));
     };
     Ok(Some(oauth.access_token))
@@ -3052,6 +3052,49 @@ mod tests {
         assert_eq!(
             request.headers()[reqwest::header::AUTHORIZATION],
             "Bearer gho_test_access"
+        );
+    }
+
+    #[test]
+    fn oauth_model_discovery_rejects_malformed_material_before_sending_credentials() {
+        let mut provider = custom_openai_provider("https://api.githubcopilot.com".into());
+        provider.auth.source = CredentialSource::AuthProfile;
+        provider.auth.kind = CredentialKind::OAuth;
+        provider.auth.profile = Some("github-copilot".into());
+        for material in [
+            r#"{"tokens":"refresh-secret"}"#,
+            r#"{"tokens":"{\"access_token\":\"access-secret\",\"refresh_token\":\"refresh-secret\",\"id_token\":\"id-secret\"}"}"#,
+            r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret","id_token":"id-secret"},"expires_at":"not-a-date"}"#,
+            r#"{"tokens":{"refresh_token":"refresh-secret","id_token":"id-secret"}}"#,
+            r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret"}"#,
+            "[]",
+        ] {
+            provider.credential = Some(material.into());
+            let error = provider_models_request(
+                &provider,
+                provider_discovery_definition(&provider).unwrap(),
+                &provider_models_url(&provider).unwrap(),
+            )
+            .err()
+            .expect("malformed OAuth material must fail before request construction");
+            let rendered = format!("{error:#}");
+            assert!(!rendered.contains("access-secret"));
+            assert!(!rendered.contains("refresh-secret"));
+            assert!(!rendered.contains("id-secret"));
+        }
+
+        provider.credential = Some("legacy-opaque-token".into());
+        let request = provider_models_request(
+            &provider,
+            provider_discovery_definition(&provider).unwrap(),
+            &provider_models_url(&provider).unwrap(),
+        )
+        .unwrap()
+        .build()
+        .unwrap();
+        assert_eq!(
+            request.headers()[reqwest::header::AUTHORIZATION],
+            "Bearer legacy-opaque-token"
         );
     }
 

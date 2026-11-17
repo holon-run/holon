@@ -27,8 +27,9 @@ pub enum OAuthDeviceProtocol {
 }
 
 pub fn load_oauth_profile_credential(material: &str, profile: &str) -> Result<OAuthCredential> {
+    // Serde type errors can include credential values; never retain their source.
     let auth: AuthDotJson = serde_json::from_str(material)
-        .with_context(|| format!("failed to parse Holon credential profile {profile}"))?;
+        .map_err(|_| anyhow!("failed to parse Holon credential profile {profile}"))?;
     let tokens = auth
         .tokens
         .ok_or_else(|| anyhow!("OAuth credential profile {profile} did not contain tokens"))?;
@@ -47,6 +48,19 @@ pub fn load_oauth_profile_credential(material: &str, profile: &str) -> Result<OA
         access_token: tokens.access_token,
         expires_at,
     })
+}
+
+/// Recognize structured OAuth material before parsing, so a malformed
+/// document cannot fall back to sending refresh/id tokens as an opaque bearer.
+pub(crate) fn oauth_profile_material_credential(
+    material: &str,
+    profile: &str,
+) -> Result<Option<OAuthCredential>> {
+    if matches!(material.trim_start().chars().next(), Some('{' | '[')) {
+        load_oauth_profile_credential(material, profile).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 pub async fn refresh_oauth_profile_material(
@@ -573,6 +587,11 @@ const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "GITHUB_TOKEN_URL_OVERRIDE";
 
+/// Serializes tests that override the process-wide GitHub token URL env var
+/// across test modules.
+#[cfg(test)]
+pub(crate) static GITHUB_TOKEN_URL_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 fn env_client_id(env_var: &str) -> Option<String> {
     std::env::var(env_var)
         .ok()
@@ -1064,10 +1083,10 @@ async fn refresh_github_oauth_profile_material(
     profile: &str,
 ) -> std::result::Result<RefreshedOAuthProfile, CodexOAuthRefreshFailure> {
     let mut auth: AuthDotJson =
-        serde_json::from_str(material).map_err(|error| CodexOAuthRefreshFailure {
+        serde_json::from_str(material).map_err(|_| CodexOAuthRefreshFailure {
             kind: CodexOAuthRefreshFailureKind::Other,
             status: None,
-            message: format!("failed to parse Holon credential profile {profile}: {error}"),
+            message: format!("failed to parse Holon credential profile {profile}"),
         })?;
     // Prefer the client ID captured at login; fall back to the resolved
     // configuration so refresh also works after the user rotates their
@@ -1971,8 +1990,6 @@ mod tests {
     }
 
     /// Serializes the tests that override process-wide environment variables.
-    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn oauth_refresh_http_classification_requires_rejected_grant_status() {
         for status in [400, 401, 403, 429, 500, 503] {
@@ -2025,18 +2042,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn github_refresh_parse_errors_do_not_include_credential_values() {
+        let client = reqwest::Client::new();
+        let config = OAuthProviderConfig::github_copilot("Iv1.config-client");
+        for material in [
+            r#"{"tokens":"refresh-secret"}"#,
+            r#"{"tokens":"{\"access_token\":\"access-secret\",\"refresh_token\":\"refresh-secret\",\"id_token\":\"id-secret\"}"}"#,
+        ] {
+            let failure =
+                refresh_oauth_profile_material(&client, &config, material, "github-copilot")
+                    .await
+                    .unwrap_err();
+            assert_eq!(failure.kind, CodexOAuthRefreshFailureKind::Other);
+            let rendered = format!("{failure:#?}");
+            assert!(!rendered.contains("access-secret"));
+            assert!(!rendered.contains("refresh-secret"));
+            assert!(!rendered.contains("id-secret"));
+            assert!(!failure.safe_summary().contains("refresh-secret"));
+        }
+    }
+
+    #[tokio::test]
     async fn github_refresh_uses_the_client_id_recorded_in_the_material() {
+        let captured_forms: std::sync::Arc<std::sync::Mutex<Vec<String>>> =
+            std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let captured = captured_forms.clone();
         let server = axum::Router::new().route(
             "/oauth/token",
-            axum::routing::post(|| async {
-                axum::Json(json!({
-                    "access_token": "new-access",
-                    "refresh_token": "rotated-refresh",
-                    "expires_in": 28800
-                }))
+            axum::routing::post(move |body: String| {
+                let captured = captured.clone();
+                async move {
+                    captured.lock().unwrap().push(body);
+                    axum::Json(json!({
+                        "access_token": "new-access",
+                        "refresh_token": "rotated-refresh",
+                        "expires_in": 28800
+                    }))
+                }
             }),
         );
-        let _env_lock = ENV_LOCK.lock().unwrap();
+        let _env_lock = GITHUB_TOKEN_URL_TEST_ENV_LOCK.lock().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let handle = tokio::spawn(async move {
@@ -2057,7 +2102,9 @@ mod tests {
         .to_string();
         let refreshed = refresh_oauth_profile_material(
             &reqwest::Client::new(),
-            &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
+            // A different configured client id must not win over the
+            // client id recorded in the material.
+            &OAuthProviderConfig::github_copilot("Iv1.config-client"),
             &material,
             "github-copilot",
         )
@@ -2075,6 +2122,11 @@ mod tests {
             auth.oauth_client_id.as_deref(),
             Some("Iv1.user-owned-client")
         );
+        let forms = captured_forms.lock().unwrap();
+        assert_eq!(forms.len(), 1);
+        assert!(forms[0].contains("client_id=Iv1.user-owned-client"));
+        assert!(!forms[0].contains("Iv1.config-client"));
+        assert!(forms[0].contains("grant_type=refresh_token"));
         handle.abort();
     }
 

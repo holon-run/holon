@@ -20,7 +20,8 @@ use crate::auth::CodexCliCredential;
 use crate::config::{
     load_credential_store_at, save_credential_store_at, CredentialKind, CredentialProfileFile,
     CredentialSource, CredentialStoreFile, ProviderAuthConfig, ProviderEndpointId, ProviderId,
-    ProviderRuntimeConfig, ProviderTransportKind, OPENAI_CODEX_CREDENTIAL_PROFILE,
+    ProviderRuntimeConfig, ProviderTransportKind, GITHUB_COPILOT_CREDENTIAL_PROFILE,
+    OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 use crate::provider::budget::effective_output_tokens;
 use crate::provider::retry::{classify_provider_error, ProviderFailureKind, RetryDisposition};
@@ -369,6 +370,158 @@ fn chat_completions_keeps_opaque_oauth_profile_tokens_as_bearer_values() {
         provider.transport.authorization_headers(),
         vec![("authorization", "Bearer opaque-token".to_string())]
     );
+}
+
+#[test]
+fn chat_completions_rejects_malformed_oauth_material_before_sending_credentials() {
+    let home = tempfile::tempdir().unwrap();
+    for material in [
+        r#"{"tokens":"refresh-secret"}"#,
+        r#"{"tokens":"{\"access_token\":\"access-secret\",\"refresh_token\":\"refresh-secret\",\"id_token\":\"id-secret\"}"}"#,
+        r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret","id_token":"id-secret"},"expires_at":"not-a-date"}"#,
+        r#"{"tokens":{"refresh_token":"refresh-secret","id_token":"id-secret"}}"#,
+        r#"{"tokens":{"access_token":"access-secret","refresh_token":"refresh-secret"}"#,
+        "[]",
+    ] {
+        let config = test_openai_codex_config(Some(material.into()));
+        let result =
+            OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+                &config,
+                "model",
+                1024,
+                None,
+                home.path(),
+                env!("CARGO_PKG_VERSION"),
+            );
+        let error = result
+            .err()
+            .expect("malformed OAuth material must fail closed");
+        let rendered = format!("{error:#}");
+        assert!(!rendered.contains("access-secret"));
+        assert!(!rendered.contains("refresh-secret"));
+        assert!(!rendered.contains("id-secret"));
+    }
+}
+
+#[tokio::test]
+async fn chat_completions_plan_alias_refreshes_oauth_credentials_via_route_provider() {
+    // A plan alias resolves its OAuth configuration through the route
+    // provider, so an expiring credential refreshes with the client id
+    // recorded in the material instead of failing with "no OAuth
+    // configuration".
+    use crate::provider::AgentProvider;
+    use axum::{routing::post, Json, Router};
+
+    let token_forms: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let chat_bearers: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let token_forms_capture = token_forms.clone();
+    let chat_bearers_capture = chat_bearers.clone();
+    let server = Router::new()
+        .route(
+            "/oauth/token",
+            post(move |body: String| {
+                let captured = token_forms_capture.clone();
+                async move {
+                    captured.lock().unwrap().push(body);
+                    Json(json!({
+                        "access_token": "rotated-access",
+                        "refresh_token": "rotated-refresh",
+                        "expires_in": 28800
+                    }))
+                }
+            }),
+        )
+        .route(
+            "/chat/completions",
+            post(move |headers: axum::http::HeaderMap| {
+                let captured = chat_bearers_capture.clone();
+                async move {
+                    captured.lock().unwrap().push(
+                        headers
+                            .get("authorization")
+                            .and_then(|value| value.to_str().ok())
+                            .unwrap_or_default()
+                            .to_string(),
+                    );
+                    Json(json!({
+                        "choices": [{
+                            "message": {"role": "assistant", "content": "ok"},
+                            "finish_reason": "stop"
+                        }]
+                    }))
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, server).await.unwrap();
+    });
+    let _env_lock = crate::auth::GITHUB_TOKEN_URL_TEST_ENV_LOCK.lock().unwrap();
+    let _env = EnvVarGuard::set(
+        "GITHUB_TOKEN_URL_OVERRIDE",
+        format!("http://{addr}/oauth/token"),
+    );
+
+    let home = tempfile::tempdir().unwrap();
+    let credential_store_path = home.path().join("credentials.json");
+    let expiring_material = json!({
+        "tokens": {
+            "access_token": "old-access",
+            "refresh_token": "old-refresh"
+        },
+        "oauth_client_id": "Iv1.material-client",
+        "expires_at": Utc::now() + chrono::Duration::minutes(30)
+    })
+    .to_string();
+    let mut profiles = BTreeMap::new();
+    profiles.insert(
+        GITHUB_COPILOT_CREDENTIAL_PROFILE.to_string(),
+        CredentialProfileFile {
+            kind: CredentialKind::OAuth,
+            material: expiring_material.clone(),
+        },
+    );
+    save_credential_store_at(&credential_store_path, &CredentialStoreFile { profiles }).unwrap();
+
+    let mut config = test_openai_codex_config(Some(expiring_material));
+    config.id = ProviderId::parse("github-copilot-example").unwrap();
+    config.route_provider = ProviderId::parse("github-copilot").unwrap();
+    config.route_endpoint = ProviderEndpointId::default_endpoint();
+    config.auth.profile = Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into());
+    config.auth.external = None;
+    config.base_url = format!("http://{addr}");
+    config.credential_store_path = Some(credential_store_path.clone());
+    let provider = OpenAiChatCompletionsProvider::from_resolved_runtime_config_with_context_window(
+        &config,
+        "gpt-5",
+        1024,
+        None,
+        home.path(),
+        env!("CARGO_PKG_VERSION"),
+    )
+    .unwrap();
+
+    let request = ProviderTurnRequest::plain(
+        "system",
+        vec![ConversationMessage::UserText("hi".into())],
+        vec![],
+    );
+    provider.complete_turn(request).await.unwrap();
+    assert_eq!(
+        chat_bearers.lock().unwrap().as_slice(),
+        ["Bearer rotated-access".to_string()]
+    );
+    let token_forms = token_forms.lock().unwrap();
+    assert_eq!(token_forms.len(), 1);
+    assert!(token_forms[0].contains("client_id=Iv1.material-client"));
+    assert!(token_forms[0].contains("grant_type=refresh_token"));
+    drop(token_forms);
+    let store = load_credential_store_at(&credential_store_path).unwrap();
+    let material = &store.profiles[GITHUB_COPILOT_CREDENTIAL_PROFILE].material;
+    assert!(material.contains("rotated-refresh"));
+    assert!(!material.contains("old-refresh"));
+    handle.abort();
 }
 
 #[tokio::test]

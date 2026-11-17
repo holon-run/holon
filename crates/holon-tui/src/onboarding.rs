@@ -309,7 +309,10 @@ impl OnboardingTuiApp {
         let oauth_config = if provider.id.is_openai_codex() {
             None
         } else {
-            match resolve_oauth_provider_config(provider.id.as_str(), None) {
+            match resolve_oauth_provider_config(
+                provider.id.as_str(),
+                provider.oauth_client_id.as_deref(),
+            ) {
                 Ok(Some(config)) => Some(config),
                 Ok(None) => None,
                 Err(error) => {
@@ -797,6 +800,7 @@ pub struct OnboardingProviderChoice {
     pub credential_profile: String,
     pub credential_configured: bool,
     pub codex_home: Option<PathBuf>,
+    pub oauth_client_id: Option<String>,
     pub configured: bool,
 }
 

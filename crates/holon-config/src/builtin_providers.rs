@@ -205,6 +205,16 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
+    if let Some((id, endpoint)) = provider_endpoint_key(rest, ".auth.client_id") {
+        let endpoint = ProviderEndpointId::parse(endpoint)?;
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider_endpoint_auth(provider, &endpoint))
+            .and_then(|auth| auth.client_id.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
     if let Some((id, plan)) = provider_plan_key(rest, ".endpoint") {
         return Ok(config
             .providers
@@ -263,6 +273,14 @@ pub(crate) fn get_provider_config_key(config: &HolonConfigFile, key: &str) -> Re
             .providers
             .get(&ProviderId::parse(id)?)
             .and_then(|provider| provider.auth.external.as_ref())
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null));
+    }
+    if let Some(id) = rest.strip_suffix(".auth.client_id") {
+        return Ok(config
+            .providers
+            .get(&ProviderId::parse(id)?)
+            .and_then(|provider| provider.auth.client_id.as_ref())
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null));
     }
@@ -340,6 +358,13 @@ pub(crate) fn set_provider_config_key(
             .external = (!value.is_empty()).then(|| value.to_string());
         return Ok(());
     }
+    if key.ends_with(".auth.client_id") {
+        let value = raw_value.trim();
+        persisted_provider_config_mut(config, key, ".auth.client_id")?
+            .auth
+            .client_id = (!value.is_empty()).then(|| value.to_string());
+        return Ok(());
+    }
     if key.ends_with(".cache_capabilities.cache_control") {
         let value =
             parse_bool_value(raw_value)?.ok_or_else(|| anyhow!("{key} expects a boolean"))?;
@@ -375,6 +400,12 @@ pub(crate) fn unset_provider_config_key(config: &mut HolonConfigFile, key: &str)
         persisted_provider_config_mut(config, key, ".auth.external")?
             .auth
             .external = None;
+        return Ok(());
+    }
+    if key.ends_with(".auth.client_id") {
+        persisted_provider_config_mut(config, key, ".auth.client_id")?
+            .auth
+            .client_id = None;
         return Ok(());
     }
     if key.ends_with(".cache_capabilities.cache_control") {
@@ -478,6 +509,19 @@ fn set_provider_endpoint_config_key(
             .external = (!value.is_empty()).then(|| value.to_string());
         return Ok(true);
     }
+    if let Some((id, endpoint_id)) = provider_endpoint_key(rest, ".auth.client_id") {
+        let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
+        let value = raw_value.trim();
+        let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
+        provider
+            .endpoints
+            .entry(endpoint_id)
+            .or_default()
+            .auth
+            .get_or_insert_with(ProviderAuthConfig::default)
+            .client_id = (!value.is_empty()).then(|| value.to_string());
+        return Ok(true);
+    }
     Ok(false)
 }
 
@@ -550,7 +594,12 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
         }
         return Ok(true);
     }
-    for suffix in [".auth.env", ".auth.profile", ".auth.external"] {
+    for suffix in [
+        ".auth.env",
+        ".auth.profile",
+        ".auth.external",
+        ".auth.client_id",
+    ] {
         if let Some((id, endpoint_id)) = provider_endpoint_key(rest, suffix) {
             let provider = persisted_provider_config_by_id_mut(config, ProviderId::parse(id)?)?;
             let endpoint_id = ProviderEndpointId::parse(endpoint_id)?;
@@ -563,6 +612,7 @@ fn unset_provider_endpoint_config_key(config: &mut HolonConfigFile, key: &str) -
                     ".auth.env" => auth.env = None,
                     ".auth.profile" => auth.profile = None,
                     ".auth.external" => auth.external = None,
+                    ".auth.client_id" => auth.client_id = None,
                     _ => {}
                 }
             }
@@ -639,6 +689,12 @@ pub fn resolve_provider_registry(
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRegistry> {
     let mut registry = built_in_provider_registry_with_settings(settings_env)?;
+    // Template headers before any user configuration is merged; plan
+    // endpoint aliases recompute their header layering from these defaults.
+    let builtin_headers: HashMap<ProviderId, ProviderHeaders> = registry
+        .values()
+        .map(|provider| (provider.id.clone(), provider.headers.clone()))
+        .collect();
     for provider in registry.values_mut() {
         provider.credential = None;
     }
@@ -677,6 +733,7 @@ pub fn resolve_provider_registry(
                 endpoint_id,
                 provider_config,
                 base_runtime.clone(),
+                builtin_headers.get(id).cloned().unwrap_or_default(),
                 settings_env,
                 credential_store,
             )?;
@@ -722,14 +779,16 @@ fn materialize_provider_endpoint_config(
     endpoint_id: &ProviderEndpointId,
     provider_config: &ProviderConfigFile,
     mut runtime: ProviderRuntimeConfig,
+    template_headers: ProviderHeaders,
     settings_env: &HashMap<String, String>,
     credential_store: &CredentialStoreFile,
 ) -> Result<ProviderRuntimeConfig> {
-    // Keep the built-in default headers (for example a provider identity
-    // header) and let the user's configured headers win per name.
-    runtime.headers = runtime
-        .headers
-        .merged(&effective_provider_headers(provider_config, endpoint_id)?)?;
+    // Recompute the endpoint headers from the built-in template plus the
+    // provider-level and selected-endpoint layers. The incoming runtime
+    // already carries the default endpoint's header layer, which must not
+    // leak to an alias that routes to a different base URL.
+    runtime.headers =
+        template_headers.merged(&effective_provider_headers(provider_config, endpoint_id)?)?;
     if let Some(endpoint_config) = provider_config.endpoints.get(endpoint_id) {
         if let Some(transport) = endpoint_config.transport {
             runtime.transport = transport;

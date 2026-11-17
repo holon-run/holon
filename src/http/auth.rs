@@ -741,12 +741,12 @@ pub async fn start_oauth_device_login(
     headers: HeaderMap,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
-    // GitHub Copilot uses the user's own OAuth app, so its client id comes
-    // from the stored provider configuration instead of the built-in catalog.
+    // Use the same resolved default-endpoint auth as onboarding, including
+    // the selected endpoint's override of provider-level configuration.
     let app_config = state.host.config();
     let configured_client_id = crate::config::ProviderId::parse(&provider)
         .ok()
-        .and_then(|provider_id| app_config.stored_config.providers.get(&provider_id))
+        .and_then(|provider_id| app_config.providers.get(&provider_id))
         .and_then(|provider_config| provider_config.auth.client_id.clone());
     let config =
         crate::auth::resolve_oauth_provider_config(&provider, configured_client_id.as_deref())

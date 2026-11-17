@@ -29,9 +29,23 @@ impl OpenAiBearerAuth {
                     })?,
             ),
         };
+        // OAuth protocol selection follows the route provider so a plan
+        // alias (for example github-copilot-<plan>) still resolves the
+        // parent provider's OAuth configuration; the display id stays for
+        // diagnostics and lock ownership.
+        let oauth_provider_key = {
+            let route = provider_config.route_provider.as_str();
+            if route.is_empty() {
+                provider_config.id.as_str()
+            } else {
+                route
+            }
+        }
+        .to_string();
         Ok(Self {
             client,
             provider_id: provider_config.id.as_str().to_string(),
+            oauth_provider_key,
             api_key,
             credential_profile: oauth_profile.then(|| {
                 provider_config
@@ -112,9 +126,12 @@ impl OpenAiBearerAuth {
         // The client id for a user-owned OAuth app lives in the profile
         // material, so a refresh does not depend on the environment or the
         // user configuration still carrying it.
-        let config = oauth_provider_config_for_material(&self.provider_id, &entry.material)?
+        let config = oauth_provider_config_for_material(&self.oauth_provider_key, &entry.material)?
             .ok_or_else(|| {
-                anyhow::anyhow!("provider {} has no OAuth configuration", self.provider_id)
+                anyhow::anyhow!(
+                    "provider {} has no OAuth configuration",
+                    self.oauth_provider_key
+                )
             })?;
         let current = load_oauth_profile_credential(&entry.material, profile)?;
         if !force
