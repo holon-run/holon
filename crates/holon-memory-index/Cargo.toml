@@ -12,6 +12,7 @@ test-support = []
 [dependencies]
 anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
 rusqlite = { version = "0.31", features = ["bundled"] }
 schemars = { version = "0.9", features = ["chrono04"] }
 serde = { version = "1.0", features = ["derive"] }

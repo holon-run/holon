@@ -2,8 +2,11 @@
 
 `holon-memory-index` owns the `memory.v2.sqlite3` schema, FTS search,
 read-only and writer connections, the per-path writer coordinator, and
-persisted rebuild progress. It works with prepared documents and source
-changes. The application supplies its existing writer metrics callbacks.
+persisted rebuild progress. It constructs memory documents from acquired
+records, including their source references, searchable excerpts, and metadata.
+The application supplies resolved file content and timestamps, its existing
+command preview formatter, and writer metrics callbacks. Document layout and
+projection version are preserved so existing index rows remain valid.
 
 The application resolves canonical sources through `AppStorage` and
 `RuntimeDb`, drives bounded rebuild passes, and reports freshness from both
