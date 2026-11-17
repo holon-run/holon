@@ -628,11 +628,19 @@ fn prepared_source(
     id: &str,
     nonce: &str,
 ) -> Result<crate::runtime_db::prepared_input_evidence::PreparedInputEvidence> {
+    prepared_source_for_task(id, nonce, "output-task")
+}
+
+fn prepared_source_for_task(
+    id: &str,
+    nonce: &str,
+    task_id: &str,
+) -> Result<crate::runtime_db::prepared_input_evidence::PreparedInputEvidence> {
     let mut source = MessageEnvelope::new(
         &scope().agent_id,
         MessageKind::TaskResult,
         MessageOrigin::Task {
-            task_id: "output-task".into(),
+            task_id: task_id.into(),
         },
         AuthorityClass::RuntimeInstruction,
         Priority::Normal,
@@ -642,7 +650,7 @@ fn prepared_source(
     );
     source.id = id.into();
     source.created_at = at();
-    source.metadata = Some(serde_json::json!({"task_id":"output-task"}));
+    source.metadata = Some(serde_json::json!({"task_id":task_id}));
     crate::runtime_db::prepared_input_evidence::PreparedInputEvidence::message(
         scope(),
         nonce.into(),
@@ -650,6 +658,126 @@ fn prepared_source(
         source,
         Vec::new(),
     )
+}
+
+#[test]
+fn original_source_ack_invalidates_reader_candidate_even_for_an_unselected_task() -> Result<()> {
+    use crate::runtime_db::transitions::InputMutationExecution;
+
+    for selected in [true, false] {
+        let (_dir, db) = fresh()?;
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        let mut task_request = request();
+        task_request.capture.terminal_limit = 0;
+        let source_task = if selected {
+            "output-task"
+        } else {
+            "unselected-terminal-task"
+        };
+        let source_key = TaskKey::new(TaskFamily::Task, source_task);
+        let before = db.transaction(|tx| {
+            task_locator(tx)?;
+            if !selected {
+                let keys = BTreeSet::from([source_key.clone()]);
+                let proof = prepare_task_write_tx(tx, &scope(), &keys)?;
+                repositories::upsert_task_tx(
+                    tx,
+                    &task(source_task, crate::types::TaskStatus::Completed),
+                )?;
+                register_task_writes_tx(
+                    tx,
+                    &proof,
+                    &keys,
+                    &crate::types::AgentState::new(&scope().agent_id),
+                    &task_request,
+                )?;
+            }
+            Ok(
+                super::super::loader::prepare_task_output_snapshot_with_budget_tx(
+                    tx,
+                    &scope(),
+                    &task_request,
+                    &ledger,
+                )?
+                .require_current()?
+                .resident,
+            )
+        })?;
+        assert_eq!(
+            before.coverage().observations.contains_key(&source_key),
+            selected
+        );
+        let candidate = db
+            .read_for_preparation(|tx| {
+                prepare_task_candidate_tx(
+                    tx,
+                    &scope(),
+                    &crate::types::AgentState::new(&scope().agent_id),
+                    &task_request,
+                    &ledger,
+                )
+            })?
+            .context("reader candidate missing")?;
+        let prepared = prepared_source_for_task(
+            "candidate-racing-source",
+            "candidate-source-ack",
+            source_task,
+        )?;
+        let InputMutationExecution::Committed { value: ack, .. } = db
+            .evidence()
+            .commit_prepared_input_evidence_with_task_budget(
+                &prepared,
+                &source_ack_work_request(),
+                &task_request,
+                &ledger,
+                None,
+                None,
+            )?
+        else {
+            panic!("original Source ACK must commit")
+        };
+        let delta = ack.task_delta.as_ref().context("metadata delta missing")?;
+        assert!(delta.records.is_empty() && delta.stop_records.is_empty());
+        assert_eq!(delta.base_revision, before.coverage().revision);
+        assert_eq!(delta.revision, before.coverage().revision + 1);
+        assert_ne!(
+            delta.coverage.output.window,
+            before.coverage().output.window
+        );
+        assert_eq!(
+            delta.coverage.output.heads.contains_key(source_task),
+            selected,
+            "an unselected Task changes the scope window without acquiring a head"
+        );
+        let error = db
+            .transaction_once(|tx| commit_task_candidate_tx(tx, &scope(), candidate))
+            .unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<TaskPreparationCandidateStale>()
+                .map(|stale| stale.0),
+            Some("base revision"),
+            "original Source ACK must invalidate the old reader: {error:#}"
+        );
+        let candidate = db
+            .read_for_preparation(|tx| {
+                prepare_task_candidate_tx(
+                    tx,
+                    &scope(),
+                    &crate::types::AgentState::new(&scope().agent_id),
+                    &task_request,
+                    &ledger,
+                )
+            })?
+            .context("refreshed candidate missing")?;
+        let refreshed =
+            db.transaction_once(|tx| commit_task_candidate_tx(tx, &scope(), candidate))?;
+        assert_eq!(
+            refreshed.coverage().output.window,
+            delta.coverage.output.window
+        );
+    }
+    Ok(())
 }
 
 #[test]

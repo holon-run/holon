@@ -8825,8 +8825,37 @@ impl RuntimeHost {
             )
             .await?;
         let child_agent_id = child_identity.agent_id.clone();
-        let child_incarnation = child_identity.incarnation;
-        async {
+        self.finish_child_task_spawn(
+            parent_runtime,
+            task,
+            prompt,
+            authority_class,
+            worktree,
+            model_resolution,
+            original_source,
+            parent_state,
+            child_identity,
+        )
+        .await
+        .context(ChildTaskSpawnFailure { child_agent_id })
+    }
+
+    #[inline(never)]
+    fn finish_child_task_spawn<'a>(
+        &'a self,
+        parent_runtime: RuntimeHandle,
+        task: &'a TaskRecord,
+        prompt: String,
+        authority_class: AuthorityClass,
+        worktree: bool,
+        model_resolution: AgentModelResolution,
+        original_source: Option<&'a crate::runtime::OriginalChildTaskProducer>,
+        parent_state: AgentState,
+        child_identity: AgentIdentityRecord,
+    ) -> Pin<Box<impl Future<Output = Result<ChildTaskSpawn>> + Send + 'a>> {
+        // Construct the admission future outside the nested invocation poll frame.
+        Box::pin(async move {
+            let child_incarnation = child_identity.incarnation;
             if let Some(source) = original_source {
                 source.original_spawn_identity_created(&child_identity)?;
                 #[cfg(test)]
@@ -8961,9 +8990,7 @@ impl RuntimeHost {
                 delivery_id: None,
                 task_detail,
             })
-        }
-        .await
-        .context(ChildTaskSpawnFailure { child_agent_id })
+        })
     }
 
     async fn deliver_to_current_runtime(
@@ -23845,12 +23872,27 @@ mod tests {
         let config = host.config().as_ref().clone();
         let parent_agent_id = config.default_agent_id.clone();
         let identity = host.ensure_default_agent_identity().unwrap();
+        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+            agent_id: parent_agent_id.clone(),
+            identity_incarnation: identity.incarnation,
+        };
         host.runtime_db()
             .transaction(|tx| {
-                crate::runtime_db::evidence::upsert_agent_state_tx(
+                let state = AgentState::new(&parent_agent_id);
+                crate::runtime_db::evidence::upsert_agent_state_tx(tx, &state)?;
+                // This unloaded-owner fixture initializes Task just as bootstrap
+                // would before admitting the original qualified Task.
+                crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
                     tx,
-                    &AgentState::new(&parent_agent_id),
-                )
+                    &scope,
+                    &state,
+                    &crate::runtime::resident_task::TaskCaptureRequest::current(),
+                    &[],
+                    4096,
+                    16 * 1024 * 1024,
+                    &host.inner.input_evidence_budget,
+                )?;
+                Ok(())
             })
             .unwrap();
         let task = TaskRecord {
@@ -23886,10 +23928,6 @@ mod tests {
             notify_scheduler: false,
             commit_on_idempotent: false,
             fault: None,
-        };
-        let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
-            agent_id: parent_agent_id.clone(),
-            identity_incarnation: identity.incarnation,
         };
         let prepared = crate::runtime_db::transitions::PreparedInputTransition::task(
             scope.clone(),

@@ -121,6 +121,8 @@ impl Material<'_, '_> {
 
 pub(super) struct TaskTransaction<'tx, 'connection, 'command> {
     proof: tasks::TaskWriteProof,
+    baseline: Option<tasks::TaskCurrentSnapshot>,
+    prepared_base: Option<Arc<crate::runtime::resident_task::ResidentTaskDomain>>,
     cleanup: Option<tasks::OriginalTaskResultCleanupProof<'tx, 'connection, 'command>>,
     allowed: BTreeSet<TaskKey>,
     observations: BTreeSet<TaskKey>,
@@ -459,7 +461,21 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
                 inserted.is_none() && actual == value.effects.task_write_keys,
                 "Defer finalization has unrelated effects"
             );
-            if let Some(delta) = defer.finish(tx, &self.proof, &actual)? {
+            let delta = defer.finish(tx, &self.proof, &actual)?.or_else(|| {
+                self.prepared_base.as_ref().map(|base| {
+                    crate::runtime::resident_task::CommittedTaskDelta {
+                        scope: self.proof.scope().clone(),
+                        base_revision: base.coverage().revision,
+                        prepared_base: None,
+                        revision: base.coverage().revision,
+                        records: Vec::new(),
+                        stop_records: Vec::new(),
+                        removals: BTreeMap::new(),
+                        coverage: base.coverage().clone(),
+                    }
+                })
+            });
+            if let Some(delta) = delta {
                 self.attach_delta(value, delta, ledger)?;
             }
             value.effects.task_material_budget_views.extend(self.guards);
@@ -475,57 +491,37 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
         .scope_facts()?
         .state
         .context("Task finalizer requires actual final State")?;
-        let facts = if self.child_phase {
+        if self.child_phase {
             anyhow::ensure!(
                 inserted.is_none(),
                 "child terminal cannot combine Stop insertion"
             );
-            let mut material = tasks::read_preparation::TaskReadMaterial::new(
-                self.proof.scope(),
-                &self.request,
-                Some(ledger),
-            )
-            .with_memory_budget(memory_budget.as_deref_mut())
-            .with_admitted_material(tasks::TaskMaintenanceMaterial {
-                bytes: self.material_total.0,
-                records: self.material_total.1,
-            })?;
-            let facts = tasks::register_original_task_writes_using_material_tx(
-                tx,
-                &self.proof,
-                &actual,
-                &final_state,
-                &self.request,
-                ledger,
-                &mut material,
-            )?;
-            let usage = material.material_estimate();
-            self.material_total = (usage.bytes, usage.records);
-            self.guards.extend(material.into_guards());
-            facts
-        } else {
-            match inserted {
-                Some(inserted) => tasks::register_task_writes_with_stop_observation_tx(
-                    tx,
-                    &self.proof,
-                    &actual,
-                    &final_state,
-                    &self.request,
-                    ledger,
-                    memory_budget.as_deref_mut(),
-                    inserted,
-                )?,
-                None => tasks::register_task_writes_with_memory_budget_tx(
-                    tx,
-                    &self.proof,
-                    &actual,
-                    &final_state,
-                    &self.request,
-                    ledger,
-                    memory_budget.as_deref_mut(),
-                )?,
-            }
-        };
+        }
+        let mut material = tasks::read_preparation::TaskReadMaterial::new(
+            self.proof.scope(),
+            &self.request,
+            Some(ledger),
+        )
+        .with_memory_budget(memory_budget.as_deref_mut())
+        .with_admitted_material(tasks::TaskMaintenanceMaterial {
+            bytes: self.material_total.0,
+            records: self.material_total.1,
+        })?;
+        let facts = self.proof.register_incremental_tx(
+            tx,
+            self.baseline
+                .take()
+                .context("Task writer lost its pre-SQL snapshot")?,
+            &actual,
+            &final_state,
+            &self.request,
+            ledger,
+            &mut material,
+            inserted,
+        )?;
+        let usage = material.material_estimate();
+        self.material_total = (usage.bytes, usage.records);
+        self.guards.extend(material.into_guards());
         self.attach_delta(value, facts.delta, ledger)?;
         value.effects.task_material_budget_views.extend(self.guards);
         Ok(tasks::TaskMaintenanceMaterial {
@@ -537,9 +533,10 @@ impl<'tx, 'connection, 'command> TaskTransaction<'tx, 'connection, 'command> {
     fn attach_delta(
         &mut self,
         value: &mut TransitionCommit,
-        delta: crate::runtime::resident_task::CommittedTaskDelta,
+        mut delta: crate::runtime::resident_task::CommittedTaskDelta,
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<()> {
+        delta.prepared_base = self.prepared_base.take();
         // Delta owns the selected Arcs and a by-value coverage. These observations
         // outlive SQL and remain with the ACK until authoritative root installation.
         self.guards.push(ledger.register_task_view(
@@ -572,6 +569,7 @@ pub(super) fn prepare_supervised_parent_transaction_tx<'tx, 'connection, 'comman
     request: &tasks::TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    task_bases: Option<&PreparedTaskBaselines>,
 ) -> Result<Option<TaskTransaction<'tx, 'connection, 'command>>> {
     let InputTransitionCommand::Queue(queue) = prepared.command.as_ref() else {
         return Ok(None);
@@ -613,19 +611,42 @@ pub(super) fn prepare_supervised_parent_transaction_tx<'tx, 'connection, 'comman
         material.message(tx, message)?;
     }
     let proof = tasks::prepare_task_write_tx(tx, scope, &allowed)?;
-    tasks::preflight_task_write_snapshot_with_memory_budget_tx(
-        tx,
-        &proof,
-        &request,
-        ledger,
-        material.memory_budget.take(),
-    )?
-    .require_current()?;
+    let resident = task_bases
+        .and_then(|bases| bases.task_base(scope))
+        .or_else(|| prepared.task_base(scope));
+    let adopted = resident
+        .map(|resident| {
+            let _adopt = crate::diagnostics::attribution::TASK_WRITE_BASELINE_ADOPT.start();
+            tasks::adopt_task_write_baseline_tx(
+                tx,
+                &proof,
+                &request,
+                &resident.resident,
+                &resident.coverage_json,
+            )
+        })
+        .transpose()?
+        .flatten();
+    if adopted.is_none() {
+        return Err(tasks::TaskWriteBaselineStale::new(scope, &request, ledger)?.into());
+    }
+    if let Some(snapshot) = &adopted {
+        material.charge(
+            usize::try_from(serialized_bytes(snapshot.resident.coverage())?)? + 256,
+            2,
+            2,
+        )?;
+    }
+    let baseline = adopted.context("prepared parent Task baseline missing")?;
     let original_material = (before.bytes, before.records);
     let material_total = (material.bytes, material.records);
     let guards = material.guards;
     Ok(Some(TaskTransaction {
         proof,
+        baseline: Some(baseline),
+        prepared_base: resident
+            .filter(|base| base.unpublished)
+            .map(|base| Arc::clone(&base.resident)),
         cleanup: None,
         allowed,
         observations: BTreeSet::new(),
@@ -680,6 +701,7 @@ pub(super) fn prepare_task_transaction_tx<'tx, 'connection, 'command: 'tx>(
     request: &tasks::TaskDomainLoadRequest,
     ledger: &InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
+    task_bases: Option<&PreparedTaskBaselines>,
 ) -> Result<Option<TaskTransaction<'tx, 'connection, 'command>>> {
     prepare_task_transaction_inner_tx(
         tx,
@@ -690,6 +712,7 @@ pub(super) fn prepare_task_transaction_tx<'tx, 'connection, 'command: 'tx>(
         ledger,
         memory_budget,
         None,
+        task_bases,
     )
 }
 pub(super) fn prepare_child_task_transaction_tx<'tx, 'connection, 'command: 'tx>(
@@ -701,6 +724,7 @@ pub(super) fn prepare_child_task_transaction_tx<'tx, 'connection, 'command: 'tx>
     ledger: &InputEvidenceBudgetLedger,
     memory_budget: Option<&mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget>,
     child_entry: super::child_terminal::ChildCurrentEntryMaterial,
+    task_bases: Option<&PreparedTaskBaselines>,
 ) -> Result<Option<TaskTransaction<'tx, 'connection, 'command>>> {
     prepare_task_transaction_inner_tx(
         tx,
@@ -711,6 +735,7 @@ pub(super) fn prepare_child_task_transaction_tx<'tx, 'connection, 'command: 'tx>
         ledger,
         memory_budget,
         Some(child_entry),
+        task_bases,
     )
 }
 pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>(
@@ -724,6 +749,7 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
         &mut crate::runtime_db::dispatch_memory::DispatchMemoryTransactionBudget,
     >,
     child_entry: Option<super::child_terminal::ChildCurrentEntryMaterial>,
+    task_bases: Option<&PreparedTaskBaselines>,
 ) -> Result<Option<TaskTransaction<'tx, 'connection, 'command>>> {
     let protocol = match prepared.command.as_ref() {
         InputTransitionCommand::Task(task) => Some(&task.execution_protocol),
@@ -1151,7 +1177,10 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
         allowed.insert(cap.result_key());
     }
     let final_request = request.clone();
-    let defer = if let Some(base) = &prepared.defer_task_base {
+    let resident = task_bases
+        .and_then(|bases| bases.task_base(scope))
+        .or_else(|| prepared.task_base(scope));
+    let defer = if let Some(base) = resident.filter(|_| prepared.is_task_result_defer()) {
         let mut phase =
             tasks::read_preparation::TaskReadMaterial::new(scope, &final_request, Some(ledger))
                 .with_memory_budget(material.memory_budget.as_deref_mut())
@@ -1163,7 +1192,7 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
             tx,
             &proof,
             &allowed,
-            base,
+            &base.resident,
             &final_request,
             &mut phase,
         )?;
@@ -1183,44 +1212,40 @@ pub(super) fn prepare_task_transaction_inner_tx<'tx, 'connection, 'command: 'tx>
             attribution::TASK_RESULT_DEFER_FALLBACK.start()
         }
     });
-    let memory = material.memory_budget.take();
-    if child_phase {
-        let mut phase =
-            tasks::read_preparation::TaskReadMaterial::new(scope, &final_request, Some(ledger))
-                .with_memory_budget(memory)
-                .with_admitted_material(tasks::TaskMaintenanceMaterial {
-                    bytes: material.bytes,
-                    records: material.records,
-                })?;
-        tasks::load_selected_using_material(
-            tx,
-            scope,
-            &final_request,
-            false,
-            deleting,
-            true,
-            Some(ledger),
-            None,
-            None,
-            &mut phase,
-        )?
-        .require_current()?;
-        let usage = phase.material_estimate();
-        material.bytes = usage.bytes;
-        material.records = usage.records;
-        material.guards.extend(phase.into_guards());
-    } else if defer.is_none() {
-        tasks::preflight_task_write_snapshot_with_memory_budget_tx(
-            tx,
-            &proof,
-            &final_request,
-            ledger,
-            memory,
-        )?
-        .require_current()?;
+    let adopted = if defer.is_none() {
+        resident
+            .map(|resident| {
+                let _adopt = crate::diagnostics::attribution::TASK_WRITE_BASELINE_ADOPT.start();
+                tasks::adopt_task_write_baseline_tx(
+                    tx,
+                    &proof,
+                    &final_request,
+                    &resident.resident,
+                    &resident.coverage_json,
+                )
+            })
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
+    if defer.is_none() && adopted.is_none() {
+        return Err(tasks::TaskWriteBaselineStale::new(scope, &final_request, ledger)?.into());
     }
+    if let Some(snapshot) = &adopted {
+        material.charge(
+            usize::try_from(serialized_bytes(snapshot.resident.coverage())?)? + 256,
+            2,
+            2,
+        )?;
+    }
+    let baseline = adopted;
     Ok(Some(TaskTransaction {
         proof,
+        baseline,
+        prepared_base: resident
+            .filter(|base| base.unpublished)
+            .map(|base| Arc::clone(&base.resident)),
         cleanup,
         allowed,
         observations,

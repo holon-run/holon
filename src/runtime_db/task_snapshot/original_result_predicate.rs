@@ -142,6 +142,7 @@ pub(crate) fn prepare_original_result_predicate_tx<'tx, 'connection>(
             scope,
             seed.as_deref(),
             record,
+            None,
             request,
             &mut material,
         )?;

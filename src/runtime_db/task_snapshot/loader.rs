@@ -98,6 +98,7 @@ pub(crate) fn preflight_named_task_snapshot_tx(
         None,
         &mut material,
         Some(read),
+        None,
     )
 }
 
@@ -277,6 +278,7 @@ pub(in crate::runtime_db) fn load_selected_using_material(
         result,
         material,
         None,
+        None,
     )
 }
 
@@ -292,6 +294,7 @@ fn load_selected_with_scope_material(
     result: Option<&crate::runtime_db::task_stop::TaskStopResultObservation<'_, '_>>,
     mut material: &mut read_preparation::TaskReadMaterial<'_>,
     read: Option<&super::super::context_inputs::ContextScopeRead<'_>>,
+    mut qualification: Option<&mut super::candidate::CandidateQualification>,
 ) -> Result<TaskBootstrapSnapshot> {
     let _load = crate::diagnostics::attribution::TASK_DOMAIN_LOAD.start();
     let facts = match read {
@@ -329,6 +332,10 @@ fn load_selected_with_scope_material(
     }
     material.charge_checkpoint_metadata(tx, seed.as_deref())?;
     let fixed = manifests(tx, seed.as_deref())?;
+    if let Some(qualification) = qualification.as_deref_mut() {
+        qualification.fixed =
+            qualification::CandidateFixedQualification::prepare(tx, seed.as_deref(), &fixed)?;
+    }
     let mut previous = material.read_current_metadata(tx)?;
     let revision = previous.as_ref().map_or(1, |c| c.revision);
     // Named reads never publish coverage; only load their requested namespaces.
@@ -630,19 +637,30 @@ fn load_selected_with_scope_material(
     let mut records = Vec::new();
     for (key, item) in &stored {
         let r = validate_member(tx, scope, seed.as_deref(), key, item)?;
+        let content_digest = item.digest();
+        let value = Alias {
+            revision: r,
+            availability: TaskAvailability::Present,
+            digest: Some(content_digest.clone()),
+            projection_digest: Some(item.projection_digest.clone()),
+        };
         records.push(item.qualified(scope, r)?);
         if prepare {
-            upsert_alias(
-                tx,
-                scope,
-                key,
-                &Alias {
-                    revision: r,
-                    availability: TaskAvailability::Present,
-                    digest: Some(item.digest()),
-                    projection_digest: Some(item.projection_digest.clone()),
-                },
-            )?;
+            upsert_alias(tx, scope, key, &value)?;
+        }
+        if let Some(qualification) = qualification.as_deref_mut() {
+            qualification.aliases.push((key.clone(), value));
+            // Record the family's canonical dependency in this reader view.
+            // Writer revalidation never acquires the canonical body.
+            qualification
+                .present
+                .push(super::candidate::CandidateRecordDependency {
+                    canonical_observation: canonical_observation_on(tx, key, material)?
+                        .context("qualified Task canonical row disappeared")?,
+                    content_digest,
+                    projection_digest: item.projection_digest.clone(),
+                    key: key.clone(),
+                });
         }
     }
     let (stop_coverage, stop_records) =
@@ -699,20 +717,33 @@ fn load_selected_with_scope_material(
         }
     }
     // Explicit absence is acquired only after global canonical + every-scope membership checks.
-    if prepare {
+    if prepare || qualification.is_some() {
         for (key, availability) in &coverage.observations {
-            if *availability != TaskAvailability::Present && alias(tx, scope, key)?.is_none() {
-                upsert_alias(
-                    tx,
-                    scope,
-                    key,
-                    &Alias {
-                        revision,
-                        availability: *availability,
-                        digest: None,
-                        projection_digest: None,
-                    },
-                )?;
+            if *availability == TaskAvailability::Present {
+                continue;
+            }
+            let existing = alias(tx, scope, key)?;
+            if let Some(qualification) = qualification.as_deref_mut() {
+                qualification
+                    .absent
+                    .push(super::candidate::CandidateAbsenceDependency {
+                        key: key.clone(),
+                        alias: existing.clone(),
+                    });
+            }
+            if existing.is_none() {
+                let value = Alias {
+                    revision,
+                    availability: *availability,
+                    digest: None,
+                    projection_digest: None,
+                };
+                if prepare {
+                    upsert_alias(tx, scope, key, &value)?;
+                }
+                if let Some(qualification) = qualification.as_deref_mut() {
+                    qualification.aliases.push((key.clone(), value));
+                }
             }
         }
     }
@@ -732,6 +763,9 @@ fn load_selected_with_scope_material(
     }
     if prepare {
         sync_child_observers_tx(tx, scope, &records)?;
+    }
+    if let Some(qualification) = qualification {
+        qualification.records = records.clone();
     }
     let resident = ResidentTaskDomain::bootstrap_with_stops(
         scope.clone(),
@@ -760,6 +794,37 @@ fn load_selected_with_scope_material(
     )))
 }
 
+/// Named preparation owns all decode material until its original writer ACK.
+pub(super) fn load_preparation_candidate_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    request: &TaskDomainLoadRequest,
+    original_recovery: bool,
+    budget: &crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger,
+    qualification: &mut super::candidate::CandidateQualification,
+) -> Result<(
+    TaskCurrentSnapshot,
+    Vec<Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
+)> {
+    let mut material = read_preparation::TaskReadMaterial::new(scope, request, Some(budget));
+    let snapshot = load_selected_with_scope_material(
+        tx,
+        scope,
+        request,
+        false,
+        original_recovery,
+        true,
+        Some(budget),
+        None,
+        None,
+        &mut material,
+        None,
+        Some(qualification),
+    )?
+    .require_current()?;
+    Ok((snapshot, material.into_guards()))
+}
+
 fn sql_text(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -772,7 +837,7 @@ fn namespace_ids_sql(family: TaskFamily, predicate: &str, limit: Option<usize>) 
     };
     format!("SELECT c.{id} FROM {table} c WHERE c.{owner}=?1 AND ({predicate}) AND NOT EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability!='present') AND (EXISTS(SELECT 1 FROM task_domain_records r WHERE r.agent_id=?1 AND r.identity_incarnation=?2 AND r.family=?3 AND r.record_id=c.{id} AND r.availability='present') OR EXISTS(SELECT 1 FROM task_domain_eligibility e WHERE e.seed_id=?4 AND e.family=?3 AND e.record_id=c.{id} AND e.availability='present') OR EXISTS(SELECT 1 FROM task_query_fixed_results q WHERE q.inventory_id=?6 AND q.result_identity=c.{id})) ORDER BY {order} LIMIT ?5")
 }
-fn namespace_ids(
+pub(super) fn namespace_ids(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
     seed: Option<&str>,

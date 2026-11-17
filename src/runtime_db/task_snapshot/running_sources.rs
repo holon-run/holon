@@ -1,6 +1,20 @@
 //! Legacy associations are original cohort metadata, not current Task adoption.
 use super::*;
 
+// Drive the immutable cohort lookup from the indexed live queue. Starting from
+// fixed Messages would revisit historical members even when none remain live.
+pub(super) const POOL: &str = "
+FROM queue_entries q INDEXED BY idx_queue_entries_agent_status
+CROSS JOIN task_query_fixed_messages f
+CROSS JOIN task_query_fixed_tasks t
+WHERE q.agent_id=?3 AND q.status IN ('queued','interrupted','dequeued','interjected')
+  AND f.inventory_id=?1 AND f.evidence_id=q.message_id
+  AND t.inventory_id=f.inventory_id AND t.task_id=f.source_task_id
+  AND f.running_created_at IS NOT NULL AND f.running_generation_digest IS NOT NULL
+  AND EXISTS(SELECT 1 FROM input_evidence_seed_membership e
+    WHERE e.seed_id=?2 AND e.family='message' AND e.record_id=f.evidence_id
+      AND e.fingerprint_json=f.fingerprint_json)";
+
 pub(super) fn observe_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -28,7 +42,6 @@ pub(super) fn observe_tx(
     );
     // Both memberships belong to the original seed. A raw late Message or Task
     // cannot enter by sharing an ID with an unrelated accepted current record.
-    const POOL: &str = "FROM task_query_fixed_messages f JOIN task_query_fixed_tasks t ON t.inventory_id=f.inventory_id AND t.task_id=f.source_task_id WHERE f.inventory_id=?1 AND f.running_created_at IS NOT NULL AND f.running_generation_digest IS NOT NULL AND EXISTS(SELECT 1 FROM input_evidence_seed_membership e WHERE e.seed_id=?2 AND e.family='message' AND e.record_id=f.evidence_id AND e.fingerprint_json=f.fingerprint_json) AND EXISTS(SELECT 1 FROM queue_entries q WHERE q.agent_id=?3 AND q.message_id=f.evidence_id AND q.status IN ('queued','interrupted','dequeued','interjected'))";
     let (count,bytes):(usize,usize)=tx.query_row(&format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(f.evidence_id AS BLOB))+length(CAST(f.content_digest AS BLOB))+length(CAST(f.source_task_id AS BLOB))+length(CAST(f.running_created_at AS BLOB))+length(CAST(f.running_generation_digest AS BLOB))+length(CAST(t.content_digest AS BLOB))+256),0) {POOL}"),params![inventory.id,seed,scope.agent_id],|row|Ok((row.get(0)?,row.get(1)?)))?;
     // Native strings/map slots are all bounded before SQLite returns a String.
     charge(

@@ -1,4 +1,7 @@
 //! The real registered child monitor and retirement drainer share one original capsule.
+#[cfg(all(test, holon_lib_test_shard = "a"))]
+#[path = "child_task_baseline_tests.rs"]
+mod baseline_tests;
 use super::*;
 use crate::runtime::input_evidence_budget::{
     serialized_bytes, BudgetViewGuard, InputEvidenceBudgetLedger, PendingAdmission,
@@ -40,6 +43,10 @@ pub(crate) fn execute_original_child_terminal(
                 .is_some_and(|intent| &intent.original == source.address()),
         "child terminal original group differs"
     );
+    let mut task_bases = crate::runtime_db::transitions::PreparedTaskBaselines::from_reservations(
+        reservations,
+        ledger,
+    )?;
     let mut pending = Vec::new();
     for message in prepared.pending_messages()? {
         match ledger.reserve_pending(scope, &message.id, serialized_bytes(&message.body)?) {
@@ -90,8 +97,12 @@ pub(crate) fn execute_original_child_terminal(
     };
     let execution = db
         .transitions_in_scope(scope)
-        .commit_prepared_transition_with_work_request_and_memory_budget(
-            prepared, &work, ledger, request,
+        .commit_prepared_transition_with_task_preparation(
+            prepared,
+            &work,
+            ledger,
+            request,
+            &mut task_bases,
         );
     if matches!(&execution, Ok(InputMutationExecution::Replayed { .. })) {
         witness.mark_input_storage_replayed()?;

@@ -761,6 +761,29 @@ fn terminal_rows_without_original_startup_audit_never_mint_startup_authorization
 }
 
 impl Fixture {
+    fn bootstrap_task_domain(&self) -> Result<()> {
+        let state = self
+            .db
+            .agent_states()
+            .latest(&self.binding.scope().agent_id)?
+            .ok_or_else(|| anyhow::anyhow!("fixture State missing"))?;
+        let budget = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            Default::default(),
+        )?;
+        self.db.transaction(|tx| {
+            crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
+                tx,
+                &self.binding.scope(),
+                &state,
+                &crate::runtime::resident_task::TaskCaptureRequest::current(),
+                &[],
+                4096,
+                4 * 1024 * 1024,
+                &budget,
+            )
+            .map(|_| ())
+        })
+    }
     fn commit_queue_reentry(&self) -> Result<()> {
         self.commit_queue_reentry_with_delay(chrono::Duration::zero())
     }
@@ -875,6 +898,9 @@ impl Fixture {
             at,
             command,
         )?;
+        // Queue reentry simulates Ready publication, which requires the real
+        // original Task-domain bootstrap before the writer commits.
+        self.bootstrap_task_domain()?;
         self.db
             .transitions_in_scope(&self.binding.scope())
             .commit_prepared_transition(&prepared)?;

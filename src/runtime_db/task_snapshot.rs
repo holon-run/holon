@@ -17,6 +17,14 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+pub(in crate::runtime_db) mod candidate;
+pub(crate) use candidate::{
+    commit_task_candidate_tx, prepare_task_candidate_tx, TaskPreparationCandidateStale,
+};
+#[cfg(holon_lib_test_shard = "b")]
+#[cfg(test)]
+#[path = "task_snapshot/candidate_tests.rs"]
+mod candidate_tests;
 mod deletion_maintenance;
 mod loader;
 pub(in crate::runtime_db) use loader::load_selected_using_material;
@@ -133,16 +141,16 @@ pub(crate) use startup_metadata::{
     prepare_exclusive_startup_task_metadata_tx, StartupTaskMetadataProof,
 };
 pub(crate) use task_stop_readback::prepare_task_sql_readback_tx;
-#[cfg(test)]
 pub(crate) use writes::{
-    preflight_task_write_snapshot_tx, register_task_writes_tx, CommittedTaskFacts,
-};
-pub(crate) use writes::{
-    preflight_task_write_snapshot_with_budget_tx,
+    adopt_task_write_baseline_tx, preflight_task_write_snapshot_with_budget_tx,
     preflight_task_write_snapshot_with_memory_budget_tx, prepare_original_task_cleanup_tx,
     prepare_task_write_tx, register_task_writes_with_budget_tx,
-    register_task_writes_with_memory_budget_tx, register_task_writes_with_stop_observation_tx,
-    register_task_writes_with_stop_result_observation_tx, TaskWriteProof,
+    register_task_writes_with_stop_result_observation_tx, TaskWriteBaselineStale, TaskWriteProof,
+};
+#[cfg(test)]
+pub(crate) use writes::{
+    preflight_task_write_snapshot_tx, register_task_writes_tx,
+    register_task_writes_with_stop_observation_tx, CommittedTaskFacts,
 };
 pub(in crate::runtime_db) use writes::{
     register_original_task_writes_using_material_tx, PreparedTaskDefer,
@@ -374,6 +382,89 @@ fn upsert_alias(
 ) -> Result<()> {
     tx.execute("INSERT INTO task_domain_records(agent_id,identity_incarnation,family,record_id,revision,availability,content_digest,projection_digest) VALUES(?1,?2,?3,?4,?5,?6,?7,?8) ON CONFLICT(agent_id,identity_incarnation,family,record_id) DO UPDATE SET revision=excluded.revision,availability=excluded.availability,content_digest=excluded.content_digest,projection_digest=excluded.projection_digest",params![scope.agent_id,scope.identity_incarnation,family_name(key.family),key.id,value.revision,availability_name(value.availability),value.digest,value.projection_digest])?;
     Ok(())
+}
+/// Task keeps its existing row revision. Results have no revision column:
+/// their dependency is the exact normalized lifecycle metadata, not a clock.
+enum CanonicalRecordObservation {
+    TaskRevision(u64),
+    ResultMetadata(String),
+}
+
+fn canonical_result_metadata_sql(connection: &Connection) -> Result<String> {
+    // Include recovery-only writes as well as admission, settlement and deferral.
+    // Frozen source/reply bodies are not read; their legal installation occurs
+    // with admission/recovery transitions represented by these columns.
+    Ok(format!(
+        "json_array({},recovery_epoch,recovery_attempts,last_recovery_root_attempt_id,last_recovery_admitted_at,recovery_paused_at,recovery_diagnostic_at)",
+        projection_sql(connection, TaskFamily::ResultSettlement)?,
+    ))
+}
+
+fn canonical_observation_on(
+    connection: &Connection,
+    key: &TaskKey,
+    material: &mut read_preparation::TaskReadMaterial<'_>,
+) -> Result<Option<CanonicalRecordObservation>> {
+    if key.family == TaskFamily::Task {
+        return Ok(connection
+            .query_row(
+                "SELECT revision FROM tasks WHERE task_id=?1",
+                [&key.id],
+                |row| row.get(0),
+            )
+            .optional()?
+            .map(CanonicalRecordObservation::TaskRevision));
+    }
+    let metadata = canonical_result_metadata_sql(connection)?;
+    let bytes: Option<usize> = connection
+        .query_row(
+            &format!("SELECT length(CAST({metadata} AS BLOB)) FROM task_result_settlements WHERE result_identity=?1"),
+            [&key.id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    // Charge the owned metadata before acquiring it. Neither side reads or
+    // hashes payload_json to establish this dependency.
+    material.charge_relation(bytes)?;
+    let metadata: String = connection.query_row(
+        &format!("SELECT {metadata} FROM task_result_settlements WHERE result_identity=?1"),
+        [&key.id],
+        |row| row.get(0),
+    )?;
+    Ok(Some(CanonicalRecordObservation::ResultMetadata(metadata)))
+}
+
+fn canonical_observation_matches_on(
+    connection: &Connection,
+    key: &TaskKey,
+    observation: &CanonicalRecordObservation,
+) -> Result<bool> {
+    let matches: Option<bool> = match (key.family, observation) {
+        (TaskFamily::Task, CanonicalRecordObservation::TaskRevision(revision)) => connection
+            .query_row(
+                "SELECT revision=?2 FROM tasks WHERE task_id=?1",
+                params![key.id, revision],
+                |row| row.get(0),
+            )
+            .optional()?,
+        (TaskFamily::ResultSettlement, CanonicalRecordObservation::ResultMetadata(expected)) => {
+            let metadata = canonical_result_metadata_sql(connection)?;
+            // Compare inside SQL after the length check, returning only a bool.
+            // A writer never acquires a changed, potentially oversized string.
+            connection
+                .query_row(
+                    &format!("SELECT CASE WHEN length(CAST({metadata} AS BLOB))=?2 THEN {metadata}=?3 ELSE 0 END FROM task_result_settlements WHERE result_identity=?1"),
+                    params![key.id, expected.len(), expected],
+                    |row| row.get(0),
+                )
+                .optional()?
+        }
+        _ => None,
+    };
+    Ok(matches.unwrap_or(false))
 }
 fn stored_on(connection: &Connection, agent: &str, key: &TaskKey) -> Result<Option<StoredTask>> {
     let (table, id, owner) = family_table(key.family);

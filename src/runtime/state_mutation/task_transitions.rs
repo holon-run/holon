@@ -73,6 +73,8 @@ impl RuntimeMutation {
         >,
     > {
         Box::pin(async move {
+            let (load, _task_request_material) = self.owner_task_load_request()?;
+            self.prepare_owner_task_domain_request(&load).await?;
             let task_id = command.task.id.clone();
             let expected_child = command
                 .agent_deletion

@@ -158,6 +158,39 @@ pub(crate) fn prepare_original_input_recovery_with_queries_tx(
     )
 }
 
+/// Only the original positive Task receipt recovery writer calls this entry.
+/// Input, Work and Task roots are closed in its current view; Task acquisition
+/// came from a reader candidate and is never repeated by the writer loader.
+pub(crate) fn prepare_original_input_recovery_with_task_candidate_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    work: &crate::runtime::resident_work::WorkCaptureRequest,
+    tasks: &crate::runtime::resident_task::TaskCaptureRequest,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    candidate: super::task_recovery::TaskRecoveryCandidate,
+) -> Result<PreparedInputRead> {
+    prepare_input_domains_with_task_candidate_tx(
+        tx,
+        scope,
+        state,
+        request,
+        recent_episode_limit,
+        budget,
+        true,
+        Some(work),
+        Some(tasks),
+        query,
+        None,
+        None,
+        true,
+        Some(candidate),
+    )
+}
+
 pub(crate) fn prepare_control_recovery_with_queries_tx(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -441,6 +474,40 @@ fn prepare_input_domains_inner_tx(
     scheduling_capture: Option<&crate::runtime::resident_scheduling::SchedulingCaptureRequest>,
     prepare: bool,
 ) -> Result<PreparedInputRead> {
+    prepare_input_domains_with_task_candidate_tx(
+        tx,
+        scope,
+        published_state,
+        request,
+        recent_episode_limit,
+        budget,
+        original_recovery,
+        work_request,
+        task_request,
+        query,
+        task_material,
+        scheduling_capture,
+        prepare,
+        None,
+    )
+}
+
+fn prepare_input_domains_with_task_candidate_tx(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    published_state: &AgentState,
+    request: &InputEvidenceLoadRequest,
+    recent_episode_limit: usize,
+    budget: &InputEvidenceBudgetLedger,
+    original_recovery: bool,
+    work_request: Option<&crate::runtime::resident_work::WorkCaptureRequest>,
+    task_request: Option<&crate::runtime::resident_task::TaskCaptureRequest>,
+    query: Option<&crate::runtime::task_queries::TaskQuerySelection>,
+    task_material: Option<&mut super::task_snapshot::read_preparation::TaskReadMaterial<'_>>,
+    scheduling_capture: Option<&crate::runtime::resident_scheduling::SchedulingCaptureRequest>,
+    prepare: bool,
+    task_candidate: Option<super::task_recovery::TaskRecoveryCandidate>,
+) -> Result<PreparedInputRead> {
     let scope_read = ContextDurableRead::new(tx, &scope.agent_id).scope_read()?;
     let facts = scope_read.facts();
     validate_preparation_scope(facts, scope, published_state, original_recovery)?;
@@ -489,7 +556,20 @@ fn prepare_input_domains_inner_tx(
         // same read view, including focused canonical absence observations.
     }
     let tasks = if let Some(capture) = task_request {
-        let task = if let Some(material) = task_material {
+        let task = if let Some(candidate) = task_candidate {
+            super::task_recovery::commit_task_recovery_candidate_tx(
+                tx,
+                scope,
+                published_state,
+                capture,
+                &pending,
+                request.record_limit,
+                request.byte_limit,
+                budget,
+                query,
+                candidate,
+            )?
+        } else if let Some(material) = task_material {
             super::task_recovery::prepare_original_task_domains_using_material_tx(
                 tx,
                 scope,

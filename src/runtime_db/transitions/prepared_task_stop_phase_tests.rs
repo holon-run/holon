@@ -95,7 +95,7 @@ fn ack(receipt: &InputMutationReceipt) -> &stops::TaskStopPhaseAck {
 #[tokio::test]
 async fn stop_progress_original_join_is_whole_receipt_and_one_current_task_revision() -> Result<()>
 {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let source = original_stop(&f, &ledger)?;
     let old = f.db.transaction(|tx| {
@@ -198,7 +198,7 @@ async fn stop_progress_original_join_is_whole_receipt_and_one_current_task_revis
 #[test]
 fn stop_progress_receipt_last_and_finalizer_fault_roll_back_actual_progress() -> Result<()> {
     for table in ["task_domain_current", "input_mutation_receipts"] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let source = original_stop(&f, &ledger)?;
         let phase = PreparedInputTransition::task_stop_safe_progress(
@@ -239,7 +239,7 @@ fn stop_progress_receipt_last_and_finalizer_fault_roll_back_actual_progress() ->
 fn stop_progress_no_state_and_successor_only_invalidate_original_metadata_without_readiness(
 ) -> Result<()> {
     for mode in ["no_state", "successor", "incomplete"] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let source = original_stop(&f, &ledger)?;
         let phase = PreparedInputTransition::task_stop_safe_progress(
@@ -324,7 +324,7 @@ fn stop_progress_no_state_and_successor_only_invalidate_original_metadata_withou
 #[test]
 fn stop_progress_cannot_turn_safe_observation_into_physical_proof_or_replace_original_nonce(
 ) -> Result<()> {
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let source = original_stop(&f, &ledger)?;
     let at = source.record.updated_at + chrono::Duration::seconds(1);
@@ -396,7 +396,7 @@ fn attention_phase(
 #[test]
 fn sparse_stop_recovery_requires_finished_original_arc_and_positive_whole_ack() -> Result<()> {
     use crate::runtime_db::input_mutation_receipts::OriginalInputMutationAttempt;
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let source = original_stop(&f, &ledger)?;
     let phase = attention_phase(&source, "sparse-original-attempt", &ledger)?;
@@ -457,7 +457,7 @@ fn sparse_stop_recovery_requires_finished_original_arc_and_positive_whole_ack() 
 fn sparse_stop_recovery_uses_fresh_retired_mode_and_revalidates_initial_whole_receipt() -> Result<()>
 {
     use crate::runtime_db::input_mutation_receipts::OriginalInputMutationAttempt;
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let source = original_stop(&f, &ledger)?;
     let phase = attention_phase(&source, "current-ack-then-retired", &ledger)?;
@@ -518,7 +518,7 @@ fn sparse_stop_recovery_uses_fresh_retired_mode_and_revalidates_initial_whole_re
 fn ready_runtime_stop_tag_cannot_install_sparse_first_ack_or_sparse_replay_as_ready() -> Result<()>
 {
     for mode in ["no_state", "incomplete", "retired"] {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let ledger = ledger()?;
         let source = original_stop(&f, &ledger)?;
         let saved_state = f.state()?;
@@ -606,7 +606,7 @@ fn ready_runtime_stop_tag_cannot_install_sparse_first_ack_or_sparse_replay_as_re
 fn sparse_stop_identity_material_is_admitted_before_malformed_decode_and_releases_guards(
 ) -> Result<()> {
     use crate::runtime_db::input_mutation_receipts::OriginalInputMutationAttempt;
-    let f = Fixture::new()?;
+    let f = Fixture::new_task_ready()?;
     let ledger = ledger()?;
     let source = original_stop(&f, &ledger)?;
     let phase = attention_phase(&source, "identity-budget-phase", &ledger)?;

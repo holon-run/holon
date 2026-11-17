@@ -58,6 +58,30 @@ impl Fixture {
             .latest(&self.scope.agent_id)?
             .context("fixture State missing")
     }
+    fn new_task_ready() -> Result<Self> {
+        let fixture = Self::new()?;
+        fixture.bootstrap_task_for_ready()?;
+        Ok(fixture)
+    }
+    fn bootstrap_task_for_ready(&self) -> Result<()> {
+        let state = self.state()?;
+        let budget = crate::runtime::input_evidence_budget::InputEvidenceBudgetLedger::new(
+            Default::default(),
+        )?;
+        self.db.transaction(|tx| {
+            crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
+                tx,
+                &self.scope,
+                &state,
+                &crate::runtime::resident_task::TaskCaptureRequest::current(),
+                &[],
+                4096,
+                4 * 1024 * 1024,
+                &budget,
+            )
+            .map(|_| ())
+        })
+    }
     fn posture(
         &self,
         state: AgentState,

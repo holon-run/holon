@@ -45,6 +45,7 @@ pub(super) fn seed(f: &Fixture, kind: TaskKind) -> Result<TaskRecord> {
     seed_status(f, kind, TaskStatus::Running)
 }
 fn seed_status(f: &Fixture, kind: TaskKind, status: TaskStatus) -> Result<TaskRecord> {
+    f.bootstrap_task_for_ready()?;
     let task = TaskRecord {
         id: "prepared-stop-task".into(),
         agent_id: f.scope.agent_id.clone(),
@@ -366,6 +367,19 @@ fn prepared_stop_alias_or_whole_receipt_fault_rolls_back_task_intent_audit_and_m
                 canonical_command_digest(prepared.command.as_ref())?,
                 prepared.descriptor.prepared_at(),
             )?;
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let request = request();
+        // Fault the original business writer, not its preceding qualification.
+        let baseline = f.db.read_for_preparation(|tx| {
+            Ok(
+                crate::runtime_db::task_snapshot::load_task_domain_snapshot_with_budget_tx(
+                    tx, &f.scope, &request, &ledger,
+                )?
+                .require_current()?
+                .resident,
+            )
+        })?;
+        prepared = prepared.with_task_bases(vec![std::sync::Arc::new(baseline)], &ledger)?;
         if phase != "canonical" {
             let sql=match phase {
                 "insert"=>"CREATE TRIGGER fail_stop_insert AFTER INSERT ON task_stop_effects BEGIN SELECT RAISE(ABORT,'stop insertion fault'); END;",
@@ -378,8 +392,6 @@ fn prepared_stop_alias_or_whole_receipt_fault_rolls_back_task_intent_audit_and_m
             })?;
         }
         let before = rows(&f)?;
-        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
-        let request = request();
         let work = crate::runtime_db::work_snapshot::WorkDomainLoadRequest {
             capture: crate::runtime::resident_work::WorkCaptureRequest::current(),
             record_limit: 4096,
@@ -398,6 +410,8 @@ fn prepared_stop_alias_or_whole_receipt_fault_rolls_back_task_intent_audit_and_m
             "fault"
         }));
         assert_eq!(rows(&f)?, before);
+        drop(error);
+        drop(prepared);
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     Ok(())

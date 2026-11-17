@@ -229,6 +229,73 @@ fn running_association_selector_material_is_admitted_before_owned_sql_rows() -> 
 }
 
 #[test]
+fn running_selector_does_not_revisit_inactive_fixed_history() -> Result<()> {
+    use rusqlite::StatementStatus;
+    let (_home, db) = legacy(true, original)?;
+    db.transaction(|tx| {
+        let seed = binding(tx, &scope())?.unwrap();
+        let fixed = qualification::manifests(tx, Some(&seed))?;
+        let inventory = &fixed.last().unwrap().query_inventory.as_ref().unwrap().id;
+        // An open inventory lets the fixture grow without mutating a sealed cut.
+        tx.execute(
+            "INSERT INTO task_query_fixed_manifests
+             (inventory_id,agent_id,task_observed,message_observed,result_observed)
+             VALUES('running-cost','task-agent',1,1,1)",
+            [],
+        )?;
+        tx.execute(
+            "INSERT INTO task_query_fixed_tasks
+             (inventory_id,task_id,content_digest,projection_digest,created_at,
+              generation_created_at,generation_digest)
+             SELECT 'running-cost',task_id,content_digest,projection_digest,created_at,
+              generation_created_at,generation_digest
+             FROM task_query_fixed_tasks WHERE inventory_id=?1 AND task_id=?2",
+            params![inventory, TASK],
+        )?;
+        tx.execute(
+            "INSERT INTO task_query_fixed_messages
+             (inventory_id,evidence_id,created_at,source_task_id,is_result,content_digest,
+              fingerprint_json,running_created_at,running_generation_digest)
+             SELECT 'running-cost',evidence_id,created_at,source_task_id,is_result,
+              content_digest,fingerprint_json,running_created_at,running_generation_digest
+             FROM task_query_fixed_messages WHERE inventory_id=?1 AND evidence_id=?2",
+            params![inventory, SOURCE],
+        )?;
+        let mut steps = Vec::new();
+        for size in [100, 10_000] {
+            for index in 0..size {
+                tx.execute(
+                    "INSERT OR IGNORE INTO task_query_fixed_messages
+                     (inventory_id,evidence_id,created_at,source_task_id,is_result,content_digest,
+                      fingerprint_json,running_created_at,running_generation_digest)
+                     SELECT inventory_id,?1,created_at,source_task_id,is_result,content_digest,
+                      fingerprint_json,running_created_at,running_generation_digest
+                     FROM task_query_fixed_messages
+                     WHERE inventory_id='running-cost' AND evidence_id=?2",
+                    params![format!("inactive-history-{index}"), SOURCE],
+                )?;
+            }
+            let mut statement = tx.prepare(&format!(
+                "SELECT f.evidence_id {} ORDER BY f.evidence_id",
+                running_sources::POOL
+            ))?;
+            let ids = statement
+                .query_map(params!["running-cost", seed, scope().agent_id], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            assert_eq!(ids, [SOURCE]);
+            steps.push(statement.get_status(StatementStatus::VmStep));
+        }
+        assert_eq!(
+            steps[0], steps[1],
+            "Running selector revisited fixed history"
+        );
+        Ok(())
+    })
+}
+
+#[test]
 fn fixed_running_actual_ledger_rejects_oversize_metadata_before_datetime_decode() -> Result<()> {
     let (_home, db) = legacy(true, original)?;
     let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;

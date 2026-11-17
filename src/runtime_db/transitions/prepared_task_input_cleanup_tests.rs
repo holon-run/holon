@@ -171,7 +171,7 @@ fn rows(f: &Fixture) -> Result<BTreeMap<String, Vec<String>>> {
 
 #[test]
 fn deleting_original_task_result_commits_message_queue_wait_and_three_domains_once() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let command = terminal_command(&f, "task:input-bridge")?;
     let result = command.task_result_settlement.as_ref().unwrap();
@@ -308,7 +308,7 @@ fn derived_task_input_cannot_create_run_binding_extra_message_or_change_generati
         "generation",
         "pending",
     ] {
-        let f = Fixture::new()?;
+        let f = initialized_task_fixture()?;
         let ledger = ledger()?;
         let mut command = terminal_command(&f, &format!("task:invalid-{case}"))?;
         match case {
@@ -370,7 +370,7 @@ fn derived_task_input_cannot_create_run_binding_extra_message_or_change_generati
 #[test]
 fn derived_task_input_rejects_pruned_and_foreign_existing_message_ids() -> Result<()> {
     for pruned in [true, false] {
-        let f = Fixture::new()?;
+        let f = initialized_task_fixture()?;
         let ledger = ledger()?;
         let mut command = setup_terminal(&f, &format!("task:collision-{pruned}"), false)?;
         let message = command.message_evidence[0].clone();
@@ -402,13 +402,24 @@ fn derived_task_input_rejects_pruned_and_foreign_existing_message_ids() -> Resul
             }
             Ok(())
         })?;
+        let baseline = f.db.transaction(|tx| {
+            Ok(tasks::prepare_task_domain_snapshot_with_budget_tx(
+                tx,
+                &f.scope,
+                &load_request(),
+                &ledger,
+            )?
+            .require_current()?
+            .resident)
+        })?;
         operator_delete(&f, command.task.updated_at)?;
         // The deliberate foreign/pruned fixture did not enqueue a membership.
         let old = f.state()?;
         command.agent_state.as_mut().unwrap().expected = Some(Box::new(old.clone()));
         command.agent_state.as_mut().unwrap().record.pending = old.pending + 1;
         let before = rows(&f)?;
-        let p = freeze(&f, &format!("collision:{pruned}"), command)?;
+        let p = freeze(&f, &format!("collision:{pruned}"), command)?
+            .with_task_bases(vec![std::sync::Arc::new(baseline)], &ledger)?;
         let error = execute(&f, &p, &load_request(), &ledger).unwrap_err();
         assert!(
             format!("{error:#}").contains(if pruned {
@@ -419,6 +430,7 @@ fn derived_task_input_rejects_pruned_and_foreign_existing_message_ids() -> Resul
             "{error:#}"
         );
         assert_eq!(rows(&f)?, before);
+        drop(p);
         assert_eq!(ledger.report()?.observed_bytes, 0);
     }
     Ok(())
@@ -427,7 +439,7 @@ fn derived_task_input_rejects_pruned_and_foreign_existing_message_ids() -> Resul
 #[test]
 fn derived_task_message_field_tamper_and_alias_fault_roll_back_whole_business() -> Result<()> {
     for tamper in [true, false] {
-        let f = Fixture::new()?;
+        let f = initialized_task_fixture()?;
         let ledger = ledger()?;
         let command = terminal_command(&f, &format!("task:rollback-{tamper}"))?;
         if tamper {
@@ -454,7 +466,7 @@ fn derived_task_message_field_tamper_and_alias_fault_roll_back_whole_business() 
 
 #[test]
 fn task_input_bridge_keeps_parent_cleanup_business_fence() -> Result<()> {
-    let f = Fixture::new()?;
+    let f = initialized_task_fixture()?;
     let ledger = ledger()?;
     let command = terminal_command(&f, "task:parent-fence")?;
     // Deliberately put the durable parent fence in place after setup. This

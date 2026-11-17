@@ -1,4 +1,6 @@
 use super::*;
+#[path = "task_recovery_candidate_tests.rs"]
+mod candidate_tests;
 use crate::{
     config::StateMemoryLimits,
     runtime::resident_task::TaskAvailability,

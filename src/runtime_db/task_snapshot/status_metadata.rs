@@ -113,6 +113,7 @@ pub(in crate::runtime_db) fn refresh_task_status_metadata_using_material_tx(
     Ok(Some(CommittedTaskDelta {
         scope: scope.clone(),
         base_revision,
+        prepared_base: None,
         revision: coverage.revision,
         coverage,
         records: Vec::new(),

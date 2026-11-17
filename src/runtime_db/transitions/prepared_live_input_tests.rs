@@ -25,7 +25,7 @@ struct RecoveryFixture {
 
 impl RecoveryFixture {
     fn new() -> Result<Self> {
-        let f = Fixture::new()?;
+        let f = Fixture::new_task_ready()?;
         let source = f.queue()?.command.message_evidence.remove(0);
         let source =
             f.db.messages()

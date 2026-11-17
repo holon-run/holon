@@ -79,6 +79,11 @@ impl RuntimeHostBridge {
                 .is_some_and(|binding| &binding.original == source.address()),
             "binding retry changed original source"
         );
+        let mut task_bases =
+            crate::runtime_db::transitions::PreparedTaskBaselines::from_reservations(
+                &reservations,
+                ledger,
+            )?;
         let witness = MutationWitness::input_mutation(
             prepared.descriptor().command_nonce().into(),
             OriginalInputMutationAttempt::new(prepared.descriptor().clone()),
@@ -99,8 +104,12 @@ impl RuntimeHostBridge {
         let execution = host
             .runtime_db()
             .transitions_in_scope(scope)
-            .commit_prepared_transition_with_work_request_and_memory_budget(
-                prepared, &work, ledger, &request,
+            .commit_prepared_transition_with_task_preparation(
+                prepared,
+                &work,
+                ledger,
+                &request,
+                &mut task_bases,
             );
         if matches!(&execution, Ok(InputMutationExecution::Replayed { .. })) {
             witness.mark_input_storage_replayed()?;

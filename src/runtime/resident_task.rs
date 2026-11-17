@@ -460,6 +460,9 @@ impl TaskCaptureRequest {
 pub(crate) struct CommittedTaskDelta {
     pub scope: InputEvidenceScope,
     pub base_revision: u64,
+    /// A qualified reader baseline not previously installed by this caller.
+    /// This cannot establish a missing domain or confer mutation authority.
+    pub prepared_base: Option<Arc<ResidentTaskDomain>>,
     pub revision: u64,
     pub records: Vec<Arc<QualifiedTaskFact>>,
     pub stop_records: Vec<Arc<TaskStopRecord>>,
@@ -626,6 +629,19 @@ impl ResidentTaskDomain {
         Ok(self)
     }
     pub(crate) fn with_committed(&self, delta: &CommittedTaskDelta) -> Result<Self> {
+        if let Some(base) = &delta.prepared_base {
+            ensure!(
+                base.scope == self.scope
+                    && base.coverage.revision == delta.base_revision
+                    && base.coverage.revision >= self.coverage.revision,
+                "Task ACK prepared baseline scope/revision mismatch"
+            );
+            return base.apply_committed(delta);
+        }
+        self.apply_committed(delta)
+    }
+
+    fn apply_committed(&self, delta: &CommittedTaskDelta) -> Result<Self> {
         ensure!(
             delta.scope == self.scope
                 && delta.coverage.revision == delta.revision

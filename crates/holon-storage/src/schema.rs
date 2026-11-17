@@ -1,5 +1,10 @@
 //! DDL shared by runtime migrations and storage tests.
 
+pub const TURN_ACTIVATION_ATTACHMENTS_SCHEMA: &str =
+    include_str!("schema/turn_activation_attachments.sql");
+pub const TASK_STOP_PENDING_FRONTIER_SCHEMA: &str =
+    include_str!("schema/task_stop_pending_frontier.sql");
+
 pub const EPISODE_CONTINUITY_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS episode_continuity_seeds (
   seed_id TEXT PRIMARY KEY,

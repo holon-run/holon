@@ -125,8 +125,23 @@ impl Fixture {
                 agent_id: identity.agent_id.clone(),
                 identity_incarnation: identity.incarnation,
             };
-            host.runtime_db()
-                .transaction(|tx| upsert_agent_state_tx(tx, &AgentState::new(&scope.agent_id)))?;
+            let state = AgentState::new(&scope.agent_id);
+            host.runtime_db().transaction(|tx| {
+                upsert_agent_state_tx(tx, &state)?;
+                // This unloaded-owner fixture must perform the same explicit
+                // initialization as bootstrap before its first Task admission.
+                crate::runtime_db::task_recovery::prepare_bootstrap_task_domains_tx(
+                    tx,
+                    &scope,
+                    &state,
+                    &TaskCaptureRequest::current(),
+                    &[],
+                    4096,
+                    16 * 1024 * 1024,
+                    &host.inner.input_evidence_budget,
+                )?;
+                Ok(())
+            })?;
             let root = home.path().join("original-repo");
             std::fs::create_dir(&root)?;
             git(&root, &["init", "--quiet"])?;
