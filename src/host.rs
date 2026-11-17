@@ -17791,25 +17791,9 @@ mod tests {
             }
         }
 
-        let (_home, host) = test_host();
-        let parent = host.default_runtime().await.unwrap();
-        let created = parent
-            .agent_invocation_service()
-            .invoke(InvokeAgentRequest {
-                target: InvokeAgentTarget::NewSubagent {
-                    template: None,
-                    workspace_mode: ChildAgentWorkspaceMode::Inherit,
-                    model_resolution: Some(inherited_model_resolution("openai", "gpt-5.4")),
-                },
-                message: "first invocation".into(),
-                authority_class: AuthorityClass::OperatorInstruction,
-            })
-            .await
-            .unwrap();
-        let first_terminal = wait_for_terminal_task(&parent, &created.task_handle.task_id).await;
-        assert_eq!(first_terminal.status, TaskStatus::Completed);
-
-        let child = host.get_or_create_agent(&created.agent_id).await.unwrap();
+        let (_home, host, parent, child, gate) =
+            reply_gate_host("target final after explicit reply", false, false).await;
+        let _gate_guard = ReplyGateReleaseGuard(gate.clone());
         let parent_agent_id = parent
             .agent_summary()
             .await
@@ -17818,17 +17802,16 @@ mod tests {
             .agent_id
             .clone();
 
-        crate::runtime::enable_delivery_checkpoint(created.agent_id.clone());
+        crate::runtime::enable_delivery_checkpoint("reply-gate-peer");
         let _checkpoint_guard = DeliveryCheckpointGuard;
         let parent_for_invoke = parent.clone();
-        let child_agent_id = created.agent_id.clone();
         let mut invocation = tokio::spawn(async move {
             parent_for_invoke
                 .agent_invocation_service()
                 .invoke(InvokeAgentRequest {
                     target: InvokeAgentTarget::ExistingAgent {
                         reply_timeout_ms: None,
-                        agent_id: child_agent_id,
+                        agent_id: "reply-gate-peer".into(),
                     },
                     message: "second invocation".into(),
                     authority_class: AuthorityClass::OperatorInstruction,
@@ -17849,6 +17832,10 @@ mod tests {
         )
         .await
         .expect("existing-agent delivery should reach its receipt checkpoint");
+        tokio::time::timeout(Duration::from_secs(10), gate.started.notified())
+            .await
+            .expect("target must reach its completion gate before explicit reply admission");
+        assert!(!invocation.is_finished(), "Invoke must still be paused");
         let response = tokio::time::timeout(
             Duration::from_secs(30),
             send_agent_message(
@@ -17860,6 +17847,14 @@ mod tests {
         )
         .await
         .expect("fast reply admission should finish while receipt attachment is paused");
+        assert_eq!(
+            response.outcome,
+            crate::types::AgentMessageDeliveryOutcome::Accepted
+        );
+        assert!(
+            !invocation.is_finished(),
+            "reply must precede Invoke return"
+        );
 
         crate::runtime::release_delivery_checkpoint();
         let receipt = tokio::time::timeout(Duration::from_secs(30), invocation)
@@ -17868,28 +17863,8 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(receipt.task_handle.task_kind, AGENT_MESSAGE_WAIT_TASK_KIND);
-        let mut terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
+        let terminal = wait_for_terminal_task(&parent, &receipt.task_handle.task_id).await;
         assert_eq!(terminal.status, TaskStatus::Completed);
-        // The reply's delivery linkage can land in the terminal task detail
-        // after the record first reaches its terminal state (#4121), so
-        // re-read the settled record before asserting on the linkage. A
-        // timeout falls through to the diagnostic assert below instead of
-        // failing with a bare null mismatch.
-        for _ in 0..100 {
-            if terminal
-                .detail
-                .as_ref()
-                .is_some_and(|detail| !detail["response_delivery_id"].is_null())
-            {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(50)).await;
-            terminal = parent
-                .storage()
-                .latest_task_record(&receipt.task_handle.task_id)
-                .unwrap()
-                .expect("task should remain persisted");
-        }
         let detail = terminal.detail.as_ref().unwrap();
         let request_delivery_id = detail["request_delivery_id"].as_str().unwrap();
         let request_record = host
@@ -17945,7 +17920,6 @@ mod tests {
             .is_none());
         assert!(response_rowid > request_rowid);
         assert_eq!(detail["message_wait_after_delivery_rowid"], request_rowid);
-        // Distinguish "linkage never became visible" from "wrong delivery".
         assert_eq!(
             detail["response_delivery_id"],
             response.delivery_id,
@@ -17955,6 +17929,24 @@ mod tests {
             detail["message_wait_satisfied"],
         );
         assert_eq!(detail["message_wait_satisfied"], true);
+        let outcome = reply_outcome(&host, &terminal.id);
+        assert_eq!(outcome["reply"]["kind"], "explicit");
+        assert_eq!(outcome["reply"]["delivery_id"], response.delivery_id);
+        assert_eq!(outcome["reply"]["message_id"], response_message_id);
+        assert_eq!(outcome["request_delivery_id"], request_delivery_id);
+
+        gate.release.notify_one();
+        wait_for_agent_inputs_settled(&child).await;
+        wait_for_agent_inputs_settled(&parent).await;
+        assert_eq!(reply_outcome(&host, &terminal.id), outcome);
+        assert!(parent
+            .storage()
+            .read_message_by_id(&format!("message:agent-final-brief-reply:{}", terminal.id))
+            .unwrap()
+            .is_none());
+        assert_eq!(reply_outcome_count(&host, &terminal.id), 1);
+        assert_eq!(reply_result_count(&host, &terminal.id), 1);
+        host.shutdown().await.unwrap();
     }
 
     #[cfg(holon_lib_test_shard = "d")]
