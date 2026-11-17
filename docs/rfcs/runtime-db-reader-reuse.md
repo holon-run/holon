@@ -219,6 +219,63 @@ replace healthy idle connections. Mature pool integration is preferred only
 if its creation, retry, error, and final-drop behavior meets this contract;
 otherwise implementation stops for review rather than relaxing protection.
 
+## Reader-pool diagnostics
+
+`/control/runtime/performance` exposes a `reader_pools` array; a snapshot from
+before this field still deserializes as empty. Each entry has one fixed `role`
+(`ordinary` or `preparation`) and belongs to `resource_scope=runtime_db`.
+`/control/runtime/metrics` renders the same data with only the fixed
+`resource_scope`, `role`, and histogram `le` labels; no owner, agent, path,
+SQL, or business value is exported.
+
+The daemon aggregates every RuntimeDb owner connected to the process
+diagnostics adapter. Owners that are offline or never wired to the adapter are
+not covered, and aggregation can hide one saturated owner: these series are a
+daemon total, not a per-owner view. Existing defaults (16 ordinary, 4
+preparation, 64 per owner combined) still bound each owner; 64 is not a daemon
+aggregation limit.
+
+Current lifecycle gauges are `instances`, `configured_capacity`,
+`connections`, `in_use`, `idle`, and `waiting`. They fall when pools or leases
+end, while `instances_created`, `instances_dropped`, `connections_opened`,
+`connections_closed`, and the checkout, lease, and connect counters are
+process-lifetime totals that never decrease. `idle` is derived as live
+configured connections minus application lease holders; it is not an atomic
+r2d2 state read, so a concurrent connect or teardown can show a transient
+combination. `waiting` counts unfinished checkouts (admission, blocking
+scheduling, and r2d2 wait) and excludes execution.
+
+Timing boundaries:
+
+- `Created` follows successful shared-pool construction and `Dropped` follows
+  destruction of the last facade. In-flight creation or leases may outlive the
+  facade briefly, so `instances` can reach zero while `connections` stays
+  positive.
+- `ConnectionOpened` is recorded when a new pooled SQLite connection has been
+  created and configured for reader use; `ConnectionClosed` follows the actual
+  SQLite close.
+- `CheckoutStarted` covers public sync/async read entry points and fixture
+  warmup, which acquires the full capacity. `CheckoutFinished` records success,
+  timeout, cancellation, or failure with the elapsed wait. Warmup finishes only
+  after the full loop; an async caller dropping does not finish a checkout
+  still owned by a running blocking worker. r2d2's internal creation polling is
+  not reported as a logical timeout. An exhausted scope deadline is classified
+  as timeout, including during blocking admission, even if its cancellation
+  token is also cancelled.
+- `LeaseStarted`/`LeaseFinished` span acquisition through connection return or
+  close, including application decoding and cleanup (and fixture warmup
+  holders), so lease duration is not pure SQL time.
+- `ConnectStarted`/`ConnectFinished` count every `manager.connect` attempt; the
+  attempt count and the failure count are separate series.
+
+Durations use the shared fixed millisecond bounds. The snapshot exposes
+count, total_ns, max_ns, and cumulative bucket counts whose last bucket is
+`+Inf`. Count is derived from that same bucket sample; total and maximum are
+independently sampled atomics, not a transactionally consistent snapshot.
+OpenMetrics renders cumulative histograms with `le` seconds, a seconds
+sum, and a count; no average or quantile is derived from the buckets. Failure
+kinds use separate fixed series instead of free-form labels.
+
 ## Verification and comparison
 
 `cargo bench --bench runtime_db` includes

@@ -11,7 +11,10 @@ use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
 use rusqlite::{ffi::ErrorCode, Connection};
 use tokio::sync::Semaphore;
 
-use crate::diagnostics::StorageStage;
+use crate::diagnostics::{ReaderPoolEvent, ReaderPoolOutcome, ReaderPoolRole, StorageStage};
+
+mod observation;
+use observation::{CheckoutObservation, ConnectObservation, LeaseObservation};
 
 use super::write_queue::RuntimeDbWriterState;
 use super::{read_block, RuntimeDbProtectionError, RuntimeDbReadScope, RuntimeDbRetryableError};
@@ -30,6 +33,7 @@ struct ReaderPoolShared {
     admission: Arc<Semaphore>,
     budget: Option<Duration>,
     control: Arc<ReaderPoolControl>,
+    capacity: u32,
 }
 
 struct ReaderPoolControl {
@@ -40,6 +44,7 @@ struct ReaderPoolControl {
     last_connect_warning: Mutex<Option<Instant>>,
     last_timeout_warning: Mutex<Option<Instant>>,
     role: &'static str,
+    diagnostic_role: ReaderPoolRole,
     holders: Mutex<Vec<Option<(read_block::ReadOrigin, Instant)>>>,
     #[cfg(any(test, feature = "test-support"))]
     test_hook: Mutex<Option<Arc<ReaderTestHook>>>,
@@ -91,11 +96,15 @@ struct ReaderConnection {
     connection: Option<Connection>,
     control: Arc<ReaderPoolControl>,
     broken: bool,
+    observed: bool,
 }
 
 impl Drop for ReaderConnection {
     fn drop(&mut self) {
         drop(self.connection.take());
+        if self.observed {
+            self.control.observe(ReaderPoolEvent::ConnectionClosed);
+        }
         #[cfg(any(test, feature = "test-support"))]
         let _ = self.control.test_hook(ReaderTestEvent::Closed);
         self.control
@@ -162,6 +171,13 @@ impl RuntimeDbReaderPool {
         role: &'static str,
     ) -> Self {
         assert!(capacity > 0, "reader pool capacity must be positive");
+        // Export only the two fixed production roles. Test and custom log
+        // labels must never become metric labels: `with_capacity` keeps its
+        // string signature, but the diagnostic dimension stays bounded.
+        let diagnostic_role = match role {
+            "preparation" => ReaderPoolRole::Preparation,
+            _ => ReaderPoolRole::Ordinary,
+        };
         let shared = Arc::new_cyclic(|owner| {
             let control = Arc::new(ReaderPoolControl {
                 writer,
@@ -171,6 +187,7 @@ impl RuntimeDbReaderPool {
                 last_connect_warning: Mutex::new(None),
                 last_timeout_warning: Mutex::new(None),
                 role,
+                diagnostic_role,
                 holders: Mutex::new(vec![None; capacity as usize]),
                 #[cfg(any(test, feature = "test-support"))]
                 test_hook: Mutex::new(None),
@@ -191,8 +208,12 @@ impl RuntimeDbReaderPool {
                 admission: Arc::new(Semaphore::new(capacity as usize)),
                 budget,
                 control,
+                capacity,
             }
         });
+        shared
+            .control
+            .observe(ReaderPoolEvent::Created { capacity });
         Self {
             shared,
             scope: None,
@@ -220,27 +241,39 @@ impl RuntimeDbReaderPool {
         let capacity = pool.max_size();
         let deadline = self.acquisition_deadline();
         let mut readers = Vec::with_capacity(capacity as usize);
+        let checkout = CheckoutObservation::start(
+            self.shared.control.writer.diagnostics,
+            self.shared.control.role(),
+        );
+        let scope = self.effective_scope();
         for _ in 0..capacity {
-            self.check_read_scope()?;
+            self.shared.control.ensure_protected()?;
+            self.check_scope_observed(&scope, &checkout)?;
             let mut reader = self.checkout_connection(
                 &pool,
                 deadline,
-                &self.effective_scope(),
+                &scope,
                 read_block::ReadOrigin::UNKNOWN,
                 "warmup",
+                &checkout,
             )?;
-            self.check_read_scope()?;
-            if let Err(error) = reader.connection.as_ref().expect("live reader").query_row(
-                "SELECT count(*) FROM sqlite_schema",
-                [],
-                |_| Ok(()),
-            ) {
-                reader.broken = true;
+            self.shared.control.ensure_protected()?;
+            self.check_scope_observed(&scope, &checkout)?;
+            if let Err(error) = reader
+                .connection
+                .connection
+                .as_ref()
+                .expect("live reader")
+                .query_row("SELECT count(*) FROM sqlite_schema", [], |_| Ok(()))
+            {
+                reader.connection.broken = true;
                 return Err(error.into());
             }
-            self.check_read_scope()?;
+            self.shared.control.ensure_protected()?;
+            self.check_scope_observed(&scope, &checkout)?;
             readers.push(reader);
         }
+        checkout.finish(ReaderPoolOutcome::Success);
         Ok(capacity)
     }
 
@@ -260,7 +293,8 @@ impl RuntimeDbReaderPool {
         scope: &Option<RuntimeDbReadScope>,
         origin: read_block::ReadOrigin,
         stage: &'static str,
-    ) -> Result<PooledConnection<ReaderManager>> {
+        observation: &CheckoutObservation,
+    ) -> Result<ReadLease> {
         #[cfg(any(test, feature = "test-support"))]
         self.shared
             .control
@@ -269,11 +303,12 @@ impl RuntimeDbReaderPool {
             .fetch_add(1, Ordering::Relaxed);
         loop {
             self.shared.control.ensure_protected()?;
-            self.check_scope(scope)?;
+            self.check_scope_observed(scope, observation)?;
             let remaining =
                 deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
             if remaining.is_some_and(|remaining| remaining.is_zero()) {
                 self.shared.control.timeout(origin, stage);
+                observation.finish(ReaderPoolOutcome::Timeout);
                 return Err(RuntimeDbRetryableError::new(
                     "reader pool checkout",
                     &self.shared.control.writer.path,
@@ -284,12 +319,15 @@ impl RuntimeDbReaderPool {
             let interval =
                 remaining.map_or(CHECK_INTERVAL, |remaining| remaining.min(CHECK_INTERVAL));
             match pool.get_timeout(interval) {
-                Ok(connection) => return Ok(connection),
+                Ok(connection) => {
+                    return Ok(ReadLease::new(connection));
+                }
                 Err(error) => {
                     self.shared.control.ensure_protected()?;
                     if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
                         self.shared.control.timeout(origin, stage);
-                        self.check_scope(scope)?;
+                        observation.finish(ReaderPoolOutcome::Timeout);
+                        self.check_scope_observed(scope, observation)?;
                         return Err(RuntimeDbRetryableError::new(
                             "reader pool checkout",
                             &self.shared.control.writer.path,
@@ -297,7 +335,7 @@ impl RuntimeDbReaderPool {
                         )
                         .into());
                     }
-                    self.check_scope(scope)?;
+                    self.check_scope_observed(scope, observation)?;
                 }
             }
         }
@@ -314,6 +352,29 @@ impl RuntimeDbReaderPool {
             scope.check(&self.shared.control.writer.path)?;
         }
         Ok(())
+    }
+
+    /// Classify a pre-lease scope rejection without changing scope semantics.
+    fn check_scope_observed(
+        &self,
+        scope: &Option<RuntimeDbReadScope>,
+        observation: &CheckoutObservation,
+    ) -> Result<()> {
+        match self.check_scope(scope) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let outcome = if scope
+                    .as_ref()
+                    .is_some_and(|scope| Instant::now() >= scope.deadline())
+                {
+                    ReaderPoolOutcome::Timeout
+                } else {
+                    ReaderPoolOutcome::Cancelled
+                };
+                observation.finish(outcome);
+                Err(error)
+            }
+        }
     }
 
     pub fn check_read_scope(&self) -> Result<()> {
@@ -380,8 +441,22 @@ impl RuntimeDbReaderPool {
         origin: read_block::ReadOrigin,
         f: impl FnOnce(&mut Connection) -> Result<T>,
     ) -> Result<T> {
-        let started = Instant::now();
-        let checkout = self
+        let checkout = CheckoutObservation::start(
+            self.shared.control.writer.diagnostics,
+            self.shared.control.role(),
+        );
+        self.read_until_observed(deadline, scope, origin, f, &checkout)
+    }
+
+    fn read_until_observed<T>(
+        &self,
+        deadline: Option<Instant>,
+        scope: Option<RuntimeDbReadScope>,
+        origin: read_block::ReadOrigin,
+        f: impl FnOnce(&mut Connection) -> Result<T>,
+        checkout: &CheckoutObservation,
+    ) -> Result<T> {
+        let checkout_stage = self
             .shared
             .control
             .writer
@@ -389,7 +464,7 @@ impl RuntimeDbReaderPool {
             .start(StorageStage::ReaderCheckout);
         let control = &self.shared.control;
         control.ensure_protected()?;
-        self.check_scope(&scope)?;
+        self.check_scope_observed(&scope, checkout)?;
         let pool = self
             .shared
             .pool
@@ -397,9 +472,11 @@ impl RuntimeDbReaderPool {
             .map_err(|_| anyhow!("runtime db reader pool mutex poisoned"))?
             .clone()
             .ok_or_else(|| anyhow!("runtime db reader pool is closed"))?;
-        let connection = self.checkout_connection(&pool, deadline, &scope, origin, "checkout")?;
-        drop(checkout);
-        let checkout_elapsed = started.elapsed();
+        let lease =
+            self.checkout_connection(&pool, deadline, &scope, origin, "checkout", checkout)?;
+        checkout.finish(ReaderPoolOutcome::Success);
+        drop(checkout_stage);
+        let checkout_elapsed = checkout.elapsed();
         // Declare the timer first so the lease is returned before it stops.
         let _held = self
             .shared
@@ -407,10 +484,7 @@ impl RuntimeDbReaderPool {
             .writer
             .diagnostics
             .start(StorageStage::ReaderLease);
-        let mut lease = ReadLease {
-            connection,
-            progress_handler: false,
-        };
+        let mut lease = lease;
         let _holder = control.track_holder(origin);
         control.ensure_protected()?;
         self.check_scope(&scope)?;
@@ -491,8 +565,12 @@ impl RuntimeDbReaderPool {
             tokio::time::Instant::now() + deadline.saturating_duration_since(Instant::now())
         });
         let scope = self.scope.as_ref().map(RuntimeDbReadScope::child);
+        let checkout = CheckoutObservation::start(
+            self.shared.control.writer.diagnostics,
+            self.shared.control.role(),
+        );
         self.shared.control.ensure_protected()?;
-        self.check_scope(&scope)?;
+        self.check_scope_observed(&scope, &checkout)?;
         let pending = Arc::clone(&self.shared.admission).acquire_owned();
         tokio::pin!(pending);
         let admitted = loop {
@@ -501,12 +579,12 @@ impl RuntimeDbReaderPool {
                 () = wait_for_deadline(async_deadline) => break None,
                 () = RuntimeDbReadScope::cancelled(&scope) => {
                     self.shared.control.ensure_protected()?;
-                    self.check_scope(&scope)?;
+                    self.check_scope_observed(&scope, &checkout)?;
                     unreachable!("cancelled scope must reject the read");
                 }
                 () = tokio::time::sleep(CHECK_INTERVAL) => {
                     self.shared.control.ensure_protected()?;
-                    self.check_scope(&scope)?;
+                    self.check_scope_observed(&scope, &checkout)?;
                 }
             }
         };
@@ -518,6 +596,7 @@ impl RuntimeDbReaderPool {
             }
             None => {
                 self.shared.control.timeout(origin, "admission");
+                checkout.finish(ReaderPoolOutcome::Timeout);
                 self.shared.control.ensure_protected()?;
                 self.check_scope(&scope)?;
                 return Err(RuntimeDbRetryableError::new(
@@ -530,8 +609,9 @@ impl RuntimeDbReaderPool {
         };
         drop(admission);
         self.shared.control.ensure_protected()?;
-        self.check_scope(&scope)?;
+        self.check_scope_observed(&scope, &checkout)?;
         let reader = self.clone();
+        let task_checkout = checkout.clone();
         let task_scope = scope.clone();
         let state = Arc::new(AtomicU8::new(0));
         let task_state = Arc::clone(&state);
@@ -551,7 +631,7 @@ impl RuntimeDbReaderPool {
             {
                 bail!("runtime db read cancelled before execution");
             }
-            reader.read_until(deadline, task_scope, origin, f)
+            reader.read_until_observed(deadline, task_scope, origin, f, &task_checkout)
         });
         let _cancel = CancelQueuedRead {
             state: Arc::clone(&state),
@@ -570,6 +650,16 @@ impl RuntimeDbReaderPool {
                     .compare_exchange(0, 2, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
                 {
+                    let outcome = if scope.as_ref().is_some_and(|scope| {
+                        scope.is_cancelled() && Instant::now() < scope.deadline()
+                    }) {
+                        ReaderPoolOutcome::Cancelled
+                    } else {
+                        ReaderPoolOutcome::Timeout
+                    };
+                    // Finish before aborting so the queued task's drop cannot
+                    // report this planned deadline/cancellation as a failure.
+                    checkout.finish(outcome);
                     task.abort();
                     self.shared.control.timeout(origin, "blocking_admission");
                     self.shared.control.ensure_protected()?;
@@ -658,9 +748,23 @@ impl Drop for CancelQueuedRead {
 struct ReadLease {
     connection: PooledConnection<ReaderManager>,
     progress_handler: bool,
+    // Fields drop in declaration order: return/close the connection first.
+    _observation: LeaseObservation,
 }
 
 impl ReadLease {
+    fn new(connection: PooledConnection<ReaderManager>) -> Self {
+        let observation = LeaseObservation::start(
+            connection.control.writer.diagnostics,
+            connection.control.role(),
+        );
+        Self {
+            connection,
+            progress_handler: false,
+            _observation: observation,
+        }
+    }
+
     fn clear_progress_handler(&mut self) {
         if self.progress_handler {
             self.connection
@@ -705,6 +809,14 @@ impl ReaderPoolControl {
             bail!("runtime db reader pool is closed");
         }
         Ok(())
+    }
+
+    fn role(&self) -> ReaderPoolRole {
+        self.diagnostic_role
+    }
+
+    fn observe(&self, event: ReaderPoolEvent) {
+        (self.writer.diagnostics.reader_pool)(self.diagnostic_role, event);
     }
 
     fn close(&self) {
@@ -776,6 +888,9 @@ impl Drop for ReaderPoolShared {
         if let Ok(pool) = self.pool.get_mut() {
             drop(pool.take());
         }
+        self.control.observe(ReaderPoolEvent::Dropped {
+            capacity: self.capacity,
+        });
     }
 }
 
@@ -789,6 +904,7 @@ impl ManageConnection for ReaderManager {
             .stats
             .connect_attempts
             .fetch_add(1, Ordering::Relaxed);
+        let mut observation = ConnectObservation::start(control.writer.diagnostics, control.role());
         let result: Result<ReaderConnection> = (|| {
             control.ensure_protected()?;
             #[cfg(any(test, feature = "test-support"))]
@@ -801,19 +917,23 @@ impl ManageConnection for ReaderManager {
                 .stats
                 .connections_opened
                 .fetch_add(1, Ordering::Relaxed);
-            let reader = ReaderConnection {
+            let mut reader = ReaderConnection {
                 connection: Some(connection),
                 control: Arc::clone(control),
                 broken: false,
+                observed: false,
             };
             let connection = reader.connection.as_ref().expect("live reader");
             connection.pragma_update(None, "query_only", true)?;
             connection.authorizer(Some(read_authorizer));
+            reader.observed = true;
+            control.observe(ReaderPoolEvent::ConnectionOpened);
             #[cfg(any(test, feature = "test-support"))]
             control.test_hook(ReaderTestEvent::Opened)?;
             control.ensure_protected()?;
             Ok(reader)
         })();
+        observation.finish(result.is_ok());
         result.map_err(|error| {
             if error
                 .chain()
@@ -930,7 +1050,7 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
-    use crate::diagnostics::NO_DIAGNOSTICS;
+    use crate::diagnostics::{StorageDiagnostics, NO_DIAGNOSTICS};
     use crate::write_queue::RuntimeDbWriter;
     use crate::RuntimeDbProtectionState;
 
@@ -1379,6 +1499,449 @@ mod tests {
         );
         assert_eq!(pool.stats().connect_attempts, stats.connect_attempts);
         assert!(!wal.exists(), "pool must not recreate quarantined sidecars");
+        Ok(())
+    }
+
+    static RECORDED: Mutex<Vec<(ReaderPoolRole, ReaderPoolEvent)>> = Mutex::new(Vec::new());
+    static RECORDING_LOCK: Mutex<()> = Mutex::new(());
+
+    fn record_reader_pool(role: ReaderPoolRole, event: ReaderPoolEvent) {
+        RECORDED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .push((role, event));
+    }
+
+    fn recording_diagnostics() -> &'static StorageDiagnostics {
+        static RECORDING: StorageDiagnostics = StorageDiagnostics {
+            record_open_attempt: || {},
+            observe_connection: |_| Ok(()),
+            record_open_duration: |_| {},
+            record_sidecar_scan: |_| {},
+            record_stage: |_, _| {},
+            reader_pool: record_reader_pool,
+        };
+        &RECORDING
+    }
+
+    fn diagnostics_guard() -> std::sync::MutexGuard<'static, ()> {
+        RECORDING_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn clear_recorded() {
+        RECORDED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+    }
+
+    fn recorded_events() -> Vec<(ReaderPoolRole, ReaderPoolEvent)> {
+        RECORDED
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+    }
+
+    fn recorded_checkout_outcomes() -> Vec<ReaderPoolOutcome> {
+        recorded_events()
+            .iter()
+            .filter_map(|(_, event)| match event {
+                ReaderPoolEvent::CheckoutFinished { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn recording_fixture(
+        capacity: u32,
+        budget: Duration,
+    ) -> Result<(tempfile::TempDir, ReaderFixture)> {
+        let diagnostics = recording_diagnostics();
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("runtime.sqlite");
+        let connection = crate::connection::open_connection(&path, diagnostics)?;
+        crate::connection::configure_persistent_database(&connection)?;
+        connection.execute_batch("CREATE TABLE reader_fixture (value INTEGER)")?;
+        let writer = RuntimeDbWriter::open_starting(path.clone(), connection, diagnostics)?;
+        let readers =
+            RuntimeDbReaderPool::with_config(Arc::clone(writer.state()), capacity, budget);
+        Ok((
+            directory,
+            ReaderFixture {
+                path,
+                readers,
+                writer,
+            },
+        ))
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_record_lifecycle_and_success() -> Result<()> {
+        let _guard = diagnostics_guard();
+        clear_recorded();
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(2))?;
+        assert_eq!(
+            recorded_events(),
+            vec![(
+                ReaderPoolRole::Ordinary,
+                ReaderPoolEvent::Created { capacity: 1 }
+            )]
+        );
+        db.with_read(|connection| {
+            connection.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?;
+            Ok(())
+        })?;
+        let events = recorded_events();
+        assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::CheckoutStarted)));
+        assert!(events
+            .iter()
+            .any(|(role, event)| *role == ReaderPoolRole::Ordinary
+                && matches!(
+                    event,
+                    ReaderPoolEvent::CheckoutFinished {
+                        outcome: ReaderPoolOutcome::Success,
+                        ..
+                    }
+                )));
+        assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectStarted)));
+        assert!(events
+            .iter()
+            .any(|(role, event)| *role == ReaderPoolRole::Ordinary
+                && matches!(
+                    event,
+                    ReaderPoolEvent::ConnectFinished { success: true, .. }
+                )));
+        assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionOpened)));
+        assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::LeaseStarted)));
+        assert!(events
+            .iter()
+            .any(|(role, event)| *role == ReaderPoolRole::Ordinary
+                && matches!(event, ReaderPoolEvent::LeaseFinished { .. })));
+
+        drop(db);
+        let events = recorded_events();
+        assert!(events.contains(&(
+            ReaderPoolRole::Ordinary,
+            ReaderPoolEvent::Dropped { capacity: 1 }
+        )));
+        assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionClosed)));
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_finish_lease_after_connection_close() -> Result<()> {
+        let _guard = diagnostics_guard();
+        clear_recorded();
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(2))?;
+        // Deliberately violate the Rust API contract to force discard on return.
+        let error = db
+            .with_read(|connection| {
+                connection.authorizer(None::<fn(AuthContext<'_>) -> Authorization>);
+                connection.execute_batch("PRAGMA query_only = OFF")?;
+                Ok(())
+            })
+            .unwrap_err();
+        assert!(error.to_string().contains("dirty state"));
+        let events = recorded_events();
+        let closed = events
+            .iter()
+            .position(|(_, event)| matches!(event, ReaderPoolEvent::ConnectionClosed))
+            .expect("discarded connection closes");
+        let finished = events
+            .iter()
+            .position(|(_, event)| matches!(event, ReaderPoolEvent::LeaseFinished { .. }))
+            .expect("lease finishes");
+        assert!(
+            closed < finished,
+            "lease must include connection return/close"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_separate_connect_failure_from_checkout_timeout() -> Result<()> {
+        let _guard = diagnostics_guard();
+        clear_recorded();
+        let (_directory, db) = recording_fixture(1, Duration::from_millis(30))?;
+        install_hook(&db.readers, |event, _writer| {
+            if event == ReaderTestEvent::BeforeOpen {
+                bail!("synthetic reader creation failure");
+            }
+            Ok(())
+        });
+        let error = db.readers.with_read(|_| Ok(())).unwrap_err();
+        assert!(error.downcast_ref::<RuntimeDbRetryableError>().is_some());
+        let events = recorded_events();
+        assert!(events
+            .iter()
+            .any(|(role, event)| *role == ReaderPoolRole::Ordinary
+                && matches!(
+                    event,
+                    ReaderPoolEvent::CheckoutFinished {
+                        outcome: ReaderPoolOutcome::Timeout,
+                        ..
+                    }
+                )));
+        assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectStarted)));
+        assert!(events
+            .iter()
+            .any(|(role, event)| *role == ReaderPoolRole::Ordinary
+                && matches!(
+                    event,
+                    ReaderPoolEvent::ConnectFinished { success: false, .. }
+                )));
+        assert!(!events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionOpened)));
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_checkout_lives_until_last_owner() {
+        let _guard = diagnostics_guard();
+        for outcome in [ReaderPoolOutcome::Success, ReaderPoolOutcome::Failed] {
+            clear_recorded();
+            let caller =
+                CheckoutObservation::start(recording_diagnostics(), ReaderPoolRole::Ordinary);
+            let worker = caller.clone();
+            drop(caller);
+            assert!(recorded_checkout_outcomes().is_empty());
+            if outcome == ReaderPoolOutcome::Success {
+                worker.finish(outcome);
+            }
+            drop(worker);
+            assert_eq!(recorded_checkout_outcomes(), vec![outcome]);
+        }
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_warmup_observes_all_readers() -> Result<()> {
+        let _guard = diagnostics_guard();
+        for outcome in [
+            ReaderPoolOutcome::Success,
+            ReaderPoolOutcome::Timeout,
+            ReaderPoolOutcome::Cancelled,
+        ] {
+            clear_recorded();
+            let budget = if outcome == ReaderPoolOutcome::Timeout {
+                Duration::from_millis(100)
+            } else {
+                Duration::from_secs(2)
+            };
+            let (_directory, db) = recording_fixture(2, budget)?;
+            let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+            let cancel = scope.clone();
+            let attempts = Arc::new(AtomicU64::new(0));
+            let hook_attempts = Arc::clone(&attempts);
+            install_hook(&db.readers, move |event, _writer| {
+                if event == ReaderTestEvent::BeforeOpen {
+                    let attempt = hook_attempts.fetch_add(1, Ordering::Relaxed);
+                    if attempt == 1 {
+                        // The first reader is held while the second is acquired.
+                        assert!(recorded_events()
+                            .iter()
+                            .any(|(_, event)| matches!(event, ReaderPoolEvent::LeaseStarted)));
+                        assert!(recorded_checkout_outcomes().is_empty());
+                    }
+                    if attempt >= 1 {
+                        match outcome {
+                            ReaderPoolOutcome::Timeout => bail!("second reader cannot connect"),
+                            ReaderPoolOutcome::Cancelled => cancel.cancel(),
+                            _ => {}
+                        }
+                    }
+                }
+                Ok(())
+            });
+            let result = db.readers.with_scope(scope).warm_for_fixture();
+            assert!(attempts.load(Ordering::Relaxed) >= 2);
+            if outcome == ReaderPoolOutcome::Success {
+                assert_eq!(result?, 2);
+            } else {
+                assert!(result.is_err());
+            }
+            assert_eq!(recorded_checkout_outcomes(), vec![outcome]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_detached_worker_keeps_checkout_open() -> Result<()> {
+        let _guard = diagnostics_guard();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_time()
+            .build()?;
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(5))?;
+        let raw_pool = db.readers.shared.pool.lock().unwrap().clone().unwrap();
+        let held = raw_pool.get_timeout(Duration::from_secs(5))?;
+        clear_recorded();
+        runtime.block_on(async {
+            let reader = db.readers.clone();
+            let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+            let caller = tokio::spawn(async move {
+                reader
+                    .with_read_async_at(read_block::ReadOrigin::UNKNOWN, move |_| {
+                        let _ = done_tx.send(());
+                        Ok(())
+                    })
+                    .await
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while db.readers.stats().checkout_attempts == 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await?;
+            caller.abort();
+            assert!(caller.await.unwrap_err().is_cancelled());
+            assert!(recorded_checkout_outcomes().is_empty());
+            drop(held);
+            tokio::time::timeout(Duration::from_secs(5), done_rx).await??;
+            assert_eq!(
+                recorded_checkout_outcomes(),
+                vec![ReaderPoolOutcome::Success]
+            );
+            Ok::<_, anyhow::Error>(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_classify_scoped_blocking_queue_exit() -> Result<()> {
+        use std::future::Future;
+        use std::task::Poll;
+
+        let _guard = diagnostics_guard();
+        for explicit_cancel in [false, true] {
+            clear_recorded();
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_time()
+                .max_blocking_threads(1)
+                .build()?;
+            let (_directory, db) = recording_fixture(1, Duration::from_secs(30))?;
+            let (started_tx, started_rx) = mpsc::channel();
+            let (release_tx, release_rx) = mpsc::channel::<()>();
+            runtime.block_on(async {
+                let blocker = tokio::task::spawn_blocking(move || {
+                    let _ = started_tx.send(());
+                    let _ = release_rx.recv();
+                });
+                started_rx.recv_timeout(Duration::from_secs(5))?;
+                let allowance = if explicit_cancel {
+                    Duration::from_secs(30)
+                } else {
+                    Duration::from_millis(250)
+                };
+                let scope = RuntimeDbReadScope::new(Instant::now() + allowance);
+                let pool = db.readers.with_scope(scope.clone());
+                let ran = Arc::new(AtomicBool::new(false));
+                let task_ran = Arc::clone(&ran);
+                let read = pool.with_read_async_at(read_block::ReadOrigin::UNKNOWN, move |_| {
+                    task_ran.store(true, Ordering::Relaxed);
+                    Ok(())
+                });
+                tokio::pin!(read);
+                // Poll into spawn_blocking while the sole worker is held.
+                std::future::poll_fn(|cx| {
+                    assert!(read.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                assert_eq!(pool.stats().available_admission, 0);
+                assert_eq!(pool.stats().checkout_attempts, 0);
+                if explicit_cancel {
+                    scope.cancel();
+                }
+                let result = tokio::time::timeout(Duration::from_secs(5), read).await?;
+                drop(release_tx);
+                blocker.await?;
+                assert!(result.is_err());
+                assert!(!ran.load(Ordering::Relaxed));
+                assert_eq!(
+                    recorded_checkout_outcomes(),
+                    vec![if explicit_cancel {
+                        ReaderPoolOutcome::Cancelled
+                    } else {
+                        ReaderPoolOutcome::Timeout
+                    }]
+                );
+                Ok::<_, anyhow::Error>(())
+            })?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_report_scope_cancellation_as_cancelled() -> Result<()> {
+        let _guard = diagnostics_guard();
+        clear_recorded();
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(2))?;
+        let scope = RuntimeDbReadScope::new(Instant::now() + Duration::from_secs(30));
+        scope.cancel();
+        let pool = db.readers.with_scope(scope);
+        let error = pool.with_read(|_| Ok(())).unwrap_err();
+        assert!(error.downcast_ref::<RuntimeDbRetryableError>().is_some());
+        let events = recorded_events();
+        assert!(events
+            .iter()
+            .any(|(role, event)| *role == ReaderPoolRole::Ordinary
+                && matches!(
+                    event,
+                    ReaderPoolEvent::CheckoutFinished {
+                        outcome: ReaderPoolOutcome::Cancelled,
+                        ..
+                    }
+                )));
+        assert!(!events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionOpened)));
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_report_expired_scope_as_timeout() -> Result<()> {
+        let _guard = diagnostics_guard();
+        clear_recorded();
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(2))?;
+        let scope = RuntimeDbReadScope::new(Instant::now());
+        // An exhausted deadline takes precedence when both causes are present.
+        scope.cancel();
+        let pool = db.readers.with_scope(scope);
+        let error = pool.with_read(|_| Ok(())).unwrap_err();
+        assert!(error.downcast_ref::<RuntimeDbRetryableError>().is_some());
+        let outcomes: Vec<_> = recorded_events()
+            .iter()
+            .filter_map(|(_, event)| match event {
+                ReaderPoolEvent::CheckoutFinished { outcome, .. } => Some(*outcome),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(outcomes, vec![ReaderPoolOutcome::Timeout]);
+        assert!(!recorded_events()
+            .iter()
+            .any(|(_, event)| matches!(event, ReaderPoolEvent::ConnectStarted)));
+        Ok(())
+    }
+
+    #[test]
+    fn reader_pool_diagnostics_keep_roles_bounded() -> Result<()> {
+        let _guard = diagnostics_guard();
+        clear_recorded();
+        let (_directory, db) = recording_fixture(1, Duration::from_secs(2))?;
+        let preparation =
+            RuntimeDbReaderPool::with_capacity(Arc::clone(db.writer.state()), 1, "preparation");
+        let events = recorded_events();
+        assert!(events.contains(&(
+            ReaderPoolRole::Ordinary,
+            ReaderPoolEvent::Created { capacity: 1 }
+        )));
+        assert!(events.contains(&(
+            ReaderPoolRole::Preparation,
+            ReaderPoolEvent::Created { capacity: 1 }
+        )));
+        drop(preparation);
+        assert!(recorded_events().contains(&(
+            ReaderPoolRole::Preparation,
+            ReaderPoolEvent::Dropped { capacity: 1 }
+        )));
         Ok(())
     }
 }

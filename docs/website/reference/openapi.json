@@ -13174,6 +13174,316 @@
             },
             "type": "array"
           },
+          "reader_pools": {
+            "default": [],
+            "description": "Process-lifetime reader-pool diagnostics for the `runtime_db` resource\n scope, aggregated across every connected owner. Older snapshots omit\n this field and deserialize as empty.",
+            "items": {
+              "description": "Reader-pool diagnostics for one fixed role within `resource_scope=runtime_db`.\n\n Gauge-like fields are current lifecycle values and fall back when a pool is\n dropped. `*_created`/`*_opened`/`*_started`/`*_finished` counters are\n process-lifetime totals and never decrease. `idle` is derived as live\n connections minus application lease holders; it is a non-transactional\n snapshot, so concurrent connect/teardown transitions may show transient\n combinations.",
+              "properties": {
+                "checkout_duration": {
+                  "description": "Fixed-bucket latency distribution.\n\n `buckets` is cumulative: each entry counts observations at or below its\n upper bound, and the last entry is `+Inf`. Bounds are the shared fixed\n millisecond bounds, so they never depend on the workload.",
+                  "properties": {
+                    "buckets": {
+                      "items": {
+                        "properties": {
+                          "count": {
+                            "description": "Cumulative observation count at or below `upper_bound_ms`.",
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "upper_bound_ms": {
+                            "description": "Inclusive upper bound in milliseconds; `None` denotes `+Inf`.",
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "count": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "max_ns": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total_ns": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "total_ns",
+                    "max_ns",
+                    "buckets"
+                  ],
+                  "type": "object"
+                },
+                "checkouts_cancelled": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "checkouts_failed": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "checkouts_started": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "checkouts_succeeded": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "checkouts_timed_out": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "configured_capacity": {
+                  "description": "Sum of live pools' configured capacities.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "connect_duration": {
+                  "description": "Fixed-bucket latency distribution.\n\n `buckets` is cumulative: each entry counts observations at or below its\n upper bound, and the last entry is `+Inf`. Bounds are the shared fixed\n millisecond bounds, so they never depend on the workload.",
+                  "properties": {
+                    "buckets": {
+                      "items": {
+                        "properties": {
+                          "count": {
+                            "description": "Cumulative observation count at or below `upper_bound_ms`.",
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "upper_bound_ms": {
+                            "description": "Inclusive upper bound in milliseconds; `None` denotes `+Inf`.",
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "count": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "max_ns": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total_ns": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "total_ns",
+                    "max_ns",
+                    "buckets"
+                  ],
+                  "type": "object"
+                },
+                "connections": {
+                  "description": "Live configured connections (`ConnectionOpened` minus `ConnectionClosed`).",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "connections_closed": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "connections_opened": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "connects_failed": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "connects_started": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "connects_succeeded": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "idle": {
+                  "description": "`connections` minus `in_use`, floored at zero.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "in_use": {
+                  "description": "Live application lease holders (`LeaseStarted` minus `LeaseFinished`).",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "instances": {
+                  "description": "Live pool facades (`Created` minus `Dropped`).",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "instances_created": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "instances_dropped": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "lease_duration": {
+                  "description": "Fixed-bucket latency distribution.\n\n `buckets` is cumulative: each entry counts observations at or below its\n upper bound, and the last entry is `+Inf`. Bounds are the shared fixed\n millisecond bounds, so they never depend on the workload.",
+                  "properties": {
+                    "buckets": {
+                      "items": {
+                        "properties": {
+                          "count": {
+                            "description": "Cumulative observation count at or below `upper_bound_ms`.",
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": "integer"
+                          },
+                          "upper_bound_ms": {
+                            "description": "Inclusive upper bound in milliseconds; `None` denotes `+Inf`.",
+                            "format": "uint64",
+                            "minimum": 0,
+                            "type": [
+                              "integer",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "count"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "count": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "max_ns": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    },
+                    "total_ns": {
+                      "format": "uint64",
+                      "minimum": 0,
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "count",
+                    "total_ns",
+                    "max_ns",
+                    "buckets"
+                  ],
+                  "type": "object"
+                },
+                "leases_finished": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "leases_started": {
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                },
+                "role": {
+                  "description": "Fixed reader-pool role dimension.\n\n Roles are the only permitted role label values in exported metrics;\n runtime code must not invent additional roles or free-form owner labels.",
+                  "enum": [
+                    "ordinary",
+                    "preparation"
+                  ],
+                  "type": "string"
+                },
+                "waiting": {
+                  "description": "Checkouts that started and have not finished yet. Execution time is not\n part of checkout waiting.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
+                }
+              },
+              "required": [
+                "role",
+                "instances",
+                "configured_capacity",
+                "connections",
+                "in_use",
+                "idle",
+                "waiting",
+                "instances_created",
+                "instances_dropped",
+                "connections_opened",
+                "connections_closed",
+                "checkouts_started",
+                "checkouts_succeeded",
+                "checkouts_timed_out",
+                "checkouts_cancelled",
+                "checkouts_failed",
+                "checkout_duration",
+                "leases_started",
+                "leases_finished",
+                "lease_duration",
+                "connects_started",
+                "connects_succeeded",
+                "connects_failed",
+                "connect_duration"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
           "runtime_db_wal": {
             "default": {
               "busy": false,
@@ -28170,7 +28480,7 @@
     },
     "/api/control/runtime/metrics": {
       "get": {
-        "description": "Return a bounded, label-free OpenMetrics snapshot for runtime performance and diagnostics.",
+        "description": "Return a bounded, low-cardinality OpenMetrics snapshot for runtime performance and diagnostics; reader pools use only fixed labels.",
         "operationId": "runtimeMetrics",
         "parameters": [],
         "responses": {
@@ -28218,7 +28528,7 @@
     },
     "/api/control/runtime/performance": {
       "get": {
-        "description": "Return bounded in-process performance diagnostics for HTTP, projections, DB, and scheduler activity.",
+        "description": "Return bounded in-process performance diagnostics for HTTP, projections, DB, reader pools, and scheduler activity.",
         "operationId": "runtimePerformance",
         "parameters": [],
         "responses": {
