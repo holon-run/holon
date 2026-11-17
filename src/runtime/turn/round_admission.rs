@@ -259,6 +259,7 @@ pub(crate) fn admit_provider_round(
     Ok(())
 }
 
+#[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]
 mod tests {
     use super::*;
