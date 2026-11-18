@@ -301,22 +301,31 @@ jobs:
             packages/conversation-sdk/package-lock.json
 
       - name: Set up Rust
+        if: github.event_name != 'push'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache Rust build
+        if: github.event_name != 'push'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Set up Java
+        if: github.event_name != 'push'
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '21'
 
       - name: Set up Gradle
+        if: github.event_name != 'push'
         uses: gradle/actions/setup-gradle@v4
 
       - name: Test and build web GUI
+        if: github.event_name != 'push'
         run: make web-ci
+
+      - name: Build web GUI
+        if: github.event_name == 'push'
+        run: make web
 
   swift-sdk:
     name: Swift client SDK and wire drift
@@ -471,10 +480,16 @@ jobs:
 
       - name: Test SDK and build APKs
         working-directory: apps/android
+        env:
+          RUN_TESTS: ${{ github.event_name != 'push' }}
         run: |
-          bash ../../scripts/test-android-release-version.sh
-          bash ../../scripts/test-android-release-packaging.sh
-          python3 ../../scripts/test-android-release-channels.py
+          test_tasks=()
+          if [ "$RUN_TESTS" = true ]; then
+            bash ../../scripts/test-android-release-version.sh
+            bash ../../scripts/test-android-release-packaging.sh
+            python3 ../../scripts/test-android-release-channels.py
+            test_tasks=(:sdk:test :app:testDirectDebugUnitTest :app:testPlayDebugUnitTest)
+          fi
           # AGP's incremental packaging splitter can fail on nightly runners with
           # a transient IncrementalSplitterRunnable crash (issue #4098,
           # rerun-cured); retry only that signature so real test failures still
@@ -483,8 +498,7 @@ jobs:
           log="${RUNNER_TEMP:-/tmp}/gradle-build.log"
           ok=0
           for attempt in 1 2 3; do
-            if ./gradlew --no-daemon :sdk:test \
-                :app:testDirectDebugUnitTest :app:testPlayDebugUnitTest \
+            if ./gradlew --no-daemon "${test_tasks[@]}" \
                 :app:assembleDirectDebug :app:assemblePlayDebug \
                 :app:assembleDirectRelease :app:assemblePlayRelease :app:bundlePlayRelease \
                 2>&1 | tee "$log"; then
@@ -502,11 +516,14 @@ jobs:
             echo "::error::Gradle build failed after 3 attempts (IncrementalSplitterRunnable packaging flake, see #4098)"
             exit 1
           fi
-          python3 ../../scripts/verify-android-release-channels.py \
-            app/build/outputs/apk/direct/release/app-direct-release-unsigned.apk \
-            app/build/outputs/bundle/playRelease/app-play-release.aab
+          if [ "$RUN_TESTS" = true ]; then
+            python3 ../../scripts/verify-android-release-channels.py \
+              app/build/outputs/apk/direct/release/app-direct-release-unsigned.apk \
+              app/build/outputs/bundle/playRelease/app-play-release.aab
+          fi
 
       - name: Verify Android screenshots and lint
+        if: github.event_name != 'push'
         working-directory: apps/android
         run: ./gradlew --no-daemon :app:verifyPaparazziDirectDebug :app:lintDirectRelease :app:lintPlayRelease
 
@@ -530,9 +547,11 @@ jobs:
           cache-dependency-path: packages/conversation-sdk/package-lock.json
 
       - name: Set up Rust
+        if: github.event_name != 'push'
         uses: dtolnay/rust-toolchain@stable
 
       - name: Restore Rust build cache
+        if: github.event_name != 'push'
         uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
         with:
           prefix-key: v1-rust
@@ -541,7 +560,13 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Test conversation SDK protocol
+        if: github.event_name != 'push'
         run: make conversation-sdk-ci
+
+      - name: Build conversation SDK
+        if: github.event_name == 'push'
+        working-directory: packages/conversation-sdk
+        run: npm ci && npm run build
 
   macos-rust-check:
     name: Rust darwin check
@@ -729,19 +754,21 @@ jobs:
           cache-to: type=gha,mode=max,scope=holon-docker
 
       - name: Smoke test image
+        if: github.event_name != 'push'
         run: scripts/docker-smoke.sh holon:ci
 
       - name: Validate Docker E2E runner
+        if: github.event_name != 'push'
         run: make docker-e2e-validate
 
       - name: Export image for downstream E2E jobs
-        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
+        if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
         run: |
           mkdir -p target
           docker image save --output target/holon-ci.tar holon:ci
 
       - name: Upload image for downstream E2E jobs
-        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true'
+        if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
         uses: actions/upload-artifact@v4
         with:
           name: ci-holon-docker-image
@@ -764,7 +791,7 @@ jobs:
   template-validation:
     name: Agent templates
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.template_validation == 'true'
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.template_validation == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -783,7 +810,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust lint
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -841,7 +868,7 @@ jobs:
         run: make test-resource-lint
 
       - name: Test CI timing tooling
-        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards tests.test_build_script
+        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards tests.test_build_script tests.test_ci_event_matrix
 
       - name: Clippy
         run: make lint
@@ -900,31 +927,34 @@ jobs:
       - name: Check controlled recovery acceptance feature
         run: cargo check --locked --features recovery-acceptance
 
-      - name: Test independent Rust crates
+      - name: Check or test independent Rust crates
+        env:
+          CRATE_COMMAND: ${{ github.event_name == 'push' && 'check' || 'test' }}
         run: |
-          cargo test --manifest-path crates/decision-core/Cargo.toml --locked
-          cargo test --manifest-path crates/decision-clef/Cargo.toml --locked
-          cargo test --manifest-path crates/decision-jev/Cargo.toml --locked
-          cargo test --manifest-path crates/decision-openai/Cargo.toml --locked
-          cargo test --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-model-client/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-domain/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-github/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-agent-templates/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-system/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-storage/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-memory-index/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-observability/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-provider/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-model-catalog/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-config/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-context/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-tools/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-web-retrieval/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-client/Cargo.toml --locked
-          cargo test --manifest-path crates/holon-tui/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/decision-core/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/decision-clef/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/decision-jev/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-client/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-domain/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-github/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-agent-templates/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-system/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-storage/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-memory-index/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-observability/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-provider/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-catalog/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-config/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-context/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-tools/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-web-retrieval/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-client/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-tui/Cargo.toml --locked
 
       - name: Package check
+        if: github.event_name != 'push'
         run: |
           if grep -q 'decision-core = {.*path = "crates/decision-core"' Cargo.toml; then
             echo "::notice::Skipping crates.io package dry-run because holon depends on unpublished local decision crates."
@@ -933,6 +963,7 @@ jobs:
           fi
 
       - name: Check generated snapshots
+        if: github.event_name != 'push'
         run: make snapshots-check
 
   rust-test:
@@ -940,7 +971,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Test (${{ matrix.shard }})
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -1015,7 +1046,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Concurrent
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -1223,7 +1254,7 @@ jobs:
     needs:
       - changes
       - docker
-    if: always() && (needs.docker.result == 'success' || needs.docker.result == 'skipped') && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
+    if: always() && github.event_name != 'push' && (needs.docker.result == 'success' || needs.docker.result == 'skipped') && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
