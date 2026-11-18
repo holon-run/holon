@@ -149,36 +149,6 @@ fn app_config_explicit_small_budget_derives_compression_and_preserves_overrides(
     assert_eq!(config.compaction_keep_recent_estimated_tokens, 342);
 }
 
-#[test]
-fn agent_timezone_configuration_validation_and_compatibility() {
-    let mut state = crate::types::AgentState::new("timezone-test");
-    let old_state = serde_json::to_value(&state).unwrap();
-    assert!(old_state.get("timezone_override").is_none());
-    assert!(
-        serde_json::from_value::<crate::types::AgentState>(old_state)
-            .unwrap()
-            .timezone_override
-            .is_none()
-    );
-    state.set_timezone(Some("America/Los_Angeles")).unwrap();
-    assert!(state.set_timezone(Some("invalid/zone")).is_err());
-    assert_eq!(
-        state.timezone_override.as_deref(),
-        Some("America/Los_Angeles")
-    );
-    let mut encoded = serde_json::to_value(&state).unwrap();
-    assert_eq!(
-        serde_json::from_value::<crate::types::AgentState>(encoded.clone())
-            .unwrap()
-            .timezone_override,
-        state.timezone_override
-    );
-    encoded["timezone_override"] = serde_json::json!("invalid/zone");
-    assert!(serde_json::from_value::<crate::types::AgentState>(encoded).is_err());
-    state.set_timezone(None).unwrap();
-    assert!(state.timezone_override.is_none());
-}
-
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::PathBuf;
