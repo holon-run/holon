@@ -258,7 +258,7 @@ The apply layer should:
 
 Bare hunk headers (`@@` or `@@ <description>`, without range markers) are
 accepted for context-bearing hunks: counts are derived from the hunk body and
-matching runs without a line hint, like Codex DSL hunks. A context-less
+matching runs with no line hint and no top-of-file match window. A context-less
 add-only hunk cannot derive an insertion position from a bare header, so it
 fails with the dedicated `bare_hunk_insertion_position_required` rule instead
 of silently inserting at the top of the file. Headers that attempt a range
