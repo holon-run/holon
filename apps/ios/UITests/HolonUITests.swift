@@ -2043,10 +2043,25 @@ final class HolonUITests: XCTestCase {
         reveal(older, in: app); older.tap()
         func assertTop(_ id: String) {
             let timestamp = app.staticTexts["conversation.time." + id]
-            let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: timestamp)
-            XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: UIWaitScale.scaled(20)), .completed)
-            let viewport = app.scrollViews["conversation.viewport"].frame
             let status = app.otherElements["conversation.connectionStatus"].firstMatch
+            // A hittable target can still precede the native ID scroll's
+            // committed layout. Wait for the same geometry we assert below.
+            let positioned = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
+                guard timestamp.exists, timestamp.isHittable, status.exists else { return false }
+                let top = max(app.scrollViews["conversation.viewport"].frame.minY, status.frame.maxY)
+                return timestamp.frame.minY >= top - 2 && timestamp.frame.minY <= top + 50
+            }, object: nil)
+            let result = XCTWaiter.wait(for: [positioned], timeout: UIWaitScale.scaled(20))
+            if result != .completed {
+                capture(app, "native-window-position-timeout")
+                let hierarchy = XCTAttachment(string: app.debugDescription)
+                hierarchy.name = "native-window-position-timeout"; hierarchy.lifetime = .keepAlways
+                add(hierarchy)
+            }
+            let viewport = app.scrollViews["conversation.viewport"].frame
+            XCTAssertEqual(result, .completed,
+                "Window navigation must finish positioning its first turn; "
+                + "turn=\(timestamp.frame), viewport=\(viewport), status=\(status.frame)")
             XCTAssertTrue(status.exists)
             // The scroll view's AX frame includes its top safe-area inset.
             let top = max(viewport.minY, status.frame.maxY)
