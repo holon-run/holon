@@ -77,6 +77,13 @@ order: 4
 <p>以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。</p>
 <span class="blog-read">阅读架构分析 <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/zh-CN/blog/local-model-agent-benchmark">
+<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">基准实测</span>
+<h3>本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测</h3>
+<p>单轮盲测能写代码，接进带 30k 系统契约的多轮编码 Agent 却经常超时。我们在 Apple M5 Pro 64GB 上用 8 个真实仓库任务实测了推理后端、MoE 轮次膨胀与缓存表现。</p>
+<span class="blog-read">阅读实测报告 <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -117,6 +124,10 @@ order: 4
 
 - [为什么技能塞得越多，Agent 反而越笨？聊聊技能膨胀与隔离设计](./why-agents-need-skill-isolation.md)
   以为装满 30 个 Skill 能得到全能助手，却常遭遇上下文稀释、指令互斥与工具误调用。深入剖析技能膨胀的根源，以及 Holon 的多 Agent 技能隔离机制。
+  <!-- mdorigin:index kind=article -->
+
+- [本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测](./local-model-agent-benchmark.md)
+  单轮盲测能写代码，接进带 30k 系统契约的多轮编码 Agent 却经常超时。我们在 Apple M5 Pro 64GB 上用 8 个真实仓库任务做了一组对照实测，给出模型选型结论与推理后端、MoE 轮次膨胀、Prompt Cache 及 KV 量化的真实表现。
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

@@ -88,6 +88,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Run agents offline with zero-token-cost local Ollama models, connect cloud providers via interactive onboarding, inspect active models conversationally, and configure resilient multi-cloud failover chains.
   <!-- mdorigin:index kind=article -->
 
+- [Run Private Agents in Offline and Self-Hosted Environments: From Ollama to Private Search and Local Toolchains](./run-offline-private-agent.md)
+  Deploy Holon in air-gapped or self-hosted intranet environments: lock local Ollama/vLLM models, disable cloud fallback, configure SearXNG or command-based local search, enforce WebFetch host allowlists, set local toolchain rules, and verify boundaries in chat.
+  <!-- mdorigin:index kind=article -->
+
 - [Configure advisory decisions](./configure-decision-subsystem.md)
   Choose a Decision route, set call limits, and verify a recommendation or explicit abstention.
   <!-- mdorigin:index kind=article -->

@@ -3,9 +3,12 @@ title: "本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀
 summary: "单轮盲测能写代码，接进带 30k 系统契约的多轮编码 Agent 却经常超时。我们在 Apple M5 Pro 64GB 上用 8 个真实仓库任务做了一组对照实测，给出模型选型结论与推理后端、MoE 轮次膨胀、Prompt Cache 及 KV 量化的真实表现。"
 order: 65
 date: 2026-11-18
+socialImage: "/assets/local-model-agent-benchmark-cover.webp"
 ---
 
 # 本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测
+
+<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="左侧橙色标志的机器人困在杂乱的齿轮与沙漏循环中，右侧冷静的蓝色机器人沿着清晰的步进路径，在银色桌面主机驱动下完成代码模块。" decoding="async" fetchpriority="high">
 
 在本地终端里用 Ollama 写一段快排，或者解释一段报错，几秒钟就能出结果。单轮代码榜单上，不少开源模型分数也不低（在我们自己的 72 题单轮代码盲测里，`qwen3-coder:30b` 拿到了 58/72）。
 
@@ -137,7 +140,7 @@ date: 2026-11-18
 2. **手动导入优先用标准 `ggml-org` `Q4_K_M` GGUF**：测试中部分第三方动态量化打包（如本次尝试导入的 `unsloth` 量化版本）未通过当前 Ollama 的格式校验，直接用 `ggml-org` 官方 `Q4_K_M`（约 19GB）最稳；若不想手动导入，也可显式拉取 Ollama 库中的 `qwen3.8:27b-q4_K_M`（GGUF 版）而非默认标签。
 3. **64GB Apple Silicon 上保持 Ollama 默认参数即可**：保持默认的 `--flash-attn auto` 和 FP16 KV Cache，别加 `OLLAMA_KV_CACHE_TYPE=q8_0`（实测降速 7%–28%），也不要指望 `OLLAMA_KEEP_ALIVE=-1` 缩短跨任务首轮 prefill。
 
-模型导进 Ollama 之后，如果想在 Holon 里设为默认模型，或者按角色路由（比如日常开发用本地 `qwen3.8:27b-gguf`，复杂评审按需切云端模型），可以参考[《配置与切换大模型：从本地 Ollama 到多云灾备》](../guides/configure-models.md)。关于工作区隔离和记忆管理，详见[《使用工作区与隔离目录》](../guides/work-with-workspaces.md)和[《管理 Agent 记忆》](../guides/manage-agent-memory.md)。
+模型导进 Ollama 之后，如果你打算进一步把整套 Agent 运行时收口到纯离线或内网自托管环境（关闭云端回退、限制外部网络抓取、接入自托管 SearXNG 搜索与本地工具链），可以直接按照[《在离线与自托管环境中运行私有 Agent：从 Ollama 到私有搜索与本地工具链》](../guides/run-offline-private-agent.md)落地配置。若需要混合配置云端备用模型或按角色路由，可以参考[《配置与切换大模型：从本地 Ollama 到多云灾备》](../guides/configure-models.md)；工作区隔离与记忆管理详见[《使用工作区与隔离目录》](../guides/work-with-workspaces.md)和[《管理 Agent 记忆》](../guides/manage-agent-memory.md)。
 
 ---
 

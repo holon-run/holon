@@ -40,6 +40,8 @@ To run agents entirely free and offline, local Ollama is the cleanest starting p
    holon config doctor
    ```
 
+> **Local hardware selection & strict offline isolation**: If you run multi-turn coding agents on a 64GB desktop (such as Apple Silicon), check [our multi-turn local model benchmark](../blog/local-model-agent-benchmark.md) for measured backend and model guidance (`llama.cpp`/GGUF vs. MLX, MoE turn counts, and KV cache defaults). To lock down cloud fallback, external web access, and local toolchains completely, see [Run Private Agents in Offline and Self-Hosted Environments](./run-offline-private-agent.md).
+
 ### Scenario 2: Connect Cloud Providers via Onboarding
 
 When you need advanced cloud reasoning models, use Holon's interactive onboarding wizard:
@@ -175,6 +177,8 @@ These settings do not affect your chat model. For details, see [Inspect Images](
 ## See Also
 
 - [Models, Providers, and Routing Concepts](/concepts/models-and-providers.md)
+- [Run Private Agents in Offline and Self-Hosted Environments](./run-offline-private-agent.md)
+- [Can Local LLMs Complete Multi-Turn Coding Agent Tasks?](../blog/local-model-agent-benchmark.md)
 - [Use the Web GUI](./use-web-gui.md)
 - [Configure the Decision Subsystem](./configure-decision-subsystem.md)
 - [Run Long-Lived Tasks and Recovery](./run-long-lived-task.md)

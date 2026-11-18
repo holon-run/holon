@@ -90,6 +90,10 @@ order: 30
   从本地零成本离线运行 Ollama 到云端主流模型接入，在对话中随时自检生效模型，并配置自动多云灾备回退链保障高可用。
   <!-- mdorigin:index kind=article -->
 
+- [在离线与自托管环境中运行私有 Agent：从 Ollama 到私有搜索与本地工具链](./run-offline-private-agent.md)
+  把 Holon 运行时部署在纯断网离线或内网自托管环境中：锁定本地 Ollama/vLLM 模型与禁用云端回退，配置 SearXNG 私有搜索或命令型本地检索、WebFetch 内网白名单、本机工具链边界，并在对话中完成验证。
+  <!-- mdorigin:index kind=article -->
+
 - [配置咨询决策子系统](./configure-decision-subsystem.md)
   选择决策模型路由、设置调用限额，并验证决策建议或显式弃权行为。
   <!-- mdorigin:index kind=article -->

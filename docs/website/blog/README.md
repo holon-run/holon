@@ -77,6 +77,13 @@ order: 4
 <p>Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.</p>
 <span class="blog-read">Read the analysis <span aria-hidden="true">→</span></span></div>
 </a>
+<a class="blog-story" href="/blog/local-model-agent-benchmark">
+<img src="/assets/local-model-agent-benchmark-cover.webp" width="1280" height="720" alt="" loading="lazy" decoding="async">
+<div><span class="blog-category">BENCHMARK</span>
+<h3>Can Local LLMs Complete Multi-Turn Coding Agent Tasks? Benchmarking GGUF, MoE Turn Bloat, and Prompt Caching</h3>
+<p>Single-turn coding benchmarks do not predict multi-turn agent success. We benchmarked local Ollama setups on a 64GB Apple M5 Pro across 8 real repo tasks.</p>
+<span class="blog-read">Read the benchmark <span aria-hidden="true">→</span></span></div>
+</a>
 </section>
 
 <footer class="blog-next">
@@ -117,6 +124,10 @@ order: 4
 
 - [Why your agent gets dumber with more skills (and how to fix it)](./why-agents-need-skill-isolation.md)
   Adding 30 skills to a single agent triggers context dilution, instruction conflicts, and safety risks. Here is how Holon isolates skills across long-lived roles.
+  <!-- mdorigin:index kind=article -->
+
+- [Can Local LLMs Complete Multi-Turn Coding Agent Tasks? Benchmarking GGUF, MoE Turn Bloat, and Prompt Caching](./local-model-agent-benchmark.md)
+  Models that score well on single-turn coding tests often time out inside a multi-turn coding agent with a 30k-token system contract. We tested local Ollama configurations across 8 real repository tasks on an Apple M5 Pro 64GB to measure model selection, inference backends, MoE turn bloat, prompt caching, and KV quantization.
   <!-- mdorigin:index kind=article -->
 
 <!-- INDEX:END -->

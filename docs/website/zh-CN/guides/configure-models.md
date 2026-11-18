@@ -40,6 +40,8 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
    holon config doctor
    ```
 
+> **本地选型与全栈私有化收口**：如果你计划在 64GB 桌面设备（如 Apple Silicon）上跑多轮编码 Agent，模型与推理后端实测对比（`llama.cpp`/GGUF vs MLX、MoE 轮次膨胀与 KV 缓存开关）请参阅[《本地大模型能跑通多轮编码 Agent 吗？》](../blog/local-model-agent-benchmark.md)。若需彻底锁定本地运行环境（禁用云端回退、阻断公网访问、接入自托管搜索与本地工具链），请直接按[《在离线与自托管环境中运行私有 Agent》](./run-offline-private-agent.md)配置。
+
 ### 场景二：快速接入云端大模型服务商
 
 当你需要调用云端前沿推理模型时，最便捷的方式是使用交互式引导向导：
@@ -171,6 +173,8 @@ holon config set image_generation.default "openai@default/dall-e-3"
 ## 另见
 
 - [模型、提供商与路由设计概念](/zh-CN/concepts/models-and-providers.md)
+- [在离线与自托管环境中运行私有 Agent](./run-offline-private-agent.md)
+- [本地大模型能跑通多轮编码 Agent 吗？](../blog/local-model-agent-benchmark.md)
 - [使用 Web GUI 界面](./use-web-gui.md)
 - [配置决策子系统](./configure-decision-subsystem.md)
 - [运行无须值守的长周期任务与恢复](./run-long-lived-task.md)
