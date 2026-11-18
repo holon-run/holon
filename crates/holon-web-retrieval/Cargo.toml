@@ -1,0 +1,28 @@
+[package]
+name = "holon-web-retrieval"
+version = "0.1.0"
+edition = "2021"
+description = "Web search and bounded page retrieval for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+
+[dependencies]
+anyhow = "1.0"
+chrono = "0.4"
+holon-config = { version = "0.1.0", path = "../holon-config" }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-tools = { version = "0.1.0", path = "../holon-tools" }
+reqwest = { version = "0.12", features = ["gzip", "json", "rustls-tls", "stream"], default-features = false }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+tokio = { version = "1.43", features = ["io-util", "net", "process", "rt", "time"] }
+tokio-stream = "0.1"
+url = "2.5"
+wreq = { version = "=6.0.0-rc.31", features = ["gzip", "stream"] }
+wreq-util = { version = "=3.0.0-rc.14" }
+
+[dev-dependencies]
+axum = { version = "0.8", features = ["json"] }
+flate2 = "1.0"
+tokio = { version = "1.43", features = ["macros"] }

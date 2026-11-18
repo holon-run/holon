@@ -1549,6 +1549,7 @@ dependencies = [
  "holon-system",
  "holon-tools",
  "holon-tui",
+ "holon-web-retrieval",
  "hyper",
  "hyper-util",
  "image",
@@ -1581,8 +1582,6 @@ dependencies = [
  "unicode-casefold",
  "url",
  "uuid",
- "wreq",
- "wreq-util",
 ]
 
 [[package]]
@@ -1857,6 +1856,26 @@ dependencies = [
  "unicode-width 0.2.0",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "holon-web-retrieval"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "holon-config",
+ "holon-domain",
+ "holon-tools",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tokio",
+ "tokio-stream",
+ "url",
+ "wreq",
+ "wreq-util",
 ]
 
 [[package]]
