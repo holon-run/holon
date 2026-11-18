@@ -1385,9 +1385,9 @@ final class HolonUITests: XCTestCase {
             probe.terminate()
         }
     }
-    private func connectForSharing() async throws {
+    private func connectForSharing(large: Bool = false) async throws {
         let endpoint = try required("ENDPOINT")
-        let app = launch(language: "en", dark: false, large: false)
+        let app = launch(language: "en", dark: false, large: large)
         if !app.buttons["onboarding.scan"].waitForExistence(timeout: UIWaitScale.scaled(5)) {
             // A full sweep already authenticated through the shipped UI. Restore
             // that validated session; don't require a second disconnected install.
@@ -1931,7 +1931,7 @@ final class HolonUITests: XCTestCase {
     }
 
     private func verifyLiveInterruption(large: Bool) async throws {
-        try await connectForSharing()
+        try await connectForSharing(large: large)
         let app = launch(language: "en", dark: false, large: large)
         defer { app.terminate() }
         // A preceding sweep case can restore straight into its conversation;
