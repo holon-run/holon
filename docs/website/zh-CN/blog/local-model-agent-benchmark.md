@@ -1,68 +1,69 @@
 ---
-title: "本地大模型真能跑通多轮编码 Agent 吗？一次关于 GGUF、轮次膨胀与 Prompt Cache 的实测"
-summary: "单轮盲测能写代码，不代表能在 30k 系统契约下跑完多轮修改与单测自检。我们在 M5 Pro 64GB 上用 8 个真实仓库任务历经 5 轮基准演进，实测多组本地模型、共享系统前缀修复与 FlashAttention/KV 量化调优，拆解推理后端、MoE 轮次膨胀与本地推理性能的真实瓶颈。"
+title: "本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测"
+summary: "单轮盲测能写代码，接进带 30k 系统契约的多轮编码 Agent 却经常超时。我们在 Apple M5 Pro 64GB 上用 8 个真实仓库任务跑了 5 轮对照实验，记录推理后端、MoE 轮次膨胀、共享前缀缓存与 KV 量化的真实表现。"
 order: 65
 date: 2026-11-18
 ---
 
-# 本地大模型真能跑通多轮编码 Agent 吗？一次关于 GGUF、轮次膨胀与 Prompt Cache 的实测
+# 本地大模型能跑通多轮编码 Agent 吗？GGUF、MoE 轮次膨胀与 Prompt Cache 实测
 
-在本地终端用 Ollama 跑一句“写个快排”或让模型解释一段报错，几秒钟就能拿到漂亮的输出。单轮盲测榜单上，不少开源模型也屡屡刷出高分（比如 72 题单轮代码盲测里，`qwen3-coder:30b` 拿下了 58/72 的成绩）。这些体验很容易给人一种错觉：桌面级硬件跑本地编码 Agent 已经水到渠成了。
+在本地终端里用 Ollama 写一段快排，或者解释一段报错，几秒钟就能出结果。单轮代码榜单上，不少开源模型分数也不低（在我们自己的 72 题单轮代码盲测里，`qwen3-coder:30b` 拿到了 58/72）。
 
-但把同一个本地模型接进真实的工程运行时，画风往往会突变。
+但把同一个模型放进编码 Agent 运行时，情况很快就不一样了。
 
-在 Holon 这类承载真实仓库工作的运行时里，一次普通的代码修复远不是单轮问答：Agent 首轮就要吞下约 30k Token 的系统与工具契约（文件补丁格式、命令执行规则、工作区权限边界），随后在隔离目录里自己读代码、查调用链、打 `ApplyPatch` 补丁、跑 `node test.js` 验证、看报错修补，最后按契约交付修改摘要。任何一个环节卡壳——首轮预填充太慢、补丁格式打歪、或者反复试探迟迟不收敛——都会直接撞死在任务超时墙上。
+在 Holon 里做一次普通的代码修复，首轮就要吞下约 30k Token 的系统提示与工具契约（补丁格式、命令规则、工作区边界）。之后模型得在隔离目录里自己读文件、查调用链、用 `ApplyPatch` 改代码、跑 `node test.js`，失败了再看报错接着改，最后整理交付摘要。首轮 prefill 太慢、补丁格式写歪，或者反复试探收不了尾，都会直接拖到任务超时。
 
-为了摸清 64GB 内存级别的桌面设备到底能不能胜任多轮编码 Agent，我们在 Apple M5 Pro（64GB 统一内存）上，用 Holon 仓库自带的隔离基准套件历经 5 轮演进测试（从早期玩具题、隔离 Harness、后端与 MoE 对比、Daemon 缓存常驻，一直测到共享系统前缀修复与 FlashAttention / KV 量化探针），横向对比了多组本地 Ollama 模型配置与云端基准对照（`deepseek-v4-flash`）。
+为了确认 64GB 统一内存的桌面设备现在到底能跑成什么样，我们在 Apple M5 Pro（64GB，macOS 26.6.2）上用 Holon 仓库内置的隔离基准套件跑了 5 轮实验。测试覆盖了几组本地 Ollama 模型配置，并用云端的 `deepseek-v4-flash` 作为对照。
 
-跑完 5 轮数据，很多流传颇广的“本地优化直觉”站不住脚：
+跑完这 5 轮之后，有几条常见的本地优化经验并不成立：
 
-1. **上一轮本地 27B 模型频频超时，锅不在模型智商，而在推理后端**：同一个 `qwen3.8:27b` 从 MLX 切到 `llama.cpp`/GGUF 路径后，通过率直接从 **3/8 跳到 7/8（底层单测验证 8/8 全过）**。
-2. **“单轮代码盲测高分 + MoE 单步吐字快”，在多轮 Agent 里反而可能翻车**：单轮代码盲测拿过 58/72 高分的 `qwen3-coder:30b`（MoE-A3B），虽然把 7 个任务的单测修过了，却因为平均 **23.2~36.9 轮**的决策膨胀，单任务吞掉上百万输入 Token，最终一半任务折在预算外。
-3. **Daemon 常驻（`KEEP_ALIVE=-1`）救不了开轮 Prefill，共享前缀修复也会因模型架构而分化**：v4 验证了轮内 Cache 本就有 93% 命中率，跨任务开轮重算是公共前缀缺失所致；v5 我们在运行时合入“共享系统前缀前置”修复后，文本公共前缀拉高到 **83.2%**，全注意力架构（`qwen3moe`）确实命中了 11k–14k 跨任务缓存，但端到端收益不到 5%，而混合/循环记忆架构（`qwen35`）在当前 `llama.cpp` 下仍无法部分复用前缀，8 个任务开轮全部被强制全量重算。
-4. **常规“加速旋钮”在 Metal 上可能越开越慢**：v5 单变量探针证实，Ollama 0.32.15 Metal 后端默认 `--flash-attn auto` 本就已开启 FlashAttention，`OLLAMA_FLASH_ATTENTION=1` 纯属无效安慰剂；而打开 `q8_0` KV 量化会带来逐 Token 反量化开销，直接把 `qwen3-coder:30b` 的解码速度打掉 **28%（27 → 19.5 tok/s）**。
-
-下面是完整的前因后果、测试口径、实测拆解，以及我们基于这组数据整理的本地选型指南。
+- `qwen3.8:27b` 在 v2 频频超时是 MLX runner 的长提示词 prefill 太慢导致的。切到 `llama.cpp`/GGUF 路径后，同一款模型的通过率从 3/8 升到了 7/8，底层单测 8/8 全过。
+- 单轮代码测到 58/72 的 `qwen3-coder:30b`（MoE-A3B）单步吐字很快，但在多轮任务里平均要走 23.2 到 36.9 轮，单任务输入超过百万 Token，最终有一半任务超时。
+- 把 `OLLAMA_KEEP_ALIVE=-1` 配成常驻救不了首轮 prefill。轮内前缀缓存原本就命中了 93%；在 Holon 0.59.0 合入共享系统前缀前置（`SharedPrefix`）后，全注意力模型 `qwen3moe` 跨任务命中了 11k–14k 缓存，但端到端总耗时变化不大，而混合/循环记忆模型 `qwen35` 在当前 `llama.cpp` 下仍然只能整段重算。
+- 在 Ollama 0.32.15 Metal 后端上，默认的 `--flash-attn auto` 本身就开了 FlashAttention，`OLLAMA_FLASH_ATTENTION=1` 不起额外作用；开启 `q8_0` KV 量化反而会因为逐 Token 反量化开销，把 `qwen3-coder:30b` 的解码速度拉低 28%（27 → 19.5 tok/s）。
 
 ---
 
-## 基准演进与测试口径：从“玩具题”到“纯机械判分”
+## 我们怎么测：基准演进与环境约束
 
-在聊数据之前，有必要交代一下我们这套评测基准的演进背景。
+这套基准从 v1 到 v5 改过五版，主要为了解决两个问题：题目太水、或者模型偷看答案。
 
-做本地 Agent 评测最怕两件事：一是题目太简单或可以“作弊”；二是拿人工主观打分当结论。
-- **v1 阶段（早期玩具题）**：我们曾用简单的单文件修改做测试，结果几乎所有模型都能拿满分；但后来检查日志才发现，部分 Agent 甚至通过 `rg` 在工作区里直接读到了包含预期答案的测试文件。
-- **v2 阶段（引入隔离 Harness）**：我们彻底重构了测试套件，把评分规则（测试命令退出码 + 交付约束 `success_criteria`）全部收归 Harness 侧，隔离在受测 Agent 可读取的工作区之外；同时引入 `assertHolonFixtureModel` 校验，确保模型确实产生了真实的推理与工具调用，防止 0 轮空转混过只读检查。
-- **v3 阶段（推理后端与 MoE 对照）**：在 v2 隔离环境的基础上，对比本地推理后端（MLX vs GGUF/llama.cpp）与 Dense / MoE 架构在真实多轮任务中的表现。
-- **v4 阶段（Daemon Cache 常驻实验）**：通过单一变量实验（`OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1`），验证模型常驻对 pass 率与开轮 Prefill 的真实影响。
-- **v5 阶段（共享系统前缀修复与解码加速验证）**：在 Holon `0.59.0` 合入共享系统前缀前置修复（`SharedPrefix`，将系统契约段统一置于 Prompt 最前方）后，验证跨任务 Prefix Cache 实际命中率与端到端提速（v5a），并通过单变量 Probe 测试 FlashAttention 与 KV `q8_0` 量化效果。
+- **v1（早期玩具题）**：用简单的单文件修改测，几乎所有模型都能满分。翻日志才发现，有些 Agent 直接用 `rg` 在工作区里搜到了带着预期答案的测试文件。
+- **v2（隔离 Harness）**：把所有评分规则（测试命令退出码和交付约束 `success_criteria`）移出 Agent 可读的工作区，放进外层 Harness；同时加上 `assertHolonFixtureModel` 检查，确保模型真做了推理和工具调用，防止 0 轮空转混过只读校验。
+- **v3（推理后端与架构对照）**：在 v2 隔离环境里对比 MLX 和 GGUF/`llama.cpp`，以及 Dense 与 MoE 模型的差异。
+- **v4（Daemon 常驻单变量实验）**：固定加上 `OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1`，测模型常驻到底能不能省下首轮 prefill。
+- **v5（共享前缀修复与解码探针）**：在 Holon `0.59.0` 合入共享系统前缀前置（`SharedPrefix`）后重跑一轮（v5a），再用 40k Prompt 探针单独测 FlashAttention 与 `q8_0` KV 量化。
 
-### 本轮实测约束
+### 测试环境
 
-- **硬件与推理环境**：Apple M5 Pro（64GB 统一内存，Metal GPU 后端），macOS 26.6.2，Ollama 0.32.15（默认参数启动 `ollama serve`，统一走 OpenAI 兼容端点 `http://127.0.0.1:11434/v1`）。所有受测配置严格串行单跑，避免并发争抢统一内存。
-- **隔离 Harness**：使用仓库内置的 `benchmark/run.mjs --runner holon`，每个任务分配独立隔离的 `holon-home` 与测试工作区（v5 运行于包含前缀修复提交的 Holon `0.59.0`）。
-- **任务集与分级预算**：共 8 个真实仓库任务，覆盖代码链路分析（`analyze-pipeline`）、多文件配置合并修复（`fix-multi-file-config-merger`）及其跨轮追问（`followup-after-multifile-fix`）、测试失败重试（`failed-verification-retry`）、带约束修复（`coupon-constrained-fix`、`callback-refactor`）、发票流水线排障（`invoice-pipeline-bug`）以及主从子 Agent 状态巡检（`task-inspection-subagent-status`）。按任务复杂度设 **300s / 600s / 900s** 三档超时预算：预算内同时通过测试与交付检查记 `Passed (P)`，超预算一律记 `Timeout (T)`。
+硬件是 Apple M5 Pro（64GB 统一内存，Metal GPU 后端），系统为 macOS 26.6.2，Ollama 版本 0.32.15，走默认 `ollama serve` 的 OpenAI 兼容端点 `http://127.0.0.1:11434/v1`。所有配置全部串行单跑，避免并发抢占内存带宽。
+
+测试跑在仓库自带的 `benchmark/run.mjs --runner holon` 上，每个任务分配独立的 `holon-home` 和临时工作区。8 个任务全部来自真实仓库场景：代码链路分析（`analyze-pipeline`）、多文件配置合并修复（`fix-multi-file-config-merger`）及跨轮追问（`followup-after-multifile-fix`）、测试失败重试（`failed-verification-retry`）、带约束修改（`coupon-constrained-fix`、`callback-refactor`）、发票流水线排障（`invoice-pipeline-bug`）和主从子 Agent 状态巡检（`task-inspection-subagent-status`）。
+
+按任务复杂度设 **300s / 600s / 900s** 三档超时预算。预算内同时通过测试和交付检查记 `P`（Passed），超时记 `T`（Timeout）。
 
 ---
 
-### 全型号横向基线汇总（v2–v4 同口径统计）
+## 整体结果汇总
+
+### 横向基线（v2–v4 同口径统计）
 
 | 模型配置 | 最终通过 | 单测验证 (`verify`) | 平均耗时/任务 | 平均轮次 | 平均累计输入 Token | 超时/报错数 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
 | `deepseek-v4-flash`（云端对照） | 8/8 | 8/8 | 21s | 5.6 | 30k | 0 |
 | **`qwen3.8:27b-gguf`（v3 默认）** | **7/8** | **8/8** | **422s** | **6.6** | **248k** | **1** |
-| **`qwen3.8:27b-gguf`（v4 Cache常驻）** | **7/8** | **8/8** | **437s** | **5.9** | **218k** | **1** |
+| **`qwen3.8:27b-gguf`（v4 Cache 常驻）** | **7/8** | **8/8** | **437s** | **5.9** | **218k** | **1** |
 | `gemma4:26b` | 5/8 | 5/8 | 159s | 8.5 | 325k | 0 |
 | `qwen3-coder:30b`（v3 默认，MoE） | 4/8 | 7/8 | 561s | 23.2 | 962k | 4* |
-| `qwen3-coder:30b`（v4 Cache常驻，MoE） | 4/8 | 7/8 | 583s | 36.9 | 1,588k | 5* |
+| `qwen3-coder:30b`（v4 Cache 常驻，MoE） | 4/8 | 7/8 | 583s | 36.9 | 1,588k | 5* |
 | `qwen3.8:27b-mlx`（v2） | 3/8 | 4/8 | 552s | 6.5 | 245k | 5 |
 | `qwen3.5:0.8b-mlx`（v2） | 0/8 | 0/8 | 28s | 8.5 | 327k | 0 |
 
-> *注：`qwen3-coder:30b` 在 v4 超时的 5 个任务中，有 3 个（`callback-refactor`、`fix-multi-file-config-merger`、`task-inspection-subagent-status`）实际底层单测已经 `verify passed`（代码已改对，但由于交互轮次过多或未及时收尾而撞上预算墙）。*
+> *注：`qwen3-coder:30b` 在 v4 超时的 5 个任务里，有 3 个（`callback-refactor`、`fix-multi-file-config-merger`、`task-inspection-subagent-status`）其实已经过了底层单测（`verify passed`），但因为后面拖了太多轮次没收尾，最后还是超时了。*
 
-### 8 任务逐项明细（v3 → v4 → v5a 演进对比）
+### 8 任务逐项明细（v3 → v4 → v5a）
 
-表中符号：`P` = 通过，`F` = 验证失败，`T` = 超时，`E` = 执行/约束报错，`DNF` = 首轮未完成（0 轮）。
+符号说明：`P` = 通过，`F` = 验证失败，`T` = 超时，`E` = 执行/约束报错。
 
 | 任务名称 | `deepseek` | `gemma4` | `qwen3.8-gguf` (v3/v4) | **`qwen3.8-gguf` (v5a)** | `coder30b` (v3) | `coder30b` (v4) | **`coder30b` (v5a)** |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -76,138 +77,119 @@ date: 2026-11-18
 | `task-inspection-subagent-status` | P | P | T / T | **T** | T | T | **T** |
 | **总通过数** | **8/8** | **5/8** | **7/8 / 7/8** | **6/8** | **4/8** | **4/8** | **3/8** |
 
-在 v5a 中，`coder30b` 的个体任务翻转仍呈双向波动（`followup` T→P、`coupon` P→T、`invoice` P→T、`analyze` T→E），净变化 -1 落在运行间正常方差带内；`qwen3.8-gguf` 的 `invoice-pipeline-bug` 因首轮 opener 异常拖长至 324 秒（占该任务 provider 总时长 93%）而超时，也属正常方差，并不意味着共享前缀修复造成了模型能力退化。
+在 v5a 里，`coder30b` 有几个任务来回翻转（`followup` T→P，`coupon` P→T，`invoice` P→T，`analyze` T→E），净变化 -1 属于本地长任务的正常波动。`qwen3.8-gguf` 在 `invoice-pipeline-bug` 上超时，是因为那一轮首轮 opener 异常拉长到了 324 秒（占了整个任务 provider 时长的 93%），也不是前缀修改造成的退化。
 
 ---
 
-## 发现一：从 3/8 到 7/8，卡住 27B 模型的不是智商，是推理后端
+## 换到 GGUF 后，27B Dense 从 3/8 升到 7/8
 
-在上一轮（v2）测试里，我们对 `qwen3.8:27b-mlx` 抱有很高期待，结果它只拿到 3/8——剩下 5 个任务全部死在时间上（4 个超时，1 个首轮直接没跑出来）。翻看运行日志才发现，面对 Holon 约 30k Token 的系统提示词，Ollama 当时的 MLX runner 首轮冷启动预填充就要耗掉 **235 秒左右**。代码还没开始读，时间预算已经烧掉了一半。
+v2 测试的时候，`qwen3.8:27b-mlx` 只拿了 3/8，剩下 5 个任务全部倒在时间上（4 个超时，1 个首轮没跑完）。看日志才发现，面对 Holon 约 30k Token 的系统提示词，Ollama 当时的 MLX runner 首轮冷启动 prefill 就要吃掉约 **235 秒**。模型还没开始读文件，一半预算已经没了。
 
-为了验证这到底是模型能力问题还是推理路径问题，我们在 v3 换了一条路：直接拉取 `ggml-org` 官方的 `Q4_K_M` GGUF 权重（约 19GB，27B Dense），通过本地 `Modelfile` 导入 Ollama 走 `llama.cpp` 后端，原封不动重跑一遍 8 个任务。
+为了排除模型量化本身的影响，我们在 v3 拿了 `ggml-org` 官方的 `Q4_K_M` GGUF 权重（约 19GB，27B Dense），写本地 `Modelfile` 导进 Ollama 走 `llama.cpp` 后端，原样重跑 8 个任务。
 
-结果非常干脆：
-- 原先在 MLX 下超时的 4 个任务（`analyze-pipeline`、`coupon-constrained-fix`、`followup-after-multifile-fix`、`invoice-pipeline-bug`）**全部转正为 `P`**；
-- 总成绩从 **3/8 跃升至 7/8**，`verify` 底层校验 **8/8 全过**，直接超过此前本地表现最好的 `gemma4:26b`（5/8）。
+结果很直接：之前在 MLX 下超时的 4 个任务（`analyze-pipeline`、`coupon-constrained-fix`、`followup-after-multifile-fix`、`invoice-pipeline-bug`）全部变成了 `P`，总分从 3/8 跳到 **7/8**，底层单测 `verify` 更是 8/8 全过。
 
-更有说服力的是两者的过程遥测对比：
+两边的过程遥测几乎完全重合：
 
-- **平均交互轮次**：GGUF 版为 **6.6 轮**，MLX 版为 **6.5 轮**；
-- **平均累计输入 Token**：GGUF 版为 **248k**，MLX 版为 **245k**；
-- **平均输出 Token**：GGUF 版为 **2.2k**，甚至比 MLX 版（4.2k）更克制。
+- 平均轮次：GGUF 版 6.6 轮，MLX 版 6.5 轮
+- 平均输入 Token：GGUF 版 248k，MLX 版 245k
+- 平均输出 Token：GGUF 版 2.2k，MLX 版 4.2k
 
-轮次和输入量几乎重合，直接排除了“换量化格式让模型变聪明了”的解释——模型思考和调用工具的步数根本没变，纯粹是切回 `llama.cpp`/GGUF 后，首轮 30k 冷提示词预填充耗时大幅缩短，原本被卡在半路的正确解法得以在预算内跑完。
+轮次和输入量几乎没变，说明换了格式并没有让模型变聪明，纯粹是 `llama.cpp`/GGUF 把首轮 30k prefill 的时间压下来了，模型原本能做出来的题终于来得及在超时前交卷。
 
-唯一没拿到 `P` 的是最后一个任务 `task-inspection-subagent-status`（跑了 2 轮、303 秒撞上 300s 预算墙）。在 v4 中，即使开启了模型常驻，首轮 30k 提示词 Prefill 依然耗费了 243 秒（占总时间的 87%）。这说明该任务在 300s 最短预算下撞上了“30k Prompt × 300s 预算”的结构性冲突，而非模型推理逻辑缺陷。
+唯一没过的是 `task-inspection-subagent-status`。v3 它跑了 2 轮耗时 303 秒，卡在 300s 预算线上；v4 即使开了常驻，首轮 30k prefill 还是花了 243 秒（占总时间 87%）。在 300 秒的短预算下，30k 提示词本身就已经占满了大部分时间。
 
 ---
 
-## 发现二：“每轮吐字快”的陷阱——MoE 模型的轮次膨胀与收尾瓶颈
+## 单轮高分的 30B MoE 为什么卡在 4/8
 
-如果说 GGUF 救活 `qwen3.8:27b` 还在预期之内，那么 `qwen3-coder:30b` 的表现则给我们泼了一盆冷水。
+`qwen3-coder:30b` 是个 17GB 的 MoE-A3B 代码模型（总参数 30B，每 Token 激活约 3B）。单轮代码盲测它拿过 58/72，平时单步吐字也很快，但放进隔离多轮基准后，v3 和 v4 都只有 4/8，平均轮次飙到 **23.2 ~ 36.9 轮**，v4 单任务平均输入 Token 高达 158.8 万。
 
-这是一款 17GB 的 MoE-A3B 代码模型（总参数 30B，每 Token 激活约 3B）。在此前的 72 题单轮代码盲测里，它拿下了 **58/72** 的高分，平时交互时单步吐字速度也很轻快。按直觉推演，一个专攻代码又省算力的 MoE 模型，跑编码基准应该如鱼得水。
+日志里最明显的问题是代码改对了却不会收尾。v4 超时的 5 个任务里，`callback-refactor`（跑了 72 轮）、`fix-multi-file-config-merger`（41 轮）和 `task-inspection-subagent-status`（7 轮）其实已经把单测跑通了，但模型没有及时结束交付，而是接着发只读命令复查文件，一直耗到预算耗尽。
 
-但真放进多轮隔离基准里，它的最终通过率只有 **4/8**。在 v4 中，即使显式配置了 Ollama 模型常驻，通过率依然卡在 4/8（甚至平均轮次从 23.2 轮膨胀到了 36.9 轮，单任务平均输入达到 158.8 万 Token）。
+另一个问题是单步太碎导致的轮次膨胀。`qwen3.8:27b-gguf`（27B Dense）看清文件后直接动手，平均 5.9 到 6.6 轮收工；`qwen3-coder:30b` 只有 3B 激活参数，单步推理快，但面对多文件上下文时经常把命令拆碎、反复试探补丁再返工，把轮次拉长到 4–6 倍。
 
-深挖日志，我们发现了两个关键问题：
-
-1. **“代码修对了，却卡在收尾”**：
-   在 v4 超时的 5 个任务中，`callback-refactor`（72 轮）、`fix-multi-file-config-merger`（41 轮）、`task-inspection-subagent-status`（7 轮）这 3 个任务的底层代码单测**实际已经全部 Passed**。模型成功修复了代码，但由于缺乏果断收尾的终结意识，在后续轮次里不断重复只读检查或多余试探，最终活活耗尽时间预算。
-2. **单步决策质量带来的轮次膨胀**：
-   - `qwen3.8:27b-gguf`（27B Dense）看准代码后动手果断，平均 **5.9~6.6 轮**就能干净收敛；
-   - `qwen3-coder:30b`（3B 激活参数）单步生成虽快，但在多文件上下文中容易犹豫、拆碎命令、打补丁试错再返工，平均轮次高达 **23.2~36.9 轮**。
-
-在单轮问答里，激活参数小意味着低延迟；但在多轮 Agent 循环里，每多犹豫一轮，历史上下文就要重算一遍。当增量生成成本降低时，MoE 模型反而更容易陷入多余的试探轮次。**“单轮吐字快”从来不等于“多轮收敛快”。**
+在单轮问答里，低激活参数意味着响应快；但在多轮 Agent 循环里，每多犹豫一轮，前面累积的历史上下文就得跟着走一轮。单步吐字快，并没换成更快的任务收敛。
 
 ---
 
-## 发现三：Prompt Cache 调优的完整真相——从常驻参数证伪到共享前缀的架构分化
+## Prompt Cache 调优：哪些有效，哪些没用
 
-围绕“怎么把开轮 30k Token 的预填充时间压下来”，我们在 v4 和 v5 连续做了两轮单变量验证，把常见调优手段的底牌摸了一遍。
+首轮 30k prefill 占了大头时间，我们在 v4 和 v5 连续做了两轮单变量测试，看看到底能省下多少。
 
-### 1. v4 验证：Daemon 常驻参数只省冷加载，省不了开轮 Prefill
+### v4：Daemon 常驻参数只省冷加载，不省首轮 Prefill
 
-v3 结束后最自然的怀疑是：默认 Ollama Daemon 会不会在任务间隙把 KV Cache 换出内存？于是在 v4 中，我们固定加上 `OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1` 重跑全矩阵。结果通过率与总耗时全部持平（`qwen3.8` 422s vs 437s，`coder30b` 561s vs 583s）。
+v3 跑完后我们怀疑过：是不是 Ollama 默认在任务之间把 KV Cache 换出内存了？于是 v4 加上了 `OLLAMA_KEEP_ALIVE=-1 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1`。
 
-1. **轮内 Cache 其实一直高达 93% 命中**：
-   在 403 个 Prompt Eval 请求中，增量 ≤1k Token 的请求占了 **373 个（93%）**，单次 Prefill 只需 0.02s~0.5s。这证明 Ollama 默认 Daemon 的 Prefix Cache 在同一轮对话追加时一直正常生效。
-2. **显式常驻参数的唯一收益是省去 5~12 秒冷加载**：
-   对动辄 400 秒以上的多轮任务来说，这几秒不在关键路径上。
-3. **跨任务全量重算是因为没有公共前缀**：
-   30 个 >1k Token 的大 Prefill 请求（最大 36,329 Token）累计消耗 **3,185 秒，占 Prefill 总时长的 83%**。当时提示词里把变化的工作区路径、身份上下文嵌在靠前位置，每个新任务一开场就分叉，Cache 无从复用。
+重跑结果和 v3 基本持平（`qwen3.8` 422s vs 437s，`coder30b` 561s vs 583s）。拆开 403 次 Prompt Eval 请求来看，原因很清楚：
 
-### 2. v5 验证：合入共享系统前缀修复后，运行层出现明显架构分化
+1. **同一任务轮内 Cache 原本就有 93% 命中率**：增量 ≤1k Token 的请求占了 373 次（93%），每次 prefill 只要 0.02s 到 0.5s，说明默认 Ollama Daemon 在对话追加时缓存一直正常。
+2. **显式常驻只省了 5 到 12 秒模型冷加载**：对 400 秒级别的多轮任务来说感知不到。
+3. **跨任务全量重算是提示词结构问题**：当时 30 次 >1k Token 的大 prefill（最大 36,329 Token）一共花掉 3,185 秒，占了总 prefill 时长的 83%。原因是运行时把变化的工作区路径、身份信息插在了 Prompt 靠前位置，每个任务一开场前缀就分叉了。
 
-顺着 v4 的定位，我们在 Holon 运行时合入了共享系统前缀修复（将系统契约段落前置固定为 `SharedPrefix`）。文本层探针立刻生效：跨任务文本公共前缀从原本的 ~194 字符跃升到 **56,510 字符（占比 83.2%）**。
+### v5：合入共享前缀前置后，不同模型架构分了叉
 
-但在实际跑完 8 个连续任务后，两款本地模型在推理层走了两条截然不同的路：
+顺着 v4 的结果，我们在 Holon `0.59.0` 里把系统契约段落前置固定成了 `SharedPrefix`。从文本上看立刻见效：跨任务文本公共前缀从 ~194 个字符拉到了 **56,510 个字符（占 83.2%）**。
 
-- **`qwen3-coder:30b`（`qwen3moe` 全注意力架构）：跨任务 Cache 真实命中，但端到端收益不到 5%**
-  除第一个任务冷启动（`cached = 0`）外，后续 7 个任务的跨任务开轮在 Daemon 日志里均报出 **`cached n_tokens = 11,378–14,306`**（稳定落在 ≈11.4k 与 ≈14.2k 两档，取决于相邻任务对的分叉点；v4 同位置全部为 0）。单轮 opener 中位耗时也确实从 ~140s 降到了 **~121s（-13%）**，8 任务 opener 合计耗时从 1377s 降到 1237s（-10%）。
-  但 8 个任务的总 Provider 耗时依然几乎纹丝不动（**4249s → 4296s**）。原因很现实：共享前缀只覆盖了 35.5k 开轮上下文里的 11–14k Token，剩下的 **21–24k 任务特定指令与工作区状态**仍得现算，再加上内存中 Prefix Cache 保存/恢复的开销，这点开轮节省很快被后续数十轮 Decode 耗时淹没。
-- **`qwen3.8:27b-gguf`（`qwen35` 混合/循环记忆架构）：轮内能续，跨任务仍全量重算**
-  查看 `llama.cpp` 运行日志，它在同一任务的多轮对话内可以通过检查点完整恢复（`restored context checkpoint n_past=35.6k+`）；但只要切换到新任务，全部 8 个开轮都触发了 `forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory)`。也就是说，这类包含 SWA / 循环记忆层的架构在当前 `llama.cpp` 实现下，**只能整段恢复，不能截断到部分公共前缀后再续算**。跨任务开轮中位耗时依然停在 **~156s**。
+但跑完 8 个连续任务后，两款模型的推理层日志完全是两种情况：
 
-下面是两款模型在 v3 / v4 / v5a 三轮中“首轮开场（`round == 1`）”的 Provider 耗时变化：
+**`qwen3-coder:30b`（`qwen3moe` 全注意力架构）：命中了跨任务缓存，但总耗时只动了一点。**
+除了第一个任务冷启动（`cached = 0`），后面 7 个任务的开轮在 Daemon 日志里都出现了 `cached n_tokens = 11,378–14,306`（主要落在 ≈11.4k 和 ≈14.2k 两档，视相邻任务分叉点而定；v4 在同位置全是 0）。首轮 opener 中位耗时从 ~140s 降到了 ~121s（-13%），8 个任务 opener 合计从 1377s 降到 1237s（-10%）。
+
+但 8 个任务的总 Provider 耗时几乎没变（4249s → 4296s）。35.5k 的开轮上下文里只复用了 11k–14k，剩下 21k–24k 任务指令和工作区状态还是要现算；再加上后续几十轮 decode 的耗时，开轮省出来的这十几秒很快被平均掉了。
+
+**`qwen3.8:27b-gguf`（`qwen35` 混合/循环记忆架构）：轮内能续，跨任务依然全部重算。**
+查看 `llama.cpp` 日志，它在同一个任务的多轮之间可以靠检查点恢复（`restored context checkpoint n_past=35.6k+`）；但只要切到新任务，全部 8 个 opener 都打出了 `forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory)`。包含 SWA 或循环记忆层的架构在当前 `llama.cpp` 里还做不到截断到部分公共前缀后再续算，只能整段重跑。跨任务开轮中位耗时依然停在 ~156s。
+
+下面是两款模型在 v3、v4、v5a 三轮里首轮开场（`round == 1`）的 Provider 耗时对比：
 
 | 指标（8 任务聚合，Provider 口径） | `coder30b` v3 | `coder30b` v4 | **`coder30b` v5a** | `qwen38` v3 | `qwen38` v4 | **`qwen38` v5a** |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| --- | ---: | ---: | ---: | --- | ---: | ---: |
 | 总 Provider 耗时 | 4019s | 4249s | **4296s** | 3289s | 3437s | **3097s** |
 | 首轮 Opener 合计（占比） | 1471s (37%) | 1377s (32%) | **1237s (29%)** | 1472s (45%) | 1394s (41%) | **1558s (50%)** |
 | 单轮 Opener 中位耗时 | ~144s | ~140s | **~121s** | ~160s | ~156s | **~156s** |
 
-这一轮实测证明：把系统前缀前置固定方向是对的（全注意力模型立即吃到了 11–14k 跨任务复用，云端支持 `cache_control` 的模型同样受益），但单靠它改不了本地编码 Agent 的剧本——Prefill 侧的低垂果实已经摘完，主瓶颈已经转移到 **Decode 吞吐 × 轮次啰嗦度** 与 **21–24k 的任务级提示词体积**。
+把系统前缀固定在最前面本身是对的（全注意力模型和云端支持 `cache_control` 的模型都能直接受益），但只靠这一项改动还改变不了本地编码 Agent 的大头开销。接下来的瓶颈主要是两点：21k–24k 的任务级提示词能不能继续瘦身，以及本地硬件的 decode 吞吐和模型收敛轮次。
 
 ---
 
-## 发现四：FlashAttention 与 KV 量化探针——两个被高估的“加速旋钮”
+## FlashAttention 与 KV Cache 量化实测
 
-很多本地部署教程会建议在环境变量里顺手加上 `OLLAMA_FLASH_ATTENTION=1` 和 `OLLAMA_KV_CACHE_TYPE=q8_0`，期望在不换硬件的情况下白嫖一截吞吐。
-
-在 v5 中，我们用 **40k Prompt + 512 Token Decode** 的单变量探针直接测试了这组配置（`base` 默认 vs `fakv` 开启两项环境变量）：
+网上不少本地部署指南会建议顺手加上 `OLLAMA_FLASH_ATTENTION=1` 和 `OLLAMA_KV_CACHE_TYPE=q8_0`。我们在 v5 用 **40k Prompt + 512 Token Decode** 的单变量探针直接测了默认配置（`base`）和同时开启这两项环境变量（`fakv`）的速率：
 
 | 模型 | Prefill 速率 (`base` → `fakv`) | Decode 速率 (`base` → `fakv`) |
 | --- | ---: | ---: |
 | `qwen3-coder:30b` | 266 → 212 tok/s (**-20%**) | 27 → 19.5 tok/s (**-28%**) |
 | `qwen3.8:27b-gguf` | 221.6 → 195.8 tok/s (**-12%**) | 11 → 10.2 tok/s (**-7%**) |
 
-数据出来后，我们直接取消了原定的全矩阵对比测试，原因很直接：
-1. **`OLLAMA_FLASH_ATTENTION=1` 在当前环境是安慰剂**：在 Ollama 0.32.15 的 Apple Metal 后端上，默认的 `--flash-attn auto` 本来就已经解析为启用 FlashAttention，再手动传环境变量没有任何增量作用。
-2. **KV `q8_0` 量化在统一内存上反而净回退**：真正生效的变量只有 KV Cache 的 `q8_0` 量化。省下一部分显存占用的代价，是每次生成都要做逐 Token 反量化计算——在 M5 Pro Metal 上，反量化开销直接吃掉了带宽红利，把 `coder30b` 的 Decode 速度打掉了将近三成。在内存容量够用（如 64GB 跑 27B–30B Q4_K_M）的前提下，强开 KV 量化得不偿失。
+跑完探针后我们直接取消了原定的全矩阵对比：
+
+1. 在 Ollama 0.32.15 的 Metal 后端上，默认的 `--flash-attn auto` 本来就已经开了 FlashAttention，再加 `OLLAMA_FLASH_ATTENTION=1` 没有任何效果。
+2. 唯一产生变化的是 `q8_0` KV 量化。虽然能省下一部分显存，但每次生成都要做逐 Token 反量化。在 M5 Pro 统一内存上，这部分计算开销反而让 `coder30b` 的解码速率掉了将近三成。64GB 内存跑 27B–30B Q4_K_M 本来就够装，没必要开 KV 量化换带宽。
 
 ---
 
-## 私有环境选型指南：今天如何配置本地 Agent 模型？
+## 私有环境选型与避坑建议
 
-如果你打算在开发机、内网工作站或离线环境中搭建本地编码 Agent，不需要把所有模型重测一遍，可以直接参考这套经过实测验证的选型方案。
+如果你要在开发机或离线工作站上跑本地编码 Agent，可以按下面这组实测结论选配置：
 
-### 1. 本地模型怎么选？
-
-| 你的核心诉求 | 推荐模型配置 | 实测依据与预期表现 |
+| 使用场景 | 建议配置 | 实测参考 |
 | --- | --- | --- |
-| **主力代码修改（质量与一次收敛优先）** | **`qwen3.8:27b`（`ggml-org` `Q4_K_M` GGUF，约 19GB）** | 三轮综合 6/8–7/8 通过、`verify` 稳定 8/8（v3/v4），平均约 6 轮收敛；单任务约 5–10 分钟 |
-| **日常快修与交互（速度优先）** | **`gemma4:26b`** | 5/8 通过且 **0 超时**，平均 159s/任务，体感响应最轻快，适合常规单模块改动 |
-| **后台异步长任务（不卡交互窗口）** | **`qwen3-coder:30b`（17GB GGUF）** | 代码修复底子扎实（`verify` 7/8），但存在轮次膨胀，单任务预算须放宽至 **10–15 分钟以上** |
-| **明确不建议用于编码 Agent** | `qwen3.8:27b-mlx`、`qwen3.5:0.8b` 等超小模型 | 前者受困于长提示词预填充耗时；0.8B 量级在 8 任务中 0/8，无法稳定遵循补丁与工具契约 |
+| 主力改代码（看重一次做对和收尾） | `qwen3.8:27b`（`ggml-org` `Q4_K_M` GGUF，约 19GB） | 三轮通过 6/8–7/8，v3/v4 单测验证 8/8，平均约 6 轮收敛，单任务 5–10 分钟 |
+| 日常小改和快速响应 | `gemma4:26b` | 通过 5/8 且 0 超时，平均 159s/任务，响应最快 |
+| 后台异步长任务 | `qwen3-coder:30b`（17GB GGUF） | 代码修复底子不错（`verify` 7/8），但轮次偏多，超时预算建议放宽到 10–15 分钟以上 |
+| 不建议用于编码 Agent | `qwen3.8:27b-mlx`、`qwen3.5:0.8b` 等超小模型 | 前者受长提示词 prefill 拖累严重；0.8B 量级在 8 个任务里 0/8，守不住工具和补丁契约 |
 
-### 2. 本地导入与运行时避坑
+自己拿 `qwen3.8:27b` GGUF 往 Ollama 里导时，有三个坑我们在测试里都踩过：
 
-如果你选择表现最好的 `qwen3.8:27b` GGUF 自己导入 Ollama，有三个我们在五轮测试里踩出来的实操坑值得提前避开：
+1. **别用管道往 `ollama create` 里传 `Modelfile`**：目前 `ollama create <name> -f -` 从标准输入读取时会静默失败且返回退出码 `0`，表面看不出报错，实际模型没建成功。先在磁盘写好真实的 `Modelfile`（比如 `FROM ./Qwen3.8-27B-Q4_K_M.gguf`），再跑 `ollama create qwen3.8:27b-gguf -f ./Modelfile`。
+2. **优先用 `ggml-org` 官方 `Q4_K_M` GGUF**：测试中个别第三方打包版本（如 `unsloth` 同款）在导入 Ollama 时卡在格式校验上，官方 GGUF 最稳。
+3. **64GB Apple Silicon 上保持 Ollama 默认参数即可**：保持默认的 `--flash-attn auto` 和 FP16 KV Cache，别加 `OLLAMA_KV_CACHE_TYPE=q8_0`（实测降速 7%–28%），也不要指望 `OLLAMA_KEEP_ALIVE=-1` 缩短跨任务首轮 prefill。
 
-1. **不要用管道或标准输入传 `Modelfile`**：当前 `ollama create <name> -f -` 从 stdin 读取配置时会**静默失败并返回退出码 `0`**，表面不报错，实则没建好模型。务必先在磁盘写好真实的 `Modelfile` 文件（如 `FROM ./Qwen3.8-27B-Q4_K_M.gguf`），再执行 `ollama create qwen3.8:27b-gguf -f ./Modelfile`。
-2. **认准 `ggml-org` 官方量化包**：实测部分第三方量化权重（如 `unsloth` 同款）在导入 Ollama 时会卡在格式校验上，直接使用 `ggml-org` 官方发布的 `Q4_K_M` GGUF 最省心。
-3. **在 64GB Apple Silicon 上保留默认 Ollama 参数即可**：保持默认 `--flash-attn auto` 与默认 FP16 KV Cache，不要盲目添加 `OLLAMA_KV_CACHE_TYPE=q8_0`（实测降速 7%–28%），也无需指望 `OLLAMA_KEEP_ALIVE=-1` 缩短跨任务开轮预填充。
-
-导入完成后，如何在 Holon 中把本地 Ollama 设为默认路由、为不同角色 Agent 分配不同模型（例如让主力开发用本地 `qwen3.8:27b-gguf`，架构审查按需切回云端强模型），直接参考[《配置与切换大模型：从本地 Ollama 到多云灾备》](../guides/configure-models.md)。关于隔离工作区与记忆管理的使用说明，详见[《使用工作区与隔离目录》](../guides/work-with-workspaces.md)和[《管理 Agent 记忆》](../guides/manage-agent-memory.md)。
+模型导进 Ollama 之后，如果想在 Holon 里设为默认模型，或者按角色路由（比如日常开发用本地 `qwen3.8:27b-gguf`，复杂评审按需切云端模型），可以参考[《配置与切换大模型：从本地 Ollama 到多云灾备》](../guides/configure-models.md)。关于工作区隔离和记忆管理，详见[《使用工作区与隔离目录》](../guides/work-with-workspaces.md)和[《管理 Agent 记忆》](../guides/manage-agent-memory.md)。
 
 ---
 
-## 总结
+## 结论
 
-5 轮基准演进把本地多轮编码 Agent 的能力边界与调优杠杆划得很清楚：**在一台 64GB 统一内存的桌面设备上，选对 GGUF 推理路径的 27B Dense 模型（`qwen3.8:27b-gguf`），已经能在隔离机械验证下跑通 75%–87.5%（6/8–7/8）的多轮代码修改与测试闭环。**
-
-真正决定这套方案能不能扛起日常生产任务的，主要是三件事：
-1. **推理后端是否匹配长上下文**：GGUF / `llama.cpp` 路径在 30k 开轮 Prefill 上明显快过当前 MLX 路径；
-2. **模型多轮收敛是否克制**：Dense 27B 平均 6 轮左右收工，而 30B MoE-A3B 容易膨胀到 23–37 轮，把“单步吐字快”的优势耗光；
-3. **Decode 吞吐与系统契约总体积**：从 Daemon 常驻、共享前缀前置到 Metal KV 量化，Prefill 侧与环境变量侧已经没有多少“一键提速”的余地；对于混合记忆架构（`qwen35`）的跨任务缓存复用还要等上游推理引擎演进，而对当前运行时而言，真正有效的方向是继续给系统工具契约瘦身，以及提升本地硬件的 Decode 带宽。
+从 5 轮实测来看，64GB 统一内存的桌面设备已经能把本地 27B Dense 模型（`qwen3.8:27b-gguf`）稳定跑在 6/8 到 7/8 的多轮修复通过率上。但再往上的瓶颈不在环境变量调参，而在两件更基础的事：模型在多轮循环里能不能少走弯路、按时收尾，以及运行时能不能把二三十 k 的任务提示词再压下来。
