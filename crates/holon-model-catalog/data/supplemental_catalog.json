@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "upstream_revision": "3a6ced626e1b3e47270eb82c15ed55ab967ae74948634d46e6f7b3c7a0e4c4de",
-  "adapter_version": "0.59.0 (6198b476b)",
+  "upstream_revision": "53fe4bbc0f0911bf07abb49956b71302d1cd269817cfac0ace5ea540bd8fad97",
+  "adapter_version": "0.59.0 (50a4e1e22)",
   "models": [
     {
       "model_ref": "anthropic/claude-fable-5-1",
@@ -1304,11 +1304,11 @@
       "model_ref": "volcengine/doubao-seed-character-260628",
       "display_name": "Seed Character",
       "description": "ByteDance Seed model optimized for character-driven dialogue and consistent conversational behavior",
-      "context_window_tokens": 256000,
+      "context_window_tokens": null,
       "effective_context_window_percent": 95,
-      "auto_compact_token_limit": 243200,
-      "default_max_output_tokens": 256000,
-      "max_output_tokens_upper_limit": 256000,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": null,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {

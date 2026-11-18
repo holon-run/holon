@@ -5,6 +5,57 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-19
+
+Pinned models.dev SHA256
+`53fe4bbc0f0911bf07abb49956b71302d1cd269817cfac0ace5ea540bd8fad97`,
+sampled **November 18, 2026 20:38:31 UTC**, against main `50a4e1e2`.
+Upstream still supplies 256000 context and output for the exact
+`volcengine/doubao-seed-character-260628` ID. This conflicts with the official
+[model list](https://ark.volcengine.com/region:cn-beijing/docs/model-list.md):
+128K context/input, 32K answer, 32K reasoning, and 4K answer default.
+The list was sampled at **20:39:19 UTC**, HTTP 200, SHA256
+`5ea6928ba2e4226d70279ba03ba5e97e914eb90e88e927deecbb61bea8274f4e`.
+The previous sample listed 96K input and 128K reasoning; today's corrections
+do not establish exact integer token counts.
+
+The independently sampled
+[Responses API contract](https://ark.volcengine.com/region:cn-beijing/docs/create-model-responses-api.md)
+(20:39:19 UTC, HTTP 200, SHA256
+`72a998bc7ae8178ff93a34693d3ad8bda5ebfd67abe23b275ac214816f3ac8ed`)
+defines `max_output_tokens` as answer plus reasoning tokens. It establishes
+131072 as the three DeepSeek Flash IDs' default, not as Seed Character's
+default or a universal hard ceiling. No precise total-output default/ceiling
+is established for Seed Character by the separate abbreviated answer and
+reasoning maxima.
+
+The
+[plan overview](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-plan-overview.md)
+(20:39:19 UTC, HTTP 200, SHA256
+`191734f14310b9377457b434088f73ed1d31f08fdd66cca66114f9cf510ad10b`)
+does not establish independent capacity for that exact dated ID.
+The shared projection withdraws the conflicting context/output values and
+derived auto-compaction from both retained routes, without inferring plan
+eligibility or importing another model's limits. Unknown capacity must remain
+distinct from runtime fallback execution budgets.
+
+The exact-provider/date regression includes adjacent-date and other-provider
+controls, and a catalog integration regression covers both final routes.
+Strict complete-object assertions passed: only the two retained Seed Character
+routes change, while the other 646 complete objects and ledger records remain
+unchanged. Only the matching ledger entries are reviewed as unknown; local
+128000 prompt / 8192 execution-output fallback budgets are not provider limits.
+Final fixed regeneration, validation, 648-route coverage, strict assertions,
+224 catalog tests (one ignored), 51 domain tests, 516 provider tests,
+formatting and both warning-gated all-target checks passed.
+The complete lib-c run remains non-green: 804 passed, four failed, seven ignored.
+Two non-IPv6 failures each passed two exact isolated reruns; the original
+concurrent failures and two listener address/network errors remain recorded.
+Independent seven-file production/evidence review found no confirmed findings.
+Neither that review nor the initial unchanged coverage replaces full acceptance.
+The [endpoint review](endpoint-review.md#2026-11-19-incremental-review)
+records all other contract changes and unresolved boundaries.
+
 ## Incremental review: 2026-11-18
 
 Pinned models.dev SHA256

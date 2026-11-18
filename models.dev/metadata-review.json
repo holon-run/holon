@@ -47526,11 +47526,11 @@
     {
       "route_ref": "volcengine@default/doubao-seed-character-260628",
       "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 256000,
-        "max_output_tokens_upper_limit": 256000,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 256000,
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -47549,7 +47549,13 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 243200,
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -47558,37 +47564,31 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 256000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 256000,
           "reasoning_effort_options": [
             "minimal",
             "low",
             "high"
-          ],
-          "tool_output_truncation_estimated_tokens": 2500
+          ]
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -47599,9 +47599,18 @@
           }
         }
       },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-19",
+        "reason": "The exact dated ordinary API model has abbreviated 128K context, 32K answer and 32K reasoning limits; these conflict with upstream 256000 context/output and do not establish exact integers or a total output default/ceiling. The 4K answer default is not a combined reasoning/answer budget. The retained plan route has no independent precise capacity evidence. Null limits are reviewed unknown, not entitlement certification. 128000 prompt/8192 output are local runtime fallback budgets, not provider limits.",
+        "recheck": "At the next exact model or endpoint contract change, before increasing execution budgets, or when precise integer total-output limits are published.",
+        "evidence": [
+          "models.dev/metadata-evidence.md",
+          "models.dev/endpoint-review.md"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@default/doubao-seedream-5.0-lite",
@@ -49367,11 +49376,11 @@
     {
       "route_ref": "volcengine@plan/doubao-seed-character-260628",
       "facts": {
-        "context_window_tokens": 256000,
-        "default_max_output_tokens": 256000,
-        "max_output_tokens_upper_limit": 256000,
-        "prompt_budget_estimated_tokens": 243200,
-        "runtime_max_output_tokens": 256000,
+        "context_window_tokens": null,
+        "default_max_output_tokens": null,
+        "max_output_tokens_upper_limit": null,
+        "prompt_budget_estimated_tokens": 128000,
+        "runtime_max_output_tokens": 8192,
         "capabilities": {
           "agent_turn": true,
           "parallel_tool_calls": false,
@@ -49390,7 +49399,13 @@
       },
       "inputs": {
         "model": {
-          "auto_compact_token_limit": 243200,
+          "context_window_tokens": null,
+          "effective_context_window_percent": 95,
+          "auto_compact_token_limit": null,
+          "default_max_output_tokens": null,
+          "max_output_tokens_upper_limit": null,
+          "default_verbosity": null,
+          "tool_output_truncation_estimated_tokens": 2500,
           "capabilities": {
             "agent_turn": true,
             "image_generation": false,
@@ -49399,37 +49414,31 @@
             "parallel_tool_calls": false,
             "supports_reasoning": true
           },
-          "context_window_tokens": 256000,
-          "default_max_output_tokens": 256000,
-          "default_verbosity": null,
-          "effective_context_window_percent": 95,
-          "max_output_tokens_upper_limit": 256000,
           "reasoning_effort_options": [
             "minimal",
             "low",
             "high"
-          ],
-          "tool_output_truncation_estimated_tokens": 2500
+          ]
         },
         "route": {
-          "capabilities": {},
           "effective_context_window_percent": null,
+          "capabilities": {},
           "reasoning_effort_options": null
         },
         "evidence": {
           "fields": {
             "display_name": "model_builtin",
             "description": "model_builtin",
-            "context_window_tokens": "model_builtin",
+            "context_window_tokens": "derived",
             "effective_context_window_percent": "model_builtin",
-            "auto_compact_token_limit": "model_builtin",
-            "prompt_budget_estimated_tokens": "derived",
+            "auto_compact_token_limit": "derived",
+            "prompt_budget_estimated_tokens": "runtime_default",
             "compaction_trigger_estimated_tokens": "derived",
             "compaction_keep_recent_estimated_tokens": "derived",
-            "runtime_max_output_tokens": "model_builtin",
+            "runtime_max_output_tokens": "runtime_default",
             "verbosity": "derived",
             "tool_output_truncation_estimated_tokens": "model_builtin",
-            "max_output_tokens_upper_limit": "model_builtin",
+            "max_output_tokens_upper_limit": "derived",
             "agent_turn": "model_builtin",
             "parallel_tool_calls": "model_builtin",
             "image_input": "model_builtin",
@@ -49440,9 +49449,18 @@
           }
         }
       },
-      "context_status": "known",
-      "output_status": "known",
-      "review": null
+      "context_status": "unknown",
+      "output_status": "unknown",
+      "review": {
+        "owner": "holon-model-provider",
+        "reviewed_at": "2026-11-19",
+        "reason": "The exact dated ordinary API model has abbreviated 128K context, 32K answer and 32K reasoning limits; these conflict with upstream 256000 context/output and do not establish exact integers or a total output default/ceiling. The 4K answer default is not a combined reasoning/answer budget. The retained plan route has no independent precise capacity evidence. Null limits are reviewed unknown, not entitlement certification. 128000 prompt/8192 output are local runtime fallback budgets, not provider limits.",
+        "recheck": "At the next exact model or endpoint contract change, before increasing execution budgets, or when precise integer total-output limits are published.",
+        "evidence": [
+          "models.dev/metadata-evidence.md",
+          "models.dev/endpoint-review.md"
+        ]
+      }
     },
     {
       "route_ref": "volcengine@plan/doubao-seed-evolving",
