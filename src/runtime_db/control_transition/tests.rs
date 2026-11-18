@@ -2260,7 +2260,8 @@ fn canonical_stop_proof_rejects_changed_terminal_outcome_without_repairing_any_e
         let payload: String = tx.query_row(
             "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",
             params![f.key.agent_id, outcome_id], |row| row.get(0))?;
-        let mut outcome: execution_protocol::ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+        let mut outcome: execution_protocol::ExecutionOutcomeRecord =
+            crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?;
         outcome.outcome = execution_protocol::ExecutionOutcome::Command(
             execution_protocol::CommandResult::Applied { references: vec!["different-original".into()] });
         let changed = serde_json::to_string(&outcome)?;

@@ -1,9 +1,7 @@
 //! Original cutover observation of a closed claim that never installed a Turn.
 
 use super::*;
-use crate::domain::execution_protocol::{
-    ConversationOutcome, ExecutionOutcome, ExecutionOutcomeRecord, WorkItemOutcome,
-};
+use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome, WorkItemOutcome};
 
 pub(super) fn original_observation(
     tx: &Transaction<'_>,
@@ -122,7 +120,7 @@ pub(super) fn original_observation(
     let Some(payload) = payload else {
         return Ok(None);
     };
-    let outcome: ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+    let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?;
     ensure!(
         outcome.attempt_id == attempt.attempt_id && outcome.outcome_id == *outcome_id,
         "closed claim Outcome projection mismatch"

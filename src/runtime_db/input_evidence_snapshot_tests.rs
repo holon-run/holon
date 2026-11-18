@@ -4010,3 +4010,39 @@ fn read_only_input_preparation_plans_only_missing_fixed_members() -> Result<()> 
     }
     Ok(())
 }
+
+/// Prompt admission reads the stored Outcome body through `decode_canonical`;
+/// the retired WorkItem `needs_repair` encoding must converge there instead of
+/// failing the whole admission.
+#[test]
+fn canonical_outcome_decode_converges_the_retired_needs_repair_encoding() -> Result<()> {
+    let key = Key::new(Family::Outcome, "outcome:message:msg-1");
+    let legacy = serde_json::json!({
+        "outcome_id": "outcome:message:msg-1",
+        "attempt_id": "attempt-1",
+        "outcome": {
+            "owner": "work_item",
+            "outcome": {
+                "kind": "needs_repair",
+                "repair_id": "provider_dispatch_rejected:turn-1"
+            }
+        },
+        "created_at": "2026-10-30T00:00:00Z"
+    })
+    .to_string();
+    let CanonicalInputEvidence::Outcome(outcome) = decode_canonical(&key, &legacy)? else {
+        panic!("expected the Outcome family record");
+    };
+    assert_eq!(
+        outcome.outcome,
+        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
+            crate::domain::execution_protocol::WorkItemOutcome::Interrupted {
+                reason: "provider_dispatch_rejected:turn-1".into()
+            }
+        )
+    );
+    // A damaged retired row still fails closed.
+    let damaged = legacy.replace(",\"repair_id\":\"provider_dispatch_rejected:turn-1\"", "");
+    assert!(decode_canonical(&key, &damaged).is_err());
+    Ok(())
+}

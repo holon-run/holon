@@ -85,6 +85,28 @@ fn related<T: DeserializeOwned>(
     .map_err(Into::into)
 }
 
+/// Outcome rows decode through the single migration-aware entry; a bare
+/// `related` decode would reject the retired WorkItem `needs_repair` encoding
+/// that the closure read must tolerate.
+fn related_outcome(
+    tx: &Transaction<'_>,
+    sql: &str,
+    agent_id: &str,
+    id: &str,
+) -> Result<Option<ExecutionOutcomeRecord>> {
+    let payload: Option<String> = tx
+        .query_row(sql, params![agent_id, id], |row| {
+            crate::runtime_db::repositories::borrowed_sql_text(row, 0).map(str::to_owned)
+        })
+        .optional()?;
+    let Some(payload) = payload else {
+        return Ok(None);
+    };
+    Ok(Some(
+        crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?,
+    ))
+}
+
 pub(crate) fn read_validated_closure_protocol_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -124,7 +146,7 @@ fn read_protocol_rows_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Validat
             }
         }
         let outcome: Option<ExecutionOutcomeRecord> = attempt.terminal_outcome_id.as_deref().map(|id|
-            related(tx, "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2", agent_id, id)
+            related_outcome(tx, "SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2", agent_id, id)
         ).transpose()?.flatten();
         execution_protocol::validate_attempt_invariants(
             agent_id,
@@ -151,8 +173,9 @@ fn read_protocol_rows_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Validat
     let mut rows = outcomes.query([agent_id])?;
     while let Some(row) = rows.next()? {
         let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?;
-        let outcome: ExecutionOutcomeRecord =
-            serde_json::from_str(crate::runtime_db::repositories::borrowed_sql_text(row, 1)?)?;
+        let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(
+            crate::runtime_db::repositories::borrowed_sql_text(row, 1)?,
+        )?;
         let attempt: Option<ExecutionAttempt> = related(tx,
             "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2", agent_id, &outcome.attempt_id)?;
         execution_protocol::validate_outcome_invariants(id, &outcome, attempt.as_ref())
@@ -254,6 +277,7 @@ mod tests {
             read_protocol_rows_tx(&tx, "agent-a")?.work_items,
             valid.work_items
         );
+
         assert!(read_protocol_rows_tx(&tx, "agent-a")?
             .into_work_items("foreign")
             .is_err());
@@ -320,6 +344,62 @@ mod tests {
         tx.execute(
             "UPDATE execution_protocol_attempts SET payload_json='!'",
             [],
+        )?;
+        assert!(read_protocol_rows_tx(&tx, "agent-a").is_err());
+        Ok(())
+    }
+    #[test]
+    fn closure_read_converges_the_retired_needs_repair_outcome_encoding() -> Result<()> {
+        let mut connection = Connection::open_in_memory()?;
+        let tx = connection.transaction()?;
+        let valid = state()?;
+        write(&tx, &valid)?;
+        // A pre-v115 database still stores the retired WorkItem encoding; the
+        // closure read must decode it through the shared migration entry.
+        tx.execute(
+            "UPDATE execution_protocol_outcomes SET payload_json=?1
+             WHERE agent_id=?2 AND outcome_id=?3",
+            params![
+                serde_json::json!({
+                    "outcome_id": "outcome-0000",
+                    "attempt_id": "attempt-0000",
+                    "outcome": {
+                        "owner": "work_item",
+                        "outcome": {
+                            "kind": "needs_repair",
+                            "repair_id": "provider_dispatch_rejected:turn-1"
+                        }
+                    },
+                    "created_at": "at"
+                })
+                .to_string(),
+                "agent-a",
+                "outcome-0000"
+            ],
+        )?;
+        assert_eq!(
+            read_protocol_rows_tx(&tx, "agent-a")?.work_items,
+            valid.work_items,
+            "the retired needs_repair encoding must not break the closure read"
+        );
+        // Damaged retired rows still fail closed.
+        tx.execute(
+            "UPDATE execution_protocol_outcomes SET payload_json=?1
+             WHERE agent_id=?2 AND outcome_id=?3",
+            params![
+                serde_json::json!({
+                    "outcome_id": "outcome-0000",
+                    "attempt_id": "attempt-0000",
+                    "outcome": {
+                        "owner": "work_item",
+                        "outcome": { "kind": "needs_repair" }
+                    },
+                    "created_at": "at"
+                })
+                .to_string(),
+                "agent-a",
+                "outcome-0000"
+            ],
         )?;
         assert!(read_protocol_rows_tx(&tx, "agent-a").is_err());
         Ok(())

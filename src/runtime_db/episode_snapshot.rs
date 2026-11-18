@@ -1649,8 +1649,7 @@ fn quarantined_unstarted_claim_is_closed(
         return Ok(false);
     }
     use crate::domain::execution_protocol::{
-        ConversationOutcome, ExecutionAttemptState, ExecutionOutcome, ExecutionOutcomeRecord,
-        WorkItemOutcome,
+        ConversationOutcome, ExecutionAttemptState, ExecutionOutcome, WorkItemOutcome,
     };
     if attempt.state != ExecutionAttemptState::Interrupted || attempt.run_id.is_some() {
         return Ok(false);
@@ -1739,7 +1738,7 @@ fn quarantined_unstarted_claim_is_closed(
     let Some(outcome) = outcome else {
         return Ok(false);
     };
-    let outcome: ExecutionOutcomeRecord = serde_json::from_str(&outcome)?;
+    let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(&outcome)?;
     ensure!(
         outcome.attempt_id == attempt.attempt_id && outcome.outcome_id == outcome_id,
         "quarantined claim Outcome projection mismatch"
