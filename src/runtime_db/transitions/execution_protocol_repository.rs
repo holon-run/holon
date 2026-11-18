@@ -2944,7 +2944,7 @@ fn load_outcomes_with_migration(
     while let Some(row) = rows.next()? {
         let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
         let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
-        let record = holon_storage::execution::decode_outcome_record_with_migration(payload)
+        let record = crate::runtime_db::outcome_reads::decode_outcome_payload(payload)
             .with_context(|| format!("decoding execution protocol record {}", id))?;
         records.insert(id, record);
     }

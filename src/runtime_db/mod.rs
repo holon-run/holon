@@ -82,6 +82,7 @@ pub(crate) mod workspace_context;
 pub mod write_queue;
 
 pub mod observer_sync;
+pub(crate) mod outcome_reads;
 
 mod index_outbox;
 

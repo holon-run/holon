@@ -12,8 +12,8 @@ mod tests;
 
 use crate::{
     domain::execution_protocol::{
-        ConversationOutcome, ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolState,
-        ExecutionSourceIdentity, WorkItemOutcome,
+        ConversationOutcome, ExecutionOutcome, ExecutionProtocolState, ExecutionSourceIdentity,
+        WorkItemOutcome,
     },
     runtime_db::{evidence::append_message_tx, RuntimeIndexChange},
     types::{
@@ -235,7 +235,7 @@ fn provider_reply_source_tx(
     let mut statement =
         tx.prepare("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id = ?1")?;
     for row in statement.query_map([&turn.agent_id], |row| row.get::<_, String>(0))? {
-        let outcome: ExecutionOutcomeRecord = serde_json::from_str(&row?)?;
+        let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(row?.as_str())?;
         state.outcomes.insert(outcome.outcome_id.clone(), outcome);
     }
     let mut open = state.attempts.values().filter(|attempt| {
@@ -595,7 +595,9 @@ pub(crate) fn commit_final_brief_reply_tx(
             |row| row.get::<_, String>(0),
         )
         .optional()?
-        .map(|payload| serde_json::from_str::<ExecutionOutcomeRecord>(&payload))
+        .map(|payload| {
+            crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)
+        })
         .transpose()?;
     let Some(outcome) = outcome else {
         return Ok(Vec::new());

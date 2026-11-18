@@ -145,7 +145,7 @@ pub(super) fn read_tx(
             params![key.agent_id, outcome_id],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        let outcome: ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+        let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?;
         let at = attempt
             .terminal_at
             .as_deref()

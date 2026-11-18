@@ -370,7 +370,7 @@ fn load_stopped_outcome(
     let (attempt_id,payload):(String,String)=connection.query_row(
         "SELECT attempt_id,payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",
         params![agent,id],|r|Ok((r.get(0)?,r.get(1)?)))?;
-    let outcome: execution_protocol::ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+    let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?;
     ensure!(
         outcome.outcome_id == id && outcome.attempt_id == attempt_id,
         "original Stop Outcome columns and payload disagree"

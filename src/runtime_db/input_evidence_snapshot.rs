@@ -3725,7 +3725,9 @@ fn decode_canonical(key: &Key, payload: &str) -> Result<CanonicalInputEvidence> 
         Family::Brief => CanonicalInputEvidence::Brief(serde_json::from_str(payload)?),
         Family::Transcript => CanonicalInputEvidence::Transcript(serde_json::from_str(payload)?),
         Family::Attempt => CanonicalInputEvidence::Attempt(serde_json::from_str(payload)?),
-        Family::Outcome => CanonicalInputEvidence::Outcome(serde_json::from_str(payload)?),
+        Family::Outcome => CanonicalInputEvidence::Outcome(
+            crate::runtime_db::outcome_reads::decode_outcome_payload(payload)?,
+        ),
         Family::WorkExecution => CanonicalInputEvidence::WorkExecution {
             work_item_id: key.id.clone(),
             record: serde_json::from_str(payload)?,

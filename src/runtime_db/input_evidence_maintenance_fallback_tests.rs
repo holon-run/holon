@@ -176,7 +176,8 @@ fn qualified_command_fallback_keeps_quarantine_semantics_and_exact_input_delta()
             &Key::new(Family::Outcome, "retired-scheduler-cleanup:attempt-a"),
         )?
         .unwrap();
-        let outcome: ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+        let outcome: ExecutionOutcomeRecord =
+            crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?;
         assert!(matches!(
             outcome.outcome,
             ExecutionOutcome::Command(CommandResult::Quarantined { .. })

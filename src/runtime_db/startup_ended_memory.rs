@@ -606,7 +606,7 @@ fn read_startup_interruption_tx(
         let (outcome_attempt,_size): (String,usize)=tx.query_row("SELECT attempt_id,length(CAST(payload_json AS BLOB)) FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",params![key.agent_id,outcome_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
 
         let payload:String=tx.query_row("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2",params![key.agent_id,outcome_id],|r|r.get(0))?;
-        let outcome: ExecutionOutcomeRecord = serde_json::from_str(&payload)?;
+        let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(&payload)?;
         ensure!(
             outcome_attempt == id
                 && outcome.attempt_id == id

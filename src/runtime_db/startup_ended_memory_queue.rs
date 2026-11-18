@@ -194,7 +194,7 @@ pub(super) fn read_tx(
         "queue reentry activation is not uniquely attached to its original dispatch Turn"
     );
     let outcome_payload: String = tx.query_row("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id=?2 AND attempt_id=?3", params![key.agent_id,outcome_id,attempt_id], |r|r.get(0))?;
-    let outcome: ExecutionOutcomeRecord = serde_json::from_str(&outcome_payload)?;
+    let outcome = crate::runtime_db::outcome_reads::decode_outcome_payload(&outcome_payload)?;
     ensure!(
         outcome.outcome_id == outcome_id
             && outcome.attempt_id == attempt_id
