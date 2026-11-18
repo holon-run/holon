@@ -9936,6 +9936,187 @@ async fn explicit_pick_of_yielded_work_item_resolves_frame_without_new_yield() {
 }
 
 #[tokio::test]
+async fn pick_clear_blocker_resumes_yielded_parent_with_retained_operator_wait() {
+    let dir = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+
+    let parent = runtime
+        .create_work_item("yielded parent".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let child = runtime
+        .create_work_item("active child".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(parent.id.clone()).await.unwrap();
+    runtime.pick_work_item(child.id.clone()).await.unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            Some(parent.id.clone()),
+            WaitForWakeKind::OperatorInput,
+            None,
+            "waiting for the product decision".into(),
+            Some(60_000),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        wait.work_item.as_ref().unwrap().readiness(),
+        WorkItemReadiness::Blocked
+    );
+    let execution_before = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("execution protocol initialized");
+    let paused_before = execution_before
+        .work_items
+        .get(&parent.id)
+        .cloned()
+        .expect("yielded parent keeps canonical execution state");
+    assert!(matches!(
+        &paused_before.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+            if reason == &format!("yielded_to:{}", child.id)
+    ));
+
+    let picked = runtime
+        .pick_work_item_with_reason_and_clear_blocker(
+            parent.id.clone(),
+            Some("operator approved continuing the yielded work".into()),
+            true,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        picked.current_work_item.readiness(),
+        WorkItemReadiness::Runnable
+    );
+    assert!(picked.current_work_item.blocked_by.is_none());
+    assert!(picked.current_work_item.recheck_at.is_none());
+    assert!(picked.transition.blocker_cleared);
+    assert_eq!(picked.transition.switch_kind, "explicit_yield_return");
+    assert!(picked
+        .transition
+        .cancelled_wait_condition_ids
+        .contains(&wait.condition.id));
+    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(parent.id.as_str())
+    );
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_work_item("default", &parent.id)
+        .unwrap()
+        .is_empty());
+    assert!(runtime
+        .storage()
+        .latest_active_work_item_continuation_for_suspended("default", &parent.id)
+        .unwrap()
+        .is_none());
+    let frames = runtime.storage().latest_work_item_continuations().unwrap();
+    assert!(frames.iter().any(|frame| {
+        frame.suspended_work_item_id == parent.id
+            && frame.state == WorkItemContinuationState::Resumed
+    }));
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("execution protocol remains initialized");
+    let execution_parent = execution
+        .work_items
+        .get(&parent.id)
+        .expect("resumed parent keeps canonical execution state");
+    assert_eq!(
+        execution_parent.source_revision,
+        picked.current_work_item.revision
+    );
+    let crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+        generation: paused_generation,
+        ..
+    } = paused_before.state
+    else {
+        panic!("yielded parent must start paused");
+    };
+    assert!(matches!(
+        &execution_parent.state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { generation, .. }
+            if *generation == paused_generation + 1
+    ));
+    assert!(
+        execution_parent.source_revision > paused_before.source_revision,
+        "resuming with a cleared blocker must advance the canonical source revision"
+    );
+
+    // The resumed state survives persistence reload.
+    let restarted = RuntimeHandle::new(
+        "default",
+        dir.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("done")),
+        "default".into(),
+        context_config(),
+    )
+    .unwrap();
+    let execution_reloaded = restarted
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .expect("execution protocol survives restart");
+    assert_eq!(
+        execution_reloaded.work_items.get(&parent.id),
+        Some(execution_parent)
+    );
+    assert!(restarted
+        .storage()
+        .latest_active_work_item_continuation_for_suspended("default", &parent.id)
+        .unwrap()
+        .is_none());
+
+    // Re-picking the resumed parent is an ordinary same-item pick: no new
+    // continuation frame and no duplicate canonical generation advance.
+    let repick = restarted
+        .pick_work_item_with_reason(parent.id.clone(), None)
+        .await
+        .unwrap();
+    assert_eq!(repick.transition.switch_kind, "same_work_item");
+    assert!(repick.continuation_created.is_none());
+    assert!(repick.continuation_resolved.is_none());
+    let execution_repick = restarted
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        execution_repick.work_items.get(&parent.id),
+        Some(execution_parent)
+    );
+}
+
+#[tokio::test]
 async fn explicit_pick_unwinds_nested_continuations_and_canonical_parents() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();

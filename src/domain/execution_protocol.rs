@@ -283,7 +283,7 @@ mod tests {
                 continuation_id: "continuation-a".into(),
                 expected: paused.clone(),
                 source: WorkItemContinuationResumeSource {
-                    work_item_revision: 1,
+                    work_item_revision: 2,
                     blocked_by: None,
                     active_wait_ids: Vec::new(),
                     latest_admitted_wait_id: None,
@@ -299,9 +299,38 @@ mod tests {
                 recovery_ref: None,
             }
         );
+        assert_eq!(resumed.state.work_items["work-a"].source_revision, 2);
 
         let stale = ResumeWorkItemContinuation {
             command_id: "resume:continuation-a:stale".into(),
+            work_item_id: "work-a".into(),
+            active_work_item_id: "work-b".into(),
+            continuation_id: "continuation-a".into(),
+            expected: paused,
+            source: WorkItemContinuationResumeSource {
+                work_item_revision: 2,
+                blocked_by: None,
+                active_wait_ids: Vec::new(),
+                latest_admitted_wait_id: None,
+            },
+            outcome: WorkItemOutcome::Continue,
+        };
+        assert!(resume_work_item_continuation(&resumed.state, &stale)
+            .unwrap_err()
+            .contains("stale"));
+    }
+
+    #[test]
+    fn continuation_resume_rejects_rewinding_the_source_revision() {
+        let mut state = ExecutionProtocolState::empty("agent-a");
+        let paused = work_item_record(WorkItemExecutionState::Paused {
+            generation: 2,
+            reason: "yielded_to:work-b".into(),
+        });
+        state.work_items.insert("work-a".into(), paused.clone());
+
+        let rewinding = ResumeWorkItemContinuation {
+            command_id: "resume:continuation-a:rewind".into(),
             work_item_id: "work-a".into(),
             active_work_item_id: "work-b".into(),
             continuation_id: "continuation-a".into(),
@@ -314,9 +343,9 @@ mod tests {
             },
             outcome: WorkItemOutcome::Continue,
         };
-        assert!(resume_work_item_continuation(&resumed.state, &stale)
+        assert!(resume_work_item_continuation(&state, &rewinding)
             .unwrap_err()
-            .contains("stale"));
+            .contains("cannot rewind the WorkItem source revision"));
     }
 
     #[test]

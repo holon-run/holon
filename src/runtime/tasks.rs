@@ -3526,6 +3526,7 @@ impl RuntimeHandle {
         record: &WorkItemRecord,
         wait_conditions: &[crate::types::WaitConditionRecord],
         read: &WorkCommandRead,
+        readiness_owned_by_continuation_resume: bool,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
             AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
@@ -3561,25 +3562,37 @@ impl RuntimeHandle {
         let revision_changed = authoritative.source_revision != record.revision;
         let command = match &authoritative.state {
             WorkItemExecutionState::Waiting { generation, .. }
-            | WorkItemExecutionState::Paused { generation, .. } => Some(
-                ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
-                    command_id: format!(
-                        "work_item:clear_blocker:{}:{}",
-                        record.id, record.revision
-                    ),
-                    work_item_id: record.id.clone(),
-                    expected: authoritative.clone(),
-                    record: WorkItemExecutionRecord {
-                        source_revision: record.revision,
-                        state: WorkItemExecutionState::Runnable {
-                            generation: generation.checked_add(1).ok_or_else(|| {
-                                anyhow!("WorkItem scheduling generation overflow")
-                            })?,
-                            recovery_ref: None,
+            | WorkItemExecutionState::Paused { generation, .. } => {
+                if readiness_owned_by_continuation_resume {
+                    // The same atomic batch resolves this WorkItem's own
+                    // yield frame; its ResumeWorkItemContinuation command is
+                    // the single canonical transition (state and source
+                    // revision) for this WorkItem. A readiness command here
+                    // would rewrite the record first and invalidate the
+                    // resume's expected fence mid-transaction.
+                    None
+                } else {
+                    Some(ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(
+                        SetWorkItemReadiness {
+                            command_id: format!(
+                                "work_item:clear_blocker:{}:{}",
+                                record.id, record.revision
+                            ),
+                            work_item_id: record.id.clone(),
+                            expected: authoritative.clone(),
+                            record: WorkItemExecutionRecord {
+                                source_revision: record.revision,
+                                state: WorkItemExecutionState::Runnable {
+                                    generation: generation.checked_add(1).ok_or_else(|| {
+                                        anyhow!("WorkItem scheduling generation overflow")
+                                    })?,
+                                    recovery_ref: None,
+                                },
+                            },
                         },
-                    },
-                })),
-            ),
+                    )))
+                }
+            }
             WorkItemExecutionState::Runnable { generation, .. } if revision_changed => Some(
                 ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
                     command_id: format!(
@@ -3615,7 +3628,13 @@ impl RuntimeHandle {
             }
             _ => None,
         };
-        if command.is_none() && !wait_conditions.is_empty() {
+        if command.is_none()
+            && !wait_conditions.is_empty()
+            && !readiness_owned_by_continuation_resume
+        {
+            // When the continuation resume owns this WorkItem's canonical
+            // transition, its source fence re-derives the cancelled waits
+            // within the same transaction.
             return Err(anyhow!(
                 "cancelled WorkItem waits require a canonical readiness transition"
             ));
@@ -4082,8 +4101,36 @@ impl RuntimeHandle {
                 }]
             })
             .unwrap_or_default();
+        // When this pick clears a blocker and also resolves the target's own
+        // yield frame, the ResumeWorkItemContinuation command performs the
+        // WorkItem's canonical transition (state and source revision) in one
+        // step; a separate readiness command would invalidate the resume's
+        // expected fence mid-transaction.
+        let readiness_owned_by_continuation_resume = continuation_records.iter().any(|frame| {
+            frame.state != WorkItemContinuationState::Active
+                && frame.suspended_work_item_id == record.id
+                && read
+                    .protocol
+                    .as_ref()
+                    .and_then(|state| state.work_items.get(&record.id))
+                    .is_some_and(|authoritative| {
+                        matches!(
+                            &authoritative.state,
+                            crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+                                reason,
+                                ..
+                            } if reason
+                                == &format!("yielded_to:{}", frame.active_work_item_id)
+                        )
+                    })
+        });
         let mut execution_protocol = if blocker_cleared {
-            self.plan_work_item_execution_clear_blocker(&record, &wait_conditions, &read)?
+            self.plan_work_item_execution_clear_blocker(
+                &record,
+                &wait_conditions,
+                &read,
+                readiness_owned_by_continuation_resume,
+            )?
         } else {
             Default::default()
         };
