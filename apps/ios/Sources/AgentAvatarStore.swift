@@ -4,7 +4,7 @@ import Observation
 import UIKit
 import HolonClient
 
-/// Session-only decoded PNGs. A cache hit is decorative data, never proof of access.
+/// Bounded decoded PNGs. A cache hit is decorative data, never proof of access.
 @Observable @MainActor
 final class AgentAvatarStore {
     struct Key: Hashable {
@@ -14,6 +14,7 @@ final class AgentAvatarStore {
     private struct Entry {
         let image: UIImage
         let bytes: Int
+        let png: Data
     }
     private enum Capability { case unknown, checking, supported, unsupported, failed }
 
@@ -37,19 +38,75 @@ final class AgentAvatarStore {
     @ObservationIgnored private let entryLimit: Int
     @ObservationIgnored private let byteLimit: Int
     @ObservationIgnored private let concurrency: Int
+    @ObservationIgnored private let cache: (any AgentAvatarCaching)?
+    @ObservationIgnored private var partition: ReadingPartition?
+    @ObservationIgnored private var resourceEpoch: String?
+    @ObservationIgnored private var restoration: Task<Void, Never>?
+    @ObservationIgnored private var persistence: Task<Void, Never>?
+    @ObservationIgnored private var pendingSnapshot: AgentAvatarCache.Snapshot?
+    @ObservationIgnored private var pendingRemovals: Set<ReadingPartition> = []
+    @ObservationIgnored private var restoring = false
 
-    init(entryLimit: Int = 128, byteLimit: Int = 8 * 1_024 * 1_024, concurrency: Int = 4) {
+    init(entryLimit: Int = 128, byteLimit: Int = 8 * 1_024 * 1_024, concurrency: Int = 4,
+         cache: (any AgentAvatarCaching)? = nil) {
         self.entryLimit = min(128, max(1, entryLimit))
         self.byteLimit = min(8 * 1_024 * 1_024, max(1, byteLimit))
         self.concurrency = min(4, max(1, concurrency))
+        self.cache = cache
     }
 
-    func activate(transport: any AgentAvatarTransport) {
-        disconnect()
+    func activate(transport: any AgentAvatarTransport, partition: ReadingPartition? = nil) {
+        prepare(partition: partition)
         self.transport = transport
     }
 
+    func activateOffline(partition: ReadingPartition) {
+        prepare(partition: partition)
+    }
+
+    private func prepare(partition: ReadingPartition?) {
+        if partition != nil, self.partition == partition {
+            cancelRequests()
+            transport = nil
+            isOnline = false
+            capability = .unknown
+            failed.removeAll()
+            sessionID = UUID()
+            return
+        }
+        disconnect()
+        self.partition = partition
+        guard let partition, let cache else { return }
+        restoring = true
+        let previous = persistence
+        restoration = Task { [weak self] in
+            await previous?.value
+            let saved = await cache.load(partition)
+            guard let self, !Task.isCancelled, self.partition == partition else { return }
+            // A transport reactivation may change sessionID without changing identity.
+            guard self.restoring else { return }
+            if let saved, self.resourceEpoch == nil || self.resourceEpoch == saved.epoch {
+                self.resourceEpoch = saved.epoch
+                for record in saved.images where !record.agentID.isEmpty && record.agentID.utf8.count <= 512 {
+                    let key = Key(agentID: record.agentID, expression: record.expression)
+                    if self.entries[key] == nil, let entry = Self.decode(record.png), entry.bytes <= self.byteLimit {
+                        self.insert(entry, for: key)
+                    }
+                }
+            } else if saved != nil {
+                // A new epoch may arrive before the cold-launch read completes.
+                self.removePersisted(partition)
+            }
+            self.restoring = false
+            self.restoration = nil
+            self.pump()
+        }
+    }
+
     func disconnect() {
+        restoration?.cancel()
+        restoration = nil
+        restoring = false
         cancelRequests()
         transport = nil
         sessionID = UUID()
@@ -59,6 +116,8 @@ final class AgentAvatarStore {
         access.removeAll()
         failed.removeAll()
         retainedBytes = 0
+        partition = nil
+        resourceEpoch = nil
     }
 
     func setOnline(_ online: Bool) {
@@ -68,11 +127,64 @@ final class AgentAvatarStore {
     }
 
     func invalidateResources() {
-        guard let transport else { disconnect(); return }
+        let transport = transport, partition = partition, epoch = resourceEpoch
         let online = isOnline
-        activate(transport: transport)
+        disconnect()
+        self.partition = partition
+        resourceEpoch = epoch
+        self.transport = transport
+        if let partition { removePersisted(partition) }
         setOnline(online)
     }
+
+    func observeResourceEpoch(_ epoch: String) {
+        if let resourceEpoch, resourceEpoch != epoch { invalidateResources() }
+        resourceEpoch = epoch
+    }
+
+    func purge(_ partition: ReadingPartition) {
+        if self.partition == partition { disconnect() }
+        removePersisted(partition)
+    }
+
+    private func removePersisted(_ partition: ReadingPartition) {
+        guard cache != nil else { return }
+        if pendingSnapshot?.partition == partition { pendingSnapshot = nil }
+        pendingRemovals.insert(partition)
+        startWriter()
+    }
+
+    private func persist() {
+        guard cache != nil, let partition, let resourceEpoch else { return }
+        let images = entries.sorted { (access[$0.key] ?? 0) < (access[$1.key] ?? 0) }.map {
+            AgentAvatarCache.Image(agentID: $0.key.agentID, expression: $0.key.expression, png: $0.value.png)
+        }
+        pendingSnapshot = AgentAvatarCache.Snapshot(partition: partition, epoch: resourceEpoch, images: images)
+        startWriter()
+    }
+
+    private func startWriter() {
+        guard persistence == nil, let cache else { return }
+        persistence = Task { [weak self] in
+            guard let self else { return }
+            // At most one in-flight and one pending image snapshot. Purges run
+            // after an in-flight save and before any newer authorized save.
+            while true {
+                if let partition = self.pendingRemovals.first {
+                    self.pendingRemovals.remove(partition)
+                    await cache.remove(partition)
+                } else if let snapshot = self.pendingSnapshot {
+                    self.pendingSnapshot = nil
+                    await cache.save(snapshot)
+                } else {
+                    self.persistence = nil
+                    return
+                }
+            }
+        }
+    }
+
+    func flushCache() async { await persistence?.value }
 
     /// Only explicit reader refresh retries failures; scrolling cannot create a retry loop.
     func retry() {
@@ -84,9 +196,11 @@ final class AgentAvatarStore {
 
     func image(agentID: String, expression: HolonAvatarExpression) -> UIImage? {
         let key = Key(agentID: agentID, expression: isOnline ? expression : .neutral)
-        guard let entry = entries[key] else { return nil }
+        // An expression change must not flash a generic placeholder while its PNG loads.
+        let displayed = entries[key] != nil ? key : Key(agentID: agentID, expression: .neutral)
+        guard let entry = entries[displayed] else { return nil }
         clock &+= 1
-        access[key] = clock
+        access[displayed] = clock
         return entry.image
     }
 
@@ -119,7 +233,7 @@ final class AgentAvatarStore {
     }
 
     private func pump() {
-        guard isOnline, let transport else { return }
+        guard isOnline, !restoring, let transport else { return }
         if capability == .unknown {
             capability = .checking
             let stamp = operationID
@@ -154,6 +268,7 @@ final class AgentAvatarStore {
                     }
                     self.active.removeValue(forKey: key)
                     self.insert(entry, for: key)
+                    self.persist()
                     self.pump()
                 } catch {
                     guard let self, self.current(stamp) else { return }
@@ -169,6 +284,7 @@ final class AgentAvatarStore {
 
     private func handleAuthorization(_ error: any Error) {
         guard let failure = error as? HolonHTTPFailure, [401, 403].contains(failure.statusCode) else { return }
+        if let partition { removePersisted(partition) }
         disconnect()
         onAuthorizationFailure?(failure)
     }
@@ -201,6 +317,9 @@ final class AgentAvatarStore {
         // Detach from the source provider: retained images cannot retain arbitrary PNG metadata.
         bitmap.draw(image, in: CGRect(x: 0, y: 0, width: 128, height: 128))
         guard let decoded = bitmap.makeImage() else { return nil }
-        return Entry(image: UIImage(cgImage: decoded), bytes: 128 * 128 * 4)
+        let result = UIImage(cgImage: decoded)
+        // Persist only the validated, metadata-free bitmap, never the response container.
+        guard let png = result.pngData() else { return nil }
+        return Entry(image: result, bytes: 128 * 128 * 4, png: png)
     }
 }

@@ -53,6 +53,53 @@ private actor AvatarFixture: AgentAvatarTransport {
     func deny(_ failure: HolonHTTPFailure) { self.failure = failure }
 }
 
+private actor HeldAvatarCache: AgentAvatarCaching {
+    private(set) var snapshot: AgentAvatarCache.Snapshot?
+    private(set) var loads = 0
+    private(set) var saves = 0
+    private(set) var removals = 0
+    private var holdLoad: Bool
+    private var holdSave: Bool
+    private var loadGate: CheckedContinuation<Void, Never>?
+    private var saveGate: CheckedContinuation<Void, Never>?
+
+    init(snapshot: AgentAvatarCache.Snapshot? = nil, holdLoad: Bool = false, holdSave: Bool = false) {
+        self.snapshot = snapshot
+        self.holdLoad = holdLoad
+        self.holdSave = holdSave
+    }
+
+    func load(_ partition: ReadingPartition) async -> AgentAvatarCache.Snapshot? {
+        loads += 1
+        let saved = snapshot
+        if holdLoad { await withCheckedContinuation { loadGate = $0 } }
+        return saved?.partition == partition ? saved : nil
+    }
+
+    func save(_ snapshot: AgentAvatarCache.Snapshot) async {
+        saves += 1
+        if holdSave { await withCheckedContinuation { saveGate = $0 } }
+        self.snapshot = snapshot
+    }
+
+    func remove(_ partition: ReadingPartition) {
+        removals += 1
+        if snapshot?.partition == partition { snapshot = nil }
+    }
+
+    func releaseLoad() {
+        holdLoad = false
+        loadGate?.resume()
+        loadGate = nil
+    }
+
+    func releaseSave() {
+        holdSave = false
+        saveGate?.resume()
+        saveGate = nil
+    }
+}
+
 @MainActor
 final class AgentAvatarStoreTests: XCTestCase {
     private func png(size: CGFloat = 128) -> Data {
@@ -213,5 +260,151 @@ final class AgentAvatarStoreTests: XCTestCase {
         store.request(agentID: "agent", expression: .neutral)
         let calls = await transport.calls
         XCTAssertEqual(calls.count, 2)
+    }
+
+    private func partition(user: String = "reader") throws -> ReadingPartition {
+        try XCTUnwrap(ReadingPartition(apiBaseURL: URL(string: "https://avatar.example/api")!,
+            identity: HolonConnectionIdentity(networkID: "network", runtimeID: "runtime",
+                                             userID: user, visibilityScopeID: "private")))
+    }
+
+    func testNeutralRemainsVisibleWhileAnotherExpressionLoads() async throws {
+        let transport = AvatarFixture(data: png())
+        let store = AgentAvatarStore()
+        store.activate(transport: transport)
+        store.setOnline(true)
+        store.request(agentID: "same", expression: .neutral)
+        try await waitUntil { store.cachedCount == 1 }
+        let neutral = try XCTUnwrap(store.image(agentID: "same", expression: .neutral))
+        XCTAssertTrue(store.image(agentID: "same", expression: .focused) === neutral)
+        XCTAssertTrue(store.image(agentID: "same", expression: .waiting) === neutral)
+        store.disconnect()
+    }
+
+    func testDiskCacheSurvivesColdLaunchAndSameIdentityReconnectWithoutDownloads() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let cache = AgentAvatarCache(file: file), partition = try partition()
+        let transport = AvatarFixture(data: png())
+        let original = AgentAvatarStore(cache: cache)
+        original.activate(transport: transport, partition: partition)
+        original.observeResourceEpoch("epoch")
+        original.setOnline(true)
+        original.request(agentID: "same", expression: .focused)
+        try await waitUntil { original.cachedCount == 2 }
+        await original.flushCache()
+        original.disconnect()
+
+        let restored = AgentAvatarStore(cache: AgentAvatarCache(file: file))
+        restored.activateOffline(partition: partition)
+        try await waitUntil { restored.cachedCount == 2 }
+        XCTAssertNotNil(restored.image(agentID: "same", expression: .neutral))
+        let replacement = AvatarFixture(data: png())
+        restored.activate(transport: replacement, partition: partition)
+        restored.observeResourceEpoch("epoch")
+        restored.setOnline(true)
+        restored.request(agentID: "same", expression: .focused)
+        try await waitUntil { await replacement.handshakes == 1 }
+        let downloads = await replacement.calls
+        XCTAssertTrue(downloads.isEmpty)
+        XCTAssertEqual(restored.cachedCount, 2)
+        restored.disconnect()
+    }
+
+    func testPersistedAvatarsCannotCrossIdentityOrServerEpochAndPurgeIsDurable() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let cache = AgentAvatarCache(file: file), partition = try partition()
+        let store = AgentAvatarStore(cache: cache), transport = AvatarFixture(data: png())
+        store.activate(transport: transport, partition: partition)
+        store.observeResourceEpoch("old")
+        store.setOnline(true)
+        store.request(agentID: "same", expression: .neutral)
+        try await waitUntil { store.cachedCount == 1 }
+        await store.flushCache()
+        let foreignPartition = try self.partition(user: "other")
+        let foreign = await cache.load(foreignPartition)
+        XCTAssertNil(foreign)
+        store.observeResourceEpoch("new")
+        XCTAssertEqual(store.cachedCount, 0)
+        await store.flushCache()
+        let invalidated = await cache.load(partition)
+        XCTAssertNil(invalidated)
+        store.request(agentID: "same", expression: .neutral)
+        try await waitUntil { store.cachedCount == 1 }
+        store.purge(partition)
+        await store.flushCache()
+        let removed = await cache.load(partition)
+        XCTAssertNil(removed, "An older queued write must not resurrect a signed-out cache")
+        XCTAssertEqual(store.cachedCount, 0)
+    }
+
+    func testEpochArrivingBeforeColdRestoreDeletesOldSnapshotBeforeOfflineRelaunch() async throws {
+        let partition = try partition()
+        let saved = AgentAvatarCache.Snapshot(partition: partition, epoch: "old",
+            images: [.init(agentID: "same", expression: .neutral, png: png())])
+        let cache = HeldAvatarCache(snapshot: saved, holdLoad: true)
+        let store = AgentAvatarStore(cache: cache)
+        store.activateOffline(partition: partition)
+        store.observeResourceEpoch("new")
+        try await waitUntil { await cache.loads == 1 }
+        await cache.releaseLoad()
+        try await waitUntil { await cache.removals == 1 }
+        await store.flushCache()
+        XCTAssertEqual(store.cachedCount, 0)
+        store.disconnect()
+
+        let relaunched = AgentAvatarStore(cache: cache)
+        relaunched.activateOffline(partition: partition)
+        try await waitUntil { await cache.loads == 2 }
+        let persisted = await cache.snapshot
+        XCTAssertNil(persisted)
+        XCTAssertEqual(relaunched.cachedCount, 0)
+        relaunched.disconnect()
+    }
+
+    func testSlowPersistenceCoalescesToOneLatestPendingSnapshot() async throws {
+        let cache = HeldAvatarCache(holdSave: true)
+        let store = AgentAvatarStore(entryLimit: 2, cache: cache)
+        store.activate(transport: AvatarFixture(data: png()), partition: try partition())
+        store.observeResourceEpoch("epoch")
+        store.setOnline(true)
+        store.request(agentID: "agent-0", expression: .neutral)
+        try await waitUntil { await cache.saves == 1 }
+        for index in 1..<24 {
+            let agent = "agent-\(index)"
+            store.request(agentID: agent, expression: .neutral)
+            try await waitUntil { store.image(agentID: agent, expression: .neutral) != nil }
+        }
+        await cache.releaseSave()
+        await store.flushCache()
+        let saves = await cache.saves
+        let savedAgents = await cache.snapshot?.images.map(\.agentID)
+        XCTAssertEqual(saves, 2, "Slow storage must not retain one full snapshot task per download")
+        XCTAssertEqual(Set(savedAgents ?? []), ["agent-22", "agent-23"])
+        XCTAssertEqual(store.cachedCount, 2)
+        store.disconnect()
+    }
+
+    func testPurgeDiscardsPendingSnapshotAndRunsAfterBlockedWrite() async throws {
+        let cache = HeldAvatarCache(holdSave: true)
+        let partition = try partition()
+        let store = AgentAvatarStore(cache: cache)
+        store.activate(transport: AvatarFixture(data: png()), partition: partition)
+        store.observeResourceEpoch("epoch")
+        store.setOnline(true)
+        store.request(agentID: "first", expression: .neutral)
+        try await waitUntil { await cache.saves == 1 }
+        store.request(agentID: "second", expression: .neutral)
+        try await waitUntil { store.image(agentID: "second", expression: .neutral) != nil }
+        store.purge(partition)
+        await cache.releaseSave()
+        await store.flushCache()
+        let saves = await cache.saves
+        let removals = await cache.removals
+        let persisted = await cache.snapshot
+        XCTAssertEqual(saves, 1)
+        XCTAssertEqual(removals, 1)
+        XCTAssertNil(persisted, "A blocked old write must not resurrect a purged cache")
     }
 }

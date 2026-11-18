@@ -1170,7 +1170,10 @@ class UIFixtureSetupContracts(unittest.TestCase):
                       if isinstance(node, ast.If)
                       and any(isinstance(value, ast.Constant)
                               and value.value == "testConversationHistoryWindowPosition"
-                              for value in ast.walk(node.test)))
+                              for value in ast.walk(node.test))
+                      and any(isinstance(value, ast.Constant)
+                              and value.value == "TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"
+                              for value in ast.walk(node)))
         code = compile(ast.Module(body=[seed, oracle], type_ignores=[]), str(source), "exec")
         for history_acceptance in (False, True):
             with self.subTest(history_acceptance=history_acceptance):
@@ -2603,6 +2606,29 @@ class UIFixtureProxyAvailabilityContracts(unittest.TestCase):
 
 
 class UIFixtureProviderContracts(unittest.TestCase):
+    def test_history_window_case_seeds_an_interior_window_before_pairing(self):
+        source = ROOT / "scripts/ios_ui_fixture.py"
+        tree = ast.parse(source.read_text(), filename=str(source))
+        seed = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.If)
+                    and any(isinstance(value, ast.Constant)
+                            and value.value == "testConversationHistoryWindowPosition"
+                            for value in ast.walk(node.test))
+                    and any(isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
+                            and value.func.id == "seed_fixture_history"
+                            for statement in node.body for value in ast.walk(statement)))
+        code = compile(ast.Module(body=[seed], type_ignores=[]), str(source), "exec")
+        for method in ("testConversationHistoryWindowPosition", "testOfflineReadingCacheColdLaunchAndRetry"):
+            with self.subTest(method=method):
+                seed_history, local, active = Mock(), Mock(), threading.Event()
+                exec(code, dict(method=method, seed_fixture_history=seed_history,
+                                local=local, agent="holon-tester", history_seed_active=active))
+                if method == "testConversationHistoryWindowPosition":
+                    seed_history.assert_called_once_with(local, "holon-tester", active,
+                                                         count=40, marker_prefix="IOS_WINDOW_HISTORY")
+                else:
+                    seed_history.assert_not_called()
+
     def test_history_window_oracle_matches_reader_snapshot_limit(self):
         source = ROOT / "scripts/ios_ui_fixture.py"
         tree = ast.parse(source.read_text(), filename=str(source))
@@ -2611,7 +2637,10 @@ class UIFixtureProviderContracts(unittest.TestCase):
                      and isinstance(node.test.left, ast.Name) and node.test.left.id == "method"
                      and any(isinstance(value, ast.Constant)
                              and value.value == "testConversationHistoryWindowPosition"
-                             for value in ast.walk(node.test)))
+                             for value in ast.walk(node.test))
+                     and any(isinstance(value, ast.Constant)
+                             and value.value == "TEST_RUNNER_HOLON_UI_HISTORY_OLDER_TOP"
+                             for value in ast.walk(node)))
         code = compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec")
         for count, older, newer in [(25, 0, 5), (33, 0, 13), (60, 25, 40)]:
             with self.subTest(turns=count):

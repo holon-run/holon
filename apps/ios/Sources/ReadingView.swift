@@ -171,9 +171,6 @@ private struct AgentConversationTitle: View {
                 Text(verbatim: agent.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 AgentStatusLabel(presentation: presentation)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                if let key = presentation.connectionStatusKey {
-                    Text(LocalizedStringKey(key)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -182,7 +179,7 @@ private struct AgentConversationTitle: View {
 }
 
 struct ConversationReadingView: View {
-    private enum ScrollRequest: Hashable { case top(String), latest }
+    private enum ScrollRequest: Hashable { case latest }
     @Bindable var reader: ReadingCoordinator
     let sender: SendingCoordinator?
     var apiBaseURL: URL?
@@ -199,6 +196,7 @@ struct ConversationReadingView: View {
     @State private var userScrolling = false
     @State private var scrollRequest: ScrollRequest?
     @State private var scrollPosition = ScrollPosition(idType: String.self)
+    @State private var historyScrollIntent: String?
     @State private var showPrivacyInfo = false
 
     private var turnIDs: [String] { turns.map(\.id) }
@@ -228,6 +226,10 @@ struct ConversationReadingView: View {
         GeometryReader { geometry in
         Group {
         if reader.snapshot == nil || initializedAgent == reader.snapshot?.agentID {
+        // Post-mount id directives on ScrollPosition are silently dropped in
+        // this stack (pre-mount restore assignments resolve fine); route
+        // history positioning through ScrollViewReader's imperative proxy.
+        ScrollViewReader { scrollProxy in
         ScrollView {
             // The explicit turn window is bounded to20. Use its actual heights:
             // lazy offscreen estimates can loop while scrolling rich results.
@@ -235,26 +237,29 @@ struct ConversationReadingView: View {
                 if turnRange.lowerBound > 0 || reader.canLoadHistory {
                     Button("reading.history") {
                         follow.reviewHistory()
-                        Task {
-                            let agent = reader.selectedAgentID
-                            let epoch = reader.snapshot?.eventLogEpoch
-                            if turnRange.lowerBound > 0 {
-                                historyEndTurnID = ConversationTurnWindow.olderEnd(ids: turnIDs, current: turnRange)
-                            } else {
+                        if turnRange.lowerBound > 0 {
+                            showHistoryWindow(endingAt: ConversationTurnWindow.olderEnd(ids: turnIDs, current: turnRange))
+                        } else {
+                            Task {
+                                let agent = reader.selectedAgentID
+                                let epoch = reader.snapshot?.eventLogEpoch
                                 let previousFirst = turnIDs.first
                                 await reader.loadHistory()
                                 guard reader.selectedAgentID == agent, reader.snapshot?.eventLogEpoch == epoch else { return }
                                 if let previousFirst, let index = turnIDs.firstIndex(of: previousFirst), index > 0 {
-                                    historyEndTurnID = turnIDs[min(turnIDs.count - 1, index + 4)]
+                                    showHistoryWindow(endingAt: turnIDs[min(turnIDs.count - 1, index + 4)])
+                                } else {
+                                    showHistoryWindow(endingAt: historyEndTurnID)
                                 }
                             }
-                            if let first = visibleTurns.first { scrollRequest = .top(first.id) }
                         }
                     }
                         .disabled(reader.isLoadingHistory || (turnRange.lowerBound == 0 && reader.status != .live))
                         .accessibilityIdentifier("conversation.older")
+                        .overlay(alignment: .trailing) {
+                            if reader.isLoadingHistory { ProgressView().controlSize(.mini) }
+                        }
                 }
-                if reader.isLoadingHistory { ProgressView() }
                 if reader.status == .offline && reader.snapshot == nil {
                     Text("reading.cache.noConversation").foregroundStyle(.secondary)
                         .accessibilityIdentifier("conversation.notCached")
@@ -267,16 +272,17 @@ struct ConversationReadingView: View {
                         .environment(\.holonOpenReference, reader.status == .live ? openReference : nil)
                         .environment(\.holonOpenWork, reader.status == .live ? openWork : nil)
                         .environment(\.holonOpenTask, reader.status == .live ? openTask : nil)
-                        .id(turn.id)
+                    // No explicit .id(turn.id) here: ForEach already gives each
+                    // turn its Identifiable identity, and an .id() modifier on
+                    // children of a scrollTargetLayout breaks ScrollPosition's
+                    // id-based scrollTo resolution (the directive is silently
+                    // dropped even after the target materializes).
                 }
                 if turnRange.upperBound < turns.count {
                     Button("reading.newerTurns") {
-                        follow.reviewHistory()
                         let ids = turnIDs
                         let nextEnd = ConversationTurnWindow.newerEnd(ids: ids, current: turnRange)
-                        let nextRange = ConversationTurnWindow.range(ids: ids, endingAt: nextEnd)
-                        historyEndTurnID = nextEnd
-                        if !nextRange.isEmpty { scrollRequest = .top(ids[nextRange.lowerBound]) }
+                        showHistoryWindow(endingAt: nextEnd)
                     }.accessibilityIdentifier("conversation.newer")
                 }
                 ForEach((reader.snapshot?.raw["pending_inputs"].viewArray ?? []).filter { $0["presentation_class"] == .string("operator") && TaskResultInput($0) == nil }, id: \.viewMessageID) { input in
@@ -297,14 +303,46 @@ struct ConversationReadingView: View {
             .padding(.vertical, 16)
             .scrollTargetLayout()
         }
+        .accessibilityIdentifier("conversation.viewport")
         .scrollPosition($scrollPosition)
         // Initial layout must not override a saved historical ID with the tail.
         .defaultScrollAnchor(reader.readingPosition == nil ? .bottom : .top, for: .initialOffset)
+        // Only tail following needs a resize anchor. Historical windows retain
+        // their native offset/explicit ID instead of competing with a top anchor.
+        .defaultScrollAnchor(follow.followsLatest && historyEndTurnID == nil ? .bottom : nil, for: .sizeChanges)
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
             visibleTurnIDs = ids
+            // Arrival confirmation: once the layout reports the pending target
+            // visible, retire the intent and re-affirm the anchor (the early
+            // consumer below may have travelled a long distance to get here).
+            guard let target = historyScrollIntent, ids.contains(target) else { return }
+            historyScrollIntent = nil
+            scrollProxy.scrollTo(target, anchor: .top)
+        }
+        .onChange(of: historyScrollIntent) { _, target in
+            guard let target else { return }
+            // The turn window is a plain VStack: every turn id registers when
+            // the navigation transaction commits, so the imperative proxy can
+            // resolve the target even while it is off-screen. Jumping to a
+            // window top from the window bottom never brings the target
+            // through the visibility set on its own, so consume early and let
+            // the visibility callback above confirm arrival.
+            Task { @MainActor in
+                guard historyScrollIntent == target else { return }
+                scrollProxy.scrollTo(target, anchor: .top)
+            }
         }
         .onScrollPhaseChange { _, phase in
-            if phase == .interacting { userScrolling = true }
+            if phase == .tracking || phase == .interacting {
+                userScrolling = true
+                follow.userBeganScroll()
+                scrollRequest = nil
+            }
+            if phase == .interacting {
+                // Only a real drag revokes pending programmatic positioning;
+                // the navigation tap itself never reports a tracking phase.
+                historyScrollIntent = nil
+            }
             if phase == .idle, userScrolling {
                 userScrolling = false
                 follow.userEndedScroll(nearBottom: nearBottom, newestWindow: historyEndTurnID == nil)
@@ -321,17 +359,9 @@ struct ConversationReadingView: View {
             if value { newContent = false }
         }
         .task(id: scrollRequest) {
-            guard let request = scrollRequest else { return }
-            // Keep the ID/edge as native position state so the new window's
-            // committed layout resolves it, rather than a one-shot proxy read.
-            switch request {
-            case .top(let id):
-                if visibleTurns.contains(where: { $0.id == id }) {
-                    scrollPosition.scrollTo(id: id, anchor: .top)
-                    reader.rememberPosition(turnID: id)
-                }
-            case .latest: scrollPosition.scrollTo(edge: .bottom)
-            }
+            guard scrollRequest != nil else { return }
+            guard follow.followsLatest, !userScrolling else { scrollRequest = nil; return }
+            scrollPosition.scrollTo(edge: .bottom)
             scrollRequest = nil
         }
         .onChange(of: latestContentKey) { _, _ in
@@ -354,6 +384,7 @@ struct ConversationReadingView: View {
                 .accessibilityIdentifier("conversation.latest").padding(12)
             }
         }
+        }
         } else {
             ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -374,6 +405,7 @@ struct ConversationReadingView: View {
                 scrollPosition.scrollTo(edge: .bottom)
             }
             scrollRequest = nil
+            historyScrollIntent = nil
             visibleTurnIDs = []
             userScrolling = false
             newContent = false
@@ -383,21 +415,13 @@ struct ConversationReadingView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil,
-                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing) {
+                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
+                                         canPersistDraft: sender?.canPersistDraft == true) {
                 Task { await reader.refresh() }
             }
         }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
-                if reader.status != .live, sender?.canPersistDraft == true {
-                    // Offline keeps the composer available: drafts are saved
-                    // locally and delivery fails with an explicit per-message
-                    // retry. A disconnected sender (session expired) cannot
-                    // persist input, so the promise only shows while true.
-                    Text("reading.cache.readOnly").font(.caption).foregroundStyle(.secondary)
-                        .padding(.top, 6)
-                        .accessibilityIdentifier("conversation.readOnly")
-                }
                 if let sender {
                     SendingView(sender: sender, currentRunID: currentRunID,
                                 commonModels: reader.agents.compactMap(\.effectiveModel))
@@ -461,6 +485,22 @@ struct ConversationReadingView: View {
             Text("reading.cumulativeReadNotice")
         }
         }
+    }
+
+    private func showHistoryWindow(endingAt end: String?) {
+        let ids = turnIDs
+        let previousRange = turnRange
+        let range = ConversationTurnWindow.range(ids: ids, endingAt: end)
+        guard !range.isEmpty else { return }
+        let first = ids[range.lowerBound]
+        follow.reviewHistory()
+        scrollRequest = nil
+        historyEndTurnID = end
+        // Post-mount ScrollPosition id directives are dropped in this stack,
+        // so both the same-window and replacement-window paths defer
+        // positioning to the imperative proxy consumers above.
+        historyScrollIntent = first
+        reader.rememberPosition(turnID: first)
     }
 
     private var latestContentKey: String {
@@ -575,32 +615,103 @@ struct ReadingInputView: View {
 
 /// Connection state is chrome, not an invented entry in the conversation.
 struct ConversationConnectionStatus: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let status: ReadingStatus
     let hasSnapshot: Bool
     var isCached = false
     var isRefreshing = false
+    var canPersistDraft = false
     var retry: () -> Void
+
+    // Reserve natural, localized heights rather than truncating recovery text.
+    private static let statusKeys = [
+        "reading.status.disconnected", "reading.status.syncing", "reading.status.live",
+        "reading.status.offline", "reading.status.permissionDenied", "reading.status.sessionExpired",
+        "reading.status.incompatible", "reading.cache.offline", "reading.cache.refreshing",
+        "reading.cache.saved", "reading.loadingConversation"
+    ]
+
     var body: some View {
-        if let key = ReadingPresentation.connectionStatusKey(
+        let key = ReadingPresentation.connectionStatusKey(
             status: status, hasContent: hasSnapshot, isCached: isCached, isRefreshing: isRefreshing
-        ) {
-            HStack(spacing: 8) {
-                if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
-                    ProgressView().controlSize(.mini)
-                } else { Image(systemName: isCached && status == .live ? "internaldrive" : "wifi.exclamationmark") }
-                Text(LocalizedStringKey(key))
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
-                    Button("reading.retry", action: retry).font(.caption).frame(minHeight: 44)
-                        .accessibilityIdentifier("conversation.retry")
+        ) ?? "reading.status.live"
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                // Keep recovery instructions full-width at accessibility sizes.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        statusIcon
+                        Spacer()
+                        retryControl
+                    }
+                    statusCaption(key)
+                    draftNotice
+                }
+            } else {
+                HStack(spacing: 8) {
+                    statusIcon
+                    VStack(alignment: .leading, spacing: 2) {
+                        statusCaption(key)
+                        draftNotice
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    retryControl
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(.bar)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("conversation.connectionStatus")
         }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(.bar)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation.connectionStatus")
+    }
+
+    private func statusCaption(_ key: String) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Self.statusKeys, id: \.self) { candidate in
+                Text(LocalizedStringKey(candidate)).hidden().accessibilityHidden(true)
+            }
+            Text(LocalizedStringKey(key))
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var draftNotice: some View {
+        ZStack(alignment: .topLeading) {
+            Text("reading.cache.readOnly").hidden().accessibilityHidden(true)
+            if status != .live && canPersistDraft {
+                Text("reading.cache.readOnly")
+                    .accessibilityIdentifier("conversation.readOnly")
+            }
+        }
+        .font(.caption2).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var statusIcon: some View {
+        Group {
+            if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: status == .live ? (isCached ? "internaldrive" : "checkmark.circle") : "wifi.exclamationmark")
+            }
+        }
+        .frame(width: 20, height: 20)
+        .accessibilityHidden(true)
+    }
+
+    private var retryControl: some View {
+        Group {
+            if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
+                Button("reading.retry", action: retry)
+                    .accessibilityIdentifier("conversation.retry")
+            } else {
+                Text("reading.retry").hidden().accessibilityHidden(true)
+            }
+        }
+        .font(.caption).frame(minWidth: 44, minHeight: 44)
     }
 }
 

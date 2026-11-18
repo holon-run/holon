@@ -73,6 +73,19 @@ Real HTTP/SSE, authorization, restoration and default-case/export contracts are
 verified by `python3 scripts/test-ios-build-tools.py`, without starting Xcode.
 Python or Swift syntax checks are not evidence the XCUITest cases passed.
 
+`testLiveInterruptionRecoversInPlace` also compares the actual scroll viewport,
+connection strip and composer frames before, during and after the outage.
+Connection changes must not move or resize the reading viewport.
+With `IOS_RICH_ACCEPTANCE=1`, `testLiveInterruptionMaximumTextSize` repeats the
+outage and recovery geometry checks in English at the maximum system text size.
+Native rendering tests additionally check that full recovery instructions fit
+at 320pt in English and Chinese without truncation.
+With `IOS_HISTORY_ACCEPTANCE=1`, `testConversationHistoryWindowPosition` checks
+older/newer window anchors, then opens the keyboard and grows a multiline draft
+without moving the historical top turn. Interactive keyboard dismissal must keep
+that window visible; explicit Latest must still resume tail following.
+Use `IOS_UI_RETRY=0` for layout acceptance so a failed first attempt is preserved.
+
 ### Content-report acceptance
 
 After rebasing onto the real content-report API, run on the isolated simulator:

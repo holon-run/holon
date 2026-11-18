@@ -7,6 +7,10 @@ Native SwiftUI remote client, targeting iOS 18+ on iPhone and iPad. This directo
 contains first-connection onboarding, camera QR scanning, connection profiles,
 token/session login, offline invitation preview and confirmed redemption,
 native organization login, and scoped Keychain recovery.
+Decorative avatars use bounded memory and disk caches partitioned by the confirmed
+server/runtime/user/visibility identity and resource epoch. Reconnecting the same
+identity reuses images; expression loading keeps the neutral face visible.
+Sign-out, authorization failure and resource-epoch changes invalidate the cache.
 The searchable Agent home provides recent activity, reply/result filters and
 identity-partitioned offline caching, without global bottom tabs. Conversations
 show operator input and full Markdown briefs, with structured execution activity
