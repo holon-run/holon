@@ -21,11 +21,10 @@ private enum ReadingReconnectContext {
 
 @Observable @MainActor
 final class ReadingCoordinator {
-    let avatars = AgentAvatarStore()
+    let avatars = AgentAvatarStore(cache: AgentAvatarCache())
     private(set) var agents: [ReadingAgent] = []
     private(set) var rosterRevision = 0
     @ObservationIgnored private var rosterEpoch: String?
-    @ObservationIgnored private var observedResourceEpoch: String?
     // Only a successful roster response in the current context authorizes missing-agent decisions.
     private(set) var isRosterCurrent = false
     private(set) var selectedAgentID: String?
@@ -125,7 +124,7 @@ final class ReadingCoordinator {
             guard let self else { return }
             self.failed(failure, token: self.revision, recover: false)
         }
-        avatars.activate(transport: AgentAvatarClientTransport(client: client, authority: identity))
+        avatars.activate(transport: AgentAvatarClientTransport(client: client, authority: identity), partition: partition)
         avatars.setOnline(status == .live)
     }
 
@@ -138,9 +137,8 @@ final class ReadingCoordinator {
     }
 
     private func applyActivation(transport: any ReadingTransport, identity: HolonConnectionIdentity, apiBaseURL: URL) {
-        avatars.disconnect()
-        observedResourceEpoch = nil
         let next = ReadingPartition(apiBaseURL: apiBaseURL, identity: identity)
+        if partition != next || next == nil { avatars.disconnect() }
         if partition != next || next == nil { cancelReconnect() }
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -170,8 +168,7 @@ final class ReadingCoordinator {
     }
 
     private func applyOfflineActivation(partition: ReadingPartition) {
-        avatars.disconnect()
-        observedResourceEpoch = nil
+        avatars.activateOffline(partition: partition)
         if self.partition != partition { cancelReconnect() }
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -197,6 +194,7 @@ final class ReadingCoordinator {
             cacheWrites.removeValue(forKey: key)
         }
         cache.remove(partition)
+        avatars.purge(partition)
         guard self.partition == partition else { return }
         disconnect()
     }
@@ -210,7 +208,6 @@ final class ReadingCoordinator {
 
     private func applyDisconnect() {
         avatars.disconnect()
-        observedResourceEpoch = nil
         cancelReconnect()
         reportSessionID = UUID()
         reportDrafts.removeAll()
@@ -473,8 +470,7 @@ final class ReadingCoordinator {
     }
 
     private func observeResourceEpoch(_ epoch: String) {
-        if let observedResourceEpoch, observedResourceEpoch != epoch { avatars.invalidateResources() }
-        observedResourceEpoch = epoch
+        avatars.observeResourceEpoch(epoch)
     }
 
     private func applyRoster(_ roster: ReadingRoster) {

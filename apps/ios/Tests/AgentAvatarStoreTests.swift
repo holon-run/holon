@@ -214,4 +214,81 @@ final class AgentAvatarStoreTests: XCTestCase {
         let calls = await transport.calls
         XCTAssertEqual(calls.count, 2)
     }
+
+    private func partition(user: String = "reader") throws -> ReadingPartition {
+        try XCTUnwrap(ReadingPartition(apiBaseURL: URL(string: "https://avatar.example/api")!,
+            identity: HolonConnectionIdentity(networkID: "network", runtimeID: "runtime",
+                                             userID: user, visibilityScopeID: "private")))
+    }
+
+    func testNeutralRemainsVisibleWhileAnotherExpressionLoads() async throws {
+        let transport = AvatarFixture(data: png())
+        let store = AgentAvatarStore()
+        store.activate(transport: transport)
+        store.setOnline(true)
+        store.request(agentID: "same", expression: .neutral)
+        try await waitUntil { store.cachedCount == 1 }
+        let neutral = try XCTUnwrap(store.image(agentID: "same", expression: .neutral))
+        XCTAssertTrue(store.image(agentID: "same", expression: .focused) === neutral)
+        XCTAssertTrue(store.image(agentID: "same", expression: .waiting) === neutral)
+        store.disconnect()
+    }
+
+    func testDiskCacheSurvivesColdLaunchAndSameIdentityReconnectWithoutDownloads() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let cache = AgentAvatarCache(file: file), partition = try partition()
+        let transport = AvatarFixture(data: png())
+        let original = AgentAvatarStore(cache: cache)
+        original.activate(transport: transport, partition: partition)
+        original.observeResourceEpoch("epoch")
+        original.setOnline(true)
+        original.request(agentID: "same", expression: .focused)
+        try await waitUntil { original.cachedCount == 2 }
+        await original.flushCache()
+        original.disconnect()
+
+        let restored = AgentAvatarStore(cache: AgentAvatarCache(file: file))
+        restored.activateOffline(partition: partition)
+        try await waitUntil { restored.cachedCount == 2 }
+        XCTAssertNotNil(restored.image(agentID: "same", expression: .neutral))
+        let replacement = AvatarFixture(data: png())
+        restored.activate(transport: replacement, partition: partition)
+        restored.observeResourceEpoch("epoch")
+        restored.setOnline(true)
+        restored.request(agentID: "same", expression: .focused)
+        try await waitUntil { await replacement.handshakes == 1 }
+        let downloads = await replacement.calls
+        XCTAssertTrue(downloads.isEmpty)
+        XCTAssertEqual(restored.cachedCount, 2)
+        restored.disconnect()
+    }
+
+    func testPersistedAvatarsCannotCrossIdentityOrServerEpochAndPurgeIsDurable() async throws {
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: file) }
+        let cache = AgentAvatarCache(file: file), partition = try partition()
+        let store = AgentAvatarStore(cache: cache), transport = AvatarFixture(data: png())
+        store.activate(transport: transport, partition: partition)
+        store.observeResourceEpoch("old")
+        store.setOnline(true)
+        store.request(agentID: "same", expression: .neutral)
+        try await waitUntil { store.cachedCount == 1 }
+        await store.flushCache()
+        let foreignPartition = try self.partition(user: "other")
+        let foreign = await cache.load(foreignPartition)
+        XCTAssertNil(foreign)
+        store.observeResourceEpoch("new")
+        XCTAssertEqual(store.cachedCount, 0)
+        await store.flushCache()
+        let invalidated = await cache.load(partition)
+        XCTAssertNil(invalidated)
+        store.request(agentID: "same", expression: .neutral)
+        try await waitUntil { store.cachedCount == 1 }
+        store.purge(partition)
+        await store.flushCache()
+        let removed = await cache.load(partition)
+        XCTAssertNil(removed, "An older queued write must not resurrect a signed-out cache")
+        XCTAssertEqual(store.cachedCount, 0)
+    }
 }
