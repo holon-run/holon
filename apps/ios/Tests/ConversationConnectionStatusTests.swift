@@ -5,6 +5,39 @@ import XCTest
 
 @MainActor
 final class ConversationConnectionStatusTests: XCTestCase {
+    func testNarrowMaximumTextSizeReservesUntruncatedRecoveryInstructions() throws {
+        for locale in ["en", "zh-Hans"] {
+            for key in ["reading.status.sessionExpired", "reading.status.incompatible", "reading.cache.offline"] {
+                // At accessibility sizes instructions use the full width,
+                // below the fixed-height icon/action row.
+                let reference = ImageRenderer(content:
+                    VStack(alignment: .leading, spacing: 4) {
+                        Color.clear.frame(height: 44)
+                        Text(LocalizedStringKey(key)).font(.caption)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text("reading.cache.readOnly").font(.caption2)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    .padding(.horizontal, 16).padding(.vertical, 8)
+                    .frame(width: 320)
+                    .environment(\.locale, Locale(identifier: locale))
+                    .dynamicTypeSize(.accessibility5)
+                )
+                let renderer = ImageRenderer(content:
+                    ConversationConnectionStatus(status: .offline, hasSnapshot: true,
+                                                 isCached: true, canPersistDraft: true, retry: {})
+                        .frame(width: 320)
+                        .environment(\.locale, Locale(identifier: locale))
+                        .dynamicTypeSize(.accessibility5)
+                )
+                let referenceImage = try XCTUnwrap(reference.uiImage)
+                let image = try XCTUnwrap(renderer.uiImage)
+                XCTAssertGreaterThanOrEqual(image.size.height + 0.5, referenceImage.size.height,
+                                           "\(locale), \(key): full recovery instructions must fit")
+            }
+        }
+    }
+
     func testConnectionAndDraftChangesKeepTheSameHeightInBothLanguagesAndTextSizes() throws {
         for locale in ["en", "zh-Hans"] {
             var regularHeight: CGFloat = 0

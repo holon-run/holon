@@ -576,6 +576,7 @@ struct ReadingInputView: View {
 
 /// Connection state is chrome, not an invented entry in the conversation.
 struct ConversationConnectionStatus: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let status: ReadingStatus
     let hasSnapshot: Bool
     var isCached = false
@@ -583,52 +584,95 @@ struct ConversationConnectionStatus: View {
     var canPersistDraft = false
     var retry: () -> Void
 
+    // Reserve natural, localized heights rather than truncating recovery text.
+    private static let statusKeys = [
+        "reading.status.disconnected", "reading.status.syncing", "reading.status.live",
+        "reading.status.offline", "reading.status.permissionDenied", "reading.status.sessionExpired",
+        "reading.status.incompatible", "reading.cache.offline", "reading.cache.refreshing",
+        "reading.cache.saved", "reading.loadingConversation"
+    ]
+
     var body: some View {
         let key = ReadingPresentation.connectionStatusKey(
             status: status, hasContent: hasSnapshot, isCached: isCached, isRefreshing: isRefreshing
         ) ?? "reading.status.live"
-        let showsRetry = ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing)
-        let showsDraftNotice = status != .live && canPersistDraft
-        HStack(spacing: 8) {
-            Group {
-                if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Image(systemName: status == .live ? (isCached ? "internaldrive" : "checkmark.circle") : "wifi.exclamationmark")
-                }
-            }
-            .frame(width: 20, height: 20)
-            .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(LocalizedStringKey(key))
-                    .font(.caption).lineLimit(2, reservesSpace: true)
-                // Keep the same slots in every connection state. Hidden controls
-                // and notices retain geometry, not interaction or accessibility.
-                ZStack(alignment: .topLeading) {
-                    Text("reading.cache.readOnly").hidden().accessibilityHidden(true)
-                    if showsDraftNotice {
-                        Text("reading.cache.readOnly")
-                            .accessibilityIdentifier("conversation.readOnly")
+        Group {
+            if dynamicTypeSize.isAccessibilitySize {
+                // Keep recovery instructions full-width at accessibility sizes.
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        statusIcon
+                        Spacer()
+                        retryControl
                     }
+                    statusCaption(key)
+                    draftNotice
                 }
-                .font(.caption2).lineLimit(2, reservesSpace: true)
-            }
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            Group {
-                if showsRetry {
-                    Button("reading.retry", action: retry)
-                        .accessibilityIdentifier("conversation.retry")
-                } else {
-                    Text("reading.retry").hidden().accessibilityHidden(true)
+            } else {
+                HStack(spacing: 8) {
+                    statusIcon
+                    VStack(alignment: .leading, spacing: 2) {
+                        statusCaption(key)
+                        draftNotice
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    retryControl
                 }
             }
-            .font(.caption).frame(minWidth: 44, minHeight: 44)
         }
         .padding(.horizontal, 16).padding(.vertical, 8)
         .background(.bar)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation.connectionStatus")
+    }
+
+    private func statusCaption(_ key: String) -> some View {
+        ZStack(alignment: .topLeading) {
+            ForEach(Self.statusKeys, id: \.self) { candidate in
+                Text(LocalizedStringKey(candidate)).hidden().accessibilityHidden(true)
+            }
+            Text(LocalizedStringKey(key))
+        }
+        .font(.caption).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var draftNotice: some View {
+        ZStack(alignment: .topLeading) {
+            Text("reading.cache.readOnly").hidden().accessibilityHidden(true)
+            if status != .live && canPersistDraft {
+                Text("reading.cache.readOnly")
+                    .accessibilityIdentifier("conversation.readOnly")
+            }
+        }
+        .font(.caption2).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var statusIcon: some View {
+        Group {
+            if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
+                ProgressView().controlSize(.mini)
+            } else {
+                Image(systemName: status == .live ? (isCached ? "internaldrive" : "checkmark.circle") : "wifi.exclamationmark")
+            }
+        }
+        .frame(width: 20, height: 20)
+        .accessibilityHidden(true)
+    }
+
+    private var retryControl: some View {
+        Group {
+            if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
+                Button("reading.retry", action: retry)
+                    .accessibilityIdentifier("conversation.retry")
+            } else {
+                Text("reading.retry").hidden().accessibilityHidden(true)
+            }
+        }
+        .font(.caption).frame(minWidth: 44, minHeight: 44)
     }
 }
 

@@ -1257,7 +1257,8 @@ with fixture_directory(repo) as root:
                          ("testPreparedDiagnosticsViewportCoverage", MAXIMUM_TEXT_SIZE)]
                 if rich_acceptance:
                     cases.extend([("testRichActivityWorkflow", "large"), ("testRichFilesWorkflow", "large"),
-                                  ("testPopulatedComposerMaximumTextSize", MAXIMUM_TEXT_SIZE)])
+                                  ("testPopulatedComposerMaximumTextSize", MAXIMUM_TEXT_SIZE),
+                                  ("testLiveInterruptionMaximumTextSize", MAXIMUM_TEXT_SIZE)])
                 if task_result_acceptance:
                     cases.append(("testTaskResultProcessWorkflow", "large"))
                 if lost_response_acceptance:

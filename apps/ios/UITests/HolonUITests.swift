@@ -1923,8 +1923,16 @@ final class HolonUITests: XCTestCase {
     }
 
     func testLiveInterruptionRecoversInPlace() async throws {
+        try await verifyLiveInterruption(large: false)
+    }
+
+    func testLiveInterruptionMaximumTextSize() async throws {
+        try await verifyLiveInterruption(large: true)
+    }
+
+    private func verifyLiveInterruption(large: Bool) async throws {
         try await connectForSharing()
-        let app = launch(language: "en", dark: false, large: false)
+        let app = launch(language: "en", dark: false, large: large)
         defer { app.terminate() }
         // A preceding sweep case can restore straight into its conversation;
         // this case starts from the roster like a fresh sign-in.
