@@ -2,6 +2,20 @@ import XCTest
 @testable import Holon
 
 final class ConversationTurnWindowTests: XCTestCase {
+    func testTouchImmediatelySuspendsFollowingUntilUserSettlesAtLatest() {
+        var follow = ConversationFollowState()
+        follow.userBeganScroll()
+        XCTAssertFalse(follow.followsLatest, "A revision during tracking must not pull the reader to the tail")
+        follow.userEndedScroll(nearBottom: false, newestWindow: true)
+        XCTAssertFalse(follow.followsLatest)
+        follow.userBeganScroll()
+        follow.userEndedScroll(nearBottom: true, newestWindow: true)
+        XCTAssertTrue(follow.followsLatest)
+        follow.userBeganScroll()
+        follow.userEndedScroll(nearBottom: true, newestWindow: false)
+        XCTAssertFalse(follow.followsLatest)
+    }
+
     func testNewerWindowDoesNotResumeTailFollowingDuringBriefHydration() {
         var follow = ConversationFollowState()
         XCTAssertTrue(follow.followsLatest)

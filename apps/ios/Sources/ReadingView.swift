@@ -171,9 +171,6 @@ private struct AgentConversationTitle: View {
                 Text(verbatim: agent.name).font(.subheadline.weight(.semibold)).lineLimit(1)
                 AgentStatusLabel(presentation: presentation)
                     .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                if let key = presentation.connectionStatusKey {
-                    Text(LocalizedStringKey(key)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
-                }
             }
         }
         .accessibilityElement(children: .combine)
@@ -253,8 +250,10 @@ struct ConversationReadingView: View {
                     }
                         .disabled(reader.isLoadingHistory || (turnRange.lowerBound == 0 && reader.status != .live))
                         .accessibilityIdentifier("conversation.older")
+                        .overlay(alignment: .trailing) {
+                            if reader.isLoadingHistory { ProgressView().controlSize(.mini) }
+                        }
                 }
-                if reader.isLoadingHistory { ProgressView() }
                 if reader.status == .offline && reader.snapshot == nil {
                     Text("reading.cache.noConversation").foregroundStyle(.secondary)
                         .accessibilityIdentifier("conversation.notCached")
@@ -297,14 +296,22 @@ struct ConversationReadingView: View {
             .padding(.vertical, 16)
             .scrollTargetLayout()
         }
+        .accessibilityIdentifier("conversation.viewport")
         .scrollPosition($scrollPosition)
         // Initial layout must not override a saved historical ID with the tail.
         .defaultScrollAnchor(reader.readingPosition == nil ? .bottom : .top, for: .initialOffset)
+        // Only tail following needs a resize anchor. Historical windows retain
+        // their native offset/explicit ID instead of competing with a top anchor.
+        .defaultScrollAnchor(follow.followsLatest && historyEndTurnID == nil ? .bottom : nil, for: .sizeChanges)
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.1) { ids in
             visibleTurnIDs = ids
         }
         .onScrollPhaseChange { _, phase in
-            if phase == .interacting { userScrolling = true }
+            if phase == .tracking || phase == .interacting {
+                userScrolling = true
+                follow.userBeganScroll()
+                scrollRequest = nil
+            }
             if phase == .idle, userScrolling {
                 userScrolling = false
                 follow.userEndedScroll(nearBottom: nearBottom, newestWindow: historyEndTurnID == nil)
@@ -330,7 +337,9 @@ struct ConversationReadingView: View {
                     scrollPosition.scrollTo(id: id, anchor: .top)
                     reader.rememberPosition(turnID: id)
                 }
-            case .latest: scrollPosition.scrollTo(edge: .bottom)
+            case .latest:
+                guard follow.followsLatest, !userScrolling else { scrollRequest = nil; return }
+                scrollPosition.scrollTo(edge: .bottom)
             }
             scrollRequest = nil
         }
@@ -383,21 +392,13 @@ struct ConversationReadingView: View {
         .navigationBarTitleDisplayMode(.inline)
         .safeAreaInset(edge: .top, spacing: 0) {
             ConversationConnectionStatus(status: reader.status, hasSnapshot: reader.snapshot != nil,
-                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing) {
+                                         isCached: reader.isShowingCachedContent, isRefreshing: reader.isRefreshing,
+                                         canPersistDraft: sender?.canPersistDraft == true) {
                 Task { await reader.refresh() }
             }
         }
         .safeAreaInset(edge: .bottom) {
             VStack(spacing: 0) {
-                if reader.status != .live, sender?.canPersistDraft == true {
-                    // Offline keeps the composer available: drafts are saved
-                    // locally and delivery fails with an explicit per-message
-                    // retry. A disconnected sender (session expired) cannot
-                    // persist input, so the promise only shows while true.
-                    Text("reading.cache.readOnly").font(.caption).foregroundStyle(.secondary)
-                        .padding(.top, 6)
-                        .accessibilityIdentifier("conversation.readOnly")
-                }
                 if let sender {
                     SendingView(sender: sender, currentRunID: currentRunID,
                                 commonModels: reader.agents.compactMap(\.effectiveModel))
@@ -579,28 +580,55 @@ struct ConversationConnectionStatus: View {
     let hasSnapshot: Bool
     var isCached = false
     var isRefreshing = false
+    var canPersistDraft = false
     var retry: () -> Void
+
     var body: some View {
-        if let key = ReadingPresentation.connectionStatusKey(
+        let key = ReadingPresentation.connectionStatusKey(
             status: status, hasContent: hasSnapshot, isCached: isCached, isRefreshing: isRefreshing
-        ) {
-            HStack(spacing: 8) {
+        ) ?? "reading.status.live"
+        let showsRetry = ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing)
+        let showsDraftNotice = status != .live && canPersistDraft
+        HStack(spacing: 8) {
+            Group {
                 if isRefreshing || status == .syncing || (status == .live && !hasSnapshot) {
                     ProgressView().controlSize(.mini)
-                } else { Image(systemName: isCached && status == .live ? "internaldrive" : "wifi.exclamationmark") }
-                Text(LocalizedStringKey(key))
-                    .font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 0)
-                if ReadingPresentation.showsConnectionRetry(status: status, isRefreshing: isRefreshing) {
-                    Button("reading.retry", action: retry).font(.caption).frame(minHeight: 44)
-                        .accessibilityIdentifier("conversation.retry")
+                } else {
+                    Image(systemName: status == .live ? (isCached ? "internaldrive" : "checkmark.circle") : "wifi.exclamationmark")
                 }
             }
-            .padding(.horizontal, 16).padding(.vertical, 8)
-            .background(.bar)
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("conversation.connectionStatus")
+            .frame(width: 20, height: 20)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(LocalizedStringKey(key))
+                    .font(.caption).lineLimit(2, reservesSpace: true)
+                // Keep the same slots in every connection state. Hidden controls
+                // and notices retain geometry, not interaction or accessibility.
+                ZStack(alignment: .topLeading) {
+                    Text("reading.cache.readOnly").hidden().accessibilityHidden(true)
+                    if showsDraftNotice {
+                        Text("reading.cache.readOnly")
+                            .accessibilityIdentifier("conversation.readOnly")
+                    }
+                }
+                .font(.caption2).lineLimit(2, reservesSpace: true)
+            }
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Group {
+                if showsRetry {
+                    Button("reading.retry", action: retry)
+                        .accessibilityIdentifier("conversation.retry")
+                } else {
+                    Text("reading.retry").hidden().accessibilityHidden(true)
+                }
+            }
+            .font(.caption).frame(minWidth: 44, minHeight: 44)
         }
+        .padding(.horizontal, 16).padding(.vertical, 8)
+        .background(.bar)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation.connectionStatus")
     }
 }
 

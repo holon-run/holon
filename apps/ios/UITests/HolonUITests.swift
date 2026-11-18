@@ -1941,6 +1941,20 @@ final class HolonUITests: XCTestCase {
                       "A visible turn must anchor the reading position before the interruption")
         XCTAssertFalse(app.staticTexts["conversation.readOnly"].exists,
                        "A live session shows no offline caption")
+        let viewport = app.scrollViews["conversation.viewport"]
+        let statusBar = app.otherElements["conversation.connectionStatus"].firstMatch
+        XCTAssertTrue(viewport.exists)
+        XCTAssertTrue(statusBar.exists)
+        let onlineViewport = viewport.frame
+        let onlineStatusBar = statusBar.frame
+        let onlineComposer = app.otherElements["sending.composer"].firstMatch.frame
+        func assertStableChrome(_ phase: String) {
+            XCTAssertEqual(viewport.frame.minY, onlineViewport.minY, accuracy: 1, phase)
+            XCTAssertEqual(viewport.frame.height, onlineViewport.height, accuracy: 1, phase)
+            XCTAssertEqual(statusBar.frame.height, onlineStatusBar.height, accuracy: 1, phase)
+            XCTAssertEqual(app.otherElements["sending.composer"].firstMatch.frame.minY,
+                           onlineComposer.minY, accuracy: 1, phase)
+        }
         capture(app, "live-interruption-before")
 
         // Cut both ends of every established stream while the session is being
@@ -1951,6 +1965,8 @@ final class HolonUITests: XCTestCase {
                       "A sustained outage must surface the offline state")
         XCTAssertTrue(turnTime.exists,
                       "The interruption must not clear the conversation being read")
+        XCTAssertTrue(app.staticTexts["conversation.readOnly"].exists)
+        assertStableChrome("offline")
         capture(app, "live-interruption-offline")
 
         // Unbounded recovery backoff reconnects on its own once the node
@@ -1966,6 +1982,7 @@ final class HolonUITests: XCTestCase {
         XCTAssertTrue(turnTime.waitForExistence(timeout: UIWaitScale.scaled(10)),
                       "The recovered session must keep the conversation in place")
         XCTAssertTrue(editor.waitForExistence(timeout: UIWaitScale.scaled(10)), "The composer must return with the live session")
+        assertStableChrome("recovered")
         capture(app, "live-interruption-recovered")
     }
 
@@ -1998,9 +2015,14 @@ final class HolonUITests: XCTestCase {
         try assertNoCachedSessionUI(app)
     }
 
-    func testConversationHistoryWindowPosition() throws {
+    func testConversationHistoryWindowPosition() async throws {
+        try await connectForSharing()
         let app = launch(language: "en", dark: false, large: false)
         defer { app.terminate() }
+        if !app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(10)) {
+            let agent = app.buttons["agent." + (try required("AGENT_ID"))]
+            reveal(agent, in: app); agent.tap()
+        }
         XCTAssertTrue(app.buttons["conversation.more"].waitForExistence(timeout: UIWaitScale.scaled(30)))
         if app.buttons["conversation.latest"].exists { app.buttons["conversation.latest"].tap() }
         let older = app.buttons["conversation.older"]
@@ -2014,11 +2036,17 @@ final class HolonUITests: XCTestCase {
             let timestamp = app.staticTexts["conversation.time." + id]
             let visible = XCTNSPredicateExpectation(predicate: NSPredicate(format: "hittable == true"), object: timestamp)
             XCTAssertEqual(XCTWaiter.wait(for: [visible], timeout: UIWaitScale.scaled(20)), .completed)
-            let top = app.navigationBars.firstMatch.frame.maxY
+            let viewport = app.scrollViews["conversation.viewport"].frame
+            let status = app.otherElements["conversation.connectionStatus"].firstMatch
+            XCTAssertTrue(status.exists)
+            // The scroll view's AX frame includes its top safe-area inset.
+            let top = max(viewport.minY, status.frame.maxY)
             XCTAssertGreaterThanOrEqual(timestamp.frame.minY, top - 2)
             XCTAssertLessThanOrEqual(timestamp.frame.minY, top + 50,
-                "Window navigation must position its first turn, not just change the underlying range")
+                "Window navigation must position its first turn, not just change the underlying range; "
+                + "turn=\(timestamp.frame), viewport=\(viewport), status=\(status.frame)")
         }
+        capture(app, "native-older-turn-window-before-assertion")
         assertTop(try required("HISTORY_OLDER_TOP"))
         capture(app, "native-older-turn-window-position")
         let newer = app.buttons["conversation.newer"]
@@ -2029,6 +2057,38 @@ final class HolonUITests: XCTestCase {
         capture(app, "native-window-after-newer-tap")
         assertTop(try required("HISTORY_NEWER_TOP"))
         capture(app, "native-newer-turn-window-position")
+        let anchor = app.staticTexts["conversation.time." + (try required("HISTORY_NEWER_TOP"))]
+        let historicalY = anchor.frame.minY
+        let editor = app.descendants(matching: .any)["sending.text"].firstMatch
+        editor.tap()
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: UIWaitScale.scaled(10)))
+        XCTAssertEqual(anchor.frame.minY, historicalY, accuracy: 3,
+                       "Opening the keyboard while reading history must not pull the viewport to the tail")
+        editor.typeText("IOS_LAYOUT_DRAFT\nsecond line\nthird line\nfourth line")
+        XCTAssertEqual(anchor.frame.minY, historicalY, accuracy: 3,
+                       "Growing the composer must preserve the historical top anchor")
+        capture(app, "native-history-multiline-keyboard-position")
+        // AX exposes the scroll view behind its safe-area insets. Start in the
+        // actual message region, not the composer/keyboard covering that frame.
+        let status = app.otherElements["conversation.connectionStatus"].firstMatch
+        let messageTop = status.frame.maxY
+        let messageBottom = editor.frame.minY
+        XCTAssertGreaterThan(messageBottom - messageTop, 40)
+        let dragStart = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: app.frame.midX, dy: messageTop + (messageBottom - messageTop) * 0.7))
+        let dragEnd = app.coordinate(withNormalizedOffset: .zero).withOffset(CGVector(
+            dx: app.frame.midX, dy: app.frame.maxY - 10))
+        dragStart.press(forDuration: 0.1, thenDragTo: dragEnd)
+        let dismissed = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"),
+                                                object: app.keyboards.firstMatch)
+        XCTAssertEqual(XCTWaiter.wait(for: [dismissed], timeout: UIWaitScale.scaled(10)), .completed)
+        XCTAssertTrue(anchor.isHittable, "Interactive keyboard dismissal must stay in the historical window")
+        let latest = app.buttons["conversation.latest"]
+        XCTAssertTrue(latest.exists)
+        latest.tap()
+        let following = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == false"), object: latest)
+        XCTAssertEqual(XCTWaiter.wait(for: [following], timeout: UIWaitScale.scaled(10)), .completed,
+                       "Explicit Latest must still resume tail following")
     }
 
     func testLostResponseAndProcessRecovery() async throws {

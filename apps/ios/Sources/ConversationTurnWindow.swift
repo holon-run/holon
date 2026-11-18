@@ -6,6 +6,7 @@ struct ConversationFollowState {
 
     mutating func reviewHistory() { followsLatest = false }
     mutating func showLatest() { followsLatest = true }
+    mutating func userBeganScroll() { followsLatest = false }
     mutating func userEndedScroll(nearBottom: Bool, newestWindow: Bool) {
         followsLatest = nearBottom && newestWindow
     }
