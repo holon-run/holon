@@ -20,7 +20,6 @@ FAKE_TARGETS = [
     "http_workspace",
     "live_openai",
     "misc_new_binary",
-    "models_dev_adapter",
     "run_once",
     "runtime_tasks",
     "wt204_parallel_worktree_workflow",

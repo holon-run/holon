@@ -1,4 +1,4 @@
-use holon::model_catalog::{
+use holon_model_catalog::{
     models_dev::{
         coverage::{
             annotate_reviews, check_coverage, endpoint_associations, generate_coverage,
@@ -23,7 +23,7 @@ fn report() -> CoverageReport {
 
 #[test]
 fn models_dev_coverage_inherited_values_cannot_hide_raw_or_source_regressions() {
-    use holon::model_catalog::{ModelMetadataField, ModelMetadataOrigin};
+    use holon_model_catalog::{ModelMetadataField, ModelMetadataOrigin};
 
     let mut report = report();
     report.routes[0].raw_route = serde_json::json!({"context_window_tokens": 128000});
@@ -57,7 +57,7 @@ fn models_dev_coverage_inherited_values_cannot_hide_raw_or_source_regressions() 
 
 #[test]
 fn models_dev_coverage_summary_keeps_current_review_status_but_not_stale_reviews() {
-    use holon::model_catalog::models_dev::coverage::render_coverage_summary;
+    use holon_model_catalog::models_dev::coverage::render_coverage_summary;
 
     let mut report = report();
     report.routes[0].effective.context_window_tokens = None;
@@ -219,7 +219,7 @@ fn models_dev_coverage_associations_need_registered_reviewed_endpoints() {
 
 #[test]
 fn models_dev_coverage_reviewed_compatibility_routes_are_complete_and_endpoint_scoped() {
-    use holon::config::ModelRouteRef;
+    use holon_domain::model_values::ModelRouteRef;
 
     let snapshot = parse_snapshot(
         r#"{

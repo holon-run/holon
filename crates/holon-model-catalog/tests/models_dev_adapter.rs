@@ -4,22 +4,15 @@
 //! project it into Holon canonical model metadata, build an immutable
 //! artifact with provenance, and validate internal consistency.
 
-use std::fs;
-
-use holon::model_catalog::models_dev::{
+use holon_model_catalog::models_dev::{
     generate_artifact, parse_snapshot, ArtifactBuilder, ModelsDevArtifact, Projector,
 };
 
-const FIXTURE_PATH: &str = "tests/fixtures/models_dev/sample.json";
-
-fn fixture_json() -> String {
-    fs::read_to_string(FIXTURE_PATH).expect("fixture must be readable")
-}
+const SAMPLE_SNAPSHOT: &str = include_str!("fixtures/models_dev/sample.json");
 
 #[test]
 fn parse_fixture_snapshot() {
-    let json = fixture_json();
-    let snapshot = parse_snapshot(&json).expect("parse must succeed");
+    let snapshot = parse_snapshot(SAMPLE_SNAPSHOT).expect("parse must succeed");
     assert!(snapshot.providers.contains_key("openai"));
     assert!(snapshot.providers.contains_key("anthropic"));
     assert!(snapshot.providers.contains_key("hpc-ai"));
@@ -28,8 +21,7 @@ fn parse_fixture_snapshot() {
 
 #[test]
 fn project_fixture_with_default_mappings() {
-    let json = fixture_json();
-    let snapshot = parse_snapshot(&json).unwrap();
+    let snapshot = parse_snapshot(SAMPLE_SNAPSHOT).unwrap();
     let result = Projector::new().project(&snapshot).unwrap();
 
     // openai and anthropic are mapped; hpc-ai and zai-org are not.
@@ -39,8 +31,7 @@ fn project_fixture_with_default_mappings() {
 
 #[test]
 fn projected_model_has_correct_capabilities() {
-    let json = fixture_json();
-    let snapshot = parse_snapshot(&json).unwrap();
+    let snapshot = parse_snapshot(SAMPLE_SNAPSHOT).unwrap();
     let result = Projector::new().project(&snapshot).unwrap();
 
     let gpt55 = result
@@ -62,8 +53,7 @@ fn projected_model_has_correct_capabilities() {
 
 #[test]
 fn projected_image_generation_model() {
-    let json = fixture_json();
-    let snapshot = parse_snapshot(&json).unwrap();
+    let snapshot = parse_snapshot(SAMPLE_SNAPSHOT).unwrap();
     let result = Projector::new().project(&snapshot).unwrap();
 
     let gpt4o = result
@@ -78,8 +68,7 @@ fn projected_image_generation_model() {
 
 #[test]
 fn unmapped_providers_are_skipped() {
-    let json = fixture_json();
-    let snapshot = parse_snapshot(&json).unwrap();
+    let snapshot = parse_snapshot(SAMPLE_SNAPSHOT).unwrap();
     let result = Projector::new().project(&snapshot).unwrap();
 
     assert!(result
@@ -94,9 +83,8 @@ fn unmapped_providers_are_skipped() {
 
 #[test]
 fn generate_artifact_end_to_end() {
-    let json = fixture_json();
     let generated = generate_artifact(
-        &json,
+        SAMPLE_SNAPSHOT,
         "fixture-rev-001",
         "2026-08-31T00:00:00Z",
         "test-0.1.0",
@@ -116,9 +104,8 @@ fn generate_artifact_end_to_end() {
 
 #[test]
 fn artifact_json_roundtrips_through_serde() {
-    let json = fixture_json();
     let generated = generate_artifact(
-        &json,
+        SAMPLE_SNAPSHOT,
         "fixture-rev-001",
         "2026-08-31T00:00:00Z",
         "test-0.1.0",
@@ -203,11 +190,10 @@ fn missing_fields_do_not_become_true() {
 
 #[test]
 fn custom_provider_mapping_projects_unmapped() {
-    let json = fixture_json();
-    let snapshot = parse_snapshot(&json).unwrap();
+    let snapshot = parse_snapshot(SAMPLE_SNAPSHOT).unwrap();
 
     // Map zai-org to the Holon "zai" provider.
-    use holon::model_catalog::models_dev::ProviderMapping;
+    use holon_model_catalog::models_dev::ProviderMapping;
     let mut mappings = ProviderMapping::default_mappings();
     mappings.push(ProviderMapping {
         models_dev_id: "zai-org".to_string(),

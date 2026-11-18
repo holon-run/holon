@@ -61,7 +61,6 @@ CLI_SHARD = (
     "tool_schema_inventory_snapshot",
     "cli_exit_codes",
     "release_version_contract",
-    "models_dev_adapter",
 )
 
 EXPLICIT_TARGETS = frozenset(CONCURRENT_TEST_TARGETS)

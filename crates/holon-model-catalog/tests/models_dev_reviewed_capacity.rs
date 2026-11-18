@@ -1,12 +1,10 @@
-use holon::{
-    config::{ModelRef, ModelRouteRef},
-    model_catalog::{
-        models_dev::{
-            coverage::{endpoint_associations, generate_coverage},
-            parse_snapshot,
-        },
-        BuiltInModelCatalog,
+use holon_domain::model_values::{ModelRef, ModelRouteRef};
+use holon_model_catalog::{
+    models_dev::{
+        coverage::{endpoint_associations, generate_coverage},
+        parse_snapshot,
     },
+    BuiltInModelCatalog,
 };
 
 #[test]

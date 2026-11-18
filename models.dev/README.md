@@ -61,7 +61,7 @@ cargo run -- models-dev validate --supplement-path crates/holon-model-catalog/da
 cargo run -- models-dev coverage --check
 cargo run -- models-dev coverage --json
 cargo test --locked --manifest-path crates/holon-model-catalog/Cargo.toml
-cargo test --locked --test models_dev_adapter --test models_dev_reviewed_capacity --test models_dev_coverage
+cargo test --locked --test cli_exit_codes models_dev_refresh
 ```
 
 The `models-dev-validate.yml` workflow runs these checks on PRs touching
