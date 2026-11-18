@@ -12,8 +12,7 @@ on:
       - "crates/holon-config/src/models.rs"
       - "src/context/**"
       - "src/provider/registry/providers.rs"
-      - "tests/models_dev*.rs"
-      - "tests/fixtures/models_dev/**"
+      - "tests/cli_exit_codes.rs"
       - ".github/workflows/models-dev-validate.yml"
       - "Cargo.toml"
       - "build.rs"
@@ -63,7 +62,6 @@ jobs:
       - name: Run models.dev tests
         run: |
           cargo test --locked --manifest-path crates/holon-model-catalog/Cargo.toml
-          cargo test --locked --test models_dev_adapter --test models_dev_reviewed_capacity --test models_dev_coverage
           cargo test --locked --test cli_exit_codes models_dev_refresh
 
       - name: Check reviewed route metadata and runtime budget policies (offline)
