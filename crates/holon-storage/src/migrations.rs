@@ -4494,6 +4494,11 @@ ALTER TABLE execution_protocol_work_items_retired_needs_repair
   RENAME TO execution_protocol_work_items;
 "#,
     },
+    Migration {
+        version: 114,
+        name: "index_canonical_event_page_kind",
+        sql: schema::EVENT_PAGE_KIND_INDEX,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {

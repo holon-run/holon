@@ -2325,7 +2325,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
             harness.agent_id = "default"
             first = [{"type": "old_event", "payload": {}}] * runner.CONTEXT_EVENT_LIMIT
             pages = [
-                {"events": first, "newest_seq": 300, "has_newer": True},
+                {"events": first, "newest_seq": 300, "next_after_seq": 300,
+                 "has_newer": True},
                 {"events": [
                     {"type": "turn_started", "payload": {
                         "turn_id": "turn-after-300", "turn_index": 11,
@@ -2365,6 +2366,7 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 {
                     "events": [{"type": "turn_started", "payload": {}}],
                     "newest_seq": 12,
+                    "next_after_seq": 12,
                     "has_newer": True,
                 },
                 {
@@ -2390,6 +2392,66 @@ class DockerE2ERunnerTests(unittest.TestCase):
             self.assertEqual(batch["newest_seq"], 14)
             self.assertIn("after_seq=10", paths[0])
             self.assertIn("after_seq=12", paths[1])
+
+    def test_event_batch_continues_empty_pages_with_scan_progress(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="empty-event-pagination",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "default"
+            event = {"event_seq": 13, "type": "turn_terminal", "payload": {}}
+            harness.request = Mock(side_effect=[
+                {"events": [], "newest_seq": None, "next_after_seq": 12,
+                 "cursor_seq": 999, "has_newer": True},
+                {"events": [event], "newest_seq": 13, "next_after_seq": 14,
+                 "cursor_seq": 999, "has_newer": True},
+                {"events": [], "newest_seq": None, "next_after_seq": None,
+                 "cursor_seq": 999, "has_newer": False},
+            ])
+
+            batch = harness.event_batch("scan", after_seq=10, limit=2)
+
+            self.assertEqual(batch["events"], [event])
+            self.assertEqual(batch["newest_seq"], 13)
+            self.assertEqual(batch["resume_after_seq"], 14)
+            paths = [call.args[1] for call in harness.request.call_args_list]
+            self.assertEqual(len(paths), 3)
+            for path, cursor in zip(paths, [10, 12, 14]):
+                self.assertIn(f"after_seq={cursor}", path)
+                self.assertIn("order=asc", path)
+                self.assertIn("limit=2", path)
+
+    def test_event_batch_rejects_invalid_scan_continuations(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            harness = runner.CaseHarness(
+                case_id="invalid-event-pagination",
+                image="holon:test",
+                model="deepseek/deepseek-v4-flash",
+                credential_envs=[],
+                env_file=None,
+                runtime_env={},
+                evidence_root=Path(directory),
+                timeout_seconds=1,
+                keep=False,
+            )
+            harness.agent_id = "default"
+            for cursor in [None, 10, 9, True]:
+                with self.subTest(cursor=cursor):
+                    harness.request = Mock(return_value={
+                        "events": [], "newest_seq": None,
+                        "next_after_seq": cursor, "has_newer": True,
+                    })
+                    with self.assertRaisesRegex(AssertionError, "did not advance"):
+                        harness.event_batch("invalid", after_seq=10)
+                    self.assertEqual(harness.request.call_count, 1)
 
     def test_tool_assertion_reads_target_after_first_event_page(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2426,7 +2488,8 @@ class DockerE2ERunnerTests(unittest.TestCase):
                 }},
             ]
             pages = [
-                {"events": old_events, "newest_seq": 300, "cursor_seq": 302,
+                {"events": old_events, "newest_seq": 300, "next_after_seq": 300,
+                 "cursor_seq": 302,
                  "has_newer": True},
                 {"events": target_events, "newest_seq": 302, "cursor_seq": 302,
                  "has_newer": False},

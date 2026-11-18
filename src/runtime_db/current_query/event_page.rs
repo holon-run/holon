@@ -2,12 +2,39 @@
 use super::*;
 use crate::storage::EventLogPageOrder;
 
+const MAX_PAGE_CANDIDATES: usize = 256;
+const MAX_PAGE_PAYLOAD_BYTES: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Default)]
+pub(crate) struct EventPageCosts {
+    pub scanned: usize,
+    pub decoded: usize,
+    pub matched: usize,
+    pub returned: usize,
+    pub payload_bytes: usize,
+    pub hash: std::time::Duration,
+    pub nodes: std::time::Duration,
+    pub decode: std::time::Duration,
+    pub filter: std::time::Duration,
+    pub vm_steps: i32,
+    pub sorts: i32,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct EventPageScan<'a> {
+    pub kind: Option<&'a str>,
+}
+
 pub(crate) struct PreparedEventPage {
     events: Vec<Arc<OwnedCurrentRecord>>,
     pub cursor_seq: Option<u64>,
     pub recovery: crate::runtime_db::AgentEventRecoveryWindow,
     pub has_older: bool,
     pub has_newer: bool,
+    pub next_before_seq: Option<u64>,
+    pub next_after_seq: Option<u64>,
+    #[cfg(test)]
+    pub costs: EventPageCosts,
     _material: Vec<Arc<BudgetViewGuard>>,
 }
 
@@ -66,6 +93,7 @@ impl PreparedEventPage {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn prepare_event_page(
     tx: &Transaction<'_>,
     scope: &InputEvidenceScope,
@@ -74,6 +102,22 @@ pub(crate) fn prepare_event_page(
     after_seq: Option<u64>,
     limit: usize,
     order: EventLogPageOrder,
+    matches: impl FnMut(&crate::types::AuditEvent) -> bool,
+) -> Result<PreparedEventPage> {
+    prepare_event_page_with_scan(
+        tx, scope, ledger, before_seq, after_seq, limit, order, None, matches,
+    )
+}
+
+pub(crate) fn prepare_event_page_with_scan(
+    tx: &Transaction<'_>,
+    scope: &InputEvidenceScope,
+    ledger: &InputEvidenceBudgetLedger,
+    before_seq: Option<u64>,
+    after_seq: Option<u64>,
+    limit: usize,
+    order: EventLogPageOrder,
+    scan: Option<EventPageScan<'_>>,
     mut matches: impl FnMut(&crate::types::AuditEvent) -> bool,
 ) -> Result<PreparedEventPage> {
     let lower = i64::try_from(after_seq.unwrap_or(0))
@@ -123,40 +167,73 @@ pub(crate) fn prepare_event_page(
     )?;
     let mut events = Vec::new();
     let descending = order == EventLogPageOrder::Desc;
-    let sql = if descending {
-        "SELECT audit_event_id,event_seq,data_json FROM audit_events
-         WHERE agent_id=?1 AND event_seq>?2 AND (?3 IS NULL OR event_seq<?3)
-         ORDER BY event_seq DESC,created_at DESC"
+    let kind = scan.and_then(|scan| scan.kind);
+    let sql = event_page_sql(descending, upper.is_some(), kind.is_some());
+    let upper = upper.unwrap_or(i64::MAX);
+    let mut statement = tx.prepare(&sql)?;
+    let mut rows = if let Some(kind) = kind {
+        statement.query(params![scope.agent_id, lower, upper, kind])?
     } else {
-        "SELECT audit_event_id,event_seq,data_json FROM audit_events
-         WHERE agent_id=?1 AND event_seq>?2 AND (?3 IS NULL OR event_seq<?3)
-         ORDER BY event_seq ASC,created_at ASC"
+        statement.query(params![scope.agent_id, lower, upper])?
     };
-    let mut statement = tx.prepare(sql)?;
-    let mut rows = statement.query(params![scope.agent_id, lower, upper])?;
     let mut has_more = false;
+    let mut scanned_seq = None;
+    let mut costs = EventPageCosts::default();
     if limit > 0 {
         while let Some(row) = rows.next()? {
+            // Bounded history probes candidate existence, not another match.
+            // This lookahead has not been consumed and cannot advance a cursor.
+            if scan.is_some() && (events.len() == limit || costs.scanned == MAX_PAGE_CANDIDATES) {
+                has_more = true;
+                break;
+            }
             let id = row.get_ref(0)?.as_str()?;
             let seq = u64::try_from(row.get::<_, i64>(1)?)
                 .context("stored audit event sequence is negative")?;
             let payload = row.get_ref(2)?.as_str()?;
+            // SQLite's borrowed UTF-8 cell is the canonical input, not a
+            // reserialized value. Admit it before hashing or walking JSON.
+            if scan.is_some() && payload.len() > MAX_PAGE_PAYLOAD_BYTES - costs.payload_bytes {
+                if costs.scanned == 0 {
+                    return Err(crate::runtime_error::RuntimeError::new(
+                        crate::runtime_error::RuntimeErrorDomain::Runtime,
+                        "event_page_resource_exhausted",
+                        "ResourceExhausted: Event-page canonical JSON input exceeds the fixed 8 MiB budget",
+                    )
+                    .with_retryable(false)
+                    .into());
+                }
+                has_more = true;
+                break;
+            }
+            costs.scanned += 1;
+            costs.payload_bytes += payload.len();
+            let started = std::time::Instant::now();
+            let hash = digest(payload);
+            costs.hash += started.elapsed();
             let body = decode_body(
                 tx,
                 scope,
                 CurrentFamily::Event,
                 id,
                 payload,
-                digest(payload),
+                hash,
                 &mut material,
+                Some(&mut costs),
             )?;
+            costs.decoded += 1;
             let CurrentRecord::Event(event) = body.record() else {
                 unreachable!("selected Event has another family")
             };
             ensure!(event.event_seq == seq, "Event query sequence differs");
-            if !matches(event) {
+            scanned_seq = Some(seq);
+            let started = std::time::Instant::now();
+            let matched = kind.is_none_or(|kind| event.kind == kind) && matches(event);
+            costs.filter += started.elapsed();
+            if !matched {
                 continue;
             }
+            costs.matched += 1;
             if events.len() == limit {
                 has_more = true;
                 break;
@@ -166,6 +243,11 @@ pub(crate) fn prepare_event_page(
             events.push(body);
         }
     }
+    costs.returned = events.len();
+    drop(rows);
+    costs.vm_steps = statement.get_status(rusqlite::StatementStatus::VmStep);
+    costs.sorts = statement.get_status(rusqlite::StatementStatus::Sort);
+    tracing::debug!(?costs, "finite Event page costs");
     let guards = material.into_guards();
     Ok(PreparedEventPage {
         events,
@@ -173,6 +255,39 @@ pub(crate) fn prepare_event_page(
         recovery,
         has_older: descending && has_more,
         has_newer: !descending && has_more,
+        next_before_seq: (scan.is_some() && descending && has_more)
+            .then_some(scanned_seq)
+            .flatten(),
+        next_after_seq: (scan.is_some() && !descending && has_more)
+            .then_some(scanned_seq)
+            .flatten(),
+        #[cfg(test)]
+        costs,
         _material: guards,
     })
+}
+
+fn event_page_sql(descending: bool, has_upper: bool, filtered: bool) -> String {
+    let direction = if descending { "DESC" } else { "ASC" };
+    let upper_op = if has_upper { "<" } else { "<=" };
+    let bounds = format!("agent_id=?1 AND event_seq>?2 AND event_seq{upper_op}?3");
+    let columns = "audit_event_id,event_seq,data_json,kind,created_at";
+    if filtered {
+        let key = holon_storage::schema::EVENT_PAGE_KIND_KEY;
+        // Two disjoint, ordered index ranges. The fallback cannot be dropped:
+        // normalized kind alone says nothing about a legacy/corrupt body.
+        format!(
+            "SELECT {columns} FROM audit_events
+             WHERE {bounds} AND ({key})=?4
+             UNION ALL
+             SELECT {columns} FROM audit_events
+             WHERE {bounds} AND ({key}) IS NULL
+             ORDER BY event_seq {direction},created_at {direction}"
+        )
+    } else {
+        format!(
+            "SELECT {columns} FROM audit_events WHERE {bounds}
+             ORDER BY event_seq {direction},created_at {direction}"
+        )
+    }
 }

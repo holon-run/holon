@@ -210,6 +210,10 @@ pub(crate) struct EventsPageResponse {
     pub(crate) contract_version: u32,
     pub(crate) oldest_seq: Option<u64>,
     pub(crate) newest_seq: Option<u64>,
+    /// Exclusive descending continuation after the last scanned candidate, if more remain.
+    pub(crate) next_before_seq: Option<u64>,
+    /// Exclusive ascending continuation after the last scanned candidate, if more remain.
+    pub(crate) next_after_seq: Option<u64>,
     pub(crate) cursor_seq: Option<u64>,
     pub(crate) has_older: bool,
     pub(crate) has_newer: bool,

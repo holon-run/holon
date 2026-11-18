@@ -11713,6 +11713,24 @@
               "null"
             ]
           },
+          "next_after_seq": {
+            "description": "Exclusive ascending continuation after the last scanned candidate, if more remain.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "next_before_seq": {
+            "description": "Exclusive descending continuation after the last scanned candidate, if more remain.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "oldest_seq": {
             "format": "uint64",
             "minimum": 0,

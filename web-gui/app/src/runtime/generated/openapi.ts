@@ -5927,6 +5927,16 @@ export interface components {
             limit: number;
             /** Format: uint64 */
             newest_seq?: number | null;
+            /**
+             * Format: uint64
+             * @description Exclusive ascending continuation after the last scanned candidate, if more remain.
+             */
+            next_after_seq?: number | null;
+            /**
+             * Format: uint64
+             * @description Exclusive descending continuation after the last scanned candidate, if more remain.
+             */
+            next_before_seq?: number | null;
             /** Format: uint64 */
             oldest_seq?: number | null;
             /** @enum {string} */

@@ -1,8 +1,15 @@
 use super::*;
 use crate::{
-    runtime_db::current_query::{prepare, prepare_event_page, CurrentSelection},
+    runtime_db::current_query::{
+        prepare, prepare_event_page, prepare_event_page_with_scan, CurrentSelection, EventPageScan,
+    },
     storage::EventLogPageOrder,
 };
+
+#[path = "event_page_budget.rs"]
+mod budget;
+#[path = "event_page_selection.rs"]
+mod selection;
 
 fn append(f: &Fixture, index: usize) -> Result<()> {
     let mut event = AuditEvent::legacy(
@@ -12,6 +19,81 @@ fn append(f: &Fixture, index: usize) -> Result<()> {
     event.id = format!("finite-event-{index}");
     f.db.audit_events()
         .append(Some(&f.scope.agent_id), &event)?;
+    Ok(())
+}
+
+#[test]
+fn finite_event_page_cost_evidence() -> Result<()> {
+    for count in [1_000, 10_000, 50_000] {
+        let f = Fixture::new()?;
+        f.db.transaction(|tx| {
+            for index in 0..count {
+                let mut event = AuditEvent::legacy(
+                    if index < 20 { "target" } else { "noise" },
+                    serde_json::json!({"index": index}),
+                );
+                event.id = format!("cost-event-{index}");
+                append_audit_event_tx(tx, Some(&f.scope.agent_id), &event)?;
+            }
+            Ok(())
+        })?;
+        let ledger = InputEvidenceBudgetLedger::new(Default::default())?;
+        for kind in [None, Some("target"), Some("absent")] {
+            let started = std::time::Instant::now();
+            let page = f.db.transaction(|tx| {
+                prepare_event_page_with_scan(
+                    tx,
+                    &f.scope,
+                    &ledger,
+                    None,
+                    None,
+                    20,
+                    EventLogPageOrder::Desc,
+                    Some(EventPageScan { kind }),
+                    |event| kind.is_none_or(|kind| event.kind == kind),
+                )
+            })?;
+            let elapsed = started.elapsed();
+            assert!(page.events().len() <= 20);
+            assert!(page
+                .events()
+                .all(|event| kind.is_none_or(|kind| event.kind == kind)));
+            if kind == Some("target") {
+                assert_eq!(page.events().len(), 20);
+                assert_eq!(page.costs.decoded, 20);
+                assert_eq!(page.costs.sorts, 0);
+                let (ids, vm_steps) = f.db.with_read(|connection| {
+                    let mut statement = connection.prepare(
+                        "SELECT audit_event_id FROM audit_events
+                         INDEXED BY idx_audit_events_agent_seq_created
+                         WHERE agent_id=?1 AND kind='target'
+                         ORDER BY event_seq DESC,created_at DESC LIMIT 20",
+                    )?;
+                    let ids = statement
+                        .query_map([&f.scope.agent_id], |row| row.get::<_, String>(0))?
+                        .collect::<std::result::Result<Vec<_>, _>>()?;
+                    Ok((ids, statement.get_status(rusqlite::StatementStatus::VmStep)))
+                })?;
+                assert_eq!(
+                    ids,
+                    page.events()
+                        .map(|event| event.id.clone())
+                        .collect::<Vec<_>>()
+                );
+                assert!(page.costs.vm_steps < vm_steps);
+                eprintln!(
+                    "Event-page kind index history={count} sequence_index_vm={vm_steps} canonical_kind_vm={}",
+                    page.costs.vm_steps
+                );
+            }
+            eprintln!(
+                "Event-page evidence history={count} kind={kind:?} elapsed={elapsed:?} costs={:?}",
+                page.costs
+            );
+            drop(page);
+            assert_eq!(ledger.report()?.observed_bytes, 0);
+        }
+    }
     Ok(())
 }
 

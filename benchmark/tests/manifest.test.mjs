@@ -1349,6 +1349,7 @@ test("readHolonAuditEvents paginates stable DB event envelopes", async () => {
     {
       event_log_epoch: "epoch-1",
       newest_seq: 2,
+      next_after_seq: 2,
       has_newer: true,
       events: [
         {
@@ -1413,6 +1414,74 @@ test("readHolonAuditEvents paginates stable DB event envelopes", async () => {
   assert.equal(events[0].kind, "provider_round_completed");
   assert.equal(events[0].data.round, 1);
   assert.deepEqual(calls[1].slice(-2), ["--after-seq", "2"]);
+});
+
+test("readHolonAuditEvents follows scan cursors through short and empty pages", async () => {
+  const calls = [];
+  const event = (seq) => ({
+    id: `audit-${seq}`,
+    event_seq: seq,
+    ts: "2026-08-15T00:00:00Z",
+    agent_id: "agent",
+    type: "tool_executed",
+    payload: {}
+  });
+  const pages = [
+    { events: [event(1)], newest_seq: 1, next_after_seq: 5, has_newer: true },
+    { events: [], newest_seq: null, next_after_seq: 8, has_newer: true },
+    { events: [event(9)], newest_seq: 9, next_after_seq: null, has_newer: false }
+  ];
+  const events = await readHolonAuditEvents({
+    holonBinary: "holon",
+    agentId: "agent",
+    homeDir: "/tmp/home",
+    cwd: "/tmp/repo",
+    env: {},
+    execute: async (_command, args) => {
+      calls.push(args);
+      return {
+        stdout: JSON.stringify({
+          event_log_epoch: "epoch-1",
+          cursor_seq: 999,
+          ...pages[calls.length - 1]
+        }),
+        stderr: "",
+        exitCode: 0
+      };
+    }
+  });
+
+  assert.deepEqual(events.map((entry) => entry.event_seq), [1, 9]);
+  assert.deepEqual(calls[1].slice(-2), ["--after-seq", "5"]);
+  assert.deepEqual(calls[2].slice(-2), ["--after-seq", "8"]);
+});
+
+test("readHolonAuditEvents rejects non-advancing empty-page cursors", async () => {
+  let calls = 0;
+  await assert.rejects(
+    readHolonAuditEvents({
+      holonBinary: "holon",
+      agentId: "agent",
+      homeDir: "/tmp/home",
+      cwd: "/tmp/repo",
+      env: {},
+      execute: async () => {
+        calls += 1;
+        return {
+          stdout: JSON.stringify({
+            events: [],
+            event_log_epoch: "epoch-1",
+            next_after_seq: 5,
+            has_newer: true
+          }),
+          stderr: "",
+          exitCode: 0
+        };
+      }
+    }),
+    /cursor did not advance/
+  );
+  assert.equal(calls, 2);
 });
 
 test("event envelope normalization rejects invalid events", () => {

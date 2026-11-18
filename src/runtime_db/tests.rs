@@ -2910,6 +2910,8 @@ INSERT INTO storage_domains (
 );
 "#,
             )?;
+            // Materialize the foundation migration recorded below.
+            connection.execute_batch(MIGRATIONS[0].sql)?;
             for migration in &MIGRATIONS[..12] {
                 connection.execute(
                     "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -4604,6 +4606,8 @@ INSERT INTO queue_entries (
   );
 "#,
             )?;
+            // Materialize the foundation migration recorded below.
+            connection.execute_batch(MIGRATIONS[0].sql)?;
             for migration in &MIGRATIONS[..17] {
                 connection.execute(
                     "INSERT INTO schema_migrations (version, name, applied_at) VALUES (?1, ?2, ?3)",
@@ -5200,6 +5204,8 @@ CREATE TABLE working_memory_deltas (
         {
             let connection = open_connection(&db_path)?;
             ensure_migration_table(&connection)?;
+            // Materialize the foundation migration recorded below.
+            connection.execute_batch(MIGRATIONS[0].sql)?;
             for migration in MIGRATIONS
                 .iter()
                 .filter(|migration| migration.version <= 14)

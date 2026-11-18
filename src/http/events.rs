@@ -37,13 +37,12 @@ pub async fn events(
                 after_seq,
                 limit,
                 order.into(),
+                Some(crate::runtime_db::current_query::EventPageScan {
+                    kind: event_kind.as_deref(),
+                }),
                 &db,
                 &handle,
-                move |_| {
-                    Ok(move |event: &AuditEvent| {
-                        event_kind.as_deref().is_none_or(|kind| event.kind == kind)
-                    })
-                },
+                |_| Ok(|_: &AuditEvent| true),
             ))
         })
         .await
@@ -66,6 +65,8 @@ pub async fn events(
         oldest_seq,
         newest_seq,
         cursor_seq: page.cursor_seq,
+        next_before_seq: page.next_before_seq,
+        next_after_seq: page.next_after_seq,
         has_older: page.has_older,
         has_newer: page.has_newer,
         order,
@@ -97,6 +98,8 @@ struct BorrowedEventsPage<'a> {
     oldest_seq: Option<u64>,
     newest_seq: Option<u64>,
     cursor_seq: Option<u64>,
+    next_before_seq: Option<u64>,
+    next_after_seq: Option<u64>,
     has_older: bool,
     has_newer: bool,
     order: EventPageOrder,
@@ -303,6 +306,7 @@ pub async fn events_stream(
                 None,
                 event_window_limit.saturating_add(1),
                 EventLogPageOrder::Desc,
+                None,
                 &db,
                 &handle,
                 |_| Ok(|_: &AuditEvent| true),

@@ -164,26 +164,40 @@ async fn assert_lagged_stream_recovers(
         "the lagged stream should close before delivering every event"
     );
 
-    let response = client
-        .get(format!(
-            "{base}/api/agents/default/events?after_seq={last_contiguous_seq}&limit=512&order=asc"
-        ))
-        .send()
-        .await?;
-    let status = response.status();
-    let page: serde_json::Value = response.json().await?;
-    assert!(status.is_success(), "lag recovery HTTP {status}: {page}");
-    let recovered = page["events"]
-        .as_array()
-        .expect("events")
-        .iter()
-        .filter(|event| event["type"] == "lag_test_event")
-        .count();
-    let streamed_count = streamed
+    let mut recovered_seqs: Vec<_> = streamed
         .iter()
         .filter(|event| event.event == "lag_test_event")
-        .count();
-    assert_eq!(streamed_count + recovered, expected_count);
+        .map(|event| event.data["event_seq"].as_u64().expect("stream sequence"))
+        .collect();
+    let mut after_seq = last_contiguous_seq;
+    loop {
+        let response = client
+            .get(format!(
+                "{base}/api/agents/default/events?after_seq={after_seq}&limit=512&order=asc"
+            ))
+            .send()
+            .await?;
+        let status = response.status();
+        let page: serde_json::Value = response.json().await?;
+        assert!(status.is_success(), "lag recovery HTTP {status}: {page}");
+        recovered_seqs.extend(
+            page["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .filter(|event| event["type"] == "lag_test_event")
+                .map(|event| event["event_seq"].as_u64().expect("recovered sequence")),
+        );
+        let Some(next) = page["next_after_seq"].as_u64() else {
+            assert_eq!(page["has_newer"], false);
+            break;
+        };
+        assert_eq!(page["has_newer"], true);
+        assert!(next > after_seq, "recovery continuation must advance");
+        after_seq = next;
+    }
+    assert_eq!(recovered_seqs.len(), expected_count);
+    assert!(recovered_seqs.windows(2).all(|pair| pair[0] < pair[1]));
     Ok(())
 }
 
@@ -357,19 +371,53 @@ pub async fn events_route_reads_raw_history_without_original_writer() -> Result<
             serde_json::json!({"index": index}),
         ))?;
     }
-    let response = client
-        .get(format!(
+    let mut before_seq = None;
+    let mut raw_indexes = Vec::new();
+    let mut sequences = Vec::new();
+    let mut found_original = false;
+    loop {
+        let mut request = client.get(format!(
             "{base}/api/agents/default/events?limit=5000&order=desc"
-        ))
-        .send()
-        .await?;
-    assert_eq!(response.status(), reqwest::StatusCode::OK);
-    let body: serde_json::Value = response.json().await?;
+        ));
+        if let Some(before) = before_seq {
+            request = request.query(&[("before_seq", before)]);
+        }
+        let response = request.send().await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body: serde_json::Value = response.json().await?;
+        let events = body["events"].as_array().context("capped events")?;
+        assert_eq!(body["limit"], holon::http::MAX_EVENT_STREAM_WINDOW);
+        assert!(events.len() <= 256, "candidate budget bounds each page");
+        if before_seq.is_none() {
+            assert_eq!(events.len(), 256);
+            assert_eq!(body["has_older"], true);
+        }
+        for row in events {
+            sequences.push(row["event_seq"].as_u64().context("event sequence")?);
+            if row["type"] == "raw_cap_fixture" {
+                raw_indexes.push(row["payload"]["index"].as_u64().context("raw index")?);
+            }
+            found_original |= row["id"] == event.id && row["payload"]["original_writer"] == false;
+        }
+        let Some(next) = body["next_before_seq"].as_u64() else {
+            assert_eq!(body["has_older"], false);
+            break;
+        };
+        assert_eq!(body["has_older"], true);
+        assert!(
+            before_seq.is_none_or(|before| next < before),
+            "history continuation must advance"
+        );
+        before_seq = Some(next);
+    }
+    assert!(found_original, "raw history remains readable across pages");
     assert_eq!(
-        body["events"].as_array().context("capped events")?.len(),
-        holon::http::MAX_EVENT_STREAM_WINDOW
+        raw_indexes,
+        (0..=holon::http::MAX_EVENT_STREAM_WINDOW as u64)
+            .rev()
+            .collect::<Vec<_>>()
     );
-    assert_eq!(body["has_older"], true);
+    assert!(sequences.windows(2).all(|pair| pair[0] > pair[1]));
     server.abort();
     Ok(())
 }

@@ -201,6 +201,10 @@ pub struct EventPageResponse {
     pub oldest_seq: Option<u64>,
     pub newest_seq: Option<u64>,
     #[serde(default)]
+    pub next_before_seq: Option<u64>,
+    #[serde(default)]
+    pub next_after_seq: Option<u64>,
+    #[serde(default)]
     pub cursor_seq: Option<u64>,
     pub has_older: bool,
     pub has_newer: bool,
@@ -2137,9 +2141,9 @@ mod tests {
         api_path, authorization_header_value, decode_chunked_body, decode_or_error,
         event_stream_path, normalize_remote_base_url, parse_http_response, parse_sse_frame,
         read_http_response_body, take_next_sse_frame, validate_header_value,
-        validate_unix_request_target, EventStreamRequest, EventStreamTransport, LocalEventStream,
-        LocalHttpError, StreamEventEnvelope, TuiNetworkPolicy, TUI_LOCAL_NETWORK_POLICY,
-        TUI_REMOTE_NETWORK_POLICY,
+        validate_unix_request_target, EventPageResponse, EventStreamRequest, EventStreamTransport,
+        LocalEventStream, LocalHttpError, StreamEventEnvelope, TuiNetworkPolicy,
+        TUI_LOCAL_NETWORK_POLICY, TUI_REMOTE_NETWORK_POLICY,
     };
     use holon_domain::RuntimeErrorDomain;
     use std::time::Duration;
@@ -2153,6 +2157,112 @@ mod tests {
         assert_eq!(api_path("/api"), "/api");
         assert_eq!(api_path("/agents/list"), "/api/agents/list");
         assert_eq!(api_path("/api/agents/list"), "/api/agents/list");
+    }
+
+    #[tokio::test]
+    async fn event_page_resource_error_is_not_automatically_retried() {
+        use std::sync::{
+            atomic::{AtomicUsize, Ordering},
+            Arc,
+        };
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = Arc::new(AtomicUsize::new(0));
+        let observed = Arc::clone(&requests);
+        let server = tokio::spawn(async move {
+            loop {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = [0; 2048];
+                let count = socket.read(&mut request).await.unwrap();
+                let request = std::str::from_utf8(&request[..count]).unwrap();
+                assert!(request.starts_with("GET /api/agents/default/events?"));
+                assert!(request.contains("after_seq=4"));
+                observed.fetch_add(1, Ordering::SeqCst);
+                let body = r#"{"ok":false,"error":"ResourceExhausted: Event-page canonical input","code":"event_page_resource_exhausted","domain":"runtime","retryable":false}"#;
+                let response = format!(
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let client = super::LocalClient::remote(
+            super::ConnectionConfig {
+                home_dir: Default::default(),
+                default_agent_id: "default".into(),
+                socket_path: Default::default(),
+                control_token: None,
+                http_addr: addr.to_string(),
+            },
+            format!("http://{addr}"),
+            "event-page-test-token",
+        )
+        .unwrap();
+        let error = client
+            .agent_events_page(
+                "default",
+                super::EventPageRequest {
+                    after_seq: Some(4),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap_err();
+        let error = error.downcast_ref::<LocalHttpError>().unwrap();
+        assert_eq!(error.status_code, 500);
+        assert!(error.has_code("event_page_resource_exhausted"));
+        assert_eq!(error.domain, Some(RuntimeErrorDomain::Runtime));
+        assert_eq!(error.retryable, Some(false));
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        server.abort();
+        assert!(server.await.unwrap_err().is_cancelled());
+    }
+
+    #[test]
+    fn event_page_response_accepts_legacy_pages_without_scan_cursors() {
+        let page: EventPageResponse = serde_json::from_value(serde_json::json!({
+            "events": [],
+            "oldest_seq": null,
+            "newest_seq": null,
+            "cursor_seq": 100,
+            "has_older": false,
+            "has_newer": true,
+            "order": "asc",
+            "limit": 128
+        }))
+        .unwrap();
+
+        assert_eq!(page.next_before_seq, None);
+        assert_eq!(page.next_after_seq, None);
+        assert_eq!(page.cursor_seq, Some(100));
+        assert!(page.has_newer);
+    }
+
+    #[test]
+    fn event_page_response_preserves_empty_page_scan_cursors() {
+        for (order, next_before_seq, next_after_seq) in
+            [("desc", Some(40), None), ("asc", None, Some(60))]
+        {
+            let page: EventPageResponse = serde_json::from_value(serde_json::json!({
+                "events": [],
+                "oldest_seq": null,
+                "newest_seq": null,
+                "next_before_seq": next_before_seq,
+                "next_after_seq": next_after_seq,
+                "cursor_seq": 100,
+                "has_older": true,
+                "has_newer": true,
+                "order": order,
+                "limit": 128
+            }))
+            .unwrap();
+
+            assert_eq!(page.next_before_seq, next_before_seq);
+            assert_eq!(page.next_after_seq, next_after_seq);
+            assert_eq!(page.oldest_seq, None);
+            assert_eq!(page.newest_seq, None);
+            assert!(page.has_older && page.has_newer);
+        }
     }
 
     #[test]

@@ -5192,15 +5192,14 @@ export async function readHolonAuditEvents({
     if (!page.has_newer) {
       return events;
     }
-    const newestSeq = Number(page.newest_seq);
+    const nextAfterSeq = page.next_after_seq;
     if (
-      normalized.length === 0 ||
-      !Number.isSafeInteger(newestSeq) ||
-      newestSeq <= (afterSeq ?? 0)
+      !Number.isSafeInteger(nextAfterSeq) ||
+      nextAfterSeq <= (afterSeq ?? 0)
     ) {
       throw new Error("holon DB event export cursor did not advance");
     }
-    afterSeq = newestSeq;
+    afterSeq = nextAfterSeq;
   }
 }
 

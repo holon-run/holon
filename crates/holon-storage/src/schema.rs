@@ -1,5 +1,8 @@
 //! DDL shared by runtime migrations and storage tests.
 
+mod event_page;
+pub use event_page::{EVENT_PAGE_KIND_INDEX, EVENT_PAGE_KIND_KEY};
+
 pub const TURN_ACTIVATION_ATTACHMENTS_SCHEMA: &str =
     include_str!("schema/turn_activation_attachments.sql");
 pub const TASK_STOP_PENDING_FRONTIER_SCHEMA: &str =

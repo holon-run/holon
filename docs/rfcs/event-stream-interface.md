@@ -224,6 +224,57 @@ display-level filtering belongs in clients. Unfiltered pages and live streams
 remain the raw event feed so clients can reconnect and maintain local state
 without losing lower-visibility events.
 
+### Bounded Event Pages
+
+`GET /agents/:id/events` scans a bounded number of durable candidates within the
+exclusive `before_seq` / `after_seq` bounds, in the requested `order`, optionally
+filtered by `event_kind`. A scan or payload budget may end a page before `limit`
+matching events are returned. A short or empty page is not proof of exhaustion.
+
+- `oldest_seq` / `newest_seq` are the minimum/maximum `event_seq` of returned
+  events, or `null` when `events` is empty.
+- `cursor_seq` remains the raw event-log high-watermark for SSE handoff; it is
+  not a bounded-page continuation.
+- `next_before_seq` is non-null only for `order=desc` when `has_older` is true
+  and the scan advanced. `next_after_seq` is non-null only for `order=asc` when
+  `has_newer` is true and the scan advanced. Each points to the last consumed
+  candidate, which need not be a returned event. Unconsumed lookahead is never
+  included in that cursor.
+- The scan-direction cursor is `null` on exhaustion; the other direction's
+  cursor is always `null`. A null cursor says nothing about the other
+  direction's `has_older` / `has_newer` flag.
+
+Continue descending pages with `before_seq=next_before_seq`, or ascending pages
+with `after_seq=next_after_seq`, preserving `order`, `event_kind`, and the other
+bound. Follow a non-null continuation even on an empty page; never substitute
+`oldest_seq`, `newest_seq`, or `cursor_seq`. Reject non-advancing continuations
+rather than repeating the same request. Older responses may omit the new
+nullable fields; Rust clients deserialize either missing field as `None`.
+
+Each page consumes at most **256 candidates** after safe SQL kind selection and
+at most **8 MiB** (`8 * 1024 * 1024`) of canonical JSON's original UTF-8 bytes.
+Candidates include legacy or normalized/canonical disagreement rows that require
+canonical verification, even when they do not match the requested kind. Raw
+input length is admitted before hash, `json_tree`/node traversal, and typed
+decode; it is not a character count, normalized-column length, reserialized
+size, or response size. Equality with either budget is allowed.
+
+If another candidate cannot fit after the scan has advanced, leave it
+unconsumed and return the last consumed candidate's continuation. At most one
+unconsumed lookahead is used to establish continuation; it is not hashed or
+decoded and never advances the watermark. This also applies to empty pages.
+The fixed input budget is not a total-memory or wall-clock bound; existing
+qualification, material accounting, cancellation, and owner reservation remain
+in force.
+
+If the first candidate itself exceeds 8 MiB, fail the entire request with the
+existing error envelope: `code=event_page_resource_exhausted`, `domain=runtime`,
+`retryable=false`, HTTP **500**. No successful-page continuation or event body is
+included. Do not skip, truncate, relax the limit, or automatically retry the
+same cursor. A prior page may have succeeded before deferring this candidate;
+that oversized record cannot currently be read through this fixed-budget
+interface. This is a deliberate behavior boundary, not only an optimization.
+
 ## Event Envelope
 
 Every stream event should use one canonical envelope.

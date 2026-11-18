@@ -16,10 +16,10 @@ use crate::runtime::{
 
 mod event_page;
 #[cfg(test)]
-pub(crate) use event_page::append_qualified_event_for_fixture;
+pub(crate) use event_page::{append_qualified_event_for_fixture, prepare_event_page};
 #[cfg(test)]
 mod source_fixture;
-pub(crate) use event_page::{prepare_event_page, PreparedEventPage};
+pub(crate) use event_page::{prepare_event_page_with_scan, EventPageScan, PreparedEventPage};
 #[cfg(test)]
 pub(crate) use source_fixture::remove_qualified_terminal_queue_for_fixture;
 
@@ -690,7 +690,7 @@ fn load_body(
         |row| row.get::<_, bool>(0),
     ).optional()?.unwrap_or(false);
     ensure!(qualified, "Current body needs original writer preparation");
-    decode_body(tx, scope, family, id, payload, hash, material).map(Some)
+    decode_body(tx, scope, family, id, payload, hash, material, None).map(Some)
 }
 
 // Shared decoding and accounting, not read authority. Live callers validate
@@ -703,6 +703,7 @@ fn decode_body(
     payload: &str,
     content_digest: String,
     material: &mut InputReadMaterial<'_>,
+    mut costs: Option<&mut event_page::EventPageCosts>,
 ) -> Result<Arc<OwnedCurrentRecord>> {
     let (address_material, guard) = if family == CurrentFamily::Event {
         // One typed Event, not a completion/resolver aggregate. Gate SQLite
@@ -714,6 +715,7 @@ fn decode_body(
                 .context("Event raw bytes overflow")?,
             1,
         )?;
+        let started = std::time::Instant::now();
         let nodes: usize =
             match tx.query_row("SELECT COUNT(*) FROM json_tree(?1)", [payload], |row| {
                 row.get(0)
@@ -728,6 +730,9 @@ fn decode_body(
                     return Err(error.into());
                 }
             };
+        if let Some(costs) = costs.as_deref_mut() {
+            costs.nodes += started.elapsed();
+        }
         let decoded = material.observe_native_footprint(
             nodes
                 .checked_mul(std::mem::size_of::<serde_json::Value>())
@@ -751,7 +756,11 @@ fn decode_body(
             CurrentRecord::Queue(queue)
         }
         CurrentFamily::Event => {
+            let started = std::time::Instant::now();
             let event: crate::types::AuditEvent = serde_json::from_str(payload)?;
+            if let Some(costs) = costs {
+                costs.decode += started.elapsed();
+            }
             ensure!(event.id == id, "Current Event body address differs");
             CurrentRecord::Event(super::transitions::AuditEventAck::new(event)?)
         }

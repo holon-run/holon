@@ -3489,6 +3489,8 @@ mod tests {
         assert_eq!(page.events[0].event_type, "provider_round_completed");
         assert_eq!(page.events[0].payload["round"], 1);
         assert_eq!(page.newest_seq, Some(page.events[0].event_seq));
+        assert_eq!(page.next_after_seq, page.newest_seq);
+        assert_eq!(page.next_before_seq, None);
         assert!(page.has_newer);
         assert!(!page.has_older);
 
@@ -4675,6 +4677,16 @@ fn offline_event_page(
         contract_version: holon::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION,
         oldest_seq,
         newest_seq,
+        next_before_seq: if descending && has_more {
+            oldest_seq
+        } else {
+            None
+        },
+        next_after_seq: if !descending && has_more {
+            newest_seq
+        } else {
+            None
+        },
         cursor_seq: runtime_db.audit_events().latest_event_seq(Some(agent_id))?,
         has_older: descending && has_more,
         has_newer: !descending && has_more,
