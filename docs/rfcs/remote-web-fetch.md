@@ -13,6 +13,9 @@ provider and its independent `/v1/tools/fetch` API. `WebSearch` uses the same
 provider registry entry and credential profile for `/v1/tools/search`.
 This does not depend on the conversation model's transport or native search.
 
+The `holon-web-retrieval` crate implements local and remote retrieval. The
+application supplies resolved configuration and checks the tool capability.
+
 ## Boundary
 
 Remote Fetch discloses the requested URL to a third-party paid service.

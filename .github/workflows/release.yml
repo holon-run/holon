@@ -561,6 +561,7 @@ jobs:
           publish_if_needed holon-config
           publish_if_needed holon-context
           publish_if_needed holon-tools
+          publish_if_needed holon-web-retrieval
           publish_if_needed holon-client
           publish_if_needed holon-tui
           publish_if_needed decision-core

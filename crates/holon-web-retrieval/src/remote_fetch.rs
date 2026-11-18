@@ -6,7 +6,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use crate::tool::{helpers::truncate_text, ToolError};
+use holon_domain::ToolError;
+use holon_tools::helpers::truncate_text;
 
 use super::{
     deepseek_tool_url,
@@ -155,7 +156,6 @@ fn remote_error(message: &str, retryable: bool) -> anyhow::Error {
         .into()
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -60,6 +60,7 @@ holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
 holon-tools = { version = "0.1.0", path = "crates/holon-tools" }
 holon-tui = { version = "0.1.0", path = "crates/holon-tui" }
+holon-web-retrieval = { version = "0.1.0", path = "crates/holon-web-retrieval" }
 flate2 = "1.0"
 fs2 = "0.4"
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
@@ -93,8 +94,6 @@ unicode-casefold = "0.2"
 url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4"] }
 aide = { version = "0.15.1", features = ["axum"] }
-wreq = { version = "=6.0.0-rc.31", features = ["gzip", "stream"] }
-wreq-util = { version = "=3.0.0-rc.14" }
 
 [features]
 default = []

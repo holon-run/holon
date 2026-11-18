@@ -8,7 +8,9 @@ use serde_json::json;
 use tokio::net::lookup_host;
 use url::Url;
 
-use crate::{tool::ToolError, web::WebFetchConfig};
+use holon_domain::ToolError;
+
+use crate::WebFetchConfig;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WebAccessDecision {
@@ -230,7 +232,6 @@ fn is_metadata_ip(ip: &IpAddr) -> bool {
     }
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,7 +241,7 @@ mod tests {
         let config = WebFetchConfig::default();
         let url = Url::parse("http://127.0.0.1:3000/").unwrap();
         let error = validate_fetch_url(&url, &config).await.unwrap_err();
-        let tool_error = crate::tool::tool_error_from_anyhow(&error);
+        let tool_error = crate::test_tool_error(&error);
         assert_eq!(tool_error.kind, "network_denied");
     }
 
@@ -268,7 +269,7 @@ mod tests {
         config.allowed_hosts = vec!["169.254.169.254".into()];
         let url = Url::parse("http://169.254.169.254/latest/meta-data").unwrap();
         let error = validate_fetch_url(&url, &config).await.unwrap_err();
-        let tool_error = crate::tool::tool_error_from_anyhow(&error);
+        let tool_error = crate::test_tool_error(&error);
         assert_eq!(tool_error.kind, "network_denied");
         assert!(tool_error.message.contains("metadata"));
     }
