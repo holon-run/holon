@@ -51,6 +51,9 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
+      - "scripts/ci_test_shards.py"
+      - "scripts/ci_external_tests.py"
+      - "scripts/ci-external-tests.json"
       - "scripts/validate-agent-templates*.py"
   pull_request:
     branches: [main]
@@ -102,6 +105,9 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
+      - "scripts/ci_test_shards.py"
+      - "scripts/ci_external_tests.py"
+      - "scripts/ci-external-tests.json"
       - "scripts/validate-agent-templates*.py"
   workflow_dispatch:
   schedule:
@@ -173,6 +179,8 @@ jobs:
               - 'packages/api-sdk/**'
               - 'packages/app-sdk/**'
               - 'scripts/ci_test_shards.py'
+              - 'scripts/ci_external_tests.py'
+              - 'scripts/ci-external-tests.json'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
@@ -598,8 +606,8 @@ jobs:
           CARGO_TARGET_DIR: target/macos-aarch64
           HOLON_LIB_TEST_SHARD: c
         run: |
-          cargo test --locked --lib daemon::logging -- --test-threads=2
-          cargo test --locked --lib daemon_logs -- --test-threads=2
+          python3 scripts/ci_external_tests.py regular --target lib --filter daemon::logging --test-threads 2
+          python3 scripts/ci_external_tests.py regular --target lib --filter daemon_logs --test-threads 2
 
   macos-rust-cross-check:
     name: Rust darwin cross-check
@@ -931,27 +939,36 @@ jobs:
         env:
           CRATE_COMMAND: ${{ github.event_name == 'push' && 'check' || 'test' }}
         run: |
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-core/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-clef/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-jev/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-client/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-domain/Cargo.toml --locked --features error-sanitization
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-github/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-agent-templates/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-system/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-storage/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-memory-index/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-observability/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-provider/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-catalog/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-config/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-context/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-tools/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-web-retrieval/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-client/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-tui/Cargo.toml --locked
+          check_or_test_crate() {
+            local manifest="$1"
+            shift
+            if [ "$CRATE_COMMAND" = check ]; then
+              cargo check --manifest-path "$manifest" --locked "$@"
+            else
+              python3 scripts/ci_external_tests.py crate "$manifest" "$@"
+            fi
+          }
+          check_or_test_crate crates/decision-core/Cargo.toml
+          check_or_test_crate crates/decision-clef/Cargo.toml
+          check_or_test_crate crates/decision-jev/Cargo.toml
+          check_or_test_crate crates/decision-openai/Cargo.toml
+          check_or_test_crate crates/decision-openai-decisions/Cargo.toml
+          check_or_test_crate crates/holon-model-client/Cargo.toml
+          check_or_test_crate crates/holon-domain/Cargo.toml --features error-sanitization
+          check_or_test_crate crates/holon-github/Cargo.toml
+          check_or_test_crate crates/holon-agent-templates/Cargo.toml
+          check_or_test_crate crates/holon-system/Cargo.toml
+          check_or_test_crate crates/holon-storage/Cargo.toml
+          check_or_test_crate crates/holon-memory-index/Cargo.toml
+          check_or_test_crate crates/holon-observability/Cargo.toml
+          check_or_test_crate crates/holon-provider/Cargo.toml
+          check_or_test_crate crates/holon-model-catalog/Cargo.toml
+          check_or_test_crate crates/holon-config/Cargo.toml
+          check_or_test_crate crates/holon-context/Cargo.toml
+          check_or_test_crate crates/holon-tools/Cargo.toml
+          check_or_test_crate crates/holon-web-retrieval/Cargo.toml
+          check_or_test_crate crates/holon-client/Cargo.toml
+          check_or_test_crate crates/holon-tui/Cargo.toml
 
       - name: Package check
         if: github.event_name != 'push'
@@ -1039,6 +1056,47 @@ jobs:
           path: |
             target/ci-timing/rust-test-targets.json
             target/ci-timing/lib-test-names-*.json
+          if-no-files-found: warn
+
+  rust-external:
+    name: External fixtures (${{ matrix.os }})
+    needs: changes
+    # Never selected by a PR/path label or main push.
+    if: needs.changes.outputs.full_sweep == 'true'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      CARGO_BUILD_JOBS: "1"
+      RUST_TEST_THREADS: "1"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_TEST_DEBUG: "line-tables-only"
+      CARGO_PROFILE_TEST_CODEGEN_UNITS: "16"
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+      - name: Restore external fixture build cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+        with:
+          key: ci-external-${{ matrix.os }}
+          cache-bin: false
+      - name: Build App SDK for embedded asset tests
+        run: make app-sdk
+      - name: Run exact external fixture set and verify partition
+        run: make test-external EXTERNAL_ARGS="--report target/ci-timing/external-tests.json"
+      - name: Upload external fixture names and exit statuses
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-external-${{ matrix.os }}-${{ github.run_attempt }}
+          path: target/ci-timing/external-tests.json
           if-no-files-found: warn
 
   rust-concurrent:
@@ -1375,6 +1433,7 @@ jobs:
       - rust-lint
       - rust-build
       - rust-test
+      - rust-external
       - rust-concurrent
       - e2e-scheduler
       - scheduler-e2e-required

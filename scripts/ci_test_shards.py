@@ -22,6 +22,11 @@ import sys
 from collections import Counter
 from pathlib import Path
 
+try:
+    from . import ci_external_tests
+except ImportError:
+    import ci_external_tests
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 # Binaries already executed with Rust's default test threads by
@@ -150,7 +155,11 @@ def command_verify_lib_lists(args: argparse.Namespace) -> None:
     for group in "abcd":
         names = json.loads((args.directory / f"lib-test-names-{group}.json").read_text())
         validate_lib_group(names, group)
-        groups.append(names)
+        external = [
+            entry["name"] for entry in ci_external_tests.entries_for("Cargo.toml", ["lib"])
+            if ci_external_tests.applicable(entry) and lib_compile_group(entry["name"]) == group
+        ]
+        groups.append(names + external)
     verify_lib_lists(baseline, groups)
     print(f"lib coverage: {len(baseline)} original test names, no missing/extra/duplicates")
 
@@ -202,6 +211,12 @@ def suite_members(suite: str, all_targets: list[str]) -> list[str] | None:
 def validation_problems(all_targets: list[str]) -> list[str]:
     known = set(all_targets)
     problems: list[str] = []
+    unknown_external = sorted({
+        entry["target"] for entry in ci_external_tests.entries_for("Cargo.toml")
+        if entry["target"] != "lib" and entry["target"] not in known
+    })
+    if unknown_external:
+        problems.append(f"external manifest lists non-existent test targets: {', '.join(unknown_external)}")
     for shard, members in (("concurrent", CONCURRENT_TEST_TARGETS), ("control", CONTROL_SHARD), ("cli", CLI_SHARD)):
         unknown = sorted(name for name in members if name not in known)
         if unknown:
@@ -234,9 +249,13 @@ def suite_command(suite: str, all_targets: list[str], test_threads: str | None) 
 
 
 def lib_test_names(group: str | None = None) -> list[str]:
-    """Return every unit-test name in the lib target, spelled as libtest does."""
+    """Enumerate regular unit tests; libtest skips external names before listing."""
+    if ci_external_tests.entries_for("Cargo.toml", ["lib"]):
+        return ci_external_tests.verify_regular_target("Cargo.toml", "lib", group)
     completed = subprocess.run(
-        ["cargo", "test", "--lib", "--", "--list"],
+        ci_external_tests.regular_command(
+            ["cargo", "test", "--lib", "--", "--list"], targets=["lib"],
+        ),
         cwd=REPO_ROOT,
         stdout=subprocess.PIPE,
         text=True,
@@ -268,7 +287,10 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
         )
         print(f"lib compile group {group}: {len(names)} tests", file=sys.stderr)
         completed = subprocess.run(
-            ["cargo", "test", "--lib", "--", f"--test-threads={threads}"],
+            ci_external_tests.regular_command(
+                ["cargo", "test", "--lib", "--", f"--test-threads={threads}"],
+                targets=["lib"],
+            ),
             cwd=REPO_ROOT,
             env=lib_group_environment(group),
         )
@@ -314,7 +336,8 @@ def command_task_fixtures(_: argparse.Namespace) -> None:
         print(f"task fixture module {module}: {len(selected)} tests", file=sys.stderr)
         print(f"$ HOLON_LIB_TEST_SHARD=b {' '.join(command)}", file=sys.stderr)
         completed = subprocess.run(
-            command, cwd=REPO_ROOT, env=lib_group_environment("b"),
+            ci_external_tests.regular_command(command, targets=["lib"]),
+            cwd=REPO_ROOT, env=lib_group_environment("b"),
         )
         if completed.returncode:
             failures.append(completed)
@@ -326,7 +349,28 @@ def suite_commands(
     suite: str, all_targets: list[str], test_threads: str | None
 ) -> list[list[str]]:
     """Return every cargo command a suite runs, in order."""
-    return [suite_command(suite, all_targets, test_threads)]
+    members = suite_members(suite, all_targets)
+    if members is None:
+        return [ci_external_tests.regular_command(
+            suite_command(suite, all_targets, test_threads), targets=["lib"],
+        )]
+    affected = {entry["target"] for entry in ci_external_tests.entries_for("Cargo.toml", members)}
+    if not affected:
+        return [suite_command(suite, all_targets, test_threads)]
+    threads = test_threads or SERIAL_TEST_THREADS
+    commands = []
+    regular_targets = [target for target in members if target not in affected]
+    if regular_targets:
+        command = ["cargo", "test"]
+        for target in regular_targets:
+            command += ["--test", target]
+        commands.append(command + ["--", f"--test-threads={threads}"])
+    for target in sorted(affected):
+        commands.append(ci_external_tests.regular_command(
+            ["cargo", "test", "--test", target, "--", f"--test-threads={threads}"],
+            targets=[target],
+        ))
+    return commands
 
 
 def command_list(args: argparse.Namespace) -> None:
@@ -354,12 +398,17 @@ def command_args(args: argparse.Namespace) -> None:
     if args.suite in LIB_SHARDS:
         threads = args.test_threads or THREAD_DEFAULTS.get("lib", SERIAL_TEST_THREADS)
         for group in LIB_COMPILE_GROUPS[args.suite]:
+            command = ci_external_tests.regular_command(
+                ["cargo", "test", "--lib", "--", f"--test-threads={threads}"],
+                targets=["lib"],
+            )
             print(
                 f"HOLON_LIB_TEST_SHARD={group} "
-                f"cargo test --lib -- --test-threads={threads}"
+                f"{' '.join(command)}"
             )
         return
-    print(" ".join(suite_command(args.suite, all_targets, args.test_threads)))
+    for command in suite_commands(args.suite, all_targets, args.test_threads):
+        print(" ".join(command))
 
 
 def command_run(args: argparse.Namespace) -> None:
@@ -373,18 +422,26 @@ def command_run(args: argparse.Namespace) -> None:
         run_lib_shard(args.suite, args.test_threads)
         return
     commands = suite_commands(args.suite, all_targets, args.test_threads)
+    failures = []
     for command in commands:
+        targets = [command[index + 1] for index, word in enumerate(command) if word == "--test"]
+        affected = {entry["target"] for entry in ci_external_tests.entries_for(
+            "Cargo.toml", targets if targets else ["lib"],
+        )}
+        for target in sorted(affected):
+            ci_external_tests.verify_regular_target("Cargo.toml", target)
         printable = " ".join(command)
         if len(printable) > 200:
             printable = f"{' '.join(command[:6])} <{len(command) - 7} test names>"
         print(f"$ {printable}", file=sys.stderr)
         completed = subprocess.run(command, cwd=REPO_ROOT)
         if completed.returncode != 0:
-            sys.exit(completed.returncode)
-    sys.exit(0)
+            failures.append(completed.returncode)
+    sys.exit(failures[0] if failures else 0)
 
 
 def command_validate(_: argparse.Namespace) -> None:
+    ci_external_tests.load_manifest()
     all_targets = cargo_test_targets()
     problems = validation_problems(all_targets)
     if problems:

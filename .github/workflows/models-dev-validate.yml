@@ -64,7 +64,7 @@ jobs:
         run: |
           cargo test --locked --manifest-path crates/holon-model-catalog/Cargo.toml
           cargo test --locked --test models_dev_adapter --test models_dev_reviewed_capacity --test models_dev_coverage
-          cargo test --locked --test cli_exit_codes models_dev_refresh
+          python3 scripts/ci_external_tests.py regular --target cli_exit_codes --filter models_dev_refresh
 
       - name: Check reviewed route metadata and runtime budget policies (offline)
         run: cargo run --locked -- models-dev coverage --check

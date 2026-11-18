@@ -168,7 +168,10 @@ test: ## Run serial integration-test targets (concurrent-proven binaries exclude
 test-shard: ## Run one CI test shard (SHARD=lib-a|lib-b|control|cli|misc); lib shards use 2 test threads
 	python3 scripts/ci_test_shards.py run $(SHARD)
 
-.PHONY: test-task-fixtures
+.PHONY: test-task-fixtures test-external
+test-external: ## Run reviewed external CLI/service/host fixtures (manual/nightly only)
+	python3 scripts/ci_external_tests.py run $(EXTERNAL_ARGS)
+
 test-task-fixtures: ## Run the three task fixture regression modules (compile group b; 2 test threads)
 	python3 scripts/ci_test_shards.py task-fixtures
 
@@ -178,7 +181,7 @@ test-resource-lint: ## Audit permanent test temp directories against the reasone
 test-concurrent: ## Run runtime lifecycle integration tests with Rust's default test threads
 	@set -eu; \
 	for test_target in $(CONCURRENT_TESTS); do \
-		cargo test --test "$$test_target"; \
+		python3 scripts/ci_external_tests.py regular --target "$$test_target"; \
 	done
 
 test-concurrent-repeat: ## Repeat core concurrent lifecycle tests (CONCURRENT_REPEATS=3)
@@ -187,7 +190,7 @@ test-concurrent-repeat: ## Repeat core concurrent lifecycle tests (CONCURRENT_RE
 	while [ "$$repeat" -le "$(CONCURRENT_REPEATS)" ]; do \
 		echo "Concurrent lifecycle test pass $$repeat/$(CONCURRENT_REPEATS)"; \
 		for test_target in $(CONCURRENT_LIFECYCLE_TESTS); do \
-			cargo test --test "$$test_target"; \
+			python3 scripts/ci_external_tests.py regular --target "$$test_target"; \
 		done; \
 		repeat=$$((repeat + 1)); \
 	done

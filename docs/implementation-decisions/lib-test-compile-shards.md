@@ -28,9 +28,12 @@ The existing `lib-a` CI job compiles and runs `a`, then `c`; `lib-b` runs `b`,
 then `d`. Each group is compiled **before** enumerating it. The runner rejects
 empty lists, duplicate names, and tests appearing outside their owning group,
 including a new ungated test that would otherwise run in all four groups.
-It saves the real lists as timing artifacts for union/overlap verification.
+It saves the real regular-test lists as timing artifacts for union/overlap
+verification; reviewed external fixtures use the same groups in the
+[manual/nightly route](external-dependency-test-routing.md).
 `verify-lib-lists --baseline <original-name-list> --directory <list-directory>`
-compares all four real enumerations with an original libtest name multiset,
+adds the platform's reviewed external names to the four regular enumerations
+and compares them with an original unfiltered libtest name multiset,
 rejecting missing, extra, or duplicate names rather than just checking counts.
 Binary unit tests run once, in `lib-a`. Integration test partitioning is unchanged.
 The all-target build and filtered models.dev job select `c`, and `rust-build`

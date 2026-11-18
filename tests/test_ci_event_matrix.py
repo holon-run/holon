@@ -109,6 +109,30 @@ class CiEventMatrixTests(unittest.TestCase):
         self.assertIn("e2e-scheduler", selected("pull_request", {"rust"}, {"e2e-scheduler"}))
         self.assertIn('cron: "40 2 * * *"', WORKFLOW)
 
+    def test_external_fixtures_only_use_existing_manual_and_nightly_entries(self):
+        triggers = WORKFLOW.split("jobs:\n", 1)[0]
+        for path in ("scripts/ci_test_shards.py", "scripts/ci_external_tests.py",
+                     "scripts/ci-external-tests.json"):
+            self.assertEqual(triggers.count(f'- "{path}"'), 2)
+        for event in EVENTS:
+            self.assertEqual(
+                "rust-external" in selected(event, {"rust"}, {"e2e-scheduler"}),
+                event in ("schedule", "workflow_dispatch"),
+            )
+        self.assertIn("os: [ubuntu-latest, macos-latest]", JOBS["rust-external"])
+        self.assertIn("make test-external", JOBS["rust-external"])
+        external_steps = steps("rust-external")
+        self.assertEqual(
+            command(external_steps["Build App SDK for embedded asset tests"]),
+            "make app-sdk",
+        )
+        self.assertLess(
+            JOBS["rust-external"].index("run: make app-sdk"),
+            JOBS["rust-external"].index("run: make test-external"),
+        )
+        self.assertNotIn("continue-on-error:", JOBS["rust-external"])
+        self.assertIn("      - rust-external", JOBS["timing"])
+
     def test_mixed_steps_only_test_outside_push(self):
         for job, names in {
             "web": ["Test and build web GUI", "Set up Rust", "Set up Java", "Set up Gradle"],
@@ -163,6 +187,8 @@ class CiEventMatrixTests(unittest.TestCase):
             root = Path(directory)
             log = root / "commands.jsonl"
             self.stub(root / "cargo", log)
+            (root / "scripts").mkdir()
+            self.stub(root / "scripts/ci_external_tests.py", log)
             for event in EVENTS:
                 mode = condition(field(step, "CRATE_COMMAND", 10), event)
                 log.unlink(missing_ok=True)
@@ -171,18 +197,19 @@ class CiEventMatrixTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
                 self.assertEqual(len(calls), 21)
-                manifests = {call[2] for call in calls}
-                self.assertEqual(len(manifests), 21)
+                manifests = [call[2] if event == "push" else call[1] for call in calls]
+                self.assertEqual(len(set(manifests)), 21)
                 domain_manifest = "crates/holon-domain/Cargo.toml"
                 self.assertIn(domain_manifest, manifests)
+                for manifest, call in zip(manifests, calls):
+                    feature_flags = ["--features", "error-sanitization"] if manifest == domain_manifest else []
+                    if event == "push":
+                        self.assertEqual(call[0], "check")
+                        self.assertEqual(call[1], "--manifest-path")
+                        self.assertEqual(call[3:], ["--locked", *feature_flags])
+                    else:
+                        self.assertEqual(call, ["crate", manifest, *feature_flags])
                 self.assertIn("crates/holon-web-retrieval/Cargo.toml", manifests)
-                for mode, manifest_flag, manifest, *flags in calls:
-                    self.assertEqual(mode, "check" if event == "push" else "test")
-                    self.assertEqual(manifest_flag, "--manifest-path")
-                    expected_flags = ["--locked"]
-                    if manifest == domain_manifest:
-                        expected_flags.extend(["--features", "error-sanitization"])
-                    self.assertEqual(flags, expected_flags)
                 log.unlink()
                 result = self.run_shell(command(step), root, {**env, "STUB_EXIT": "42"})
                 self.assertNotEqual(result.returncode, 0)
