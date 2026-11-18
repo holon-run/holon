@@ -303,6 +303,28 @@ async fn apply_patch_unified_diff_rejects_bare_pure_add_hunk() {
     );
 }
 
+#[tokio::test]
+async fn apply_patch_unified_diff_accepts_bare_remove_only_hunk() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("sample.txt");
+    tokio::fs::write(&file, "alpha\nbeta\ngamma\n")
+        .await
+        .unwrap();
+
+    let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@
+-beta
+"#;
+
+    let outcome = apply_patch(dir.path(), patch).await.unwrap();
+    assert_eq!(
+        tokio::fs::read_to_string(&file).await.unwrap(),
+        "alpha\ngamma\n"
+    );
+    assert!(outcome.diagnostics.is_empty());
+}
+
 #[test]
 fn parse_unified_diff_bare_headers_derive_counts_and_split_hunks() {
     let patches = parse_patch(
