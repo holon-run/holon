@@ -20,13 +20,7 @@ use super::*;
 
 pub(crate) use adapters::OpenAiCompactionPolicy;
 #[cfg(test)]
-pub(crate) use adapters::{
-    accumulate_chat_completion_stream_events, build_chat_completion_messages,
-    build_chat_completion_request, classify_openai_chat_completion_error,
-    parse_chat_completion_response, send_chat_completion_stream_request,
-    set_stream_idle_timeout_override_for_tests, HttpTimeouts, OpenAiResponsesTransportContract,
-    HTTP_TIMEOUTS_OVERRIDE,
-};
+pub(crate) use adapters::OpenAiResponsesTransportContract;
 
 const HOLON_VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -353,14 +347,6 @@ impl AnthropicProvider {
             HOLON_VERSION,
         )
         .map(Self)
-    }
-
-    #[cfg(all(test, holon_lib_test_shard = "c"))]
-    pub(crate) fn with_http_trace_for_tests(
-        self,
-        trace: super::http_trace::ProviderHttpTrace,
-    ) -> Self {
-        Self(self.0.with_http_trace_for_tests(trace))
     }
 
     pub(crate) fn with_cache_policy(

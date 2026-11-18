@@ -31,11 +31,6 @@ pub async fn spawn_test_server(router: Router) -> String {
     format!("http://{}", addr)
 }
 
-#[allow(dead_code)]
-pub async fn spawn_raw_http_server(response: &'static [u8]) -> String {
-    spawn_raw_http_server_sequence(vec![response]).await
-}
-
 pub async fn spawn_raw_http_server_sequence(responses: Vec<&'static [u8]>) -> String {
     spawn_raw_http_server_bytes_sequence(
         responses
@@ -57,54 +52,6 @@ pub async fn spawn_raw_http_server_bytes_sequence(responses: Vec<Vec<u8>>) -> St
         }
     });
     format!("http://{}", addr)
-}
-
-#[allow(dead_code)]
-pub async fn spawn_raw_http_server_bytes_sequence_with_delay(
-    responses: Vec<(u64, Vec<u8>)>,
-) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        for (delay_ms, response) in responses {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            drain_http_request(&mut stream).await;
-            if delay_ms > 0 {
-                tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-            }
-            stream.write_all(&response).await.unwrap();
-        }
-    });
-    format!("http://{}", addr)
-}
-
-pub async fn spawn_raw_http_server_scripted(responses: Vec<Vec<(u64, Vec<u8>)>>) -> String {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
-        for chunks in responses {
-            let (mut stream, _) = listener.accept().await.unwrap();
-            drain_http_request(&mut stream).await;
-            for (delay_ms, chunk) in chunks {
-                if delay_ms > 0 {
-                    tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
-                }
-                stream.write_all(&chunk).await.unwrap();
-            }
-        }
-    });
-    format!("http://{}", addr)
-}
-
-pub fn chunked_http_response(chunks: &[&[u8]]) -> Vec<u8> {
-    let mut response = b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n".to_vec();
-    for chunk in chunks {
-        response.extend_from_slice(format!("{:X}\r\n", chunk.len()).as_bytes());
-        response.extend_from_slice(chunk);
-        response.extend_from_slice(b"\r\n");
-    }
-    response.extend_from_slice(b"0\r\n\r\n");
-    response
 }
 
 async fn drain_http_request(stream: &mut TcpStream) {
