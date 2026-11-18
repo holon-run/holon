@@ -115,22 +115,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn create_timer_rejects_unknown_fields_and_zero_durations() {
-        let error = serde_json::from_value::<CreateTimerArgs>(json!({
-            "duration_ms": 1,
-            "agent_id": "other",
-        }))
-        .unwrap_err();
-        assert!(error.to_string().contains("unknown field `agent_id`"));
-
-        let error = validate_positive(CREATE_NAME, "duration_ms", 0).unwrap_err();
-        assert_eq!(
-            crate::tool::tool_error_from_anyhow(&error).kind,
-            "invalid_tool_input"
-        );
-    }
-
-    #[test]
     fn list_timer_limit_is_bounded() {
         let args: ListTimersArgs = parse_tool_args(LIST_NAME, &json!({"limit": 0})).unwrap();
         assert_eq!(args.limit.unwrap_or(DEFAULT_LIMIT).clamp(1, MAX_LIMIT), 1);

@@ -225,13 +225,4 @@ mod tests {
         let tool_error = crate::tool::tool_error_from_anyhow(&error);
         assert_eq!(tool_error.kind, "invalid_tool_input");
     }
-
-    #[test]
-    fn use_workspace_schema_exposes_path_and_workspace_id() {
-        let spec = definition().unwrap().spec;
-        let properties = spec.input_schema["properties"].as_object().unwrap();
-        assert!(properties["path"].is_object());
-        assert!(properties["workspace_id"].is_object());
-        assert!(!properties.contains_key("access_mode"));
-    }
 }

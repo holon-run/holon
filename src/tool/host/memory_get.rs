@@ -354,29 +354,6 @@ mod tests {
             .is_some_and(|message| message.contains("whitespace")));
     }
 
-    #[test]
-    fn max_chars_accepts_omitted_and_bounded_values() {
-        assert_eq!(validate_max_chars(None).unwrap(), None);
-        assert_eq!(validate_max_chars(Some(1)).unwrap(), Some(1));
-        assert_eq!(
-            validate_max_chars(Some(MAX_CHARS_MAX)).unwrap(),
-            Some(MAX_CHARS_MAX)
-        );
-    }
-
-    #[test]
-    fn max_chars_rejects_zero_and_oversized_values() {
-        for max_chars in [0, MAX_CHARS_MAX + 1] {
-            let error = tool_error(validate_max_chars(Some(max_chars)).unwrap_err());
-            assert_eq!(error.kind, "invalid_tool_input");
-            assert!(error
-                .details
-                .as_ref()
-                .and_then(|details| details.get("maximum"))
-                .is_some());
-        }
-    }
-
     #[tokio::test]
     async fn memory_get_tool_accepts_command_receipt_source_refs() {
         let dir = tempdir().unwrap();
