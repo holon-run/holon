@@ -3,8 +3,6 @@
 use super::*;
 use crate::domain::conversation::{HistoryAfterCursor, HistoryCursor};
 use crate::memory::refs::RuntimeRef;
-#[cfg(all(test, holon_lib_test_shard = "b"))]
-pub(super) use holon_storage::conversation::HISTORY_AFTER_SQL;
 use holon_storage::conversation::{
     active_turn_rows, forward_rows, locate_source_in, pending_input_rows, window_snapshot,
     ConversationSource,

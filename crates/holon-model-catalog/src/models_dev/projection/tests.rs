@@ -260,3 +260,49 @@ fn custom_mapping_overrides_default() {
         .as_str()
         .contains("openrouter"));
 }
+
+#[test]
+fn seed_character_limits_do_not_inherit_conflicting_upstream_capacity() {
+    for (route, expected_context, expected_output) in [
+        ("volcengine/doubao-seed-character-260628", None, None),
+        (
+            "volcengine/doubao-seed-character-251128",
+            Some(256_000),
+            Some(256_000),
+        ),
+        (
+            "openrouter/doubao-seed-character-260628",
+            Some(256_000),
+            Some(256_000),
+        ),
+    ] {
+        let model_ref = ModelRef::parse(route).unwrap();
+        let model: ModelsDevModel = serde_json::from_value(serde_json::json!({
+            "id": model_ref.model,
+            "reasoning": true,
+            "tool_call": true,
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+            "limit": {"context": 256_000, "output": 256_000}
+        }))
+        .unwrap();
+        let metadata = project_model(&model_ref, &model);
+        assert_eq!(metadata.context_window_tokens, expected_context, "{route}");
+        assert_eq!(
+            metadata.default_max_output_tokens, expected_output,
+            "{route}"
+        );
+        assert_eq!(
+            metadata.max_output_tokens_upper_limit, expected_output,
+            "{route}"
+        );
+        assert_eq!(
+            metadata.auto_compact_token_limit,
+            expected_context
+                .map(|value| value * DEFAULT_EFFECTIVE_CONTEXT_WINDOW_PERCENT as usize / 100),
+            "{route}"
+        );
+        assert!(metadata.capabilities.agent_turn, "{route}");
+        assert!(metadata.capabilities.image_input, "{route}");
+        assert!(metadata.capabilities.supports_reasoning, "{route}");
+    }
+}

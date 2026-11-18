@@ -4507,6 +4507,11 @@ ALTER TABLE execution_protocol_work_items_retired_needs_repair
         // refreshes the input-evidence fingerprints that froze the old bytes.
         sql: "",
     },
+    Migration {
+        version: 116,
+        name: "repair_retired_outcome_current_fingerprint",
+        sql: "",
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4955,6 +4960,9 @@ fn apply_migration_transaction(
     if migration.name == "retire_outcome_needs_repair" {
         migrate_retired_outcome_needs_repair(transaction)?;
     }
+    if migration.name == "repair_retired_outcome_current_fingerprint" {
+        repair_retired_outcome_current_fingerprint(transaction)?;
+    }
     if migration.name == "strict_runtime_sequences" {
         migrate_runtime_sequences(transaction)?;
     }
@@ -5069,10 +5077,9 @@ fn migrate_retired_outcome_needs_repair(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
-/// Re-freeze the input-evidence copies of a rewritten outcome payload. The
-/// Outcome family has no canonical content hash, so admission compares the raw
-/// byte count and the frozen SHA-256 of the body. Revision is intentionally
-/// unchanged: the record identity is the same, only its retired encoding moved.
+/// Refresh a rewritten outcome without changing its identity or evidence revisions.
+/// Fixed seed evidence freezes the body in its fingerprint; Current keeps the
+/// body digest alongside, not inside, the metadata fingerprint.
 fn refresh_retired_outcome_input_evidence_tx(
     transaction: &Transaction<'_>,
     agent_id: &str,
@@ -5120,16 +5127,133 @@ fn refresh_retired_outcome_input_evidence_tx(
         transaction.execute(
             "UPDATE input_evidence_current
              SET content_digest = ?1,
-                 fingerprint_json = json_set(
-                   fingerprint_json,
-                   '$.payload_bytes', ?2,
-                   '$.frozen_payload_digest', ?1
-                 )
+                 fingerprint_json = json_set(fingerprint_json, '$.payload_bytes', ?2)
              WHERE agent_id = ?3 AND family = 'outcome' AND record_id = ?4",
             params![&digest, payload_bytes, agent_id, outcome_id],
         )?;
     }
     Ok(())
+}
+
+/// Old v115 wrote the rewritten digest into two independent fields. Only undo
+/// the extra write when both digests and the rest of the Current fingerprint
+/// match the canonical v115 rewrite; leave other evidence to normal admission.
+fn repair_retired_outcome_current_fingerprint(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "input_evidence_current")?
+        || !table_exists_tx(transaction, "execution_protocol_outcomes")?
+    {
+        return Ok(());
+    }
+    let mut scan = transaction.prepare(
+        "SELECT c.agent_id, c.identity_incarnation, c.record_id, c.content_digest,
+                c.fingerprint_json, o.attempt_id, o.payload_json
+         FROM input_evidence_current c
+         JOIN execution_protocol_outcomes o
+           ON o.agent_id = c.agent_id AND o.outcome_id = c.record_id
+         WHERE c.family = 'outcome' AND c.availability = 'present'
+           AND (c.agent_id, c.identity_incarnation, c.family, c.record_id)
+               > (?1, ?2, 'outcome', ?3)
+           AND CASE WHEN json_valid(c.fingerprint_json)
+               THEN json_type(c.fingerprint_json, '$.frozen_payload_digest') = 'text'
+               ELSE 0 END
+         ORDER BY c.agent_id, c.identity_incarnation, c.family, c.record_id
+         LIMIT 128",
+    )?;
+    let mut repair = transaction.prepare(
+        "UPDATE input_evidence_current
+         SET fingerprint_json = json_remove(fingerprint_json, '$.frozen_payload_digest')
+         WHERE agent_id = ?1 AND identity_incarnation = ?2 AND family = 'outcome'
+           AND record_id = ?3",
+    )?;
+    let mut cursor = (String::new(), 0_i64, String::new());
+    loop {
+        // Close the scan before mutating the table. Keep only one batch of keys.
+        let mut repairs = Vec::new();
+        let mut rows = scan.query(params![cursor.0, cursor.1, cursor.2])?;
+        let mut advanced = false;
+        while let Some(row) = rows.next()? {
+            cursor = (row.get(0)?, row.get(1)?, row.get(2)?);
+            advanced = true;
+            if let (Ok(digest), Ok(fingerprint), Ok(attempt), Ok(payload)) = (
+                row.get_ref(3)?.as_str(),
+                row.get_ref(4)?.as_str(),
+                row.get_ref(5)?.as_str(),
+                row.get_ref(6)?.as_str(),
+            ) {
+                if is_retired_outcome_current_miswrite(
+                    &cursor.2,
+                    attempt,
+                    payload,
+                    digest,
+                    fingerprint,
+                )? {
+                    repairs.push(cursor.clone());
+                }
+            }
+        }
+        drop(rows);
+        if !advanced {
+            return Ok(());
+        }
+        for (agent, incarnation, outcome) in repairs {
+            repair.execute(params![agent, incarnation, outcome])?;
+        }
+    }
+}
+
+fn is_retired_outcome_current_miswrite(
+    outcome_id: &str,
+    attempt_id: &str,
+    payload: &str,
+    content_digest: &str,
+    fingerprint: &str,
+) -> Result<bool> {
+    use holon_domain::execution_protocol::{
+        ExecutionOutcome, ExecutionOutcomeRecord, WorkItemOutcome,
+    };
+    use serde_json::{json, Value};
+
+    let Ok(mut body) = serde_json::from_str::<Value>(payload) else {
+        return Ok(false);
+    };
+    let Ok(outcome) = serde_json::from_value::<ExecutionOutcomeRecord>(body.clone()) else {
+        return Ok(false);
+    };
+    let ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { reason }) = outcome.outcome
+    else {
+        return Ok(false);
+    };
+    if outcome.outcome_id != outcome_id || outcome.attempt_id != attempt_id {
+        return Ok(false);
+    }
+    // Round-trip the actual v115 mapping, not just the "interrupted" tag.
+    body["outcome"] = json!({
+        "owner": "work_item",
+        "outcome": {"kind": "needs_repair", "repair_id": reason},
+    });
+    if crate::execution::rewrite_outcome_needs_repair(&serde_json::to_string(&body)?)?.as_deref()
+        != Some(payload)
+    {
+        return Ok(false);
+    }
+    // Mirrors RuntimeDb's Outcome fingerprint_on projection, plus the field
+    // incorrectly added by old v115.
+    let expected = json!({
+        "content_hash": null,
+        "sequence": null,
+        "turn_index": null,
+        "created_at": outcome.created_at,
+        "owner_kind": null,
+        "owner_id": null,
+        "revision_marker": attempt_id,
+        "payload_bytes": payload.len(),
+        "related_turn_id": null,
+        "frozen_payload_digest": content_digest,
+    });
+    Ok(
+        serde_json::from_str::<Value>(fingerprint).is_ok_and(|value| value == expected)
+            && bytes_sha256_hex(payload.as_bytes()) == content_digest,
+    )
 }
 
 fn bytes_sha256_hex(bytes: &[u8]) -> String {
@@ -7736,351 +7860,7 @@ pub fn migrate(connection: &mut Connection, runtime_backfill: ApplyRuntimeBackfi
 }
 
 #[cfg(test)]
-mod runtime_backfill_tests {
-    use super::*;
-
-    #[test]
-    fn runtime_backfill_failure_rolls_back_schema_and_migration_record() -> Result<()> {
-        let mut connection = Connection::open_in_memory()?;
-        ensure_migration_table(&connection)?;
-        let migration = Migration {
-            version: 94,
-            name: "explicit_episode_continuity",
-            sql: "CREATE TABLE capture_probe (value TEXT NOT NULL);",
-        };
-
-        let err = apply_migration(&mut connection, &migration, |tx, step| {
-            assert!(matches!(step, RuntimeBackfill::EpisodeContinuity));
-            tx.execute("INSERT INTO capture_probe VALUES ('partial')", [])?;
-            bail!("injected runtime backfill failure");
-        })
-        .unwrap_err();
-        assert_eq!(err.to_string(), "injected runtime backfill failure");
-        assert!(!table_exists(&connection, "capture_probe")?);
-        assert_eq!(current_schema_version(&connection)?, 0);
-
-        apply_migration(&mut connection, &migration, |tx, step| {
-            assert!(matches!(step, RuntimeBackfill::EpisodeContinuity));
-            tx.execute("INSERT INTO capture_probe VALUES ('complete')", [])?;
-            Ok(())
-        })?;
-        assert_eq!(current_schema_version(&connection)?, migration.version);
-        assert_eq!(
-            connection.query_row("SELECT value FROM capture_probe", [], |r| r
-                .get::<_, String>(0))?,
-            "complete"
-        );
-        Ok(())
-    }
-}
+mod runtime_backfill_tests;
 
 #[cfg(test)]
-mod retired_outcome_migration_tests {
-    use super::*;
-    use sha2::{Digest, Sha256};
-
-    const OUTCOME_ID: &str = "outcome:message:msg-legacy";
-    const AGENT_ID: &str = "agent-a";
-    const SEED_ID: &str = "seed-a";
-
-    fn sha256_hex(value: &str) -> String {
-        format!("{:x}", Sha256::digest(value.as_bytes()))
-    }
-
-    fn legacy_payload(repair_id: Option<&str>) -> String {
-        let inner = match repair_id {
-            Some(repair_id) => serde_json::json!({
-                "kind": "needs_repair",
-                "repair_id": repair_id,
-            }),
-            None => serde_json::json!({ "kind": "needs_repair" }),
-        };
-        serde_json::json!({
-            "outcome_id": OUTCOME_ID,
-            "attempt_id": "attempt-legacy",
-            "outcome": { "owner": "work_item", "outcome": inner },
-            "created_at": "2026-10-30T00:00:00Z",
-        })
-        .to_string()
-    }
-
-    fn conversation_payload() -> String {
-        serde_json::json!({
-            "outcome_id": "outcome-keep",
-            "attempt_id": "attempt-keep",
-            "outcome": { "owner": "conversation", "outcome": { "kind": "replied" } },
-            "created_at": "2026-10-30T00:00:00Z",
-        })
-        .to_string()
-    }
-
-    fn create_tables(connection: &Connection) -> Result<()> {
-        connection.execute_batch(
-            "CREATE TABLE execution_protocol_outcomes (
-               agent_id TEXT NOT NULL,
-               outcome_id TEXT NOT NULL,
-               attempt_id TEXT NOT NULL,
-               payload_json TEXT NOT NULL,
-               PRIMARY KEY (agent_id, outcome_id)
-             );
-             CREATE TABLE episode_continuity_seeds (
-               seed_id TEXT NOT NULL PRIMARY KEY,
-               agent_id TEXT NOT NULL,
-               roots_json TEXT NOT NULL
-             );
-             CREATE TABLE input_evidence_eligibility (
-               seed_id TEXT NOT NULL,
-               capture_phase TEXT NOT NULL,
-               family TEXT NOT NULL,
-               record_id TEXT NOT NULL,
-               fingerprint_json TEXT NOT NULL,
-               mandatory INTEGER NOT NULL,
-               PRIMARY KEY (seed_id, capture_phase, family, record_id)
-             );
-             CREATE TABLE input_evidence_seed_recovery_current (
-               seed_id TEXT NOT NULL,
-               family TEXT NOT NULL,
-               record_id TEXT NOT NULL,
-               revision INTEGER NOT NULL,
-               fingerprint_json TEXT NOT NULL,
-               PRIMARY KEY (seed_id, family, record_id)
-             );
-             CREATE TABLE input_evidence_current (
-               agent_id TEXT NOT NULL,
-               identity_incarnation INTEGER NOT NULL,
-               family TEXT NOT NULL,
-               record_id TEXT NOT NULL,
-               revision INTEGER NOT NULL,
-               content_digest TEXT,
-               fingerprint_json TEXT NOT NULL,
-               availability TEXT NOT NULL,
-               qualification TEXT NOT NULL,
-               seed_id TEXT,
-               attempt_turn_proof_json TEXT,
-               PRIMARY KEY (agent_id, identity_incarnation, family, record_id)
-             );",
-        )?;
-        Ok(())
-    }
-
-    fn seed_legacy_rows(connection: &Connection, payload: &str) -> Result<()> {
-        connection.execute(
-            "INSERT INTO episode_continuity_seeds (seed_id, agent_id, roots_json)
-             VALUES (?1, ?2, '{}')",
-            params![SEED_ID, AGENT_ID],
-        )?;
-        connection.execute(
-            "INSERT INTO execution_protocol_outcomes (agent_id, outcome_id, attempt_id, payload_json)
-             VALUES (?1, ?2, 'attempt-legacy', ?3)",
-            params![AGENT_ID, OUTCOME_ID, payload],
-        )?;
-        connection.execute(
-            "INSERT INTO execution_protocol_outcomes (agent_id, outcome_id, attempt_id, payload_json)
-             VALUES (?1, 'outcome-keep', 'attempt-keep', ?2)",
-            params![AGENT_ID, conversation_payload()],
-        )?;
-        let stale_fingerprint = serde_json::json!({
-            "content_hash": serde_json::Value::Null,
-            "sequence": serde_json::Value::Null,
-            "turn_index": serde_json::Value::Null,
-            "created_at": "2026-10-30T00:00:00Z",
-            "owner_kind": serde_json::Value::Null,
-            "owner_id": serde_json::Value::Null,
-            "revision_marker": "attempt-legacy",
-            "payload_bytes": payload.len(),
-            "related_turn_id": serde_json::Value::Null,
-            "frozen_payload_digest": sha256_hex(payload),
-        })
-        .to_string();
-        for phase in ["upgrade", "first_import"] {
-            connection.execute(
-                "INSERT INTO input_evidence_eligibility
-                 (seed_id, capture_phase, family, record_id, fingerprint_json, mandatory)
-                 VALUES (?1, ?2, 'outcome', ?3, ?4, 0)",
-                params![SEED_ID, phase, OUTCOME_ID, stale_fingerprint],
-            )?;
-        }
-        connection.execute(
-            "INSERT INTO input_evidence_seed_recovery_current
-             (seed_id, family, record_id, revision, fingerprint_json)
-             VALUES (?1, 'outcome', ?2, 1, ?3)",
-            params![SEED_ID, OUTCOME_ID, stale_fingerprint],
-        )?;
-        connection.execute(
-            "INSERT INTO input_evidence_current
-             (agent_id, identity_incarnation, family, record_id, revision, content_digest,
-              fingerprint_json, availability, qualification, seed_id)
-             VALUES (?1, 1, 'outcome', ?2, 3, ?3, ?4, 'present', 'committed_writer', ?5)",
-            params![
-                AGENT_ID,
-                OUTCOME_ID,
-                sha256_hex(payload),
-                stale_fingerprint,
-                SEED_ID
-            ],
-        )?;
-        Ok(())
-    }
-
-    fn retired_outcome_migration() -> Migration {
-        Migration {
-            version: 115,
-            name: "retire_outcome_needs_repair",
-            sql: "",
-        }
-    }
-
-    fn stored_fingerprints(connection: &Connection) -> Result<Vec<String>> {
-        let mut fingerprints = Vec::new();
-        let mut statement = connection.prepare(
-            "SELECT fingerprint_json FROM input_evidence_eligibility
-             WHERE family = 'outcome' AND record_id = ?1",
-        )?;
-        for row in statement.query_map([OUTCOME_ID], |row| row.get::<_, String>(0))? {
-            fingerprints.push(row?);
-        }
-        let mut statement = connection.prepare(
-            "SELECT fingerprint_json FROM input_evidence_seed_recovery_current
-             WHERE family = 'outcome' AND record_id = ?1",
-        )?;
-        for row in statement.query_map([OUTCOME_ID], |row| row.get::<_, String>(0))? {
-            fingerprints.push(row?);
-        }
-        let current: (String, String) = connection.query_row(
-            "SELECT content_digest, fingerprint_json FROM input_evidence_current
-             WHERE family = 'outcome' AND record_id = ?1",
-            [OUTCOME_ID],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(current.0, sha256_hex(&rewritten_payload(connection)?));
-        fingerprints.push(current.1);
-        Ok(fingerprints)
-    }
-
-    fn rewritten_payload(connection: &Connection) -> Result<String> {
-        Ok(connection.query_row(
-            "SELECT payload_json FROM execution_protocol_outcomes
-             WHERE agent_id = ?1 AND outcome_id = ?2",
-            params![AGENT_ID, OUTCOME_ID],
-            |row| row.get::<_, String>(0),
-        )?)
-    }
-
-    #[test]
-    fn migration_converges_legacy_outcome_and_refreezes_evidence() -> Result<()> {
-        let mut connection = Connection::open_in_memory()?;
-        create_tables(&connection)?;
-        ensure_migration_table(&connection)?;
-        let legacy = legacy_payload(Some("provider_dispatch_rejected:turn-1"));
-        let conversation = conversation_payload();
-        seed_legacy_rows(&connection, &legacy)?;
-
-        apply_migration(
-            &mut connection,
-            &retired_outcome_migration(),
-            unexpected_runtime_backfill,
-        )?;
-
-        let rewritten = rewritten_payload(&connection)?;
-        let value: serde_json::Value = serde_json::from_str(&rewritten)?;
-        assert_eq!(value["outcome"]["owner"], "work_item");
-        assert_eq!(value["outcome"]["outcome"]["kind"], "interrupted");
-        assert_eq!(
-            value["outcome"]["outcome"]["reason"],
-            "provider_dispatch_rejected:turn-1"
-        );
-        assert_eq!(value["outcome_id"], OUTCOME_ID);
-        assert_eq!(value["attempt_id"], "attempt-legacy");
-        assert_eq!(value["created_at"], "2026-10-30T00:00:00Z");
-        let decoded = crate::execution::decode_outcome_record_with_migration(&rewritten)?;
-        assert_eq!(
-            decoded.outcome,
-            holon_domain::execution_protocol::ExecutionOutcome::WorkItem(
-                holon_domain::execution_protocol::WorkItemOutcome::Interrupted {
-                    reason: "provider_dispatch_rejected:turn-1".into()
-                }
-            )
-        );
-
-        let kept: String = connection.query_row(
-            "SELECT payload_json FROM execution_protocol_outcomes WHERE outcome_id = 'outcome-keep'",
-            [],
-            |row| row.get(0),
-        )?;
-        assert_eq!(kept, conversation, "conversation outcomes are untouched");
-
-        let mut legacy_rows = 0usize;
-        let mut statement = connection
-            .prepare("SELECT payload_json FROM execution_protocol_outcomes WHERE agent_id = ?1")?;
-        for row in statement.query_map([AGENT_ID], |row| row.get::<_, String>(0))? {
-            let payload = row?;
-            let value: serde_json::Value = serde_json::from_str(&payload)?;
-            if value["outcome"]["outcome"]["kind"] == "needs_repair" {
-                legacy_rows += 1;
-            }
-        }
-        assert_eq!(legacy_rows, 0, "no retired encoding survives the migration");
-
-        for fingerprint in stored_fingerprints(&connection)? {
-            let value: serde_json::Value = serde_json::from_str(&fingerprint)?;
-            assert_eq!(value["payload_bytes"], rewritten.len());
-            assert_eq!(value["frozen_payload_digest"], sha256_hex(&rewritten));
-            assert_eq!(value["revision_marker"], "attempt-legacy");
-        }
-        assert_eq!(current_schema_version(&connection)?, 115);
-        Ok(())
-    }
-
-    #[test]
-    fn damaged_legacy_outcome_rolls_the_migration_back() -> Result<()> {
-        let mut connection = Connection::open_in_memory()?;
-        create_tables(&connection)?;
-        ensure_migration_table(&connection)?;
-        let damaged = legacy_payload(None);
-        seed_legacy_rows(&connection, &damaged)?;
-
-        let error = apply_migration(
-            &mut connection,
-            &retired_outcome_migration(),
-            unexpected_runtime_backfill,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("lacks repair_id"));
-        assert_eq!(rewritten_payload(&connection)?, damaged);
-        assert_eq!(current_schema_version(&connection)?, 0);
-        Ok(())
-    }
-
-    #[test]
-    fn malformed_outcome_json_rolls_the_migration_back() -> Result<()> {
-        let mut connection = Connection::open_in_memory()?;
-        create_tables(&connection)?;
-        ensure_migration_table(&connection)?;
-        let legacy = legacy_payload(Some("provider_dispatch_rejected:turn-1"));
-        seed_legacy_rows(&connection, &legacy)?;
-        connection.execute(
-            "INSERT INTO execution_protocol_outcomes (agent_id, outcome_id, attempt_id, payload_json)
-             VALUES (?1, 'outcome-damaged', 'attempt-damaged', ?2)",
-            params![AGENT_ID, "{\"outcome_id\": \"outcome-damaged\","],
-        )?;
-
-        let error = apply_migration(
-            &mut connection,
-            &retired_outcome_migration(),
-            unexpected_runtime_backfill,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("malformed payload_json"));
-        assert_eq!(current_schema_version(&connection)?, 0);
-        let unchanged: String = connection.query_row(
-            "SELECT payload_json FROM execution_protocol_outcomes WHERE outcome_id = ?1",
-            [OUTCOME_ID],
-            |row| row.get(0),
-        )?;
-        assert_eq!(
-            unchanged, legacy,
-            "rollback leaves the legacy row untouched"
-        );
-        Ok(())
-    }
-}
+mod retired_outcome_migration_tests;

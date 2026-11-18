@@ -8,6 +8,37 @@ use holon_model_catalog::{
 };
 
 #[test]
+fn seed_character_routes_keep_unconfirmed_capacity_unknown() {
+    let report = generate_coverage(
+        &parse_snapshot("{}").unwrap(),
+        &BuiltInModelCatalog::new(),
+        &endpoint_associations().unwrap(),
+    )
+    .unwrap();
+    for route in [
+        "volcengine@default/doubao-seed-character-260628",
+        "volcengine@plan/doubao-seed-character-260628",
+    ] {
+        let row = report
+            .routes
+            .iter()
+            .find(|row| row.route_ref.as_string() == route)
+            .unwrap_or_else(|| panic!("missing route {route}"));
+        for field in [
+            "context_window_tokens",
+            "auto_compact_token_limit",
+            "default_max_output_tokens",
+            "max_output_tokens_upper_limit",
+        ] {
+            assert!(row.raw_model[field].is_null(), "{route} {field}");
+        }
+        assert_eq!(row.effective.context_window_tokens, None, "{route}");
+        assert_eq!(row.effective.default_max_output_tokens, None, "{route}");
+        assert_eq!(row.effective.max_output_tokens_upper_limit, None, "{route}");
+    }
+}
+
+#[test]
 fn models_dev_reviewed_capacity_fills_exact_routes_without_changing_output_policy() {
     let catalog = BuiltInModelCatalog::new();
     let report = generate_coverage(

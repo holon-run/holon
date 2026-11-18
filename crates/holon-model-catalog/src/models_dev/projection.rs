@@ -209,17 +209,26 @@ pub(super) fn project_model(model_ref: &ModelRef, model: &ModelsDevModel) -> Bui
         // The exact dated model is documented as 256K, not the newer 260915's
         // 1024K. Neither abbreviation establishes a precise integer context.
         ("volcengine", "doubao-seed-2-1-pro-260628") => None,
+        // Official 128K context conflicts with upstream's 256000. Do not
+        // guess an integer from an abbreviated endpoint specification.
+        ("volcengine", "doubao-seed-character-260628") => None,
         _ => model
             .limit
             .as_ref()
             .and_then(|l| l.context)
             .filter(|v| *v > 0),
     };
-    let max_output_tokens_upper_limit = model
-        .limit
-        .as_ref()
-        .and_then(|l| l.output)
-        .filter(|v| *v > 0);
+    let max_output_tokens_upper_limit =
+        match (model_ref.provider.as_str(), model_ref.model.as_str()) {
+            // The model list separates 32K answers and 32K reasoning; neither
+            // that nor the 4K answer default establishes a total output budget.
+            ("volcengine", "doubao-seed-character-260628") => None,
+            _ => model
+                .limit
+                .as_ref()
+                .and_then(|l| l.output)
+                .filter(|v| *v > 0),
+        };
     // Moonshot documents a 128K default separately from its 1M output ceiling.
     // Do not turn the upstream capability ceiling into the request budget.
     let default_max_output_tokens = match (model_ref.provider.as_str(), model_ref.model.as_str()) {

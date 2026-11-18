@@ -256,6 +256,15 @@ The apply layer should:
 - validate each operation against the state produced by all preceding
   operations; invalid sequences fail before workspace writes
 
+Bare hunk headers (`@@` or `@@ <description>`, without range markers) are
+accepted for context-bearing hunks: counts are derived from the hunk body and
+matching runs with no line hint and no top-of-file match window. A context-less
+add-only hunk cannot derive an insertion position from a bare header, so it
+fails with the dedicated `bare_hunk_insertion_position_required` rule instead
+of silently inserting at the top of the file. Headers that attempt a range
+section (leading `@@ -` or a closing ` @@` marker) must still parse as full
+headers; malformed range attempts keep failing closed.
+
 This keeps the model-facing format standard while preserving agent-friendly
 robustness. Models can write familiar unified diff headers, but small line
 number drift does not need to make a valid contextual edit fail.
@@ -325,7 +334,9 @@ path_token: ("a/" | "b/")? filename
 filename: /[^\n]+/
 
 hunk: hunk_header hunk_line+
-hunk_header: "@@ -" range " +" range " @@" /[^\n]*/ LF
+hunk_header: full_hunk_header | bare_hunk_header
+full_hunk_header: "@@ -" range " +" range " @@" /[^\n]*/ LF
+bare_hunk_header: "@@" (" " /[^\n]*/)? LF
 range: INT ("," INT)?
 
 hunk_line: context_line | add_line | remove_line | no_newline
@@ -350,6 +361,9 @@ Examples:
 
 - `missing_file_header`: expected `--- old_path` followed by `+++ new_path`
 - `invalid_hunk_header`: expected `@@ -old_start,old_count +new_start,new_count @@`
+- `bare_hunk_insertion_position_required`: a context-less add-only hunk with a
+  bare `@@` header cannot determine its insertion position; provide
+  `@@ -start,0 +start,count @@` or add context lines around the insertion
 - `unsupported_git_patch_feature`: binary patches, mode changes, copy headers,
   or submodule patches are not supported; harmless metadata may be accepted and
   ignored instead

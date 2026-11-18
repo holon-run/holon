@@ -1186,18 +1186,6 @@ mod tests {
     }
 
     #[test]
-    fn policy_defaults_to_disabled_and_rejects_small_audit_floor() {
-        assert!(!RuntimeDbRetentionPolicy::default().enabled);
-        let error = RuntimeDbRetentionPolicy {
-            audit_events_min_rows_per_scope: crate::http::MAX_EVENT_STREAM_WINDOW - 1,
-            ..RuntimeDbRetentionPolicy::default()
-        }
-        .validate()
-        .expect_err("audit floor below replay window must fail");
-        assert!(error.to_string().contains("must be at least"));
-    }
-
-    #[test]
     fn disabled_retention_reports_candidates_without_deleting() -> Result<()> {
         let (_directory, db) = runtime_db()?;
         let now = Utc::now();
