@@ -171,12 +171,18 @@ class CiEventMatrixTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
                 self.assertEqual(len(calls), 21)
-                self.assertEqual(len({call[2] for call in calls}), 21)
-                for call in calls:
-                    self.assertEqual(call[0], "check" if event == "push" else "test")
-                    self.assertEqual(call[1], "--manifest-path")
-                    self.assertEqual(call[3:], ["--locked"])
-                self.assertIn("crates/holon-web-retrieval/Cargo.toml", [call[2] for call in calls])
+                manifests = {call[2] for call in calls}
+                self.assertEqual(len(manifests), 21)
+                domain_manifest = "crates/holon-domain/Cargo.toml"
+                self.assertIn(domain_manifest, manifests)
+                self.assertIn("crates/holon-web-retrieval/Cargo.toml", manifests)
+                for mode, manifest_flag, manifest, *flags in calls:
+                    self.assertEqual(mode, "check" if event == "push" else "test")
+                    self.assertEqual(manifest_flag, "--manifest-path")
+                    expected_flags = ["--locked"]
+                    if manifest == domain_manifest:
+                        expected_flags.extend(["--features", "error-sanitization"])
+                    self.assertEqual(flags, expected_flags)
                 log.unlink()
                 result = self.run_shell(command(step), root, {**env, "STUB_EXIT": "42"})
                 self.assertNotEqual(result.returncode, 0)
