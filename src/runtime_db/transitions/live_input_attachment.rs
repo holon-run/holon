@@ -1064,15 +1064,44 @@ pub(super) fn canonical_input_binding_matches_tx(
     {
         return Ok(false);
     }
-    let pending_report = tx.query_row(
-        "SELECT EXISTS(SELECT 1 FROM tool_executions
-         WHERE agent_id = ?1 AND json_extract(payload_json, '$.turn_id') = ?2
-           AND json_extract(payload_json, '$.status') = 'deferred'
-           AND json_extract(payload_json, '$.tool_name') IN ('WaitFor', 'CompleteWorkItem'))",
-        params![agent_id, turn.turn_id],
+    let pending_report = deferred_report_pending_tx(tx, agent_id, &turn.turn_id)?;
+    Ok(!pending_report)
+}
+
+/// SQL for [`deferred_report_pending_tx`]: the physical `turn_id` column
+/// scopes the index probe to `(agent_id, turn_id)`, while the payload
+/// comparisons re-verify turn ownership and keep the original deferred
+/// status/tool filters.
+const DEFERRED_REPORT_PENDING_SQL: &str = "SELECT EXISTS(SELECT 1 FROM tool_executions
+     WHERE agent_id = ?1 AND turn_id = ?2
+       AND json_extract(payload_json, '$.turn_id') = ?2
+       AND json_extract(payload_json, '$.status') = 'deferred'
+       AND json_extract(payload_json, '$.tool_name') IN ('WaitFor', 'CompleteWorkItem'))";
+
+/// Whether the target agent/turn still owns an unreported deferred
+/// `WaitFor`/`CompleteWorkItem` tool execution.
+///
+/// The `tool_executions.turn_id` column and `payload_json.turn_id` are
+/// written from the same `ToolExecutionRecord.turn_id` field
+/// (`insert_tool_evidence_tx`), the column has existed since the table was
+/// created, and no production path updates one side without the other, so
+/// scoping the probe by the indexed column cannot drop an in-contract
+/// deferred-report fence. The payload `turn_id` comparison stays as a
+/// defensive consistency re-check. Rows without a turn (column NULL, no
+/// payload key) match no turn under either reading.
+fn deferred_report_pending_tx(tx: &Transaction<'_>, agent_id: &str, turn_id: &str) -> Result<bool> {
+    let lookup_started = std::time::Instant::now();
+    let pending = tx.query_row(
+        DEFERRED_REPORT_PENDING_SQL,
+        params![agent_id, turn_id],
         |row| row.get::<_, bool>(0),
     )?;
-    Ok(!pending_report)
+    tracing::debug!(
+        deferred_report_lookup_us = lookup_started.elapsed().as_micros(),
+        agent_id,
+        "canonical input binding deferred-report lookup"
+    );
+    Ok(pending)
 }
 
 fn ordinary_live_source_matches_tx(
@@ -1174,3 +1203,8 @@ fn ordinary_live_source_matches_tx(
             .input_message_ids
             .contains(&batch.anchor_message_id))
 }
+
+#[cfg(test)]
+#[cfg(holon_lib_test_shard = "b")]
+#[path = "live_input_attachment_deferred_report_tests.rs"]
+mod deferred_report_tests;
