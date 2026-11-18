@@ -152,26 +152,27 @@ The agent invokes `WebSearch { query: "Holon runtime agent", max_results: 5 }`. 
 - **Search-and-fetch closed loop**: The agent followed up with `WebFetch` on the returned URLs, successfully extracting page text, version numbers, and documentation tables.
 - **Quality comparison**: Compared against commercial cloud providers (such as Brave) on the same queries, self-hosted SearXNG delivered broader domain diversity and sufficient precision for engineering workflows.
 
-### Negative and error semantics verification
+### Empty results and error responses
 
-Verified error behaviors on intentional failure modes:
+Holon distinguishes a valid empty result from a request or parsing error:
 
 | Scenario | SearXNG server behavior | Holon agent observation |
 |---|---|---|
-| `search.formats` lacks `json` | HTTP 403 Forbidden (HTML error page) | Reports `network_failed` with explicit `HTTP 403 Forbidden` and `retryable: true` |
+| `search.formats` lacks `json` | HTTP 403 Forbidden (HTML error page) | Reports `network_failed` with `HTTP 403 Forbidden`, `retryable: true`, and a hint to check whether `search.formats` includes `json` |
 | `base_url` unreachable or port closed | Connection refused | Reports `network_failed` with full request URL and retry suggestions |
-| All upstream engines timed out or challenged | HTTP 200 with valid empty results `{"results": []}` and `unresponsive_engines` list | Reports `parse_failed` ("no parseable search results") |
+| Valid empty results (for example, when all upstream engines time out) | HTTP 200 with `{"results": []}` | Succeeds with zero results |
+| Invalid JSON, missing or non-array `results`, or a non-empty array with no usable entries | HTTP 200 with an invalid or unusable body | Reports `parse_failed` |
 
-> **Note**: When all upstream engines time out or hit rate limits simultaneously, SearXNG returns HTTP 200 with an empty list. Holon categorizes this as `parse_failed` to signal that no usable results were parsed. A suggestion to clarify this diagnostic message is tracked in [holon-run/holon#4024](https://github.com/holon-run/holon/issues/4024). This reflects transient upstream availability rather than a configuration defect; configuring multiple diverse engines or retrying resolves it.
+> **Note**: In fallback mode, Holon stops at the first successful provider response, even if it contains zero results. An empty result alone does not mean the instance or its upstream engines failed.
 
 ## Step 4: Troubleshooting
 
 - **WebSearch reports `network_failed` with `HTTP 403 Forbidden`**:
-  `settings.yml` inside the SearXNG container lacks JSON format support. Ensure `search.formats` includes `- json`, then restart the container.
+  Check whether `search.formats` in the instance's `settings.yml` includes `json`. If you manage the instance and change this setting, restart the container. If JSON is already enabled, investigate other reasons for the 403.
 - **WebSearch reports `network_failed` with connection refused**:
   Holon cannot reach the configured `base_url`. Run `curl -s "http://127.0.0.1:8888/search?q=test&format=json"` on the host to verify container health, and check host firewall rules.
-- **WebSearch reports `parse_failed`, but manual curl sometimes succeeds**:
-  The container is healthy, but all enabled engines timed out or were challenged during that specific query window. Inspect the `unresponsive_engines` field in the SearXNG response. To fix, switch the container to host networking to avoid NAT drops, increase `search.timeout` in `settings.yml` (e.g., 8–10 seconds), and lower `ban_time_on_fail`.
+- **WebSearch succeeds with zero results when you expect matches**:
+  Check the raw SearXNG response for `unresponsive_engines`. If it shows timeouts or challenges, retry the query or enable additional engines. If timeouts persist, check for container networking issues and review `search.timeout` and `ban_time_on_fail` in `settings.yml`.
 - **Intermittent empty results**:
   Single-engine suspension caused by timeout penalties. Enable at least two independent upstream engines in `keep_only` (such as Bing alongside a secondary engine) to provide redundancy.
 
