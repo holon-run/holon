@@ -226,6 +226,129 @@ async fn apply_patch_unified_diff_reports_stripped_body_error_without_writes() {
 }
 
 #[tokio::test]
+async fn apply_patch_unified_diff_accepts_bare_hunk_header() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("sample.txt");
+    tokio::fs::write(&file, "alpha\nbeta\ngamma\n")
+        .await
+        .unwrap();
+
+    let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@
+ alpha
+-beta
++delta
+ gamma
+"#;
+
+    let outcome = apply_patch(dir.path(), patch).await.unwrap();
+    assert_eq!(
+        tokio::fs::read_to_string(&file).await.unwrap(),
+        "alpha\ndelta\ngamma\n"
+    );
+    assert!(outcome.diagnostics.is_empty());
+}
+
+#[tokio::test]
+async fn apply_patch_unified_diff_accepts_bare_hunk_header_with_description() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("sample.txt");
+    tokio::fs::write(&file, "alpha\nbeta\ngamma\n")
+        .await
+        .unwrap();
+
+    let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@ tweak the middle line
+ alpha
+-beta
++delta
+ gamma
+"#;
+
+    let outcome = apply_patch(dir.path(), patch).await.unwrap();
+    assert_eq!(
+        tokio::fs::read_to_string(&file).await.unwrap(),
+        "alpha\ndelta\ngamma\n"
+    );
+    assert!(outcome.diagnostics.is_empty());
+}
+
+#[tokio::test]
+async fn apply_patch_unified_diff_rejects_bare_pure_add_hunk() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("sample.txt");
+    tokio::fs::write(&file, "alpha\nbeta\ngamma\n")
+        .await
+        .unwrap();
+
+    let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@
++inserted at top
++inserted below top
+"#;
+
+    let error = apply_patch(dir.path(), patch).await.unwrap_err();
+    let tool_error = patch_tool_error(&error);
+    assert_eq!(tool_error.kind, "invalid_patch_syntax");
+    assert_eq!(
+        tool_error.details.as_ref().unwrap()["rule"],
+        "bare_hunk_insertion_position_required"
+    );
+    assert_eq!(
+        tokio::fs::read_to_string(&file).await.unwrap(),
+        "alpha\nbeta\ngamma\n"
+    );
+}
+
+#[test]
+fn parse_unified_diff_bare_headers_derive_counts_and_split_hunks() {
+    let patches = parse_patch(
+        "--- a/sample.txt\n+++ b/sample.txt\n@@\n alpha\n-beta\n+delta\n@@ tail\n gamma\n",
+    )
+    .unwrap();
+    assert_eq!(patches.len(), 1);
+    let hunks = &patches[0].hunks;
+    assert_eq!(hunks.len(), 2);
+    assert_eq!(hunks[0].old_start, 0);
+    assert_eq!(hunks[0].old_count, 2);
+    assert_eq!(hunks[0].new_start, 0);
+    assert_eq!(hunks[0].new_count, 2);
+    assert_eq!(hunks[1].old_start, 0);
+    assert_eq!(hunks[1].old_count, 1);
+    assert_eq!(hunks[1].new_count, 1);
+    assert!(patches[0].diagnostics.is_empty());
+}
+
+#[test]
+fn apply_patch_bare_hunk_unified_diff_uses_cross_format_fallback_on_dsl_surface() {
+    let dir = tempdir().unwrap();
+    let file = dir.path().join("sample.txt");
+    std::fs::write(&file, "alpha\nbeta\ngamma\n").unwrap();
+
+    let patch = r#"--- a/sample.txt
++++ b/sample.txt
+@@
+ alpha
+-beta
++delta
+ gamma
+"#;
+
+    let outcome = apply_sync(dir.path(), patch, ApplyPatchSurface::CodexDslFreeform).unwrap();
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        "alpha\ndelta\ngamma\n"
+    );
+    assert!(outcome
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.kind == "apply_patch_compatibility_fallback"));
+}
+
+#[tokio::test]
 async fn apply_patch_unified_diff_keeps_full_codex_wrapper_on_cross_format_fallback() {
     let dir = tempdir().unwrap();
     let file = dir.path().join("sample.txt");

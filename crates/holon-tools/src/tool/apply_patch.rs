@@ -315,7 +315,7 @@ fn detect_patch_format(input: &str) -> PatchFormat {
     for line in trimmed.lines().take(40) {
         has_old |= line.starts_with("--- ");
         has_new |= line.starts_with("+++ ");
-        has_hunk |= line.starts_with("@@ ");
+        has_hunk |= is_hunk_header_line(line);
     }
     if has_old && has_new && has_hunk {
         PatchFormat::UnifiedDiff
@@ -492,7 +492,7 @@ fn parse_unified_diff_patch(input: &str) -> Result<Vec<FilePatch>> {
                 index += 1;
                 continue;
             }
-            if !lines[index].starts_with("@@ ") {
+            if !is_hunk_header_line(&lines[index]) {
                 return Err(syntax_error(
                     "invalid_hunk_header",
                     format!("expected unified diff hunk header, got: {}", lines[index]),
@@ -822,14 +822,14 @@ fn parse_hunk(
     start_index: usize,
     path: Option<&str>,
 ) -> Result<(PatchHunk, usize, Vec<ApplyPatchDiagnostic>)> {
-    let (old_start, old_count, new_start, new_count) = parse_hunk_header(&lines[0], path)?;
+    let header = parse_hunk_header(&lines[0], path)?;
     let mut consumed = 1usize;
     let mut hunk_lines: Vec<HunkLine> = Vec::new();
     let mut no_newline_at_end = false;
 
     while consumed < lines.len() {
         let line = lines[consumed].as_str();
-        if line.starts_with("@@ ")
+        if is_hunk_header_line(line)
             || line.starts_with("diff --git ")
             || (line.starts_with("--- ")
                 && consumed + 1 < lines.len()
@@ -914,23 +914,46 @@ fn parse_hunk(
         .filter(|line| line.kind != HunkLineKind::Remove)
         .count();
     let mut diagnostics = Vec::new();
-    if old_actual != old_count || new_actual != new_count {
-        diagnostics.push(ApplyPatchDiagnostic {
-            path: path.unwrap_or("").to_string(),
-            kind: "hunk_count_mismatch".to_string(),
-            message: format!(
-                "hunk header declared -{},{} +{},{} but body counted -{},{} +{},{}",
-                old_start,
-                old_count,
-                new_start,
-                new_count,
-                old_start,
-                old_actual,
-                new_start,
-                new_actual
-            ),
-        });
-    }
+    let (old_start, old_count, new_start, new_count) = match header {
+        HunkHeader::Full {
+            old_start,
+            old_count,
+            new_start,
+            new_count,
+        } => {
+            if old_actual != old_count || new_actual != new_count {
+                diagnostics.push(ApplyPatchDiagnostic {
+                    path: path.unwrap_or("").to_string(),
+                    kind: "hunk_count_mismatch".to_string(),
+                    message: format!(
+                        "hunk header declared -{},{} +{},{} but body counted -{},{} +{},{}",
+                        old_start,
+                        old_count,
+                        new_start,
+                        new_count,
+                        old_start,
+                        old_actual,
+                        new_start,
+                        new_actual
+                    ),
+                });
+            }
+            (old_start, old_count, new_start, new_count)
+        }
+        // Bare `@@` / `@@ <description>`: counts derive from the hunk body
+        // and the matcher runs without a line hint, like Codex DSL hunks.
+        HunkHeader::Bare => {
+            if hunk_lines.iter().all(|line| line.kind == HunkLineKind::Add) {
+                return Err(syntax_error(
+                    "bare_hunk_insertion_position_required",
+                    "cannot determine insertion position for a context-less add-only hunk with a bare @@ header",
+                    path,
+                    "provide @@ -start,0 +start,count @@ or add context lines around the insertion",
+                ));
+            }
+            (0, old_actual, 0, new_actual)
+        }
+    };
 
     Ok((
         PatchHunk {
@@ -946,7 +969,39 @@ fn parse_hunk(
     ))
 }
 
-fn parse_hunk_header(line: &str, path: Option<&str>) -> Result<(usize, usize, usize, usize)> {
+/// Parsed unified diff hunk header. `Full` carries declared ranges; `Bare`
+/// covers `@@` and `@@ <description>` headers whose counts derive from the
+/// hunk body and whose matcher runs without a line hint.
+enum HunkHeader {
+    Full {
+        old_start: usize,
+        old_count: usize,
+        new_start: usize,
+        new_count: usize,
+    },
+    Bare,
+}
+
+/// `@@` or `@@ <description>`; also the hunk-body boundary predicate.
+fn is_hunk_header_line(line: &str) -> bool {
+    line == "@@" || line.starts_with("@@ ")
+}
+
+fn parse_hunk_header(line: &str, path: Option<&str>) -> Result<HunkHeader> {
+    // A header that attempts a range section (leading `@@ -` or a closing
+    // ` @@` marker) must parse as a full header; malformed range attempts
+    // keep failing closed instead of degrading into descriptions.
+    if !line.starts_with("@@ -") && !line.contains(" @@") {
+        if !is_hunk_header_line(line) {
+            return Err(syntax_error(
+                "invalid_hunk_header",
+                "expected @@ -old_start,old_count +new_start,new_count @@",
+                path,
+                "use a standard unified diff hunk header",
+            ));
+        }
+        return Ok(HunkHeader::Bare);
+    }
     let Some(rest) = line.strip_prefix("@@ -") else {
         return Err(syntax_error(
             "invalid_hunk_header",
@@ -973,7 +1028,12 @@ fn parse_hunk_header(line: &str, path: Option<&str>) -> Result<(usize, usize, us
     };
     let (old_start, old_count) = parse_range(old_range, path)?;
     let (new_start, new_count) = parse_range(new_range, path)?;
-    Ok((old_start, old_count, new_start, new_count))
+    Ok(HunkHeader::Full {
+        old_start,
+        old_count,
+        new_start,
+        new_count,
+    })
 }
 
 fn parse_range(range: &str, path: Option<&str>) -> Result<(usize, usize)> {
