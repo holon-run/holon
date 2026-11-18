@@ -223,8 +223,10 @@ mod tests {
         Ok(state)
     }
     fn write(tx: &Transaction<'_>, state: &ExecutionProtocolState) -> Result<()> {
+        // Include the repository's WorkItem marker columns while leaving the
+        // fixture free to seed invalid records for invariant checks.
         tx.execute_batch("CREATE TABLE IF NOT EXISTS execution_protocol_partitions(agent_id TEXT PRIMARY KEY);
-            CREATE TABLE IF NOT EXISTS execution_protocol_work_items(agent_id TEXT,work_item_id TEXT,payload_json TEXT,PRIMARY KEY(agent_id,work_item_id));
+            CREATE TABLE IF NOT EXISTS execution_protocol_work_items(agent_id TEXT,work_item_id TEXT,source_revision INTEGER,generation INTEGER,lifecycle_state TEXT,payload_json TEXT,PRIMARY KEY(agent_id,work_item_id));
             CREATE TABLE IF NOT EXISTS execution_protocol_attempts(agent_id TEXT,attempt_id TEXT,payload_json TEXT,PRIMARY KEY(agent_id,attempt_id));
             CREATE TABLE IF NOT EXISTS execution_protocol_outcomes(agent_id TEXT,outcome_id TEXT,payload_json TEXT,PRIMARY KEY(agent_id,outcome_id));
             DELETE FROM execution_protocol_work_items;DELETE FROM execution_protocol_attempts;DELETE FROM execution_protocol_outcomes;")?;
@@ -232,15 +234,26 @@ mod tests {
             "INSERT OR IGNORE INTO execution_protocol_partitions VALUES(?1)",
             [&state.agent_id],
         )?;
+        for (id, work) in &state.work_items {
+            let payload = serde_json::to_value(work)?;
+            let lifecycle = payload["state"]["state"]
+                .as_str()
+                .context("closure fixture WorkItem must have a state tag")?;
+            tx.execute(
+                "INSERT INTO execution_protocol_work_items
+                 (agent_id,work_item_id,source_revision,generation,lifecycle_state,payload_json)
+                 VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    state.agent_id,
+                    id,
+                    work.source_revision,
+                    work.generation(),
+                    lifecycle,
+                    payload.to_string()
+                ],
+            )?;
+        }
         for (table, records) in [
-            (
-                "execution_protocol_work_items",
-                state
-                    .work_items
-                    .iter()
-                    .map(|(id, r)| Ok((id, serde_json::to_string(r)?)))
-                    .collect::<Result<Vec<_>>>()?,
-            ),
             (
                 "execution_protocol_attempts",
                 state
