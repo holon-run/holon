@@ -165,6 +165,7 @@ fn qualified_command_fallback_keeps_quarantine_semantics_and_exact_input_delta()
         let stored = decode_canonical(
             &Key::new(Family::Message, "source-a"),
             &payload_on(tx, "agent-a", &Key::new(Family::Message, "source-a"))?.unwrap(),
+            None,
         )?;
         let CanonicalInputEvidence::Message(stored) = stored else {
             panic!()

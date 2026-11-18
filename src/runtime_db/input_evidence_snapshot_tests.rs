@@ -25,6 +25,8 @@ mod provider_replay_tests;
 mod recent_tools_window_tests;
 #[path = "input_evidence_turn_transcript_tests.rs"]
 mod turn_transcript_tests;
+#[path = "input_evidence_v113_work_execution_tests.rs"]
+mod v113_work_execution_tests;
 
 #[path = "input_prepare_attribution_tests.rs"]
 mod prepare_attribution_tests;
@@ -1703,7 +1705,7 @@ fn interrupt_claim(db: &RuntimeDb, mut attempt: ExecutionAttempt) -> Result<()> 
             status: crate::types::QueueEntryStatus::Interrupted, created_at: time(), updated_at: time(),
         })?;
         let source_key = Key::new(Family::Message, "claim-source");
-        let source = decode_canonical(&source_key, &payload_on(tx, "agent-a", &source_key)?.context("fixture source")?)?;
+        let source = decode_canonical(&source_key, &payload_on(tx, "agent-a", &source_key)?.context("fixture source")?, None)?;
         register_committed_input_evidence_tx(tx, &scope(), &[
             source, CanonicalInputEvidence::Attempt(attempt.clone()), CanonicalInputEvidence::Outcome(outcome),
         ])?;
@@ -2168,6 +2170,7 @@ fn explicit_interrupted_source_request_keeps_all_candidates_and_rejects_missing_
         let source = decode_canonical(
             &source_key,
             &payload_on(tx, "agent-a", &source_key)?.context("fixture claim source")?,
+            None,
         )?;
         register_committed_input_evidence_tx(
             tx,
@@ -4030,7 +4033,7 @@ fn canonical_outcome_decode_converges_the_retired_needs_repair_encoding() -> Res
         "created_at": "2026-10-30T00:00:00Z"
     })
     .to_string();
-    let CanonicalInputEvidence::Outcome(outcome) = decode_canonical(&key, &legacy)? else {
+    let CanonicalInputEvidence::Outcome(outcome) = decode_canonical(&key, &legacy, None)? else {
         panic!("expected the Outcome family record");
     };
     assert_eq!(
@@ -4043,6 +4046,6 @@ fn canonical_outcome_decode_converges_the_retired_needs_repair_encoding() -> Res
     );
     // A damaged retired row still fails closed.
     let damaged = legacy.replace(",\"repair_id\":\"provider_dispatch_rejected:turn-1\"", "");
-    assert!(decode_canonical(&key, &damaged).is_err());
+    assert!(decode_canonical(&key, &damaged, None).is_err());
     Ok(())
 }

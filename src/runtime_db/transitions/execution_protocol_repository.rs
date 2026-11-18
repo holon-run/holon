@@ -1618,7 +1618,8 @@ impl RuntimeTransitionRepository<'_> {
         agent_id: &str,
     ) -> Result<BTreeMap<String, crate::domain::execution_protocol::WorkItemExecutionRecord>> {
         self.db.with_read(|connection| load_work_items_with_migration(connection, agent_id,
-            "SELECT work_item_id, payload_json FROM execution_protocol_work_items WHERE agent_id=?1 AND lifecycle_state!='terminal' AND EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)"))
+            "SELECT work_item_id, payload_json, source_revision||':'||generation||':'||lifecycle_state
+             FROM execution_protocol_work_items WHERE agent_id=?1 AND lifecycle_state!='terminal' AND EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)"))
     }
 
     pub(crate) fn load_execution_protocol_state_if_initialized(
@@ -2888,7 +2889,7 @@ fn load_state_unchecked_on(
         work_items: load_work_items_with_migration(
             connection,
             agent_id,
-            "SELECT work_item_id, payload_json
+            "SELECT work_item_id, payload_json, source_revision||':'||generation||':'||lifecycle_state
              FROM execution_protocol_work_items WHERE agent_id = ?1",
         )?,
         outcomes: load_outcomes_with_migration(connection, agent_id)?,
@@ -2906,26 +2907,10 @@ fn load_work_items_with_migration(
     while let Some(row) = rows.next()? {
         let id = crate::runtime_db::repositories::borrowed_sql_text(row, 0)?.to_owned();
         let payload = crate::runtime_db::repositories::borrowed_sql_text(row, 1)?;
-        let record = if payload.contains("\"needs_repair\"") {
-            let durable_revision = tx
-                .query_row(
-                    "SELECT revision FROM work_items
-                     WHERE agent_id = ?1 AND work_item_id = ?2",
-                    [agent_id, id.as_str()],
-                    |row| row.get::<_, i64>(0),
-                )
-                .optional()?
-                .map(|revision| u64::try_from(revision))
-                .transpose()
-                .context("work item revision is negative")?;
-            holon_storage::execution::decode_work_item_record_with_migration(
-                payload,
-                durable_revision,
-            )
-        } else {
-            serde_json::from_str(payload).map_err(anyhow::Error::from)
-        }
-        .with_context(|| format!("decoding execution protocol record {}", id))?;
+        let marker = crate::runtime_db::repositories::borrowed_sql_text(row, 2)?;
+        let record =
+            holon_storage::execution::decode_work_item_record_with_migration(payload, marker)
+                .with_context(|| format!("decoding execution protocol record {}", id))?;
         records.insert(id, record);
     }
     Ok(records)

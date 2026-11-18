@@ -506,7 +506,7 @@ fn read_authorized_task_input_with_fingerprint_tx(
     }
     let canonical = payload
         .as_ref()
-        .map(|payload| decode_canonical(key, payload))
+        .map(|payload| decode_canonical(key, payload, Some(&fingerprint.revision_marker)))
         .transpose()?;
     let attempt_proof = match canonical.as_ref() {
         Some(CanonicalInputEvidence::Attempt(attempt)) => {
