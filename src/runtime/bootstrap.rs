@@ -2438,8 +2438,31 @@ pub(crate) struct AgentConstructorQuarantine {
 }
 
 #[derive(Debug, thiserror::Error)]
-#[error("scoped input preparation rejected its projection")]
-struct ScopedInputPreparationRejected;
+#[error("{message}")]
+struct ScopedInputPreparationRejected {
+    message: String,
+}
+
+impl ScopedInputPreparationRejected {
+    fn tag(error: anyhow::Error) -> anyhow::Error {
+        use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+        if matches!(
+            error.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::ProjectionChanged(_))
+        ) {
+            let message = error.to_string();
+            error.context(Self { message })
+        } else {
+            error
+        }
+    }
+
+    fn is_rolled_back(error: &anyhow::Error) -> bool {
+        error.is::<Self>()
+            && crate::runtime_db::persistence_certainty(error)
+                == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+    }
+}
 
 fn prepare_runtime_storage_owned(
     setup: RuntimeStorageSetup,
@@ -2985,17 +3008,7 @@ fn prepare_runtime_storage_owned(
             &input_scope,
             &request,
         )
-        .map_err(|error| {
-            use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
-            if matches!(
-                error.downcast_ref::<InputEvidenceSnapshotError>(),
-                Some(InputEvidenceSnapshotError::ProjectionChanged(_))
-            ) {
-                ScopedInputPreparationRejected.into()
-            } else {
-                error
-            }
-        })?
+        .map_err(ScopedInputPreparationRejected::tag)?
         else {
             return Err(anyhow!("bootstrap input evidence scope retired"));
         };
@@ -3030,11 +3043,7 @@ fn prepare_runtime_storage_owned(
             if !changed_recovery_state
                 // The posture receipt does not cover a separate registry write.
                 && execution_root_acknowledged
-                && error
-                    .chain()
-                    .any(|cause| cause.is::<ScopedInputPreparationRejected>())
-                && crate::runtime_db::persistence_certainty(&error)
-                    == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+                && ScopedInputPreparationRejected::is_rolled_back(&error)
                 && reservation.is_some() =>
         {
             // The derived transaction was rolled back. Reconcile only the
@@ -3042,11 +3051,11 @@ fn prepare_runtime_storage_owned(
             if let Some(reservation) = reservation.as_deref_mut() {
                 reservation.publish(Arc::new(state.clone()))?;
             }
-            return Err(AgentConstructorQuarantine {
+            // Keep the original domain error downcastable for direct callers.
+            return Err(error.context(AgentConstructorQuarantine {
                 agent_id,
                 incarnation: input_scope.identity_incarnation,
-            }
-            .into());
+            }));
         }
         Err(error) => return Err(error),
     };
@@ -4489,6 +4498,40 @@ mod view_image_candidate_health_tests {
 mod mutation_bootstrap_tests {
     use super::*;
     use crate::{host::RuntimeHost, provider::StubProvider};
+
+    #[test]
+    fn scoped_input_preparation_tag_preserves_domain_error_and_requires_rollback() {
+        use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+        use crate::runtime_db::{PersistenceCertainty, PersistenceFailurePhase};
+        use holon_storage::persistence::mark_persistence_failure;
+
+        let projection_changed =
+            || InputEvidenceSnapshotError::ProjectionChanged("synthetic-record".into()).into();
+        let tag = ScopedInputPreparationRejected::tag(projection_changed());
+        let mark = |error, certainty| {
+            mark_persistence_failure(error, certainty, PersistenceFailurePhase::Rollback, None)
+        };
+        assert!(!ScopedInputPreparationRejected::is_rolled_back(&tag));
+        let rolled_back = mark(tag, PersistenceCertainty::DefinitelyNotCommitted);
+        assert!(ScopedInputPreparationRejected::is_rolled_back(&rolled_back));
+        assert!(matches!(
+            rolled_back.downcast_ref::<InputEvidenceSnapshotError>(),
+            Some(InputEvidenceSnapshotError::ProjectionChanged(record))
+                if record == "synthetic-record"
+        ));
+        let unscoped = mark(
+            projection_changed(),
+            PersistenceCertainty::DefinitelyNotCommitted,
+        );
+        assert!(!ScopedInputPreparationRejected::is_rolled_back(&unscoped));
+        let indeterminate = mark(
+            ScopedInputPreparationRejected::tag(projection_changed()),
+            PersistenceCertainty::Indeterminate,
+        );
+        assert!(!ScopedInputPreparationRejected::is_rolled_back(
+            &indeterminate
+        ));
+    }
 
     fn build_for_retry(
         host: &RuntimeHost,
