@@ -182,7 +182,7 @@ impl RuntimeHost {
     }
 }
 
-#[cfg(all(test, holon_lib_test_shard = "c"))]
+#[cfg(all(test, holon_lib_test_shard = "d"))]
 mod tests {
     use super::*;
 
