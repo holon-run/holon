@@ -928,7 +928,7 @@ async fn duckduckgo_search(
     let encoded = form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
     let url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
-    let html = send_search_text(client.get(&url), DUCKDUCKGO_PROVIDER_ID).await?;
+    let html = send_search_text(client.get(&url), DUCKDUCKGO_PROVIDER_ID, None).await?;
     let results = parse_duckduckgo_lite_results(&html, max_results);
     if results.is_empty() {
         return Err(search_error(
@@ -963,7 +963,15 @@ async fn searxng_search(
         .append_pair("format", "json")
         .append_pair("language", "auto");
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
-    let body = send_search_text(client.get(url), provider_id).await?;
+    let body = send_search_text(
+        client.get(url),
+        provider_id,
+        Some(
+            "check whether `search.formats` in the SearXNG instance's `settings.yml` includes `json`; \
+             disabled JSON output is one possible cause of HTTP 403",
+        ),
+    )
+    .await?;
     let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
         search_error(
             "parse_failed",
@@ -972,11 +980,23 @@ async fn searxng_search(
             "check the configured SearXNG instance or use provider=duckduckgo",
         )
     })?;
-    let results = payload
+    let no_parseable_results = || {
+        search_error(
+            "parse_failed",
+            "SearXNG returned no parseable search results",
+            provider_id,
+            "check the SearXNG instance or use provider=duckduckgo",
+        )
+    };
+    let entries = payload
         .get("results")
-        .and_then(|value| value.as_array())
-        .into_iter()
-        .flatten()
+        .and_then(Value::as_array)
+        .ok_or_else(no_parseable_results)?;
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let results = entries
+        .iter()
         .enumerate()
         .filter_map(|(index, entry)| {
             let title = entry.get("title")?.as_str()?.trim().to_string();
@@ -999,12 +1019,7 @@ async fn searxng_search(
         .take(max_results)
         .collect::<Vec<_>>();
     if results.is_empty() {
-        return Err(search_error(
-            "parse_failed",
-            "SearXNG returned no parseable search results",
-            provider_id,
-            "check the SearXNG instance or use provider=duckduckgo",
-        ));
+        return Err(no_parseable_results());
     }
     Ok(results)
 }
@@ -2220,7 +2235,11 @@ fn normalize_max_results(requested: Option<usize>, configured: usize) -> Result<
         .max(1))
 }
 
-async fn send_search_text(request: reqwest::RequestBuilder, provider: &str) -> Result<String> {
+async fn send_search_text(
+    request: reqwest::RequestBuilder,
+    provider: &str,
+    forbidden_hint: Option<&str>,
+) -> Result<String> {
     let response = request.send().await.map_err(|error| {
         search_error(
             "network_failed",
@@ -2239,11 +2258,17 @@ async fn send_search_text(request: reqwest::RequestBuilder, provider: &str) -> R
         ));
     }
     if !status.is_success() {
+        let default_hint = "retry later or configure another WebSearch provider";
+        let hint = if status == StatusCode::FORBIDDEN {
+            forbidden_hint.unwrap_or(default_hint)
+        } else {
+            default_hint
+        };
         return Err(search_error(
             "network_failed",
             format!("WebSearch provider `{provider}` returned HTTP {status}"),
             provider,
-            "retry later or configure another WebSearch provider",
+            hint,
         ));
     }
 
@@ -3066,11 +3091,20 @@ mod tests {
     }
 
     async fn searxng_mock_base_url(results: serde_json::Value) -> String {
+        searxng_mock_response_base_url(StatusCode::OK, "application/json", results.to_string())
+            .await
+    }
+
+    async fn searxng_mock_response_base_url(
+        status: StatusCode,
+        content_type: &'static str,
+        body: String,
+    ) -> String {
         let router = axum::Router::new().route(
             "/search",
             axum::routing::get(move || {
-                let results = results.clone();
-                async move { axum::Json(results) }
+                let body = body.clone();
+                async move { (status, [(CONTENT_TYPE, content_type)], body) }
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3079,6 +3113,131 @@ mod tests {
             axum::serve(listener, router).await.unwrap();
         });
         format!("http://{}", addr)
+    }
+
+    async fn search_mock_searxng(base_url: &str) -> Result<WebSearchResponse> {
+        let config = test_search_config(
+            vec![(
+                "local_searxng",
+                test_provider(WebProviderKind::Searxng, base_url),
+            )],
+            vec!["local_searxng"],
+            WebSearchMode::Single,
+        );
+        search(
+            WebSearchRequest {
+                query: "test".to_string(),
+                max_results: Some(1),
+                provider: Some("local_searxng".to_string()),
+            },
+            &config,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn searxng_search_empty_results_succeeds() {
+        let base_url = searxng_mock_base_url(json!({
+            "results": [],
+            "unresponsive_engines": [["engine", "timeout"]],
+        }))
+        .await;
+
+        let response = search_mock_searxng(&base_url).await.unwrap();
+        assert!(response.results.is_empty());
+        assert!(response.citations.is_empty());
+        assert_eq!(response.summary_text, "0 web results");
+        assert_eq!(response.winning_provider.as_deref(), Some("local_searxng"));
+        let [attempt] = response.provider_attempts.as_slice() else {
+            panic!("expected one provider attempt");
+        };
+        assert_eq!(attempt.status, WebSearchProviderAttemptStatus::Success);
+        assert_eq!(attempt.result_count, 0);
+    }
+
+    #[tokio::test]
+    async fn searxng_search_invalid_or_unusable_results_fail_parsing() {
+        for (body, expected_message) in [
+            ("not json", "SearXNG returned invalid JSON:"),
+            (
+                r#"{"unresponsive_engines":[]}"#,
+                "SearXNG returned no parseable search results",
+            ),
+            (
+                r#"{"results":null}"#,
+                "SearXNG returned no parseable search results",
+            ),
+            (
+                r#"{"results":{}}"#,
+                "SearXNG returned no parseable search results",
+            ),
+            (
+                r#"{"results":[{"title":"No URL"}]}"#,
+                "SearXNG returned no parseable search results",
+            ),
+        ] {
+            let base_url = searxng_mock_response_base_url(
+                StatusCode::OK,
+                "application/json",
+                body.to_string(),
+            )
+            .await;
+            let error = search_mock_searxng(&base_url).await.unwrap_err();
+            let error = test_tool_error(&error);
+            assert_eq!(error.kind, "parse_failed", "{body}");
+            assert!(error.message.starts_with(expected_message), "{error:?}");
+            assert!(!error.retryable, "{body}");
+        }
+    }
+
+    #[tokio::test]
+    async fn searxng_search_still_returns_normalized_nonempty_results() {
+        let base_url = searxng_mock_base_url(searxng_results_json(&[
+            (
+                "Example result",
+                "https://example.com/result",
+                "Result snippet",
+            ),
+            (
+                "Second result",
+                "https://example.org/result",
+                "Second snippet",
+            ),
+        ]))
+        .await;
+        let response = search_mock_searxng(&base_url).await.unwrap();
+        let [result] = response.results.as_slice() else {
+            panic!("expected one result after applying max_results");
+        };
+        assert_eq!(result.title, "Example result");
+        assert_eq!(result.url, "https://example.com/result");
+        assert_eq!(response.citations.len(), 1);
+        assert_eq!(response.citations[0].url, result.url);
+    }
+
+    #[tokio::test]
+    async fn searxng_search_only_hints_about_json_for_http_403() {
+        for status in [StatusCode::FORBIDDEN, StatusCode::SERVICE_UNAVAILABLE] {
+            let base_url =
+                searxng_mock_response_base_url(status, "text/html", "<p>Denied</p>".to_string())
+                    .await;
+            let error = search_mock_searxng(&base_url).await.unwrap_err();
+            let error = test_tool_error(&error);
+            assert_eq!(error.kind, "network_failed");
+            assert!(error.retryable);
+            assert_eq!(
+                error.message,
+                format!("WebSearch provider `local_searxng` returned HTTP {status}")
+            );
+            let hint = error.recovery_hint.as_deref().unwrap();
+            if status == StatusCode::FORBIDDEN {
+                assert!(hint.contains("`search.formats`"));
+                assert!(hint.contains("`json`"));
+                assert!(hint.contains("one possible cause"));
+            } else {
+                assert_eq!(hint, "retry later or configure another WebSearch provider");
+            }
+        }
     }
 
     fn brave_results_json() -> serde_json::Value {
