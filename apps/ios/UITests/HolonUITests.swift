@@ -1546,7 +1546,8 @@ final class HolonUITests: XCTestCase {
         editor.tap(); editor.typeText("IOS_ACCESSIBILITY_DRAFT")
         let send = app.buttons["sending.enqueue"]
         XCTAssertTrue(send.isHittable); waitForEnabled(send)
-        XCTAssertGreaterThanOrEqual(send.frame.height, 44)
+        XCTAssertGreaterThanOrEqual(send.frame.height, 44 - 0.000001,
+                                    "The 44pt hit target tolerates floating-point noise only")
         let keyboard = app.keyboards.firstMatch
         XCTAssertTrue(keyboard.exists)
         var keyboardTop = keyboard.frame.minY
