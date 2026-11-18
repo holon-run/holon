@@ -680,6 +680,7 @@ fn is_safe_context_key(key: &str) -> bool {
             | "model_ref"
             | "stage"
             | "status"
+            | "cause_code"
             | "record_type"
             | "record_id"
             | "repair_admitted"

@@ -41,6 +41,14 @@ original Current qualification for live Events. If settlement recovery fails,
 the runtime reports `tool_result_settlement_pending` and stops the dependent
 model round.
 
+When that failure retains a typed `runtime_instance_retiring` admission error,
+the settlement wrapper adds safe context `cause_code=runtime_instance_retiring`
+and explains that runtime shutdown/restart interrupted the Turn. This attribution
+does not change `tool_result_settlement_pending`, its non-retryable classification,
+the `not_persisted`/`outcome_unknown` status, or replay/settlement rules. Other
+storage failures keep their original message and have no shutdown attribution.
+The diagnostic does not promise zero data loss or successful automatic recovery.
+
 Exclusive startup recovery uses the original call binding to fill a missing
 `ToolResults` transcript from the committed output and original renderer. The
 normal tool loop still uses the existing provider result format. An unowned
