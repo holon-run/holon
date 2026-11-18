@@ -194,21 +194,33 @@ async fn task_stale_baseline_reprepares_and_retries_only_the_frozen_command() ->
         )?;
         Ok(())
     })?;
-    let error = db
-        .transitions_in_scope(&scope)
-        .commit_prepared_transition_with_input_query_and_task_bases(
-            &prepared,
-            &mutation.owner_work_load_request()?,
-            &f.runtime.inner.input_evidence_budget,
-            &load,
-            None,
-            None,
-            &Default::default(),
-        )
-        .unwrap_err();
+    let work_request = mutation.owner_work_load_request()?;
+    let probe = crate::runtime_db::write_log_probe::WriteLogProbe::default();
+    let error = probe.capture(|| {
+        db.transitions_in_scope(&scope)
+            .commit_prepared_transition_with_input_query_and_task_bases(
+                &prepared,
+                &work_request,
+                &f.runtime.inner.input_evidence_budget,
+                &load,
+                None,
+                None,
+                &Default::default(),
+            )
+            .unwrap_err()
+    });
     assert!(
         error.downcast_ref::<TaskWriteBaselineStale>().is_some(),
         "{error:#}"
+    );
+    assert_eq!(
+        probe.write_failure_warns(),
+        0,
+        "the intermediate reprepare attempt must not surface as a failure WARN"
+    );
+    assert!(
+        probe.deferred_reprepare_events() >= 1,
+        "the intermediate attempt must leave an identifiable reader_reprepare event"
     );
     assert!(db.tasks().latest(&original.id)?.is_none());
     assert!(!original_run.token.is_cancelled());

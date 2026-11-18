@@ -963,4 +963,86 @@ mod tests {
         assert_eq!(db.tasks().latest(&task.id)?, Some(terminal));
         Ok(())
     }
+
+    #[test]
+    fn reprepare_failure_alerts_and_propagates_preparation_error() -> Result<()> {
+        use super::super::PreparedTaskBaselines;
+        use crate::runtime::{
+            input_evidence_budget::InputEvidenceBudgetLedger, resident_task::TaskCaptureRequest,
+            resident_work::WorkCaptureRequest,
+        };
+        use crate::runtime_db::write_log_probe::WriteLogProbe;
+        use crate::runtime_db::{task_snapshot as tasks, work_snapshot::WorkDomainLoadRequest};
+
+        let (_dir, db, task, command) = fixture_with_native_task(true)?;
+        let prepared = prepared_admission(command.clone(), &task, "reprepare-failed")?;
+        let child = prepared
+            .descriptor()
+            .scopes()
+            .iter()
+            .find(|scope| scope.agent_id == command.agent_id)
+            .context("child scope missing")?
+            .clone();
+        let ledger = InputEvidenceBudgetLedger::new(crate::config::StateMemoryLimits::default())?;
+        let work = WorkDomainLoadRequest {
+            capture: WorkCaptureRequest::current(),
+            record_limit: 4096,
+            byte_limit: 4 * 1024 * 1024,
+        };
+        let request = tasks::TaskDomainLoadRequest {
+            recovery_at: None,
+            query: Default::default(),
+            capture: TaskCaptureRequest::current(),
+            record_limit: 4096,
+            byte_limit: 4 * 1024 * 1024,
+        };
+        // First observe the typed miss while the parent domain still decodes.
+        let bases = PreparedTaskBaselines::new(Vec::new(), &ledger)?;
+        db.transitions_in_scope(&child)
+            .commit_prepared_transition_with_input_query_and_task_bases(
+                &prepared, &work, &ledger, &request, None, None, &bases,
+            )
+            .unwrap_err()
+            .downcast_ref::<tasks::TaskWriteBaselineStale>()
+            .context("cold parent must request preparation before business SQL")?;
+        // Dropping the parent's initialized task domain makes preparation fail
+        // after the first stale attempt, while the stale preflight itself
+        // (empty bases) never reads task_domain_current.
+        db.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM task_domain_current WHERE agent_id = ?1",
+                rusqlite::params![task.agent_id],
+            )?;
+            Ok(())
+        })?;
+        let mut bases = PreparedTaskBaselines::new(Vec::new(), &ledger)?;
+        let probe = WriteLogProbe::default();
+        let error = probe
+            .capture(|| {
+                db.transitions_in_scope(&child)
+                    .commit_prepared_transition_with_task_preparation(
+                        &prepared, &work, &ledger, &request, &mut bases,
+                    )
+            })
+            .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("Task baseline preparation failed"),
+            "{error:#}"
+        );
+        assert_eq!(
+            probe.write_failure_warns(),
+            0,
+            "the stale attempt itself must not surface as a failure WARN"
+        );
+        assert!(
+            probe.deferred_reprepare_events() >= 1,
+            "the stale attempt must leave a reader_reprepare event"
+        );
+        assert_eq!(
+            probe.terminal_alerts("reprepare failed"),
+            1,
+            "preparation failure must alert exactly once"
+        );
+        Ok(())
+    }
 }

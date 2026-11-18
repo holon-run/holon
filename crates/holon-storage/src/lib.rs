@@ -35,8 +35,8 @@ mod errors;
 use std::time::Duration;
 
 pub use errors::{
-    RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbProtectionStatus,
-    RuntimeDbRetryableError, RuntimeStateTransitionConflict,
+    ReaderReprepareRequested, RuntimeDbProtectionError, RuntimeDbProtectionState,
+    RuntimeDbProtectionStatus, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
 };
 pub use read_scope::RuntimeDbReadScope;
 pub use reader_config::{

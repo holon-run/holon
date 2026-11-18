@@ -29,9 +29,9 @@ use crate::write_queue::RuntimeDbWriteContext;
 #[cfg(target_os = "linux")]
 use crate::RuntimeDbProtectionError;
 use crate::{
-    RuntimeDbRetryableError, RuntimeStateTransitionConflict, RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL,
-    RUNTIME_DB_BUSY_TIMEOUT, RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY,
-    RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
+    ReaderReprepareRequested, RuntimeDbRetryableError, RuntimeStateTransitionConflict,
+    RUNTIME_DB_BEGIN_RETRY_WARN_INTERVAL, RUNTIME_DB_BUSY_TIMEOUT,
+    RUNTIME_DB_TRANSACTION_RETRY_INITIAL_DELAY, RUNTIME_DB_TRANSACTION_RETRY_MAX_DELAY,
 };
 
 pub enum LockMode {
@@ -708,7 +708,36 @@ fn run_transaction_attempt<T>(
             let sqlite_extended_code = sqlite_extended_code(&error);
             let sqlite_code = sqlite_extended_code.map(|code| code & 0xff);
             let held_write_lock = elapsed.saturating_sub(begin_wait);
-            if rolled_back && is_retryable_state_transition_conflict(&error) {
+            let definitely_not_committed =
+                persistence_certainty(&error) == Some(PersistenceCertainty::DefinitelyNotCommitted);
+            if rolled_back && definitely_not_committed && is_reader_reprepare_requested(&error) {
+                // Intermediate reprepare control flow: business SQL never
+                // ran, the writer was released, and the layer owning the
+                // bounded attempts will re-enter. Not a write failure.
+                tracing::debug!(
+                    error = %error,
+                    reader_reprepare = true,
+                    retryable,
+                    phase = "callback",
+                    sqlite_code,
+                    sqlite_extended_code,
+                    held_write_lock_ms = held_write_lock.as_millis(),
+                    callback_ms = callback_elapsed.as_millis(),
+                    rollback_ms = rollback_elapsed.as_millis(),
+                    path = %path.display(),
+                    operation = context.operation,
+                    table = context.table,
+                    mode = context.mode.as_str(),
+                    origin_file,
+                    origin_line,
+                    queue_wait_ms = queue_wait.as_millis(),
+                    mutex_wait_ms = mutex_wait.as_millis(),
+                    begin_wait_ms = begin_wait.as_millis(),
+                    begin_retry_count,
+                    elapsed_ms = elapsed.as_millis(),
+                    "runtime db write deferred to reader reprepare"
+                );
+            } else if rolled_back && is_retryable_state_transition_conflict(&error) {
                 tracing::debug!(
                     error = %error,
                     retryable,
@@ -863,6 +892,12 @@ fn is_retryable_state_transition_conflict(error: &anyhow::Error) -> bool {
             .downcast_ref::<RuntimeStateTransitionConflict>()
             .is_some_and(RuntimeStateTransitionConflict::retryable)
     })
+}
+
+fn is_reader_reprepare_requested(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|source| source.downcast_ref::<ReaderReprepareRequested>().is_some())
 }
 
 pub(crate) fn is_retryable_transaction_error(error: &anyhow::Error) -> bool {
@@ -1596,5 +1631,132 @@ mod tests {
             3
         );
         Ok(())
+    }
+
+    use tracing_subscriber::prelude::*;
+
+    #[derive(Default, Clone)]
+    struct WriteOutcomeRecorder {
+        events: std::sync::Arc<std::sync::Mutex<Vec<(tracing::Level, String, bool)>>>,
+    }
+
+    #[derive(Default)]
+    struct RecordedOutcomeFields {
+        message: String,
+        reader_reprepare: bool,
+    }
+
+    impl tracing::field::Visit for RecordedOutcomeFields {
+        fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+            if field.name() == "message" {
+                self.message = format!("{value:?}");
+            }
+        }
+
+        fn record_bool(&mut self, field: &tracing::field::Field, value: bool) {
+            if field.name() == "reader_reprepare" {
+                self.reader_reprepare = value;
+            }
+        }
+    }
+
+    impl<S> tracing_subscriber::layer::Layer<S> for WriteOutcomeRecorder
+    where
+        S: tracing::Subscriber,
+    {
+        fn on_event(
+            &self,
+            event: &tracing::Event<'_>,
+            _context: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            if event.metadata().target() != "holon_storage::connection" {
+                return;
+            }
+            let mut fields = RecordedOutcomeFields::default();
+            event.record(&mut fields);
+            self.events.lock().unwrap().push((
+                event.metadata().level().clone(),
+                fields.message,
+                fields.reader_reprepare,
+            ));
+        }
+    }
+
+    fn captured_write_outcomes(failure: anyhow::Error) -> Vec<(tracing::Level, String, bool)> {
+        let recorder = WriteOutcomeRecorder::default();
+        let dir = tempdir().expect("tempdir");
+        let db_path = dir.path().join("write-outcome-probe.db");
+        let result: Result<()> = tracing::subscriber::with_default(
+            tracing_subscriber::registry().with(recorder.clone()),
+            || {
+                let connection = open_connection(&db_path)?;
+                run_transaction_on_connection(
+                    &connection,
+                    &db_path,
+                    RuntimeDbWriteContext::sync("probe.write", "probe"),
+                    Duration::ZERO,
+                    Duration::ZERO,
+                    |_transaction| Err(failure),
+                )
+            },
+        );
+        assert!(result.is_err());
+        let events = recorder.events.lock().unwrap().clone();
+        events
+    }
+
+    fn warn_failures(events: &[(tracing::Level, String, bool)]) -> usize {
+        events
+            .iter()
+            .filter(|(level, message, _)| {
+                matches!(*level, tracing::Level::WARN) && message.contains("write callback failed")
+            })
+            .count()
+    }
+
+    #[test]
+    fn reader_reprepare_marker_is_quiet_not_a_write_failure() {
+        let events =
+            captured_write_outcomes(anyhow::Error::new(ReaderReprepareRequested::new("task")));
+        assert!(events.iter().any(|(level, message, reader_reprepare)| {
+            matches!(*level, tracing::Level::DEBUG)
+                && *reader_reprepare
+                && message.contains("deferred to reader reprepare")
+        }));
+        assert_eq!(warn_failures(&events), 0);
+    }
+
+    #[test]
+    fn retryable_conflict_rollback_keeps_rolled_back_debug() {
+        let events = captured_write_outcomes(anyhow::Error::new(
+            RuntimeStateTransitionConflict::concurrent_mutation("task", "task:probe"),
+        ));
+        assert!(events.iter().any(|(level, message, _)| {
+            matches!(*level, tracing::Level::DEBUG) && message.contains("write rolled back")
+        }));
+        assert_eq!(warn_failures(&events), 0);
+    }
+
+    #[test]
+    fn unmarked_rolled_back_error_keeps_failure_warn() {
+        let events = captured_write_outcomes(anyhow!("probe business failure"));
+        assert_eq!(warn_failures(&events), 1);
+        assert!(!events.iter().any(|(_, message, reader_reprepare)| {
+            *reader_reprepare && message.contains("deferred to reader reprepare")
+        }));
+    }
+
+    #[test]
+    fn sqlite_busy_classification_is_unchanged() {
+        let busy = anyhow::Error::new(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error {
+                code: ErrorCode::DatabaseBusy,
+                extended_code: 5,
+            },
+            None,
+        ));
+        assert!(is_retryable_db_error(&busy));
+        assert!(!is_reader_reprepare_requested(&busy));
+        assert!(!is_retryable_db_error(&anyhow!("probe business failure")));
     }
 }

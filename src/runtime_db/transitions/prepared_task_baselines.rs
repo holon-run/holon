@@ -13,6 +13,12 @@ pub(crate) struct PreparedTaskBaselines {
     // Borrowed body Arcs need no new body charge. Delay coverage encoding until
     // typed preflight: exact replay / NoState / Retired must win over admission.
     roots: Vec<Arc<ResidentTaskDomain>>,
+    /// Test-only: every reprepare resolves as a silent no-op while the write
+    /// preflight still reports the baseline stale. Emulates the concurrent
+    /// revision churn that exhausts the bounded budget in production without
+    /// failing the preflight earlier.
+    #[cfg(test)]
+    pub(crate) silent_reprepare: bool,
 }
 
 impl PreparedTaskBaselines {
@@ -60,6 +66,8 @@ impl PreparedTaskBaselines {
                 .map(|resident| PreparedTaskBaseline::new(resident, ledger))
                 .collect::<Result<_>>()?,
             roots: Vec::new(),
+            #[cfg(test)]
+            silent_reprepare: false,
         })
     }
 
@@ -82,6 +90,12 @@ impl PreparedTaskBaselines {
         ledger: &InputEvidenceBudgetLedger,
     ) -> Result<()> {
         let scope = &stale.scope;
+        #[cfg(test)]
+        if self.silent_reprepare {
+            // The bounded loop must still exhaust and alert exactly once when
+            // preparation keeps resolving without refreshing the baseline.
+            return Ok(());
+        }
         if let Some(index) = self
             .roots
             .iter()

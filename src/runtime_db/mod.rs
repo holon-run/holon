@@ -160,6 +160,8 @@ mod current_run_abort_tests;
 pub(crate) mod test_support;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+pub(crate) mod write_log_probe;
 
 use std::{
     fmt,

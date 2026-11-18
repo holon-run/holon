@@ -2496,9 +2496,23 @@ impl RuntimeTransitionRepository<'_> {
                 return Err(error);
             };
             if attempt + 1 == attempts {
+                tracing::warn!(
+                    reader_reprepare_exhausted = true,
+                    attempts,
+                    agent_id = %stale.scope.agent_id,
+                    command_nonce = %prepared.descriptor.command_nonce(),
+                    "Task write baseline reprepare attempts exhausted"
+                );
                 return Err(error);
             }
             if let Err(preparation) = task_bases.reprepare(self.db, stale, memory_ledger) {
+                tracing::warn!(
+                    reader_reprepare_failed = true,
+                    attempts = attempt + 1,
+                    agent_id = %stale.scope.agent_id,
+                    error = %preparation,
+                    "Task write baseline reprepare failed"
+                );
                 // The failed business preflight is still definitely uncommitted;
                 // a qualification attempt cannot change its original certainty.
                 return Err(
