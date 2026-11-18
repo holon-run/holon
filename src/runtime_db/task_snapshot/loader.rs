@@ -296,6 +296,8 @@ fn load_selected_with_scope_material(
     read: Option<&super::super::context_inputs::ContextScopeRead<'_>>,
     mut qualification: Option<&mut super::candidate::CandidateQualification>,
 ) -> Result<TaskBootstrapSnapshot> {
+    #[cfg(all(test, holon_lib_test_shard = "a"))]
+    super::test_probe::record_load();
     let _load = crate::diagnostics::attribution::TASK_DOMAIN_LOAD.start();
     let facts = match read {
         Some(read) => {

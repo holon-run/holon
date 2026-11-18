@@ -1,61 +1,8 @@
 //! Exercise the actual Host producer, not a writer-only stand-in.
 use super::*;
 use crate::runtime::resident_task::{TaskCaptureRequest, TaskFamily, TaskKey};
+use crate::runtime_db::task_snapshot::test_probe;
 use crate::types::*;
-use std::sync::atomic::{AtomicUsize, Ordering};
-use tracing::instrument::WithSubscriber;
-use tracing_subscriber::{layer::Context as TraceContext, prelude::*, Layer, Registry};
-
-#[derive(Clone, Default)]
-struct TaskLoadProbe {
-    writer: Arc<AtomicUsize>,
-    reader: Arc<AtomicUsize>,
-    writer_attempts: Arc<AtomicUsize>,
-}
-#[derive(Default)]
-struct StageField(bool);
-impl tracing::field::Visit for StageField {
-    fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
-        self.0 |= field.name() == "stage" && value == "db.task.domain_load";
-    }
-    fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
-}
-impl<S> Layer<S> for TaskLoadProbe
-where
-    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
-{
-    fn on_new_span(
-        &self,
-        attributes: &tracing::span::Attributes<'_>,
-        _: &tracing::span::Id,
-        _: TraceContext<'_, S>,
-    ) {
-        if attributes.metadata().name() == "prepared_task_writer" {
-            self.writer_attempts.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-
-    fn on_event(&self, event: &tracing::Event<'_>, context: TraceContext<'_, S>) {
-        let mut field = StageField::default();
-        event.record(&mut field);
-        if !field.0 {
-            return;
-        }
-        if let Some(scope) = context.event_scope(event) {
-            for span in scope {
-                match span.metadata().name() {
-                    "prepared_task_writer" => {
-                        self.writer.fetch_add(1, Ordering::Relaxed);
-                    }
-                    "prepared_task_baseline_reader" => {
-                        self.reader.fetch_add(1, Ordering::Relaxed);
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-}
 
 #[tokio::test]
 async fn actual_child_terminal_task_baseline_has_zero_writer_load_and_full_ack_oracle() -> Result<()>
@@ -186,26 +133,29 @@ async fn actual_child_terminal_task_baseline_has_zero_writer_load_and_full_ack_o
         before_tasks.capture(&request.capture).is_err(),
         "the same-revision root must fail the expanded selection"
     );
-    let probe = TaskLoadProbe::default();
-    let subscriber = Registry::default().with(probe.clone());
     let bridge = parent
         .inner
         .host_bridge
         .as_ref()
         .context("Host bridge missing")?;
     let mut pending = None;
-    let read = bridge
-        .commit_original_child_task_terminal(&run.source, &frozen, &mut pending, &request)
-        .with_subscriber(subscriber)
-        .await?;
-    assert_eq!(probe.writer.load(Ordering::Relaxed), 0);
+    let (read, loads) = test_probe::observe(bridge.commit_original_child_task_terminal(
+        &run.source,
+        &frozen,
+        &mut pending,
+        &request,
+    ))
+    .await;
+    let read = read?;
+    assert_eq!(loads.writer_loads, 0, "{loads:?}");
+    assert_eq!(loads.borrowed_roots, 1, "{loads:?}");
     assert!(
-        probe.reader.load(Ordering::Relaxed) > 0,
-        "the typed miss really prepared on the reader"
+        loads.reader_loads > 0,
+        "the typed miss must prepare on the reader: {loads:?}"
     );
     assert!(
-        probe.writer_attempts.load(Ordering::Relaxed) >= 3,
-        "cold preflight, rejected borrowed root, and reader baseline must all be attempted"
+        loads.writer_attempts >= 3,
+        "cold preflight, rejected borrowed root, and reader baseline must all be attempted: {loads:?}"
     );
     assert!(
         read.ack.task_changed,
