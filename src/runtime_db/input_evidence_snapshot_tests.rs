@@ -2291,6 +2291,13 @@ fn provider_lineage_recovery(id: &str, source: &str, turn: &str) -> MessageEnvel
 }
 
 fn install_provider_lineage(tx: &Transaction<'_>) -> Result<MessageEnvelope> {
+    install_provider_lineage_with_legacy_outcome(tx, false)
+}
+
+fn install_provider_lineage_with_legacy_outcome(
+    tx: &Transaction<'_>,
+    legacy_outcome: bool,
+) -> Result<MessageEnvelope> {
     use crate::domain::execution_protocol::*;
     let mut first = message("lineage-original");
     first.turn_id = Some("lineage-turn-0".into());
@@ -2378,14 +2385,28 @@ fn install_provider_lineage(tx: &Transaction<'_>) -> Result<MessageEnvelope> {
         let outcome = ExecutionOutcomeRecord {
             outcome_id,
             attempt_id,
-            outcome: ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
-                reason: "provider failed".into(),
-            }),
+            outcome: if legacy_outcome && index == 0 {
+                ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
+                    reason: "provider failed".into(),
+                })
+            } else {
+                ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+                    reason: "provider failed".into(),
+                })
+            },
             created_at: time().to_rfc3339(),
+        };
+        let payload = if legacy_outcome && index == 0 {
+            let mut legacy = serde_json::to_value(&outcome)?;
+            legacy["outcome"]["outcome"] =
+                serde_json::json!({"kind":"needs_repair","repair_id":"provider failed"});
+            legacy.to_string()
+        } else {
+            serde_json::to_string(&outcome)?
         };
         store_attempt(tx, &attempt)?;
         tx.execute("INSERT INTO execution_protocol_outcomes(agent_id,outcome_id,attempt_id,payload_json) VALUES(?1,?2,?3,?4)",
-                params![attempt.agent_id, outcome.outcome_id, outcome.attempt_id, serde_json::to_string(&outcome)?])?;
+                params![attempt.agent_id, outcome.outcome_id, outcome.attempt_id, payload])?;
         evidence.extend([
             CanonicalInputEvidence::Turn(
                 ContextDurableRead::new(tx, "agent-a")
@@ -2417,6 +2438,9 @@ fn provider_lineage_request(latest: &MessageEnvelope) -> InputEvidenceLoadReques
         byte_limit: 1024 * 1024,
     }
 }
+
+#[path = "input_evidence_retired_outcome_upgrade_tests.rs"]
+mod retired_outcome_upgrade_tests;
 
 #[test]
 fn cold_multihop_provider_lineage_prepares_complete_sources_without_history_windows() -> Result<()>
