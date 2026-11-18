@@ -2,6 +2,9 @@
 use super::super::*;
 use super::support::*;
 use crate::runtime::message_dispatch::message_text;
+use crate::runtime::resident_task::{
+    CanonicalTaskFact, ResidentTaskDomain, TaskAvailability, TaskFamily, TaskKey,
+};
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementDisposition, TaskResultSettlementState,
 };
@@ -11,6 +14,11 @@ use crate::types::{
     AgentMessagePrincipalKind, AgentMessageSendRequest, QueueEntryRecord, WorkItemPlanStatus,
 };
 use std::collections::BTreeSet;
+
+#[path = "live_input_attachment_oracle.rs"]
+mod live_input_attachment_oracle;
+#[path = "live_input_task_oracle.rs"]
+mod live_input_task_oracle;
 
 #[derive(Clone, Copy)]
 enum Source {
@@ -61,6 +69,7 @@ struct LiveProvider {
     sources: Mutex<Vec<String>>,
     attachment_fault: Mutex<Option<TransitionFaultPoint>>,
     before_attachment: Mutex<Option<serde_json::Value>>,
+    task_domain_snapshots: Mutex<Option<Vec<Arc<ResidentTaskDomain>>>>,
     interrupted: tokio::sync::Notify,
 }
 
@@ -160,6 +169,9 @@ impl AgentProvider for LiveProvider {
             latest_turn(&runtime).live_input_batches.len(),
             batches_before
         );
+        if let Some(snapshots) = self.task_domain_snapshots.lock().await.as_mut() {
+            snapshots.push(ready_task_domain(&runtime).await);
+        }
         let blocks = match step.reply {
             Reply::Final => vec![ModelBlock::Text {
                 text: "p2 done".into(),
@@ -636,6 +648,16 @@ async fn run(runtime: &RuntimeHandle, receiver: Option<&str>) {
 
 fn latest_turn(runtime: &RuntimeHandle) -> TurnRecord {
     runtime.storage().read_recent_turns(1).unwrap().remove(0)
+}
+
+async fn ready_task_domain(runtime: &RuntimeHandle) -> Arc<ResidentTaskDomain> {
+    let mutation = runtime.begin_mutation().await.unwrap();
+    mutation
+        .capture_published_root()
+        .unwrap()
+        .tasks
+        .clone()
+        .expect("the unrelated Task fixture must already be resident")
 }
 
 fn visible(request: &ProviderTurnRequest) -> String {
@@ -2713,6 +2735,229 @@ async fn p2_provider_result_handoff_preserves_mixed_operator_and_ordinary_inputs
         ProviderHandoffCheck::Mixed,
     ))
     .await;
+}
+
+#[tokio::test]
+async fn p2_ordinary_only_provider_handoff_preserves_live_input_once() {
+    Box::pin(assert_ordinary_only_provider_handoff(false)).await;
+}
+
+#[tokio::test]
+async fn p2_ordinary_only_provider_handoff_ack_preserves_unrelated_task_domain() {
+    Box::pin(assert_ordinary_only_provider_handoff(true)).await;
+}
+
+async fn assert_ordinary_only_provider_handoff(check_handoff_ack: bool) {
+    let data = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let provider = Arc::new(LiveProvider::default());
+    let runtime = RuntimeHandle::new(
+        "default",
+        data.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(LiveFallbackProvider {
+            live: provider.clone(),
+        }),
+        "default".into(),
+        ContextConfig {
+            recent_messages: 1,
+            ..live_context_config()
+        },
+    )
+    .unwrap();
+    isolate_test_user_home(&runtime);
+    *provider.runtime.lock().await = Some(runtime.clone());
+    let unrelated_owner = owner(&runtime, "unrelated Task owner").await;
+    let receiver = owner(&runtime, "ordinary-only handoff").await;
+    let unrelated_task = TaskRecord {
+        id: "ordinary-handoff-unrelated-task".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: runtime.now(),
+        updated_at: runtime.now(),
+        parent_message_id: None,
+        work_item_id: Some(unrelated_owner),
+        summary: Some("unrelated terminal Task".into()),
+        detail: Some(serde_json::json!({ "preserved_body": "unrelated".repeat(128) })),
+        recovery: None,
+    };
+    runtime
+        .persist_task_transition(&unrelated_task, "task_completed")
+        .await
+        .unwrap();
+    *provider.task_domain_snapshots.lock().await = Some(Vec::new());
+    *provider.steps.lock().await = vec![
+        Step {
+            inputs: vec![ordinary(Some(&receiver), "ordinary-handoff-peer", true)],
+            reply: Reply::PairedTools,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Fallback,
+        },
+        Step {
+            inputs: Vec::new(),
+            reply: Reply::Final,
+        },
+    ];
+    Box::pin(run(&runtime, Some(&receiver))).await;
+    let predecessor = latest_turn(&runtime);
+    let sources = provider.sources.lock().await.clone();
+    assert_eq!(sources.len(), 1);
+    assert_eq!(predecessor.live_input_batches.len(), 1);
+    assert_eq!(live_ids(&predecessor), sources);
+    assert!(predecessor.live_input_batches[0]
+        .result_identities
+        .is_empty());
+    assert_eq!(
+        predecessor.live_input_batches[0].ordinary_message_ids,
+        sources,
+    );
+    {
+        let snapshots = provider.task_domain_snapshots.lock().await;
+        let snapshots = snapshots.as_ref().unwrap();
+        assert_eq!(snapshots.len(), 2);
+        // Paired GetAgent tools do not write Tasks. The attachment's original
+        // ACK must retain the nonempty Task domain seen after ordinary delivery.
+        assert!(Arc::ptr_eq(&snapshots[0], &snapshots[1]));
+    }
+    assert!(runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&sources[0])
+        .unwrap()
+        .is_none());
+    let body = source_bodies(&runtime, &sources).remove(0);
+    let scheduled = Box::pin(claim(&runtime)).await;
+    if check_handoff_ack {
+        Box::pin(
+            runtime.begin_dispatch_turn(
+                &scheduled.message,
+                None,
+                None,
+                scheduled
+                    .dispatch_plan
+                    .execution_admission_provenance
+                    .clone(),
+                &scheduled.dispatch_plan.prior_closure,
+            ),
+        )
+        .await
+        .unwrap();
+        runtime
+            .record_incoming_transcript_entry(&scheduled.message)
+            .await
+            .unwrap();
+        // Capture after scheduler/turn preparation, so only the handoff writer
+        // and its native ACK consumer are inside this identity assertion.
+        let before = ready_task_domain(&runtime).await;
+        live_input_task_oracle::assert_ordinary_handoff_task_oracle(&runtime)
+            .await
+            .unwrap();
+        for replay in [false, true] {
+            let turn_before = latest_turn(&runtime);
+            assert!(
+                Box::pin(runtime.recover_provider_result_inputs(&scheduled.message))
+                    .await
+                    .unwrap()
+            );
+            let after = ready_task_domain(&runtime).await;
+            assert!(Arc::ptr_eq(&before, &after));
+            if replay {
+                assert_eq!(latest_turn(&runtime), turn_before, "handoff replay");
+            }
+        }
+    } else {
+        Box::pin(process(&runtime, scheduled)).await;
+    }
+    let current = latest_turn(&runtime);
+    if !check_handoff_ack {
+        assert_eq!(
+            current.terminal.as_ref().unwrap().kind,
+            TurnTerminalKind::Completed
+        );
+    }
+    assert_eq!(live_ids(&current), sources);
+    assert_eq!(current.live_input_batches.len(), 1);
+    assert!(current.live_input_batches[0].result_identities.is_empty());
+    assert_eq!(current.live_input_batches[0].ordinary_message_ids, sources);
+    let final_tasks = ready_task_domain(&runtime).await;
+    let snapshots = provider.task_domain_snapshots.lock().await;
+    let snapshots = snapshots.as_ref().unwrap();
+    let key = TaskKey::new(TaskFamily::Task, &unrelated_task.id);
+    let expected = CanonicalTaskFact::Task(unrelated_task.clone());
+    let original_records = snapshots[0].selected_install_records();
+    let original = original_records
+        .iter()
+        .find(|record| record.locator.key == key)
+        .unwrap();
+    // Scheduler preparation may legitimately refresh other coverage. Check
+    // this unrelated Task's body and qualified coverage at every actual request.
+    for tasks in snapshots.iter().chain(std::iter::once(&final_tasks)) {
+        assert_eq!(
+            tasks.coverage().task_metadata[&unrelated_task.id],
+            snapshots[0].coverage().task_metadata[&unrelated_task.id],
+        );
+        assert_eq!(
+            tasks.coverage().observations.get(&key),
+            Some(&TaskAvailability::Present),
+        );
+        assert_eq!(
+            tasks.coverage().terminal.keys.contains(&key),
+            snapshots[0].coverage().terminal.keys.contains(&key),
+        );
+        let records = tasks.selected_install_records();
+        let record = records
+            .iter()
+            .find(|record| record.locator.key == key)
+            .unwrap();
+        assert_eq!(record.locator, original.locator);
+        assert_eq!(record.fact, expected);
+    }
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_task_record(&unrelated_task.id)
+            .unwrap(),
+        Some(unrelated_task),
+    );
+    assert!(runtime
+        .inner
+        .runtime_db
+        .task_result_settlements()
+        .latest_for_message(&sources[0])
+        .unwrap()
+        .is_none());
+    assert_eq!(
+        runtime
+            .inner
+            .runtime_db
+            .queue_entries()
+            .latest(&sources[0])
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Interjected,
+    );
+    let requests = provider.requests.lock().await;
+    assert_eq!(requests.len(), if check_handoff_ack { 2 } else { 3 });
+    assert_eq!(visible(&requests[0]).matches(&body).count(), 0);
+    for request in requests.iter().skip(1) {
+        assert_request_tool_pairs(request);
+        assert_eq!(visible(request).matches(&body).count(), 1);
+    }
+    assert_eq!(
+        runtime
+            .storage()
+            .read_turn_by_id(&predecessor.turn_id)
+            .unwrap()
+            .unwrap()
+            .live_input_batches,
+        predecessor.live_input_batches,
+    );
 }
 
 fn assert_provider_result_handoff(

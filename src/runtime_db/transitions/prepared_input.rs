@@ -50,6 +50,12 @@ pub(crate) use task_stop_phase::worktree_receipt_exists_tx;
 mod current_writes;
 #[path = "prepared_live_input.rs"]
 mod live_input;
+#[path = "prepared_live_task.rs"]
+mod live_task;
+#[cfg(test)]
+pub(crate) fn with_full_task_oracle<T>(run: impl FnOnce() -> T) -> T {
+    live_task::with_full_task_oracle(run)
+}
 #[path = "prepared_input_native_birth.rs"]
 mod native_input;
 #[path = "prepared_task_status_metadata.rs"]
@@ -2200,6 +2206,7 @@ struct PreparedTransitionContext<'tx, 'connection, 'command> {
     scheduling_transaction: Option<timer_writes::SchedulingTransaction<'tx, 'connection>>,
     supervised_parent_transaction: Option<task_writes::TaskTransaction<'tx, 'connection, 'command>>,
     task_transaction: Option<task_writes::TaskTransaction<'tx, 'connection, 'command>>,
+    unchanged_live_task: Option<live_task::UnchangedLiveTask>,
     _creation_material:
         Option<std::sync::Arc<crate::runtime::input_evidence_budget::BudgetViewGuard>>,
     stop_proof: Option<crate::runtime_db::task_stop::TaskStopWriteProof<'tx, 'connection>>,
@@ -2823,6 +2830,7 @@ impl RuntimeTransitionRepository<'_> {
             scheduling_transaction,
             supervised_parent_transaction,
             task_transaction,
+            unchanged_live_task,
             _creation_material,
             stop_proof,
             work_proof,
@@ -2846,7 +2854,18 @@ impl RuntimeTransitionRepository<'_> {
             memory_budget.as_mut(),
             task_bases,
         )?;
-        *task_transaction = if let Some(entry) = child_entry {
+        *unchanged_live_task = live_task::UnchangedLiveTask::prepare_tx(
+            tx,
+            prepared,
+            scope,
+            task_request,
+            memory_ledger,
+            memory_budget.as_mut(),
+            task_bases,
+        )?;
+        *task_transaction = if unchanged_live_task.is_some() {
+            None
+        } else if let Some(entry) = child_entry {
             task_writes::prepare_child_task_transaction_tx(
                 tx,
                 prepared,
@@ -3132,6 +3151,7 @@ impl RuntimeTransitionRepository<'_> {
             scheduling_transaction: None,
             supervised_parent_transaction: None,
             task_transaction: None,
+            unchanged_live_task: None,
             _creation_material: None,
             stop_proof: None,
             work_proof: None,
@@ -3451,25 +3471,39 @@ impl RuntimeTransitionRepository<'_> {
                     preflight.memory_budget.as_mut(),
                 )?,
                 InputTransitionCommand::LiveInputAttachment(command) => {
-                    let tasks = preflight
+                    let allowed = preflight
                         .task_transaction
                         .as_ref()
+                        .map(|tasks| tasks.allowed_keys())
+                        .or_else(|| {
+                            preflight
+                                .unchanged_live_task
+                                .as_ref()
+                                .map(|proof| proof.allowed_keys())
+                        })
                         .context("live attachment omitted Task proof")?;
                     (
                         repository.commit_live_input_attachment_tx(
                             tx,
                             Some(scope),
                             command,
-                            Some(tasks.allowed_keys()),
+                            Some(allowed),
                             Some(memory_ledger),
                         )?,
                         InputMutationResult::Transition,
                     )
                 }
                 InputTransitionCommand::LiveInputRecovery(command) => {
-                    let tasks = preflight
+                    let allowed = preflight
                         .task_transaction
                         .as_ref()
+                        .map(|tasks| tasks.allowed_keys())
+                        .or_else(|| {
+                            preflight
+                                .unchanged_live_task
+                                .as_ref()
+                                .map(|proof| proof.allowed_keys())
+                        })
                         .context("live recovery omitted Task proof")?;
                     (
                         repository.commit_live_input_recovery_tx(
@@ -3480,7 +3514,7 @@ impl RuntimeTransitionRepository<'_> {
                             &command.predecessor,
                             &command.audit_event_id,
                             command.fault,
-                            Some(tasks.allowed_keys()),
+                            Some(allowed),
                         )?,
                         InputMutationResult::Transition,
                     )
@@ -3504,9 +3538,16 @@ impl RuntimeTransitionRepository<'_> {
                     )
                 }
                 InputTransitionCommand::ProviderResultHandoff(command) => {
-                    let tasks = preflight
+                    let allowed = preflight
                         .task_transaction
                         .as_ref()
+                        .map(|tasks| tasks.allowed_keys())
+                        .or_else(|| {
+                            preflight
+                                .unchanged_live_task
+                                .as_ref()
+                                .map(|proof| proof.allowed_keys())
+                        })
                         .context("provider handoff omitted Task proof")?;
                     (
                         repository.commit_provider_result_handoff_tx(
@@ -3517,7 +3558,7 @@ impl RuntimeTransitionRepository<'_> {
                             command.at,
                             &command.audit_event_id,
                             command.fault,
-                            Some(tasks.allowed_keys()),
+                            Some(allowed),
                         )?,
                         InputMutationResult::Transition,
                     )
@@ -4020,6 +4061,7 @@ impl RuntimeTransitionRepository<'_> {
                 value.applied |= memory.applied;
             }
             if preflight.task_transaction.is_none()
+                && preflight.unchanged_live_task.is_none()
                 && value.effects.task_delta.is_none()
                 && !matches!(prepared.command.as_ref(), InputTransitionCommand::Timer(_))
             {
@@ -4039,6 +4081,9 @@ impl RuntimeTransitionRepository<'_> {
                 }
             }
             let mut child_usage = None;
+            if let Some(unchanged) = preflight.unchanged_live_task.take() {
+                unchanged.finish(&mut value)?;
+            }
             if let Some(tasks) = preflight.task_transaction {
                 let _defer_finalization =
                     measure_defer.then(|| attribution::TASK_RESULT_DEFER_FINALIZATION.start());

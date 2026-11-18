@@ -161,6 +161,21 @@ fn selector(command: &InputTransitionCommand) -> Result<Option<(&'static str, St
     })
 }
 
+/// The original selector, without copying its Task/Result rows.
+pub(super) fn has_result_writes_tx(
+    tx: &Transaction<'_>,
+    prepared: &PreparedInputTransition,
+) -> Result<bool> {
+    let Some((sql, selector)) = selector(prepared.command.as_ref())? else {
+        return Ok(false);
+    };
+    Ok(tx.query_row(
+        &format!("SELECT EXISTS(SELECT 1 FROM ({sql}))"),
+        params![prepared.primary_scope.agent_id, selector],
+        |row| row.get(0),
+    )?)
+}
+
 /// Reserve address copies before constructing the original Task candidate set.
 pub(super) fn result_address_material_tx(
     tx: &Transaction<'_>,

@@ -7,6 +7,30 @@ use crate::runtime::{
 use crate::runtime_db::task_snapshot::{self as tasks, TaskWriteBaselineStale};
 use std::sync::Arc;
 
+#[cfg(test)]
+type ReaderBarrier = Box<dyn FnOnce() -> Result<()>>;
+
+#[cfg(test)]
+thread_local! {
+    static READER_BARRIER: std::cell::RefCell<Option<ReaderBarrier>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn with_reader_barrier<T>(
+    barrier: impl FnOnce() -> Result<()> + 'static,
+    run: impl FnOnce() -> T,
+) -> T {
+    struct Restore(Option<ReaderBarrier>);
+    impl Drop for Restore {
+        fn drop(&mut self) {
+            READER_BARRIER.with(|slot| slot.replace(self.0.take()));
+        }
+    }
+    let _restore = Restore(READER_BARRIER.with(|slot| slot.replace(Some(Box::new(barrier)))));
+    run()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct PreparedTaskBaselines {
     entries: Vec<PreparedTaskBaseline>,
@@ -77,6 +101,14 @@ impl PreparedTaskBaselines {
             .find(|entry| entry.resident.scope() == scope)
     }
 
+    /// Only installed roots may be retained without publishing a Task ACK.
+    pub(super) fn resident(&self, scope: &InputEvidenceScope) -> Option<&Arc<ResidentTaskDomain>> {
+        self.task_base(scope)
+            .filter(|base| !base.unpublished)
+            .map(|base| &base.resident)
+            .or_else(|| self.roots.iter().find(|root| root.scope() == scope))
+    }
+
     pub(crate) fn has_prepared_scope(&self, scope: &InputEvidenceScope) -> bool {
         self.task_base(scope).is_some()
     }
@@ -142,6 +174,10 @@ impl PreparedTaskBaselines {
                 let Some(state) = facts.state else {
                     return Ok(None);
                 };
+                #[cfg(test)]
+                if let Some(barrier) = READER_BARRIER.with(|slot| slot.borrow_mut().take()) {
+                    barrier()?;
+                }
                 let candidate = tasks::prepare_task_candidate_tx(
                     tx,
                     scope,

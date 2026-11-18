@@ -1327,6 +1327,57 @@ An Invalid Result can contribute only a partial reverse index for an unselected
 Task. If that Task later enters the selected window, the finalizer loads its
 complete Result namespace instead of treating the partial index as a closure.
 
+Live attachment, live recovery and provider handoff may preserve an existing
+resident Task domain when their actual writes cannot invalidate its observations
+and the consumer introduces no unobserved selector. This decision precedes Task
+candidate preparation, coverage decoding and baseline cloning. The original
+writer checks the resident scope, scalar Task revision, complete active/unsettled
+coverage, requested selection, empty cached recovery observations, and the actual
+Result selector. It does not require the entire Task or Result namespace to be
+empty. A reader-prepared, unpublished baseline is not an installed resident:
+cold, stale and expanded-selection fallbacks must publish their complete Task
+ACK, including the prepared base, before the consumer can retain that domain.
+
+For attachment, every changed Message must have an unchanged accepted order tuple,
+no old or new Task Source, and no associated Result. Queue transitions must stay
+within the fixed Running live-status set. This preserves the global recent
+Output window as well as its Task heads. Recovery/handoff preserve Message and
+Queue records; their Result selectors and affected activation boundaries are
+checked separately. These commands do not write Task, Stop, control-worktree or
+delegation facts. A changed Turn alone does not change accepted parent-turn Task
+relations. Any unknown dependency, missing resident, changed revision or new
+selector uses the existing protected-reader/baseline/finalizer path.
+
+The independent path still explicitly supplies an empty allowed Result write set
+to the original business writer and checks its actual Task write set. It returns
+the original atomic Input/Current/receipt ACK, with no Task delta: publication
+retains the original Task Arc rather than claiming a freshly finalized domain.
+This does not omit scope, owner, source, budget, cancellation, replay or
+uncertain-commit checks. Changed Task dependencies still require a complete
+committed Task delta through the existing contract.
+
+`db.task.live.dependency_check` measures these finite observations;
+`db.task.live.unchanged` counts successful preservation decisions. Absence of
+candidate/read/finalizer work is a causal counter assertion, not an elapsed-time
+promise. Paired tests use the same frozen command and a copy of its original
+database, with a test-only thread-local switch forcing the existing Task path
+as the oracle. A scoped test clock freezes writer-generated transcript, Result
+recovery and audit timestamps; complete Current digests and receipt outcomes
+are compared without removing those fields. Both controls are absent from
+production builds.
+
+The isolated cost matrix separates selected active Task bodies from unselected
+terminal history. It covers retained warm inputs, cold/stale preparation,
+new named Task/settled Result selectors, and actual CallerAdmitted Result
+recovery writes. Each pair consumes and verifies its complete ACK against the
+canonical post-write domain; samples alternate oracle execution order. Stage
+timers are inclusive and must not be summed. Commit-API elapsed time includes
+repreparation/retries, not the exclusive writer lease; business-SQL, writer
+queue/held and other unavailable phase measurements remain explicitly
+unavailable. A separate barrier enters the real recovery reprepare reader and
+requires a peer writer to finish before releasing it, then verifies the original
+ACK and exact receipt replay.
+
 Content-free diagnostics separate `db.task.candidate.read` (selection, decoding
 and qualification), `.validate` and `.apply`, and
 `db.task.write.delta_finalize`. Their row counters describe selected qualified

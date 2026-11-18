@@ -106,6 +106,8 @@ stages! {
     TASK_DOMAIN_PREPARE => "db.task.domain_prepare",
     TASK_DOMAIN_LOAD => "db.task.domain_load",
     TASK_DOMAIN_REBUILD => "runtime.task.domain_rebuild",
+    TASK_LIVE_DEPENDENCY_CHECK => "db.task.live.dependency_check",
+    TASK_LIVE_UNCHANGED => "db.task.live.unchanged",
     TASK_CANDIDATE_READ => "db.task.candidate.read",
     TASK_CANDIDATE_VALIDATE => "db.task.candidate.validate",
     TASK_CANDIDATE_APPLY => "db.task.candidate.apply",

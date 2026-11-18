@@ -400,6 +400,31 @@ struct CommittedInputQueryPublication {
 }
 
 impl CommittedInputQueryAdvance {
+    #[cfg(test)]
+    pub(crate) fn oracle_facts(&self) -> Result<serde_json::Value> {
+        let born = self
+            .born
+            .iter()
+            .map(|(key, birth)| {
+                (
+                    key,
+                    birth
+                        .as_ref()
+                        .map(|birth| (birth.seq, birth.revision, birth.content_digest.as_slice())),
+                )
+            })
+            .collect::<Vec<_>>();
+        Ok(serde_json::json!({
+            "scope": serde_json::to_value(&self.scope)?,
+            "base_cursor": self.base_cursor,
+            "cursor": self.cursor,
+            "born": serde_json::to_value(born)?,
+            "publication": serde_json::to_value(
+                self.publication.as_ref().map(|p| (&p.base, &p.coverage))
+            )?,
+        }))
+    }
+
     pub(crate) fn install_query(
         &self,
         base: Option<&Arc<InputQueryCoverage>>,

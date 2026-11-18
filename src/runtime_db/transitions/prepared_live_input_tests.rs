@@ -1,5 +1,7 @@
 //! Live recovery uses the original fence and publishes one whole-input ACK.
 use super::*;
+#[path = "prepared_live_dependency_tests.rs"]
+mod dependencies;
 use crate::domain::{
     execution_protocol::{
         AdmittedFences, CommandResult, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
@@ -224,6 +226,16 @@ fn prepared_live_input_recovery_installs_turn_input_task_and_current_acks_once()
                 &f.turn.turn_id
             )));
     assert_eq!(value.effects.task_delta.as_ref().unwrap().scope, f.f.scope);
+    assert!(
+        value
+            .effects
+            .task_delta
+            .as_ref()
+            .unwrap()
+            .prepared_base
+            .is_some(),
+        "cold reader baseline must accompany the original ACK"
+    );
     assert!(value.effects.current_read_writes.is_some());
     assert_eq!(f.f.receipt_count()?, 1);
     assert!(matches!(f.f.db.transitions_in_scope(&f.f.scope)
