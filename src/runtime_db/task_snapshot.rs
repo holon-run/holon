@@ -27,6 +27,8 @@ pub(crate) use candidate::{
 mod candidate_tests;
 mod deletion_maintenance;
 mod loader;
+#[cfg(all(test, holon_lib_test_shard = "a"))]
+pub(crate) mod test_probe;
 pub(in crate::runtime_db) use loader::load_selected_using_material;
 mod maintenance;
 mod original_cleanup;

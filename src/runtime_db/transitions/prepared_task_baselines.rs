@@ -90,6 +90,8 @@ impl PreparedTaskBaselines {
             let resident = self.roots.remove(index);
             self.entries
                 .push(PreparedTaskBaseline::new(resident, ledger)?);
+            #[cfg(all(test, holon_lib_test_shard = "a"))]
+            tasks::test_probe::record_borrowed_root();
             return Ok(());
         }
         let _stage = attribution::TASK_DOMAIN_PREPARE.start();
@@ -97,6 +99,8 @@ impl PreparedTaskBaselines {
             let candidate = {
                 let _reader = tracing::trace_span!("prepared_task_baseline_reader").entered();
                 db.read_for_preparation(|tx| {
+                #[cfg(all(test, holon_lib_test_shard = "a"))]
+                let _lane = tasks::test_probe::enter(tasks::test_probe::LoadLane::PreparationReader);
                 let reader =
                     crate::runtime_db::context_inputs::ContextDurableRead::new(tx, &scope.agent_id);
                 let identity = reader.identity_fact()?;

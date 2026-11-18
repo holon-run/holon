@@ -3262,6 +3262,10 @@ impl RuntimeTransitionRepository<'_> {
         });
         let measure_queue = queue.is_some();
         let commit = |tx: &Transaction<'_>| {
+            #[cfg(all(test, holon_lib_test_shard = "a"))]
+            let _lane = crate::runtime_db::task_snapshot::test_probe::enter(
+                crate::runtime_db::task_snapshot::test_probe::LoadLane::Writer,
+            );
             let _task_writer = tracing::trace_span!("prepared_task_writer").entered();
             if let InputTransitionCommand::ExternalTrigger(command) = prepared.command.as_ref() {
                 return trigger_writes::commit_tx(
