@@ -2,7 +2,7 @@ use super::*;
 use crate::runtime::tests::support::LifecycleHarness;
 
 #[tokio::test]
-async fn list_subagent_cleanup_waits_for_supervisor_publication() -> Result<()> {
+async fn list_subagents_waits_for_supervisor_publication() -> Result<()> {
     let (_home, host, runtime) = crate::runtime::tests::support::host_backed_test_runtime().await;
     runtime.await_initial_resources().await;
     let refresh = runtime.hold_resource_refresh_for_test().await?;
@@ -10,7 +10,7 @@ async fn list_subagent_cleanup_waits_for_supervisor_publication() -> Result<()> 
     owner.begin("pending-cleanup-inspection".into())?;
     let call = crate::tool::ToolCall {
         id: "pending-cleanup".into(),
-        name: crate::tool::names::LIST_SUBAGENT_CLEANUP.into(),
+        name: crate::tool::names::LIST_SUBAGENTS.into(),
         input: serde_json::json!({}),
     };
     let mut read = crate::tool::tools::execute_builtin_tool(
@@ -26,7 +26,7 @@ async fn list_subagent_cleanup_waits_for_supervisor_publication() -> Result<()> 
     drop(owner);
     let result = tokio::time::timeout(Duration::from_secs(1), read).await??;
     assert_eq!(
-        result.envelope.result.context("cleanup result")?["subagent_cleanup"],
+        result.envelope.result.context("subagents result")?["subagents"],
         serde_json::json!([])
     );
     drop(refresh);

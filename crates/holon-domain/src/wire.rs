@@ -27,6 +27,43 @@ pub struct SubagentCleanupCandidate {
     pub observed_since: Option<String>,
 }
 
+pub const DEFAULT_SUBAGENT_LIST_LIMIT: usize = 20;
+pub const MAX_SUBAGENT_LIST_LIMIT: usize = 100;
+
+/// Direct supervision discovery, not a deletion or task-completion decision.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SubagentListPage {
+    pub subagents: Vec<SubagentListEntry>,
+    pub limit: usize,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SubagentListEntry {
+    pub agent_id: String,
+    pub incarnation: u64,
+    pub supervision_state: crate::AgentSupervisionState,
+    pub identity_status: crate::AgentIdentityLifecycle,
+    /// None means no committed runtime-state projection is available.
+    pub runtime_status: Option<AgentStatus>,
+    pub invocation_task: Option<SubagentInvocationTaskRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<SubagentCleanupDiagnostic>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SubagentInvocationTaskRef {
+    pub task_id: String,
+    pub status: Option<crate::TaskStatus>,
+}
+
+/// The first current database blocker only; DeleteAgent must recheck safety.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
+pub struct SubagentCleanupDiagnostic {
+    pub blocker: Option<String>,
+    pub observed_since: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct SlimAgentDto {
     pub identity: AgentIdentityView,

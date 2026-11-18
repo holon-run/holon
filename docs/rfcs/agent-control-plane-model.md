@@ -234,7 +234,7 @@ The central inspection primitive should be:
 
 - `GetAgent`
   - Returns one compact `GetAgentResult` for the requested agent, defaulting to self.
-  - `ListSubagentCleanup` lists the caller’s supervised ephemeral children and their current cleanup blockers.
+  - `ListSubagents` pages through the caller’s directly supervised children with lightweight status/task references and optional cleanup diagnostics.
 
 `GetAgent` should read agent-plane state for the context-owning agent:
 

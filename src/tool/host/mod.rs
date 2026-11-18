@@ -30,7 +30,7 @@ pub(crate) mod get_workspace_state;
 pub(crate) mod invoke_agent;
 pub(crate) mod list_model_providers;
 pub(crate) mod list_provider_models;
-pub(crate) mod list_subagent_cleanup;
+pub(crate) mod list_subagents;
 pub(crate) mod list_work_items;
 pub(crate) mod memory_get;
 pub(crate) mod memory_search;
@@ -142,8 +142,8 @@ pub(super) fn execute_builtin_tool_route<'a>(
             holon_tools::builtins::BuiltinTool::GetAgent => {
                 Box::pin(get_agent::execute(runtime, &call.input))
             }
-            holon_tools::builtins::BuiltinTool::ListSubagentCleanup => {
-                Box::pin(list_subagent_cleanup::execute(runtime, &call.input))
+            holon_tools::builtins::BuiltinTool::ListSubagents => {
+                Box::pin(list_subagents::execute(runtime, &call.input))
             }
             holon_tools::builtins::BuiltinTool::Enqueue => Box::pin(enqueue::execute(
                 runtime,
@@ -403,8 +403,8 @@ mod tests {
                 "crates/holon-tools/src/tool/tool_descriptions/detach_workspace.md"
             }
             "DeleteAgent" => "crates/holon-tools/src/tool/tool_descriptions/delete_agent.md",
-            "ListSubagentCleanup" => {
-                "crates/holon-tools/src/tool/tool_descriptions/list_subagent_cleanup.md"
+            "ListSubagents" | "ListSubagentCleanup" => {
+                "crates/holon-tools/src/tool/tool_descriptions/list_subagents.md"
             }
             "Enqueue" => "crates/holon-tools/src/tool/tool_descriptions/enqueue.md",
             "ExecCommand" => "crates/holon-tools/src/tool/tool_descriptions/exec_command.md",

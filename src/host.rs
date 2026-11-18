@@ -26529,7 +26529,10 @@ mod tests {
             "legacy age is not an expiry"
         );
         assert_eq!(
-            ready_observer(|| parent.subagent_cleanup_candidates()).await[0].agent_id,
+            ready_observer(|| parent.list_subagents(None, None, false))
+                .await
+                .subagents[0]
+                .agent_id,
             child.agent_id
         );
         let cleanup = crate::tool::tools::execute_builtin_tool(
@@ -26539,15 +26542,15 @@ mod tests {
             &crate::tool::ToolCall {
                 id: "list-cleanup".into(),
                 name: "ListSubagentCleanup".into(),
-                input: json!({}),
+                input: json!({"include_cleanup": true}),
             },
         )
         .await
         .unwrap();
-        let candidates = ready_observer(|| parent.subagent_cleanup_candidates()).await;
+        let candidates = ready_observer(|| parent.list_subagents(None, None, true)).await;
         assert_eq!(
-            cleanup.envelope.result.unwrap()["subagent_cleanup"],
-            json!(candidates)
+            cleanup.envelope.result.unwrap()["subagents"],
+            json!(candidates.subagents)
         );
         assert!(host.try_get_loaded_runtime(&child.agent_id).await.is_none());
         let again = db

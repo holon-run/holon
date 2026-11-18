@@ -36,6 +36,7 @@ pub const STABLE_TOOL_NAMES: &[&str] = &[
     INVOKE_AGENT,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
+    LIST_SUBAGENTS,
     LIST_SUBAGENT_CLEANUP,
     LIST_TASKS,
     LIST_TIMERS,
@@ -75,7 +76,8 @@ pub const CUSTOM_TEXT_RECEIPT_TOOLS: &[&str] = &[
 pub const FUNCTION_JSON_ENVELOPE_TOOLS: &[&str] = &[EXEC_COMMAND, EXEC_COMMAND_BATCH];
 
 /// Tools that are **not** exposed to the model (hidden from tool specs).
-pub const HIDDEN_FROM_MODEL_TOOLS: &[&str] = &[SLEEP, TASK_LIST, USE_WORKSPACE];
+pub const HIDDEN_FROM_MODEL_TOOLS: &[&str] =
+    &[SLEEP, TASK_LIST, USE_WORKSPACE, LIST_SUBAGENT_CLEANUP];
 
 /// Tools considered "sleep-like" for the `only_sleep_tools` aggregation.
 pub const SLEEP_LIKE_TOOLS: &[&str] = &[SLEEP, WAIT_FOR];
@@ -105,6 +107,7 @@ pub const ALL_TOOL_NAMES: &[&str] = &[
     INVOKE_AGENT,
     LIST_MODEL_PROVIDERS,
     LIST_PROVIDER_MODELS,
+    LIST_SUBAGENTS,
     LIST_SUBAGENT_CLEANUP,
     LIST_TASKS,
     LIST_TIMERS,
