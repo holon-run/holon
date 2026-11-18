@@ -937,7 +937,7 @@ jobs:
           cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai/Cargo.toml --locked
           cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
           cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-client/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-domain/Cargo.toml --locked
+          cargo "$CRATE_COMMAND" --manifest-path crates/holon-domain/Cargo.toml --locked --features error-sanitization
           cargo "$CRATE_COMMAND" --manifest-path crates/holon-github/Cargo.toml --locked
           cargo "$CRATE_COMMAND" --manifest-path crates/holon-agent-templates/Cargo.toml --locked
           cargo "$CRATE_COMMAND" --manifest-path crates/holon-system/Cargo.toml --locked
