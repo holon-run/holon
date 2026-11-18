@@ -671,6 +671,81 @@ async fn exec_command_batch_registers_once_and_reuses_its_grouped_result() -> Re
     .await
 }
 
+#[tokio::test]
+async fn tool_result_shutdown_attribution_keeps_unconfirmed_result_and_turn_fence() -> Result<()> {
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let (_, _session) = runtime.begin_task_birth_session().await?;
+    let (turn_id, _) = runtime
+        .begin_interactive_turn_with_provenance(None, None, None, None)
+        .await?;
+    runtime
+        .mark_current_turn_external_side_effect_possible(crate::tool::names::EXEC_COMMAND, None)
+        .await?;
+    let prior = runtime
+        .runtime_db()
+        .turn_records()
+        .by_id(Some("default"), &turn_id)?;
+    let record = ToolExecutionRecord {
+        id: "shutdown-unsettled-tool".into(),
+        agent_id: "default".into(),
+        work_item_id: None,
+        turn_id: Some(turn_id.clone()),
+        turn_index: 1,
+        tool_name: crate::tool::names::EXEC_COMMAND.into(),
+        created_at: Utc::now(),
+        completed_at: Some(Utc::now()),
+        duration_ms: 1,
+        authority_class: AuthorityClass::RuntimeInstruction,
+        status: ToolExecutionStatus::Success,
+        input: serde_json::json!({}),
+        output: serde_json::json!({"stdout": "original result"}),
+        summary: "returned before shutdown".into(),
+        call_binding: None,
+        invocation_surface: None,
+    };
+    // Close only this isolated fixture's admission; never stop a real daemon.
+    runtime.close_execution_admission();
+    let error = runtime
+        .persist_tool_result_evidence(
+            &record,
+            AuditEvent::legacy("tool_executed", serde_json::json!({"agent_id": "default"})),
+        )
+        .await
+        .unwrap_err();
+    let report = crate::runtime_error::describe_runtime_error(&error);
+    assert_eq!(
+        report.code,
+        crate::runtime_error::TOOL_RESULT_SETTLEMENT_PENDING
+    );
+    assert!(!report.retryable);
+    assert_eq!(report.safe_context["status"], "outcome_unknown");
+    assert_eq!(
+        report.safe_context["cause_code"],
+        "runtime_instance_retiring"
+    );
+    assert_eq!(report.safe_context["tool_execution_id"], record.id);
+    assert_eq!(report.safe_context["turn_id"], turn_id);
+    assert_eq!(report.operator_message,
+        "Turn interrupted by runtime shutdown/restart; Tool returned, but its result settlement is unconfirmed");
+    assert_eq!(
+        runtime
+            .runtime_db()
+            .turn_records()
+            .by_id(Some("default"), &turn_id)?,
+        prior
+    );
+    assert!(prior.unwrap().external_side_effect_possible);
+    assert!(runtime
+        .runtime_db()
+        .evidence()
+        .tool_execution_by_id("default", &record.id)?
+        .is_none());
+    Ok(())
+}
+
 async fn assert_external_command_settlement_reuses_original_result(tool_name: &str) -> Result<()> {
     use crate::runtime_db::prepared_input_evidence::InputEvidenceWrite;
     use crate::tool::{spec::ToolExecutionContext, ToolCall};
@@ -829,6 +904,11 @@ async fn assert_external_command_settlement_reuses_original_result(tool_name: &s
         Some("not_persisted")
     );
     assert!(!diagnostic.retryable);
+    assert!(!diagnostic.safe_context.contains_key("cause_code"));
+    assert_eq!(
+        diagnostic.operator_message,
+        "Tool returned, but its result was not persisted"
+    );
 
     runtime
         .storage()

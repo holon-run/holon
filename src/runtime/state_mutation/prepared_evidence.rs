@@ -20,6 +20,56 @@ fn tool_result_not_committed(error: &anyhow::Error) -> bool {
             == Some(PersistenceCertainty::DefinitelyNotCommitted)
 }
 
+fn tool_result_settlement_error(
+    error: anyhow::Error,
+    execution_id: String,
+    turn_id: String,
+) -> anyhow::Error {
+    let (status, message) = if tool_result_not_committed(&error) {
+        (
+            "not_persisted",
+            "Tool returned, but its result was not persisted",
+        )
+    } else {
+        (
+            "outcome_unknown",
+            "Tool returned, but its result settlement is unconfirmed",
+        )
+    };
+    // Only a typed admission failure proves retirement. Neither its retryability
+    // nor its text proves that replaying an external side effect would be safe.
+    let retiring = error.chain().any(|source| {
+        source.downcast_ref::<RuntimeError>().is_some_and(|cause| {
+            cause.descriptor().domain == RuntimeErrorDomain::Runtime
+                && cause.descriptor().code == "runtime_instance_retiring"
+        })
+    });
+    let message = if retiring {
+        format!("Turn interrupted by runtime shutdown/restart; {message}")
+    } else {
+        message.to_owned()
+    };
+    let mut report = RuntimeError::new(
+        RuntimeErrorDomain::Storage,
+        TOOL_RESULT_SETTLEMENT_PENDING,
+        message,
+    )
+    .with_safe_context("status", status)
+    .with_safe_context("tool_execution_id", execution_id)
+    .with_safe_context("turn_id", turn_id)
+    .with_recovery_hint(
+        "Inspect the original tool execution and external state before submitting it again",
+    );
+    if retiring {
+        report = report.with_safe_context("cause_code", "runtime_instance_retiring");
+    }
+    error.context(report)
+}
+
+#[cfg(all(test, holon_lib_test_shard = "a"))]
+#[path = "prepared_evidence_tests.rs"]
+mod tests;
+
 impl RuntimeMutation {
     #[inline(never)]
     pub(crate) fn commit_prepared_evidence<'a>(
@@ -316,22 +366,7 @@ impl RuntimeHandle {
             let Some((execution_id, turn_id)) = external_tool else {
                 return error;
             };
-            let (status, message) = if tool_result_not_committed(&error) {
-                ("not_persisted", "Tool returned, but its result was not persisted")
-            } else {
-                ("outcome_unknown", "Tool returned, but its result settlement is unconfirmed")
-            };
-            error.context(
-                RuntimeError::new(
-                    RuntimeErrorDomain::Storage,
-                    TOOL_RESULT_SETTLEMENT_PENDING,
-                    message,
-                )
-                .with_safe_context("status", status)
-                .with_safe_context("tool_execution_id", execution_id)
-                .with_safe_context("turn_id", turn_id)
-                .with_recovery_hint("Inspect the original tool execution and external state before submitting it again")
-            )
+            tool_result_settlement_error(error, execution_id, turn_id)
         })
     }
 
