@@ -1,6 +1,10 @@
 use super::*;
-use crate::{ProviderEndpointConfigFile, ProviderPlanConfigFile, ProviderTransportKind};
-use std::collections::BTreeMap;
+use crate::{
+    built_in_provider_registry_with_settings, resolve_provider_registry, CredentialKind,
+    CredentialSource, CredentialStoreFile, ProviderEndpointConfigFile, ProviderPlanConfigFile,
+    ProviderTransportKind,
+};
+use std::collections::{BTreeMap, HashMap};
 
 fn headers(pairs: &[(&str, &str)]) -> ProviderHeaders {
     ProviderHeaders::new(
@@ -223,4 +227,88 @@ fn provider_headers_unset_endpoint_override_restores_inheritance() {
             .is_err()
     );
     assert_eq!(serde_json::to_value(&config).unwrap(), before);
+}
+
+#[test]
+fn provider_headers_materialize_endpoint_inheritance_and_route_isolation() {
+    let (stored, id) = custom_config();
+    let registry =
+        resolve_provider_registry(&stored, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    let base = &registry[&id].headers;
+    let coding = &registry[&ProviderId::parse("custom-headers-coding").unwrap()].headers;
+    assert_eq!(
+        base,
+        &headers(&[("x-base", "base"), ("x-shared", "provider")])
+    );
+    assert_eq!(
+        coding,
+        &headers(&[("x-base", "base"), ("x-shared", "endpoint")])
+    );
+    assert!(registry[&ProviderId::openai()].headers.is_empty());
+    let other = effective_provider_headers(
+        &stored.providers[&id],
+        &ProviderEndpointId::parse("other").unwrap(),
+    )
+    .unwrap();
+    assert_eq!(&other, base);
+}
+
+#[test]
+fn provider_headers_canonical_builtin_config_applies_only_its_route_layers() {
+    let mut stored = HolonConfigFile::default();
+    let id = ProviderId::parse("opencode-go").unwrap();
+    set_provider_headers(&mut stored, &id, None, &["X-Shared=base".into()]).unwrap();
+    set_provider_headers(
+        &mut stored,
+        &id,
+        Some(&ProviderEndpointId::default_endpoint()),
+        &["X-Default=default-only".into()],
+    )
+    .unwrap();
+    set_provider_headers(
+        &mut stored,
+        &id,
+        Some(&ProviderEndpointId::parse("messages").unwrap()),
+        &["X-Shared=messages".into()],
+    )
+    .unwrap();
+    let registry =
+        resolve_provider_registry(&stored, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    assert_eq!(
+        registry[&id].headers,
+        headers(&[("x-shared", "base"), ("x-default", "default-only")])
+    );
+    assert_eq!(
+        registry[&ProviderId::parse("opencode-go-messages").unwrap()].headers,
+        headers(&[("x-shared", "messages")])
+    );
+    assert!(!registry.contains_key(&ProviderId::parse("opencode-go-responses").unwrap()));
+    assert!(registry[&ProviderId::openai()].headers.is_empty());
+}
+
+#[test]
+fn provider_headers_builtin_materialization_preserves_default_auth() {
+    let expected = built_in_provider_registry_with_settings(&HashMap::new()).unwrap();
+    for id in [
+        ProviderId::openai_codex(),
+        ProviderId::openai(),
+        ProviderId::anthropic(),
+    ] {
+        let mut config = HolonConfigFile::default();
+        set_provider_headers(&mut config, &id, None, &["x-example=value".into()]).unwrap();
+        assert_eq!(config.providers[&id].auth, expected[&id].auth);
+        assert_ne!(config.providers[&id].auth.source, CredentialSource::None);
+        assert_ne!(config.providers[&id].auth.kind, CredentialKind::None);
+    }
+    let mut config = HolonConfigFile::default();
+    assert!(set_provider_headers(
+        &mut config,
+        &ProviderId::parse("missing-custom").unwrap(),
+        None,
+        &["x-example=value".into()],
+    )
+    .is_err());
+    assert!(config.providers.is_empty());
 }
