@@ -5011,10 +5011,30 @@ fn apply_migration_transaction(
 /// transaction: admission recomputes the payload digest and compares it with the
 /// frozen evidence copy, so a payload-only rewrite would fail closed on the very
 /// agents this migration is meant to unblock. Damaged legacy rows abort the
-/// migration instead of being silently legalized.
+/// migration instead of being silently legalized: rows whose payload is not
+/// valid JSON are checked up front, because the rewrite selection below only
+/// inspects valid JSON and would otherwise mark such rows as migrated while
+/// every outcome read of them keeps failing.
 fn migrate_retired_outcome_needs_repair(transaction: &Transaction<'_>) -> Result<()> {
     if !table_exists_tx(transaction, "execution_protocol_outcomes")? {
         return Ok(());
+    }
+    let damaged = transaction
+        .query_row(
+            "SELECT agent_id, outcome_id
+             FROM execution_protocol_outcomes
+             WHERE NOT json_valid(payload_json)
+             LIMIT 1",
+            [],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+        )
+        .optional()?;
+    if let Some((damaged_agent_id, damaged_outcome_id)) = damaged {
+        bail!(
+            "execution_protocol_outcomes row {damaged_outcome_id} of agent \
+             {damaged_agent_id} has malformed payload_json; refusing to mark \
+             damaged outcome data as migrated"
+        );
     }
     let legacy = {
         let mut statement = transaction.prepare(
@@ -8028,6 +8048,39 @@ mod retired_outcome_migration_tests {
         assert!(error.to_string().contains("lacks repair_id"));
         assert_eq!(rewritten_payload(&connection)?, damaged);
         assert_eq!(current_schema_version(&connection)?, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_outcome_json_rolls_the_migration_back() -> Result<()> {
+        let mut connection = Connection::open_in_memory()?;
+        create_tables(&connection)?;
+        ensure_migration_table(&connection)?;
+        let legacy = legacy_payload(Some("provider_dispatch_rejected:turn-1"));
+        seed_legacy_rows(&connection, &legacy)?;
+        connection.execute(
+            "INSERT INTO execution_protocol_outcomes (agent_id, outcome_id, attempt_id, payload_json)
+             VALUES (?1, 'outcome-damaged', 'attempt-damaged', ?2)",
+            params![AGENT_ID, "{\"outcome_id\": \"outcome-damaged\","],
+        )?;
+
+        let error = apply_migration(
+            &mut connection,
+            &retired_outcome_migration(),
+            unexpected_runtime_backfill,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("malformed payload_json"));
+        assert_eq!(current_schema_version(&connection)?, 0);
+        let unchanged: String = connection.query_row(
+            "SELECT payload_json FROM execution_protocol_outcomes WHERE outcome_id = ?1",
+            [OUTCOME_ID],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            unchanged, legacy,
+            "rollback leaves the legacy row untouched"
+        );
         Ok(())
     }
 }
