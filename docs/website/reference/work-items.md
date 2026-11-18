@@ -252,8 +252,11 @@ requires input support; supervised child follow-up uses
 
 Children are retained for reuse after invocation completion. The supervising
 parent owns cleanup and must inspect the child's current incarnation and
-blockers before deletion. `ListSubagentCleanup` exposes up to 16
-`subagent_cleanup` entries. Active execution, unresolved descendants, and
+blockers before deletion. `ListSubagents` returns `subagents` with lightweight
+status/task references. Use `limit` (1–100, default 20) and `next_cursor`
+(`null` on the last page); current visibility is rechecked on every page.
+`include_cleanup=true` adds incomplete database diagnostics without filtering
+children or granting deletion authority. Active execution, unresolved descendants, and
 dirty/shared worktrees can block deletion. Open WorkItems or completed tasks
 alone do not prevent cleanup once the parent has decided their records are no
 longer needed. Optional `reminders_enabled` reminders and

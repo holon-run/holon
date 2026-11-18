@@ -27,16 +27,22 @@ pub(crate) struct AgentMessagingService<'a> {
 }
 
 impl RuntimeHandle {
-    pub(crate) async fn subagent_cleanup_candidates(
+    pub(crate) async fn list_subagents(
         &self,
-    ) -> Result<Vec<crate::types::SubagentCleanupCandidate>> {
+        limit: Option<usize>,
+        cursor: Option<&str>,
+        include_cleanup: bool,
+    ) -> Result<crate::types::SubagentListPage> {
         drop(
             self.observer_ready_root_bounded(&self.inner.runtime_db)
                 .await?,
         );
-        self.inner
-            .runtime_db
-            .subagent_cleanup_candidates(self.inner.mutation_owner.agent_id(), 16)
+        self.inner.runtime_db.list_subagents(
+            self.inner.mutation_owner.agent_id(),
+            limit.unwrap_or(crate::types::DEFAULT_SUBAGENT_LIST_LIMIT),
+            cursor,
+            include_cleanup,
+        )
     }
 
     pub(crate) async fn delete_supervised_child(

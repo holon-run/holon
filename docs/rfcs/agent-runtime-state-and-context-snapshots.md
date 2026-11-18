@@ -3516,8 +3516,9 @@ Body eligibility is still granted only by each original domain's proofs.
 
 The default HTTP status and GetAgent select the requested Agent only. Child
 inventory and execution evidence are acquired by explicit detail consumers.
-GetAgent exposes one compact result. ListSubagentCleanup reads only the caller’s
-bounded supervision and blocker information.
+GetAgent exposes one compact result. ListSubagents reads only the caller’s
+bounded direct supervision and scalar child status/task references, with
+cleanup diagnostics opt-in and no child summary expansion.
 
 Operator tree entries reuse explicit inventory acquisition and preserve
 canonical relation filtering and cycle handling. Observer roster/projection

@@ -23,7 +23,7 @@ pub mod get_workspace_state;
 pub mod invoke_agent;
 pub mod list_model_providers;
 pub mod list_provider_models;
-pub mod list_subagent_cleanup;
+pub mod list_subagents;
 pub mod list_work_items;
 pub mod memory_get;
 pub mod memory_search;
@@ -70,7 +70,8 @@ pub fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         timer::cancel_definition()?,
         get_agent::definition()?,
         delete_agent::definition()?,
-        list_subagent_cleanup::definition()?,
+        list_subagents::definition()?,
+        list_subagents::legacy_definition()?,
         enqueue::definition()?,
         create_agent::definition()?,
         send_agent_message::definition()?,
@@ -152,7 +153,7 @@ pub enum BuiltinTool {
     CancelTimer,
     DeleteAgent,
     GetAgent,
-    ListSubagentCleanup,
+    ListSubagents,
     Enqueue,
     CreateAgent,
     SendAgentMessage,
@@ -204,7 +205,7 @@ impl BuiltinTool {
             timer::CANCEL_NAME => Self::CancelTimer,
             delete_agent::NAME => Self::DeleteAgent,
             get_agent::NAME => Self::GetAgent,
-            list_subagent_cleanup::NAME => Self::ListSubagentCleanup,
+            list_subagents::NAME | list_subagents::LEGACY_NAME => Self::ListSubagents,
             enqueue::NAME => Self::Enqueue,
             create_agent::NAME => Self::CreateAgent,
             send_agent_message::NAME => Self::SendAgentMessage,

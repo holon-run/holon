@@ -255,6 +255,48 @@ while an attached child remains live, the child enters an explicit
 `cleanup_required` posture for authorized operator or recovery handling. The
 runtime must not silently promote or delete the child.
 
+#### Direct supervision discovery
+
+`ListSubagents` is the model-facing discovery query. Its caller is bound by the
+runtime; there is no supervisor override. Membership comes from the latest
+canonical direct supervision in `active` or `cleanup_required` state and an
+existing, non-deleted child identity. Running, retained, stopped and
+cleanup-blocked children remain discoverable. Creation lineage, past
+invocations, independent agents, other supervisors and closed edges do not
+grant visibility. This is neither a global browser nor a recursive tree.
+
+The result contains `subagents`, the effective `limit`, and `next_cursor`
+(`null` on the last page). Each entry contains `agent_id`, `incarnation`,
+`supervision_state`, `identity_status`, committed `runtime_status` (`null`
+when unavailable), and `invocation_task` (task ID and scalar status, if known).
+The query reads scalar committed projections, not full child summaries, task
+bodies, outputs or historical evidence. `GetAgent` and `TaskStatus` retain
+their separate detail responsibilities. Listing does not load or wake children,
+consume results, prove business completion or alter supervision/readiness.
+The runtime bridge preserves the supervisor's publication-readiness barrier.
+
+`limit` defaults to 20 and must be in `1..=100`; out-of-range values are errors.
+Pages use stable ascending `agent_id` keyset ordering. An opaque, versioned
+cursor binds the runtime ID, caller ID/incarnation and the last child's
+ID/incarnation/supervision edge/revision. Every continuation rechecks current
+visibility, including its anchor. Malformed, foreign and stale cursors fail
+explicitly; callers restart without a cursor when an anchor has disappeared
+or changed. A cursor is not authorization. An unchanged relation set traverses
+without duplicates or omissions; concurrent changes are observed per page,
+not as a cross-page historical snapshot.
+
+`include_cleanup` defaults to false. Enabling it only adds `cleanup` diagnostics
+and never filters members. The first database blocker is current; the optional
+`observed_since` comes from the last matching identity/supervision observation
+and can lag activity. These are incomplete hints, not deletion eligibility,
+advice or authority. `DeleteAgent` still independently checks incarnation,
+supervision, execution, files and worktrees.
+
+Only `ListSubagents` is advertised to models. The historical
+`ListSubagentCleanup` spelling remains a hidden dispatch alias to the same
+query contract; stored calls and results keep their original names and bodies.
+There is no second cleanup-only discovery semantics.
+
 ### 2.3 Durability
 
 Initial values:

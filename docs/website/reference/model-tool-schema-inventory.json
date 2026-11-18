@@ -678,7 +678,7 @@
       "stability": "stable"
     },
     {
-      "description": "Read one agent's identity, runtime status, current work, waiting reason, model,\nworkspace, and queue and task counts. Omit agent_id to inspect yourself.\nReading an unloaded agent keeps it unloaded.\n\nUse TaskStatus to inspect a delegation's progress. Use ListSubagentCleanup\nto inspect your cleanup responsibilities.\n",
+      "description": "Read one agent's identity, runtime status, current work, waiting reason, model,\nworkspace, and queue and task counts. Omit agent_id to inspect yourself.\nReading an unloaded agent keeps it unloaded.\n\nUse TaskStatus to inspect a delegation's progress. Use ListSubagents to discover\ndirectly supervised children, optionally including cleanup diagnostics.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -709,7 +709,7 @@
       "stability": "stable"
     },
     {
-      "description": "Request durable deletion of an ephemeral child currently supervised by you.\nSupply `agent_id` and `incarnation` from `GetAgent` identity or\n`ListSubagentCleanup`. Caller identity\ncomes from your runtime and cannot be supplied. No reminder or special reply is\nrequired. You may delete a retained child once it is no longer useful.\n\nAccepted requests return a deletion job, not proof that physical cleanup has\nfinished. Repeating the request for the same incarnation returns its job.\nActive execution (running or queued work, active waits, pending settlements),\ndescendant responsibility, protected artifacts, and unsafe worktrees block\ncleanup. Open WorkItems and timers do not: the parent decides whether they are\nstill needed, and the cleanup job cancels admitted timers. A terminal command\ntask's output reference and runtime-owned `tool-artifacts/`, `task-output/`,\nand `work-items/` files do not block cleanup. User deliverables (for example\nnonempty `work/`, `notes/`, `media/`, or `apps/`) still block this safe policy.\nThe tool and operator CLI share the deletion core and path/worktree safety\nchecks, but the CLI's explicit deletion policy may discard user home data or\ncancel accepted work while this tool's safe policy may not. The separate\n`delete_on_terminal` child lifecycle also uses the destructive deletion policy.\nResolve the reported blocker first; do not cancel valid work\nmerely to make cleanup eligible. Public, independent, peer, and recreated\nidentities are excluded. No automatic identity TTL applies.\n",
+      "description": "Request durable deletion of an ephemeral child currently supervised by you.\nSupply `agent_id` and `incarnation` from `GetAgent` identity or\n`ListSubagents`. Caller identity\ncomes from your runtime and cannot be supplied. No reminder or special reply is\nrequired. You may delete a retained child once it is no longer useful.\n\nAccepted requests return a deletion job, not proof that physical cleanup has\nfinished. Repeating the request for the same incarnation returns its job.\nActive execution (running or queued work, active waits, pending settlements),\ndescendant responsibility, protected artifacts, and unsafe worktrees block\ncleanup. Open WorkItems and timers do not: the parent decides whether they are\nstill needed, and the cleanup job cancels admitted timers. A terminal command\ntask's output reference and runtime-owned `tool-artifacts/`, `task-output/`,\nand `work-items/` files do not block cleanup. User deliverables (for example\nnonempty `work/`, `notes/`, `media/`, or `apps/`) still block this safe policy.\nThe tool and operator CLI share the deletion core and path/worktree safety\nchecks, but the CLI's explicit deletion policy may discard user home data or\ncancel accepted work while this tool's safe policy may not. The separate\n`delete_on_terminal` child lifecycle also uses the destructive deletion policy.\nResolve the reported blocker first; do not cancel valid work\nmerely to make cleanup eligible. Public, independent, peer, and recreated\nidentities are excluded. No automatic identity TTL applies.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {
@@ -864,52 +864,159 @@
       "stability": "stable"
     },
     {
-      "description": "List up to 16 ephemeral children currently supervised by the calling agent.\nEach entry contains its agent ID, incarnation, first database blocker, and the\ntime the current evidence was first observed when available. Use TaskStatus\nfor the progress of a known task. When a retained child is no longer needed,\nuse its ID and incarnation with DeleteAgent. Deletion rechecks eligibility and\nmay report additional blockers.\n",
+      "description": "List the calling agent's directly supervised children, including running,\nretained and stopped children. Runtime-bound caller identity and current\ncanonical supervision determine visibility; creation, lineage and historical\ninvocations alone do not. This is not a global or recursive agent browser.\n\nUse limit=1..100 (default 20) and the opaque cursor returned as next_cursor.\nEntries are ordered by agent_id; next_cursor=null ends the list. Each page\nrechecks current visibility, not a historical snapshot. Malformed, foreign or\nstale cursors fail explicitly; restart without a cursor if its anchor was\nremoved or its supervision changed. Cursors are continuations, not authority.\n\nEach entry has identity/incarnation, supervision state, committed lightweight\nruntime status (null if unavailable), and an invocation task reference if known.\nGetAgent provides individual details; TaskStatus provides task progress. This\nquery neither loads/wakes a child nor consumes a result or proves completion.\n\ninclude_cleanup defaults to false. When true, add the first current database\nblocker and observed_since when available, without changing list membership.\nThis is incomplete diagnostic evidence, not deletion eligibility or permission.\nDeleteAgent independently rechecks incarnation, supervision, execution, files\nand worktrees. Do not stop valid work merely to make cleanup eligible.\n",
       "family": "agent_creation",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
-        "properties": {},
+        "properties": {
+          "cursor": {
+            "default": null,
+            "description": "Opaque continuation returned by this caller's preceding page.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "include_cleanup": {
+            "default": false,
+            "description": "Include the first database cleanup blocker; does not change membership.",
+            "type": "boolean"
+          },
+          "limit": {
+            "default": 20,
+            "description": "Page size: 1..=100, default 20. Invalid values are rejected, not clamped.",
+            "format": "uint",
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "type": "integer"
+          }
+        },
         "required": [],
         "type": "object"
       },
-      "name": "ListSubagentCleanup",
+      "name": "ListSubagents",
       "related_surfaces": [],
       "result_envelope": {
         "canonical": "ToolResultEnvelope",
         "error_result": "ToolError",
         "model_rendering": "canonical_json_envelope",
-        "success_result": "ListSubagentCleanupResult",
+        "success_result": "ListSubagentsResult",
         "success_result_schema": {
+          "description": "Direct supervision discovery, not a deletion or task-completion decision.",
           "properties": {
-            "subagent_cleanup": {
+            "limit": {
+              "format": "uint",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "next_cursor": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "subagents": {
               "items": {
-                "description": "Bounded, read-only lifecycle responsibility; never a deletion decision.",
                 "properties": {
                   "agent_id": {
                     "type": "string"
                   },
-                  "blocker": {
+                  "cleanup": {
+                    "description": "The first current database blocker only; DeleteAgent must recheck safety.",
+                    "properties": {
+                      "blocker": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "observed_since": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [],
                     "type": [
-                      "string",
+                      "object",
                       "null"
                     ]
+                  },
+                  "identity_status": {
+                    "enum": [
+                      "active",
+                      "deleting",
+                      "deleted"
+                    ],
+                    "type": "string"
                   },
                   "incarnation": {
                     "format": "uint64",
                     "minimum": 0.0,
                     "type": "integer"
                   },
-                  "observed_since": {
+                  "invocation_task": {
+                    "properties": {
+                      "status": {
+                        "enum": [
+                          "queued",
+                          "running",
+                          "cancelling",
+                          "completed",
+                          "failed",
+                          "cancelled",
+                          "interrupted",
+                          null
+                        ],
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      },
+                      "task_id": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "task_id"
+                    ],
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "runtime_status": {
+                    "description": "None means no committed runtime-state projection is available.",
+                    "enum": [
+                      "booting",
+                      "awake_idle",
+                      "awake_running",
+                      "awaiting_task",
+                      "asleep",
+                      "stopped",
+                      null
+                    ],
                     "type": [
                       "string",
                       "null"
                     ]
+                  },
+                  "supervision_state": {
+                    "enum": [
+                      "active",
+                      "cleanup_required",
+                      "closed"
+                    ],
+                    "type": "string"
                   }
                 },
                 "required": [
                   "agent_id",
-                  "incarnation"
+                  "incarnation",
+                  "supervision_state",
+                  "identity_status"
                 ],
                 "type": "object"
               },
@@ -917,7 +1024,8 @@
             }
           },
           "required": [
-            "subagent_cleanup"
+            "subagents",
+            "limit"
           ],
           "type": "object"
         }
