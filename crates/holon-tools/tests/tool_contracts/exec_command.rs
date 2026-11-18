@@ -1,0 +1,205 @@
+use super::serialize_success;
+use holon_domain::{
+    ExecCommandDuplicatePolicy, ExecCommandOutcome, ExecCommandResult, TaskHandle, TaskStatus,
+};
+use holon_tools::builtins::{exec_command::*, render_tool_result_for_model};
+use holon_tools::helpers::parse_tool_args;
+use holon_tools::spec::ToolInputCoercion;
+use holon_tools::ToolError;
+use serde_json::json;
+
+#[test]
+fn exec_command_args_reject_continue_on_result() {
+    let err = match serde_json::from_value::<ExecCommandArgs>(serde_json::json!({
+        "cmd": "echo ok",
+        "continue_on_result": true
+    })) {
+        Ok(_) => panic!("continue_on_result is no longer an ExecCommand startup field"),
+        Err(err) => err,
+    };
+
+    assert!(err.to_string().contains("continue_on_result"));
+}
+
+#[test]
+fn exec_command_completed_renders_text_receipt() {
+    let result = serialize_success(
+        NAME,
+        &ExecCommandResult {
+            outcome: ExecCommandOutcome::Completed {
+                exit_status: Some(0),
+                stdout_preview: Some("line one\nline two".into()),
+                stderr_preview: None,
+                truncated: false,
+                artifacts: Vec::new(),
+                stdout_artifact: None,
+                stderr_artifact: None,
+            },
+            command_diagnostics: None,
+            summary_text: Some("command exited with status 0".into()),
+        },
+    )
+    .unwrap();
+
+    let rendered = render_for_model(&result).unwrap();
+    assert!(rendered.contains("Process exited with code 0"));
+    assert!(rendered.contains("stdout:"));
+    assert!(rendered.contains("line one"));
+}
+
+#[test]
+fn exec_command_model_receipt_reports_input_envelope_recovery_without_values() {
+    let mut result = serialize_success(
+        NAME,
+        &ExecCommandResult {
+            outcome: ExecCommandOutcome::Completed {
+                exit_status: Some(0),
+                stdout_preview: None,
+                stderr_preview: None,
+                truncated: false,
+                artifacts: Vec::new(),
+                stdout_artifact: None,
+                stderr_artifact: None,
+            },
+            command_diagnostics: None,
+            summary_text: Some("command exited with status 0".into()),
+        },
+    )
+    .unwrap();
+    result.envelope.input_coercion = Some(ToolInputCoercion::UnwrapToolInputEnvelope {
+        envelope_key: "arguments".into(),
+        outer_keys: vec!["arguments".into(), "max_output_tokens".into()],
+        inner_keys: vec!["cmd".into()],
+    });
+
+    let rendered = render_tool_result_for_model(&result).unwrap();
+
+    assert!(rendered.contains("unwrapped top-level `arguments`"));
+    assert!(rendered.contains("outer keys: arguments, max_output_tokens"));
+    assert!(rendered.contains("inner keys: cmd"));
+    assert!(!rendered.contains("SECRET_MARKER"));
+}
+
+#[test]
+fn exec_command_rejects_command_field_instead_of_cmd() {
+    let error = parse_tool_args::<ExecCommandArgs>(
+        NAME,
+        &json!({
+            "command": "git status",
+        }),
+    )
+    .unwrap_err();
+    let tool_error = error.downcast_ref::<ToolError>().unwrap();
+
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| hint
+        .contains("provide input for ExecCommand that matches the published tool schema")));
+    assert!(tool_error
+        .details
+        .as_ref()
+        .and_then(|value| value.get("parse_error"))
+        .and_then(|value| value.as_str())
+        .is_some_and(|message| {
+            message.contains("command")
+                || message.contains("cmd")
+                || message.contains("missing field")
+        }));
+}
+
+#[test]
+fn exec_command_rejects_task_metadata_fields() {
+    let error = parse_tool_args::<ExecCommandArgs>(
+        NAME,
+        &json!({
+            "cmd": "git status",
+            "status": "running",
+        }),
+    )
+    .unwrap_err();
+    let tool_error = error.downcast_ref::<ToolError>().unwrap();
+
+    assert_eq!(tool_error.kind, "invalid_tool_input");
+    assert!(tool_error
+        .details
+        .as_ref()
+        .and_then(|value| value.get("parse_error"))
+        .and_then(|value| value.as_str())
+        .is_some_and(|message| message.contains("status")));
+    assert!(tool_error.recovery_hint.as_deref().is_some_and(|hint| hint
+        .contains("provide input for ExecCommand that matches the published tool schema")));
+}
+
+#[test]
+fn exec_command_promoted_renders_task_receipt() {
+    let result = serialize_success(
+        NAME,
+        &ExecCommandResult {
+            outcome: ExecCommandOutcome::PromotedToTask {
+                task_handle: TaskHandle {
+                    task_id: "task_123".into(),
+                    task_kind: "command_task".into(),
+                    status: TaskStatus::Running,
+                    initial_output: None,
+                },
+                initial_output_preview: Some("booting".into()),
+                initial_output_truncated: false,
+            },
+            command_diagnostics: None,
+            summary_text: Some("command promoted to a managed task".into()),
+        },
+    )
+    .unwrap();
+
+    let rendered = render_for_model(&result).unwrap();
+    assert!(rendered.contains("Command promoted to background task"));
+    assert!(rendered.contains("Task: task_123"));
+    assert!(rendered.contains("Initial output:"));
+}
+
+#[test]
+fn exec_command_promoted_renders_empty_initial_output_placeholder() {
+    let result = serialize_success(
+        NAME,
+        &ExecCommandResult {
+            outcome: ExecCommandOutcome::PromotedToTask {
+                task_handle: TaskHandle {
+                    task_id: "task_123".into(),
+                    task_kind: "command_task".into(),
+                    status: TaskStatus::Running,
+                    initial_output: None,
+                },
+                initial_output_preview: None,
+                initial_output_truncated: false,
+            },
+            command_diagnostics: None,
+            summary_text: Some("command promoted to a managed task".into()),
+        },
+    )
+    .unwrap();
+
+    let rendered = render_for_model(&result).unwrap();
+    assert!(rendered.contains("Initial output:"));
+    assert!(rendered.contains("(none captured before promotion)"));
+}
+
+#[test]
+fn exec_command_default_duplicate_policy_is_reuse_running() {
+    let args = serde_json::from_value::<ExecCommandArgs>(serde_json::json!({
+        "cmd": "printf ok",
+    }))
+    .expect("default duplicate policy should parse");
+    assert_eq!(
+        args.duplicate_policy,
+        ExecCommandDuplicatePolicy::ReuseRunning
+    );
+}
+
+#[test]
+fn exec_command_duplicate_policy_start_new_parses() {
+    let args = serde_json::from_value::<ExecCommandArgs>(serde_json::json!({
+        "cmd": "printf ok",
+        "duplicate_policy": "start_new",
+    }))
+    .expect("start_new duplicate policy should parse");
+    assert_eq!(args.duplicate_policy, ExecCommandDuplicatePolicy::StartNew);
+}

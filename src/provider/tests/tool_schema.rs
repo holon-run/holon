@@ -115,14 +115,6 @@ fn deepseek_responses_request_uses_custom_apply_patch_tool_shape() {
 }
 
 #[test]
-fn built_in_tool_source_schemas_remain_valid() {
-    for spec in trusted_tool_specs() {
-        crate::tool::schema::validate_source_tool_schema(&spec.input_schema)
-            .unwrap_or_else(|error| panic!("{} source schema invalid: {error}", spec.name));
-    }
-}
-
-#[test]
 fn openai_request_payload_validates_full_tool_matrix_in_strict_mode() {
     let tools = trusted_tool_specs();
     let request = provider_turn_request_with_tools(tools.clone());

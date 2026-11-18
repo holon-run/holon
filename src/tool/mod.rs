@@ -16,9 +16,6 @@ pub(crate) mod summary;
 #[path = "host/mod.rs"]
 pub(crate) mod tools;
 
-#[cfg(test)]
-pub(crate) use holon_tools::schema;
-
 // Re-export the key types that are used throughout the codebase
 pub use apply_patch::ApplyPatchSurface;
 pub use dispatch::ToolRegistry;
