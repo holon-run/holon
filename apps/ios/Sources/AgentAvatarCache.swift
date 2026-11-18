@@ -1,8 +1,14 @@
 import Foundation
 import HolonClient
 
+protocol AgentAvatarCaching: Sendable {
+    func load(_ partition: ReadingPartition) async -> AgentAvatarCache.Snapshot?
+    func save(_ snapshot: AgentAvatarCache.Snapshot) async
+    func remove(_ partition: ReadingPartition) async
+}
+
 /// Decorative PNGs only. One bounded, identity-partitioned cache; never credentials.
-actor AgentAvatarCache {
+actor AgentAvatarCache: AgentAvatarCaching {
     struct Image: Codable, Sendable {
         let agentID: String
         let expression: HolonAvatarExpression

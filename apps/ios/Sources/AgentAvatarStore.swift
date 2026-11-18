@@ -38,15 +38,17 @@ final class AgentAvatarStore {
     @ObservationIgnored private let entryLimit: Int
     @ObservationIgnored private let byteLimit: Int
     @ObservationIgnored private let concurrency: Int
-    @ObservationIgnored private let cache: AgentAvatarCache?
+    @ObservationIgnored private let cache: (any AgentAvatarCaching)?
     @ObservationIgnored private var partition: ReadingPartition?
     @ObservationIgnored private var resourceEpoch: String?
     @ObservationIgnored private var restoration: Task<Void, Never>?
     @ObservationIgnored private var persistence: Task<Void, Never>?
+    @ObservationIgnored private var pendingSnapshot: AgentAvatarCache.Snapshot?
+    @ObservationIgnored private var pendingRemovals: Set<ReadingPartition> = []
     @ObservationIgnored private var restoring = false
 
     init(entryLimit: Int = 128, byteLimit: Int = 8 * 1_024 * 1_024, concurrency: Int = 4,
-         cache: AgentAvatarCache? = nil) {
+         cache: (any AgentAvatarCaching)? = nil) {
         self.entryLimit = min(128, max(1, entryLimit))
         self.byteLimit = min(8 * 1_024 * 1_024, max(1, byteLimit))
         self.concurrency = min(4, max(1, concurrency))
@@ -91,6 +93,9 @@ final class AgentAvatarStore {
                         self.insert(entry, for: key)
                     }
                 }
+            } else if saved != nil {
+                // A new epoch may arrive before the cold-launch read completes.
+                self.removePersisted(partition)
             }
             self.restoring = false
             self.restoration = nil
@@ -143,19 +148,40 @@ final class AgentAvatarStore {
     }
 
     private func removePersisted(_ partition: ReadingPartition) {
-        guard let cache else { return }
-        let previous = persistence
-        persistence = Task { await previous?.value; await cache.remove(partition) }
+        guard cache != nil else { return }
+        if pendingSnapshot?.partition == partition { pendingSnapshot = nil }
+        pendingRemovals.insert(partition)
+        startWriter()
     }
 
     private func persist() {
-        guard let cache, let partition, let resourceEpoch else { return }
+        guard cache != nil, let partition, let resourceEpoch else { return }
         let images = entries.sorted { (access[$0.key] ?? 0) < (access[$1.key] ?? 0) }.map {
             AgentAvatarCache.Image(agentID: $0.key.agentID, expression: $0.key.expression, png: $0.value.png)
         }
-        let snapshot = AgentAvatarCache.Snapshot(partition: partition, epoch: resourceEpoch, images: images)
-        let previous = persistence
-        persistence = Task { await previous?.value; await cache.save(snapshot) }
+        pendingSnapshot = AgentAvatarCache.Snapshot(partition: partition, epoch: resourceEpoch, images: images)
+        startWriter()
+    }
+
+    private func startWriter() {
+        guard persistence == nil, let cache else { return }
+        persistence = Task { [weak self] in
+            guard let self else { return }
+            // At most one in-flight and one pending image snapshot. Purges run
+            // after an in-flight save and before any newer authorized save.
+            while true {
+                if let partition = self.pendingRemovals.first {
+                    self.pendingRemovals.remove(partition)
+                    await cache.remove(partition)
+                } else if let snapshot = self.pendingSnapshot {
+                    self.pendingSnapshot = nil
+                    await cache.save(snapshot)
+                } else {
+                    self.persistence = nil
+                    return
+                }
+            }
+        }
     }
 
     func flushCache() async { await persistence?.value }
