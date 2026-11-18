@@ -9,6 +9,103 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-19 incremental review
+
+Baseline main is `50a4e1e2`. The fixed models.dev payload was sampled on
+**November 18, 2026 at 20:38:31 UTC** (November 19 Beijing cycle), SHA256
+`53fe4bbc0f0911bf07abb49956b71302d1cd269817cfac0ace5ea540bd8fad97`.
+An initial refresh preserved all 648 runtime coverage records; upstream
+candidate changes alone did not authorize new routes. Independent public
+contract review then identified the capacity conflict below.
+
+### Seed Character: withdraw conflicting capacity, not routes
+
+The exact ordinary API ID `doubao-seed-character-260628` is documented with
+128K context, 128K maximum input, 32K maximum answer, and 32K maximum reasoning.
+Its answer default is 4K. The previous sample had 96K maximum input and 128K
+maximum reasoning; neither sample supports upstream's 256000 context or
+256000 total-output ceiling/default.
+
+These abbreviations do not establish exact integers. The Responses API
+`max_output_tokens` budget includes both reasoning and answer tokens, so the
+answer-only default is not its total-output default. The shared projection
+therefore clears context, derived auto-compaction, output default and output
+ceiling for this exact provider/model pair. It does not invent 128000, 131072,
+32768, 4096, or a sum of independent answer/reasoning maxima.
+
+The existing default and plan routes remain; the plan route no longer inherits
+the same unsupported upstream capacity. The plan overview supplies no
+independent capacity for this dated ID. This is not fresh subscription
+eligibility certification. Other dates/providers, route metadata, capabilities
+and model preferences remain unchanged.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-19)
+records the independently archived sources.
+
+### Special endpoint review and retained boundaries
+
+The review covers the same 30 tracked endpoint prefixes: four parent-owned
+DashScope variants, eleven China-provider prefixes (50 public sources, all
+HTTP 200), and fifteen other prefixes (39 sources, 38 HTTP 200 and one 404).
+Raw responses, timestamps, hashes and previous-sample comparisons are archived;
+this is limited public-contract review, not inference or account testing.
+
+- Volcengine lists 128K rather than 384K reasoning maxima for the three
+  `deepseek-v4-1-flash-*` IDs. Their explicit Responses default remains
+  **131072**, and the model does not expose a separate reasoning-token ceiling;
+  do not overwrite that total-output default with an abbreviated reasoning
+  maximum. The plan adds image `doubao-seedream-5.5` at all four tiers and
+  video `doubao-seedance-2.5-flash` only at Large/Max. No agent-turn routes or
+  generic API entitlements are added from these generation-only plan entries.
+- TokenHub's dated M2.7 retirement remains effective; stale static model tables
+  do not restore its three removed routes. `hy4-preview` has an upcoming
+  retirement label but no effective date. Volcengine K3's November 25,
+  2026 14:00 UTC+8 retirement remains future, not a deletion instruction today.
+- MiniMax ordinary API's November 18 retirement announcement still lacks an
+  hour or time zone; at this sample that date has not ended globally. Keep the
+  four M2.5/M2.7 ordinary API IDs pending a settled boundary. M Plan's Flash
+  Preview compatibility alias is independent of ordinary API retirement.
+- Go's 32-model inventory is unchanged. Recommendation/featured/quota metadata
+  does not supply Qwen4 Messages reasoning fields; keep Qwen4 deferred.
+  Qianfan ERNIE Flash still needs fixed-high implementation and verification.
+- Kimi's default-effort conflict and account-scoped legacy access remain.
+  NVIDIA's Flash total context remains unknown; Nemotron was not freshly
+  sampled in this limited group review and is not newly certified.
+- DashScope formal/preview Qwen4 IDs, personal/team discounts and expiry remain
+  separate and unchanged. New PDF documentation is not implemented Holon input
+  support. Codex inventory and API 6.2 contracts do not authorize new variants.
+  Fireworks, Xiaomi, Qwen Portal, BigModel and Z.ai retain their existing
+  protocol, dynamic-discovery, credential and subscription boundaries.
+
+### Verification status
+
+The new precise projection regression failed first against the upstream
+256000 capacity as expected, then passed after correction. Fixed regeneration
+and validation passed; the expected coverage gate required explicit review.
+Strict full-object assertions establish exactly two changed routes and 646
+unchanged complete objects, with no route, capability or endpoint-mapping
+changes. Only those two ledger records are updated to reviewed unknown, with
+the local 128000 prompt / 8192 execution-output fallback distinguished from
+provider limits.
+
+Final fixed regeneration, validation, 648-route coverage and strict full-object
+assertions passed. Catalog tests passed 200 unit and 24 integration tests
+(one ignored); domain and provider tests passed 51 and 516, respectively.
+Both workspace/provider formatting checks and both all-target checks with
+`RUSTFLAGS="-D warnings"` passed.
+
+The complete lib-c run is **not green**: 804 passed, four failed, seven ignored.
+`cookie_only_reader_checkout_failure_remains_storage_error` and
+`capability_read_and_build_share_the_callers_absolute_deadline` failed with
+Disconnected / RecvError; each subsequently passed two exact isolated runs.
+The two tailscale listener failures reported unavailable-address /
+unreachable-network errors. These results do not prove patch causation or
+erase the original concurrent failures.
+
+Independent read-only review of the seven production/evidence files found no
+confirmed findings; review is not a substitute for the failing full lib-c run.
+The initial unchanged-refresh run passed 648 coverage checks and 222 catalog
+tests (one ignored); it is not final-patch or full-repository acceptance.
+
 ## 2026-11-18 incremental review
 
 Baseline main is `6198b476`. The fixed models.dev payload was sampled on
