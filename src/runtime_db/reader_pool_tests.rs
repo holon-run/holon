@@ -153,6 +153,156 @@ async fn configured_reader_roles_grow_to_their_limits_and_resume_after_release()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn simultaneously_saturated_reader_roles_make_progress_after_each_release() -> Result<()> {
+    exercise_saturated_reader_roles(4, 1, None).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "isolated #4169 performance run; do not run in routine CI"]
+async fn measure_dual_reader_pools_saturation() -> Result<()> {
+    exercise_saturated_reader_roles(12, 4, Some(Duration::from_millis(100))).await
+}
+
+async fn exercise_saturated_reader_roles(
+    epochs: usize,
+    waiters_per_role: usize,
+    hold: Option<Duration>,
+) -> Result<()> {
+    use tokio::{sync::oneshot, task::spawn_blocking, time::timeout};
+
+    const GUARD: Duration = Duration::from_secs(5);
+
+    fn read<T>(db: &RuntimeDb, preparation: bool, f: impl FnOnce() -> Result<T>) -> Result<T> {
+        if preparation {
+            db.read_for_preparation(|_| f())
+        } else {
+            db.with_read(|_| f())
+        }
+    }
+
+    let started = Instant::now();
+    let stage = |epoch, phase, first_preparation| {
+        if hold.is_some() {
+            println!(
+                "reader_pool_sample {}",
+                serde_json::json!({
+                    "scenario": "saturation",
+                    "epoch": epoch,
+                    "phase": phase,
+                    "first_preparation": first_preparation,
+                    "elapsed_us": started.elapsed().as_micros() as u64,
+                    "waiters_per_role": waiters_per_role,
+                    "reader_pools": crate::diagnostics::performance_snapshot().reader_pools,
+                })
+            );
+        }
+    };
+    stage(0, "before_open", false);
+    let directory = tempfile::tempdir()?;
+    let db = RuntimeDb::open_and_migrate_with_reader_config(
+        directory.path().join("runtime.sqlite"),
+        directory.path().join("runtime.lock"),
+        RuntimeDbReaderConfig::new(1, 1)?,
+    )?;
+    let stats = |preparation| {
+        if preparation {
+            db.preparation_pool_stats_for_tests()
+        } else {
+            db.reader_pool_stats_for_tests()
+        }
+    };
+    assert_eq!(stats(false).current_connections, 0);
+    assert_eq!(stats(true).current_connections, 0);
+
+    // Change which pool drains first. Neither role depends on the other
+    // releasing its lease, and both must recover at each phase boundary.
+    for epoch in 0..epochs {
+        let first = epoch % 2 == 1;
+        let mut phases = Vec::new();
+        for role in [first, !first] {
+            let (entered, held) = oneshot::channel();
+            let (release, released) = mpsc::channel();
+            let reader = db.clone();
+            let holder = spawn_blocking(move || {
+                read(&reader, role, || {
+                    entered.send(()).expect("holder observer disappeared");
+                    released.recv_timeout(GUARD * 3)?;
+                    Ok(())
+                })
+            });
+            timeout(GUARD, held).await??;
+            assert_eq!(stats(role).idle_connections, 0);
+
+            let attempts = stats(role).checkout_attempts;
+            let waiters: Vec<_> = (0..waiters_per_role)
+                .map(|_| {
+                    let reader = db.clone();
+                    spawn_blocking(move || {
+                        if role {
+                            reader.read_for_preparation(|tx| {
+                                Ok(tx.query_row("SELECT 1", [], |row| row.get::<_, i64>(0))?)
+                            })
+                        } else {
+                            read_one(&reader)
+                        }
+                    })
+                })
+                .collect();
+            timeout(GUARD, async {
+                let mut observe = tokio::time::interval(Duration::from_millis(1));
+                while stats(role).checkout_attempts < attempts + waiters_per_role as u64 {
+                    observe.tick().await;
+                }
+            })
+            .await?;
+            assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
+            phases.push((role, release, holder, waiters));
+        }
+
+        stage(epoch, "both_queued", first);
+        if let Some(hold) = hold {
+            // This dwell is the injected load, not a signal used to detect queuing.
+            tokio::time::sleep(hold).await;
+        }
+        for (drained, (role, release, holder, waiters)) in phases.into_iter().enumerate() {
+            if drained == 1 {
+                assert_eq!(stats(role).idle_connections, 0);
+                assert!(waiters.iter().all(|waiter| !waiter.is_finished()));
+            }
+            stage(
+                epoch,
+                if drained == 0 {
+                    "release_first"
+                } else {
+                    "release_second"
+                },
+                first,
+            );
+            release.send(())?;
+            timeout(GUARD, async {
+                holder.await??;
+                for waiter in waiters {
+                    assert_eq!(waiter.await??, 1);
+                }
+                Ok::<_, anyhow::Error>(())
+            })
+            .await??;
+        }
+        for role in [false, true] {
+            let recovered = stats(role);
+            assert_eq!(recovered.current_connections, 1);
+            assert_eq!(recovered.idle_connections, 1);
+            assert_eq!(recovered.connections_opened, 1);
+            assert_eq!(recovered.checkout_timeouts, 0);
+        }
+        stage(epoch, "both_recovered", first);
+    }
+    drop(db);
+    stage(epochs, "after_close", false);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn unscoped_preparation_waits_past_old_checkout_limit_but_scope_still_expires() -> Result<()>
 {
     let directory = tempfile::tempdir()?;
@@ -308,6 +458,177 @@ async fn operator_prompt_waits_for_preparation_reader_and_is_admitted_once() -> 
         "operator prompt failed before the preparation reader was released: {first}"
     );
     assert_eq!(status, StatusCode::OK, "{first}");
+    let replay = app.oneshot(prompt()).await.unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replay: serde_json::Value =
+        serde_json::from_slice(&to_bytes(replay.into_body(), usize::MAX).await?)?;
+    assert_eq!(first["message_id"], replay["message_id"]);
+    assert_eq!(replay["disposition"], "duplicate");
+    drop(runtime);
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_prompt_settles_once_after_ordinary_reader_wait() -> Result<()> {
+    use crate::types::QueueEntryStatus;
+    use anyhow::Context as _;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+    };
+    use tower::ServiceExt;
+
+    let home = tempfile::tempdir()?;
+    std::fs::write(
+        home.path().join("config.json"),
+        r#"{"model":{"default":"openai/gpt-5.4"},"runtime":{"db_readers":{"ordinary_max_connections":1,"preparation_max_connections":1}}}"#,
+    )?;
+    let mut config = crate::config::AppConfig::load_with_home(Some(home.path().to_path_buf()))?;
+    config.user_home_dir = None;
+    config.control_token = Some("secret".into());
+    config.control_auth_mode = crate::config::ControlAuthMode::Required;
+    let host = crate::host::RuntimeHost::new_with_provider(
+        config,
+        Arc::new(crate::provider::StubProvider::new("done")),
+    )?;
+    let runtime = host.default_runtime_bootstrapped_observed(None).await?;
+    runtime.await_initial_resources_for_test().await;
+    let agent = host.config().default_agent_id.clone();
+    let db = host.runtime_db();
+    assert_eq!(db.reader_pool_stats_for_tests().capacity, 1);
+    assert_eq!(db.preparation_pool_stats_for_tests().capacity, 1);
+    let (started, running) = tokio::sync::oneshot::channel();
+    let (release, held) = mpsc::channel();
+    let holder_db = db.clone();
+    let guard = Duration::from_secs(10);
+    let holder = tokio::task::spawn_blocking(move || {
+        holder_db.with_read(|_| {
+            let _ = started.send(());
+            held.recv_timeout(guard * 2)?;
+            Ok(())
+        })
+    });
+    tokio::time::timeout(guard, running)
+        .await
+        .context("hold ordinary lease")??;
+    assert_eq!(db.reader_pool_stats_for_tests().idle_connections, 0);
+    let app = crate::http::router(crate::http::AppState::for_tcp(host.clone()));
+    let prompt = move || {
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/control/agents/{agent}/prompt"))
+            .header("authorization", "Bearer secret")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"text":"reader wait regression","client_request_id":"reader-wait-input"}"#,
+            ))
+            .unwrap()
+    };
+    // The prompt's identity lookup uses the ordinary reader before admission.
+    let before = db.reader_pool_stats_for_tests().checkout_attempts;
+    let pending = tokio::spawn(app.clone().oneshot(prompt()));
+    tokio::time::timeout(guard, async {
+        let mut observe = tokio::time::interval(Duration::from_millis(1));
+        while db.reader_pool_stats_for_tests().checkout_attempts == before && !pending.is_finished()
+        {
+            observe.tick().await;
+        }
+    })
+    .await
+    .context("observe operator prompt ordinary checkout")?;
+    assert!(
+        !pending.is_finished(),
+        "operator prompt bypassed the held ordinary reader"
+    );
+    release.send(())?;
+    tokio::time::timeout(guard, holder).await???;
+    let response = tokio::time::timeout(guard, pending)
+        .await
+        .context("operator prompt response")??
+        .unwrap();
+    let status = response.status();
+    let first: serde_json::Value =
+        serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await?)?;
+    assert_eq!(status, StatusCode::OK, "{first}");
+    assert_eq!(first["disposition"], "accepted");
+    let message_id = first["message_id"]
+        .as_str()
+        .expect("accepted response has a canonical message ID");
+
+    // All of this must be durable before the client ever resends the request.
+    tokio::time::timeout(guard, async {
+        let mut observe = tokio::time::interval(Duration::from_millis(5));
+        loop {
+            if db
+                .queue_entries()
+                .latest(message_id)?
+                .is_some_and(|entry| entry.status == QueueEntryStatus::Processed)
+            {
+                break Ok::<_, anyhow::Error>(());
+            }
+            observe.tick().await;
+        }
+    })
+    .await
+    .context("settle canonical operator prompt queue entry")??;
+    let turns = runtime.storage().read_recent_turns(20)?;
+    let linked: Vec<_> = turns
+        .iter()
+        .filter(|turn| turn.input_message_ids.iter().any(|id| id == message_id))
+        .collect();
+    assert_eq!(linked.len(), 1, "one canonical turn for the admitted input");
+    let turn = linked[0];
+    assert_eq!(
+        turn.trigger
+            .as_ref()
+            .and_then(|trigger| trigger.message_id.as_deref()),
+        Some(message_id)
+    );
+    assert_eq!(
+        turn.terminal.as_ref().map(|terminal| terminal.kind),
+        Some(crate::types::TurnTerminalKind::Completed)
+    );
+    // A trusted operator prompt uses an original dispatch checkpoint, not an
+    // idle input batch. Match the durable checkpoint to the actual turn.
+    let checkpoints: u32 = db.with_read(|conn| {
+        Ok(conn.query_row(
+            "SELECT COUNT(*) FROM dispatch_memory_checkpoints
+             WHERE agent_id=?1 AND turn_id=?2 AND turn_index=?3 AND source_message_id=?4",
+            rusqlite::params![turn.agent_id, turn.turn_id, turn.turn_index, message_id],
+            |row| row.get(0),
+        )?)
+    })?;
+    assert_eq!(checkpoints, 1, "one durable original dispatch checkpoint");
+    let execution = db
+        .transitions()
+        .load_execution_protocol_state_if_initialized(&host.config().default_agent_id)?
+        .expect("dispatch initializes canonical execution state");
+    let attempts: Vec<_> = execution
+        .attempts
+        .values()
+        .filter(|attempt| attempt.source_message_id.as_deref() == Some(message_id))
+        .collect();
+    assert_eq!(attempts.len(), 1);
+    let attempt = attempts[0];
+    assert_eq!(attempt.turn_id.as_deref(), Some(turn.turn_id.as_str()));
+    assert_eq!(
+        execution
+            .outcomes
+            .values()
+            .filter(|outcome| outcome.attempt_id == attempt.attempt_id)
+            .count(),
+        1
+    );
+    let outcome_id = attempt
+        .terminal_outcome_id
+        .as_ref()
+        .expect("attempt settled");
+    assert_eq!(
+        execution.outcomes[outcome_id].attempt_id,
+        attempt.attempt_id
+    );
+
     let replay = app.oneshot(prompt()).await.unwrap();
     assert_eq!(replay.status(), StatusCode::OK);
     let replay: serde_json::Value =
