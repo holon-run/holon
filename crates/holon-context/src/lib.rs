@@ -8,6 +8,7 @@ pub mod episodes;
 pub mod fingerprint;
 pub mod history;
 pub mod planner;
+pub mod projection_eval;
 pub mod render;
 pub mod system_prompt;
 pub mod time;

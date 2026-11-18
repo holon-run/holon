@@ -6,6 +6,11 @@ and prompt fingerprints. It receives the already captured records and
 borrows the qualified history observations. The budget planner and the
 legacy JSON fingerprint encoding retain their existing behavior.
 
+Projection manifest assembly, invariant checking, and scorecards also live
+in `holon-context`. The application passes borrowed prompt sections, budget
+decisions, and evidence references, along with the existing byte-based token
+estimator. Baseline corpus I/O and the CLI remain in the application.
+
 The application owns resident state and storage capture, evidence and
 replay qualification, resource observations and their allocation guards,
 and provider requests. Context and prompt entry points still capture and

@@ -729,7 +729,7 @@ mod tests {
             generate_manifest_for_selector(&spec, BUDGET_MEDIUM, HistorySelector::RecentTurns);
         let scoped =
             generate_manifest_for_selector(&spec, BUDGET_MEDIUM, HistorySelector::WorkItemScoped);
-        let prompt = build_baseline_prompt(&spec, BUDGET_MEDIUM);
+        let mut prompt = build_baseline_prompt(&spec, BUDGET_MEDIUM);
         let scorecard = prompt.compare_history_selectors().unwrap();
 
         assert!(scorecard.passed);
@@ -756,6 +756,15 @@ mod tests {
             scorecard.diff.candidate_sha256,
             scoped.byte_sha256().unwrap()
         );
+
+        // Keep the manifest's UTF-8 byte-based token estimates.
+        for (content, expected_tokens) in [("中文", 2), ("", 0)] {
+            prompt.system_sections[0].content = content.into();
+            let manifest = prompt.projection_manifest_for_selector(HistorySelector::RecentTurns);
+            let section = &manifest.system_sections[0];
+            assert_eq!(section.requested_estimated_tokens, expected_tokens);
+            assert_eq!(section.allocated_estimated_tokens, expected_tokens);
+        }
     }
 
     #[test]
