@@ -59,6 +59,7 @@ async fn anthropic_compatible_endpoint_can_send_without_authentication() {
         1024,
         Path::new("."),
         true,
+        TEST_CLIENT_VERSION,
     )
     .unwrap();
 
@@ -92,20 +93,9 @@ async fn anthropic_request_lowers_prompt_frame_blocks_to_cache_control() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    let provider = anthropic_provider(&fixture);
 
     let response = provider
         .complete_turn(provider_turn_request_with_prompt_frame())
@@ -195,19 +185,9 @@ async fn claude_code_prompt_cache_skips_cache_mimicry_without_cache_control_capa
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
     {
-        let provider_config = fixture
-            .config
-            .providers
-            .get_mut(&ProviderId::anthropic())
-            .unwrap();
+        let provider_config = &mut fixture.config;
         provider_config.base_url = base_url;
         provider_config.context_management.cache_strategy =
             AnthropicCacheStrategy::ClaudeCodePromptCache;
@@ -216,7 +196,7 @@ async fn claude_code_prompt_cache_skips_cache_mimicry_without_cache_control_capa
             .cache_capabilities
             .cache_control = false;
     }
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     provider
         .complete_turn(provider_turn_request_with_prompt_frame())
@@ -266,19 +246,9 @@ async fn messages_native_skips_breakpoints_without_cache_control_capability() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
     {
-        let provider_config = fixture
-            .config
-            .providers
-            .get_mut(&ProviderId::anthropic())
-            .unwrap();
+        let provider_config = &mut fixture.config;
         provider_config.base_url = base_url;
         provider_config.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
         provider_config
@@ -286,7 +256,7 @@ async fn messages_native_skips_breakpoints_without_cache_control_capability() {
             .cache_capabilities
             .cache_control = false;
     }
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     provider
         .complete_turn(provider_turn_request_with_prompt_frame())
@@ -328,29 +298,16 @@ async fn anthropic_text_form_tool_call_protocol_failure_writes_failure_trace() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    let provider = anthropic_provider(&fixture).with_http_trace_for_tests(
+        ProviderHttpTrace::failure_only_for_tests(fixture.home.path()),
     );
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config)
-        .unwrap()
-        .with_http_trace_for_tests(ProviderHttpTrace::failure_only_for_tests(
-            fixture.config.home_dir.clone(),
-        ));
     let error = provider
         .complete_turn(ProviderTurnRequest::plain(
             "use a tool",
             Vec::new(),
-            vec![crate::tool::ToolSpec {
+            vec![ToolSpec {
                 name: "ExecCommand".into(),
                 description: "Run a command".into(),
                 input_schema: json!({
@@ -396,25 +353,14 @@ async fn anthropic_zero_block_tool_use_stop_fails_as_retryable_protocol_violatio
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    let provider = anthropic_provider(&fixture);
     let error = provider
         .complete_turn(ProviderTurnRequest::plain(
             "use a tool",
             Vec::new(),
-            vec![crate::tool::ToolSpec {
+            vec![ToolSpec {
                 name: "ExecCommand".into(),
                 description: "Run a command".into(),
                 input_schema: json!({
@@ -470,20 +416,9 @@ async fn anthropic_continuation_request_retains_cache_control_prompt_anchors() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    let provider = anthropic_provider(&fixture);
 
     let response = provider
         .complete_turn(provider_continuation_request_with_prompt_frame())
@@ -569,25 +504,15 @@ async fn anthropic_claude_code_prompt_cache_strategy_preserves_structured_system
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
     anthropic.context_management.betas = vec![
         "claude-code-20250219".into(),
         "prompt-caching-scope-2026-01-05".into(),
     ];
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     let mut request = provider_turn_request_with_prompt_frame();
     request
@@ -691,48 +616,16 @@ async fn anthropic_request_emits_context_management_when_enabled() {
         ),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    fixture.config.context_management.enabled = true;
+    fixture.config.context_management.trigger_input_tokens = 12_000;
+    fixture.config.context_management.keep_recent_tool_uses = 4;
     fixture
         .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = base_url;
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .context_management
-        .enabled = true;
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .context_management
-        .trigger_input_tokens = 12_000;
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .context_management
-        .keep_recent_tool_uses = 4;
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
         .context_management
         .clear_at_least_input_tokens = Some(2_000);
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     provider
         .complete_turn(provider_continuation_request_with_prompt_frame())
@@ -782,21 +675,11 @@ async fn anthropic_response_preserves_thinking_blocks_for_round_trip() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation.extend([
@@ -867,21 +750,11 @@ async fn anthropic_response_parses_thinking_and_redacted_thinking_blocks() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     let response = provider
         .complete_turn(provider_turn_request_with_prompt_frame())
@@ -922,21 +795,11 @@ async fn anthropic_response_preserves_redacted_thinking_blocks_for_round_trip() 
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::MessagesNative;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation.extend([
@@ -992,21 +855,11 @@ async fn anthropic_claude_code_prompt_cache_strategy_uses_valid_default_session_
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     provider
         .complete_turn(provider_turn_request())
@@ -1046,21 +899,11 @@ async fn anthropic_claude_code_prompt_cache_strategy_keeps_non_empty_initial_mes
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     provider
         .complete_turn(provider_turn_request_with_prompt_frame())
@@ -1103,21 +946,11 @@ async fn anthropic_claude_code_prompt_cache_strategy_marks_tool_results() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let anthropic = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let anthropic = &mut fixture.config;
     anthropic.base_url = base_url;
     anthropic.context_management.cache_strategy = AnthropicCacheStrategy::ClaudeCodePromptCache;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let provider = anthropic_provider(&fixture);
 
     let mut request = provider_turn_request_with_prompt_frame();
     request.conversation.extend([
@@ -1229,6 +1062,7 @@ async fn assert_ollama_tool_result_tail_has_placeholder(include_earlier_user_tex
         1024,
         Path::new("."),
         true,
+        TEST_CLIENT_VERSION,
     )
     .unwrap();
 
@@ -1293,20 +1127,9 @@ async fn anthropic_tool_only_round_does_not_append_placeholder_user_text() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-6",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = base_url;
-    let provider = AnthropicProvider::from_config(&fixture.config).unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    let provider = anthropic_provider(&fixture);
 
     let request = ProviderTurnRequest::plain(
         "system",
@@ -1363,31 +1186,17 @@ async fn anthropic_context_budget_overflow_fails_before_http_send() {
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/qwen3.8:latest",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap()
-        .base_url = format!("{base_url}?api_key=query-secret");
-    let provider_config = fixture
-        .config
-        .providers
-        .get(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = format!("{base_url}?api_key=query-secret");
+    let provider_config = &fixture.config;
     let provider = AnthropicProvider::from_runtime_config_with_context_window(
         provider_config,
         "qwen3.8:latest",
         8192,
         Some(8192),
-        &fixture.config.home_dir,
+        fixture.home.path(),
         false,
+        TEST_CLIENT_VERSION,
     )
     .unwrap();
 
@@ -1395,7 +1204,7 @@ async fn anthropic_context_budget_overflow_fails_before_http_send() {
         .complete_turn(ProviderTurnRequest::plain(
             &"x".repeat(40_000),
             vec![ConversationMessage::UserText("continue".into())],
-            vec![crate::tool::ToolSpec {
+            vec![ToolSpec {
                 name: "ExecCommand".into(),
                 description: "Run a command with a large tool schema".into(),
                 input_schema: json!({
@@ -1464,18 +1273,8 @@ async fn history_image_preflight(
         }),
     ))
     .await;
-    let mut fixture = test_config(
-        "anthropic/qwen3.8:latest",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    let config = fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .unwrap();
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    let config = &mut fixture.config;
     config.base_url = base_url;
     if let Some(strategy) = cache_strategy {
         config.context_management.cache_strategy = strategy;
@@ -1487,8 +1286,9 @@ async fn history_image_preflight(
         8192,
         // Admission pressure comes from image reserves/context, not base64 length.
         Some(context_window_tokens),
-        &fixture.config.home_dir,
+        fixture.home.path(),
         false,
+        TEST_CLIENT_VERSION,
     )
     .unwrap();
     let mut request = ProviderTurnRequest::plain(
@@ -1514,7 +1314,7 @@ async fn history_image_preflight(
         .conversation
         .push(ConversationMessage::UserBlocks(vec![PromptContentBlock {
             text: "current_time: 2026-10-21T04:30:00+00:00\ntimezone: UTC".into(),
-            stability: crate::prompt::PromptStability::TurnScoped,
+            stability: PromptStability::TurnScoped,
             cache_breakpoint: false,
         }]));
     let result = provider.complete_turn(request).await;

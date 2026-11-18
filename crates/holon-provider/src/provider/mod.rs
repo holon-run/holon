@@ -18,6 +18,8 @@ pub mod quota;
 mod request_headers;
 pub mod retry;
 pub mod test_support;
+#[cfg(test)]
+mod tests;
 pub mod tool_schema;
 pub mod transports;
 mod wire_fingerprint;

@@ -28,7 +28,6 @@ use std::sync::{
 
 use super::support::*;
 use super::*;
-use crate::config::ProviderId;
 use crate::provider::{
     is_dispatch_guard_rejected, provider_transport_diagnostics, ProviderDispatchGuard,
 };
@@ -106,26 +105,21 @@ fn sse_response_with_truncated_gzip_body() -> Vec<u8> {
     response
 }
 
-fn anthropic_provider_at(base_url: String) -> Arc<dyn AgentProvider> {
-    let mut fixture = test_config(
-        "anthropic/claude-sonnet-4-5",
-        &[],
-        None,
-        Some("anthropic-token"),
-        false,
-    );
-    fixture.config.disable_provider_fallback = true;
-    fixture
-        .config
-        .providers
-        .get_mut(&ProviderId::anthropic())
-        .expect("anthropic provider should be configured by test_config")
-        .base_url = base_url;
-    // Production turns always wrap the transport in FallbackProvider, which owns
-    // same-route retry and dispatch-guard recovery deferral. Calling the raw
-    // AnthropicProvider would skip both mechanisms.
-    build_provider_from_config(&fixture.config)
-        .expect("configured anthropic route should build the production provider")
+fn anthropic_provider_at(base_url: String) -> (ProviderFixture, FallbackProvider) {
+    let mut fixture = ProviderFixture::anthropic("anthropic-token");
+    fixture.config.base_url = base_url;
+    let provider = AnthropicProvider::from_runtime_config(
+        &fixture.config,
+        "claude-sonnet-4-5",
+        TEST_OUTPUT_TOKENS,
+        fixture.home.path(),
+        true,
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+    // The fallback provider handles same-route retries and dispatch-guard deferral.
+    let provider = single_route("anthropic", "claude-sonnet-4-5", Arc::new(provider));
+    (fixture, provider)
 }
 
 #[tokio::test]
@@ -135,7 +129,7 @@ async fn anthropic_stream_disconnect_retries_same_route_and_recovers() {
         complete_sse_response(),
     ])
     .await;
-    let provider = anthropic_provider_at(base_url);
+    let (_fixture, provider) = anthropic_provider_at(base_url);
 
     let (response, diagnostics) = provider
         .complete_turn_with_diagnostics(provider_turn_request())
@@ -207,7 +201,7 @@ async fn anthropic_stream_disconnect_with_dispatch_guard_defers_recovery_to_runt
         complete_sse_response(),
     ])
     .await;
-    let provider = anthropic_provider_at(base_url);
+    let (_fixture, provider) = anthropic_provider_at(base_url);
     let guard = Arc::new(CountingDispatchGuard {
         dispatches: AtomicUsize::new(0),
     });
@@ -255,7 +249,7 @@ async fn anthropic_truncated_gzip_stream_body_preserves_connection_retry() {
     let base_url =
         spawn_raw_http_server_bytes_sequence(vec![response.clone(), response.clone(), response])
             .await;
-    let provider = anthropic_provider_at(base_url);
+    let (_fixture, provider) = anthropic_provider_at(base_url);
 
     let error = provider
         .complete_turn(provider_turn_request())
@@ -304,7 +298,7 @@ async fn anthropic_message_stop_completes_before_http_body_disconnect() {
     let base_url =
         spawn_raw_http_server_bytes_sequence(vec![response.clone(), response.clone(), response])
             .await;
-    let provider = anthropic_provider_at(base_url);
+    let (_fixture, provider) = anthropic_provider_at(base_url);
 
     let (response, diagnostics) = provider
         .complete_turn_with_diagnostics(provider_turn_request())
@@ -341,7 +335,7 @@ async fn anthropic_message_stop_completes_while_http_connection_stays_open() {
         (60_000, b"0\r\n\r\n".to_vec()),
     ]])
     .await;
-    let provider = anthropic_provider_at(base_url);
+    let (_fixture, provider) = anthropic_provider_at(base_url);
     let (response, diagnostics) = tokio::time::timeout(
         std::time::Duration::from_secs(5),
         provider.complete_turn_with_diagnostics(provider_turn_request()),
@@ -390,7 +384,7 @@ async fn anthropic_message_stop_ignores_trailing_events_and_partial_frames() {
                 response,
             ])
             .await;
-            let provider = anthropic_provider_at(base_url);
+            let (_fixture, provider) = anthropic_provider_at(base_url);
             let (response, diagnostics) = provider
                 .complete_turn_with_diagnostics(provider_turn_request())
                 .await
@@ -426,7 +420,7 @@ async fn anthropic_message_stop_finalizes_tool_json_without_guarded_redispatch()
     let mut raw_response = SSE_HEADERS.to_vec();
     raw_response.extend(chunk(body.as_bytes()));
     let base_url = spawn_raw_http_server_bytes_sequence(vec![raw_response]).await;
-    let provider = anthropic_provider_at(base_url);
+    let (_fixture, provider) = anthropic_provider_at(base_url);
     let guard = Arc::new(CountingDispatchGuard {
         dispatches: AtomicUsize::new(0),
     });
@@ -473,7 +467,7 @@ async fn anthropic_message_stop_still_requires_protocol_finalization() {
             response,
         ])
         .await;
-        let provider = anthropic_provider_at(base_url);
+        let (_fixture, provider) = anthropic_provider_at(base_url);
         let error = provider
             .complete_turn(provider_turn_request())
             .await

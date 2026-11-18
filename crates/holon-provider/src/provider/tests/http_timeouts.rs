@@ -2,13 +2,10 @@
 
 use super::support::*;
 use super::*;
-use crate::{
-    config::ProviderId,
-    provider::{
-        provider_transport_diagnostics,
-        retry::{classify_provider_error, ProviderFailureKind},
-        transports::{HttpTimeouts, HTTP_TIMEOUTS_OVERRIDE},
-    },
+use crate::provider::{
+    provider_transport_diagnostics,
+    retry::{classify_provider_error, ProviderFailureKind},
+    transports::{HttpTimeouts, HTTP_TIMEOUTS_OVERRIDE},
 };
 use std::time::Duration;
 
@@ -30,42 +27,26 @@ enum Transport {
 }
 
 impl Transport {
-    fn provider(self, url: &str) -> (ProviderTestFixture, Box<dyn AgentProvider>) {
+    fn provider(self, url: &str) -> (ProviderFixture, Box<dyn AgentProvider>) {
         match self {
             Self::Anthropic => {
-                let mut fixture = test_config(
-                    "anthropic/claude-sonnet-4-5",
-                    &[],
-                    None,
-                    Some("test"),
-                    false,
-                );
-                let config = fixture
-                    .config
-                    .providers
-                    .get_mut(&ProviderId::anthropic())
-                    .unwrap();
-                config.base_url = url.to_string();
+                let mut fixture = ProviderFixture::anthropic("test");
+                fixture.config.base_url = url.into();
                 let provider = AnthropicProvider::from_runtime_config(
-                    config,
+                    &fixture.config,
                     "claude-sonnet-4-5",
                     1024,
-                    &fixture.config.home_dir,
+                    fixture.home.path(),
                     true,
+                    TEST_CLIENT_VERSION,
                 )
                 .unwrap();
                 (fixture, Box::new(provider))
             }
             Self::Codex => {
-                let mut fixture = test_config("openai-codex/gpt-5.4", &[], None, None, true);
-                fixture
-                    .config
-                    .providers
-                    .get_mut(&ProviderId::openai_codex())
-                    .unwrap()
-                    .base_url = url.to_string();
-                let provider =
-                    OpenAiCodexProvider::from_config(&fixture.config, "gpt-5.4").unwrap();
+                let mut fixture = ProviderFixture::codex();
+                fixture.config.base_url = url.into();
+                let provider = codex_provider(&fixture, 2048);
                 (fixture, Box::new(provider))
             }
         }
@@ -258,8 +239,12 @@ async fn phase_timeout_cancelling_request_drops_connection_without_retry() {
                     "cancellation must not spawn another attempt"
                 );
             });
-            let (fixture, _direct_provider) = transport.provider(&url);
-            let provider = build_provider_from_config(&fixture.config).unwrap();
+            let (_fixture, direct_provider) = transport.provider(&url);
+            let (provider_name, model) = match transport {
+                Transport::Anthropic => ("anthropic", "claude-sonnet-4-5"),
+                Transport::Codex => ("openai-codex", "gpt-5.4"),
+            };
+            let provider = single_route(provider_name, model, direct_provider.into());
             let mut call = Box::pin(provider.complete_turn(provider_turn_request()));
             tokio::select! {
                 accepted = accepted_rx => accepted.unwrap(),

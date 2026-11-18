@@ -616,6 +616,7 @@ dependencies = [
  "axum",
  "base64",
  "chrono",
+ "flate2",
  "holon-domain",
  "holon-model-client",
  "holon-system",

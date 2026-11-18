@@ -10,8 +10,6 @@ mod timeouts;
 
 use anyhow::{Context, Result};
 use reqwest::Client;
-#[cfg(any(test, feature = "runtime-tests"))]
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 pub use http::is_dispatch_guard_rejected;
@@ -36,9 +34,6 @@ pub use openai::{
     build_openai_responses_request, OpenAiChatCompletionsProvider, OpenAiCodexProvider,
     OpenAiProvider,
 };
-
-#[cfg(any(test, feature = "runtime-tests"))]
-static STREAM_IDLE_TIMEOUT_OVERRIDE_MS: AtomicU64 = AtomicU64::new(0);
 
 fn build_http_client() -> Result<Client> {
     build_provider_http_client(Some(http_timeouts().connect))
@@ -65,23 +60,7 @@ fn build_provider_http_client(connect: Option<Duration>) -> Result<Client> {
 }
 
 pub(super) fn stream_idle_timeout() -> Duration {
-    #[cfg(any(test, feature = "runtime-tests"))]
-    if let Ok(idle) = HTTP_TIMEOUTS_OVERRIDE.try_with(|timeouts| timeouts.idle) {
-        return idle;
-    }
-    #[cfg(any(test, feature = "runtime-tests"))]
-    {
-        let override_ms = STREAM_IDLE_TIMEOUT_OVERRIDE_MS.load(Ordering::Relaxed);
-        if override_ms > 0 {
-            return Duration::from_millis(override_ms);
-        }
-    }
     http_timeouts().idle
-}
-
-#[cfg(any(test, feature = "runtime-tests"))]
-pub fn set_stream_idle_timeout_override_for_tests(timeout_ms: Option<u64>) {
-    STREAM_IDLE_TIMEOUT_OVERRIDE_MS.store(timeout_ms.unwrap_or(0), Ordering::Relaxed);
 }
 
 pub(super) fn response_body_timeout() -> Duration {
@@ -154,4 +133,9 @@ mod constructor_fixtures {
             )
         }
     }
+}
+
+#[cfg(test)]
+pub(super) fn test_http_timeouts() -> HttpTimeouts {
+    http_timeouts()
 }

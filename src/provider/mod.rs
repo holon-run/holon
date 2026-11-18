@@ -37,9 +37,9 @@ pub(crate) use holon_provider::provider::{
 };
 #[cfg(test)]
 pub(crate) use holon_provider::provider::{
-    budget, build_openai_input, build_openai_responses_request, emitted_tool_json_schema,
-    http_trace, parse_openai_response, provider_error_token_usage, provider_max_attempts,
-    validate_emitted_tool_schema, ToolSchemaContract,
+    build_openai_responses_request, emitted_tool_json_schema, http_trace,
+    provider_error_token_usage, provider_max_attempts, validate_emitted_tool_schema,
+    ToolSchemaContract,
 };
 pub use holon_provider::provider::{
     image_delivery, provider_attempt_timeline, provider_error_code,

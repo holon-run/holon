@@ -34,6 +34,7 @@ uuid = { version = "1.11", features = ["v4"] }
 
 [dev-dependencies]
 axum = "0.8"
+flate2 = "1.0"
 tempfile = "3.14"
 tokio = { version = "1.43", features = ["test-util"] }
 tracing-subscriber = "0.3"
