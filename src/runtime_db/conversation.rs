@@ -18,10 +18,7 @@ use holon_storage::conversation::{
     conversation_snapshot_context, summary_page_in, validate_limit, ConversationSnapshotContext,
 };
 #[cfg(all(test, holon_lib_test_shard = "b"))]
-use holon_storage::conversation::{
-    turn_revision_tx, CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL,
-    MAX_BRIEFS_PER_TURN,
-};
+use holon_storage::conversation::{turn_revision_tx, MAX_BRIEFS_PER_TURN};
 pub use holon_storage::conversation::{
     ConversationChangeBatch, ConversationIdentity, ConversationReadError, ConversationResetReason,
     ConversationSnapshot, ConversationTurnRevision, MAX_ACTIVITIES_PAGE_LIMIT,

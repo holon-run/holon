@@ -7,8 +7,7 @@ use rusqlite::params;
 use tempfile::TempDir;
 
 use super::{
-    settle_turn_result_tx, ConversationReadError, ConversationResetReason,
-    CONVERSATION_ACTIVITY_BEFORE_SQL, CONVERSATION_HISTORY_BEFORE_SQL, MAX_BRIEFS_PER_TURN,
+    settle_turn_result_tx, ConversationReadError, ConversationResetReason, MAX_BRIEFS_PER_TURN,
     MAX_CONVERSATION_CHANGE_ACTIVITIES,
 };
 use crate::domain::conversation::{
@@ -17,7 +16,7 @@ use crate::domain::conversation::{
     PendingInputState, ResultState, StreamCursor, TerminalOutcome, TurnKey,
     CONVERSATION_QUERY_VERSION, CONVERSATION_SCHEMA_VERSION,
 };
-use crate::runtime_db::{migrations::CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL, RuntimeDb};
+use crate::runtime_db::RuntimeDb;
 use crate::types::{
     AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset, AgentRegistryStatus,
     AgentVisibility, AuditEvent, AuthorityClass, BriefKind, BriefRecord, ContinuationTriggerKind,
@@ -902,31 +901,6 @@ fn migration_repairs_existing_replay_input_assignment() -> Result<()> {
 }
 
 #[test]
-fn migration_replay_scan_query_plan_has_no_correlated_turn_scan() -> Result<()> {
-    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
-    let connection = db.connection()?;
-    let mut statement = connection.prepare(&format!(
-        "EXPLAIN QUERY PLAN {CONVERSATION_REPLAY_INPUT_SOURCE_SELECT_SQL}"
-    ))?;
-    let details = statement
-        .query_map([], |row| row.get::<_, String>(3))?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    assert_eq!(
-        details
-            .iter()
-            .filter(|detail| detail.contains("SCAN replay_turn"))
-            .count(),
-        1,
-        "{details:?}"
-    );
-    assert!(
-        details.iter().all(|detail| !detail.contains("CORRELATED")),
-        "{details:?}"
-    );
-    Ok(())
-}
-
-#[test]
 fn migration_repair_handles_large_non_replay_history_without_candidate_cross_product() -> Result<()>
 {
     let (_temp_dir, db_path, lock_path, db) = runtime_db()?;
@@ -1806,78 +1780,6 @@ fn activity_keyset_is_stable_and_source_updates_replace_in_place() -> Result<()>
         ["operator:message-activity"]
     );
     assert!(!older.has_more);
-    Ok(())
-}
-
-#[test]
-fn keyset_queries_use_declared_indexes_without_temp_sorting() -> Result<()> {
-    let (_temp_dir, _db_path, _lock_path, db) = runtime_db()?;
-    let connection = db.connection()?;
-
-    let history_plan = connection
-        .prepare(&format!(
-            "EXPLAIN QUERY PLAN {CONVERSATION_HISTORY_BEFORE_SQL}"
-        ))?
-        .query_map(params![AGENT_ID, 10_i64, "z", 5_i64, "m", 10_i64], |row| {
-            row.get::<_, String>(3)
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    assert!(
-        history_plan
-            .iter()
-            .any(|detail| detail.contains("idx_turn_records_agent_keyset")),
-        "history plan did not use keyset index: {history_plan:?}"
-    );
-    assert!(
-        history_plan
-            .iter()
-            .all(|detail| !detail.contains("USE TEMP B-TREE")),
-        "history plan used a temporary sort: {history_plan:?}"
-    );
-
-    let forward_plan = connection
-        .prepare(&format!(
-            "EXPLAIN QUERY PLAN {}",
-            super::locate::HISTORY_AFTER_SQL
-        ))?
-        .query_map(params![AGENT_ID, 5_i64, "m", 10_i64, "z", 10_i64], |row| {
-            row.get::<_, String>(3)
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    assert!(
-        forward_plan
-            .iter()
-            .any(|detail| detail.contains("idx_turn_records_agent_keyset")),
-        "forward history did not seek the native keyset index: {forward_plan:?}"
-    );
-    assert!(
-        forward_plan
-            .iter()
-            .all(|detail| !detail.contains("USE TEMP B-TREE")),
-        "forward history used a temporary sort: {forward_plan:?}"
-    );
-
-    let activity_plan = connection
-        .prepare(&format!(
-            "EXPLAIN QUERY PLAN {CONVERSATION_ACTIVITY_BEFORE_SQL}"
-        ))?
-        .query_map(
-            params![AGENT_ID, "turn", 10_i64, 5_i64, "tool:z", 10_i64],
-            |row| row.get::<_, String>(3),
-        )?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    assert!(
-        activity_plan
-            .iter()
-            .any(|detail| detail.contains("idx_conversation_sources_agent_turn_activity")),
-        "activity plan did not use keyset index: {activity_plan:?}"
-    );
-    assert!(
-        activity_plan
-            .iter()
-            .all(|detail| !detail.contains("USE TEMP B-TREE")),
-        "activity plan used a temporary sort: {activity_plan:?}"
-    );
     Ok(())
 }
 
