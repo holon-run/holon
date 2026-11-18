@@ -4507,6 +4507,11 @@ ALTER TABLE execution_protocol_work_items_retired_needs_repair
         // refreshes the input-evidence fingerprints that froze the old bytes.
         sql: "",
     },
+    Migration {
+        version: 116,
+        name: "repair_retired_outcome_current_fingerprint",
+        sql: "",
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4955,6 +4960,9 @@ fn apply_migration_transaction(
     if migration.name == "retire_outcome_needs_repair" {
         migrate_retired_outcome_needs_repair(transaction)?;
     }
+    if migration.name == "repair_retired_outcome_current_fingerprint" {
+        repair_retired_outcome_current_fingerprint(transaction)?;
+    }
     if migration.name == "strict_runtime_sequences" {
         migrate_runtime_sequences(transaction)?;
     }
@@ -5069,10 +5077,9 @@ fn migrate_retired_outcome_needs_repair(transaction: &Transaction<'_>) -> Result
     Ok(())
 }
 
-/// Re-freeze the input-evidence copies of a rewritten outcome payload. The
-/// Outcome family has no canonical content hash, so admission compares the raw
-/// byte count and the frozen SHA-256 of the body. Revision is intentionally
-/// unchanged: the record identity is the same, only its retired encoding moved.
+/// Refresh a rewritten outcome without changing its identity or evidence revisions.
+/// Fixed seed evidence freezes the body in its fingerprint; Current keeps the
+/// body digest alongside, not inside, the metadata fingerprint.
 fn refresh_retired_outcome_input_evidence_tx(
     transaction: &Transaction<'_>,
     agent_id: &str,
@@ -5120,16 +5127,133 @@ fn refresh_retired_outcome_input_evidence_tx(
         transaction.execute(
             "UPDATE input_evidence_current
              SET content_digest = ?1,
-                 fingerprint_json = json_set(
-                   fingerprint_json,
-                   '$.payload_bytes', ?2,
-                   '$.frozen_payload_digest', ?1
-                 )
+                 fingerprint_json = json_set(fingerprint_json, '$.payload_bytes', ?2)
              WHERE agent_id = ?3 AND family = 'outcome' AND record_id = ?4",
             params![&digest, payload_bytes, agent_id, outcome_id],
         )?;
     }
     Ok(())
+}
+
+/// Old v115 wrote the rewritten digest into two independent fields. Only undo
+/// the extra write when both digests and the rest of the Current fingerprint
+/// match the canonical v115 rewrite; leave other evidence to normal admission.
+fn repair_retired_outcome_current_fingerprint(transaction: &Transaction<'_>) -> Result<()> {
+    if !table_exists_tx(transaction, "input_evidence_current")?
+        || !table_exists_tx(transaction, "execution_protocol_outcomes")?
+    {
+        return Ok(());
+    }
+    let mut scan = transaction.prepare(
+        "SELECT c.agent_id, c.identity_incarnation, c.record_id, c.content_digest,
+                c.fingerprint_json, o.attempt_id, o.payload_json
+         FROM input_evidence_current c
+         JOIN execution_protocol_outcomes o
+           ON o.agent_id = c.agent_id AND o.outcome_id = c.record_id
+         WHERE c.family = 'outcome' AND c.availability = 'present'
+           AND (c.agent_id, c.identity_incarnation, c.family, c.record_id)
+               > (?1, ?2, 'outcome', ?3)
+           AND CASE WHEN json_valid(c.fingerprint_json)
+               THEN json_type(c.fingerprint_json, '$.frozen_payload_digest') = 'text'
+               ELSE 0 END
+         ORDER BY c.agent_id, c.identity_incarnation, c.family, c.record_id
+         LIMIT 128",
+    )?;
+    let mut repair = transaction.prepare(
+        "UPDATE input_evidence_current
+         SET fingerprint_json = json_remove(fingerprint_json, '$.frozen_payload_digest')
+         WHERE agent_id = ?1 AND identity_incarnation = ?2 AND family = 'outcome'
+           AND record_id = ?3",
+    )?;
+    let mut cursor = (String::new(), 0_i64, String::new());
+    loop {
+        // Close the scan before mutating the table. Keep only one batch of keys.
+        let mut repairs = Vec::new();
+        let mut rows = scan.query(params![cursor.0, cursor.1, cursor.2])?;
+        let mut advanced = false;
+        while let Some(row) = rows.next()? {
+            cursor = (row.get(0)?, row.get(1)?, row.get(2)?);
+            advanced = true;
+            if let (Ok(digest), Ok(fingerprint), Ok(attempt), Ok(payload)) = (
+                row.get_ref(3)?.as_str(),
+                row.get_ref(4)?.as_str(),
+                row.get_ref(5)?.as_str(),
+                row.get_ref(6)?.as_str(),
+            ) {
+                if is_retired_outcome_current_miswrite(
+                    &cursor.2,
+                    attempt,
+                    payload,
+                    digest,
+                    fingerprint,
+                )? {
+                    repairs.push(cursor.clone());
+                }
+            }
+        }
+        drop(rows);
+        if !advanced {
+            return Ok(());
+        }
+        for (agent, incarnation, outcome) in repairs {
+            repair.execute(params![agent, incarnation, outcome])?;
+        }
+    }
+}
+
+fn is_retired_outcome_current_miswrite(
+    outcome_id: &str,
+    attempt_id: &str,
+    payload: &str,
+    content_digest: &str,
+    fingerprint: &str,
+) -> Result<bool> {
+    use holon_domain::execution_protocol::{
+        ExecutionOutcome, ExecutionOutcomeRecord, WorkItemOutcome,
+    };
+    use serde_json::{json, Value};
+
+    let Ok(mut body) = serde_json::from_str::<Value>(payload) else {
+        return Ok(false);
+    };
+    let Ok(outcome) = serde_json::from_value::<ExecutionOutcomeRecord>(body.clone()) else {
+        return Ok(false);
+    };
+    let ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { reason }) = outcome.outcome
+    else {
+        return Ok(false);
+    };
+    if outcome.outcome_id != outcome_id || outcome.attempt_id != attempt_id {
+        return Ok(false);
+    }
+    // Round-trip the actual v115 mapping, not just the "interrupted" tag.
+    body["outcome"] = json!({
+        "owner": "work_item",
+        "outcome": {"kind": "needs_repair", "repair_id": reason},
+    });
+    if crate::execution::rewrite_outcome_needs_repair(&serde_json::to_string(&body)?)?.as_deref()
+        != Some(payload)
+    {
+        return Ok(false);
+    }
+    // Mirrors RuntimeDb's Outcome fingerprint_on projection, plus the field
+    // incorrectly added by old v115.
+    let expected = json!({
+        "content_hash": null,
+        "sequence": null,
+        "turn_index": null,
+        "created_at": outcome.created_at,
+        "owner_kind": null,
+        "owner_id": null,
+        "revision_marker": attempt_id,
+        "payload_bytes": payload.len(),
+        "related_turn_id": null,
+        "frozen_payload_digest": content_digest,
+    });
+    Ok(
+        serde_json::from_str::<Value>(fingerprint).is_ok_and(|value| value == expected)
+            && bytes_sha256_hex(payload.as_bytes()) == content_digest,
+    )
 }
 
 fn bytes_sha256_hex(bytes: &[u8]) -> String {
@@ -7910,7 +8034,8 @@ mod retired_outcome_migration_tests {
             "INSERT INTO input_evidence_current
              (agent_id, identity_incarnation, family, record_id, revision, content_digest,
               fingerprint_json, availability, qualification, seed_id)
-             VALUES (?1, 1, 'outcome', ?2, 3, ?3, ?4, 'present', 'committed_writer', ?5)",
+             VALUES (?1, 1, 'outcome', ?2, 3, ?3, json_remove(?4, '$.frozen_payload_digest'),
+                     'present', 'committed_writer', ?5)",
             params![
                 AGENT_ID,
                 OUTCOME_ID,
@@ -8021,7 +8146,12 @@ mod retired_outcome_migration_tests {
         }
         assert_eq!(legacy_rows, 0, "no retired encoding survives the migration");
 
-        for fingerprint in stored_fingerprints(&connection)? {
+        let mut fingerprints = stored_fingerprints(&connection)?;
+        let current: serde_json::Value =
+            serde_json::from_str(&fingerprints.pop().expect("Current fingerprint"))?;
+        assert_eq!(current["payload_bytes"], rewritten.len());
+        assert!(current.get("frozen_payload_digest").is_none());
+        for fingerprint in fingerprints {
             let value: serde_json::Value = serde_json::from_str(&fingerprint)?;
             assert_eq!(value["payload_bytes"], rewritten.len());
             assert_eq!(value["frozen_payload_digest"], sha256_hex(&rewritten));
