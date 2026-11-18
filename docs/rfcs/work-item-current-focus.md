@@ -86,6 +86,14 @@ Focus transitions use one restricted runtime transition transaction.
 No committed state may expose a continuation-frame change without its matching
 focus change, or a completed focused WorkItem.
 
+When a pick both clears a blocker and resolves the picked WorkItem's own
+yield frame, the `ResumeWorkItemContinuation` command is that WorkItem's
+single canonical execution transition in the same transaction: it applies the
+outcome-derived state and carries the projected source revision, cancelled
+waits, and WorkItem update atomically. The transition does not also plan a
+separate readiness command for that WorkItem, because the sequential command
+reduce would otherwise invalidate the resume's expected fence.
+
 ## Operator Input And Sticky Association
 
 Focus, plan status, waits, and turn attribution remain orthogonal:

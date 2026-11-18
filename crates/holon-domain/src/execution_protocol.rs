@@ -59,12 +59,21 @@ pub fn resume_work_item_continuation(
     if continuation_resume_outcome(&command.work_item_id, &command.source)? != command.outcome {
         return Err("continuation resume outcome does not match its source fence".into());
     }
+    if command.source.work_item_revision < command.expected.source_revision {
+        return Err("continuation resume cannot rewind the WorkItem source revision".into());
+    }
     let mut next = state.clone();
     let record = next
         .work_items
         .get_mut(&command.work_item_id)
         .expect("continuation resume preserved WorkItem");
     record.state = plan_work_item_outcome(record.generation(), &command.outcome)?;
+    // The resume is the single canonical transition for the suspended
+    // WorkItem in its atomic batch: its source fence carries the projected
+    // revision that batch writes, so the canonical source revision advances
+    // here instead of through a second readiness command that would
+    // invalidate this command's expected fence.
+    record.source_revision = command.source.work_item_revision;
     assert_invariants(&next)?;
     Ok(ExecutionTransition {
         state: next,
