@@ -21,4 +21,8 @@ tokio = { version = "1.43", features = ["io-util", "net", "time"] }
 url = "2.5"
 
 [dev-dependencies]
+axum = { version = "0.8", features = ["json"] }
 tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+tempfile = "3.14"

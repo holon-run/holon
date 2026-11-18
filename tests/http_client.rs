@@ -23,14 +23,11 @@ http_async_tests!(
     local_client_over_http_can_stream_events_with_cursor_query,
     local_client_over_http_stream_without_cursor_starts_at_tail,
     agent_list_parent_filter_is_not_served_from_foreign_query_cache,
-    github_rate_limit_envelope_decodes_and_displays_recovery_guidance,
     observer_get_retries_only_retryable_projection_failures,
 );
 
 #[cfg(unix)]
 http_async_tests!(
-    local_client_unix_failure_does_not_retry_over_http,
-    local_client_unix_event_stream_failure_does_not_retry_over_http,
     local_client_over_unix_socket_can_poll_without_http_fallback,
     local_client_over_unix_socket_can_read_agent_state_snapshot,
     local_client_over_unix_socket_can_stream_events_with_cursor_query,
