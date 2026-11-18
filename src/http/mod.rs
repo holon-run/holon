@@ -81,13 +81,12 @@ pub(crate) use crate::{
     storage::EventLogPageOrder,
     system::{ExecutionScopeKind, HostLocalBoundary},
     types::{
-        AdmissionContext, AgentRegistryStatus, AgentState, AuditEvent, AuthorityClass,
-        CallbackDeliveryPayload, CallbackDeliveryResult, MessageBody, MessageDeliverySurface,
-        MessageKind, MessageOrigin, OperatorTransportBinding, OperatorTransportBindingStatus,
-        OperatorTransportCapabilities, OperatorTransportDeliveryAuth,
-        OperatorTransportDeliveryAuthKind, Priority, TaskStatus, TaskStatusSnapshot,
-        TaskStopResult, TodoItem, TurnTerminalRecord, WorkItemPlanStatus, WorkItemRecord,
-        WorkItemState,
+        AdmissionContext, AgentState, AuditEvent, AuthorityClass, CallbackDeliveryPayload,
+        CallbackDeliveryResult, MessageBody, MessageDeliverySurface, MessageKind, MessageOrigin,
+        OperatorTransportBinding, OperatorTransportBindingStatus, OperatorTransportCapabilities,
+        OperatorTransportDeliveryAuth, OperatorTransportDeliveryAuthKind, Priority, TaskStatus,
+        TaskStatusSnapshot, TaskStopResult, TodoItem, TurnTerminalRecord, WorkItemPlanStatus,
+        WorkItemRecord, WorkItemState,
     },
 };
 #[cfg(holon_lib_test_shard = "c")]
@@ -2345,6 +2344,19 @@ fn remote_skill_install_failed_envelope(
 }
 
 pub(crate) fn error_response(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    if error
+        .downcast_ref::<crate::host::AgentQuarantined>()
+        .is_some()
+    {
+        return http_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            HttpErrorEnvelope::new(
+                "agent_quarantined",
+                "target agent is temporarily unavailable",
+            )
+            .retryable(true),
+        );
+    }
     if let Some(limit) = error.downcast_ref::<crate::github::RateLimit>() {
         return github_rate_limit_response(limit, "github_rate_limited");
     }

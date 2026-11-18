@@ -221,7 +221,7 @@ use anyhow::{anyhow, bail, Context, Result};
 use arc_swap::{ArcSwap, ArcSwapOption};
 use bootstrap::ConfigSnapshot;
 pub(crate) use bootstrap::{
-    append_unloaded_audit_event, ViewImageCandidateFailureStatus,
+    append_unloaded_audit_event, AgentConstructorQuarantine, ViewImageCandidateFailureStatus,
     VIEW_IMAGE_PROTOCOL_FAILURE_THRESHOLD,
 };
 use chrono::{DateTime, Utc};

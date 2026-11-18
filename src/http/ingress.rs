@@ -9,40 +9,88 @@ async fn callback_ingress(
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     let payload = build_callback_delivery_payload(&headers, body)
         .map_err(|err| bad_request(err.to_string()))?;
-    let locator = state
+    let (locator, incarnation) = state
         .host
         .resolve_external_trigger_locator(&callback_token)
-        .map_err(error_response)?
+        .map_err(callback_internal_error)?
         .ok_or_else(|| forbidden("invalid callback token"))?;
-    let identity = state
-        .host
-        .agent_identity_record(&locator.target_agent_id)
-        .map_err(error_response)?
-        .ok_or_else(|| forbidden("invalid callback token"))?;
-    if identity.status != AgentRegistryStatus::Active {
-        return Err(forbidden("invalid callback token"));
-    }
     if locator.delivery_mode != mode.delivery_mode() {
         return Err(forbidden("callback delivery mode mismatch"));
     }
-    let result = state
+    let delivery = state
         .host
         .deliver_external_callback(
             &locator.target_agent_id,
+            incarnation,
             &locator.external_trigger_id,
             payload,
         )
-        .await
-        .map_err(|err| {
-            error!(
-                external_trigger_id = %locator.external_trigger_id,
-                error = %err,
-                "callback ingress rejected delivery"
-            );
-            forbidden("forbidden")
-        })?;
+        .await;
+    let result = match delivery {
+        Ok(result) => result,
+        Err(err)
+            if err
+                .downcast_ref::<crate::host::AgentQuarantined>()
+                .is_some() =>
+        {
+            // A descriptor can be revoked while cold activation is waiting.
+            // Do not disclose quarantine if the capability no longer resolves.
+            let target = locator.target_agent_id.clone();
+            let descriptor = locator.external_trigger_id.clone();
+            drop(locator);
+            let still_authorized = state
+                .host
+                .resolve_external_trigger_locator(&callback_token)
+                .map_err(callback_internal_error)?
+                .is_some_and(|(current, current_incarnation)| {
+                    current_incarnation == incarnation
+                        && current.target_agent_id == target
+                        && current.external_trigger_id == descriptor
+                        && current.delivery_mode == mode.delivery_mode()
+                });
+            return Err(if still_authorized {
+                error_response(err)
+            } else {
+                forbidden("invalid callback token")
+            });
+        }
+        Err(err) if callback_access_denied(&err) => {
+            return Err(forbidden("invalid callback token"));
+        }
+        Err(err) => return Err(callback_internal_error(err)),
+    };
     drop(locator);
     Ok(Json(CallbackResponse { ok: true, result }))
+}
+
+fn callback_access_denied(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<PublicAgentError>(),
+        Some(
+            PublicAgentError::NotFound { .. }
+                | PublicAgentError::Deleting { .. }
+                | PublicAgentError::Deleted { .. }
+                | PublicAgentError::Stopped { .. }
+        )
+    ) || error
+        .downcast_ref::<crate::runtime_error::RuntimeError>()
+        .is_some_and(|error| {
+            matches!(
+                error.descriptor().code.as_str(),
+                "agent_incarnation_mismatch" | "callback_descriptor_rejected"
+            )
+        })
+}
+
+fn callback_internal_error(error: anyhow::Error) -> (StatusCode, Json<Value>) {
+    error!(
+        code = %describe_runtime_error(&error).code,
+        "callback ingress failed internally"
+    );
+    http_error(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        HttpErrorEnvelope::new("callback_internal_error", "callback delivery failed"),
+    )
 }
 
 pub async fn callback_ingress_enqueue(

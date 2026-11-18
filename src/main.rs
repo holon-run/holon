@@ -1365,6 +1365,7 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
             std::env::remove_var(PRE_SERVER_PREPARED_ENV);
             std::env::remove_var(DAEMON_SERVE_ARGS_ENV);
             std::env::remove_var(DAEMON_SERVE_RESOLUTION_ENV);
+            host.begin_quarantine_report(&startup).await;
             let (_, startup_dispatch) = host.recover_startup_deferred_observed(&startup).await?;
             startup
                 .observe("bootstrap_sweep", async {
@@ -1378,23 +1379,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
                     Ok(())
                 })
                 .await?;
-            startup
-                .observe("default_activation", async {
-                    if host.configured_default_agent_id()?.is_some() {
-                        host.default_runtime_bootstrapped_observed(Some(startup.clone()))
-                            .await?;
-                    }
-                    Ok(())
-                })
-                .await?;
-            let listener = startup
-                .observe("bind", async {
-                    TcpListener::bind(&config.http_addr)
-                        .await
-                        .with_context(|| format!("failed to bind {}", config.http_addr))
-                })
+            let listener = host
+                .bind_primary_for_serve(&startup, &config.http_addr)
                 .await?;
             let primary_addr = listener.local_addr()?;
+            host.publish_quarantine_report().await;
             println!("Holon listening on {primary_addr}");
             if let Some(advertise_url) = &advertise_url {
                 println!("Holon advertised at {advertise_url}");
@@ -6610,6 +6599,9 @@ async fn handle_daemon_command(config: AppConfig, command: DaemonCommands) -> Re
             serde_json::to_value(daemon_prepare_update(&config).await?)?
         }
         DaemonCommands::Status => serde_json::to_value(daemon_status(&config).await?)?,
+        DaemonCommands::Quarantine => {
+            serde_json::to_value(holon::daemon::read_quarantine_report(&config))?
+        }
         DaemonCommands::Restart {
             options,
             start_timeout,

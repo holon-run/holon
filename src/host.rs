@@ -27,6 +27,8 @@ mod input_evidence;
 #[path = "host/child_task_spawn.rs"]
 mod original_child_spawn;
 mod pending_budget;
+mod quarantine;
+pub(crate) use quarantine::AgentQuarantined;
 pub(crate) mod resource_writes;
 mod startup_dispatch;
 pub use startup_dispatch::StartupDispatchCompletion;
@@ -501,6 +503,8 @@ pub(crate) struct HostInner {
     >,
     #[cfg(test)]
     clock_recovery_dispatch_gates: Mutex<BTreeMap<String, Arc<tokio::sync::Semaphore>>>,
+    #[cfg(all(test, holon_lib_test_shard = "d"))]
+    test_constructor_outcomes: Mutex<BTreeMap<String, anyhow::Error>>,
     bootstrap_provider_active: AtomicBool,
     bootstrap_ready_notify: Notify,
     runtimes: RwLock<HostRuntimeRegistry>,
@@ -524,6 +528,7 @@ pub(crate) struct HostInner {
     config_reload_notify: Notify,
     bootstrap_locks: Mutex<HashMap<String, Arc<AsyncMutex<()>>>>,
     bootstrap_handoff_lock: AsyncMutex<()>,
+    cold_activation_gates: Mutex<HashMap<String, Weak<AsyncMutex<()>>>>,
     // Background bootstrap reconciles in flight, keyed by agent id. Presence
     // of the key means a reconcile task is running; it drains and removes the
     // waiters when the reconcile finishes.
@@ -647,6 +652,7 @@ struct HostRuntimeRegistry {
     temporary_runtimes: BTreeMap<String, TemporaryRuntimeEntry>,
     next_generation: u64,
     recovering: HashMap<String, RuntimeRecoveryClaim>,
+    quarantines: quarantine::AgentQuarantines,
 }
 
 type HostShutdownResult = std::result::Result<(), HostShutdownFailure>;
@@ -1326,6 +1332,8 @@ impl RuntimeHost {
                 runtime_constructor_gate: Mutex::new(None),
                 #[cfg(test)]
                 clock_recovery_dispatch_gates: Mutex::new(BTreeMap::new()),
+                #[cfg(all(test, holon_lib_test_shard = "d"))]
+                test_constructor_outcomes: Mutex::new(BTreeMap::new()),
                 bootstrap_provider_active: AtomicBool::new(bootstrap_provider_active),
                 bootstrap_ready_notify: Notify::new(),
                 runtimes: RwLock::new(HostRuntimeRegistry {
@@ -1337,6 +1345,7 @@ impl RuntimeHost {
                     temporary_runtimes: BTreeMap::new(),
                     next_generation: 1,
                     recovering: HashMap::new(),
+                    quarantines: Default::default(),
                 }),
                 shutdown_operation: Mutex::new(None),
                 mutation_owners,
@@ -1358,6 +1367,7 @@ impl RuntimeHost {
                 config_reload_notify: Notify::new(),
                 bootstrap_locks: Mutex::new(HashMap::new()),
                 bootstrap_handoff_lock: AsyncMutex::new(()),
+                cold_activation_gates: Mutex::new(HashMap::new()),
                 bootstrap_reconcile_waiters: Mutex::new(HashMap::new()),
                 runtime_operations: Mutex::new(HostRuntimeOperations {
                     closing: false,
@@ -3943,10 +3953,14 @@ impl RuntimeHost {
                 tracing::info!(startup_id = %observation.startup_id, agent_id, skip_reason, "startup recovery candidate skipped");
                 return Ok(false);
             }
-            let runtime = agent_observation.observe(
+            let runtime = match agent_observation.observe(
                 "activation",
                 self.activate_agent_observed(&agent_id, RuntimeActivationReason::StartupRecovery, Some(observation.clone())),
-            ).await?;
+            ).await {
+                Ok(runtime) => runtime,
+                Err(error) if error.downcast_ref::<AgentQuarantined>().is_some() => return Ok(false),
+                Err(error) => return Err(error),
+            };
             agent_observation.observe("bootstrap_wait", runtime.wait_for_bootstrap()).await?;
             Ok(true)
             }.await;
@@ -4706,9 +4720,16 @@ impl RuntimeHost {
             .await
             .map_err(PublicAgentError::Runtime)?;
         let loaded_agents_md = LoadedAgentsMdView::default();
+        let lifecycle = self
+            .cold_lifecycle_hint(
+                agent_id,
+                identity_view.incarnation,
+                agent_state.status.clone(),
+            )
+            .await;
         let summary = AgentSummary {
             identity: identity_view,
-            lifecycle: AgentLifecycleHint::from_status(agent_id, agent_state.status.clone()),
+            lifecycle,
             agent: agent_state,
             scheduling_posture,
             active_task_count,
@@ -5489,10 +5510,11 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
-        self.public_agent_identity(agent_id)?;
+        let identity = self.public_agent_identity(agent_id)?;
         self.get_active_agent_for_message_ingress(
             agent_id,
             RuntimeActivationReason::ExternalIngress,
+            identity.incarnation,
         )
         .await
     }
@@ -5502,10 +5524,11 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
-        self.active_agent_identity(agent_id)?;
+        let identity = self.active_agent_identity(agent_id)?;
         self.get_active_agent_for_message_ingress(
             agent_id,
             RuntimeActivationReason::OperatorControl,
+            identity.incarnation,
         )
         .await
     }
@@ -5514,6 +5537,7 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
         reason: RuntimeActivationReason,
+        incarnation: u64,
     ) -> std::result::Result<RuntimeHandle, PublicAgentError> {
         let state = self
             .agent_storage(agent_id)
@@ -5527,7 +5551,7 @@ impl RuntimeHost {
             });
         }
         let runtime = self
-            .activate_agent(agent_id, reason)
+            .activate_agent_observed_for_incarnation(agent_id, reason, None, Some(incarnation))
             .await
             .map_err(Self::public_activation_error)?;
         runtime
@@ -6914,6 +6938,17 @@ impl RuntimeHost {
         })
     }
 
+    fn cold_activation_gate(&self, agent_id: &str) -> Arc<AsyncMutex<()>> {
+        let mut gates = self.inner.cold_activation_gates.lock().unwrap();
+        if let Some(gate) = gates.get(agent_id).and_then(Weak::upgrade) {
+            return gate;
+        }
+        gates.retain(|_, gate| gate.strong_count() != 0);
+        let gate = Arc::new(AsyncMutex::new(()));
+        gates.insert(agent_id.to_owned(), Arc::downgrade(&gate));
+        gate
+    }
+
     async fn activate_cold_agent(
         &self,
         agent_id: &str,
@@ -6926,6 +6961,14 @@ impl RuntimeHost {
             self.wait_for_runtime_operation(request_cancelled, self.wait_for_bootstrap_ready())
                 .await??;
         }
+        // A second cold activation must not reserve mutation ownership for
+        // reconciliation while the first is trying to claim it for construction.
+        let activation_guard = self
+            .wait_for_runtime_operation(
+                request_cancelled,
+                self.cold_activation_gate(agent_id).lock_owned(),
+            )
+            .await?;
         {
             let _bootstrap_handoff_guard = self
                 .wait_for_runtime_operation(
@@ -6940,6 +6983,28 @@ impl RuntimeHost {
                     "invocation target incarnation changed before activation",
                 )
                 .into());
+            }
+            {
+                let registry = self
+                    .wait_for_runtime_operation(request_cancelled, self.inner.runtimes.read())
+                    .await?;
+                if registry.phase != HostRuntimePhase::Open {
+                    return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+                }
+                if let Some(entry) = registry.agents.get(agent_id) {
+                    if entry.accepts_host_access() {
+                        if expected_incarnation.is_some_and(|expected| {
+                            expected != entry.runtime.instance_incarnation()
+                        }) {
+                            return Err(RuntimeError::policy(
+                                "agent_incarnation_mismatch",
+                                "invocation target instance changed before activation",
+                            )
+                            .into());
+                        }
+                        return Ok(entry.runtime.clone());
+                    }
+                }
             }
             if agent_id == self.config().default_agent_id {
                 self.ensure_default_agent_home_initialized().await?;
@@ -6988,6 +7053,15 @@ impl RuntimeHost {
             }
             if let Some(entry) = registry.agents.get(agent_id) {
                 if entry.accepts_host_access() {
+                    if expected_incarnation
+                        .is_some_and(|expected| expected != entry.runtime.instance_incarnation())
+                    {
+                        return Err(RuntimeError::policy(
+                            "agent_incarnation_mismatch",
+                            "invocation target instance changed before activation",
+                        )
+                        .into());
+                    }
                     return Ok(entry.runtime.clone());
                 }
                 if !entry.task.is_finished()
@@ -7016,6 +7090,21 @@ impl RuntimeHost {
                 identity.incarnation,
                 &self.inner.input_evidence_budget,
             )?;
+            if registry.quarantines.blocks_activation(
+                agent_id,
+                identity.incarnation,
+                reason,
+                tokio::time::Instant::now(),
+            ) {
+                return Err(AgentQuarantined {
+                    agent_id: agent_id.to_owned(),
+                    incarnation: identity.incarnation,
+                }
+                .into());
+            }
+            if request_cancelled.is_cancelled() {
+                return Err(anyhow::Error::new(RuntimeAdmissionClosed));
+            }
             registry.ever_activated = true;
             let generation = registry.next_generation;
             let (runtime, runtime_task, phase) = match self
@@ -7039,7 +7128,32 @@ impl RuntimeHost {
                     drop(bootstrap_handoff_guard);
                     continue;
                 }
-                Err(error) => return Err(error),
+                Err(error) => {
+                    if error
+                        .downcast_ref::<crate::runtime::AgentConstructorQuarantine>()
+                        .is_some_and(|failure| {
+                            failure.agent_id == agent_id
+                                && failure.incarnation == identity.incarnation
+                        })
+                    {
+                        registry.next_generation = registry.next_generation.saturating_add(1);
+                        let failure = registry.quarantines.record(
+                            agent_id,
+                            identity.incarnation,
+                            generation,
+                            tokio::time::Instant::now(),
+                        );
+                        tracing::warn!(
+                            agent_id,
+                            incarnation = failure.incarnation,
+                            generation,
+                            "isolated agent during runtime construction"
+                        );
+                        registry.quarantines.persist(self).await;
+                        return Err(failure.into());
+                    }
+                    return Err(error);
+                }
             };
             registry.next_generation = registry.next_generation.saturating_add(1);
             let stale_entry = registry.agents.remove(agent_id);
@@ -7062,8 +7176,12 @@ impl RuntimeHost {
                     idle_observation: None,
                 },
             );
+            if registry.quarantines.clear_on_install(agent_id) {
+                registry.quarantines.persist(self).await;
+            }
             drop(registry);
             drop(bootstrap_handoff_guard);
+            drop(activation_guard);
             if let Some(entry) = stale_entry {
                 let _ = entry.task.await;
             }
@@ -8272,19 +8390,43 @@ impl RuntimeHost {
     pub(crate) async fn deliver_external_callback(
         &self,
         agent_id: &str,
+        incarnation: u64,
         descriptor_id: &str,
         payload: crate::types::CallbackDeliveryPayload,
     ) -> Result<crate::types::CallbackDeliveryResult> {
         for _ in 0..3 {
             let identity = self
                 .active_agent_identity(agent_id)
-                .map_err(anyhow::Error::new)?;
+                .map_err(|error| match error {
+                    PublicAgentError::Runtime(error) => error,
+                    other => other.into(),
+                })?;
+            if identity.incarnation != incarnation {
+                return Err(RuntimeError::policy(
+                    "agent_incarnation_mismatch",
+                    "callback target incarnation changed before activation",
+                )
+                .into());
+            }
             let runtime = if identity.visibility == AgentVisibility::Public {
-                self.get_public_agent_for_external_ingress(agent_id)
-                    .await
-                    .map_err(anyhow::Error::new)?
+                self.get_active_agent_for_message_ingress(
+                    agent_id,
+                    RuntimeActivationReason::ExternalIngress,
+                    incarnation,
+                )
+                .await
+                .map_err(|error| match error {
+                    PublicAgentError::Runtime(error) => error,
+                    other => other.into(),
+                })?
             } else {
-                self.get_or_create_agent(agent_id).await?
+                self.activate_agent_observed_for_incarnation(
+                    agent_id,
+                    RuntimeActivationReason::ExternalIngress,
+                    None,
+                    Some(incarnation),
+                )
+                .await?
             };
             match runtime
                 .deliver_callback(descriptor_id, payload.clone())
@@ -8323,15 +8465,29 @@ impl RuntimeHost {
     pub(crate) fn resolve_external_trigger_locator(
         &self,
         callback_token: &str,
-    ) -> Result<Option<crate::runtime_db::scheduling_snapshot::ExternalTriggerTokenLocator>> {
+    ) -> Result<
+        Option<(
+            crate::runtime_db::scheduling_snapshot::ExternalTriggerTokenLocator,
+            u64,
+        )>,
+    > {
         let token_hash = hash_callback_token(callback_token);
         let request = self.callback_discovery_request()?;
         self.runtime_db().transaction(|tx| {
-            crate::runtime_db::scheduling_snapshot::discover_external_trigger_token_tx(
-                tx,
-                &token_hash,
-                &request,
-                &self.inner.input_evidence_budget,
+            let Some(locator) =
+                crate::runtime_db::scheduling_snapshot::discover_external_trigger_token_tx(
+                    tx,
+                    &token_hash,
+                    &request,
+                    &self.inner.input_evidence_budget,
+                )?
+            else {
+                return Ok(None);
+            };
+            // Bind capability discovery and identity to one database snapshot.
+            Ok(
+                holon_storage::conversation::active_agent_identity(tx, &locator.target_agent_id)?
+                    .map(|identity| (locator, identity.agent_incarnation)),
             )
         })
     }
@@ -11439,6 +11595,16 @@ impl RuntimeHost {
         let runtime_agent_id = agent_id.to_string();
         let constructor_observation = observation.clone();
         let runtime = spawn_blocking(move || {
+            #[cfg(all(test, holon_lib_test_shard = "d"))]
+            if let Some(error) = host
+                .inner
+                .test_constructor_outcomes
+                .lock()
+                .unwrap()
+                .remove(&runtime_agent_id)
+            {
+                return Err(error);
+            }
             host.construct_runtime(&runtime_agent_id, constructor_observation.as_ref())
         })
         .await??;
@@ -12294,6 +12460,8 @@ mod tests {
     mod projection_storage_view_tests;
     #[path = "projection_work_queue_material_tests.rs"]
     mod projection_work_queue_material_tests;
+    #[cfg(holon_lib_test_shard = "d")]
+    mod quarantine_tests;
     #[cfg(holon_lib_test_shard = "d")]
     #[path = "startup_dispatch_tests.rs"]
     mod startup_dispatch_tests;
@@ -26979,6 +27147,7 @@ mod tests {
         );
         host.deliver_external_callback(
             &target,
+            host.active_agent_identity(&target).unwrap().incarnation,
             &descriptor.external_trigger_id,
             crate::types::CallbackDeliveryPayload {
                 body: None,

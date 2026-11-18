@@ -14,6 +14,7 @@ pub(crate) type StartupTestHook = dyn Fn(StartupObservation, &'static str) -> Pi
 #[derive(Clone)]
 pub struct StartupObservation {
     pub startup_id: String,
+    pub(crate) started_at: chrono::DateTime<chrono::Utc>,
     pub agent_id: Option<String>,
     pub generation: Option<u64>,
     #[cfg(test)]
@@ -44,6 +45,7 @@ impl StartupObservation {
     pub fn with_id(startup_id: String) -> Self {
         Self {
             startup_id,
+            started_at: chrono::Utc::now(),
             agent_id: None,
             generation: None,
             #[cfg(test)]
@@ -60,6 +62,7 @@ impl StartupObservation {
     pub fn for_agent(&self, agent_id: &str, generation: Option<u64>) -> Self {
         Self {
             startup_id: self.startup_id.clone(),
+            started_at: self.started_at,
             agent_id: Some(agent_id.to_string()),
             generation,
             #[cfg(test)]

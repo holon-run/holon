@@ -2428,6 +2428,19 @@ fn stale_execution_binding_on(
     }))
 }
 
+/// Only this constructor boundary can certify a scope-local preparation failure.
+/// A ProjectionChanged anywhere else, including bootstrap_wait, is not eligible.
+#[derive(Debug, thiserror::Error)]
+#[error("agent-local input preparation could not be completed")]
+pub(crate) struct AgentConstructorQuarantine {
+    pub agent_id: String,
+    pub incarnation: u64,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("scoped input preparation rejected its projection")]
+struct ScopedInputPreparationRejected;
+
 fn prepare_runtime_storage_owned(
     setup: RuntimeStorageSetup,
     mut reservation: Option<&mut super::mutation_owner::MutationReservation>,
@@ -2547,6 +2560,11 @@ fn prepare_runtime_storage_owned(
         "timer normalization omitted an exact queue change"
     );
     let timer_wake_recovery = normalized.result;
+    let changed_recovery_state = timer_wake_recovery.created_wakes > 0
+        || timer_wake_recovery.reactivated_wakes > 0
+        || timer_wake_recovery.invalidated_wakes > 0
+        || !timer_wake_recovery.dropped_message_ids.is_empty()
+        || !timer_wake_recovery.settled_wait_conditions.is_empty();
     if timer_wake_recovery.retained_wakes > 0
         || timer_wake_recovery.created_wakes > 0
         || timer_wake_recovery.reactivated_wakes > 0
@@ -2752,6 +2770,7 @@ fn prepare_runtime_storage_owned(
         &mut state,
         scheduler_executor::BootstrapRecoveryFacts { queued_messages },
     );
+    let mut execution_root_acknowledged = true;
     if let Some(active) = state.active_workspace_entry.as_ref() {
         let existing = runtime_db
             .execution_root_entries()
@@ -2765,6 +2784,7 @@ fn prepare_runtime_storage_owned(
             existing.and_then(|entry| entry.worktree),
         );
         if let Err(error) = runtime_db.execution_root_entries().upsert(&entry) {
+            execution_root_acknowledged = false;
             tracing::warn!(
                 agent_id = %agent_id,
                 execution_root_id = %entry.execution_root_id,
@@ -2808,7 +2828,7 @@ fn prepare_runtime_storage_owned(
     storage.enable_audit_event_index(runtime_db.clone(), Some(state.id.clone()))?;
 
     let recent_episode_candidates = context_config.recent_episode_candidates;
-    let (episodes, inputs, work, tasks, scheduling, pending) = runtime_db.transaction(|tx| {
+    let derived = runtime_db.transaction(|tx| {
         let current = crate::runtime_db::episode_snapshot::load_episode_memory_snapshot_in(
             tx,
             &crate::runtime_db::episode_snapshot::EpisodeMemoryLoadScope {
@@ -2964,7 +2984,18 @@ fn prepare_runtime_storage_owned(
             tx,
             &input_scope,
             &request,
-        )?
+        )
+        .map_err(|error| {
+            use crate::runtime_db::input_evidence_snapshot::InputEvidenceSnapshotError;
+            if matches!(
+                error.downcast_ref::<InputEvidenceSnapshotError>(),
+                Some(InputEvidenceSnapshotError::ProjectionChanged(_))
+            ) {
+                ScopedInputPreparationRejected.into()
+            } else {
+                error
+            }
+        })?
         else {
             return Err(anyhow!("bootstrap input evidence scope retired"));
         };
@@ -2992,7 +3023,33 @@ fn prepare_runtime_storage_owned(
             scheduling,
             pending,
         ))
-    })?;
+    });
+    let (episodes, inputs, work, tasks, scheduling, pending) = match derived {
+        Ok(derived) => derived,
+        Err(error)
+            if !changed_recovery_state
+                // The posture receipt does not cover a separate registry write.
+                && execution_root_acknowledged
+                && error
+                    .chain()
+                    .any(|cause| cause.is::<ScopedInputPreparationRejected>())
+                && crate::runtime_db::persistence_certainty(&error)
+                    == Some(crate::runtime_db::PersistenceCertainty::DefinitelyNotCommitted)
+                && reservation.is_some() =>
+        {
+            // The derived transaction was rolled back. Reconcile only the
+            // independently acknowledged posture; never publish prepared domains.
+            if let Some(reservation) = reservation.as_deref_mut() {
+                reservation.publish(Arc::new(state.clone()))?;
+            }
+            return Err(AgentConstructorQuarantine {
+                agent_id,
+                incarnation: input_scope.identity_incarnation,
+            }
+            .into());
+        }
+        Err(error) => return Err(error),
+    };
     let (tasks, recovered_tasks) = tasks;
     let recovered_timers =
         scheduling.capture(&super::resident_scheduling::SchedulingCaptureRequest::current())?;

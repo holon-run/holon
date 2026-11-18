@@ -1,6 +1,7 @@
 mod lifecycle;
 pub mod logging;
 mod profile;
+mod quarantine;
 mod service;
 mod state;
 
@@ -21,6 +22,10 @@ pub use profile::{
     load_serve_profile, persist_serve_profile, serve_profile_path, validate_cloudflare_url,
     DaemonServeProfile, ResolvedDaemonServePlan, ServeProfileAccess, ServeProfileAuthentication,
 };
+pub(crate) use quarantine::{
+    persist_quarantine_boot, QuarantineBoot, QuarantineEntry, QuarantineReason, QuarantineStage,
+};
+pub use quarantine::{read_quarantine_report, QuarantineReport, QuarantineReportUnavailable};
 pub(crate) use service::{activity_from_snapshots, runtime_activity_message};
 pub use service::{
     runtime_activity_summary, RuntimeActivityState, RuntimeActivitySummary, RuntimeConfigSurface,
