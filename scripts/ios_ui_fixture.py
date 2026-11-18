@@ -1418,6 +1418,11 @@ with fixture_directory(repo) as root:
                         # Use fresh markers even if history was seeded at startup.
                         seed_fixture_history(local, agent, history_seed_active,
                                              count=35, marker_prefix="IOS_OFFLINE_HISTORY")
+                    if method == "testConversationHistoryWindowPosition":
+                        # Keep an earlier window after paging: the oldest boundary
+                        # removes its control and can hide a missed native ID scroll.
+                        seed_fixture_history(local, agent, history_seed_active,
+                                             count=40, marker_prefix="IOS_WINDOW_HISTORY")
                     if method == "testVisibleBriefAutomaticallyUpdatesHomeUnreadCount":
                         # Pin the marker-brief baseline before this attempt
                         # seeds anything; the confirming endpoint above then

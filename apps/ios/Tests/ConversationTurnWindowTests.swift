@@ -76,4 +76,15 @@ final class ConversationTurnWindowTests: XCTestCase {
         XCTAssertEqual(ids[newer.lowerBound], "turn-21")
         XCTAssertFalse(ids[newer].contains(ids[older.lowerBound]))
     }
+
+    func testOlderWindowTargetIsAfterTheControlInAnInteriorWindow() {
+        let ids = (0..<60).map { "turn-\($0)" }
+        let latest = ConversationTurnWindow.range(ids: ids, endingAt: nil)
+        let end = ConversationTurnWindow.olderEnd(ids: ids, current: latest)
+        let next = ConversationTurnWindow.range(ids: ids, endingAt: end)
+        XCTAssertEqual(next, 25..<45)
+        XCTAssertGreaterThan(next.lowerBound, 0, "The Older control must remain in this window")
+        XCTAssertEqual(ids[next.lowerBound], "turn-25")
+        XCTAssertNotEqual(ids[next.lowerBound], ids[latest.lowerBound])
+    }
 }
