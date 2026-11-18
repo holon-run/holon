@@ -1,0 +1,1269 @@
+//! Deterministic, model-free evaluation for prompt projections.
+//!
+//! The manifest records semantic inputs and budget decisions. It intentionally
+//! does not parse rendered Markdown and does not participate in provider
+//! request lowering.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use holon_domain::TurnOwner;
+
+use crate::{planner::ContextPlanEvidence, PromptSection, PromptStability};
+
+pub const PROJECTION_MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const PROJECTION_SCORECARD_SCHEMA_VERSION: u32 = 1;
+pub const HISTORY_SELECTOR_SCHEMA_VERSION: u32 = 1;
+
+const DIAGNOSTIC_INVARIANTS: [&str; 6] = [
+    "prompt_budget_respected",
+    "current_input_retained",
+    "direct_predecessor_retained",
+    "canonical_evidence_unique",
+    "evidence_owner_consistent",
+    "section_representation_exclusive",
+];
+
+/// Selects which canonical history candidates are eligible for a request
+/// projection. Selectors are pure request-scoped policy; they do not own
+/// runtime state, scheduling, settlement, or provider calls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistorySelector {
+    RecentTurns,
+    WorkItemScoped,
+}
+
+impl HistorySelector {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::RecentTurns => "recent_turns",
+            Self::WorkItemScoped => "work_item_scoped",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionOutcome {
+    Projected,
+    Fallback,
+    IdenticalRenderNoop,
+}
+
+/// Request-scoped diagnostic metadata shared by all history selectors.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionDiagnostics {
+    pub schema_version: u32,
+    pub history_selector: HistorySelector,
+    pub selection_reason: String,
+    pub current_work_item_id: Option<String>,
+    pub input_message_count: usize,
+    pub input_estimated_tokens: usize,
+    pub input_chars: usize,
+    pub fallback_reason: Option<String>,
+    pub policy_version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_limit: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_turns_loaded: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_window_budget_tokens: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection_outcome: Option<ProjectionOutcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub invariant_results: Option<Vec<ProjectionInvariantResult>>,
+}
+
+impl ProjectionDiagnostics {
+    pub fn new(
+        history_selector: HistorySelector,
+        selection_reason: impl Into<String>,
+        current_work_item_id: Option<String>,
+        input_message_count: usize,
+        input_estimated_tokens: usize,
+        input_chars: usize,
+    ) -> Self {
+        Self {
+            schema_version: HISTORY_SELECTOR_SCHEMA_VERSION,
+            history_selector,
+            selection_reason: selection_reason.into(),
+            current_work_item_id,
+            input_message_count,
+            input_estimated_tokens,
+            input_chars,
+            fallback_reason: None,
+            policy_version: format!("history_selector_v{}", HISTORY_SELECTOR_SCHEMA_VERSION),
+            history_window_scope: None,
+            history_window_limit: None,
+            history_window_turns_loaded: None,
+            history_window_source: None,
+            history_window_budget_tokens: None,
+            projection_outcome: None,
+            invariant_results: None,
+        }
+    }
+
+    pub fn with_fallback_reason(mut self, reason: impl Into<String>) -> Self {
+        self.fallback_reason = Some(reason.into());
+        self.projection_outcome = Some(ProjectionOutcome::Fallback);
+        self
+    }
+
+    pub fn with_projection_outcome(mut self, outcome: ProjectionOutcome) -> Self {
+        self.projection_outcome = Some(outcome);
+        self
+    }
+
+    pub fn with_history_window(
+        mut self,
+        scope: impl Into<String>,
+        limit: usize,
+        turns_loaded: usize,
+        source: impl Into<String>,
+        budget_tokens: usize,
+    ) -> Self {
+        self.history_window_scope = Some(scope.into());
+        self.history_window_limit = Some(limit);
+        self.history_window_turns_loaded = Some(turns_loaded);
+        self.history_window_source = Some(source.into());
+        self.history_window_budget_tokens = Some(budget_tokens);
+        self
+    }
+
+    pub fn with_manifest_invariants(mut self, manifest: &ProjectionManifest) -> Self {
+        self.invariant_results = Some(
+            manifest
+                .invariant_results
+                .iter()
+                .filter(|result| DIAGNOSTIC_INVARIANTS.contains(&result.code.as_str()))
+                .cloned()
+                .collect(),
+        );
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProjectionOwner {
+    WorkItem { work_item_id: String },
+    Conversation { interaction_id: String },
+    AgentLifecycle { agent_id: String },
+    LegacyUnbound { agent_id: String },
+    Command,
+}
+
+impl From<&TurnOwner> for ProjectionOwner {
+    fn from(owner: &TurnOwner) -> Self {
+        match owner {
+            TurnOwner::WorkItem { work_item_id } => Self::WorkItem {
+                work_item_id: work_item_id.clone(),
+            },
+            TurnOwner::Conversation { interaction_id } => Self::Conversation {
+                interaction_id: interaction_id.clone(),
+            },
+            TurnOwner::AgentLifecycle { agent_id } => Self::AgentLifecycle {
+                agent_id: agent_id.clone(),
+            },
+            TurnOwner::Command => Self::Command,
+        }
+    }
+}
+
+impl ProjectionOwner {
+    fn key(&self) -> String {
+        match self {
+            Self::WorkItem { work_item_id } => format!("work_item:{work_item_id}"),
+            Self::Conversation { interaction_id } => format!("conversation:{interaction_id}"),
+            Self::AgentLifecycle { agent_id } => format!("agent_lifecycle:{agent_id}"),
+            Self::LegacyUnbound { agent_id } => format!("legacy_unbound:{agent_id}"),
+            Self::Command => "command".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionBindingSummary {
+    pub source_message_id: String,
+    pub turn_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner: Option<ProjectionOwner>,
+    pub work_item_id: Option<String>,
+    pub claimed_work_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionEvidenceRole {
+    CurrentInput,
+    DirectPredecessor,
+    Turn,
+    Input,
+    Result,
+    ToolResult,
+    WorkItemState,
+    WaitState,
+    Lifecycle,
+    Supporting,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct ProjectionEvidenceRef {
+    pub reference: String,
+    pub role: ProjectionEvidenceRole,
+    pub owner: ProjectionOwner,
+}
+
+impl ProjectionEvidenceRef {
+    pub fn new(
+        reference: impl Into<String>,
+        role: ProjectionEvidenceRole,
+        owner: ProjectionOwner,
+    ) -> Self {
+        Self {
+            reference: reference.into(),
+            role,
+            owner,
+        }
+    }
+}
+
+pub type ProjectionEvidenceIndex = BTreeMap<String, Vec<ProjectionEvidenceRef>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionRepresentation {
+    Full,
+    Compact,
+    Truncated,
+    Omitted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionSectionManifest {
+    pub order: usize,
+    pub section_id: String,
+    pub section_name: String,
+    pub stability: PromptStability,
+    pub representation: ProjectionRepresentation,
+    pub reason: String,
+    pub requested_estimated_tokens: usize,
+    pub allocated_estimated_tokens: usize,
+    pub rendered_chars: usize,
+    pub content_sha256: Option<String>,
+    pub selected_evidence_refs: Vec<ProjectionEvidenceRef>,
+    pub omitted_evidence_refs: Vec<ProjectionEvidenceRef>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectionInvariantStatus {
+    Pass,
+    Fail,
+    NotApplicable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionInvariantResult {
+    pub code: String,
+    pub status: ProjectionInvariantStatus,
+    pub details: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionManifest {
+    pub schema_version: u32,
+    pub projector: String,
+    pub activation_owner: ProjectionOwner,
+    pub activation_binding: Option<ProjectionBindingSummary>,
+    pub turn_id: Option<String>,
+    pub prompt_budget_estimated_tokens: usize,
+    pub allocated_estimated_tokens: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diagnostics: Option<ProjectionDiagnostics>,
+    pub system_sections: Vec<ProjectionSectionManifest>,
+    pub context_sections: Vec<ProjectionSectionManifest>,
+    pub invariant_results: Vec<ProjectionInvariantResult>,
+}
+
+impl ProjectionManifest {
+    pub fn canonical_json(&self) -> serde_json::Result<String> {
+        serde_json::to_string_pretty(self).map(|json| format!("{json}\n"))
+    }
+
+    pub fn byte_sha256(&self) -> serde_json::Result<String> {
+        self.canonical_json()
+            .map(|json| format!("{:x}", Sha256::digest(json.as_bytes())))
+    }
+
+    pub fn evaluate(mut self) -> Self {
+        self.invariant_results = evaluate_manifest(&self);
+        self
+    }
+
+    fn active_evidence(&self) -> impl Iterator<Item = &ProjectionEvidenceRef> {
+        self.system_sections
+            .iter()
+            .chain(&self.context_sections)
+            .flat_map(|section| section.selected_evidence_refs.iter())
+    }
+
+    fn all_evidence(&self) -> impl Iterator<Item = &ProjectionEvidenceRef> {
+        self.system_sections
+            .iter()
+            .chain(&self.context_sections)
+            .flat_map(|section| {
+                section
+                    .selected_evidence_refs
+                    .iter()
+                    .chain(&section.omitted_evidence_refs)
+            })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionManifestDiff {
+    pub baseline_sha256: String,
+    pub candidate_sha256: String,
+    pub added_selected_evidence_refs: Vec<String>,
+    pub removed_selected_evidence_refs: Vec<String>,
+    pub changed_sections: Vec<String>,
+    pub candidate_failed_invariants: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectionScorecard {
+    pub schema_version: u32,
+    pub passed: bool,
+    pub baseline_projector: String,
+    pub candidate_projector: String,
+    pub diff: ProjectionManifestDiff,
+    pub assertions: Vec<ProjectionInvariantResult>,
+}
+
+pub fn compare_projection_manifests(
+    baseline: &ProjectionManifest,
+    candidate: &ProjectionManifest,
+) -> serde_json::Result<ProjectionScorecard> {
+    let baseline_refs = selected_ref_set(baseline);
+    let candidate_refs = selected_ref_set(candidate);
+    let added_selected_evidence_refs = candidate_refs
+        .difference(&baseline_refs)
+        .cloned()
+        .collect::<Vec<_>>();
+    let removed_selected_evidence_refs = baseline_refs
+        .difference(&candidate_refs)
+        .cloned()
+        .collect::<Vec<_>>();
+    let baseline_sections = section_signatures(baseline);
+    let candidate_sections = section_signatures(candidate);
+    let changed_sections = baseline_sections
+        .keys()
+        .chain(candidate_sections.keys())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|id| baseline_sections.get(*id) != candidate_sections.get(*id))
+        .cloned()
+        .collect::<Vec<_>>();
+    let candidate_failed_invariants = candidate
+        .invariant_results
+        .iter()
+        .filter(|result| result.status == ProjectionInvariantStatus::Fail)
+        .map(|result| result.code.clone())
+        .collect::<Vec<_>>();
+    let assertions = vec![
+        owner_is_unchanged(baseline, candidate),
+        binding_is_unchanged(baseline, candidate),
+        budget_is_respected(candidate),
+        current_input_is_retained(candidate),
+    ];
+    let passed = candidate_failed_invariants.is_empty()
+        && assertions
+            .iter()
+            .all(|assertion| assertion.status != ProjectionInvariantStatus::Fail);
+
+    Ok(ProjectionScorecard {
+        schema_version: PROJECTION_SCORECARD_SCHEMA_VERSION,
+        passed,
+        baseline_projector: baseline.projector.clone(),
+        candidate_projector: candidate.projector.clone(),
+        diff: ProjectionManifestDiff {
+            baseline_sha256: baseline.byte_sha256()?,
+            candidate_sha256: candidate.byte_sha256()?,
+            added_selected_evidence_refs,
+            removed_selected_evidence_refs,
+            changed_sections,
+            candidate_failed_invariants,
+        },
+        assertions,
+    })
+}
+
+/// Build a selector comparison without invoking a provider or mutating
+/// runtime state. The caller supplies manifests produced from the same
+/// canonical runtime snapshot.
+pub fn compare_history_selectors(
+    recent_turns: &ProjectionManifest,
+    work_item_scoped: &ProjectionManifest,
+) -> serde_json::Result<ProjectionScorecard> {
+    let mut scorecard = compare_projection_manifests(recent_turns, work_item_scoped)?;
+    scorecard
+        .assertions
+        .push(selector_comparison_is_pure(recent_turns, work_item_scoped));
+    scorecard.passed = scorecard.passed
+        && scorecard
+            .assertions
+            .iter()
+            .all(|assertion| assertion.status != ProjectionInvariantStatus::Fail);
+    Ok(scorecard)
+}
+
+fn selector_comparison_is_pure(
+    recent_turns: &ProjectionManifest,
+    work_item_scoped: &ProjectionManifest,
+) -> ProjectionInvariantResult {
+    let same_owner = recent_turns.activation_owner == work_item_scoped.activation_owner;
+    let same_binding = recent_turns.activation_binding == work_item_scoped.activation_binding;
+    let same_turn = recent_turns.turn_id == work_item_scoped.turn_id;
+    if same_owner && same_binding && same_turn {
+        invariant(
+            "selector_comparison_same_activation",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "selector_comparison_same_activation",
+            ProjectionInvariantStatus::Fail,
+            [
+                (!same_owner).then_some("activation owner differs"),
+                (!same_binding).then_some("activation binding differs"),
+                (!same_turn).then_some("turn id differs"),
+            ]
+            .into_iter()
+            .flatten(),
+        )
+    }
+}
+
+pub fn compare_budget_monotonicity(
+    larger_budget: &ProjectionManifest,
+    smaller_budget: &ProjectionManifest,
+) -> ProjectionInvariantResult {
+    if smaller_budget.prompt_budget_estimated_tokens >= larger_budget.prompt_budget_estimated_tokens
+    {
+        return invariant(
+            "budget_monotonic_degradation",
+            ProjectionInvariantStatus::NotApplicable,
+            ["manifests are not ordered from larger to smaller budget"],
+        );
+    }
+    let larger = selected_ref_set(larger_budget);
+    let smaller = selected_ref_set(smaller_budget);
+    let unexpected = smaller.difference(&larger).cloned().collect::<Vec<_>>();
+    if unexpected.is_empty() {
+        invariant(
+            "budget_monotonic_degradation",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "budget_monotonic_degradation",
+            ProjectionInvariantStatus::Fail,
+            unexpected
+                .into_iter()
+                .map(|reference| format!("smaller budget introduced {reference}")),
+        )
+    }
+}
+
+/// Sections, budget decisions and evidence from one already-built prompt.
+pub struct ProjectionManifestInput<'a> {
+    pub system_sections: &'a [PromptSection],
+    pub context_sections: &'a [PromptSection],
+    pub owner: &'a ProjectionOwner,
+    pub binding: Option<&'a ProjectionBindingSummary>,
+    pub turn_id: Option<&'a str>,
+    pub evidence: &'a ProjectionEvidenceIndex,
+    pub plan_evidence: &'a ContextPlanEvidence,
+}
+
+pub fn legacy_manifest_from_input(
+    input: ProjectionManifestInput<'_>,
+    estimate_text_tokens: fn(&str) -> usize,
+) -> ProjectionManifest {
+    let mut manifest =
+        manifest_from_input(input, HistorySelector::RecentTurns, estimate_text_tokens);
+    manifest.projector = "legacy_context_sections_v1".to_string();
+    manifest.diagnostics = None;
+    manifest.evaluate()
+}
+
+/// Build a manifest for the selected history policy. The system-section
+/// estimator is supplied by the caller to preserve the manifest's token counts.
+pub fn manifest_from_input(
+    input: ProjectionManifestInput<'_>,
+    selector: HistorySelector,
+    estimate_text_tokens: fn(&str) -> usize,
+) -> ProjectionManifest {
+    let system_sections: Vec<ProjectionSectionManifest> = input
+        .system_sections
+        .iter()
+        .enumerate()
+        .map(|(order, section)| selected_section_manifest(order, section, estimate_text_tokens))
+        .collect();
+    let selected_context = input
+        .context_sections
+        .iter()
+        .map(|section| (section.id.as_str(), section))
+        .collect::<BTreeMap<_, _>>();
+    let context_sections: Vec<ProjectionSectionManifest> = input
+        .plan_evidence
+        .decisions
+        .iter()
+        .enumerate()
+        .map(|(order, decision)| {
+            let section = selected_context
+                .get(decision.candidate_id.as_str())
+                .copied();
+            let representation = match decision.outcome.label() {
+                "full" => ProjectionRepresentation::Full,
+                "compact" => ProjectionRepresentation::Compact,
+                "truncated" => ProjectionRepresentation::Truncated,
+                "omitted" => ProjectionRepresentation::Omitted,
+                _ => ProjectionRepresentation::Omitted,
+            };
+            let evidence = input
+                .evidence
+                .get(&decision.candidate_id)
+                .cloned()
+                .unwrap_or_default();
+            let (selected_evidence_refs, omitted_evidence_refs) =
+                if representation == ProjectionRepresentation::Omitted {
+                    (Vec::new(), evidence)
+                } else {
+                    (evidence, Vec::new())
+                };
+            ProjectionSectionManifest {
+                order,
+                section_id: decision.candidate_id.clone(),
+                section_name: decision.section_name.clone(),
+                stability: section
+                    .map(|section| section.stability)
+                    .unwrap_or(PromptStability::TurnScoped),
+                representation,
+                reason: decision.reason.code().to_string(),
+                requested_estimated_tokens: decision.requested_estimated_tokens,
+                allocated_estimated_tokens: decision.allocated_estimated_tokens,
+                rendered_chars: section
+                    .map(|section| section.content.chars().count())
+                    .unwrap_or_default(),
+                content_sha256: section.map(section_sha256),
+                selected_evidence_refs,
+                omitted_evidence_refs,
+            }
+        })
+        .collect();
+    ProjectionManifest {
+        schema_version: PROJECTION_MANIFEST_SCHEMA_VERSION,
+        projector: "context_sections_v1".to_string(),
+        activation_owner: input.owner.clone(),
+        activation_binding: input.binding.cloned(),
+        turn_id: input.turn_id.map(str::to_owned),
+        prompt_budget_estimated_tokens: input.plan_evidence.total_budget_estimated_tokens,
+        allocated_estimated_tokens: input.plan_evidence.allocated_estimated_tokens,
+        diagnostics: Some(diagnostics_for_prompt(
+            &input,
+            selector,
+            &system_sections,
+            &context_sections,
+        )),
+        system_sections,
+        context_sections,
+        invariant_results: Vec::new(),
+    }
+    .evaluate()
+}
+
+fn diagnostics_for_prompt(
+    input: &ProjectionManifestInput<'_>,
+    selector: HistorySelector,
+    system_sections: &[ProjectionSectionManifest],
+    context_sections: &[ProjectionSectionManifest],
+) -> ProjectionDiagnostics {
+    let current_work_item_id = match input.owner {
+        ProjectionOwner::WorkItem { work_item_id } => Some(work_item_id.clone()),
+        _ => None,
+    };
+    let input_message_count = input
+        .evidence
+        .values()
+        .flatten()
+        .filter(|evidence| {
+            matches!(
+                evidence.role,
+                ProjectionEvidenceRole::CurrentInput | ProjectionEvidenceRole::Input
+            )
+        })
+        .map(|evidence| evidence.reference.as_str())
+        .collect::<BTreeSet<_>>()
+        .len();
+    let input_chars = system_sections
+        .iter()
+        .chain(context_sections.iter())
+        .map(|section| section.rendered_chars)
+        .sum();
+    let input_estimated_tokens = system_sections
+        .iter()
+        .chain(context_sections.iter())
+        .map(|section| section.allocated_estimated_tokens)
+        .sum();
+    ProjectionDiagnostics::new(
+        selector,
+        if selector == HistorySelector::RecentTurns {
+            "agent_recent_selector"
+        } else {
+            "work_item_scoped_selector"
+        },
+        current_work_item_id,
+        input_message_count,
+        input_estimated_tokens,
+        input_chars,
+    )
+}
+
+fn selected_section_manifest(
+    order: usize,
+    section: &PromptSection,
+    estimate_text_tokens: fn(&str) -> usize,
+) -> ProjectionSectionManifest {
+    ProjectionSectionManifest {
+        order,
+        section_id: section.id.clone(),
+        section_name: section.name.clone(),
+        stability: section.stability,
+        representation: ProjectionRepresentation::Full,
+        reason: "system_section".to_string(),
+        requested_estimated_tokens: estimate_text_tokens(&section.content),
+        allocated_estimated_tokens: estimate_text_tokens(&section.content),
+        rendered_chars: section.content.chars().count(),
+        content_sha256: Some(section_sha256(section)),
+        selected_evidence_refs: Vec::new(),
+        omitted_evidence_refs: Vec::new(),
+    }
+}
+
+fn section_sha256(section: &PromptSection) -> String {
+    format!("{:x}", Sha256::digest(section.content.as_bytes()))
+}
+
+fn evaluate_manifest(manifest: &ProjectionManifest) -> Vec<ProjectionInvariantResult> {
+    vec![
+        budget_is_respected(manifest),
+        activation_binding_is_consistent(manifest),
+        current_input_is_retained(manifest),
+        direct_predecessor_is_retained(manifest),
+        canonical_evidence_is_unique(manifest),
+        evidence_owner_is_consistent(manifest),
+        representations_are_exclusive(manifest),
+    ]
+}
+
+fn activation_binding_is_consistent(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    let Some(binding) = manifest.activation_binding.as_ref() else {
+        return invariant(
+            "activation_binding_consistent",
+            ProjectionInvariantStatus::NotApplicable,
+            ["manifest does not include a legacy activation binding"],
+        );
+    };
+    let matches = match binding.owner.as_ref() {
+        Some(owner) => owner == &manifest.activation_owner,
+        None => match binding.work_item_id.as_ref() {
+            Some(work_item_id) => {
+                manifest.activation_owner
+                    == (ProjectionOwner::WorkItem {
+                        work_item_id: work_item_id.clone(),
+                    })
+            }
+            None => matches!(
+                manifest.activation_owner,
+                ProjectionOwner::LegacyUnbound { .. }
+            ),
+        },
+    };
+    if matches {
+        invariant(
+            "activation_binding_consistent",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "activation_binding_consistent",
+            ProjectionInvariantStatus::Fail,
+            [format!(
+                "binding owner={} work_item_id={} conflicts with activation owner={}",
+                binding
+                    .owner
+                    .as_ref()
+                    .map(ProjectionOwner::key)
+                    .unwrap_or_else(|| "legacy".to_string()),
+                binding.work_item_id.as_deref().unwrap_or("<none>"),
+                manifest.activation_owner.key()
+            )],
+        )
+    }
+}
+
+fn budget_is_respected(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    if manifest.allocated_estimated_tokens <= manifest.prompt_budget_estimated_tokens {
+        invariant(
+            "prompt_budget_respected",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "prompt_budget_respected",
+            ProjectionInvariantStatus::Fail,
+            [format!(
+                "allocated {} exceeds budget {}",
+                manifest.allocated_estimated_tokens, manifest.prompt_budget_estimated_tokens
+            )],
+        )
+    }
+}
+
+fn current_input_is_retained(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    let refs = manifest
+        .active_evidence()
+        .filter(|evidence| evidence.role == ProjectionEvidenceRole::CurrentInput)
+        .map(|evidence| evidence.reference.clone())
+        .collect::<Vec<_>>();
+    match refs.len() {
+        1 => invariant(
+            "current_input_retained",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        ),
+        0 => invariant(
+            "current_input_retained",
+            ProjectionInvariantStatus::Fail,
+            ["no selected current-input evidence ref"],
+        ),
+        _ => invariant(
+            "current_input_retained",
+            ProjectionInvariantStatus::Fail,
+            [format!(
+                "current input appears {} times: {}",
+                refs.len(),
+                refs.join(", ")
+            )],
+        ),
+    }
+}
+
+fn direct_predecessor_is_retained(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    let expected = manifest
+        .all_evidence()
+        .filter(|evidence| evidence.role == ProjectionEvidenceRole::DirectPredecessor)
+        .count();
+    let selected = manifest
+        .active_evidence()
+        .filter(|evidence| evidence.role == ProjectionEvidenceRole::DirectPredecessor)
+        .count();
+    match (expected, selected) {
+        (0, 0) => invariant(
+            "direct_predecessor_retained",
+            ProjectionInvariantStatus::NotApplicable,
+            ["fixture does not identify a direct predecessor"],
+        ),
+        (1, 1) => invariant(
+            "direct_predecessor_retained",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        ),
+        (expected, selected) => invariant(
+            "direct_predecessor_retained",
+            ProjectionInvariantStatus::Fail,
+            [format!(
+                "selected {selected} of {expected} direct predecessor refs"
+            )],
+        ),
+    }
+}
+
+fn canonical_evidence_is_unique(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    let mut counts = BTreeMap::<String, usize>::new();
+    for evidence in manifest.active_evidence() {
+        *counts.entry(evidence.reference.clone()).or_default() += 1;
+    }
+    let duplicates = counts
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(reference, count)| format!("{reference} selected {count} times"))
+        .collect::<Vec<_>>();
+    if duplicates.is_empty() {
+        invariant(
+            "canonical_evidence_unique",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "canonical_evidence_unique",
+            ProjectionInvariantStatus::Fail,
+            duplicates,
+        )
+    }
+}
+
+fn evidence_owner_is_consistent(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    let expected = manifest.activation_owner.key();
+    let mismatches = manifest
+        .active_evidence()
+        .filter(|evidence| evidence.owner != manifest.activation_owner)
+        .map(|evidence| {
+            format!(
+                "{} owner={} expected={expected}",
+                evidence.reference,
+                evidence.owner.key()
+            )
+        })
+        .collect::<Vec<_>>();
+    if mismatches.is_empty() {
+        invariant(
+            "evidence_owner_consistent",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "evidence_owner_consistent",
+            ProjectionInvariantStatus::Fail,
+            mismatches,
+        )
+    }
+}
+
+fn representations_are_exclusive(manifest: &ProjectionManifest) -> ProjectionInvariantResult {
+    let duplicates = manifest
+        .context_sections
+        .iter()
+        .map(|section| section.section_id.as_str())
+        .fold(BTreeMap::<&str, usize>::new(), |mut counts, id| {
+            *counts.entry(id).or_default() += 1;
+            counts
+        })
+        .into_iter()
+        .filter(|(_, count)| *count > 1)
+        .map(|(id, count)| format!("{id} has {count} representations"))
+        .collect::<Vec<_>>();
+    if duplicates.is_empty() {
+        invariant(
+            "section_representation_exclusive",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "section_representation_exclusive",
+            ProjectionInvariantStatus::Fail,
+            duplicates,
+        )
+    }
+}
+
+fn owner_is_unchanged(
+    baseline: &ProjectionManifest,
+    candidate: &ProjectionManifest,
+) -> ProjectionInvariantResult {
+    if baseline.activation_owner == candidate.activation_owner {
+        invariant(
+            "activation_owner_unchanged",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "activation_owner_unchanged",
+            ProjectionInvariantStatus::Fail,
+            [format!(
+                "baseline={} candidate={}",
+                baseline.activation_owner.key(),
+                candidate.activation_owner.key()
+            )],
+        )
+    }
+}
+
+fn binding_is_unchanged(
+    baseline: &ProjectionManifest,
+    candidate: &ProjectionManifest,
+) -> ProjectionInvariantResult {
+    if baseline.activation_binding == candidate.activation_binding {
+        invariant(
+            "activation_binding_unchanged",
+            ProjectionInvariantStatus::Pass,
+            std::iter::empty::<String>(),
+        )
+    } else {
+        invariant(
+            "activation_binding_unchanged",
+            ProjectionInvariantStatus::Fail,
+            ["candidate changed the legacy activation binding summary"],
+        )
+    }
+}
+
+fn invariant(
+    code: impl Into<String>,
+    status: ProjectionInvariantStatus,
+    details: impl IntoIterator<Item = impl Into<String>>,
+) -> ProjectionInvariantResult {
+    ProjectionInvariantResult {
+        code: code.into(),
+        status,
+        details: details.into_iter().map(Into::into).collect(),
+    }
+}
+
+fn selected_ref_set(manifest: &ProjectionManifest) -> BTreeSet<String> {
+    manifest
+        .active_evidence()
+        .map(|evidence| evidence.reference.clone())
+        .collect()
+}
+
+fn section_signatures(
+    manifest: &ProjectionManifest,
+) -> BTreeMap<String, (ProjectionRepresentation, Option<String>, usize)> {
+    manifest
+        .context_sections
+        .iter()
+        .map(|section| {
+            (
+                section.section_id.clone(),
+                (
+                    section.representation,
+                    section.content_sha256.clone(),
+                    section.allocated_estimated_tokens,
+                ),
+            )
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn evidence(reference: &str, role: ProjectionEvidenceRole) -> ProjectionEvidenceRef {
+        ProjectionEvidenceRef::new(
+            reference,
+            role,
+            ProjectionOwner::AgentLifecycle {
+                agent_id: "agent-1".into(),
+            },
+        )
+    }
+
+    fn manifest(refs: Vec<ProjectionEvidenceRef>) -> ProjectionManifest {
+        ProjectionManifest {
+            schema_version: PROJECTION_MANIFEST_SCHEMA_VERSION,
+            projector: "test".into(),
+            activation_owner: ProjectionOwner::AgentLifecycle {
+                agent_id: "agent-1".into(),
+            },
+            activation_binding: None,
+            turn_id: Some("turn-1".into()),
+            prompt_budget_estimated_tokens: 100,
+            allocated_estimated_tokens: 20,
+            diagnostics: None,
+            system_sections: Vec::new(),
+            context_sections: vec![ProjectionSectionManifest {
+                order: 0,
+                section_id: "current_input".into(),
+                section_name: "current_input".into(),
+                stability: PromptStability::TurnScoped,
+                representation: ProjectionRepresentation::Full,
+                reason: "selected_full".into(),
+                requested_estimated_tokens: 20,
+                allocated_estimated_tokens: 20,
+                rendered_chars: 40,
+                content_sha256: Some("abc".into()),
+                selected_evidence_refs: refs,
+                omitted_evidence_refs: Vec::new(),
+            }],
+            invariant_results: Vec::new(),
+        }
+        .evaluate()
+    }
+
+    fn omitted_manifest(refs: Vec<ProjectionEvidenceRef>) -> ProjectionManifest {
+        let mut manifest = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        manifest.context_sections.push(ProjectionSectionManifest {
+            order: 1,
+            section_id: "omitted".into(),
+            section_name: "omitted".into(),
+            stability: PromptStability::TurnScoped,
+            representation: ProjectionRepresentation::Omitted,
+            reason: "omitted_lower_priority".into(),
+            requested_estimated_tokens: 20,
+            allocated_estimated_tokens: 0,
+            rendered_chars: 0,
+            content_sha256: None,
+            selected_evidence_refs: Vec::new(),
+            omitted_evidence_refs: refs,
+        });
+        manifest.evaluate()
+    }
+
+    #[test]
+    fn history_selector_serializes_stably() {
+        let recent: HistorySelector = serde_json::from_str("\"recent_turns\"").unwrap();
+        let scoped: HistorySelector = serde_json::from_str("\"work_item_scoped\"").unwrap();
+        assert_eq!(recent, HistorySelector::RecentTurns);
+        assert_eq!(scoped, HistorySelector::WorkItemScoped);
+        assert_eq!(serde_json::to_string(&recent).unwrap(), "\"recent_turns\"");
+        assert_eq!(
+            serde_json::to_string(&scoped).unwrap(),
+            "\"work_item_scoped\""
+        );
+    }
+
+    #[test]
+    fn projection_diagnostics_new_fields_are_backward_compatible() {
+        let diagnostics: ProjectionDiagnostics = serde_json::from_value(serde_json::json!({
+            "schema_version": 1,
+            "history_selector": "recent_turns",
+            "selection_reason": "legacy",
+            "current_work_item_id": null,
+            "input_message_count": 1,
+            "input_estimated_tokens": 2,
+            "input_chars": 3,
+            "fallback_reason": null,
+            "policy_version": "history_selector_v1"
+        }))
+        .unwrap();
+        assert_eq!(diagnostics.history_window_limit, None);
+        assert_eq!(diagnostics.projection_outcome, None);
+        assert_eq!(diagnostics.invariant_results, None);
+    }
+
+    #[test]
+    fn identical_render_noop_is_not_reported_as_fallback() {
+        let diagnostics = ProjectionDiagnostics::new(
+            HistorySelector::WorkItemScoped,
+            "identical_render",
+            None,
+            0,
+            0,
+            0,
+        )
+        .with_projection_outcome(ProjectionOutcome::IdenticalRenderNoop);
+        assert_eq!(
+            diagnostics.projection_outcome,
+            Some(ProjectionOutcome::IdenticalRenderNoop)
+        );
+        assert_eq!(diagnostics.fallback_reason, None);
+    }
+
+    #[test]
+    fn projection_diagnostics_persist_the_six_runtime_safety_invariants() {
+        let manifest = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        let diagnostics = ProjectionDiagnostics::new(
+            HistorySelector::WorkItemScoped,
+            "scoped",
+            Some("work-1".into()),
+            1,
+            1,
+            1,
+        )
+        .with_manifest_invariants(&manifest);
+        let invariant_results = diagnostics.invariant_results.unwrap();
+        assert_eq!(invariant_results.len(), 6);
+        assert!(!invariant_results
+            .iter()
+            .any(|result| result.code == "activation_binding_consistent"));
+        assert!(DIAGNOSTIC_INVARIANTS.iter().all(|expected| {
+            invariant_results
+                .iter()
+                .any(|result| result.code == *expected)
+        }));
+    }
+
+    #[test]
+    fn selector_comparison_requires_same_activation() {
+        let recent = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        let scorecard = compare_history_selectors(&recent, &recent).unwrap();
+        assert!(scorecard.passed);
+
+        let mut different = recent.clone();
+        different.turn_id = Some("turn-2".into());
+        let scorecard = compare_history_selectors(&recent, &different).unwrap();
+        assert!(!scorecard.passed);
+        assert!(scorecard.assertions.iter().any(|assertion| {
+            assertion.code == "selector_comparison_same_activation"
+                && assertion.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn canonical_json_is_byte_stable() {
+        let manifest = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+
+        assert_eq!(
+            manifest.canonical_json().unwrap(),
+            manifest.canonical_json().unwrap()
+        );
+        assert_eq!(
+            manifest.byte_sha256().unwrap(),
+            manifest.byte_sha256().unwrap()
+        );
+    }
+
+    #[test]
+    fn restart_rebuild_is_byte_equivalent() {
+        let before = manifest(vec![
+            evidence("message:current", ProjectionEvidenceRole::CurrentInput),
+            evidence("message:prior", ProjectionEvidenceRole::DirectPredecessor),
+        ]);
+        let rebuilt: ProjectionManifest =
+            serde_json::from_str(&before.canonical_json().unwrap()).unwrap();
+
+        assert_eq!(
+            before.canonical_json().unwrap(),
+            rebuilt.canonical_json().unwrap()
+        );
+        assert_eq!(
+            before.byte_sha256().unwrap(),
+            rebuilt.byte_sha256().unwrap()
+        );
+    }
+
+    #[test]
+    fn self_test_detects_duplicate_ref() {
+        let current = evidence("message:current", ProjectionEvidenceRole::CurrentInput);
+        let manifest = manifest(vec![current.clone(), current]);
+
+        assert!(manifest.invariant_results.iter().any(|result| {
+            result.code == "canonical_evidence_unique"
+                && result.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn self_test_detects_wrong_owner() {
+        let mut current = evidence("message:current", ProjectionEvidenceRole::CurrentInput);
+        current.owner = ProjectionOwner::WorkItem {
+            work_item_id: "other".into(),
+        };
+        let manifest = manifest(vec![current]);
+
+        assert!(manifest.invariant_results.iter().any(|result| {
+            result.code == "evidence_owner_consistent"
+                && result.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn self_test_detects_owner_binding_mismatch() {
+        let mut manifest = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        manifest.activation_binding = Some(ProjectionBindingSummary {
+            source_message_id: "message:current".into(),
+            turn_id: "turn-1".into(),
+            owner: None,
+            work_item_id: Some("work-1".into()),
+            claimed_work_revision: Some(1),
+        });
+        let manifest = manifest.evaluate();
+
+        assert!(manifest.invariant_results.iter().any(|result| {
+            result.code == "activation_binding_consistent"
+                && result.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn self_test_detects_missing_current_input() {
+        let manifest = manifest(vec![evidence("turn:prior", ProjectionEvidenceRole::Turn)]);
+
+        assert!(manifest.invariant_results.iter().any(|result| {
+            result.code == "current_input_retained"
+                && result.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn self_test_detects_missing_direct_predecessor() {
+        let manifest = omitted_manifest(vec![evidence(
+            "message:prior",
+            ProjectionEvidenceRole::DirectPredecessor,
+        )]);
+
+        assert!(manifest.invariant_results.iter().any(|result| {
+            result.code == "direct_predecessor_retained"
+                && result.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn self_test_detects_cross_owner_leakage() {
+        let mut leaked = evidence("message:foreign", ProjectionEvidenceRole::Supporting);
+        leaked.owner = ProjectionOwner::Conversation {
+            interaction_id: "other-interaction".into(),
+        };
+        let manifest = manifest(vec![
+            evidence("message:current", ProjectionEvidenceRole::CurrentInput),
+            leaked,
+        ]);
+
+        assert!(manifest.invariant_results.iter().any(|result| {
+            result.code == "evidence_owner_consistent"
+                && result.status == ProjectionInvariantStatus::Fail
+        }));
+    }
+
+    #[test]
+    fn self_test_detects_non_monotonic_budget_projection() {
+        let larger = manifest(vec![evidence(
+            "message:current",
+            ProjectionEvidenceRole::CurrentInput,
+        )]);
+        let mut smaller = manifest(vec![
+            evidence("message:current", ProjectionEvidenceRole::CurrentInput),
+            evidence("brief:new", ProjectionEvidenceRole::Result),
+        ]);
+        smaller.prompt_budget_estimated_tokens = 50;
+
+        assert_eq!(
+            compare_budget_monotonicity(&larger, &smaller).status,
+            ProjectionInvariantStatus::Fail
+        );
+    }
+}
