@@ -6,6 +6,7 @@ mod get_workspace_state;
 mod inventory;
 mod list_provider_models;
 mod memory_get;
+mod memory_search;
 mod sleep;
 mod timer;
 mod use_workspace;

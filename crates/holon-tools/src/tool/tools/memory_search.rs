@@ -15,6 +15,12 @@ pub struct MemorySearchArgs {
     pub limit: Option<usize>,
     #[serde(default)]
     pub include_all_workspaces: bool,
+    /// Optional explicit agent scope. Omitted, empty, or blank-only values
+    /// keep the default caller-only search; a non-empty list searches only
+    /// the listed agents (whitespace-trimmed, deduplicated; unknown ids
+    /// simply match nothing and never implicitly add the caller).
+    #[serde(default)]
+    pub agent_ids: Option<Vec<String>>,
 }
 
 pub fn definition() -> Result<BuiltinToolDefinition> {
