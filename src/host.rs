@@ -17259,8 +17259,8 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "d")]
     #[tokio::test]
-    async fn agent_message_wait_preserves_reply_authority_with_late_status() {
-        for (use_wait, reply_authority) in [
+    async fn agent_message_wait_preserves_caller_attribution_with_late_status() {
+        for (use_wait, caller_authority) in [
             (false, AuthorityClass::OperatorInstruction),
             (false, AuthorityClass::RuntimeInstruction),
             (true, AuthorityClass::RuntimeInstruction),
@@ -17404,7 +17404,7 @@ mod tests {
                             forward: false,
                             reply_context_id: None,
                         },
-                        reply_authority,
+                        caller_authority,
                     )
                     .await
                     .unwrap();
@@ -17422,6 +17422,18 @@ mod tests {
                 .read_message_by_id(detail["message_id"].as_str().unwrap())
                 .unwrap()
                 .unwrap();
+            assert_eq!(reply.authority_class, AuthorityClass::RuntimeInstruction);
+            let delivery = parent
+                .runtime_db()
+                .agent_message_deliveries()
+                .latest_for_message(&reply.id)
+                .unwrap()
+                .unwrap();
+            assert_eq!(delivery.caller.authority_class, caller_authority);
+            assert_eq!(
+                delivery.message_authority_version,
+                Some(crate::types::AgentMessageAuthorityVersion::DerivedV1)
+            );
             assert_eq!(
                 reply.body,
                 MessageBody::Text {
@@ -17460,7 +17472,7 @@ mod tests {
             );
             let result_id = format!("message:agent-message-wait:{task_id}");
             println!(
-                "3484 matrix: use_wait={use_wait}, reply_authority={reply_authority:?}, wait={:?}",
+                "3484 matrix: use_wait={use_wait}, caller_authority={caller_authority:?}, wait={:?}",
                 registration.as_ref().map(|registration| parent
                     .storage()
                     .latest_wait_conditions_for_agent("default")
@@ -17499,7 +17511,7 @@ mod tests {
                 })
                 .collect();
             panic!(
-                "real message-wait matrix stalled: use_wait={use_wait}, reply_authority={reply_authority:?}, error={error:?}, events={relevant:?}"
+                "real message-wait matrix stalled: use_wait={use_wait}, caller_authority={caller_authority:?}, error={error:?}, events={relevant:?}"
             )
         });
             let events = parent.storage().read_recent_events(400).unwrap();
@@ -17550,13 +17562,6 @@ mod tests {
                     .iter()
                     .find(|batch| batch.items.iter().any(|item| item.message_id == result_id))
                     .expect("unwaited current-turn result must remain durably attached");
-                let reply = messages
-                    .iter()
-                    .find(|message| {
-                        matches!(&message.body, MessageBody::Text { text } if text == "peer report 0")
-                    })
-                    .unwrap();
-                assert_eq!(reply.authority_class, reply_authority);
                 assert!(batch.items.iter().any(|item| item.message_id == reply.id));
                 assert!(parent_turn.input_message_ids.contains(&reply.id));
                 assert_eq!(
@@ -17616,11 +17621,7 @@ mod tests {
                 assert_eq!(reply_attempt.provenance.origin, ExecutionOrigin::System);
                 assert_eq!(
                     reply_attempt.provenance.trust,
-                    match reply_authority {
-                        AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
-                        AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
-                        _ => unreachable!(),
-                    }
+                    ExecutionTrust::RuntimeInstruction
                 );
             }
             let result_has_attempt = partition
