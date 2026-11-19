@@ -779,6 +779,13 @@ origin, authority class, correlation, causation, and admission evidence enter
 message admission, transcript storage, target prompt context, and restricted
 audit evidence. Compatibility `trust` must not replace `authority_class`.
 
+Agent sends and existing-agent invocations (including replies and forwards)
+derive `RuntimeInstruction` for the new message. The durable delivery retains
+the caller's original authority separately and records which rule was used to
+write the message. Pre-upgrade agent deliveries without that marker still bind
+against the original label; that label does not grant operator queue admission.
+Direct operator ingress and runtime-owned control messages are unchanged.
+
 Admission authority does not become execution authority. The target runtime
 computes execution permission from the preserved envelope, the target agent's
 capability policy, and the current execution policy. A message admitted from a

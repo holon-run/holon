@@ -427,7 +427,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if selected.1
             || selected.0.is_none_or(|message| {
                 message.priority == Priority::Interject
-                    || message.authority_class == AuthorityClass::OperatorInstruction
+                    || crate::wake_contract::has_operator_queue_authority(message)
             })
         {
             return Ok(selected);
@@ -491,7 +491,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         if let Some(retry) = provider_recovery {
             let source = queue.peek_next_matching(|message| {
                 message.priority == Priority::Interject
-                    || message.authority_class == AuthorityClass::OperatorInstruction
+                    || crate::wake_contract::has_operator_queue_authority(message)
                     || (message.agent_id == retry.agent_id
                         && message.work_item_id == retry.work_item_id
                         && !parked.contains(&message.id)
@@ -505,7 +505,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 // New scanner roots need admission opportunities too, not only
                 // attached snapshots, but cannot cross operator/interject input.
                 if source.priority != Priority::Interject
-                    && source.authority_class != AuthorityClass::OperatorInstruction
+                    && !crate::wake_contract::has_operator_queue_authority(source)
                     && {
                         let read = recovery
                             .context("queue recovery selection omitted qualified Task/Work")?;
@@ -1205,18 +1205,32 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             .as_ref()
             .is_some_and(|entry| entry.status == QueueEntryStatus::Queued)
         {
-            self.runtime
+            let delivery = self
+                .runtime
                 .inner
                 .runtime_db
                 .agent_message_deliveries()
-                .latest_for_message_preparation(&persisted_message.id)?
-                .as_ref()
-                .is_some_and(|delivery| {
-                    super::agent_message_delivery::isolate_legacy_cross_agent_execution_bindings(
-                        &mut persisted_message,
-                        delivery,
-                    )
-                })
+                .latest_for_message_preparation(&persisted_message.id)?;
+            if let Some(delivery) = &delivery {
+                if delivery
+                    .caller
+                    .principal_kind
+                    .delivery_authority_version()
+                    .is_some()
+                    || delivery.message_authority_version.is_some()
+                {
+                    anyhow::ensure!(
+                        delivery.matches_message_authority(persisted_message.authority_class),
+                        "queued agent delivery does not match its recorded message authority"
+                    );
+                }
+            }
+            delivery.as_ref().is_some_and(|delivery| {
+                super::agent_message_delivery::isolate_legacy_cross_agent_execution_bindings(
+                    &mut persisted_message,
+                    delivery,
+                )
+            })
         } else {
             false
         };
@@ -2412,7 +2426,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     .is_none_or(|incarnation| incarnation == tasks.scope.identity_incarnation)
                 && delivery.routing_context == message.routing_context
                 && delivery.caller.origin == message.origin
-                && delivery.caller.authority_class == message.authority_class
+                && delivery.matches_message_authority(message.authority_class)
                 && Some(delivery.caller.delivery_surface) == message.delivery_surface
                 && Some(delivery.caller.admission_context) == message.admission_context
         }))
@@ -4922,6 +4936,10 @@ fn canonical_execution_trust(
     message: &MessageEnvelope,
 ) -> crate::domain::execution_protocol::ExecutionTrust {
     use crate::domain::execution_protocol::ExecutionTrust;
+    if crate::wake_contract::is_agent_message(message) {
+        // Legacy envelopes retain their original label, not its privileges.
+        return ExecutionTrust::RuntimeInstruction;
+    }
     match message.authority_class {
         crate::types::AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
         crate::types::AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
@@ -5854,6 +5872,83 @@ mod tests {
                 retry.id,
                 "a fresh scanner cannot cross an operator input behind the selected retry"
             );
+            let parked = runtime
+                .enqueue(
+                    MessageEnvelope::new(
+                        "default",
+                        MessageKind::InternalFollowup,
+                        MessageOrigin::System {
+                            subsystem: "parked_test_input".into(),
+                        },
+                        AuthorityClass::RuntimeInstruction,
+                        Priority::Next,
+                        MessageBody::Text {
+                            text: "parked-input".into(),
+                        },
+                    )
+                    .with_admission(
+                        MessageDeliverySurface::RuntimeSystem,
+                        AdmissionContext::RuntimeOwned,
+                    ),
+                )
+                .await
+                .unwrap();
+            let parked_ids = [parked.id.clone()];
+            for legacy in [false, true] {
+                let key = if legacy {
+                    "parked-legacy"
+                } else {
+                    "parked-derived"
+                };
+                let mut prepared = operator_context_agent_delivery(key);
+                if legacy {
+                    prepared.record.message_authority_version = None;
+                    prepared.message.authority_class = AuthorityClass::OperatorInstruction;
+                }
+                let receipt = runtime
+                    .agent_message_delivery_service()
+                    .deliver(&prepared)
+                    .await
+                    .unwrap();
+                let delivery = runtime
+                    .storage()
+                    .read_message_by_id(receipt.message_id.as_deref().unwrap())
+                    .unwrap()
+                    .unwrap();
+                assert!(crate::wake_contract::is_agent_message(&delivery));
+                assert!(!crate::wake_contract::has_operator_queue_authority(
+                    &delivery
+                ));
+                assert_eq!(
+                    select(
+                        &[
+                            parked.clone(),
+                            retry.clone(),
+                            delivery.clone(),
+                            source.clone()
+                        ],
+                        &[],
+                        &parked_ids,
+                    ),
+                    source.id,
+                    "agent delivery is not an operator barrier while another input is parked"
+                );
+                assert_eq!(
+                    select(
+                        &[
+                            parked.clone(),
+                            retry.clone(),
+                            delivery,
+                            operator.clone(),
+                            source.clone(),
+                        ],
+                        &[],
+                        &parked_ids,
+                    ),
+                    retry.id,
+                    "direct operator input still bars the scanner while another input is parked"
+                );
+            }
             let wait = runtime
                 .enqueue(queued_message(Priority::Normal, "exact-wait"))
                 .await
@@ -6516,6 +6611,126 @@ mod tests {
             wait_obligation: false,
             provider_parked: Default::default(),
         }
+    }
+
+    fn operator_context_agent_delivery(
+        key: &str,
+    ) -> super::super::agent_message_delivery::PreparedAgentMessageDelivery {
+        use crate::types::{
+            AgentMessageCallerContext, AgentMessagePrincipalKind, AgentMessageSendRequest,
+        };
+        super::super::agent_message_delivery::AgentMessageDeliveryService::prepare(
+            AgentMessageSendRequest {
+                target_agent_id: "default".into(),
+                content: MessageBody::Text {
+                    text: "agent input".into(),
+                },
+                client_idempotency_key: key.into(),
+                correlation_id: None,
+                causation_id: None,
+                requested_priority: None,
+                forward: false,
+                reply_context_id: None,
+            },
+            AgentMessageCallerContext {
+                caller_principal: "agent:fixture".into(),
+                caller_agent_id: Some("fixture".into()),
+                principal_kind: AgentMessagePrincipalKind::PeerAgent,
+                route: "agent_message".into(),
+                origin: MessageOrigin::System {
+                    subsystem: "agent_message".into(),
+                },
+                authority_class: AuthorityClass::OperatorInstruction,
+                delivery_surface: MessageDeliverySurface::RuntimeSystem,
+                admission_context: AdmissionContext::RuntimeOwned,
+                current_turn_id: None,
+                current_task_id: None,
+                current_work_item_id: None,
+                inherited_routing_context: None,
+                routing_activation_id: None,
+            },
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn agent_delivery_authority_is_durable_and_legacy_envelopes_still_run() -> Result<()> {
+        use crate::domain::execution_protocol::ExecutionTrust;
+        use crate::runtime::tests::support::LifecycleHarness;
+
+        for legacy in [false, true] {
+            let harness = LifecycleHarness::new();
+            let runtime = harness.runtime();
+            let mut prepared = operator_context_agent_delivery("agent-authority-test");
+            if legacy {
+                prepared.record.message_authority_version = None;
+                prepared.message.authority_class = AuthorityClass::OperatorInstruction;
+            }
+            let id = &prepared.message.id;
+            let receipt = runtime
+                .agent_message_delivery_service()
+                .deliver(&prepared)
+                .await?;
+            assert_eq!(
+                receipt.outcome,
+                crate::types::AgentMessageDeliveryOutcome::Accepted
+            );
+            let stored = runtime
+                .storage()
+                .read_message_by_id(id)?
+                .expect("durable message");
+            let delivery = runtime
+                .runtime_db()
+                .agent_message_deliveries()
+                .latest_for_message(id)?
+                .expect("durable delivery");
+            assert_eq!(
+                delivery.caller.authority_class,
+                AuthorityClass::OperatorInstruction
+            );
+            assert_eq!(delivery.message_authority_version.is_none(), legacy);
+            assert_eq!(
+                stored.authority_class,
+                if legacy {
+                    AuthorityClass::OperatorInstruction
+                } else {
+                    AuthorityClass::RuntimeInstruction
+                }
+            );
+            assert!(delivery.authenticates_agent_message(&stored));
+            let mut mismatched = stored.clone();
+            mismatched.authority_class = if legacy {
+                AuthorityClass::RuntimeInstruction
+            } else {
+                AuthorityClass::OperatorInstruction
+            };
+            assert!(!delivery.authenticates_agent_message(&mismatched));
+
+            let RunLoopPoll::Message(scheduled) =
+                SchedulerDecisionExecutor::new(runtime).poll().await?
+            else {
+                bail!("expected agent delivery to be scheduled");
+            };
+            assert_eq!(&scheduled.message.id, id);
+            let execution = runtime
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")?
+                .expect("execution state");
+            assert_eq!(
+                execution.open_attempt().unwrap().provenance.trust,
+                ExecutionTrust::RuntimeInstruction
+            );
+            assert_eq!(
+                runtime
+                    .storage()
+                    .read_message_by_id(id)?
+                    .unwrap()
+                    .authority_class,
+                stored.authority_class
+            );
+        }
+        Ok(())
     }
 
     #[tokio::test]

@@ -196,7 +196,7 @@ impl RuntimeHandle {
                 || selected.contains(&candidate.id)
                 || candidate.kind == MessageKind::TaskResult
                 || candidate.priority == Priority::Interject
-                || candidate.authority_class == AuthorityClass::OperatorInstruction
+                || crate::wake_contract::has_operator_queue_authority(&candidate)
             {
                 continue;
             }

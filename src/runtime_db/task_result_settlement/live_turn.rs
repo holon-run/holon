@@ -1050,7 +1050,7 @@ fn reply_is_live_tx(
         || !cutoff.includes(reply.created_at)
         || !crate::wake_contract::is_agent_message(&reply)
         || reply.origin != response.caller.origin
-        || reply.authority_class != response.caller.authority_class
+        || !response.matches_message_authority(reply.authority_class)
         || reply.delivery_surface != Some(response.caller.delivery_surface)
         || reply.admission_context != Some(response.caller.admission_context)
         || !reply.routing_context.as_ref().is_some_and(|route| {

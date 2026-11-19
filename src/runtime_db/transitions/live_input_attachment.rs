@@ -883,14 +883,14 @@ fn restore_initial_snapshot_tx(
                 || message.task_id.is_some()
                 || message.priority != source.priority
                 || message.priority == Priority::Interject
-                || message.authority_class == AuthorityClass::OperatorInstruction
+                || crate::wake_contract::has_operator_queue_authority(&message)
                 || delivery.target_agent_id != current.agent_id
                 || delivery.message_id.as_deref() != Some(message.id.as_str())
                 || delivery.outcome != AgentMessageDeliveryOutcome::Accepted
                 || delivery.state != AgentMessageDeliveryState::Consumed
                 || delivery.routing_context != message.routing_context
                 || delivery.caller.origin != message.origin
-                || delivery.caller.authority_class != message.authority_class
+                || !delivery.matches_message_authority(message.authority_class)
                 || Some(delivery.caller.delivery_surface) != message.delivery_surface
                 || Some(delivery.caller.admission_context) != message.admission_context
                 || !matches!(
@@ -1165,7 +1165,7 @@ fn ordinary_live_source_matches_tx(
         || message.task_id.is_some()
         || !crate::wake_contract::is_agent_message(message)
         || message.priority == Priority::Interject
-        || message.authority_class == AuthorityClass::OperatorInstruction
+        || crate::wake_contract::has_operator_queue_authority(message)
     {
         return Ok(false);
     }
@@ -1180,7 +1180,7 @@ fn ordinary_live_source_matches_tx(
         || delivery.turn_id.is_some()
         || delivery.routing_context != message.routing_context
         || delivery.caller.origin != message.origin
-        || delivery.caller.authority_class != message.authority_class
+        || !delivery.matches_message_authority(message.authority_class)
         || Some(delivery.caller.delivery_surface) != message.delivery_surface
         || Some(delivery.caller.admission_context) != message.admission_context
         || !matches!(
