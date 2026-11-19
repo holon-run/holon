@@ -11,7 +11,7 @@ const taskPath = `${agentPath}/tasks/${taskId}`;
 const toolPath = `${agentPath}/tool-executions/${toolId}`;
 const createdAt = "2026-10-31T00:00:00.000Z";
 const staleText = "Detail is stale · showing last known data";
-const forbiddenEvents = /^\/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)\/?$/;
+const forbiddenEvents = /^\/api\/agents\/[^/]+\/events(?:\/stream)?\/?$/;
 const detailPaths = new Set([workPath, taskPath, `${taskPath}/output`, toolPath]);
 const observed = new WeakMap<Page, { rawEvents: string[]; identityErrors: string[]; navigations: number }>();
 

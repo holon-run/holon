@@ -48,8 +48,8 @@ test("production assets authenticate and use real snapshots and the conversation
   await expect(page.locator(".message-list")).toContainText("production conversation marker", { timeout: 30_000 });
 
   // #3808: after bootstrap, a live conversation update, navigation, and a
-  // reload, the production GUI must never touch the retired raw event
-  // transports (per-agent or global).
+  // reload, the production GUI must never touch the retired per-agent raw
+  // event transports; the payload-free global hint stream (#4310) is fine.
   expect(requests.filter((entry) =>
-    /^GET \/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)$/.test(entry))).toEqual([]);
+    /^GET \/api\/agents\/[^/]+\/events(?:\/stream)?$/.test(entry))).toEqual([]);
 });

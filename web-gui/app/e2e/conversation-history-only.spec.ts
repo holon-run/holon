@@ -42,7 +42,9 @@ async function trackRequests(page: Page) {
     // Locate is a read-only POST, not a business mutation.
     const locateRead = request.method() === "POST" && url.pathname === `/api/agents/${agentId}/conversation/locate`;
     if (!["GET", "HEAD", "OPTIONS"].includes(request.method()) && !locateRead) mutations.push(`${request.method()} ${url.pathname}`);
-    if (/\/events(?:\/stream)?$/.test(url.pathname)) rawEvents.push(url.pathname);
+    // The global /api/events/stream hint stream (#4310) is sanctioned;
+    // only per-agent raw event transports stay retired (#3808).
+    if (/\/agents\/[^/]+\/events(?:\/stream)?$/.test(url.pathname)) rawEvents.push(url.pathname);
   });
   await page.route("**/api/auth/session/me", (route) => route.fulfill({
     json: { user_id: "history-only-user", auth_method: "static_token" },

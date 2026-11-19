@@ -57,7 +57,7 @@ test.beforeEach(async ({ page }) => {
   const requests: string[] = [];
   forbiddenRequests.set(page, requests);
   page.on("request", (request) => {
-    if (/^\/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)\/?$/.test(new URL(request.url()).pathname)) {
+    if (/^\/api\/agents\/[^/]+\/events(?:\/stream)?\/?$/.test(new URL(request.url()).pathname)) {
       requests.push(request.url());
     }
   });

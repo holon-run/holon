@@ -5,7 +5,7 @@ const agentId = "bootstrap-agent";
 const agentPath = `/api/agents/${agentId}`;
 const createdAt = "2026-10-31T00:00:00.000Z";
 const staleText = "Detail is stale · showing last known data";
-const forbiddenEvents = /^\/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)\/?$/;
+const forbiddenEvents = /^\/api\/agents\/[^/]+\/events(?:\/stream)?\/?$/;
 const work = {
   id: "overview-refresh-work", agent_id: agentId, objective: "Keep overview reads scoped",
   state: "open", plan_status: "ready", revision: 1, created_at: createdAt, updated_at: createdAt,
