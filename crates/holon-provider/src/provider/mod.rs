@@ -1107,8 +1107,8 @@ pub fn aggregate_attempt_token_usage(attempts: &[ProviderAttemptRecord]) -> Opti
 }
 
 pub use retry::{
-    classify_provider_error, provider_transport_error_with_code, ProviderFailureClassification,
-    ProviderFailureKind, ProviderTransportError, RetryDisposition,
+    classify_provider_error, provider_transport_error_with_code, set_provider_transport_details,
+    ProviderFailureClassification, ProviderFailureKind, ProviderTransportError, RetryDisposition,
     PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
     PROVIDER_RECOVERY_MAX_FALLBACKS,
 };

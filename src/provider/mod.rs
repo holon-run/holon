@@ -30,8 +30,8 @@ pub use transports::{
 pub(crate) use holon_provider::provider::{
     aggregate_attempt_token_usage, classify_provider_error, fallback, is_dispatch_guard_rejected,
     provider_transport_error_with_code, provider_turn_error, retry, sanitize_transport_url,
-    sanitized_provider_error, BootstrapProvider, OpenAiBearerAuth, ProviderFailureClassification,
-    ProviderFailureKind, ProviderTransportError, RetryDisposition,
+    sanitized_provider_error, set_provider_transport_details, BootstrapProvider, OpenAiBearerAuth,
+    ProviderFailureClassification, ProviderFailureKind, ProviderTransportError, RetryDisposition,
     PROVIDER_RECOVERY_BASE_BACKOFF_MS, PROVIDER_RECOVERY_MAX_BACKOFF_MS,
     PROVIDER_RECOVERY_MAX_FALLBACKS,
 };
