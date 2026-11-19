@@ -452,7 +452,7 @@ fn read_authorized_task_input_with_fingerprint_tx(
         return Ok(None);
     };
     let alias = alias_on(tx, &scope, key)?;
-    let frozen = if let Some(alias) = &alias {
+    let (alias_v113, frozen) = if let Some(alias) = &alias {
         ensure!(
             alias.present,
             InputEvidenceSnapshotError::NeedsPreparation(format!(
@@ -461,13 +461,11 @@ fn read_authorized_task_input_with_fingerprint_tx(
                 key.id
             ))
         );
-        ensure!(
-            alias.fingerprint.same_metadata(&fingerprint),
-            InputEvidenceSnapshotError::ProjectionChanged(key.id.clone())
-        );
-        Vec::new()
+        let v113 = !alias.fingerprint.same_metadata(&fingerprint)
+            && alias_metadata_match(key, alias, &fingerprint)?;
+        (v113, Vec::new())
     } else {
-        frozen_versions(tx, authorization, key)?
+        (false, frozen_versions(tx, authorization, key)?)
     };
     let payload = if key.family == Family::ToolExecution {
         None
@@ -485,19 +483,43 @@ fn read_authorized_task_input_with_fingerprint_tx(
     };
     validate_canonical_payload_digest(key, &fingerprint, &digest)?;
     if let Some(alias) = &alias {
+        let raw_digest_matches = alias.digest.as_deref() == Some(digest.as_str());
+        if alias_v113 {
+            validate_v113_work_execution_body(
+                key,
+                &fingerprint,
+                payload
+                    .as_deref()
+                    .context("WorkExecution body disappeared")?,
+                raw_digest_matches,
+            )?;
+        } else {
+            ensure!(
+                raw_digest_matches,
+                InputEvidenceSnapshotError::ProjectionChanged(key.id.clone())
+            );
+        }
+    } else if !frozen.iter().any(|frozen| {
+        frozen.same_metadata(&fingerprint)
+            && (!requires_frozen_body_digest(key, &fingerprint)
+                || frozen.frozen_payload_digest.as_deref() == Some(digest.as_str()))
+    }) {
+        let v113_digest_matches = frozen.iter().any(|frozen| {
+            frozen.v113_work_execution_candidate(key, &fingerprint, true)
+                && frozen.frozen_payload_digest.as_deref() == Some(digest.as_str())
+        });
         ensure!(
-            alias.digest.as_deref() == Some(digest.as_str()),
+            v113_digest_matches,
             InputEvidenceSnapshotError::ProjectionChanged(key.id.clone())
         );
-    } else {
-        ensure!(
-            frozen
-                .iter()
-                .any(|frozen| frozen.same_metadata(&fingerprint)
-                    && (!requires_frozen_body_digest(key, &fingerprint)
-                        || frozen.frozen_payload_digest.as_deref() == Some(digest.as_str()))),
-            InputEvidenceSnapshotError::ProjectionChanged(key.id.clone())
-        );
+        validate_v113_work_execution_body(
+            key,
+            &fingerprint,
+            payload
+                .as_deref()
+                .context("WorkExecution body disappeared")?,
+            v113_digest_matches,
+        )?;
     }
     if count_nodes {
         let (table, id) = table(key.family);

@@ -3,6 +3,15 @@ use super::*;
 use crate::runtime::resident_task::{CanonicalTaskFact, TaskFamily, TaskKey};
 #[path = "episode_snapshot_task_queries.rs"]
 pub(in crate::runtime_db) mod queries;
+
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+pub(in crate::runtime_db) fn capture_legacy_query_inventory_for_test(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<queries::TaskQueryInventory> {
+    queries::capture(tx, agent_id, None)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(in crate::runtime_db) struct TaskContinuityCheckpoint {
     pub policy_version: u32,

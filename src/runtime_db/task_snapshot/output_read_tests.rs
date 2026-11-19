@@ -1,12 +1,19 @@
-use super::tests::{at, legacy, scope, task};
+use super::tests::{at, legacy, legacy_fixture, scope, task};
 use super::*;
 use crate::{
     config::StateMemoryLimits,
+    domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState},
     runtime::input_evidence_budget::InputEvidenceBudgetLedger,
-    runtime::resident_input_evidence::{InputEvidenceReadError, ResidentInputEvidence},
+    runtime::resident_input_evidence::{
+        InputEvidenceReadError, PreparedInputEvidence, ResidentInputEvidence,
+    },
     runtime_db::{
+        episode_snapshot::task_checkpoint::capture_legacy_query_inventory_for_test,
         evidence,
-        input_evidence_snapshot::{register_pruned_input_evidence_tx, InputEvidenceLoadRequest},
+        input_evidence_snapshot::{
+            register_pruned_input_evidence_tx, InputEvidenceLoadRequest, InputEvidenceSnapshotError,
+        },
+        migrations::{apply_migration, MIGRATIONS},
     },
     types::{
         AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
@@ -81,7 +88,7 @@ fn inputs() -> InputEvidenceLoadRequest {
         byte_limit: 4 * 1024 * 1024,
     }
 }
-fn historical(tx: &Transaction<'_>) -> Result<()> {
+fn historical_source(tx: &Transaction<'_>, work_item_id: Option<&str>) -> Result<()> {
     repositories::upsert_task_tx(tx, &task(TASK, TaskStatus::Completed))?;
     let mut source = MessageEnvelope::new(
         "task-agent",
@@ -96,9 +103,15 @@ fn historical(tx: &Transaction<'_>) -> Result<()> {
         },
     );
     source.id = SOURCE.into();
+    source.work_item_id = work_item_id.map(str::to_owned);
     source.created_at = at();
     source.metadata = Some(serde_json::json!({"task_id":TASK,"task_status":"completed"}));
     evidence::append_message_tx(tx, &source)?;
+    Ok(())
+}
+
+fn historical(tx: &Transaction<'_>) -> Result<()> {
+    historical_source(tx, None)?;
     for index in 1..=514 {
         let mut turn = TurnRecord::new(
             "task-agent",
@@ -140,7 +153,15 @@ fn historical(tx: &Transaction<'_>) -> Result<()> {
         entry.created_at = at();
         evidence::append_transcript_entry_tx(tx, &entry)?;
     }
-    for index in 0..201 {
+    append_newer_messages(tx)?;
+    let mut state = AgentState::new("task-agent");
+    state.turn_index = 514;
+    evidence::upsert_agent_state_tx(tx, &state)?;
+    Ok(())
+}
+
+fn append_newer_messages(tx: &Transaction<'_>) -> Result<()> {
+    for index in 0..=crate::runtime::resident_task::TASK_OUTPUT_RECENT_MESSAGES {
         let mut noise = MessageEnvelope::new(
             "task-agent",
             MessageKind::SystemTick,
@@ -157,9 +178,6 @@ fn historical(tx: &Transaction<'_>) -> Result<()> {
         noise.created_at = at();
         evidence::append_message_tx(tx, &noise)?;
     }
-    let mut state = AgentState::new("task-agent");
-    state.turn_index = 514;
-    evidence::upsert_agent_state_tx(tx, &state)?;
     Ok(())
 }
 type TaskAliasObservation = (u64, String, Option<String>, Option<String>);
@@ -201,6 +219,142 @@ fn recall(
     );
     Ok((current.resident, recall))
 }
+
+#[test]
+fn output_recall_keeps_v113_work_execution_proofs_and_rejects_changed_bytes() -> Result<()> {
+    const WORK: &str = "output-legacy-work";
+    const BODY: &str = r#"{"source_revision":7,"state":{"state":"needs_repair","generation":3,"repair_id":"repair"}}"#;
+    let key = InputEvidenceKey::new(InputEvidenceFamily::WorkExecution, WORK);
+    for proof_kind in ["current", "fixed", "overlay"] {
+        let (_home, db) = legacy_fixture(
+            true,
+            |tx| {
+                historical_source(tx, Some(WORK))?;
+                append_newer_messages(tx)
+            },
+            |conn| {
+                for m in MIGRATIONS.iter().filter(|m| (90..=94).contains(&m.version)) {
+                    apply_migration(conn, m)?;
+                }
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "INSERT INTO execution_protocol_work_items
+                     VALUES('task-agent',?1,7,3,'needs_repair',?2)",
+                    params![WORK, BODY],
+                )?;
+                // Model the historical writer's focused inventory before its
+                // Task checkpoint is registered, using the real inventory seal.
+                let inventory = capture_legacy_query_inventory_for_test(&tx, "task-agent")?;
+                let seed: String = tx.query_row(
+                    "SELECT seed_id FROM agent_episode_continuity
+                     WHERE agent_id='task-agent' AND identity_incarnation=1",
+                    [],
+                    |row| row.get(0),
+                )?;
+                assert_eq!(
+                    tx.execute(
+                        "UPDATE episode_continuity_seeds
+                         SET roots_json=json_set(roots_json,'$.task_domain_checkpoint.query_inventory',json(?2))
+                         WHERE seed_id=?1",
+                        params![seed, serde_json::to_string(&inventory)?],
+                    )?,
+                    1
+                );
+                tx.commit()?;
+                for m in MIGRATIONS
+                    .iter()
+                    .filter(|m| (95..=112).contains(&m.version))
+                {
+                    apply_migration(conn, m)?;
+                }
+                let tx = conn.transaction()?;
+                let (proof, marker, digest): (String, String, String) = tx.query_row(
+                    "SELECT fingerprint_json,json_extract(fingerprint_json,'$.revision_marker'),
+                            json_extract(fingerprint_json,'$.frozen_payload_digest')
+                     FROM task_query_fixed_input_members
+                     WHERE inventory_id=?1 AND family='work_execution' AND record_id=?2",
+                    params![inventory.id, WORK],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )?;
+                assert_eq!(marker, "7:3:needs_repair");
+                // Isolate the proof family; the focused fixed proof remains as a
+                // non-fallback for a Current alias or an authoritative overlay.
+                tx.execute(
+                    "DELETE FROM input_evidence_eligibility WHERE family='work_execution' AND record_id=?1",
+                    [WORK],
+                )?;
+                if proof_kind == "current" {
+                    tx.execute(
+                        "INSERT INTO input_evidence_current
+                         (agent_id,identity_incarnation,family,record_id,revision,content_digest,
+                          fingerprint_json,availability,qualification)
+                         VALUES('task-agent',1,'work_execution',?1,3,?2,
+                                json_remove(?3,'$.frozen_payload_digest'),'present','committed_writer')",
+                        params![WORK, digest, proof],
+                    )?;
+                } else if proof_kind == "overlay" {
+                    tx.execute(
+                        "INSERT INTO input_evidence_eligibility
+                         VALUES (?1,'upgrade','work_execution',?2,'{}',1)",
+                        params![seed, WORK],
+                    )?;
+                    tx.execute(
+                        "INSERT INTO input_evidence_seed_recovery_current
+                         (seed_id,family,record_id,revision,fingerprint_json,origin_kind)
+                         VALUES (?1,'work_execution',?2,1,?3,'fixed_member')",
+                        params![seed, WORK, proof],
+                    )?;
+                }
+                tx.commit()
+                    .context("commit WorkExecution proof fixture before v113")
+            },
+        )?;
+        let ledger = InputEvidenceBudgetLedger::new(StateMemoryLimits::default())?;
+        db.transaction(|tx| {
+            let (tasks, recalled) = recall(tx, &ledger)
+                .with_context(|| format!("recall migrated {proof_kind} WorkExecution"))?;
+            let domain =
+                ResidentInputEvidence::with_task_output_recall(None, recalled, ledger.clone())?;
+            let captured = tasks.capture_query(&request(&ledger)?.query)?;
+            let task = captured.lookup(&TaskKey::new(TaskFamily::Task, TASK))?.unwrap();
+            let selected = domain.capture_task_output_for_request(&task.locator, &inputs())?;
+            let work = selected.lookup(&key)?.expect("accepted Message owns WorkExecution");
+            assert_eq!(
+                work.record,
+                PreparedInputEvidence::WorkExecution {
+                    work_item_id: WORK.into(),
+                    record: WorkItemExecutionRecord {
+                        source_revision: 7,
+                        state: WorkItemExecutionState::Paused {
+                            generation: 3,
+                            reason: "repair".into(),
+                        },
+                    },
+                },
+                "{proof_kind}"
+            );
+            assert_eq!(work.locator.revision, if proof_kind == "current" { 3 } else { 1 });
+            drop(selected);
+            drop(domain);
+
+            // Same-sized, still decodable old body: it must fail the original digest check.
+            tx.execute(
+                "UPDATE execution_protocol_work_items SET payload_json=?1 WHERE agent_id='task-agent' AND work_item_id=?2",
+                params![BODY.replace("\"repair\"", "\"edited\""), WORK],
+            )?;
+            let err = recall(tx, &ledger).err().context("changed WorkExecution body accepted")?;
+            assert!(
+                matches!(err.downcast_ref::<InputEvidenceSnapshotError>(),
+                    Some(InputEvidenceSnapshotError::ProjectionChanged(id)) if id == WORK),
+                "{proof_kind}: {err:#}"
+            );
+            Ok(())
+        })?;
+        assert_eq!(ledger.report()?.observed_bytes, 0);
+    }
+    Ok(())
+}
+
 #[test]
 fn original_fixed_full_output_uses_strict_selected_read_only_owning_closure_and_repeats_without_body_sql(
 ) -> Result<()> {
