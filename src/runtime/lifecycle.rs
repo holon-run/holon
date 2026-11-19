@@ -1277,9 +1277,12 @@ impl RuntimeHandle {
         .await?
     }
 
-    pub(crate) async fn get_memory_snapshot(
+    /// Scope-aware snapshot read; `AnyAgentMessage` resolves `message:` refs
+    /// owned by any agent and marks foreign hits as cross-agent evidence.
+    pub(crate) async fn get_memory_snapshot_scoped(
         &self,
         source_ref: &str,
+        scope: crate::memory::MemoryReadScope,
     ) -> Result<Option<crate::memory::MemoryGetResult>> {
         let active_workspace_id = self
             .agent_state()
@@ -1289,10 +1292,11 @@ impl RuntimeHandle {
         let storage = self.inner.storage.clone();
         let source_ref = source_ref.to_string();
         tokio::task::spawn_blocking(move || {
-            crate::memory::get_memory_snapshot(
+            crate::memory::get_memory_snapshot_scoped(
                 &storage,
                 &source_ref,
                 active_workspace_id.as_deref(),
+                scope,
             )
         })
         .await?

@@ -5,7 +5,6 @@ pub(crate) mod refs;
 pub mod working;
 
 pub use episode::refresh_episode_memory;
-pub(crate) use index::get_memory_snapshot;
 pub use index::{
     get_memory, memory_index_agent_ids_needing_backfill, memory_index_agent_ids_with_pending,
     rebuild_memory_index, refresh_memory_index_bounded, repair_memory_index_for_paths,
@@ -13,4 +12,5 @@ pub use index::{
     search_memory_query_for_agent_storages, search_memory_query_for_agents, MemoryGetResult,
     MemorySearchIndexStatus, MemorySearchQueryResult, MemorySearchResult,
 };
+pub(crate) use index::{get_memory_snapshot_scoped, MemoryReadScope};
 pub use working::refresh_working_memory;

@@ -230,6 +230,30 @@ but hidden ref is missing when that distinction is safe. If revealing existence
 would leak sensitive information, it may return a bounded not-found style error
 with no secret details.
 
+### Cross-agent message evidence (`message:` refs only)
+
+Decision record: `#4316`. Message ids are a global namespace, not a secrecy
+boundary. `MemoryGet` resolves a `message:` ref owned by another agent in the
+same runtime as cross-agent evidence:
+
+- the response names the source owner (`agent_id` is the source agent) and
+  `metadata.cross_agent` records `origin_agent_id`, the source envelope's
+  `authority_class` (`source_authority_class`), `evidence_only: true`, and a
+  fixed note that the source's authority class describes the source message
+  only;
+- the delivered content is prefixed with a `[cross_agent_evidence]` header
+  stating that the source's authority, approvals, and instructions do not
+  transfer to the reading agent;
+- the persisted `ToolExecutionRecord` already carries the caller `agent_id`,
+  the requested `input.source_ref`, and the returned envelope, so no new
+  audit table is required.
+
+Observation never transfers authority. Every other ref kind stays
+self-agent-visible, search stays agent-scoped (see `#4319`), and the HTTP
+message endpoints keep their existing per-agent visibility. Cross-agent
+reads are reachable only through `MemoryGet`, not through prompt projection
+or search results.
+
 ## Error Classes
 
 The tool contract should distinguish these cases:
@@ -324,7 +348,9 @@ Focused tests should cover:
 - Should Holon expose an `event:` or `audit_event:` namespace for selected
   lifecycle receipts such as acknowledgements, or should those remain
   operator/debug API concerns?
-- How should future host-level or cross-agent retrieval be authorized without
-  weakening default agent/workspace isolation?
+- How should cross-agent retrieval beyond pointwise `message:` evidence reads
+  (for example host-level audit views) be authorized without weakening
+  default agent/workspace isolation? Pointwise cross-agent `message:` reads
+  are decided in `#4316`/`#4318`.
 - Should file refs ever be handled by `MemoryGet`, or should workspace files
   remain exclusively under execution/file tools?
