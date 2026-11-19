@@ -177,6 +177,7 @@ class RecoveryRun(FaultRun):
         self.spec = spec
         self.captured = None
         self.releases = {}
+        self.recovery_control = {}
         self.ignored_requests = set()
         self.joins = []
         self.restarted = False
@@ -292,6 +293,17 @@ class RecoveryRun(FaultRun):
                     "q=p.with_suffix('.new'); q.write_text(sys.stdin.read()); q.replace(p)",
                     path, data=json.dumps(value))
 
+    def configure_recovery(self, **updates):
+        """Rewrite the provider reconciliation document as a whole.
+
+        Releases, scanner setup, and the fairness gate share one file. A
+        straggler barrier can still be released between fairness start and its
+        prompt request, so every write must preserve the other keys instead of
+        erasing the owner gate the fairness phase installed.
+        """
+        self.recovery_control.update(updates)
+        self.configure(self.mock, "/tmp/qa-recovery.json", self.recovery_control)
+
     def snapshot(self, label):
         result = self.docker("exec", self.controller, "python", SCRIPT, self.database_mode)
         database = json.loads(result.stdout)
@@ -403,9 +415,8 @@ class RecoveryRun(FaultRun):
     def start_fairness(self, snapshot):
         require_recovery_exhausted(snapshot, captured=self.captured)
         write_json(self.evidence / "fairness-before.json", redact_evidence(snapshot))
-        self.configure(self.mock, "/tmp/qa-recovery.json", {
-            "releases": self.releases, "fairness_owner": self.captured["work_item_id"],
-        })
+        self.configure_recovery(releases=self.releases,
+                                fairness_owner=self.captured["work_item_id"])
         self.api("POST", "/api/control/agents/qa/prompt", {
             "work_item_id": self.captured["work_item_id"],
             "text": (
@@ -538,7 +549,7 @@ class RecoveryRun(FaultRun):
             self.configure(self.proxy, "/tmp/qa-fault.json", {"UPSTREAM_TIMEOUT": 90})
         scanner_first = self.spec.get("first_order") == "scanner-first"
         if scanner_first:
-            self.configure(self.mock, "/tmp/qa-recovery.json", {"scanner_first": True})
+            self.configure_recovery(scanner_first=True)
         marker = self.prefix.rsplit("-", 1)[-1]
         wait_instruction = (
             "Leave the captured owner runnable without registering a task wait. "
@@ -652,8 +663,7 @@ class RecoveryRun(FaultRun):
                     "result_identity": record["result_identity"],
                     "recovery_epoch": record["recovery_epoch"],
                 })
-                self.configure(self.mock, "/tmp/qa-recovery.json",
-                               {"releases": self.releases})
+                self.configure_recovery(releases=self.releases)
                 write_json(self.evidence / "barrier-joins.json", self.joins)
             completed = any(
                 row["work_item_id"] == record["work_item_id"] and row["state"] == "completed"

@@ -1124,6 +1124,38 @@ class RecoveryRunnerTests(unittest.TestCase):
             self.assertEqual(calls, ["barriers", "observation"])
             self.assertEqual((barriers, snapshot), (["barrier"], "rows"))
 
+    def test_late_release_does_not_erase_the_fairness_owner_gate(self):
+        # A straggler barrier can still be released between start_fairness and
+        # its prompt request. The reconciliation file is one document, so a
+        # release write must keep the owner gate the fairness phase installed.
+        with tempfile.TemporaryDirectory() as directory:
+            control = Path(directory) / "control.json"
+            run = recovery.RecoveryRun(
+                Namespace(evidence_dir=Path(directory)), "coexisting-owner",
+                {"goal": 5, "outcome": "exhausted", "fairness": True},
+            )
+            with patch.object(
+                run, "configure",
+                side_effect=lambda container, path, value: control.write_text(
+                    json.dumps(value)),
+            ):
+                run.configure_recovery(releases={"first": "fail"}, fairness_owner="owner")
+                run.configure_recovery(releases={"first": "fail", "straggler": "fail"})
+            self.assertEqual(json.loads(control.read_text()), {
+                "releases": {"first": "fail", "straggler": "fail"},
+                "fairness_owner": "owner",
+            })
+            scenario = fixture.RecoveryScenario()
+            scenario.phase = 4
+            with patch.object(fixture, "CONTROL", control), patch.object(
+                scenario, "current_input_items",
+                return_value=[{"body": "SCHEDULER-TASK-FAIRNESS under owner",
+                               "provenance": {"id": "prompt"}}],
+            ):
+                status, _ = scenario.consume_gated({}, "a", Mock(), timeout=0)
+            self.assertEqual(status, 200)
+            self.assertTrue(scenario.fairness)
+
     def test_zero_budget_success_releases_only_an_initial_result_root_once(self):
         manifest = recovery.validate_manifest(json.loads(recovery.MANIFEST.read_text()))
         for case in ("exact-success", "fallback-success", "alive-owner",
