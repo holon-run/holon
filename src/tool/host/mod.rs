@@ -319,6 +319,9 @@ pub(super) fn execute_builtin_tool_route<'a>(
                 authority_class,
                 &call.input,
             )),
+            holon_tools::builtins::BuiltinTool::ListWebSearchProviders => {
+                Box::pin(web_search::list_providers(runtime, &call.input))
+            }
             holon_tools::builtins::BuiltinTool::XSearch => Box::pin(x_search::execute(
                 runtime,
                 agent_id,

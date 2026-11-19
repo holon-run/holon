@@ -106,7 +106,7 @@ pub async fn search(
 ) -> Result<WebSearchResponse> {
     // Interpret aliases only on the call boundary, not in configured provider IDs.
     let (selector, order_selector, mode) = match request.provider.as_deref() {
-        Some(alias @ ("auto" | "aggregate")) if config.providers.contains_key(alias) => {
+        Some(alias) if is_route_selector(alias) && config.providers.contains_key(alias) => {
             return Err(search_error(
                 "invalid_tool_input",
                 format!("WebSearch provider `{alias}` conflicts with a configured provider ID"),
@@ -190,6 +190,88 @@ pub async fn search(
         citations,
         fetched_at: Utc::now().to_rfc3339(),
     })
+}
+
+fn is_route_selector(provider: &str) -> bool {
+    matches!(provider, "auto" | "aggregate")
+}
+
+/// Enumerate the locally configured routes reachable by naming a provider.
+/// This neither constructs a client nor starts an adapter.
+pub fn list_search_providers(config: &WebConfig) -> Vec<String> {
+    if !config.search.enabled {
+        return Vec::new();
+    }
+    // The built-in route takes precedence over any registry entry with this ID.
+    let mut ids = BTreeSet::from([DUCKDUCKGO_PROVIDER_ID.to_string()]);
+    for (id, provider) in &config.providers {
+        if id.is_empty() || id.trim() != id || is_route_selector(id) {
+            continue;
+        }
+        if configured_search_ready(id, provider) {
+            ids.insert(id.clone());
+        }
+    }
+    ids.into_iter().collect()
+}
+
+fn configured_search_ready(id: &str, provider: &WebProviderConfig) -> bool {
+    if provider.kind.capabilities().status != WebProviderSupportStatus::Supported {
+        return false;
+    }
+    // Match the local inputs consumed by the adapters. In particular,
+    // Keenable has a public route without an API key.
+    match provider.kind {
+        WebProviderKind::DuckDuckGo => true,
+        WebProviderKind::Searxng => searxng_endpoint(id, provider).is_ok_and(|url| is_http(&url)),
+        WebProviderKind::DeepSeek => {
+            search_api_key(id, provider).is_ok() && deepseek_endpoint(id, provider).is_ok()
+        }
+        WebProviderKind::Command => command_configuration(id, provider).is_ok_and(|(argv, _)| {
+            expand_command_argv(argv, "", 1, id).is_ok()
+                && argv.iter().all(|arg| !arg.contains('\0'))
+        }),
+        _ => {
+            search_api_key(id, provider).is_ok()
+                && provider
+                    .base_url
+                    .as_deref()
+                    .is_none_or(|url| Url::parse(url).is_ok_and(|url| is_http(&url)))
+        }
+    }
+}
+
+fn is_http(url: &Url) -> bool {
+    matches!(url.scheme(), "http" | "https") && url.host_str().is_some()
+}
+
+fn search_api_key<'a>(id: &str, provider: &'a WebProviderConfig) -> Result<&'a str> {
+    let key = provider.api_key.as_str();
+    let service = match provider.kind {
+        WebProviderKind::Brave => "Brave Search",
+        WebProviderKind::TencentCloudWsa => "Tencent Cloud WSA SearchPro",
+        WebProviderKind::Bocha => "Bocha AI Web Search",
+        WebProviderKind::DeepSeek => "DeepSeek",
+        WebProviderKind::Tavily => "Tavily",
+        WebProviderKind::Exa => "Exa",
+        WebProviderKind::Perplexity => "Perplexity",
+        WebProviderKind::Firecrawl => "Firecrawl",
+        _ => return Ok(key),
+    };
+    let empty = if provider.kind == WebProviderKind::DeepSeek {
+        key.trim().is_empty()
+    } else {
+        key.is_empty()
+    };
+    if empty {
+        return Err(search_error(
+            "provider_unavailable",
+            format!("{service} requires an API key (set credential_profile on the provider)"),
+            id,
+            "add a credential_profile with an api_key in the credential store",
+        ));
+    }
+    Ok(key)
 }
 
 struct RoutedSearchOutcome {
@@ -695,13 +777,10 @@ async fn search_configured_provider(
     Ok(ProviderSearchOutput::new(results))
 }
 
-async fn command_search(
-    map_error: fn(&anyhow::Error) -> ToolError,
-    query: &str,
-    max_results: usize,
+fn command_configuration<'a>(
     provider_id: &str,
-    provider: &WebProviderConfig,
-) -> Result<ProviderSearchOutput> {
+    provider: &'a WebProviderConfig,
+) -> Result<(&'a [String], &'a WebCommandOutputConfig)> {
     let command = provider.command.as_ref().ok_or_else(|| {
         search_error(
             "provider_unavailable",
@@ -718,7 +797,18 @@ async fn command_search(
             "configure web.providers.<id>.output.mapping",
         )
     })?;
-    let (binary, args) = expand_command_argv(&command.argv, query, max_results, provider_id)?;
+    Ok((&command.argv, output))
+}
+
+async fn command_search(
+    map_error: fn(&anyhow::Error) -> ToolError,
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+) -> Result<ProviderSearchOutput> {
+    let (argv, output) = command_configuration(provider_id, provider)?;
+    let (binary, args) = expand_command_argv(argv, query, max_results, provider_id)?;
     let mut child = Command::new(binary)
         .args(args)
         .stdin(Stdio::null())
@@ -803,8 +893,7 @@ async fn command_search(
             "retry later or check the configured command provider",
         )
     })??;
-    let command_attempt =
-        command_attempt(&command.argv, &status, stdout.truncated, stderr.truncated);
+    let command_attempt = command_attempt(argv, &status, stdout.truncated, stderr.truncated);
     if stdout.truncated || stderr.truncated {
         return Err(command_search_error(
             "response_too_large",
@@ -951,13 +1040,7 @@ async fn duckduckgo_search(
     Ok(results)
 }
 
-async fn searxng_search(
-    query: &str,
-    max_results: usize,
-    provider_id: &str,
-    provider: &WebProviderConfig,
-    fetch_config: &WebFetchConfig,
-) -> Result<Vec<WebSearchResult>> {
+fn searxng_endpoint(provider_id: &str, provider: &WebProviderConfig) -> Result<Url> {
     let base_url = provider.base_url.as_deref().ok_or_else(|| {
         search_error(
             "provider_unavailable",
@@ -966,8 +1049,18 @@ async fn searxng_search(
             "set web.providers.<id>.base_url to a SearXNG instance",
         )
     })?;
-    let mut url = searxng_search_url(base_url)
-        .map_err(|error| anyhow!("invalid SearXNG base_url for {provider_id}: {error}"))?;
+    searxng_search_url(base_url)
+        .map_err(|error| anyhow!("invalid SearXNG base_url for {provider_id}: {error}"))
+}
+
+async fn searxng_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let mut url = searxng_endpoint(provider_id, provider)?;
     url.query_pairs_mut()
         .append_pair("q", query)
         .append_pair("format", "json")
@@ -1041,15 +1134,7 @@ async fn brave_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Brave Search requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let base_url = provider
         .base_url
@@ -1064,7 +1149,7 @@ async fn brave_search(
     let response = client
         .get(&url)
         .header("Accept", "application/json")
-        .header("X-Subscription-Token", api_key.as_str())
+        .header("X-Subscription-Token", api_key)
         .send()
         .await
         .map_err(|error| {
@@ -1145,15 +1230,7 @@ async fn tencent_cloud_wsa_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Tencent Cloud WSA SearchPro requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "Query": query,
@@ -1166,7 +1243,7 @@ async fn tencent_cloud_wsa_search(
     let response = client
         .post(format!("{}/SearchPro", base_url.trim_end_matches('/')))
         .header("Content-Type", "application/json; charset=UTF-8")
-        .bearer_auth(api_key.as_str())
+        .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
@@ -1303,15 +1380,7 @@ async fn bocha_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Bocha AI Web Search requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "query": query,
@@ -1327,7 +1396,7 @@ async fn bocha_search(
     let response = client
         .post(bocha_search_url(base_url))
         .header("Content-Type", "application/json")
-        .bearer_auth(api_key.as_str())
+        .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
@@ -1446,6 +1515,17 @@ fn bocha_search_url(base_url: &str) -> String {
     }
 }
 
+fn deepseek_endpoint(provider_id: &str, provider: &WebProviderConfig) -> Result<Url> {
+    deepseek_tool_url(provider, "search").map_err(|_| {
+        search_error(
+            "provider_unavailable",
+            "DeepSeek base_url is invalid",
+            provider_id,
+            "configure an HTTP(S) DeepSeek base_url",
+        )
+    })
+}
+
 async fn deepseek_search(
     query: &str,
     max_results: usize,
@@ -1461,29 +1541,15 @@ async fn deepseek_search(
             "shorten the query or choose another WebSearch provider",
         ));
     }
-    if provider.api_key.trim().is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "DeepSeek requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
-    let url = deepseek_tool_url(provider, "search").map_err(|_| {
-        search_error(
-            "provider_unavailable",
-            "DeepSeek base_url is invalid",
-            provider_id,
-            "configure an HTTP(S) DeepSeek base_url",
-        )
-    })?;
+    let api_key = search_api_key(provider_id, provider)?;
+    let url = deepseek_endpoint(provider_id, provider)?;
     let client = Client::builder()
         .timeout(timeout(fetch_config))
         .redirect(reqwest::redirect::Policy::none())
         .build()?;
     let response = client
         .post(url)
-        .bearer_auth(&provider.api_key)
+        .bearer_auth(api_key)
         .json(&json!({
             "query": query,
             "count": max_results.clamp(1, 50),
@@ -1586,15 +1652,7 @@ async fn tavily_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Tavily requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "query": query,
@@ -1811,15 +1869,7 @@ async fn exa_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Exa requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "query": query,
@@ -1830,7 +1880,7 @@ async fn exa_search(
     let response = client
         .post(format!("{}/search", base_url.trim_end_matches('/')))
         .header("Content-Type", "application/json")
-        .header("x-api-key", api_key.as_str())
+        .header("x-api-key", api_key)
         .json(&body)
         .send()
         .await
@@ -1924,15 +1974,7 @@ async fn perplexity_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Perplexity requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "model": "sonar",
@@ -1954,7 +1996,7 @@ async fn perplexity_search(
             base_url.trim_end_matches('/')
         ))
         .header("Content-Type", "application/json")
-        .bearer_auth(api_key.as_str())
+        .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
@@ -2055,15 +2097,7 @@ async fn firecrawl_search(
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
-    let api_key = &provider.api_key;
-    if api_key.is_empty() {
-        return Err(search_error(
-            "provider_unavailable",
-            "Firecrawl requires an API key (set credential_profile on the provider)",
-            provider_id,
-            "add a credential_profile with an api_key in the credential store",
-        ));
-    }
+    let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = serde_json::json!({
         "query": query,
@@ -2076,7 +2110,7 @@ async fn firecrawl_search(
     let response = client
         .post(format!("{}/v1/search", base_url.trim_end_matches('/')))
         .header("Content-Type", "application/json")
-        .bearer_auth(api_key.as_str())
+        .bearer_auth(api_key)
         .json(&body)
         .send()
         .await
