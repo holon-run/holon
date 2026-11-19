@@ -87,19 +87,41 @@ agent 侧在等待期间注册外部等待（这是 agent 工具调用，不是 
 2. changedetection.io 日志应出现 `Change detected in UUID <uuid>`（实测从触发到检出 <1s），随后 `Notifying 1 service(s)` 与完整 `JSON POST URL: ... /api/callbacks/wake/...` 日志。
 3. agent 被 wake 唤醒续跑：`holon tail --agent <agent-id> --include-progress` 可见新 turn 与「外部唤醒已到达」进度；agent 自查目标页确认新内容后交付结论。
 
-反向用例实测（0.70.3 × Holon 0.59.0，2026-11-10）：
+反向用例实测（0.70.3 × Holon 0.59.0，2026-11-10~19）：
 
 | 用例 | 行为 |
 |---|---|
 | 无效回调 token | Holon 返回 403 + `{"code":"forbidden","error":"invalid callback token","ok":false}`，不唤醒 |
 | watch 目标 404 | 不视为变更、不发通知（保留旧快基线，日志 `checksum ... the same, nothing todo`），无误报 |
 | 通知端点超时 | apprise 记录 `Connection error ... Read timed out`，watch 状态页可见失败记录 |
+| 通知端点不可达（connection refused） | 单次尝试即失败，无自动重试（150s 观察窗内仅 1 次投递）；`last_notification_error` 立即置位，本次变更通知丢失（2026-11-19 实测） |
+| 通知端点返回非 2xx（HTTP 500） | 同样单次投递无重试（假端点仅收到 1 次 POST）；失败记入 watch 状态（`Notification error detected, goto notification log.`），本次变更通知丢失（2026-11-19 实测） |
 
-## 已知问题：wake 回调响应延迟
+## 投递语义：单次投递、不去重、不重试
 
-验证中发现 Holon `POST /api/callbacks/wake/:token` 对有效 token 不返回 HTTP 响应（发送方 4s/30s 超时均收不到 ack），delivery 实际生效但 agent 唤醒延迟可达分钟级，详见 [holon-run/holon#4016](https://github.com/holon-run/holon/issues/4016)。在该问题修复前：
+端到端时延实测（0.70.3 × Holon 0.59.0，2026-11-18/19）：
 
-- changedetection.io（apprise 默认 4s 超时）每次通知都会记录「失败」，但事件实际已送达，不要据此重配 URL；
+| 环节 | 实测值 |
+|---|---|
+| 检出变更 → 通知 POST | <30ms |
+| 通知 POST → Holon admission | ~26ms |
+| admission → agent 实际续跑 | 44–125s（Holon 调度节奏，非承诺值） |
+
+投递行为决定了消费方该怎么写：
+
+- **单次投递、无重试**：apprise 对不可达端点和非 2xx 响应都只尝试一次，失败立即记录到 watch 状态，本次变更通知即丢，直到下次变更才再次触发。
+- **投递层不去重**：同一 watch 连续变更会逐次通知（不合并事件）；Holon 侧对密集到达的 wake hint 有合并（coalesce），agent 可能一次续跑覆盖多条通知。
+- **消费方幂等**：agent 醒来后应以目标页当前内容为准做幂等处理（按内容 hash 或自身版本号判断），不要依赖「每次通知恰好处理一次」。
+
+工程含义：webhook 唤醒是 best-effort 信号——适合「有变化就来瞧一眼」的场景，不适合要求每条事件必达的审计/计费类集成。本场景天然能弥补丢失窗口：agent 醒来读的是页面最新内容，漏掉中间态不影响最终一致。
+
+## 已知问题：wake 回调响应延迟（历史间歇现象）
+
+早期验证（2026-11-10，Holon 0.59.0）中曾出现 `POST /api/callbacks/wake/:token` 对有效 token 不及时返回 HTTP 响应（发送方 4s/30s 超时均收不到 ack，但 delivery 实际生效且唤醒延迟可达分钟级）的情况，详见历史记录 [holon-run/holon#4016](https://github.com/holon-run/holon/issues/4016)（已于 2026-11-19 作为 [holon-run/holon#4043](https://github.com/holon-run/holon/issues/4043) 同类个例按 `not_planned` 关闭，未单独宣称修复）。
+
+2026-11-18 在同一 Holon 0.59.0 上的复测中，通知 POST 后 ~26ms 即被 Holon admission 接受，未再观察到响应挂起，端到端延迟主要由调度节奏主导（见上文「投递语义」）。若在部分环境仍遇到客户端超时噪音：
+
+- changedetection.io（apprise 默认 4s 超时）记录「失败」时，事件仍可能已送达，不要据此立即重配或轮换 URL；
 - 如需延长 apprise 超时，可在通知 URL 追加超时参数（apprise 通用参数）降低误报噪音；
 - 需要精确判断是否送达时，以 agent 侧 tail/状态为准，不要依赖 HTTP 状态码。
 
@@ -113,6 +135,7 @@ agent 侧在等待期间注册外部等待（这是 agent 工具调用，不是 
 | 通知报 `Invalid notification format: "Text"` | 格式字段必须用小写合法值（`text`/`html`/`markdown` 等） |
 | 通知报 `Read timed out` 但 agent 确实被唤醒 | Holon #4016 的响应挂起问题，见上一节 |
 | agent 没被唤醒 | 确认 agent 已注册 `WaitFor(wake=external)` 且未停止；停止的 agent 会吊销其全部外部 trigger，发送方保存的旧 URL 随之失效 |
+| 通知只失败一次、之后不再发 | 正常行为：apprise 单次投递不重试，失败记入 watch 状态，下次变更才再次触发（见「投递语义」） |
 
 ## 清理
 

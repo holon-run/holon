@@ -87,21 +87,43 @@ Valid notification formats are `text`, `html`, `htmlcolor`, `markdown`, and `Sys
 2. The changedetection.io container log should show `Change detected in UUID <uuid>` (typically <1s latency in local tests), followed by `Notifying 1 service(s)` and the outgoing `JSON POST URL: ... /api/callbacks/wake/...`.
 3. The agent is resumed: running `holon tail --agent <agent-id> --include-progress` displays the new turn and "external wake arrived" status. The agent inspects the target page, confirms the new content, and delivers its conclusion.
 
-Negative test results verified on changedetection.io 0.70.3 × Holon 0.59.0 (November 2026):
+Negative test results verified on changedetection.io 0.70.3 × Holon 0.59.0 (November 10–19, 2026):
 
 | Case | Behavior |
 |---|---|
 | Invalid callback token | Holon returns HTTP 403 with `{"code":"forbidden","error":"invalid callback token","ok":false}`; agent is not awakened |
 | Target returns 404 | Not treated as a diff; no notification is triggered (`checksum ... the same, nothing todo`), avoiding false alarms |
 | Notification endpoint timeout | Apprise logs `Connection error ... Read timed out`; watch status reflects the failed dispatch |
+| Notification endpoint unreachable (`connection refused`) | Fails in a single attempt with no automatic retry (only 1 delivery observed over a 150s window); `last_notification_error` is set immediately and this change notification is dropped (verified 2026-11-19) |
+| Notification endpoint returns non-2xx (`HTTP 500`) | Also single-attempt with no retry (mock endpoint received only 1 POST); failure is recorded in watch status (`Notification error detected, goto notification log.`) and this change notification is dropped (verified 2026-11-19) |
 
-## Known issue: wake callback response delay
+## Delivery semantics: at-most-once, no deduplication, no retry
 
-Testing revealed that Holon's `POST /api/callbacks/wake/:token` endpoint may not promptly return an HTTP response to valid tokens (senders waiting for 4s or 30s timeouts receive no ack). While the event is successfully recorded and the agent eventually wakes, response latency can reach several minutes. See [holon-run/holon#4016](https://github.com/holon-run/holon/issues/4016) for details. Until resolved:
+End-to-end latency observed on changedetection.io 0.70.3 × Holon 0.59.0 (November 18–19, 2026):
 
-- changedetection.io (Apprise defaults to a 4s timeout) will log each dispatch as failed, even though the wake delivery succeeds. Do not reconfigure or cycle URLs based on this error alone.
+| Stage | Observed latency |
+|---|---|
+| Change detected → notification POST | <30ms |
+| Notification POST → Holon admission | ~26ms |
+| Admission → agent resumes | 44–125s (Holon scheduler cadence, not an SLA) |
+
+These delivery characteristics dictate how the consumer should be designed:
+
+- **At-most-once, no retry**: Apprise attempts each dispatch once for both unreachable endpoints and non-2xx responses. Failures are recorded immediately on the watch and the change notification is dropped until the next detected change.
+- **No sender-side deduplication**: Consecutive changes on the same watch emit separate notifications without batching; on the Holon side, closely spaced wake hints are coalesced so one resumed turn can cover multiple notifications.
+- **Idempotent consumer**: On wake, the agent should read the target page's current content and reconcile idempotently (by content hash or its own version tracking), rather than assuming one wake per notification.
+
+In practice, a webhook wake is a best-effort signal—well suited for "come check what changed" workflows, not audit or billing pipelines requiring guaranteed per-event delivery. This workflow naturally tolerates missed intermediate notifications because the awakened agent reads the latest page state directly.
+
+## Known issue: intermittent wake callback response delay
+
+In earlier testing (2026-11-10, Holon 0.59.0), `POST /api/callbacks/wake/:token` intermittently stalled before returning an HTTP response to valid tokens (senders with 4s/30s timeouts received no ack while delivery still succeeded and wake latency could reach minutes). See the historical report [holon-run/holon#4016](https://github.com/holon-run/holon/issues/4016) (closed on 2026-11-19 as `not_planned` and grouped as an instance of [holon-run/holon#4043](https://github.com/holon-run/holon/issues/4043) without a separate fix claim).
+
+During retesting on the same Holon 0.59.0 build (2026-11-18), Holon admission accepted the POST in ~26ms without hanging, and end-to-end latency was dominated by the scheduler cadence noted above. If intermittent client timeouts still occur in your environment:
+
+- changedetection.io (Apprise defaults to a 4s timeout) may log a dispatch as failed even when the wake delivery succeeds—do not reconfigure or cycle URLs based on that error alone.
 - To reduce log noise, append timeout parameters supported by Apprise to the notification URL.
-- Always verify delivery through agent tail and execution status rather than HTTP client status codes.
+- Always verify delivery through `holon tail` and agent execution status rather than HTTP client status codes.
 
 ## Troubleshooting
 
@@ -113,6 +135,7 @@ Testing revealed that Holon's `POST /api/callbacks/wake/:token` endpoint may not
 | Notification reports `Invalid notification format: "Text"` | Format parameter must be lowercase (e.g., `text`, `html`, `markdown`) |
 | Notification logs `Read timed out` but agent resumes | Known behavior in Holon #4016; see Known Issue above |
 | Agent does not resume | Ensure agent registered `WaitFor(wake=external)` and is not stopped. Stopping an agent automatically revokes all its external triggers |
+| Notification fails once and does not retry | Expected behavior: Apprise delivers once with no retry, records the error in watch status, and fires again only on the next change (see Delivery Semantics) |
 
 ## Cleanup
 
