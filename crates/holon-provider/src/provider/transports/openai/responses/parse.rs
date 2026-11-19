@@ -561,6 +561,18 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
         ));
     }
 
+    // #4295: non-empty block sets can still carry zero countable content
+    // (blank text after citation-sentinel stripping, empty reasoning text,
+    // citations-only output). Classify those as retryable empty responses
+    // instead of successful turns, mirroring the zero-block guard above.
+    if !openai_blocks_have_countable_content(&blocks) {
+        return Err(empty_response_error(
+            "empty OpenAI-style response",
+            "response contained no countable content blocks",
+            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        ));
+    }
+
     let cache_usage = usage.map(|usage| ProviderCacheUsage {
         read_input_tokens: usage
             .get("input_tokens_details")

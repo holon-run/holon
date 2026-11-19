@@ -1682,6 +1682,21 @@ fn openai_codex_status_error_context(status: reqwest::StatusCode) -> &'static st
     }
 }
 
+/// #4295: countable response content is non-blank text, reasoning, or a tool
+/// call. Block sets without any of it (citations-only output, blank text left
+/// after citation-sentinel stripping, empty reasoning text) must classify as
+/// provider failures instead of settling as successful empty turns. Audit-only
+/// provider blocks and redacted thinking payloads are not countable content.
+pub(super) fn openai_blocks_have_countable_content(blocks: &[ModelBlock]) -> bool {
+    blocks.iter().any(|block| match block {
+        ModelBlock::Text { text }
+        | ModelBlock::ReasoningText { text }
+        | ModelBlock::Thinking { text, .. } => !text.trim().is_empty(),
+        ModelBlock::ToolUse { .. } => true,
+        _ => false,
+    })
+}
+
 #[cfg(test)]
 mod tests;
 

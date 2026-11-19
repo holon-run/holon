@@ -221,6 +221,113 @@ fn openai_responses_classifies_empty_message_content_as_retryable() {
 }
 
 #[test]
+fn openai_responses_classifies_empty_reasoning_text_as_retryable() {
+    let error = parse_openai_response(json!({
+        "id": "resp_empty_reasoning",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 12 },
+        "output": [{
+            "type": "reasoning",
+            "content": [{ "type": "reasoning_text", "text": "" }]
+        }]
+    }))
+    .expect_err("empty reasoning text should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
+fn openai_responses_classifies_stripped_empty_text_as_retryable() {
+    let error = parse_openai_response(json!({
+        "id": "resp_stripped_empty",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 7 },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "\u{e200}cite\u{e202}https://example.com/source\u{e201}"
+            }]
+        }]
+    }))
+    .expect_err("citation-sentinel-only text should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
+fn openai_responses_classifies_citations_only_output_as_retryable() {
+    let error = parse_openai_response(json!({
+        "id": "resp_citations_only",
+        "status": "completed",
+        "usage": { "input_tokens": 4, "output_tokens": 7 },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{
+                "type": "output_text",
+                "text": "",
+                "annotations": [{
+                    "type": "url_citation",
+                    "url_citation": { "url": "https://example.com/source", "title": "Example" }
+                }]
+            }]
+        }]
+    }))
+    .expect_err("citations-only output should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
+fn openai_responses_classifies_truncated_zero_countable_output_as_retryable() {
+    let error = parse_openai_response(json!({
+        "id": "resp_truncated_empty",
+        "status": "incomplete",
+        "incomplete_details": { "reason": "max_output_tokens" },
+        "usage": { "input_tokens": 4, "output_tokens": 9 },
+        "output": [{
+            "type": "reasoning",
+            "content": [{ "type": "reasoning_text", "text": "" }]
+        }]
+    }))
+    .expect_err("truncated zero-countable output should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
+fn openai_responses_keeps_truncated_partial_content_passthrough() {
+    let response = parse_openai_response(json!({
+        "id": "resp_truncated_partial",
+        "status": "incomplete",
+        "incomplete_details": { "reason": "max_output_tokens" },
+        "usage": { "input_tokens": 4, "output_tokens": 9 },
+        "output": [{
+            "type": "message",
+            "role": "assistant",
+            "content": [{ "type": "output_text", "text": "partial answer" }]
+        }]
+    }))
+    .expect("truncated response with partial content should parse");
+
+    assert_eq!(response.stop_reason.as_deref(), Some("max_output_tokens"));
+    assert!(matches!(
+        response.blocks.as_slice(),
+        [ModelBlock::Text { text }] if text == "partial answer"
+    ));
+}
+
+#[test]
 fn openai_responses_keeps_nonempty_unsupported_items_fail_fast() {
     let error = parse_openai_response(json!({
         "id": "resp_unsupported",

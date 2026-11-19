@@ -344,6 +344,76 @@ fn parse_chat_completion_response_handles_empty_arguments() {
 }
 
 #[test]
+fn parse_chat_completion_response_classifies_empty_content_as_retryable() {
+    use crate::provider::transports::parse_chat_completion_response;
+
+    let response = json!({
+        "id": "chatcmpl-empty",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "" },
+            "finish_reason": "stop"
+        }],
+        "usage": { "prompt_tokens": 7, "completion_tokens": 0, "total_tokens": 7 }
+    });
+
+    let error = parse_chat_completion_response(response)
+        .expect_err("empty content with finish_reason should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+    assert_eq!(
+        crate::provider::provider_error_token_usage(&error)
+            .map(|usage| (usage.input_tokens, usage.output_tokens)),
+        Some((7, 0))
+    );
+}
+
+#[test]
+fn parse_chat_completion_response_classifies_whitespace_content_as_retryable() {
+    use crate::provider::transports::parse_chat_completion_response;
+
+    let response = json!({
+        "id": "chatcmpl-whitespace",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "   " },
+            "finish_reason": "stop"
+        }],
+        "usage": { "prompt_tokens": 7, "completion_tokens": 1, "total_tokens": 8 }
+    });
+
+    let error =
+        parse_chat_completion_response(response).expect_err("whitespace-only content should fail");
+
+    let classification = classify_provider_error(&error);
+    assert_eq!(classification.kind, ProviderFailureKind::EmptyResponse);
+    assert_eq!(classification.disposition, RetryDisposition::Retryable);
+}
+
+#[test]
+fn parse_chat_completion_response_keeps_length_truncated_empty_content_passthrough() {
+    use crate::provider::transports::parse_chat_completion_response;
+
+    let response = json!({
+        "id": "chatcmpl-truncated",
+        "choices": [{
+            "index": 0,
+            "message": { "role": "assistant", "content": "" },
+            "finish_reason": "length"
+        }],
+        "usage": { "prompt_tokens": 7, "completion_tokens": 0, "total_tokens": 7 }
+    });
+
+    let parsed = parse_chat_completion_response(response)
+        .expect("length-truncated empty content keeps passthrough");
+
+    assert!(parsed.response.blocks.is_empty());
+    assert_eq!(parsed.response.stop_reason.as_deref(), Some("length"));
+}
+
+#[test]
 fn chat_completion_message_conversion_handles_tool_results() {
     let system_prompt = "You are a helpful assistant.";
     let conversation = vec![
