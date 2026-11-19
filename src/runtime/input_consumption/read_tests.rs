@@ -2,6 +2,21 @@ use super::*;
 use crate::context::inputs::ContextHistoryMessage;
 use crate::runtime::tests::support::LifecycleHarness;
 
+impl RuntimeHandle {
+    // Some fence fixtures deliberately mutate rows within the observed snapshot.
+    fn with_idle_fixture_write<T>(
+        &self,
+        material: &ResourceReadMaterial,
+        fixture: impl FnOnce(&IdleRead<'_, '_>) -> Result<T>,
+    ) -> Result<T> {
+        material.read(|| {
+            self.inner
+                .runtime_db
+                .transaction_once(|tx| fixture(&IdleRead::new(self, tx, None, false)?))
+        })
+    }
+}
+
 fn message() -> MessageEnvelope {
     MessageEnvelope::new(
         "default",
@@ -16,6 +31,57 @@ fn message() -> MessageEnvelope {
             text: "qualified idle Queue".into(),
         },
     )
+}
+
+#[tokio::test]
+async fn idle_read_does_not_wait_for_shared_writer() -> Result<()> {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let harness = LifecycleHarness::new();
+    let runtime = harness.runtime();
+    runtime.await_initial_resources().await;
+    let _refresh = runtime.hold_resource_refresh_for_test().await?;
+    let message = message();
+    runtime.enqueue(message.clone()).await?;
+    let state = runtime
+        .begin_mutation()
+        .await?
+        .capture_published_root()?
+        .state
+        .clone();
+
+    std::thread::scope(|scope| -> Result<()> {
+        let (held_tx, held_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel();
+        let writer = scope.spawn(move || {
+            runtime.inner.runtime_db.transaction(|_| {
+                held_tx.send(())?;
+                release_rx.recv()?;
+                Ok(())
+            })
+        });
+        held_rx.recv_timeout(Duration::from_secs(5))?;
+        scope.spawn(move || {
+            let result = material(runtime).and_then(|material| {
+                runtime.with_idle_read(Some(&state), &material, |read| {
+                    let entry = read
+                        .queue(&message.id)?
+                        .context("qualified Queue missing")?;
+                    anyhow::ensure!(entry.status == QueueEntryStatus::Queued);
+                    Ok(())
+                })
+            });
+            let _ = done_tx.send(result);
+        });
+        // The receive deadline only bounds failure. The writer releases after
+        // the observation completes (or times out), not after a fixed sleep.
+        let before_writer_release = done_rx.recv_timeout(Duration::from_secs(5));
+        release_tx.send(())?;
+        writer.join().expect("writer thread panicked")?;
+        before_writer_release.context("idle observation stalled behind the shared writer")?
+    })
 }
 
 #[tokio::test]
@@ -59,7 +125,7 @@ async fn idle_queue_scope_reuse_preserves_original_qualification_and_scope_fence
     runtime.enqueue(message.clone()).await?;
     let material = material(runtime)?;
     runtime
-        .with_idle_read(None, &material, |read| {
+        .with_idle_fixture_write(&material, |read| {
             let before = material.finish()?;
             let selected = read
                 .queue(&message.id)?
@@ -107,7 +173,7 @@ async fn idle_message_predicates_reuse_body_and_keep_owning_admission_and_scope(
     runtime.enqueue(source.clone()).await?;
     let material = material(runtime)?;
     runtime
-        .with_idle_read(None, &material, |read| {
+        .with_idle_fixture_write(&material, |read| {
             let original = read
                 .with_message(&source.id, |message| {
                     assert_eq!(message.body, source.body);
@@ -179,7 +245,7 @@ async fn idle_shared_message_keeps_original_body_and_capture_until_last_holder()
     };
     runtime.enqueue(source.clone()).await?;
     let material = material(runtime)?;
-    let selected = runtime.with_idle_read(None, &material, |read| {
+    let selected = runtime.with_idle_fixture_write(&material, |read| {
         let original = read
             .with_message(&source.id, |message| Ok(message as *const MessageEnvelope))?
             .context("qualified Message missing")?;
@@ -253,7 +319,7 @@ async fn idle_shared_turn_retains_original_capture_and_owning_and_scope_fences()
         .evidence()
         .commit_prepared_input_evidence(&prepared)?;
     let material = material(runtime)?;
-    let selected = runtime.with_idle_read(None, &material, |read| {
+    let selected = runtime.with_idle_fixture_write(&material, |read| {
         let selected = read.shared_turn(&turn.turn_id)?.context("Turn missing")?;
         let Fact::Turn(original) = &selected.fact.record else {
             bail!("Turn has another family");
@@ -481,7 +547,7 @@ async fn idle_result_candidates_only_prepare_requested_originals() -> Result<()>
     let (_, pending) = pending_fixture(&harness).await?;
     let material = material(runtime)?;
     runtime
-        .with_idle_read(None, &material, |read| {
+        .with_idle_fixture_write(&material, |read| {
             assert!(read.task_reads.borrow().is_empty());
             let selected = read.qualify_result(&pending[0].record)?;
             assert_eq!(&*selected, &pending[0].record);
@@ -691,7 +757,7 @@ async fn idle_recovery_predicates_share_work_and_one_task_capture() -> Result<()
     let (owner, pending) = pending_fixture(&harness).await?;
     let material = material(runtime)?;
     runtime
-        .with_idle_read(None, &material, |read| {
+        .with_idle_fixture_write(&material, |read| {
             let changes: i64 = read
                 .tx
                 .query_row("SELECT total_changes()", [], |row| row.get(0))?;
@@ -1286,7 +1352,7 @@ async fn idle_named_input_read_reuses_scope_and_body_without_recharging() -> Res
     runtime.enqueue(message.clone()).await?;
     let material = material(runtime)?;
     runtime
-        .with_idle_read(None, &material, |read| {
+        .with_idle_fixture_write(&material, |read| {
             let mut request = read.input_request();
             request.insert_admitted_root(Family::Message, &message.id)?;
             let first = read.inputs(&request)?;
@@ -1516,7 +1582,7 @@ async fn idle_source_task_loan_checks_raw_sql_cut_and_actual_phase() -> Result<(
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
     let (owner, _) = pending_fixture(&harness).await?;
     let material = material(runtime)?;
-    runtime.with_idle_read(None, &material, |read| {
+    runtime.with_idle_fixture_write(&material, |read| {
         let records = read.unsettled(Some(&owner))?;
         let record = &records[0];
         read.shared_message(&record.message_id)?.context("Message missing")?;
@@ -1576,7 +1642,7 @@ async fn idle_source_reader_preserves_canonical_task_and_scope_checks() -> Resul
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
     let (owner, pending) = pending_fixture(&harness).await?;
     let material = material(runtime)?;
-    runtime.with_idle_read(None, &material, |read| {
+    runtime.with_idle_fixture_write(&material, |read| {
         let records = read.unsettled(Some(&owner))?;
         assert_eq!(records.len(), pending.len());
         read.prepare_result_sources(records.iter().map(|record| record.result_identity.as_str()))?;
@@ -1683,7 +1749,7 @@ async fn idle_reply_messages_share_one_capture_without_expanding_selection() -> 
     assert!(grouped.0 < separate.0, "{grouped:?} vs {separate:?}");
     assert!(grouped.1 < separate.1, "{grouped:?} vs {separate:?}");
     runtime
-        .with_idle_read(None, &material(runtime)?, |read| {
+        .with_idle_fixture_write(&material(runtime)?, |read| {
             let records = read.unsettled(Some(&owner))?;
             let selected = &records[..8];
             read.prepare_reply_source_work(selected)?;
@@ -1727,7 +1793,7 @@ async fn idle_reply_work_batch_preserves_exact_relations_and_scope() -> Result<(
     let _refresh = runtime.hold_resource_refresh_for_test().await?;
     let (owner, pending) = pending_fixture(&harness).await?;
     let material = material(runtime)?;
-    runtime.with_idle_read(None, &material, |read| {
+    runtime.with_idle_fixture_write(&material, |read| {
         let records = read.unsettled(Some(&owner))?;
         let reply = &pending[0].record.message_id;
         let capture = |tasks: BTreeSet<String>| {
@@ -2069,7 +2135,7 @@ async fn idle_overlapping_input_and_task_reads_reuse_the_same_cut() -> Result<()
     let (_, pending) = pending_fixture(&harness).await?;
     let material = material(runtime)?;
     runtime
-        .with_idle_read(None, &material, |read| {
+        .with_idle_fixture_write(&material, |read| {
             let mut request = read.input_request();
             for entry in &pending {
                 request.insert_admitted_root(Family::Message, &entry.record.message_id)?;

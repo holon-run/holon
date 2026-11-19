@@ -1620,13 +1620,10 @@ impl RuntimeHandle {
         material: &ResourceReadMaterial,
         prepare: impl FnOnce(&IdleRead<'_, '_>) -> Result<T>,
     ) -> Result<T> {
-        let mut prepare = Some(prepare);
         material.read(|| {
-            self.inner.runtime_db.transaction(|tx| {
-                prepare.take().context("idle selection already executed")?(&IdleRead::new(
-                    self, tx, expected, false,
-                )?)
-            })
+            self.inner
+                .runtime_db
+                .read_for_preparation(|tx| prepare(&IdleRead::new(self, tx, expected, false)?))
         })
     }
 
