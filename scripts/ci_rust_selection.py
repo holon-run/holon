@@ -64,8 +64,13 @@ def select(paths, manifests, dependency_graph):
         path = PurePosixPath(changed)
         if path.name in {"Cargo.toml", "Cargo.lock"}:
             return True, None, False
+        if path.parts[:2] == ("docs", "rfcs") and path.suffix == ".md":
+            continue
         if path.parts[0] == "src":
             production.add("holon")
+        elif path.parts[0] == "tests" and len(path.parts) == 2 and path.suffix == ".rs":
+            # Cargo discovers top-level Rust integration targets in the root package.
+            tests.add("holon")
         elif len(path.parts) >= 3 and path.parts[0] == "crates" and path.parts[1] in manifests:
             name = path.parts[1]
             if test_only(PurePosixPath(*path.parts[2:])) and name not in SKIP_STANDALONE:
@@ -88,7 +93,9 @@ def select(paths, manifests, dependency_graph):
         dev_consumers = {consumer for name in affected for consumer in dev.get(name, ())}
         affected.update(dev_consumers)
     affected.update(tests)
-    return "holon" in affected, sorted(affected - {"holon"} - SKIP_STANDALONE), not production
+    root = "holon" in affected
+    crates = sorted(affected - {"holon"} - SKIP_STANDALONE)
+    return root, crates, bool(crates) and not root and not production
 
 
 def changed_paths(base):

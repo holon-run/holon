@@ -63,12 +63,45 @@ class RustSelectionTests(unittest.TestCase):
         self.assertEqual(self.select(provider + "test_support.rs"),
                          self.select(provider + "mod.rs"))
 
+    def test_root_integration_test_does_not_select_standalone_crates(self):
+        self.assertEqual(self.select("tests/scripted_agent_provider.rs"), (True, [], False))
+
+    def test_mixed_runtime_pr_selects_only_its_standalone_crate(self):
+        # Changed path list from PR #4321.
+        self.assertEqual(
+            self.select(
+                "crates/holon-memory-index/src/projection.rs",
+                "docs/rfcs/runtime-ref-resolution-and-memory-get.md",
+                "src/memory/index.rs",
+                "src/memory/mod.rs",
+                "src/runtime/lifecycle.rs",
+                "src/runtime/tests/input_consumption_budget.rs",
+                "src/storage/mod.rs",
+                "src/tool/host/memory_get.rs",
+                "tests/scripted_agent_provider.rs",
+            ),
+            (True, ["holon-memory-index"], False),
+        )
+
+    def test_rfc_does_not_change_isolated_test_selection(self):
+        rfc = "docs/rfcs/tui-command-surface.md"
+        tui_test = "crates/holon-tui/src/tui/composer/tests.rs"
+        self.assertEqual(self.select(rfc), (False, [], False))
+        self.assertEqual(self.select(rfc, tui_test), (False, ["holon-tui"], True))
+        self.assertEqual(
+            self.select(rfc, tui_test, "tests/scripted_agent_provider.rs"),
+            (True, ["holon-tui"], False),
+        )
+
     def test_unclassified_paths_and_package_metadata_run_the_full_suite(self):
         for paths in (
             (),
             ("Cargo.lock",),
             ("crates/holon-tui/Cargo.toml",),
             ("tests/fixtures/client-wire/status.json",),
+            ("tests/common/mod.rs",),
+            ("tests/test_ci_rust_selection.py",),
+            ("docs/website/reference/openapi.json",),
             ("crates/deleted-crate/src/lib.rs",),
             (".github/workflows/ci.yml", "crates/holon-tui/src/tui/composer/tests.rs"),
         ):

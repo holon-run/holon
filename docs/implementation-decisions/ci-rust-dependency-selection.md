@@ -12,6 +12,8 @@ manual runs also use the full set.
   consumers via normal and build dependencies. A dev dependency selects
   its direct consumer's tests and ends propagation through that edge.
   Optional and target-specific path dependencies are included.
+- Root integration test targets at `tests/*.rs` select the root suite.
+  Markdown RFCs do not expand the Rust selection.
 - Cargo manifests, lockfiles, and changes outside known ownership paths
   select the full Rust set, including shared build and CI inputs.
 - Changes affecting the root package retain the existing checks and
