@@ -5774,8 +5774,8 @@ mod tests {
             .unwrap();
     }
 
-    #[test]
-    fn charged_recovery_root_replay_overtakes_older_provider_lineages() {
+    #[tokio::test(start_paused = true)]
+    async fn charged_recovery_root_replay_overtakes_older_provider_lineages() {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let runtime = RuntimeHandle::new(
@@ -5789,9 +5789,19 @@ mod tests {
         )
         .unwrap();
         insert_charged_settlement(&runtime, Some("msg-charged-root"));
+        // Queue selection reads persisted current-read records for every scanned
+        // message, so both lineage replays must be admitted before selection.
+        let older = runtime
+            .enqueue(lineage_replay_message("older-lineage", "msg-old-root"))
+            .await
+            .unwrap();
+        let charged = runtime
+            .enqueue(lineage_replay_message("charged-replay", "msg-charged-root"))
+            .await
+            .unwrap();
         let mut queue = crate::queue::RuntimeQueue::default();
-        queue.push(lineage_replay_message("older-lineage", "msg-old-root"));
-        queue.push(lineage_replay_message("charged-replay", "msg-charged-root"));
+        queue.push(older);
+        queue.push(charged);
 
         let (selected, obligation) = SchedulerDecisionExecutor::new(&runtime)
             .select_runtime_queue_message_from_queue(
@@ -5810,8 +5820,8 @@ mod tests {
         assert!(obligation);
     }
 
-    #[test]
-    fn uncharged_settlement_keeps_lineage_queue_order() {
+    #[tokio::test(start_paused = true)]
+    async fn uncharged_settlement_keeps_lineage_queue_order() {
         let dir = tempdir().unwrap();
         let workspace = tempdir().unwrap();
         let runtime = RuntimeHandle::new(
@@ -5825,9 +5835,17 @@ mod tests {
         )
         .unwrap();
         insert_charged_settlement(&runtime, None);
+        let older = runtime
+            .enqueue(lineage_replay_message("older-lineage", "msg-old-root"))
+            .await
+            .unwrap();
+        let charged = runtime
+            .enqueue(lineage_replay_message("charged-replay", "msg-charged-root"))
+            .await
+            .unwrap();
         let mut queue = crate::queue::RuntimeQueue::default();
-        queue.push(lineage_replay_message("older-lineage", "msg-old-root"));
-        queue.push(lineage_replay_message("charged-replay", "msg-charged-root"));
+        queue.push(older);
+        queue.push(charged);
 
         let (selected, obligation) = SchedulerDecisionExecutor::new(&runtime)
             .select_runtime_queue_message_from_queue(
