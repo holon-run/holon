@@ -45,6 +45,9 @@ order: 30
 - [运行长生命周期任务](./run-long-lived-task.md)
   在关闭终端后让 Agent 继续工作，等待外部依赖并在新会话中找回同一任务结果。
   <!-- mdorigin:index kind=article -->
+- [亲手验证生命周期保证](./verify-lifecycle.md)
+  在 Agent 休眠时重启守护进程、触发 Webhook 唤醒、检查 worktree 隔离与外部输入的信任分类，每步都有命令证据。
+  <!-- mdorigin:index kind=article -->
 
 - [将复杂任务安全委派给子 Agent 并验收交付](./delegate-work.md)
   在自然语言对话中让主 Agent 将耗时审计、独立测试或试验性重构委派给隔离的子 Agent，配置严格的只读或独立 Worktree 分支边界，并在验收产物后安全清理实例。

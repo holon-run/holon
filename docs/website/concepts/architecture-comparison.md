@@ -54,4 +54,5 @@ When comparing Holon with Grok Bot or CLI-orchestrated self-hosted assistants, e
 - [Work items and tasks](./work-items-and-tasks.md) — durable objectives vs. supervised execution handles
 - [Events, waits, and wakeups](./events-and-waits.md) — how agents pause and resume on timers, tasks, and external wakes
 - [Trust boundaries](./trust-boundaries.md) and [Security and execution boundaries](./security-and-execution-boundaries.md) — authority separation and host-local limits
+- [Verify lifecycle guarantees yourself](../guides/verify-lifecycle.md) — a hands-on reproduction of the restart, wake, isolation, and trust behavior described on this page
 - [Getting started](../getting-started/) — install Holon and run your first local assistant
