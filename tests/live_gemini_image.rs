@@ -566,7 +566,7 @@ fn write_reference(workspace: &Path, filename: &str, image: &Fixture) -> Result<
 }
 
 #[tokio::test]
-#[ignore = "paid native Gemini full-runtime budget probe; one model HTTP dispatch, two local rejections"]
+#[ignore = "paid native Gemini full-runtime budget probe; three dispatches (dedup probe + two budget degradations)"]
 async fn live_gemini_runtime_deduplicates_images_and_enforces_attachment_budget() -> Result<()> {
     let live = live_config()?;
     let seed = Uuid::new_v4().as_bytes()[0];
@@ -596,7 +596,7 @@ async fn live_gemini_runtime_deduplicates_images_and_enforces_attachment_budget(
     );
     let provider = Arc::new(ObservedProvider {
         inner: build_provider_from_model_chain(&live.config, std::slice::from_ref(&live.route))?,
-        dispatches: DispatchBudget::new(1),
+        dispatches: DispatchBudget::new(3),
         calls: AtomicUsize::new(0),
         completed: AtomicUsize::new(0),
         errors: Mutex::new(Vec::new()),
@@ -633,6 +633,7 @@ async fn live_gemini_runtime_deduplicates_images_and_enforces_attachment_budget(
         provider.calls.load(Ordering::SeqCst) == 1 && provider.dispatches.used() == 1,
         "expected one successful real Gemini dispatch"
     );
+    let mut expected_calls = 1usize;
     for scenario in ["count_overflow", "decoded_bytes_overflow"] {
         let rejected = live_config()?;
         let references = if scenario == "count_overflow" {
@@ -666,25 +667,51 @@ async fn live_gemini_runtime_deduplicates_images_and_enforces_attachment_budget(
             ),
         )
         .await?;
-        let artifact = result
-            .failure_artifact
-            .as_ref()
-            .context("the runtime did not record a failure artifact")?;
         ensure!(
-            result.final_status == RunFinalStatus::Failed
-                && artifact.kind == "image_budget_exceeded",
-            "runtime did not report the attachment-budget rejection for {scenario}: \
+            result.final_status == RunFinalStatus::Completed && result.failure_artifact.is_none(),
+            "runtime did not degrade over-budget current images for {scenario}: \
              status={:?} final_text={:?} artifact_kind={:?}",
             result.final_status,
             result.final_text,
-            artifact.kind
+            result
+                .failure_artifact
+                .as_ref()
+                .map(|artifact| artifact.kind.clone()),
         );
+        // MAX_INLINE_IMAGES is 8: nine distinct images inline 8 and degrade 1;
+        // the decoded-byte pair inlines the first and degrades the second.
+        let (expected_inline, degraded_name) = if scenario == "count_overflow" {
+            (8, "8.png")
+        } else {
+            (1, "b.png")
+        };
+        expected_calls += 1;
         ensure!(
-            provider.calls.load(Ordering::SeqCst) == 1 && provider.dispatches.used() == 1,
-            "over-budget current images reached the provider for {scenario}"
+            provider.calls.load(Ordering::SeqCst) == expected_calls
+                && provider.dispatches.used() == expected_calls,
+            "degraded {scenario} turn must dispatch exactly once"
         );
+        {
+            let calls = provider.attachments.lock().unwrap();
+            let attachments = calls.last().context("degraded turn reached no provider")?;
+            ensure!(
+                attachments.len() == expected_inline,
+                "degraded {scenario} turn inlined {} image(s), expected {expected_inline}",
+                attachments.len()
+            );
+        }
+        {
+            let calls = provider.texts.lock().unwrap();
+            let texts = calls.last().context("degraded turn reached no provider")?;
+            ensure!(
+                texts
+                    .iter()
+                    .any(|text| text.contains("were not inlined") && text.contains(degraded_name)),
+                "degraded {scenario} turn did not surface the path-only note"
+            );
+        }
         eprintln!(
-            "live_gemini_image scenario={scenario} runtime_rejected=true additional_dispatches=0"
+            "live_gemini_image scenario={scenario} runtime_degraded=true inlined={expected_inline}"
         );
     }
     eprintln!(
