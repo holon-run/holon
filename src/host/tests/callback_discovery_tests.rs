@@ -26,7 +26,7 @@ async fn callback_locator_is_read_only_and_actual_revocation_fence_prevents_deli
     .await
     .context("original idle transition did not finish")??;
     let baseline = host.inner.input_evidence_budget.report()?;
-    let locator = host
+    let (locator, _) = host
         .resolve_external_trigger_locator(token)?
         .context("original token missing")?;
     assert_eq!(locator.target_agent_id, runtime.instance_agent_id());
@@ -46,7 +46,7 @@ async fn callback_locator_is_read_only_and_actual_revocation_fence_prevents_deli
         released.host_owned, baseline.host_owned,
         "before: {baseline:?}; after: {released:?}"
     );
-    let locator = host
+    let (locator, incarnation) = host
         .resolve_external_trigger_locator(token)?
         .context("second original route missing")?;
     runtime
@@ -61,6 +61,7 @@ async fn callback_locator_is_read_only_and_actual_revocation_fence_prevents_deli
     let error = host
         .deliver_external_callback(
             &locator.target_agent_id,
+            incarnation,
             &locator.external_trigger_id,
             crate::types::CallbackDeliveryPayload {
                 body: None,
@@ -72,7 +73,23 @@ async fn callback_locator_is_read_only_and_actual_revocation_fence_prevents_deli
         .await
         .err()
         .context("discovery is not permission past the original revoke fence")?;
+    assert_eq!(
+        describe_runtime_error(&error).code,
+        "callback_descriptor_rejected"
+    );
     assert!(error.to_string().contains("not active"), "{error:#}");
+    {
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode},
+        };
+        use tower::ServiceExt;
+        let app = crate::http::router(crate::http::AppState::for_tcp(host.clone()));
+        let response = app
+            .oneshot(Request::post(format!("/api/callbacks/wake/{token}")).body(Body::empty())?)
+            .await?;
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
     assert_eq!(runtime.agent_state().await?, state);
     let after: (usize, usize) = host.runtime_db().connection()?.query_row(
         "SELECT (SELECT COUNT(*) FROM messages),(SELECT COUNT(*) FROM queue_entries)",

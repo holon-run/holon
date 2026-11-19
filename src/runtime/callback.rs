@@ -5,6 +5,7 @@ use crate::ingress::WakeHint;
 use crate::runtime_db::transitions::{
     ExternalTriggerMutationOutcome, PreparedExternalTriggerTransition, PreparedInputTransition,
 };
+use crate::runtime_error::RuntimeError;
 
 impl RuntimeHandle {
     pub async fn create_callback(
@@ -154,15 +155,16 @@ impl RuntimeHandle {
                 )?;
             let descriptor = observed
                 .record()
-                .ok_or_else(|| anyhow!("external trigger {} not found", descriptor_id))?;
-            anyhow::ensure!(
-                descriptor.status == ExternalTriggerStatus::Active,
-                "external trigger is not active"
-            );
-            anyhow::ensure!(
-                descriptor.target_agent_id == mutation.state.id,
-                "external trigger does not belong to this agent"
-            );
+                .filter(|descriptor| {
+                    descriptor.status == ExternalTriggerStatus::Active
+                        && descriptor.target_agent_id == mutation.state.id
+                })
+                .ok_or_else(|| {
+                    RuntimeError::policy(
+                        "callback_descriptor_rejected",
+                        "external trigger is not active for this agent",
+                    )
+                })?;
             (
                 descriptor.scope.clone(),
                 descriptor.external_trigger_id.clone(),

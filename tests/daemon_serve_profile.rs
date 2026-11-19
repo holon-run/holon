@@ -1719,6 +1719,48 @@ fn idempotent_start_and_rejected_mismatch_or_foreign_runtime_do_not_rewrite_prof
 }
 
 #[test]
+fn daemon_quarantine_reads_only_the_offline_summary() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mut fixture = Fixture::new();
+    let args = ["daemon", "quarantine"];
+    assert_eq!(
+        fixture.success(&args),
+        json!({"status": "unavailable", "reason": "missing"})
+    );
+
+    let path = fixture.path("run/quarantine-summary.json");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let summary = json!({
+        "version": 1,
+        "current": {
+            "startup_id": "startup_offline_fixture",
+            "started_at": "2026-01-01T00:00:00Z",
+            "entries": [{
+                "agent_id": "synthetic",
+                "incarnation": 1,
+                "generation": 3,
+                "stage": "storage_constructor",
+                "reason": "projection_changed",
+                "failed_at": "2026-01-01T00:00:01Z",
+            }],
+            "omitted_entries": 0,
+        },
+        "history": [],
+    });
+    let bytes = serde_json::to_vec(&summary).unwrap();
+    fs::write(&path, &bytes).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(
+        fixture.success(&args),
+        json!({"status": "available", "summary": summary})
+    );
+    assert_eq!(fs::read(&path).unwrap(), bytes);
+    assert!(!fixture.path("state/runtime.sqlite").exists());
+    assert!(!fixture.path("run/control.sock").exists());
+}
+
+#[test]
 fn daemon_status_stays_bounded_under_db_write_and_migration_lock_contention() {
     let _guard = server_lock();
     let mut fixture = Fixture::new();

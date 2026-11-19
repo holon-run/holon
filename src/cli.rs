@@ -362,6 +362,8 @@ pub enum DaemonCommands {
     #[command(hide = true)]
     PrepareUpdate,
     Status,
+    /// Read the last recorded startup quarantine report without contacting the daemon.
+    Quarantine,
     Restart {
         #[command(flatten)]
         options: ServeOptions,

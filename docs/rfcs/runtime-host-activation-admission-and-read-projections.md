@@ -122,6 +122,33 @@ evidence that startup reconciliation completed.
 Agent creation owns the optional initialization message. Daemon startup
 activates the configured default agent and resumes existing bootstrap work.
 
+### Agent-local constructor isolation
+
+Startup may skip an owner (including the configured default) only when cold
+construction certifies an agent-local preparation error for the still-current
+incarnation, the failed transaction has a proven rollback, and no queue, timer,
+or wait recovery changes need to be carried forward for that owner. Publication
+of previously acknowledged state does not publish a partially built runtime.
+Shared failures, unknown outcomes and failures from the later bootstrap wait
+still fail startup closed.
+
+The host serializes cold activation for the same agent from reconciliation
+through installation, separately from mutation ownership. A proven
+failure holds that incarnation for 15 seconds; only authorized on-demand
+ingress or operator control can retry after the hold, and a successful
+installation clears it. Startup and background activation do not retry an
+isolated incarnation. Admission uses current identity, not a persisted report.
+Authorized ingress can receive `503 agent_quarantined` without enqueue;
+invalid, revoked, or mismatched callback credentials still receive `403`.
+Unrelated callback delivery failures return a generic `500 callback_internal_error`,
+not a capability rejection or quarantine signal.
+
+`holon daemon quarantine` reads the bounded, private diagnostic file without
+contacting the daemon or opening its database. The report names the boot and
+distinguishes its current entries from a short history. It contains only
+allowlisted metadata, never raw storage exceptions or request contents. A
+missing or unreadable report is unavailable, not evidence of a healthy agent.
+
 ### Startup phase observations
 
 Startup observations are diagnostic evidence, not admission or readiness state.

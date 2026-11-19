@@ -759,6 +759,12 @@
     "aliases": []
   },
   {
+    "path": "daemon.quarantine",
+    "positionals": [],
+    "flags": [],
+    "aliases": []
+  },
+  {
     "path": "daemon.restart",
     "positionals": [],
     "flags": [
