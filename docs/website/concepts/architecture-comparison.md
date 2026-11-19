@@ -48,11 +48,28 @@ When comparing Holon with Grok Bot or CLI-orchestrated self-hosted assistants, e
 - **Choose a CLI orchestration shell** (such as OpenMausBot, Codync, or `nightly-labs/OpenBot`) if your primary goal is putting a chat/voice/mobile UI over existing Claude Code, Codex, or Cursor CLI sessions and immediately reusing their MCP ecosystems.
 - **Choose a hosted cloud bot** (such as Grok Bot) if you prefer zero local setup and vendor-hosted execution over self-hosting, local repository access, and model choice.
 
+## How to verify these claims locally
+
+You do not need a synthetic test harness to verify Holon's runtime behavior. Follow the regular user guides on your own machine and inspect the runtime state with read-only commands:
+
+1. **Restart survival & zero-token waits:** Follow [Run a long-lived task](../guides/run-long-lived-task.md). While a task is waiting, inspect active items and timers, then restart the daemon:
+   ```bash
+   holon work-item list --agent main
+   holon timer list --agent main
+   holon daemon stop && holon daemon start
+   holon daemon status
+   ```
+   The same `WorkItem` and timer remain persisted across the restart and resume at fire time without polling loops.
+2. **Physical Git worktree isolation:** Follow [Work in a project workspace or Git worktree](../guides/work-with-workspaces.md) and run `git worktree list` in your repository. Agent edits stay in the linked worktree branch while your primary working tree stays untouched.
+3. **External wake & trust separation:** Follow [Connect external events](../guides/connect-external-events.md). External webhook callbacks wake the agent as an untrusted `wake_hint`; they never grant operator authority or bypass ground-truth verification.
+
+*Scope note:* Holon is a single-host daemon (not replicated HA), a parked wait means the agent is suspended rather than spinning, and an external wake confirms trigger delivery—not authenticity of third-party payload claims.
+
 ## Next reading
 
 - [Runtime model](./runtime-model.md) — how the daemon, clients, agents, work items, and workspaces fit together
 - [Work items and tasks](./work-items-and-tasks.md) — durable objectives vs. supervised execution handles
 - [Events, waits, and wakeups](./events-and-waits.md) — how agents pause and resume on timers, tasks, and external wakes
 - [Trust boundaries](./trust-boundaries.md) and [Security and execution boundaries](./security-and-execution-boundaries.md) — authority separation and host-local limits
-- [Verify lifecycle guarantees yourself](../guides/verify-lifecycle.md) — a hands-on reproduction of the restart, wake, isolation, and trust behavior described on this page
+- [Run a long-lived task](../guides/run-long-lived-task.md), [Work in a project workspace or Git worktree](../guides/work-with-workspaces.md), and [Connect external events](../guides/connect-external-events.md) — hands-on workflow guides
 - [Getting started](../getting-started/) — install Holon and run your first local assistant

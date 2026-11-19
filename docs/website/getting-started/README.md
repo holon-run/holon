@@ -51,7 +51,6 @@ include several model and tool turns.
 If you're already familiar with Holon or want to jump straight into specifics:
 
 - **[Run a long-lived task](/guides/run-long-lived-task)** — track progress, wait for events, and verify completion
-- **[Verify lifecycle guarantees yourself](/guides/verify-lifecycle)** — reproduce restart survival, timer and webhook wakes, worktree isolation, and trust classification on a clean install
 - **[Delegate work to another agent](/guides/delegate-work)** — hand a scoped task to a child agent
 - **[Share with your team](/guides/share-with-your-team)** — deploy to a shared server, enable team login, and collaborate with common AI assistants
 - **[Automate Holon over HTTP](/guides/automate-over-http)** — drive Holon from code

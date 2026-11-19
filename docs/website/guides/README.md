@@ -47,9 +47,6 @@ Use [Reference](../reference/) for complete command syntax and schemas.
 - [Run a long-lived task](./run-long-lived-task.md)
   Keep an agent working after closing your terminal, wait for dependencies, and retrieve the same task result across sessions.
   <!-- mdorigin:index kind=article -->
-- [Verify lifecycle guarantees yourself](./verify-lifecycle.md)
-  Stop the daemon mid-wait and restart it, trigger a webhook wake, inspect worktree isolation, and check how external input is classified.
-  <!-- mdorigin:index kind=article -->
 
 - [Delegate Complex Tasks to Subagents Safely and Verify Deliverables](./delegate-work.md)
   Instruct your primary agent in plain language to delegate deep audits, isolated test runs, or refactors to scoped subagents with strict read-only or worktree boundaries, then verify deliverables and clean up instances safely.
