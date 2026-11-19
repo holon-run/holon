@@ -25668,6 +25668,122 @@
         ]
       }
     },
+    "/api/control/agents/{agent_id}/external-triggers": {
+      "get": {
+        "description": "Read-only diagnostic list of retained active and revoked external triggers for the target agent. Cursor pagination over (created_at desc, external_trigger_id desc) with an optional exact 16-hex token fingerprint filter. Returns metadata and fingerprints only; tokens, full hashes, and callback URLs are never included.",
+        "operationId": "listExternalTriggers",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "List external triggers",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/external-triggers/{external_trigger_id}/reveal": {
+      "post": {
+        "description": "Read the stored plain-text callback token for one active external trigger. Requires the independent static control token credential; trusted-local admission, browser sessions, and bearer session credentials are rejected. Responses use Cache-Control: no-store. Answers 404 when the target or trigger is absent, 409 trigger_not_active when revoked, and 409 token_unavailable when no stored token can be safely verified against its hash.",
+        "operationId": "revealExternalTrigger",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/JsonValue"
+                }
+              }
+            },
+            "description": "Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Reveal external trigger token",
+        "tags": [
+          "control"
+        ]
+      }
+    },
     "/api/control/agents/{agent_id}/model": {
       "post": {
         "description": "Set an agent model override and optional reasoning effort.",

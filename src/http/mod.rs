@@ -701,6 +701,14 @@ pub fn router(state: AppState) -> Router {
             post(control::reset_callback),
         )
         .route(
+            "/control/agents/{agent_id}/external-triggers",
+            get(control::list_external_triggers),
+        )
+        .route(
+            "/control/agents/{agent_id}/external-triggers/{external_trigger_id}/reveal",
+            post(control::reveal_external_trigger),
+        )
+        .route(
             "/control/agents/{agent_id}/workspace/attach",
             post(control::attach_workspace),
         )
@@ -1611,6 +1619,31 @@ pub(crate) fn authorize_control(headers: &HeaderMap, state: &AppState) -> Authen
         Ok(()) => Ok(()),
         Err(rejection) => Err(infrastructure_error.unwrap_or(rejection)),
     }
+}
+
+/// Plain-text secret reveal requires the independent static control token.
+/// Trusted-local admission, shared browser session cookies, bearer session
+/// credentials, and deployments without a configured control token are all
+/// rejected: the callback token must stay bound to an explicitly provisioned
+/// operator credential instead of any default control access branch.
+pub(crate) fn authorize_control_token_credential(
+    headers: &HeaderMap,
+    state: &AppState,
+) -> AuthenticationResult<()> {
+    let config = state.host.config();
+    let expected_token = config
+        .control_token
+        .as_deref()
+        .ok_or(AuthenticationError::Rejected(
+            "reveal requires a configured control token",
+        ))?;
+    let provided = bearer_session_credential(headers).ok_or(AuthenticationError::Rejected(
+        "missing bearer control token",
+    ))?;
+    if provided != expected_token {
+        return Err(AuthenticationError::Rejected("invalid control token"));
+    }
+    Ok(())
 }
 
 pub(crate) fn authorize_remote_access(

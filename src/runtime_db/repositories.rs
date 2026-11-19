@@ -2726,6 +2726,25 @@ impl ExternalTriggerRepository<'_> {
         })
     }
 
+    /// Agent-scoped single-record lookup for the control reveal endpoint. A
+    /// trigger that exists under a different agent is absent here, so the
+    /// caller can answer 404 without disclosing cross-agent existence.
+    pub fn for_agent_and_id(
+        &self,
+        agent_id: &str,
+        external_trigger_id: &str,
+    ) -> Result<Option<ExternalTriggerRecord>> {
+        self.db.with_read(|connection| {
+            external_trigger_on(
+                &connection,
+                "SELECT payload_json
+                 FROM external_triggers
+                 WHERE external_trigger_id = ?1 AND target_agent_id = ?2",
+                params![external_trigger_id, agent_id],
+            )
+        })
+    }
+
     pub fn latest_for_agent(&self, agent_id: &str) -> Result<Vec<ExternalTriggerRecord>> {
         self.db
             .with_read(|connection| context_external_triggers_on(&connection, agent_id))
@@ -2750,6 +2769,76 @@ impl ExternalTriggerRepository<'_> {
              LIMIT ?2",
                 params![agent_id, limit],
             )
+        })
+    }
+
+    /// Read-only diagnostic page for the control surface: retained
+    /// active/revoked records for one agent, newest first, with an optional
+    /// 16-hex token-fingerprint filter and an exclusive keyset cursor on
+    /// (created_at DESC, external_trigger_id DESC). Returns the raw created_at
+    /// column value with each record so the next cursor stays byte-identical
+    /// to the stored ordering key.
+    pub fn retained_page_for_agent(
+        &self,
+        agent_id: &str,
+        fingerprint: Option<&str>,
+        before: Option<(&str, &str)>,
+        limit: usize,
+    ) -> Result<Vec<(ExternalTriggerRecord, String)>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let mut sql = String::from(
+            "SELECT payload_json, created_at
+             FROM external_triggers
+             WHERE target_agent_id = ?1",
+        );
+        let mut bindings: Vec<&str> = Vec::with_capacity(4);
+        bindings.push(agent_id);
+        let mut next_param = 2usize;
+        if let Some(fingerprint) = fingerprint {
+            sql.push_str(&format!(" AND substr(token_hash, 1, 16) = ?{next_param}"));
+            bindings.push(fingerprint);
+            next_param += 1;
+        }
+        if let Some((created_at, external_trigger_id)) = before {
+            sql.push_str(&format!(
+                " AND (created_at < ?{next_param} OR (created_at = ?{next_param} AND external_trigger_id < ?{}))",
+                next_param + 1
+            ));
+            bindings.push(created_at);
+            bindings.push(external_trigger_id);
+            next_param += 2;
+        }
+        let _ = next_param;
+        sql.push_str(&format!(
+            " ORDER BY created_at DESC, external_trigger_id DESC LIMIT {limit}"
+        ));
+        self.db.with_read(|connection| {
+            let mut statement = connection.prepare(&sql)?;
+            let mut rows = statement.query(params_from_iter(bindings.iter().copied()))?;
+            let mut page: Vec<(ExternalTriggerRecord, String)> = Vec::new();
+            while let Some(row) = rows.next()? {
+                if page.len() == page.capacity() {
+                    let additional = page.capacity().max(4);
+                    crate::diagnostics::resource_io::charge_owned_metadata(
+                        u64::try_from(
+                            additional
+                                .checked_mul(std::mem::size_of::<ExternalTriggerRecord>())
+                                .context("trigger page capacity overflow")?,
+                        )?,
+                        additional,
+                    )
+                    .context("trigger page slots admission")?;
+                    page.try_reserve_exact(additional)
+                        .context("trigger page slots allocation")?;
+                }
+                let payload = row.get_ref(0)?.as_str()?;
+                crate::diagnostics::resource_io::admit_json_payload(payload)?;
+                let created_at = row.get_ref(1)?.as_str()?.to_string();
+                page.push((decode_external_trigger_payload(payload)?, created_at));
+            }
+            Ok(page)
         })
     }
 

@@ -1063,6 +1063,28 @@
   },
   {
     "method": "get",
+    "path": "/api/control/agents/{agent_id}/external-triggers",
+    "handler": "list_external_triggers",
+    "operation_id": "listExternalTriggers",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/control/agents/{agent_id}/scheduler-repair",
     "handler": "scheduler_repair_inspect",
     "operation_id": "inspectSchedulerRepair",
@@ -1975,6 +1997,28 @@
     ],
     "request_schema": "DebugPromptRequest",
     "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/control/agents/{agent_id}/external-triggers/{external_trigger_id}/reveal",
+    "handler": "reveal_external_trigger",
+    "operation_id": "revealExternalTrigger",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],

@@ -76,6 +76,9 @@ http_async_tests!(
     runtime_status_route_reports_waiting_activity_summary,
     runtime_status_route_reports_last_runtime_failure_summary,
     runtime_shutdown_route_requests_shutdown,
+    external_trigger_list_returns_retained_records_fingerprints_and_pagination,
+    external_trigger_reveal_requires_independent_control_token,
+    external_trigger_reveal_rejects_revoked_unknown_and_cross_agent_targets,
 );
 
 #[cfg(unix)]

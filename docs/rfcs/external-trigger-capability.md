@@ -182,6 +182,50 @@ WorkItem `blocked_by`. A future `RecordExternalWait` tool may record
 `external_trigger_id`. A corresponding wait-cancellation tool would cancel the
 waiting state only; it would not revoke the ingress capability.
 
+### Read-Only Diagnostic Surfaces
+
+The control API exposes two read-only surfaces for diagnosing retained
+external trigger records (from #4233). Neither surface mints, rotates,
+revokes, or delivers anything.
+
+`GET /api/control/agents/{agent_id}/external-triggers` lists retained
+active and revoked records for the target agent under standard control
+authorization:
+
+- cursor pagination over `(created_at DESC, external_trigger_id DESC)`,
+  default 20 entries, maximum 100
+- optional exact `fingerprint` filter over the first 16 lowercase hex
+  characters of the SHA-256 token hash; collisions return every retained
+  match and stay pageable
+- each item carries `external_trigger_id`, `delivery_mode`, `status`,
+  `created_at`, `revoked_at`, and `token_fingerprint` only
+
+The list never returns tokens, full token hashes, or callback URLs, and it
+never feeds `AgentSummary`.
+
+`POST /api/control/agents/{agent_id}/external-triggers/{external_trigger_id}/reveal`
+returns the stored plain-text token for exactly one trigger. The token is a
+bearer capability, so this surface is stricter than ordinary control access:
+
+- it accepts only the independent static control token credential presented
+  as `Authorization: Bearer`; trusted-local admission without credentials,
+  shared browser sessions, bearer session credentials, and deployments
+  without a configured control token are all rejected (fail closed)
+- it returns `200` with `external_trigger_id`, `delivery_mode`, `token`, and
+  `trigger_url` (constructed by the same callback URL rule as issuance) only
+  when the record is still active and the stored token verifies against its
+  hash; responses carry `Cache-Control: no-store`
+- it answers `404` when the target agent or the trigger under that target
+  does not exist, `409 trigger_not_active` when the record is revoked, and
+  `409 token_unavailable` when no stored token can be safely verified; a
+  revoked identifier is never silently replaced by the current active one
+- logs, errors, and OpenAPI examples for this surface carry metadata or
+  placeholders only, never response secrets
+
+Until the operator UI and App surfaces can be isolated per origin, the
+plain-text reveal deliberately stays restricted to non-browser clients that
+hold the independent control token; it is not wired into the Web UI.
+
 ### `CancelExternalTrigger`
 
 Explicit capability revocation should be an admin/diagnostic operation:
