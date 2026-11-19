@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::error::Error;
 
 use reqwest::StatusCode;
@@ -63,6 +64,11 @@ pub struct ProviderTransportError {
     pub retry_after: Option<Duration>,
     pub diagnostics: Option<ProviderTransportDiagnostics>,
     pub token_usage: Option<TokenUsage>,
+    /// Bounded, locally-authored evidence about the failure (for example
+    /// attachment budget counts). Entries are presentation evidence only:
+    /// they never come from provider payloads and never affect retry,
+    /// classification, or fallback behavior.
+    pub details: BTreeMap<String, String>,
     message: String,
 }
 
@@ -438,6 +444,7 @@ pub fn provider_transport_error_with_evidence(
         diagnostics,
         token_usage,
         retry_after,
+        details: BTreeMap::new(),
         message: message.into(),
     }
     .into()
@@ -459,6 +466,20 @@ pub fn provider_transport_error_with_code(
         None,
         message,
     )
+}
+
+/// Attaches bounded, locally-typed evidence to a provider transport error.
+///
+/// Presentation layers decide which entries are safe and useful to show;
+/// attaching evidence does not change classification, retry, or fallback.
+pub fn set_provider_transport_details(
+    mut error: anyhow::Error,
+    details: impl IntoIterator<Item = (String, String)>,
+) -> anyhow::Error {
+    if let Some(transport_error) = error.downcast_mut::<ProviderTransportError>() {
+        transport_error.details.extend(details);
+    }
+    error
 }
 
 pub fn provider_transport_error_with_code_and_retry_after(

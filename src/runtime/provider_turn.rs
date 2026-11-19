@@ -282,12 +282,13 @@ fn markdown_image_messages_from_sections_with_material(
                         omitted_history += 1;
                         continue;
                     }
-                    return Err(image_input_error(
+                    return Err(image_budget_error(
                         "image_scan_budget_exceeded",
                         format!(
                             "required markdown images exceed runtime read budget: \
                              max_paths={MAX_MARKDOWN_IMAGE_READS}; reduce current image references"
                         ),
+                        [("max_paths", MAX_MARKDOWN_IMAGE_READS.to_string())],
                     ));
                 }
                 paths.insert(canonical);
@@ -326,15 +327,21 @@ fn markdown_image_messages_from_sections_with_material(
                         omitted_history += 1;
                         continue;
                     }
-                    return Err(image_input_error(
+                    let image_count = hashes.len() + 1;
+                    return Err(image_budget_error(
                         "image_budget_exceeded",
                         format!(
                             "required markdown images exceed runtime attachment budget: \
-                             image_count={}, decoded_bytes={}, max_images={max_images}, \
+                             image_count={image_count}, decoded_bytes={next_bytes}, \
+                             max_images={max_images}, \
                              max_decoded_bytes={max_bytes}; reduce current image attachments",
-                            hashes.len() + 1,
-                            next_bytes,
                         ),
+                        [
+                            ("image_count", image_count.to_string()),
+                            ("decoded_bytes", next_bytes.to_string()),
+                            ("max_images", max_images.to_string()),
+                            ("max_decoded_bytes", max_bytes.to_string()),
+                        ],
                     ));
                 }
                 inline_bytes = next_bytes;
@@ -397,6 +404,22 @@ fn image_input_error(code: &str, message: String) -> anyhow::Error {
         None,
         None,
         message,
+    )
+}
+
+/// Builds a locally-typed contract error and attaches bounded evidence that
+/// operator-facing presentation may surface (see `runtime_error`). The values
+/// are runtime budget numbers, never provider payload text.
+fn image_budget_error(
+    code: &str,
+    message: String,
+    details: impl IntoIterator<Item = (&'static str, String)>,
+) -> anyhow::Error {
+    crate::provider::set_provider_transport_details(
+        image_input_error(code, message),
+        details
+            .into_iter()
+            .map(|(key, value)| (key.to_string(), value)),
     )
 }
 

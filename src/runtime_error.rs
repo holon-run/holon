@@ -270,6 +270,14 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
         if let Some(status) = provider_error.status {
             safe_context.insert("status".into(), status.to_string());
         }
+        if provider_error.code.is_some() && code != kind {
+            safe_context.insert("cause_code".into(), code.to_string());
+        }
+        for (key, value) in &provider_error.details {
+            if is_safe_context_key(key) {
+                safe_context.insert(key.clone(), sanitize_runtime_error_text(value));
+            }
+        }
         if let Some(diagnostics) = diagnostics {
             insert_optional_context(
                 &mut safe_context,
@@ -297,7 +305,12 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
             domain: RuntimeErrorDomain::Provider,
             code: code.to_string(),
             retryable,
-            operator_message: provider_operator_message(kind, diagnostics, &safe_context),
+            operator_message: provider_operator_message(
+                kind,
+                Some(code),
+                diagnostics,
+                &safe_context,
+            ),
             recovery_hint: provider_recovery_hint(kind),
             safe_context,
             source_chain: merge_source_chains(provider_chain, source_chain),
@@ -512,6 +525,7 @@ pub fn describe_runtime_error(error: &AnyhowError) -> RuntimeErrorDescriptor {
             retryable,
             operator_message: provider_operator_message(
                 kind,
+                None,
                 attempt.transport_diagnostics.as_ref(),
                 &safe_context,
             ),
@@ -629,24 +643,68 @@ fn merge_source_chains(primary: Vec<String>, secondary: Vec<String>) -> Vec<Stri
 
 fn provider_operator_message(
     kind: &str,
+    code: Option<&str>,
     diagnostics: Option<&crate::provider::ProviderTransportDiagnostics>,
     context: &BTreeMap<String, String>,
 ) -> String {
-    let Some(diagnostics) = diagnostics.filter(|diagnostics| diagnostics.stage == "oauth_refresh")
-    else {
-        return format!("provider request failed: {kind}");
+    if let Some(diagnostics) =
+        diagnostics.filter(|diagnostics| diagnostics.stage == "oauth_refresh")
+    {
+        let provider = context
+            .get("model_ref")
+            .or_else(|| context.get("provider"))
+            .map(String::as_str)
+            .unwrap_or("unknown");
+        let reason = diagnostics
+            .source_chain
+            .first()
+            .map(|message| sanitize_runtime_error_text(message))
+            .unwrap_or_else(|| "OAuth refresh failed (refresh_failed)".into());
+        return format!("provider request failed for {provider}: {kind}: {reason}");
+    }
+    let mut message = format!("provider request failed: {kind}");
+    let Some(code) = code.filter(|code| *code != kind) else {
+        return message;
     };
-    let provider = context
-        .get("model_ref")
-        .or_else(|| context.get("provider"))
-        .map(String::as_str)
-        .unwrap_or("unknown");
-    let reason = diagnostics
-        .source_chain
-        .first()
-        .map(|message| sanitize_runtime_error_text(message))
-        .unwrap_or_else(|| "OAuth refresh failed (refresh_failed)".into());
-    format!("provider request failed for {provider}: {kind}: {reason}")
+    message.push_str(&format!(" ({code}"));
+    if let Some(summary) = provider_operator_detail_summary(context) {
+        message.push_str(": ");
+        message.push_str(&summary);
+    }
+    if let Some(hint) = provider_code_hint(code) {
+        message.push_str("; ");
+        message.push_str(hint);
+    }
+    message.push(')');
+    message
+}
+
+/// Numeric evidence rendered in the operator message, in a stable order.
+/// Only these keys are surfaced; the bounded list keeps the summary short and
+/// prevents unrelated provider detail from reaching operator-facing text.
+const PROVIDER_OPERATOR_DETAIL_KEYS: &[&str] = &[
+    "image_count",
+    "max_images",
+    "decoded_bytes",
+    "max_decoded_bytes",
+    "max_paths",
+];
+
+fn provider_operator_detail_summary(context: &BTreeMap<String, String>) -> Option<String> {
+    let pairs: Vec<String> = PROVIDER_OPERATOR_DETAIL_KEYS
+        .iter()
+        .filter_map(|key| context.get(*key).map(|value| format!("{key}={value}")))
+        .collect();
+    (!pairs.is_empty()).then(|| pairs.join(", "))
+}
+
+fn provider_code_hint(code: &str) -> Option<&'static str> {
+    match code {
+        "image_budget_exceeded" | "image_scan_budget_exceeded" => {
+            Some("reduce or split current image attachments")
+        }
+        _ => None,
+    }
 }
 
 fn provider_recovery_hint(kind: &str) -> Option<String> {
@@ -700,6 +758,11 @@ fn is_safe_context_key(key: &str) -> bool {
             | "quota"
             | "limit"
             | "observed"
+            | "image_count"
+            | "max_images"
+            | "decoded_bytes"
+            | "max_decoded_bytes"
+            | "max_paths"
             | "count_complete"
             | "round"
             | "managed_tool_calls"
@@ -800,6 +863,112 @@ mod tests {
                 .contains("private-upstream-payload"));
             assert!(descriptor.recovery_hint.unwrap().contains("sign in again"));
         }
+    }
+
+    #[test]
+    fn provider_operator_message_keeps_typed_code_and_budget_evidence() {
+        use crate::provider::{
+            provider_transport_error_with_code, set_provider_transport_details,
+            ProviderFailureClassification, ProviderFailureKind, RetryDisposition,
+        };
+
+        let error = provider_transport_error_with_code(
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::ContractError,
+                disposition: RetryDisposition::FailFast,
+            },
+            Some("image_budget_exceeded"),
+            None,
+            None,
+            "required markdown images exceed runtime attachment budget: private /home/x/secret.png",
+        );
+        let error = set_provider_transport_details(
+            error,
+            [
+                ("image_count".to_string(), "12".to_string()),
+                ("max_images".to_string(), "8".to_string()),
+                ("decoded_bytes".to_string(), "268435456".to_string()),
+                ("max_decoded_bytes".to_string(), "20971520".to_string()),
+                ("private_payload".to_string(), "provider-secret".to_string()),
+            ],
+        );
+        let descriptor = describe_runtime_error(&error);
+        assert_eq!(descriptor.domain, RuntimeErrorDomain::Provider);
+        assert_eq!(descriptor.code, "image_budget_exceeded");
+        let message = &descriptor.operator_message;
+        assert!(message.starts_with("provider request failed: contract_error"));
+        assert!(message.contains("image_budget_exceeded"));
+        assert!(message.contains("image_count=12"));
+        assert!(message.contains("max_images=8"));
+        assert!(message.contains("decoded_bytes=268435456"));
+        assert!(message.contains("max_decoded_bytes=20971520"));
+        assert!(message.contains("reduce or split current image attachments"));
+        assert_eq!(
+            descriptor.safe_context["cause_code"],
+            "image_budget_exceeded"
+        );
+        assert_eq!(descriptor.safe_context["image_count"], "12");
+        assert_eq!(descriptor.safe_context["max_images"], "8");
+        // Only whitelisted evidence reaches presentation surfaces.
+        assert!(!message.contains("private_payload"));
+        assert!(!message.contains("secret"));
+        let serialized = serde_json::to_string(&descriptor).unwrap();
+        assert!(!serialized.contains("private_payload"));
+        assert!(!serialized.contains("provider-secret"));
+        assert!(!serialized.contains("/home/x/secret.png"));
+    }
+
+    #[test]
+    fn provider_operator_message_without_typed_code_stays_generic() {
+        use crate::provider::{
+            provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
+            RetryDisposition,
+        };
+
+        let error = provider_transport_error_with_code(
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::Connection,
+                disposition: RetryDisposition::Retryable,
+            },
+            None,
+            None,
+            None,
+            "connection reset by peer",
+        );
+        let descriptor = describe_runtime_error(&error);
+        assert_eq!(descriptor.code, "connection");
+        assert_eq!(
+            descriptor.operator_message,
+            "provider request failed: connection"
+        );
+        assert!(!descriptor.safe_context.contains_key("cause_code"));
+    }
+
+    #[test]
+    fn provider_operator_message_skips_redundant_code_when_it_equals_kind() {
+        use crate::provider::{
+            provider_transport_error_with_code, ProviderFailureClassification, ProviderFailureKind,
+            RetryDisposition,
+        };
+
+        let error = provider_transport_error_with_code(
+            ProviderFailureClassification {
+                kind: ProviderFailureKind::AuthError,
+                disposition: RetryDisposition::FailFast,
+            },
+            Some("auth_error"),
+            Some(401),
+            None,
+            "provider credentials rejected",
+        );
+        let descriptor = describe_runtime_error(&error);
+        assert_eq!(descriptor.code, "auth_error");
+        assert_eq!(
+            descriptor.operator_message,
+            "provider request failed: auth_error"
+        );
+        assert!(!descriptor.safe_context.contains_key("cause_code"));
+        assert_eq!(descriptor.safe_context["status"], "401");
     }
 
     #[test]
