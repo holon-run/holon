@@ -39,10 +39,25 @@ pub fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiRes
     }
 
     let usage = parsed.usage.as_ref();
+    let input_tokens = usage.map(|usage| usage.input_tokens).unwrap_or(0);
+    let output_tokens = usage.map(|usage| usage.output_tokens).unwrap_or(0);
     let cache_usage = usage.map(|usage| ProviderCacheUsage {
         read_input_tokens: usage.cached_input_tokens.unwrap_or(0),
         creation_input_tokens: 0,
     });
+
+    // #4295: a completed turn with no usable text or tool calls must classify
+    // as a retryable empty provider response instead of settling an empty
+    // turn. Length truncation keeps its existing passthrough behavior.
+    if parsed.finish_reason.as_deref() != Some("length")
+        && !openai_blocks_have_countable_content(&blocks)
+    {
+        return Err(empty_response_error(
+            "empty OpenAI Chat Completions response",
+            "response contained no usable text or tool calls",
+            crate::types::TokenUsage::new(input_tokens, output_tokens),
+        ));
+    }
 
     Ok(ParsedOpenAiResponse {
         served_service_tier,
@@ -50,8 +65,8 @@ pub fn parse_chat_completion_response(response: Value) -> Result<ParsedOpenAiRes
             material: Default::default(),
             blocks,
             stop_reason: parsed.finish_reason,
-            input_tokens: usage.map(|usage| usage.input_tokens).unwrap_or(0),
-            output_tokens: usage.map(|usage| usage.output_tokens).unwrap_or(0),
+            input_tokens,
+            output_tokens,
             cache_usage,
             provider_message_id: response_id.clone(),
             provider_request_id: None,
