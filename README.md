@@ -4,9 +4,11 @@ English | [中文](README.zh-CN.md)
 
 [![Release](https://img.shields.io/github/v/release/holon-run/holon?sort=semver)](https://github.com/holon-run/holon/releases/latest)[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**Create and run AI assistants on your own computer or server.**
+**Create and run self-hosted AI assistants on your own computer or server.**
 
-Holon is open-source software for individuals and teams to create and run AI assistants on their own computers or servers. Assign tasks to your assistants, track their progress, and let them follow up on ongoing work.
+Holon is an open-source, local-first AI assistant workbench powered by its own **Rust agent runtime**. Individuals and teams can assign tasks, track progress in persistent workspaces, and let assistants wait for events and follow up on ongoing work—without wrapping a third-party coding CLI.
+
+> Evaluating self-hosted AI assistants or agent runtimes? Read [Architecture comparison: self-hosted AI assistants vs. agent runtimes](docs/website/concepts/architecture-comparison.md).
 
 ## What does Holon provide?
 

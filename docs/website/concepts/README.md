@@ -82,4 +82,8 @@ belong in [Runtime specs](../spec/).
   Host-local execution, workspace limits, authenticated access, and capability-secret risks.
   <!-- mdorigin:index kind=article -->
 
+- [Architecture comparison](./architecture-comparison.md)
+  How Holon's self-owned Rust agent runtime compares with CLI-orchestrated self-hosted AI assistants, embedded harnesses, and cloud bot platforms.
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

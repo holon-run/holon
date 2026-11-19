@@ -12,7 +12,7 @@ order: 1
 
 # 在自己的电脑或服务器上，创建和运行 AI 助手。
 
-<p class="home-hero__lede">面向个人和团队的开源软件。把任务交给 AI 助手，查看执行进展，让它们持续跟进工作。</p>
+<p class="home-hero__lede">开源、可自部署的 AI 助手与 Rust Agent 运行时，面向个人和团队。在持久化工作区中分配任务、查看执行进展，并让助手持续跟进工作。</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">安装并开始</a>

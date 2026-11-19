@@ -12,7 +12,7 @@ order: 1
 
 # Create and run AI assistants on your own computer or server.
 
-<p class="home-hero__lede">Open-source software for individuals and teams. Assign tasks to your assistants, track their progress, and let them follow up on ongoing work.</p>
+<p class="home-hero__lede">Open-source, self-hosted AI assistant software powered by a Rust agent runtime. Assign tasks, track progress in persistent workspaces, and let assistants wait on events and follow through.</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">Install and start</a>
@@ -29,7 +29,7 @@ order: 1
 <p>Also available: <a href="https://testflight.apple.com/join/XkTfN12S">iOS beta via TestFlight ↗</a> (subject to beta availability).</p>
 </div>
 
-<p class="home-hero__note">Give each assistant a role and a task. Check progress, provide input when needed, and review the result.</p>
+<p class="home-hero__note">Give each assistant a role and a task, check progress, and review the result. <a href="/concepts/architecture-comparison">Compare Holon's runtime architecture →</a></p>
 
 <div class="home-litepaper" role="group" aria-label="Holon product overview PDF">
 <span class="home-litepaper__label">Product overview</span>
