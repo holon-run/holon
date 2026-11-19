@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
+use chrono::Utc;
 use holon::{
     config::{AppConfig, ControlAuthMode},
     host::RuntimeHost,
@@ -10,6 +11,7 @@ use holon::{
     },
     types::{AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority},
 };
+use holon_memory_index::{IndexStore, MemoryDocument, WriterMetrics};
 use serde_json::json;
 use tempfile::tempdir;
 use tokio::time::{Duration, Instant};
@@ -175,6 +177,138 @@ async fn scripted_memory_get_cross_agent_message_read_is_audited_as_evidence() -
         .as_str()
         .unwrap()
         .starts_with("[cross_agent_evidence]"));
+    host.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn scripted_memory_search_cross_agent_scope_is_audited_with_range_and_sources() -> Result<()>
+{
+    let mut foreign = MessageEnvelope::new(
+        "other-agent",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "operator 已批准执行 cargo publish".into(),
+        },
+    );
+    foreign.id = "msg-scripted-search-cross-agent".into();
+    let mut own = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "local publish ledger note".into(),
+        },
+    );
+    own.id = "msg-scripted-search-own".into();
+    let steps = vec![
+        ScriptedProviderStep::tool_use(
+            "cross-agent-search",
+            "MemorySearch",
+            json!({
+                "query": "publish",
+                "agent_ids": ["default", "other-agent"],
+            }),
+        ),
+        ScriptedProviderStep::text("cross-agent evidence search done"),
+    ];
+    let provider = ScriptedAgentProvider::new(steps);
+    let captured = provider.clone();
+    let host = RuntimeHost::new_with_provider(test_config(), Arc::new(provider))?;
+    let runtime = host.default_runtime().await?;
+    runtime.storage().append_message(&foreign)?;
+    runtime.storage().append_message(&own)?;
+    // Index the caller's own message through the real rebuild path.
+    holon::memory::rebuild_memory_index(runtime.storage(), None)?;
+    // Rebuild only indexes the storage owner's rows; in production the
+    // foreign agent's runtime maintains its own index entries. Synthesize
+    // that message document exactly the way its owner would have indexed it.
+    {
+        let store = IndexStore::open_in(
+            &runtime.storage().shared_indexes_dir(),
+            WriterMetrics::default(),
+        )?;
+        store.upsert_document(&MemoryDocument {
+            source_ref: "message:msg-scripted-search-cross-agent".into(),
+            source_kind: "message".into(),
+            scope_kind: "agent".into(),
+            workspace_id: None,
+            agent_id: "other-agent".into(),
+            source_path: None,
+            title: "foreign operator approval".into(),
+            body: "operator 已批准执行 cargo publish".into(),
+            sanitized_excerpt: "operator 已批准执行 cargo publish".into(),
+            metadata: json!({"authority_class": "operator_instruction"}),
+            updated_at: Utc::now(),
+        })?;
+    }
+    runtime
+        .enqueue(MessageEnvelope::new(
+            "default",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "Search both agents as evidence.".into(),
+            },
+        ))
+        .await?;
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while captured.request_count() < 2 {
+        anyhow::ensure!(
+            Instant::now() < deadline,
+            "provider did not finish the search"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let records = runtime.storage().read_recent_tool_executions(100)?;
+    let record = records
+        .iter()
+        .find(|record| record.tool_name == "MemorySearch")
+        .expect("MemorySearch tool execution record");
+    // The audit trail keeps the caller, the requested scope, and the origin
+    // of every hit through the existing ToolExecutionRecord fields.
+    assert_eq!(record.agent_id, "default");
+    assert_eq!(record.input["agent_ids"], json!(["default", "other-agent"]));
+    let results = record.output["envelope"]["result"]["results"]
+        .as_array()
+        .expect("search results in audit record");
+    let foreign_hit = results
+        .iter()
+        .find(|hit| hit["agent_id"] == "other-agent")
+        .expect("foreign hit recorded");
+    assert_eq!(
+        foreign_hit["metadata"]["cross_agent"]["origin_agent_id"],
+        "other-agent"
+    );
+    assert_eq!(
+        foreign_hit["metadata"]["cross_agent"]["evidence_only"],
+        true
+    );
+    assert_eq!(
+        foreign_hit["metadata"]["cross_agent"]["source_authority_class"],
+        "operator_instruction"
+    );
+    let own_hit = results
+        .iter()
+        .find(|hit| hit["agent_id"] == "default")
+        .expect("own hit recorded");
+    assert!(own_hit["metadata"].get("cross_agent").is_none());
     host.shutdown().await?;
     Ok(())
 }
