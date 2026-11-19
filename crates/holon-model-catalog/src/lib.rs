@@ -1658,6 +1658,8 @@ fn borrowed_reasoning_effort_options(
 }
 
 pub mod models_dev;
+#[cfg(test)]
+#[path = "test_support/providers/mod.rs"]
 mod providers;
 mod snapshot;
 #[cfg(test)]
