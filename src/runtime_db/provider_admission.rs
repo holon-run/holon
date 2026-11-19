@@ -489,6 +489,28 @@ impl RuntimeDb {
         })
     }
 
+    /// Sanitized, diagnosable credential-failure event. Only the model route
+    /// string and HTTP status cross this boundary; credentials and raw
+    /// provider response bodies never enter the event.
+    pub fn record_provider_auth_failure_event(
+        &self,
+        agent_id: &str,
+        model_ref: &str,
+        cause: &ProviderCooldownCause,
+    ) -> Result<()> {
+        let event = crate::types::AuditEvent::legacy(
+            "provider_auth_failure",
+            serde_json::json!({
+                "model_ref": model_ref,
+                "cause_code": cause.failure_kind.as_str(),
+                "status": cause.http_status,
+            }),
+        );
+        self.audit_events()
+            .append(Some(agent_id), &event)
+            .map(|_| ())
+    }
+
     pub fn provider_admission_blocked(
         &self,
         scopes: &[ProviderAdmissionScope],
@@ -748,6 +770,36 @@ mod tests {
         assert_eq!(cause.failure_kind, "unknown");
         assert_eq!(cause.incident_id, None);
         assert!(!serde_json::to_string(&cause)?.contains("secret"));
+        Ok(())
+    }
+
+    #[test]
+    fn credential_failure_event_is_sanitized_and_carries_route_and_status() -> Result<()> {
+        let (_dir, db) = database()?;
+        let cause = ProviderCooldownCause {
+            failure_kind: "auth_error".into(),
+            http_status: Some(401),
+            occurred_at: now(),
+            server_not_before: None,
+            incident_id: None,
+            details_available: true,
+        };
+        db.record_provider_auth_failure_event(
+            "agent-a",
+            "openai-codex@default/gpt-6.2-sol",
+            &cause,
+        )?;
+        let events = db.audit_events().recent(Some("agent-a"), 10)?;
+        let event = events
+            .iter()
+            .find(|event| event.kind == "provider_auth_failure")
+            .expect("credential failure audit event recorded");
+        assert_eq!(event.data["model_ref"], "openai-codex@default/gpt-6.2-sol");
+        assert_eq!(event.data["cause_code"], "auth_error");
+        assert_eq!(event.data["status"], 401);
+        let serialized = serde_json::to_string(&event.data)?;
+        assert!(!serialized.contains("token"));
+        assert!(!serialized.contains("authorization"));
         Ok(())
     }
     mod payment_required;

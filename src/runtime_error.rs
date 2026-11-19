@@ -703,6 +703,7 @@ fn is_safe_context_key(key: &str) -> bool {
             | "count_complete"
             | "round"
             | "managed_tool_calls"
+            | "next_retry_at"
     )
 }
 

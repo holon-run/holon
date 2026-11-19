@@ -151,3 +151,73 @@ fn provider_io_failure_message_is_not_reclassified_from_error_text() {
         "Turn failed while processing operator_prompt: scopecooling: Local provider dispatch admission rejected this send before IO."
     );
 }
+
+fn scope_already_attempted_rejection(
+    safe_context: &[(&str, &str)],
+    disposition: &str,
+) -> anyhow::Error {
+    let diagnostic = anyhow::Error::new(DispatchDeferred(
+        LocalDispatchDenial::Dispatch(ProviderRecoveryDispatchDenial::ScopeAlreadyAttempted),
+        None,
+    ));
+    let mut runtime_error = RuntimeError::new(
+        RuntimeErrorDomain::Conflict,
+        "provider_dispatch_rejected",
+        "Local provider dispatch admission rejected this send before IO.",
+    )
+    .with_safe_context("recovery_disposition", disposition);
+    for (key, value) in safe_context {
+        runtime_error = runtime_error.with_safe_context(*key, *value);
+    }
+    diagnostic.context(runtime_error)
+}
+
+#[test]
+fn scope_already_attempted_summary_explains_provider_credential_failure() {
+    let error = scope_already_attempted_rejection(
+        &[
+            ("cause_code", "auth_error"),
+            ("model_ref", "openai-codex@default/gpt-6.2-sol"),
+            ("next_retry_at", "2026-11-19T07:46:00Z"),
+            ("status", "401"),
+        ],
+        "execution_reentry",
+    );
+    let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
+    assert!(!summary.contains("local safety check"));
+    assert!(summary.contains("rejected the credential"));
+    assert!(summary.contains("openai-codex@default/gpt-6.2-sol"));
+    assert!(summary.contains("2026-11-19T07:46:00Z"));
+    assert!(summary.contains("HTTP 401"));
+    // The misleading local-blocker direction must be gone too.
+    assert!(!summary.contains("blocker is cleared"));
+}
+
+#[test]
+fn scope_already_attempted_summary_reports_generic_cause_without_credential_claim() {
+    let error = scope_already_attempted_rejection(
+        &[
+            ("cause_code", "rate_limited"),
+            ("model_ref", "route-a"),
+            ("next_retry_at", "2026-11-19T09:00:00Z"),
+        ],
+        "execution_reentry",
+    );
+    let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
+    assert!(!summary.contains("local safety check"));
+    assert!(!summary.contains("credential"));
+    assert!(summary.contains("cause: rate_limited"));
+    assert!(summary.contains("route-a"));
+    assert!(summary.contains("2026-11-19T09:00:00Z"));
+}
+
+#[test]
+fn scope_already_attempted_summary_degrades_without_inventing_retry_time() {
+    let error = scope_already_attempted_rejection(&[], "execution_reentry");
+    let summary = RuntimeHandle::concise_runtime_failure_text(&operator(), &error);
+    assert!(!summary.contains("local safety check"));
+    assert!(summary.contains("already failed in this recovery episode"));
+    // No retry time was supplied, so none may be fabricated.
+    assert!(!summary.contains("retry after"));
+    assert!(!summary.contains("blocker is cleared"));
+}
