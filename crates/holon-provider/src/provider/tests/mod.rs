@@ -11,6 +11,7 @@ mod anthropic_route_cache;
 mod anthropic_stream_interruption;
 mod gemini_generate_content;
 mod http_timeouts;
+mod native_web_search;
 mod openai_chat_completions;
 mod openai_responses;
 mod request_headers;

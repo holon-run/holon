@@ -23,6 +23,29 @@ const SEARCH_RESPONSE_BYTES: usize = 1_000_000;
 const COMMAND_QUERY_TEMPLATE: &str = "{{query}}";
 const COMMAND_MAX_RESULTS_TEMPLATE: &str = "{{max_results}}";
 
+/// Error surfaced by a native search dispatcher with a WebSearch error kind.
+#[derive(Debug, Clone)]
+pub struct WebSearchNativeDispatchError {
+    pub kind: &'static str,
+    pub message: String,
+    pub recovery_hint: Option<&'static str>,
+}
+
+/// Sends one standalone search request through the model route bound to a
+/// native search provider. Only the query and the search parameters cross
+/// this boundary; the implementation must deduplicate by canonical URL and
+/// truncate the results to `max_results`.
+#[async_trait::async_trait]
+pub trait WebSearchNativeDispatcher: Send + Sync {
+    async fn dispatch(
+        &self,
+        provider_id: &str,
+        model_route: &str,
+        query: &str,
+        max_results: usize,
+    ) -> std::result::Result<Vec<WebSearchResult>, WebSearchNativeDispatchError>;
+}
+
 #[derive(Debug, Clone)]
 pub struct WebSearchRequest {
     pub query: String,
@@ -104,6 +127,18 @@ pub async fn search(
     request: WebSearchRequest,
     config: &WebConfig,
 ) -> Result<WebSearchResponse> {
+    search_with_native(map_error, request, config, None).await
+}
+
+/// Search with an optional native search dispatcher attached. Native search
+/// providers run only for an explicit provider ID argument; omission, `auto`,
+/// fallback, and aggregate paths never dispatch native search requests.
+pub async fn search_with_native(
+    map_error: fn(&anyhow::Error) -> ToolError,
+    request: WebSearchRequest,
+    config: &WebConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
+) -> Result<WebSearchResponse> {
     // Interpret aliases only on the call boundary, not in configured provider IDs.
     let (selector, order_selector, mode) = match request.provider.as_deref() {
         Some(alias @ ("auto" | "aggregate")) if config.providers.contains_key(alias) => {
@@ -116,6 +151,14 @@ pub async fn search(
         }
         None => {
             let configured = config.search.provider.as_str();
+            if is_native_provider(configured, config) {
+                return Err(search_error(
+                    "provider_unavailable",
+                    format!("WebSearch default provider `{configured}` is a native search provider; native search requires an explicit provider argument"),
+                    configured,
+                    "call WebSearch with provider=<native provider id> or point web.search.provider at a managed provider",
+                ));
+            }
             (configured, configured, config.search.mode)
         }
         Some("auto") => ("auto", "auto", config.search.mode),
@@ -140,9 +183,15 @@ pub async fn search(
                 .first()
                 .cloned()
                 .unwrap_or_else(|| order_selector.to_string());
-            let outcome =
-                search_one_provider(map_error, &request.query, max_results, &provider_id, config)
-                    .await;
+            let outcome = search_one_provider(
+                map_error,
+                &request.query,
+                max_results,
+                &provider_id,
+                config,
+                native,
+            )
+            .await;
             let kind = provider_kind(&provider_id, config);
             routed_single(map_error, provider_id, kind, outcome)?
         }
@@ -153,6 +202,7 @@ pub async fn search(
                 max_results,
                 provider_order,
                 config,
+                native,
             )
             .await?
         }
@@ -163,6 +213,7 @@ pub async fn search(
                 max_results,
                 provider_order,
                 config,
+                native,
             )
             .await?
         }
@@ -317,6 +368,10 @@ fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
         return providers;
     }
     let configured = dedupe_provider_order(&config.search.providers);
+    let configured = configured
+        .into_iter()
+        .filter(|id| !is_native_provider(id, config))
+        .collect::<Vec<_>>();
     let mut providers = if configured.is_empty() {
         default_provider_order(config)
     } else {
@@ -365,6 +420,10 @@ fn provider_kind(provider: &str, config: &WebConfig) -> Option<WebProviderKind> 
         .or_else(|| config.providers.get(provider).map(|provider| provider.kind))
 }
 
+fn is_native_provider(provider_id: &str, config: &WebConfig) -> bool {
+    provider_kind(provider_id, config).is_some_and(|kind| kind.is_native_search())
+}
+
 fn dedupe_provider_order<I, S>(providers: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -407,11 +466,13 @@ async fn search_fallback(
     max_results: usize,
     provider_order: Vec<String>,
     config: &WebConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
 ) -> Result<RoutedSearchOutcome> {
     let mut attempts = Vec::new();
     for provider_id in provider_order {
         let kind = provider_kind(&provider_id, config);
-        match search_one_provider(map_error, query, max_results, &provider_id, config).await {
+        match search_one_provider(map_error, query, max_results, &provider_id, config, native).await
+        {
             Ok(output) => {
                 attempts.push(successful_attempt(
                     &provider_id,
@@ -437,6 +498,7 @@ async fn search_aggregate(
     max_results: usize,
     provider_order: Vec<String>,
     config: &WebConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
 ) -> Result<RoutedSearchOutcome> {
     let mut attempts = Vec::new();
     let mut seen_urls = BTreeSet::new();
@@ -444,7 +506,8 @@ async fn search_aggregate(
 
     for provider_id in provider_order {
         let kind = provider_kind(&provider_id, config);
-        match search_one_provider(map_error, query, max_results, &provider_id, config).await {
+        match search_one_provider(map_error, query, max_results, &provider_id, config, native).await
+        {
             Ok(output) => {
                 attempts.push(successful_attempt(
                     &provider_id,
@@ -614,6 +677,7 @@ async fn search_one_provider(
     max_results: usize,
     provider_id: &str,
     config: &WebConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
 ) -> Result<ProviderSearchOutput> {
     match provider_id {
         DUCKDUCKGO_PROVIDER_ID => duckduckgo_search(query, max_results, &config.fetch)
@@ -635,6 +699,7 @@ async fn search_one_provider(
                 provider_id,
                 provider_config,
                 &config.fetch,
+                native,
             )
             .await
         }
@@ -648,6 +713,7 @@ async fn search_configured_provider(
     provider_id: &str,
     provider_config: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
 ) -> Result<ProviderSearchOutput> {
     let results = match provider_config.kind {
         WebProviderKind::Searxng => {
@@ -685,6 +751,11 @@ async fn search_configured_provider(
         WebProviderKind::Command => {
             return command_search(map_error, query, max_results, provider_id, provider_config).await;
         }
+        WebProviderKind::OpenAiNative => {
+            return native_openai_search(query, max_results, provider_id, provider_config, native)
+                .await
+                .map(ProviderSearchOutput::new);
+        }
         kind => Err(search_error(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
@@ -693,6 +764,59 @@ async fn search_configured_provider(
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
+}
+
+async fn native_openai_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider_config: &WebProviderConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
+) -> Result<Vec<WebSearchResult>> {
+    if query.trim().is_empty() {
+        return Err(search_error(
+            "invalid_request",
+            "WebSearch native search query must not be empty",
+            provider_id,
+            "provide a non-empty query",
+        ));
+    }
+    let model_route = provider_config
+        .model_route
+        .as_deref()
+        .map(str::trim)
+        .filter(|route| !route.is_empty())
+        .ok_or_else(|| {
+            search_error(
+                "provider_unavailable",
+                format!("WebSearch native provider `{provider_id}` has no model_route bound"),
+                provider_id,
+                "bind web.providers.<id>.model_route to a configured model route",
+            )
+        })?;
+    let dispatcher = native.ok_or_else(|| {
+        search_error(
+            "provider_unavailable",
+            format!(
+                "WebSearch native provider `{provider_id}` has no native search runtime attached"
+            ),
+            provider_id,
+            "call WebSearch from the runtime host or use a managed provider",
+        )
+    })?;
+    dispatcher
+        .dispatch(provider_id, model_route, query, max_results)
+        .await
+        .map_err(|error| {
+            search_error(
+                error.kind,
+                error.message,
+                provider_id,
+                error
+                    .recovery_hint
+                    .unwrap_or("retry later or check the provider configuration"),
+            )
+        })
 }
 
 async fn command_search(

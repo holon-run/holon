@@ -582,6 +582,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
+| `web.providers.<name>.model_route` | model_route_ref | unset | Native kinds only: binds a concrete model route (for example `openai@default/gpt-5.4`) whose transport, endpoint, and credentials execute the standalone server-side search |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |
 | `web.providers.<name>.command.argv` | string_list | unset | Command argv template for `kind=command` WebSearch providers (supports `{{query}}` and `{{max_results}}`) |
 | `web.providers.<name>.output.format` | enum | `"json"` | Command provider stdout format |
@@ -605,6 +606,19 @@ Even with a default mode of `single`, explicit aggregation can send the same
 query to multiple providers, increasing disclosure, costs, or latency. To cap
 each call at one attempt, set `web.search.max_provider_attempts` to `1`. This
 is not a provider allowlist and does not limit separate calls.
+
+Native server-side search providers (native `web.providers` kinds such as
+`open_ai_native`, including routes bound through the Codex transport) are
+explicit-only. Omitting `WebSearch.provider`, `auto`, `aggregate`, and
+`web.search.providers` never dispatches them; they run only when their exact
+ID is passed as `provider`, and the bound `model_route` must be parseable,
+resolvable, and declare builtin web search. The standalone request carries
+only the query and the native search parameters — no conversation history,
+workspace data, or other tools. Results come only from structured provider
+citations, deduplicated by URL up to `max_results`; a completed search with
+no mappable sources returns an empty result list, while a response without
+search evidence fails explicitly. Every failure is terminal for the call:
+native dispatch never falls back to another provider or route.
 
 ## Runtime Database Retention
 

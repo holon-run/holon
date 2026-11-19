@@ -3,12 +3,24 @@ use anyhow::Result;
 use crate::{tool::tool_error_from_anyhow, web::WebConfig};
 
 pub use holon_web_retrieval::search::{
-    WebCitation, WebSearchCommandAttempt, WebSearchProviderAttempt, WebSearchProviderAttemptStatus,
-    WebSearchRequest, WebSearchResponse, WebSearchResult,
+    WebCitation, WebSearchCommandAttempt, WebSearchNativeDispatchError, WebSearchNativeDispatcher,
+    WebSearchProviderAttempt, WebSearchProviderAttemptStatus, WebSearchRequest, WebSearchResponse,
+    WebSearchResult,
 };
 
 pub async fn search(request: WebSearchRequest, config: &WebConfig) -> Result<WebSearchResponse> {
     holon_web_retrieval::search::search(tool_error_from_anyhow, request, config).await
+}
+
+/// Search with an optional native search dispatcher attached by the runtime
+/// host; native providers only run for an explicit provider ID argument.
+pub async fn search_with_native_dispatch(
+    request: WebSearchRequest,
+    config: &WebConfig,
+    native: Option<&dyn WebSearchNativeDispatcher>,
+) -> Result<WebSearchResponse> {
+    holon_web_retrieval::search::search_with_native(tool_error_from_anyhow, request, config, native)
+        .await
 }
 
 #[cfg(all(test, holon_lib_test_shard = "d"))]

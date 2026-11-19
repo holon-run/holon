@@ -3848,6 +3848,115 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
+    /// Dispatch one standalone native web search through the model route
+    /// bound to a native WebSearch provider. The route is resolved per call;
+    /// no candidate or credential state is cached here.
+    pub(crate) async fn dispatch_native_web_search(
+        &self,
+        provider_id: &str,
+        model_route: &str,
+        query: &str,
+        max_results: usize,
+    ) -> std::result::Result<
+        Vec<crate::web::search::WebSearchResult>,
+        crate::web::search::WebSearchNativeDispatchError,
+    > {
+        use crate::web::search::WebSearchNativeDispatchError;
+
+        let unavailable = |message: String| WebSearchNativeDispatchError {
+            kind: "provider_unavailable",
+            message,
+            recovery_hint: None,
+        };
+        let route_ref =
+            crate::config::ModelRouteRef::parse_compatible(model_route).map_err(|error| {
+                unavailable(format!(
+                    "model_route `{model_route}` cannot be parsed: {error}"
+                ))
+            })?;
+        let provider = {
+            let snap = self.inner.config_snapshot.load();
+            let reconfig = snap.provider_reconfig.as_ref().ok_or_else(|| {
+                unavailable("host provider configuration is unavailable".to_string())
+            })?;
+            crate::provider::build_candidate_with_catalog(
+                &reconfig.config,
+                &snap.model_catalog,
+                &route_ref,
+            )
+            .map_err(|error| {
+                unavailable(format!(
+                    "model_route `{model_route}` cannot be resolved: {error}"
+                ))
+            })?
+            .provider
+        };
+        let capability = provider.builtin_web_search().ok_or_else(|| {
+            unavailable(format!(
+                "model route `{model_route}` does not declare builtin web search"
+            ))
+        })?;
+        if capability.kind != crate::provider::ProviderNativeWebSearchKind::OpenAi {
+            return Err(unavailable(format!(
+                "model route `{model_route}` declares {:?} native web search, which has no standalone dispatch in this Holon version",
+                capability.kind
+            )));
+        }
+        let request = crate::provider::ProviderNativeWebSearchRequest {
+            kind: capability.kind,
+            provider_id: capability.provider_id.clone(),
+            provider_model_ref: capability.provider_model_ref.clone(),
+            advertised_tool_type: capability.advertised_tool_type.clone(),
+            backend_kind: capability.backend_kind.clone(),
+            max_results: Some(max_results.max(1)),
+        };
+        let outcome = provider
+            .native_web_search(request, query)
+            .await
+            .map_err(|failure| WebSearchNativeDispatchError {
+                kind: failure.error_kind,
+                message: failure.message,
+                recovery_hint: None,
+            })?;
+        if !outcome.search_executed {
+            return Err(WebSearchNativeDispatchError {
+                kind: "search_not_executed",
+                message: "upstream completed without evidence that the web search tool ran"
+                    .to_string(),
+                recovery_hint: Some(
+                    "retry with a different query or bind a model route that supports server-side web search",
+                ),
+            });
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        let mut results = Vec::new();
+        for citation in outcome.citations {
+            if !seen.insert(citation.url.clone()) {
+                continue;
+            }
+            results.push(crate::web::search::WebSearchResult {
+                title: citation
+                    .title
+                    .clone()
+                    .unwrap_or_else(|| citation.url.clone()),
+                url: citation.url.clone(),
+                snippet: None,
+                source: provider_id.to_string(),
+                published_at: None,
+                canonical_url: None,
+                display_url: None,
+                rank: None,
+                language: None,
+                region: None,
+                metadata: None,
+            });
+            if results.len() >= max_results {
+                break;
+            }
+        }
+        Ok(results)
+    }
+
     #[cfg(test)]
     pub(crate) fn has_provider_reconfig(&self) -> bool {
         self.inner
@@ -8765,6 +8874,11 @@ pub(crate) mod tests;
 #[cfg(test)]
 #[path = "runtime/state_mutation_2b_tests.rs"]
 mod state_mutation_2b_tests;
+
+#[cfg(holon_lib_test_shard = "a")]
+#[cfg(test)]
+#[path = "runtime/native_web_search_dispatch_tests.rs"]
+mod native_web_search_dispatch_tests;
 
 #[cfg(holon_lib_test_shard = "a")]
 #[cfg(test)]

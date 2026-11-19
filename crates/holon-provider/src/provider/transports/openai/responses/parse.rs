@@ -662,6 +662,42 @@ fn openai_url_citations(content_item: &Value) -> Vec<Citation> {
         .collect()
 }
 
+/// Parse one standalone native web search response: `search_executed` is true
+/// only when the output carries explicit search-tool evidence, and citations
+/// come only from structured `url_citation` annotations.
+pub(in super::super) fn parse_native_web_search_output(
+    output_items: &[Value],
+) -> crate::provider::ProviderNativeSearchOutcome {
+    let search_executed = output_items
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("web_search_call"));
+    let mut citations = Vec::new();
+    for item in output_items {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for content_item in content {
+            let item_type = content_item.get("type").and_then(Value::as_str);
+            if !matches!(
+                item_type,
+                Some("output_text") | Some("text") | Some("input_text")
+            ) {
+                continue;
+            }
+            if content_item.get("text").and_then(Value::as_str).is_some() {
+                citations.extend(openai_url_citations(content_item));
+            }
+        }
+    }
+    crate::provider::ProviderNativeSearchOutcome {
+        search_executed,
+        citations,
+    }
+}
+
 fn strip_openai_citation_sentinels(text: &str) -> String {
     const START: &str = "\u{e200}cite\u{e202}";
     const END: char = '\u{e201}';

@@ -17,6 +17,7 @@ pub(super) use compaction::{
 pub(super) use continuation::update_openai_continuation;
 #[cfg(test)]
 pub(super) use continuation::{latest_openai_compaction_index, native_web_search_diagnostics};
+pub(super) use parse::parse_native_web_search_output;
 #[cfg(any(test, feature = "runtime-tests"))]
 pub use parse::parse_openai_response;
 #[cfg(test)]

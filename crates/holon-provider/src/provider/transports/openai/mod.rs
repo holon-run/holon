@@ -57,6 +57,9 @@ use crate::provider::retry::{
     timeout_transport_error_with_trace, ProviderFailureClassification, ProviderFailureKind,
     ProviderTransportError, RetryDisposition,
 };
+use crate::provider::{
+    native_web_search_turn_request, ProviderNativeSearchFailure, ProviderNativeSearchOutcome,
+};
 
 mod auth;
 pub mod chat;
@@ -118,10 +121,10 @@ use responses::{
 };
 use responses::{
     maybe_compact_openai_provider_window, maybe_compact_openai_request_plan,
-    plan_openai_responses_request, retry_openai_responses_with_lossless_replay,
-    send_openai_responses_request, send_openai_responses_request_with_material,
-    send_openai_responses_streaming_request, send_openai_responses_streaming_request_with_material,
-    update_openai_continuation,
+    parse_native_web_search_output, plan_openai_responses_request,
+    retry_openai_responses_with_lossless_replay, send_openai_responses_request,
+    send_openai_responses_request_with_material, send_openai_responses_streaming_request,
+    send_openai_responses_streaming_request_with_material, update_openai_continuation,
 };
 
 use http::{
@@ -998,6 +1001,103 @@ impl AgentProvider for OpenAiProvider {
         }
         Ok(())
     }
+
+    async fn native_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+        query: &str,
+    ) -> std::result::Result<ProviderNativeSearchOutcome, ProviderNativeSearchFailure> {
+        self.request_headers
+            .require_session(None)
+            .map_err(native_search_transport_failure)?;
+        let body = build_openai_responses_request(
+            &self.model,
+            NATIVE_SEARCH_MAX_OUTPUT_TOKENS,
+            &native_web_search_turn_request(request, query),
+            OpenAiResponsesTransportContract::StandardJson,
+            ToolSchemaContract::Relaxed,
+            self.reasoning_effort.as_deref(),
+            None,
+        )
+        .map_err(native_search_transport_failure)?;
+        let mut headers = self
+            .resolve_auth_headers(None)
+            .await
+            .map_err(native_search_transport_failure)?;
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let model_ref = format!(
+            "{}@{}/{}",
+            self.route_provider, self.route_endpoint, self.model
+        );
+        let parsed = match send_openai_responses_request(
+            &self.client,
+            openai_responses_url(&self.base_url),
+            body.clone(),
+            headers.clone(),
+            trace.as_ref(),
+            None,
+            &self.route_provider,
+            &model_ref,
+            None,
+        )
+        .await
+        {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                let Some(refreshed_headers) = self
+                    .refresh_auth_headers_after_failure(&error, None)
+                    .await
+                    .map_err(native_search_transport_failure)?
+                else {
+                    return Err(native_search_transport_failure(error));
+                };
+                headers = refreshed_headers;
+                send_openai_responses_request(
+                    &self.client,
+                    openai_responses_url(&self.base_url),
+                    body,
+                    headers,
+                    trace.as_ref(),
+                    None,
+                    &self.route_provider,
+                    &model_ref,
+                    None,
+                )
+                .await
+                .map_err(native_search_transport_failure)?
+            }
+        };
+        Ok(parse_native_web_search_output(&parsed.output_items))
+    }
+}
+
+const NATIVE_SEARCH_MAX_OUTPUT_TOKENS: u32 = 256;
+
+/// Map transport failures of standalone native web search onto the WebSearch
+/// error-kind vocabulary. The mapped message keeps only the transport error
+/// display; credentials and raw request bodies are never included.
+pub(in super::super) fn native_search_transport_failure(
+    error: anyhow::Error,
+) -> crate::provider::ProviderNativeSearchFailure {
+    if let Some(transport) = error.downcast_ref::<crate::provider::retry::ProviderTransportError>()
+    {
+        let error_kind = match &transport.classification.kind {
+            ProviderFailureKind::AuthError
+            | ProviderFailureKind::PaymentRequired
+            | ProviderFailureKind::CredentialRefreshBusy => "provider_unavailable",
+            ProviderFailureKind::RateLimited => "rate_limited",
+            ProviderFailureKind::Timeout => "timeout",
+            _ => "network_failed",
+        };
+        return crate::provider::ProviderNativeSearchFailure {
+            error_kind,
+            message: format!("native web search request failed: {error}"),
+        };
+    }
+    crate::provider::ProviderNativeSearchFailure {
+        error_kind: "network_failed",
+        message: format!("native web search request failed: {error}"),
+    }
 }
 
 #[async_trait]
@@ -1390,6 +1490,61 @@ impl AgentProvider for OpenAiCodexProvider {
         )
         .await?;
         Ok(())
+    }
+
+    async fn native_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+        query: &str,
+    ) -> std::result::Result<ProviderNativeSearchOutcome, ProviderNativeSearchFailure> {
+        self.request_headers
+            .require_session(None)
+            .map_err(native_search_transport_failure)?;
+        let credential = self
+            .resolve_fresh_credential()
+            .await
+            .map_err(native_search_transport_failure)?;
+        let body = build_openai_responses_request(
+            &self.model,
+            NATIVE_SEARCH_MAX_OUTPUT_TOKENS,
+            &native_web_search_turn_request(request, query),
+            OpenAiResponsesTransportContract::CodexStreaming,
+            ToolSchemaContract::Relaxed,
+            if self.supports_reasoning {
+                self.reasoning_effort.as_deref()
+            } else {
+                None
+            },
+            self.verbosity,
+        )
+        .map_err(native_search_transport_failure)?;
+        let headers = self
+            .request_headers
+            .compose(
+                openai_codex_headers(
+                    &credential,
+                    &self.originator,
+                    self.request_headers.holon_version,
+                ),
+                None,
+            )
+            .map_err(native_search_transport_failure)?;
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let model_ref = format!("openai-codex@default/{}", self.model);
+        let parsed = send_openai_responses_streaming_request(
+            &self.client,
+            openai_codex_responses_url(&self.base_url),
+            body,
+            headers,
+            trace.as_ref(),
+            None,
+            "openai-codex",
+            &model_ref,
+            None,
+        )
+        .await
+        .map_err(native_search_transport_failure)?;
+        Ok(parse_native_web_search_output(&parsed.output_items))
     }
 }
 

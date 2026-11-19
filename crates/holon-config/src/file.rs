@@ -799,6 +799,11 @@ pub struct WebProviderConfigFile {
     /// and must be of kind `api_key`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_profile: Option<String>,
+    /// Model route bound to a native search provider. Only meaningful for
+    /// native search kinds; required before the provider can be called by an
+    /// explicit WebSearch provider ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<WebCommandProviderConfigFile>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1881,6 +1881,7 @@ name = "holon-web-retrieval"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "chrono",
  "holon-config",
  "holon-domain",

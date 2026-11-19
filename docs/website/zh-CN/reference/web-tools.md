@@ -110,7 +110,9 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选：
   需要密钥时再加
   `holon config set web.providers.keenable.credential_profile <profile>`。
 - **模型原生搜索**：部分模型提供商（OpenAI、Anthropic）通过自家 API 支持原生网络搜索。
-  在 "Auto" 模式下，Holon 会优先使用它们。
+  在 "Auto" 模式下，对话轮次会优先使用它们。独立的 `WebSearch` 原生提供商是另一回事：
+  只有通过 `WebSearch.provider` 显式点名才会运行，且需要绑定
+  `web.providers.<id>.model_route`。
 - **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
   任意对话模型均可使用。
 - **SearXNG（自托管）**：开源元搜索引擎后端，无需 API 凭据，适合自托管与本地私密网络环境。配置方式：`holon config set web.providers.searxng.kind searxng` 与 `holon config set web.providers.searxng.base_url <url>`。详细部署与排错请参阅[用自托管 SearXNG 配置搜索后端指南](/zh-CN/guides/searxng-websearch-provider.md)。
