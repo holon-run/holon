@@ -2,11 +2,12 @@
 
 use super::*;
 use crate::domain::execution_protocol::{
-    ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, WorkItemExecutionState,
+    ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionProtocolState,
+    WorkItemExecutionState,
 };
 use crate::types::{
-    AgentMessageDeliveryOutcome, AgentMessagePrincipalKind, AgentStatus, AuthorityClass,
-    LiveInputBatchRecord, MessageKind, Priority, TranscriptEntryKind, TurnOwner,
+    AgentMessageDeliveryOutcome, AgentMessagePrincipalKind, AgentState, AgentStatus,
+    AuthorityClass, LiveInputBatchRecord, MessageKind, Priority, TranscriptEntryKind, TurnOwner,
 };
 #[cfg(test)]
 use chrono::DateTime;
@@ -141,7 +142,7 @@ impl RuntimeTransitionRepository<'_> {
             audit_event_id: audit_event_id.to_owned(),
             fault,
         };
-        if !live_binding_matches_tx(tx, &command)?
+        if !live_binding_matches_loaded_state_tx(tx, agent_id, &state, &command)?
             || prior.state != ExecutionAttemptState::Interrupted
             || prior.agent_id != *agent_id
             || prior.source_message_id != expected_attempt.source_message_id
@@ -966,6 +967,31 @@ fn live_binding_matches_tx(
     canonical_input_binding_matches_tx(tx, &command.expected_attempt, &command.expected_turn)
 }
 
+/// Live recovery variant of [`live_binding_matches_tx`]: the recovery writer
+/// already loaded and invariant-checked the agent's full protocol state for
+/// its predecessor walk in this same transaction, so the canonical binding
+/// checks reuse that snapshot instead of a second full load.
+fn live_binding_matches_loaded_state_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    state: &ExecutionProtocolState,
+    command: &LiveInputAttachmentCommand,
+) -> Result<bool> {
+    let Some(agent) = agent_state_tx(tx, agent_id)? else {
+        return Ok(false);
+    };
+    if !canonical_agent_binding_matches(&agent, &command.expected_attempt, &command.expected_turn) {
+        return Ok(false);
+    }
+    canonical_input_binding_matches_loaded_state_tx(
+        tx,
+        agent_id,
+        state,
+        &command.expected_attempt,
+        &command.expected_turn,
+    )
+}
+
 pub(super) fn canonical_input_binding_matches_tx(
     tx: &Transaction<'_>,
     expected: &ExecutionAttempt,
@@ -975,7 +1001,21 @@ pub(super) fn canonical_input_binding_matches_tx(
     let Some(agent) = agent_state_tx(tx, agent_id)? else {
         return Ok(false);
     };
-    if agent.status != AgentStatus::AwakeRunning
+    if !canonical_agent_binding_matches(&agent, expected, turn) {
+        return Ok(false);
+    }
+    let state = execution_protocol_repository::load_state_tx(tx, agent_id)?;
+    canonical_input_binding_matches_loaded_state_tx(tx, agent_id, &state, expected, turn)
+}
+
+/// Agent-side prefix of the canonical binding contract: the agent must still
+/// be awake and canonically bound to exactly this attempt/turn.
+fn canonical_agent_binding_matches(
+    agent: &AgentState,
+    expected: &ExecutionAttempt,
+    turn: &TurnRecord,
+) -> bool {
+    !(agent.status != AgentStatus::AwakeRunning
         || agent.current_execution_binding.as_ref().is_none_or(|binding| {
             binding.activation_id.as_deref() != Some(expected.attempt_id.as_str())
                 || binding.turn_id != turn.turn_id
@@ -990,11 +1030,19 @@ pub(super) fn canonical_input_binding_matches_tx(
         || expected
             .run_id
             .as_ref()
-            .is_some_and(|run| turn.run_id.as_ref() != Some(run))
-    {
-        return Ok(false);
-    }
-    let state = execution_protocol_repository::load_state_tx(tx, agent_id)?;
+            .is_some_and(|run| turn.run_id.as_ref() != Some(run)))
+}
+
+/// State and SQL side of [`canonical_input_binding_matches_tx`] for callers
+/// that already hold the agent's loaded, invariant-checked protocol state in
+/// the same transaction.
+fn canonical_input_binding_matches_loaded_state_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    state: &ExecutionProtocolState,
+    expected: &ExecutionAttempt,
+    turn: &TurnRecord,
+) -> Result<bool> {
     let canonical_owner = match &expected.binding {
         ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
             work_item_id: work_item_id.clone(),
