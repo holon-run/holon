@@ -1221,6 +1221,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}/external-triggers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List external triggers
+         * @description Read-only diagnostic list of retained active and revoked external triggers for the target agent. Cursor pagination over (created_at desc, external_trigger_id desc) with an optional exact 16-hex token fingerprint filter. Returns metadata and fingerprints only; tokens, full hashes, and callback URLs are never included.
+         */
+        get: operations["listExternalTriggers"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/agents/{agent_id}/external-triggers/{external_trigger_id}/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Reveal external trigger token
+         * @description Read the stored plain-text callback token for one active external trigger. Requires the independent static control token credential; trusted-local admission, browser sessions, and bearer session credentials are rejected. Responses use Cache-Control: no-store. Answers 404 when the target or trigger is absent, 409 trigger_not_active when revoked, and 409 token_unavailable when no stored token can be safely verified against its hash.
+         */
+        post: operations["revealExternalTrigger"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/model": {
         parameters: {
             query?: never;
@@ -11490,6 +11530,88 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AgentDetail"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    listExternalTriggers: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    revealExternalTrigger: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response. Baseline schema is intentionally loose until per-route response DTO contracts are stabilized. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JsonValue"];
                 };
             };
             /** @description Client error JSON response. */
