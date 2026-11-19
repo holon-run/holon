@@ -1,273 +1,184 @@
 ---
-title: 排查 Holon 任务问题
-summary: 把卡住、失败或无输出的任务定位到一个明确的下一步。
-order: 30
+title: 排查卡住或无响应的 Agent 任务
+summary: 在 Web GUI 对话中优先自检卡住、长时间无输出或失败的 Agent 任务：区分正常的 WaitFor 挂起等待与真实阻塞，逐层核查 TaskStatus 与子 Agent 状态、模型路由、工作树冲突及守护进程故障，并安全恢复推进。
+order: 260
 ---
 
-# 排查 Holon 任务问题
+# 排查卡住或无响应的 Agent 任务
 
-任务卡住通常就那么几种。按你遇到的现象往下走，做检查，再进入下一步。运行时字段
-和端点见[参考](/zh-CN/reference/)。
+当 Agent 长时间没有回复、后台命令看似停滞、委派出去的子 Agent 未返回结果，或者执行报出模型、凭据与工作区冲突错误时，请按本指南逐层排查。**先只读核查，再决定是否干预**——在搞清楚当前任务处于正常挂起等待还是真实异常之前，不要盲目重发同一条指令、强行重启守护进程或删除 Agent 目录。
 
-## Daemon 问题
+## 适用场景
 
-### Daemon 启动不了
+- 对话长时间无新输出，无法判断 Agent 是在执行长命令、等待审批，还是已经卡死。
+- 主 Agent 委派子任务后看起来处于空闲状态。
+- 执行过程中出现模型提供商报错、凭据失效或 Git worktree 写入冲突。
+- Web GUI、TUI 或 CLI 无法连接到本地或远程 Holon 守护进程。
 
-**症状：** `holon daemon start` 卡住或报错退出。
+## 前置条件
 
-**排查清单：**
+- Holon 运行时已启动（本地默认 Web GUI 地址 `http://127.0.0.1:7878/`），或具备登录宿主机执行只读 CLI 诊断的权限。
+- 明确负责该任务的 Agent ID（例如 `main`、`builder` 或 `reviewer`），并优先围绕现有 `WorkItem` 排查，避免重复派发同一目标造成重复改动或重复评论。
+
+## 排查与恢复步骤
+
+### 1. 在 Web GUI 对话中先自检 WorkItem 与等待状态
+
+在重复下达指令之前，先直接在 [Web GUI](use-web-gui.md) 对话框里让主 Agent 做一次只读自检：
+
+> “检查你当前的开放 WorkItem、调度状态、生效中的 `WaitFor` 条件和活跃任务。你现在是在正常等待依赖，还是遇到了真实阻塞？”
+
+同时可以在 Web GUI 右侧打开 **Work Items** 面板，或将对话流显示级别从 **Info** 切换到 **Verbose / Debug**，查看最近的工具调用与等待标记。对照观察到的状态采取下一步：
+
+| 观察到的状态 | 真实含义 | 下一步动作 |
+|---|---|---|
+| `runnable`（执行中） | 正在进行模型推理轮次或执行工具调用 | 等待当前轮次完成或询问阶段进展，不要重复发送相同指令 |
+| `yielded` | 因切换 WorkItem（如 `PickWorkItem`）而由延续帧暂存挂起 | 查看它让位给哪个活跃 WorkItem；不要手动强行清理无关阻塞 |
+| `waiting`（`wake=task_result`） | 零 Token 休眠，等待后台命令或子 Agent 任务完成 | 核查对应任务的 `TaskStatus` 与可用日志，不要重复启动同一命令 |
+| `waiting`（`wake=timer` 或 `wake=external`） | 挂起等待定时器触发或外部 Webhook 回调到达 | 核对定时器时间或外部事件源；Webhook 未唤醒参见[外部事件排障](connect-external-events.md#常见问题与排障) |
+| `waiting_for_operator`（`needs_input` 或 `wake=operator_input`） | 停在人工决策或授权边界，等待你的输入 | 直接在同一对话中回复确认或补充条件，运行时会自动唤醒原 WorkItem |
+| `blocked` | 存在尚未解除的真实阻塞或依赖失败 | 按下文分层定位根因并修复后再解除阻塞 |
+| `completed`（或已中断的历史运行） | 该 WorkItem 已结算完成或已停止 | 先查看最终简报与生成产物，确认是否需要新开后续任务 |
+
+### 2. 按分层定位真实阻塞原因
+
+如果确认任务处于 `blocked` 或已报错失败，引导 Agent 逐层收敛排查：
+
+1. **后台命令任务（核对 `TaskStatus` 与可用日志路径）：**
+
+   > “用 `TaskStatus` 检查那个 task ID 的精确状态、退出码，以及是否有可用的 stdout/stderr 日志路径，并读取报错末尾。”
+
+   `TaskStatus` 会返回真实的任务生命周期状态与运行时确认的日志路径。不要自行猜测日志文件名，也不要在未确认退出码或取消原因前把正在运行的命令当作失败。
+
+2. **委派子 Agent（使用轻量 `ListSubagents` 检查）：**
+
+   > “用 `ListSubagents` 列出你直接监督的子 Agent 状态，核对子任务是否仍在运行、等待中还是已经失败。”
+
+   `ListSubagents` 仅做轻量只读监督查询，既不会唤醒未加载的子 Agent，也不会提前消费任务结果。在 Web GUI 的任务详情卡片中，也可以直接点击进入子 Agent 会话视图核对细节。参见[将复杂任务安全委派给子 Agent](delegate-work.md)。
+
+3. **模型路由、凭据与提供商超时：**
+
+   > “核对当前生效的模型路由以及失败轮次的精确报错，不要在原因不明时盲目切换模型。”
+
+   上游瞬时限流或超时与本地缺少凭据是两类问题；未排查清楚前不要随意改写配置。模型配置与故障排查参见[配置与切换大模型](configure-models.md)。
+
+4. **工作区与 Git Worktree 冲突：**
+
+   > “运行 `GetWorkspaceState` 核查当前工作树是否处于脏状态、被锁定或正被其他 Agent 占用。”
+
+   在确认清楚分支与未提交改动归属前，不要强行删除目录或重置工作树。参见[在项目工作区与 Git Worktree 中工作](work-with-workspaces.md)。
+
+### 3. 最小化恢复与续跑
+
+定位到具体原因后，按最小干预原则恢复：
+
+- **等待操作者确认：** 直接在原对话回复决策或授权即可满足 `operator_input`，运行时会自动恢复同一 WorkItem。
+- **外部阻塞已修复：** 若你已在外部修复了依赖、补齐凭据或解决了 Git 冲突，但 WorkItem 仍停在 `blocked`，在对话中明确指示 Agent：
+
+  > “确认刚才的阻塞已经解决，用 `PickWorkItem`（设置 `clear_blocker=true` 并注明原因）清除阻塞标记并从下一个待办项继续。”
+
+- **命令或模型调用失败：** 修复配置或脚本报错后，仅让 Agent 重试失败的步骤或验证命令，不要清空代理状态重新来过。
+- **重跑前先核实外部副作用：** 如果失败发生在调用 GitHub、推送代码或其他外部写操作之后，先让 Agent 核查外部目标是否已经生效，再决定是否重试，防止重复评论或重复提交。
+
+## 宿主机与 CLI / HTTP 诊断（Web GUI 不可用或无头运维时）
+
+当守护进程无法启动、所有模型路由均不可达，或需要通过 SSH 在无头服务器上排查时，可以在宿主机使用以下只读 CLI 与 HTTP 接口。
+
+### 守护进程启动失败或启动后显示已停止
 
 ```bash
-# 1. 检查是否已有实例在运行
 holon daemon status
-
-# 2. 查看最近的 daemon 日志
-holon daemon logs
-
-# 3. 重启 daemon
-holon daemon restart
-```
-
-如果 daemon 绑定端口失败，换一个端口：
-
-```bash
-holon daemon start --port 8788
-```
-
-### 启动后 daemon 状态显示“已停止”
-
-查看 daemon 日志里的崩溃信息：
-
-```bash
 holon daemon logs
 ```
 
-常见原因：
-- 端口已被其他进程占用
-- 默认模型缺少凭据或凭据无效
-- 磁盘空间不足，或 `~/.holon/` 权限不足
-
-## 凭据与模型问题
-
-### “No available model” 或凭据错误
-
-最快的修复方式是运行交互式引导向导：
+先查看真实启动报错：常见原因包括已有进程占用端口、监听地址冲突、配置文件语法错误、磁盘空间不足，或者当前 shell 与守护进程使用了不同的 `HOLON_HOME`：
 
 ```bash
-holon onboard
+printf '%s\n' "${HOLON_HOME:-<default home>}"
 ```
 
-运行诊断工具：
+不要在不同 `HOLON_HOME` 目录之间直接复制或覆盖运行时数据库。修复根因并重启守护进程后，重新查询未完成的 WorkItem 与任务状态——持久化的 WorkItem 会保留，但运行中的外部命令进程可能已随守护进程停止而中断。
+
+### “No available model” 或凭据失效
 
 ```bash
 holon config doctor
+holon config providers list
+holon config models list
+holon config credentials list
 ```
 
-它会显示哪些模型可用、配置了哪些凭据，以及每个提供商/模型组合的详细可用状态。
-
-### API key 未被识别
-
-1. 确认凭据已保存：
-   ```bash
-   holon config credentials list
-   ```
-
-2. 环境变量鉴权时，检查变量是否已设置：
-   ```bash
-   echo $DEEPSEEK_API_KEY
-   ```
-
-3. 确认提供商已注册，且凭据配置匹配：
-   ```bash
-   holon config providers list
-   ```
-
-4. 使用自定义提供商时，检查 `--credential-profile` 是否与 `config credentials set` 时用的配置一致：
-   ```bash
-   holon config providers get my-provider
-   ```
-
-### 模型报错或行为异常
-
-1. 确认模型可用：
-   ```bash
-   holon config models list
-   ```
-
-2. 检查当前默认模型：
-   ```bash
-   holon config get model.default
-   ```
-
-3. 尝试切换到其他模型：
-   ```bash
-   holon config set model.default "anthropic@default/claude-sonnet-4-6"
-   ```
-
-## Agent 问题
-
-### Agent 不响应
-
-1. 检查 Agent 是否存在：
-   ```bash
-   holon agent model get my-agent
-   ```
-
-2. 用全新的单次运行试试：
-   ```bash
-   holon run "test" --agent my-agent --max-turns 1
-   ```
-
-### Agent 使用了错误的模型
-
-检查 Agent 是否有单独的模型覆盖：
+核对提供商配置的 credential profile 是否与凭据库一致。若通过环境变量鉴权，检查变量是否存在（切勿直接打印密钥值）：
 
 ```bash
-holon agent model get my-agent
+test -n "${DEEPSEEK_API_KEY:-}" && echo "set" || echo "unset"
 ```
 
-清除覆盖，回退到全局默认：
+新终端里导出的环境变量不会自动注入已经运行中的守护进程；请使用受管的凭据存储或按文档要求重启守护进程。
+
+### 配置修改未生效
 
 ```bash
-holon agent model clear my-agent
-```
-
-## 配置问题
-
-### 配置改动没有生效
-
-1. 确认键值设置正确：
-   ```bash
-   holon config get <KEY>
-   ```
-
-2. 检查键名有没有拼写错误：
-   ```bash
-   holon config schema
-   ```
-
-3. 如果是直接编辑 `~/.holon/config.json` 做的改动，验证 JSON：
-   ```bash
-   holon config list
-   ```
-
-4. 配置改动后重启 daemon：
-   ```bash
-   holon daemon restart
-   ```
-
-### 配置被重置为默认值
-
-检查是否设置了 `HOLON_HOME`，它会改变配置文件位置：
-
-```bash
-echo $HOLON_HOME
-```
-
-## TUI 问题
-
-### TUI 显示错乱
-
-尝试禁用备用屏幕：
-
-```bash
-holon tui --no-alt-screen
-```
-
-或在配置中设置：
-
-```bash
-holon config set tui.alternate_screen never
-```
-
-### TUI 无法连接 daemon
-
-- 确认 daemon 正在运行：`holon daemon status`
-- 检查 daemon 的访问模式：本地 TUI 连接要求 `holon daemon start --access local`
-- 远程连接时，确认 `--connect` URL 和 `--token` 正确：
-  ```bash
-  holon tui --connect https://your-server:8787 --token "your-token"
-  ```
-
-## 日志与诊断
-
-### 查看 Agent 任务输出
-
-任务输出存放在 `~/.holon/agents/<agent-id>/task-output/` 下。每个任务有一个以任务 ID 命名的 `.log` 文件。
-
-### 完整系统诊断
-
-```bash
-holon config doctor
-```
-
-它会报告：默认模型、回退模型、各模型可用性及原因、提供商设置、凭据状态和重试策略。
-
-### 查看运行时配置
-
-```bash
-# 完整配置转储
-holon config list
-
-# 所有可用键，含默认值和说明
+holon config get CONFIG_KEY
 holon config schema
 ```
 
-## 运行时性能诊断
+确认配置键名与作用域（是否被单个 Agent 覆盖）。向他人反馈问题时，请剔除完整 `holon config list` 输出、密钥 Token、回调 Capability URL 与完整对话记录。
 
-Holon 跨轮次生命周期各阶段、提供商交互、工具执行和持久化跟踪细粒度性能指标。这些指标是累积的，覆盖从 daemon 启动以来的整个进程生命周期。
-
-### 获取指标
+### CLI 只读状态与日志检查
 
 ```bash
-curl http://127.0.0.1:7878/api/control/runtime/performance
+holon agent status builder
+holon work-item list --agent builder
+holon work-item get WORK_ITEM_ID --agent builder
+holon task status TASK_ID --agent builder
+holon task output TASK_ID --agent builder
+holon tail --agent builder --limit 10
+holon transcript --agent builder --limit 30
 ```
 
-响应是按类别分组的 JSON 快照：
+<a id="tui-issues"></a>
 
-### 指标分组
+### TUI 显示异常或连接失败
 
-| 分组 | 关键指标 | 关注点 |
-|-------|-------------|---------------|
-| `turn.*` | `turn.total`, `turn.context_build`, `turn.provider_round`, `turn.tool_execution`, `turn.cleanup` | 上下文构建变慢（提示词拼装增长），工具时间占比过高 |
-| `provider.*` | `provider.request_build`, `provider.round_total`, `provider.retry` | 重试次数高或延迟指向提供商问题 |
-| `tool.execution` | 累积工具耗时 | 找出 `avg_ms` 异常高的工具 |
-| `storage.*` | `storage.append_event`, `storage.persist_state` | 持久化变慢说明数据库有压力 |
-| `projection.agent_state.*` | `tasks`, `timers`, `work_items`, `waiting_intents`, `external_triggers` | 每个 Agent 的状态投影开销 |
-| `projection.agents_list` | Agent 列表投影耗时 | 仪表盘/API 列表延迟 |
-| `http.*` | 各路由 HTTP 耗时 | 慢端点、大负载 |
-| `scheduler.*` | `scheduler.poll.all`, `.message`, `.idle`, `.stopped` | 调度器健康度（空闲比例、轮询延迟） |
+- 终端花屏或错乱：使用 `holon tui --no-alt-screen`（验证有效后可通过 `holon config set tui.alternate_screen never` 持久化）。
+- 远程连接失败：核对地址与受保护的 Token 文件路径：
 
-每个指标条目包含：
+  ```bash
+  holon tui --connect https://your-server:8787 --token-file /path/to/control-token
+  ```
 
-| 字段 | 说明 |
-|-------|-------------|
-| `count` | 该阶段的总调用次数 |
-| `total_ms` | 累积墙钟时间 |
-| `max_ms` | 单次最慢调用 |
-| `avg_ms` | 平均调用耗时 |
+### 运行时性能快照与 Trace 诊断
 
-### 常见诊断模式
-
-**`turn.tool_execution` 偏高** — 某个工具占用了大部分轮次时间。运行 `holon debug latency` 找出是哪个工具。
-
-**`provider.retry` 频繁** — 模型提供商在返回错误或超时。检查提供商日志（`holon daemon logs`）和网络连通性。
-
-**`turn.context_build` 增长** — 检查每轮选中的历史范围和提示词 token 预算。
-
-**`scheduler.poll.idle` 比例偏高** — 没有 Agent 处于唤醒状态时属正常。如果有 Agent 有待处理工作，检查唤醒提示和等待条件。
-
-### 重置指标
-
-指标在 daemon 重启时重置。想观察某个特定场景时，重启 daemon、复现问题，然后抓取快照：
+在需要排查整体吞吐变慢时，使用控制面 Token 抓取性能快照：
 
 ```bash
-holon daemon restart && sleep 2 && curl http://127.0.0.1:7878/api/control/runtime/performance
+curl --fail --silent --show-error \
+  -H "Authorization: Bearer $HOLON_CONTROL_TOKEN" \
+  http://127.0.0.1:7878/api/control/runtime/performance
 ```
+
+对照[可观测性参考](../reference/observability.md#运行时性能快照)在同一守护进程生命周期内对比前后快照：
+
+- `turn.tool_execution` 偏高：检查对应耗时命令与日志输出。
+- 提供商重试频繁：排查上游报错、限流或网络连通性。
+- `turn.context_build` 持续增长：检查受影响轮次的上下文体积与诊断信息。
+- 空轮询计数偏高：核实当前是否真的存在 `runnable` 状态的工作项。
+
+可通过 `holon debug trace --search MESSAGE_OR_TURN_ID` 检索保留的 Trace，或参阅[配置可观测性](configure-observability.md)校验 OTLP 导出链路。采样未完成前，避免仅为清零计数而重启守护进程。
+
+## 何时停止重试并上报阻塞
+
+若完成上述分层检查仍无法定位或修复，请停止盲目重试并整理以下信息上报：
+
+- Agent ID、WorkItem ID、Task ID 以及相关 Message/Turn ID。
+- 预期行为与实际观察到的调度/错误状态（附脱敏后的精确报错）。
+- 已执行过的只读核查步骤，以及已确认的外部副作用。
 
 ## 另见
 
-- [配置参考](/zh-CN/reference/configuration.md) — 配置键与凭据管理
-- [观察 Agent 工作](observe-agent-work.md)
+- [实时观察、追踪与验收 Agent 工作进展](observe-agent-work.md)
+- [将复杂任务安全委派给子 Agent](delegate-work.md)
 - [运行长生命周期任务](run-long-lived-task.md)
-- [快速开始](/zh-CN/getting-started/first-agent.md) — 首次运行流程
+- [调度 Agent 工作](schedule-agent-work.md)
+- [配置参考](../reference/configuration.md)

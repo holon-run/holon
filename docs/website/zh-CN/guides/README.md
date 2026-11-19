@@ -22,16 +22,12 @@ order: 30
   在浏览器里驱动 Agent、Work Item 和 Skill。
   <!-- mdorigin:index kind=article -->
 
-- [定制 Agent 角色与指引](./customize-agent.md)
-  直接更新现有 Agent 的常驻指令，无需替换其 Home 目录或重新套用模板。
+- [创建并定制专属角色 Agent 与权限边界](./customize-agent.md)
+  在 Web GUI 中从模板创建或打开已有角色 Agent，通过自然语言对话将常驻职责、自主权限与审批门禁持久化写入 AGENTS.md 和操作者记忆，并以只读演练核验边界生效。
   <!-- mdorigin:index kind=article -->
 
 - [创建 Agent 模板](./create-agent-template.md)
   编写角色契约，添加可选的 Skill 依赖，并通过新 Agent 验证其有效性。
-  <!-- mdorigin:index kind=article -->
-
-- [排查 Holon 任务问题](./troubleshooting.md)
-  把卡住、失败或无输出的任务定位到一个明确的下一步。
   <!-- mdorigin:index kind=article -->
 
 - [安装、启用与更新 Skill](./use-skills.md)
@@ -168,6 +164,10 @@ order: 30
 
 - [观察 Agent 工作](./observe-agent-work.md)
   定位 Agent 的工作目标、查看任务进展并获取最终完成报告与交付产物。
+  <!-- mdorigin:index kind=article -->
+
+- [排查卡住或无响应的 Agent 任务](./troubleshooting.md)
+  在 Web GUI 对话中优先自检卡住、长时间无输出或失败的 Agent 任务：区分正常的 WaitFor 挂起等待与真实阻塞，逐层核查 TaskStatus 与子 Agent 状态、模型路由、工作树冲突及守护进程故障，并安全恢复推进。
   <!-- mdorigin:index kind=article -->
 
 - [配置可观测性](./configure-observability.md)

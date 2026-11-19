@@ -24,8 +24,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Pick a template, create an agent, and confirm it can take a task.
   <!-- mdorigin:index kind=article -->
 
-- [Customize an agent's role and guidance](./customize-agent.md)
-  Update an existing agent's standing instructions without replacing its home or reapplying a template.
+- [Create and customize a dedicated role agent with permission boundaries](./customize-agent.md)
+  Spin up a role agent from a template or select an existing agent in the Web GUI, persist standing responsibilities and approval gates in AGENTS.md and operator memory through natural conversation, and verify boundaries with a read-only dry run.
   <!-- mdorigin:index kind=article -->
 
 - [Create an agent template](./create-agent-template.md)
@@ -172,8 +172,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Locate an agent's objective, inspect task progress, and retrieve the completion report and artifacts.
   <!-- mdorigin:index kind=article -->
 
-- [Troubleshoot a Holon task](./troubleshooting.md)
-  Identify the failing layer of a silent, stalled, or unsuccessful task without duplicating work.
+- [Troubleshoot a stuck or unresponsive agent task](./troubleshooting.md)
+  Diagnose silent, stalled, or failed agent tasks in Web GUI conversation first, distinguish active WaitFor pauses from real blockers, inspect TaskStatus and subagents, and resume safely without duplicating work.
   <!-- mdorigin:index kind=article -->
 
 - [Configure observability](./configure-observability.md)

@@ -1,98 +1,103 @@
 ---
-title: Troubleshoot a Holon task
-summary: Identify the failing layer of a silent, stalled, or unsuccessful task without duplicating work.
+title: Troubleshoot a stuck or unresponsive agent task
+summary: Diagnose silent, stalled, or failed agent tasks in Web GUI conversation first, distinguish active WaitFor pauses from real blockers, inspect TaskStatus and subagents, and resume safely without duplicating work.
 order: 260
 ---
 
-# Troubleshoot a Holon task
+# Troubleshoot a stuck or unresponsive agent task
 
-Start with read-only checks. Record the agent ID, WorkItem ID, task ID, and the
-last observed result before retrying or restarting. A silent client can reflect
-a wait, a bounded observation timeout, or a disconnected connection while the
-daemon is still working.
+Use this guide when an agent stops replying, a background command seems stuck, a delegated subagent has not reported back, or a run fails with model, credential, or workspace errors. Start with read-only inspection before resending instructions or restarting the daemon so you do not duplicate side effects or discard active state.
 
-## Before you start
+## Applicable scenarios
 
-Use the runtime and agent that own the work. Replace `builder`, `WORK_ITEM_ID`,
-and `TASK_ID` below with actual identifiers:
+- A conversation turn goes quiet and you are unsure whether the agent is still running, waiting on a task, waiting on your approval, or stuck.
+- A parent agent delegated work to a subagent and appears idle.
+- An agent reports a provider error, credential mismatch, or Git worktree conflict.
+- The Web GUI, TUI, or CLI cannot reach the Holon daemon.
 
-```bash
-holon daemon status
-holon agent status builder
-holon work-item list --agent builder
-holon tail --agent builder --limit 10
-```
+## Prerequisites
 
-If the objective already exists, inspect it instead of submitting it again.
-[Observe agent work](observe-agent-work.md) explains how to distinguish progress,
-waiting reports, and the final result.
+- A running Holon runtime (default Web GUI at `http://127.0.0.1:7878/`) or shell access to the host running `holon`.
+- Identify the agent handling the task (for example `main`, `builder`, or `reviewer`) and keep the existing `WorkItem` rather than submitting the same objective again.
 
-## Agent Issues
+## Steps
 
-### Agent not responding
+### 1. Inspect the WorkItem and wait state in conversation
 
-```bash
-holon work-item get WORK_ITEM_ID --agent builder
-holon task list --agent builder
-holon task status TASK_ID --agent builder
-```
+In the Web GUI conversation, ask the agent directly before retrying:
 
-| Observation | Next action |
-|---|---|
-| Waiting for operator | Read the question and answer through the operator channel; keep the same WorkItem |
-| Waiting for a task | Inspect that task's state and output; do not start a duplicate command |
-| Waiting for an external event | Check the external source, callback delivery, and recorded wait |
-| Waiting for a timer | Check the timer ID, owner, next fire time, and cancelled/completed state |
-| Yielded WorkItem | Inspect the item it yielded to; do not clear unrelated blockers |
-| Runnable work but no progress | Check agent lifecycle, provider errors, and recent daemon logs |
-| Completed work | Retrieve its `result_brief_id` and inspect the report and artifacts |
+> "Check your open WorkItems, current scheduling state, active `WaitFor` conditions, and running tasks. Are you waiting on a valid dependency or stuck on a blocker?"
 
-A matching wake can resume an inspection while an independent business blocker
-remains. A stopped agent or completed owner cannot be revived by replaying a
-stale task result. If a callback is missing, follow
-[Connect external events](connect-external-events.md#if-the-agent-does-not-resume).
+You can also open the **Work Items** panel and switch the conversation display level from **Info** to **Verbose** or **Debug** in the [Web GUI](use-web-gui.md) to view recent tool calls and waiting indicators. Match what you observe to the right next step:
 
-### Agent uses wrong model
+| Observed state | What it means | Next action |
+|---|---|---|
+| `runnable` (actively executing) | The agent is running a model round or tool call | Wait for the active round or inspect recent progress; do not resend the prompt |
+| `yielded` | Execution paused by a continuation frame (for example switched to another WorkItem via `PickWorkItem`) | Inspect the active WorkItem it yielded to; do not manually clear unrelated blockers |
+| `waiting` (`wake=task_result`) | Zero-token sleep waiting for a background command or subagent task | Inspect that task's `TaskStatus` and output rather than starting a duplicate command |
+| `waiting` (`wake=timer` or `wake=external`) | Parked until a timer fires or an external webhook callback arrives | Check the timer schedule or external event source; see [Connect external events](connect-external-events.md#troubleshooting) if a webhook did not resume |
+| `waiting_for_operator` (`needs_input` or `wake=operator_input`) | Paused because your decision, approval, or credentials are required | Answer directly in the same conversation so the runtime resumes the same WorkItem |
+| `blocked` | Owns an unresolved blocker or failed dependency | Diagnose the blocker at the failing layer before clearing it |
+| `completed` (or interrupted historical run) | The WorkItem already settled or stopped | Read its completion brief and artifacts before deciding whether follow-up work is needed |
 
-```bash
-holon agent model get builder
-holon config get model.default
-holon config models list
-```
+### 2. Narrow down the failing layer in conversation
 
-Check for an intentional per-agent override before changing it. If you want the
-agent to inherit the global default, explicitly clear that override:
+If the task is genuinely blocked or failed, ask the agent to inspect one layer at a time:
 
-```bash
-holon agent model clear builder
-```
+1. **Background command tasks (`TaskStatus` and output logs):**
 
-Verify the selection on the next authorized request. Do not run another business
-action solely to test whether a model change worked.
+   > "Run `TaskStatus` on the task ID, report its lifecycle state and exit status, and read the tail of any available stdout or stderr log path."
 
-## Daemon Issues
+   `TaskStatus` reports the exact command state and runtime-confirmed log file paths. Never assume a fixed log path or declare a running command failed without checking its exit status or cancellation reason.
 
-### Daemon won't start
+2. **Delegated subagents (`ListSubagents`):**
+
+   > "List your directly supervised subagents with `ListSubagents` and tell me which child task is still running, waiting, or failed."
+
+   `ListSubagents` checks current supervision state and lightweight runtime status without waking an idle child or consuming its task result. In the Web GUI, you can also open the child task detail card and click into the child's conversation directly. See [Delegate complex tasks to subagents](delegate-work.md).
+
+3. **Model routes, credentials, and provider timeouts:**
+
+   > "Check your active model route and the exact provider error from the failed round without switching providers blindly."
+
+   A transient rate limit or upstream timeout is different from a missing credential. Do not switch models mid-task unless the active route is actually misconfigured or unavailable. See [Configure and switch models](configure-models.md).
+
+4. **Workspace and Git worktree conflicts:**
+
+   > "Inspect `GetWorkspaceState` and show whether a dirty, locked, or occupied worktree is blocking edits or cleanup."
+
+   Never force-remove a worktree or discard uncommitted changes until you confirm which agent or branch owns them. See [Work in a project workspace or Git worktree](work-with-workspaces.md).
+
+### 3. Resume cleanly with minimal intervention
+
+Once you have confirmed the root cause:
+
+- **Waiting on your decision:** Reply directly in chat (for example, approve the action or supply the missing constraint). Answering satisfies `operator_input` and resumes the WorkItem cleanly.
+- **External blocker fixed:** If you fixed a broken dependency, restored credentials, or resolved a Git conflict out of band and the WorkItem is still marked `blocked`, tell the agent:
+
+  > "Verify that the blocker is resolved, resume this WorkItem (`PickWorkItem` with `clear_blocker=true` and the reason), and continue from the next pending step."
+
+- **Failed command or provider error:** Fix the underlying configuration or command issue first, then ask the agent to retry only the failed verification or step.
+- **Side-effect check before retrying:** If a turn failed after calling GitHub, git push, or another external service, ask the agent to verify whether the external action already landed before retrying so you do not post duplicate comments or commits.
+
+## Host-level & CLI diagnostics (when Web GUI is unavailable)
+
+When the daemon will not start, no model is reachable, or you are debugging a headless server over SSH, use these read-only CLI and HTTP checks on the host.
+
+### Daemon won't start or stops immediately
 
 ```bash
 holon daemon status
 holon daemon logs
 ```
 
-Look for the actual startup error: an existing process, listener conflict,
-invalid configuration, or a filesystem access failure. Check the relevant
-setting before changing ports or deleting state. Preserve logs before any
-restart.
+Check the actual startup error before changing ports or touching `~/.holon/`: an existing daemon instance, a bound port conflict, invalid config syntax, disk space exhaustion, or a mismatched `HOLON_HOME`:
 
-### Daemon status shows "stopped" after starting
+```bash
+printf '%s\n' "${HOLON_HOME:-<default home>}"
+```
 
-Inspect the logs for the exit cause and confirm that you are using the intended
-`HOLON_HOME`. Check disk space and access to that directory if the error points
-to storage. Once you have corrected the cause, start the daemon and re-read the
-existing WorkItem and task states. Durable records do not guarantee that a
-command process survived the stop.
-
-## Credential & Model Issues
+Do not copy or overwrite runtime databases across different `HOLON_HOME` directories. After fixing the cause and restarting the daemon, re-read open WorkItems and task states—durable WorkItems survive restarts, but an in-flight shell command may have exited when the daemon stopped.
 
 ### "No available model" or credential errors
 
@@ -100,44 +105,16 @@ command process survived the stop.
 holon config doctor
 holon config providers list
 holon config models list
-```
-
-Use the reported provider/profile error to fix the missing configuration.
-[Configure models](configure-models.md) covers setup. Do not switch providers
-blindly when the failure may be a timeout or a rate limit.
-
-### API key not recognized
-
-```bash
 holon config credentials list
-holon config providers get PROVIDER_ID
 ```
 
-Replace `PROVIDER_ID` with the configured provider. Check that its credential
-profile matches the stored profile. For environment-based credentials, test
-presence without printing the value:
+Check whether the provider's credential profile matches the stored credential. If using environment variables, verify presence without printing secrets:
 
 ```bash
-if [ -n "${DEEPSEEK_API_KEY:-}" ]; then
-  printf 'Credential variable is set in this shell\n'
-else
-  printf 'Credential variable is absent from this shell\n'
-fi
+test -n "${DEEPSEEK_API_KEY:-}" && echo "set" || echo "unset"
 ```
 
-Use the variable required by your provider. A variable set in a new shell does
-not prove that the already running daemon inherited it. Prefer the credential
-store for managed configuration and follow the provider's documented reload or
-restart requirements.
-
-### Model returns errors or unexpected behavior
-
-Inspect the run's provider error, availability diagnostics, and retry outcome.
-A failed model call is different from a failed shell command. Preserve the
-message/turn ID and a redacted error before retrying. If a turn may already have
-published a PR or comment, inspect that side effect first.
-
-## Configuration Issues
+Environment variables exported in a new shell do not affect an already-running daemon; restart the daemon or store credentials in the managed credential store.
 
 ### Config changes not taking effect
 
@@ -146,78 +123,32 @@ holon config get CONFIG_KEY
 holon config schema
 ```
 
-Check the exact key and scope, including agent overrides. If you edited the
-configuration file directly, `holon config list` can reveal parse errors, but
-review its output privately rather than posting a full configuration dump.
-Restart only for settings that require it, after considering active work.
+Verify the exact key and whether a per-agent override exists. Keep full `holon config list` dumps, transcripts, tokens, and callback URLs out of public issue reports.
 
-### Config reset to defaults
-
-Check whether your shell and daemon use the same Holon home:
+### Read-only CLI task inspection
 
 ```bash
-printf '%s\n' "${HOLON_HOME:-<default home>}"
-```
-
-A different home can select different configuration and agent state. Locate the
-intended home instead of copying or overwriting runtime databases.
-
-## TUI Issues
-
-### TUI display is garbled
-
-Try a display-only change:
-
-```bash
-holon tui --no-alt-screen
-```
-
-If that resolves it, persist the preference with
-`holon config set tui.alternate_screen never`.
-
-### TUI cannot connect to daemon
-
-Check daemon status, connection address, and authentication. For remote access,
-use the intended server and a protected token file:
-
-```bash
-holon tui --connect https://your-server:8787 --token-file /path/to/control-token
-```
-
-A connection failure does not mean the underlying objective stopped. Inspect the
-same agent after reconnecting before submitting another request.
-
-## Logs & Diagnostics
-
-### Viewing agent task output
-
-```bash
+holon agent status builder
+holon work-item list --agent builder
+holon work-item get WORK_ITEM_ID --agent builder
+holon task status TASK_ID --agent builder
 holon task output TASK_ID --agent builder
+holon tail --agent builder --limit 10
 holon transcript --agent builder --limit 30
 ```
 
-Use the task's returned output metadata and artifact locations instead of
-assuming a fixed log filename. Include the command exit status or cancellation
-reason when diagnosing a failure.
+### TUI issues
 
-### Full system diagnostic
+- Garbled terminal display: run `holon tui --no-alt-screen` (persist via `holon config set tui.alternate_screen never`).
+- Remote connection failure: verify the daemon address and token file:
 
-`holon config doctor` reports configuration and provider availability. Capture
-only the relevant redacted section; it is not a substitute for the task's own
-error or test output.
+  ```bash
+  holon tui --connect https://your-server:8787 --token-file /path/to/control-token
+  ```
 
-### Checking runtime configuration
+### Runtime performance snapshots and traces
 
-Use `holon config get CONFIG_KEY` for a specific suspected setting. Keep full
-configuration, transcripts, tokens, and callback capability URLs out of public
-bug reports.
-
-## Runtime Performance Diagnostics
-
-### Retrieving metrics
-
-For a slow runtime, capture the protected performance snapshot using the actual
-control address and token:
+Capture a protected runtime performance snapshot using your control token:
 
 ```bash
 curl --fail --silent --show-error \
@@ -225,39 +156,27 @@ curl --fail --silent --show-error \
   http://127.0.0.1:7878/api/control/runtime/performance
 ```
 
-### Metric groups
+Compare snapshots within the same daemon lifetime using the metric definitions in the [Observability reference](../reference/observability.md#runtime-performance-snapshots):
 
-Group and field contracts are in the
-[Observability reference](../reference/observability.md#runtime-performance-snapshots).
-Compare snapshots from the same daemon lifetime rather than treating cumulative
-counts as the duration of one task.
+- High `turn.tool_execution`: inspect the slow command and its output.
+- Frequent provider retries: check upstream errors, rate limits, and network connectivity.
+- Growing `turn.context_build`: inspect context size and retained diagnostics.
+- High idle-poll counts: verify whether any WorkItem is actually runnable.
 
-### Common diagnosis patterns
-
-- High tool time: inspect the affected command and its output.
-- Frequent provider retries: inspect provider errors and connectivity.
-- Growing context-build time: inspect the affected turn's context diagnostics.
-- High idle-poll count: check whether any work is actually runnable.
-
-Use `holon debug trace --search MESSAGE_OR_TURN_ID` for a retained trace. A
-missing trace may reflect sampling or retention. To diagnose collector or
-metrics export, follow [Configure observability](configure-observability.md).
-
-### Resetting metrics
-
-Process metrics reset on daemon restart. Capture evidence first and avoid
-restarting solely to zero counters; before/after snapshots usually preserve more
-useful information without interrupting work.
+Use `holon debug trace --search MESSAGE_OR_TURN_ID` for retained traces, or follow [Configure observability](configure-observability.md) to verify OTLP export. Avoid restarting the daemon solely to reset counters before capturing diagnostics.
 
 ## When to stop and report a blocker
 
-If the cause remains unknown, report the expected and observed behavior, runtime
-version, relevant IDs, redacted error, and checks already performed. State which
-work remains incomplete. Do not declare success because a retry was accepted,
-and do not erase state to make the symptom disappear.
+If the cause remains unresolved after these checks, stop retrying and collect:
 
-## See Also
+- The agent ID, WorkItem ID, task ID, and message/turn ID.
+- Expected versus observed state and the exact redacted error message.
+- Which read-only checks you already ran and any external side effects already confirmed.
 
-- [Observe agent work](observe-agent-work.md)
-- [Run a long-lived task](run-long-lived-task.md)
+## See also
+
+- [Observe, track, and verify agent progress](observe-agent-work.md)
+- [Delegate complex tasks to subagents](delegate-work.md)
+- [Run unattended long-lived tasks](run-long-lived-task.md)
+- [Schedule periodic tasks](schedule-agent-work.md)
 - [Configuration reference](../reference/configuration.md)
