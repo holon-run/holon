@@ -915,7 +915,10 @@ mod tests {
     fn markdown_image_budget_degrades_required_images_to_path_references() {
         let workspace = tempfile::tempdir().unwrap();
         let mut prompt = image_budget_prompt(workspace.path());
-        let references = write_distinct_budget_images(workspace.path(), 12);
+        let mut references = write_distinct_budget_images(workspace.path(), 12);
+        // A repeated non-inlined reference is skipped as a duplicate path
+        // before budget checks, so the notice must still list it once.
+        references.push(references[8].clone());
         prompt.context_sections = vec![image_section("current_input", &references.join("\n"))];
         let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
         let inlined = request
