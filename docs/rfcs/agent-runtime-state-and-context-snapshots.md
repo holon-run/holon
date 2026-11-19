@@ -5554,6 +5554,14 @@ inputs. The selected closure still qualifies every required protocol body,
 fails closed on missing preparation, and shares the original material allowance
 and failure latch. This does not narrow the full Work inventory returned by State.
 
+For v113 WorkExecution rows only, Input may accept a frozen `needs_repair`
+marker against the migrated `paused` column. All other qualified metadata
+and the digest of the original legacy body must match, including the
+existing seed/overlay provenance checks. The body must encode `needs_repair`
+with the projected source revision and generation. The repository and Input
+both read it as `Paused`; reading does not rewrite existing proofs, and
+matching the durable WorkItem revision does not grant execution authority.
+
 The automatic live Attempt frontier contains only `Open` attempts. `Interrupted`,
 `Settled`, and `ProtocolViolation` attempts are terminal history; they do not
 independently own bootstrap Input or provider recovery expansion. Pending inputs,

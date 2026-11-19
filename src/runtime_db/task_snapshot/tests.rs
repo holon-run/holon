@@ -86,6 +86,14 @@ pub(super) fn legacy(
     sealed: bool,
     prepare: impl FnOnce(&Transaction<'_>) -> Result<()>,
 ) -> Result<(tempfile::TempDir, RuntimeDb)> {
+    legacy_fixture(sealed, prepare, |_| Ok(()))
+}
+
+pub(super) fn legacy_fixture(
+    sealed: bool,
+    prepare: impl FnOnce(&Transaction<'_>) -> Result<()>,
+    finish_fixture: impl FnOnce(&mut Connection) -> Result<()>,
+) -> Result<(tempfile::TempDir, RuntimeDb)> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("runtime.sqlite");
     let mut conn = Connection::open(&path)?;
@@ -103,6 +111,7 @@ pub(super) fn legacy(
         prepare(&tx)?;
         tx.commit()?;
     }
+    finish_fixture(&mut conn)?;
     drop(conn);
     let db = RuntimeDb::open_and_migrate(&path, dir.path().join("runtime.lock"))?;
     Ok((dir, db))

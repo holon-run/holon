@@ -1,6 +1,6 @@
 //! Execution protocol row persistence and durable authority fences.
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{anyhow, bail, ensure, Context, Result};
 use chrono::Utc;
 use holon_domain::execution_protocol::{
     self, ExecutionOutcomeRecord, ExecutionProtocolState, WorkItemExecutionState,
@@ -187,50 +187,61 @@ fn stored_outcome_matches(existing: &str, outcome: &ExecutionOutcomeRecord) -> R
     Ok(existing == *outcome)
 }
 
-/// Decode a stored WorkItemExecutionRecord, translating the removed
-/// `needs_repair` state at load time: when the execution source revision has
-/// caught up with the durable WorkItem revision the fence is gone and the
-/// WorkItem is Runnable again; otherwise it pauses with the original repair
-/// reason. `durable_revision` is the live `work_items.revision`, if any.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct V113WorkItemRecord {
+    source_revision: u64,
+    state: V113WorkItemState,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
+enum V113WorkItemState {
+    NeedsRepair { generation: u64, repair_id: String },
+}
+
+impl V113WorkItemRecord {
+    fn into_paused(self, marker: &str) -> Result<execution_protocol::WorkItemExecutionRecord> {
+        let V113WorkItemState::NeedsRepair {
+            generation,
+            repair_id,
+        } = self.state;
+        let source_revision = self.source_revision;
+        ensure!(
+            marker == format!("{source_revision}:{generation}:paused"),
+            "legacy WorkExecution body does not match its v113 projection"
+        );
+        Ok(execution_protocol::WorkItemExecutionRecord {
+            source_revision,
+            state: WorkItemExecutionState::Paused {
+                generation,
+                reason: repair_id,
+            },
+        })
+    }
+}
+
+/// Check the preserved pre-v113 body against the migrated storage columns.
+/// The caller must separately verify the scoped qualification and raw digest.
+pub fn is_v113_work_item_payload(payload: &str, marker: &str) -> bool {
+    serde_json::from_str::<V113WorkItemRecord>(payload)
+        .ok()
+        .is_some_and(|record| record.into_paused(marker).is_ok())
+}
+
+/// v113 changed the lifecycle column but left the old body in place. Reading
+/// that body preserves the pause; revision alignment is not execution authority.
 pub fn decode_work_item_record_with_migration(
     payload: &str,
-    durable_revision: Option<u64>,
-) -> Result<holon_domain::execution_protocol::WorkItemExecutionRecord> {
-    let value: serde_json::Value = serde_json::from_str(payload)?;
-    let legacy_state = value.get("state").filter(|state| {
-        state.get("state").and_then(serde_json::Value::as_str) == Some("needs_repair")
-    });
-    let Some(legacy_state) = legacy_state else {
-        return Ok(serde_json::from_value(value)?);
-    };
-    let source_revision = value
-        .get("source_revision")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("legacy needs_repair record lacks source_revision"))?;
-    let generation = legacy_state
-        .get("generation")
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("legacy needs_repair record lacks generation"))?;
-    let repair_id = legacy_state
-        .get("repair_id")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| anyhow!("legacy needs_repair record lacks repair_id"))?
-        .to_owned();
-    let state = if durable_revision == Some(source_revision) {
-        WorkItemExecutionState::Runnable {
-            generation,
-            recovery_ref: None,
-        }
-    } else {
-        WorkItemExecutionState::Paused {
-            generation,
-            reason: repair_id,
-        }
-    };
-    Ok(holon_domain::execution_protocol::WorkItemExecutionRecord {
-        source_revision,
-        state,
-    })
+    marker: &str,
+) -> Result<execution_protocol::WorkItemExecutionRecord> {
+    match serde_json::from_str(payload) {
+        Ok(record) => Ok(record),
+        Err(current_error) => match serde_json::from_str::<V113WorkItemRecord>(payload) {
+            Ok(legacy) => legacy.into_paused(marker),
+            Err(_) => Err(current_error.into()),
+        },
+    }
 }
 
 /// Rewrite a stored legacy WorkItem `needs_repair` outcome payload with the

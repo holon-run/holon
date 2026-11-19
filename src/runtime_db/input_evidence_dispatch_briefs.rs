@@ -30,7 +30,7 @@ pub(crate) fn qualified_dispatch_briefs_tx(
             if alias.fingerprint != fingerprint {
                 return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
             }
-            BTreeSet::new()
+            FixedBodyDigests::default()
         } else {
             require_eligible_metadata(tx, &binding, &key, &fingerprint)?
         };
@@ -52,13 +52,19 @@ pub(crate) fn qualified_dispatch_briefs_tx(
                 "dispatch Brief raw/normalized digest mismatch"
             );
         } else if requires_frozen_body_digest(&key, &fingerprint) {
-            validate_fixed_body_digest(&key, &fixed_digests, &actual_digest)?;
+            validate_fixed_body_digest(
+                &key,
+                &fingerprint,
+                &fixed_digests,
+                &payload,
+                &actual_digest,
+            )?;
         }
         let record = prepare_record_on(
             tx,
             &scope.agent_id,
             &key,
-            Some(decode_canonical(&key, &payload)?),
+            Some(decode_canonical(&key, &payload, None)?),
         )?;
         let PreparedInputEvidence::Brief(brief) = record else {
             anyhow::bail!("dispatch Brief selector returned another family")

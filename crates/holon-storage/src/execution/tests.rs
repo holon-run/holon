@@ -39,7 +39,7 @@ fn stored_outcome_identity_ignores_removed_wait_generation_field() {
 }
 
 #[test]
-fn legacy_needs_repair_record_migrates_by_revision_alignment() {
+fn legacy_needs_repair_record_requires_the_v113_projection_and_stays_paused() {
     let legacy = serde_json::json!({
         "source_revision": 4,
         "state": {
@@ -50,28 +50,22 @@ fn legacy_needs_repair_record_migrates_by_revision_alignment() {
     })
     .to_string();
     assert_eq!(
-        decode_work_item_record_with_migration(&legacy, Some(4)).unwrap(),
+        decode_work_item_record_with_migration(&legacy, "4:3:paused").unwrap(),
         WorkItemExecutionRecord {
             source_revision: 4,
-            state: WorkItemExecutionState::Runnable {
+            state: WorkItemExecutionState::Paused {
                 generation: 3,
-                recovery_ref: None
+                reason: "work_item_waits_ambiguous:work-a".into(),
             }
-        },
-        "an aligned revision means the fence is gone: Runnable again"
+        }
     );
-    for unaligned in [Some(5u64), None] {
-        assert_eq!(
-            decode_work_item_record_with_migration(&legacy, unaligned).unwrap(),
-            WorkItemExecutionRecord {
-                source_revision: 4,
-                state: WorkItemExecutionState::Paused {
-                    generation: 3,
-                    reason: "work_item_waits_ambiguous:work-a".into()
-                }
-            },
-            "unaligned or missing durable revision pauses with the original reason"
-        );
+    for wrong_marker in [
+        "5:3:paused",
+        "4:4:paused",
+        "4:3:runnable",
+        "4:3:needs_repair",
+    ] {
+        assert!(decode_work_item_record_with_migration(&legacy, wrong_marker).is_err());
     }
     // Current records pass through unchanged; the migration is idempotent.
     let current = WorkItemExecutionRecord {
@@ -83,7 +77,7 @@ fn legacy_needs_repair_record_migrates_by_revision_alignment() {
     };
     let payload = serde_json::to_string(&current).unwrap();
     assert_eq!(
-        decode_work_item_record_with_migration(&payload, None).unwrap(),
+        decode_work_item_record_with_migration(&payload, "2:1:runnable").unwrap(),
         current
     );
 }

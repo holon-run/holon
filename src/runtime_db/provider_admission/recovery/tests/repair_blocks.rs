@@ -464,7 +464,7 @@ fn repair_blocks_preserve_prior_io_side_effects_and_terminal_source_fences() -> 
 }
 
 #[test]
-fn legacy_needs_repair_rows_reevaluate_when_loaded() -> Result<()> {
+fn legacy_needs_repair_rows_stay_paused_when_loaded() -> Result<()> {
     let (_dir, db) = database()?;
     let attempt = canonical_root(&db)?;
     let legacy = serde_json::json!({
@@ -530,11 +530,11 @@ fn legacy_needs_repair_rows_reevaluate_when_loaded() -> Result<()> {
         .expect("protocol must stay initialized");
     assert_eq!(
         protocol.work_items["work-a"].state,
-        WorkItemExecutionState::Runnable {
+        WorkItemExecutionState::Paused {
             generation: 1,
-            recovery_ref: None,
+            reason: "work_item_waits_ambiguous:work-a".into(),
         },
-        "an aligned durable revision means the fence is gone: Runnable again"
+        "an aligned durable revision does not clear the pause or confer execution authority"
     );
     assert_eq!(
         protocol.outcomes["outcome-legacy-repair"].outcome,

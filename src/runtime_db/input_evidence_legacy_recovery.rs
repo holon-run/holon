@@ -178,7 +178,7 @@ pub(crate) fn register_unbound_seed_recovery_tx(
         let key = supplied.key();
         let payload = payload_on(tx, agent, &key)?.context("legacy recovery ACK row missing")?;
         ensure!(
-            decode_canonical(&key, &payload)? == *supplied,
+            decode_canonical_on(tx, agent, &key, &payload)? == *supplied,
             "legacy recovery ACK differs from canonical SQL"
         );
         let mut current =

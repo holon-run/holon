@@ -81,7 +81,7 @@ pub(crate) fn prepare_offline_input_repair_tx(
     let existing_records = selected
         .iter()
         .filter_map(|key| match payload_on(tx, agent, key) {
-            Ok(Some(payload)) => Some(decode_canonical(key, &payload)),
+            Ok(Some(payload)) => Some(decode_canonical_on(tx, agent, key, &payload)),
             Ok(None) => None,
             Err(error) => Some(Err(error)),
         })
@@ -208,7 +208,7 @@ impl PreparedOfflineInputRepair {
             .map(|key| {
                 let payload = payload_on(tx, &self.agent, key)?
                     .context("offline repair canonical ACK row missing")?;
-                decode_canonical(key, &payload)
+                decode_canonical_on(tx, &self.agent, key, &payload)
             })
             .collect::<Result<Vec<_>>>()?;
         match self.role {

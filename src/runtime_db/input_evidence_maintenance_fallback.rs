@@ -220,7 +220,9 @@ fn exact_records_tx(
 ) -> Result<Vec<CanonicalInputEvidence>> {
     keys.iter()
         .map(|key| {
-            decode_canonical(
+            decode_canonical_on(
+                tx,
+                agent,
                 key,
                 &payload_on(tx, agent, key)?.context("fallback actual row missing")?,
             )
@@ -287,6 +289,7 @@ fn validate_created_outcome_tx(
     let record = decode_canonical(
         key,
         &payload_on(tx, agent, key)?.context("fallback Outcome missing")?,
+        None,
     )?;
     let CanonicalInputEvidence::Outcome(outcome) = record else {
         unreachable!()

@@ -336,6 +336,27 @@ impl Fingerprint {
         right.frozen_payload_digest = None;
         left == right
     }
+
+    /// Only a candidate until that proof's original bytes and legacy body
+    /// have both been checked. Do not normalize either persisted fingerprint.
+    fn v113_work_execution_candidate(&self, key: &Key, current: &Self, fixed: bool) -> bool {
+        if key.family != Family::WorkExecution {
+            return false;
+        }
+        let Some(prefix) = current.revision_marker.strip_suffix(":paused") else {
+            return false;
+        };
+        if self.revision_marker != format!("{prefix}:needs_repair") {
+            return false;
+        }
+        let mut candidate = current.clone();
+        candidate.revision_marker.clone_from(&self.revision_marker);
+        if fixed {
+            self.same_metadata(&candidate)
+        } else {
+            *self == candidate
+        }
+    }
 }
 #[derive(Debug, Clone)]
 struct Binding {
@@ -762,7 +783,7 @@ impl ExistingAdmissionInputProof {
                     );
                 }
             } else if let Some(payload) = payload_on(tx, &scope.agent_id, key)? {
-                let existing = decode_canonical(key, &payload)?;
+                let existing = decode_canonical_on(tx, &scope.agent_id, key, &payload)?;
                 ensure!(
                     canonical_input_work_id(&existing) == Some(owner.as_str()),
                     "existing derived input belongs to another Work"
@@ -902,7 +923,12 @@ fn register_committed_input_evidence_inner_tx(
         if is_existing_member_on(tx, scope, &binding, &key)? {
             let payload = payload_on(tx, &scope.agent_id, &key)?
                 .context("qualified related projection canonical row disappeared")?;
-            actual_records.push(std::borrow::Cow::Owned(decode_canonical(&key, &payload)?));
+            actual_records.push(std::borrow::Cow::Owned(decode_canonical_on(
+                tx,
+                &scope.agent_id,
+                &key,
+                &payload,
+            )?));
         }
     }
     let mut final_records = BTreeMap::new();
@@ -912,7 +938,7 @@ fn register_committed_input_evidence_inner_tx(
         let key = supplied.key();
         let payload = payload_on(tx, &scope.agent_id, &key)?
             .context("committed input evidence is missing")?;
-        let actual = decode_canonical(&key, &payload)?;
+        let actual = decode_canonical_on(tx, &scope.agent_id, &key, &payload)?;
         ensure!(
             &actual == supplied,
             "input evidence commit differs from canonical SQL readback"
@@ -1028,7 +1054,7 @@ pub(crate) fn refresh_related_input_evidence_tx(
         if is_existing_member_on(tx, scope, &binding, &key)? {
             let payload = payload_on(tx, &scope.agent_id, &key)?
                 .context("qualified related projection canonical row disappeared")?;
-            records.push(decode_canonical(&key, &payload)?);
+            records.push(decode_canonical_on(tx, &scope.agent_id, &key, &payload)?);
         }
     }
     register_committed_input_evidence_tx(tx, scope, &records)
@@ -1117,20 +1143,12 @@ fn validate_existing_input_evidence_inner_tx(
     let fingerprint = fingerprint_on(tx, &scope.agent_id, key)?
         .context("existing evidence metadata disappeared")?;
     if let Some(alias) = alias {
-        ensure!(
-            alias.fingerprint == fingerprint,
-            "existing evidence changed without an acknowledged scoped writer"
-        );
         // Tool projection trusts its canonical normalized hash and never
         // materializes full stdout. Every other alias validates its raw body.
-        if key.family != Family::ToolExecution {
-            validate_alias_body(
-                tx,
-                &scope.agent_id,
-                key,
-                &fingerprint,
-                alias.digest.as_deref(),
-            )?;
+        if key.family == Family::ToolExecution {
+            alias_metadata_match(key, &alias, &fingerprint)?;
+        } else {
+            validate_alias_body(tx, &scope.agent_id, key, &fingerprint, &alias)?;
         }
     } else {
         require_eligible(tx, &binding, key, &fingerprint)?;
@@ -1572,21 +1590,20 @@ fn observe_input_qualification_tx(
     allow_qualification: bool,
 ) -> Result<ObservedInputQualification> {
     let alias = alias_on(tx, scope, key)?;
-    let mut fixed_body_digests = BTreeSet::new();
-    if let Some(alias) = alias.as_ref() {
+    let mut fixed_body_digests = FixedBodyDigests::default();
+    let alias_v113 = if let Some(alias) = alias.as_ref() {
         ensure!(
             alias.present,
             "pruned evidence reappeared without committed writer"
         );
-        if alias.fingerprint != fingerprint {
-            return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
-        }
+        alias_metadata_match(key, alias, &fingerprint)?
     } else {
         if !allow_qualification {
             return Err(InputEvidenceSnapshotError::NeedsPreparation(key.id.clone()).into());
         }
         fixed_body_digests = require_eligible_metadata(tx, binding, key, &fingerprint)?;
-    }
+        false
+    };
     // One materialization per selected body, reused for decode and digest.
     let payload = if key.family == Family::ToolExecution {
         None
@@ -1602,6 +1619,17 @@ fn observe_input_qualification_tx(
                 .context("Tool projection needs canonical normalized content hash")?,
         )?,
     };
+    if alias_v113 {
+        validate_v113_work_execution_body(
+            key,
+            &fingerprint,
+            payload
+                .as_deref()
+                .context("selected WorkExecution body missing")?,
+            alias.as_ref().and_then(|alias| alias.digest.as_deref())
+                == Some(actual_digest.as_str()),
+        )?;
+    }
     if key.family != Family::ToolExecution {
         legacy_brief::validate_payload_digest(
             tx,
@@ -1612,12 +1640,18 @@ fn observe_input_qualification_tx(
             &actual_digest,
         )?;
         if alias.is_none() && requires_frozen_body_digest(key, &fingerprint) {
-            validate_fixed_body_digest(key, &fixed_body_digests, &actual_digest)?;
+            validate_fixed_body_digest(
+                key,
+                &fingerprint,
+                &fixed_body_digests,
+                payload.as_deref().context("selected input body missing")?,
+                &actual_digest,
+            )?;
         }
     }
     let canonical = payload
         .as_ref()
-        .map(|payload| decode_canonical(key, payload))
+        .map(|payload| decode_canonical(key, payload, Some(&fingerprint.revision_marker)))
         .transpose()?;
     let attempt_turn_proof = match canonical.as_ref() {
         Some(CanonicalInputEvidence::Attempt(attempt)) => {
@@ -2706,12 +2740,18 @@ fn binding_on(tx: &Transaction<'_>, scope: &InputEvidenceScope) -> Result<Bindin
 }
 /// Metadata qualification can run before the request's body budget check.
 /// The returned digest set is checked after its one selected materialization.
+#[derive(Default)]
+struct FixedBodyDigests {
+    exact: BTreeSet<String>,
+    v113: BTreeSet<String>,
+}
+
 fn require_eligible_metadata(
     tx: &Transaction<'_>,
     binding: &Binding,
     key: &Key,
     current: &Fingerprint,
-) -> Result<BTreeSet<String>> {
+) -> Result<FixedBodyDigests> {
     let seed = binding
         .seed_id
         .as_deref()
@@ -2722,20 +2762,28 @@ fn require_eligible_metadata(
         r.get::<_, String>(0)
     })?;
     let mut matched = false;
-    let mut digests = BTreeSet::new();
+    let mut digests = FixedBodyDigests::default();
     for row in rows {
         let frozen: Fingerprint = serde_json::from_str(&row?)?;
         if frozen.same_metadata(current) {
             matched = true;
             if let Some(digest) = frozen.frozen_payload_digest {
-                digests.insert(digest);
+                digests.exact.insert(digest);
+            }
+        } else if frozen.v113_work_execution_candidate(key, current, true) {
+            matched = true;
+            if let Some(digest) = frozen.frozen_payload_digest {
+                digests.v113.insert(digest);
             }
         }
     }
     if !matched {
         return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
     }
-    if requires_frozen_body_digest(key, current) && digests.is_empty() {
+    if requires_frozen_body_digest(key, current)
+        && digests.exact.is_empty()
+        && digests.v113.is_empty()
+    {
         return Err(InputEvidenceSnapshotError::NeedsPreparation(format!(
             "fixed input {} has no frozen body digest",
             key.id
@@ -2744,8 +2792,28 @@ fn require_eligible_metadata(
     }
     Ok(digests)
 }
-fn validate_fixed_body_digest(key: &Key, digests: &BTreeSet<String>, actual: &str) -> Result<()> {
-    if !digests.contains(actual) {
+fn validate_fixed_body_digest(
+    key: &Key,
+    current: &Fingerprint,
+    digests: &FixedBodyDigests,
+    payload: &str,
+    actual: &str,
+) -> Result<()> {
+    if digests.exact.contains(actual) {
+        return Ok(());
+    }
+    validate_v113_work_execution_body(key, current, payload, digests.v113.contains(actual))
+}
+
+fn validate_v113_work_execution_body(
+    key: &Key,
+    current: &Fingerprint,
+    payload: &str,
+    raw_digest_matches: bool,
+) -> Result<()> {
+    if !raw_digest_matches
+        || !holon_storage::execution::is_v113_work_item_payload(payload, &current.revision_marker)
+    {
         return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
     }
     Ok(())
@@ -2773,7 +2841,7 @@ fn require_eligible(
         let digest = prepare_attribution::hash(payload.as_bytes());
         legacy_brief::validate_payload_digest(tx, &agent, key, current, &payload, &digest)?;
         if requires_frozen_body_digest(key, current) {
-            validate_fixed_body_digest(key, &digests, &digest)?;
+            validate_fixed_body_digest(key, current, &digests, &payload, &digest)?;
         }
     }
     Ok(())
@@ -2796,17 +2864,37 @@ fn bounded_body_payload(
 ) -> Result<String> {
     payload_on(tx, agent, key)?.context("qualified input body missing")
 }
+/// Returns whether the raw body must also prove the v113 marker change.
+fn alias_metadata_match(key: &Key, alias: &Alias, current: &Fingerprint) -> Result<bool> {
+    if alias.fingerprint == *current {
+        return Ok(false);
+    }
+    if alias.attempt_turn_proof.is_none()
+        && alias
+            .fingerprint
+            .v113_work_execution_candidate(key, current, false)
+    {
+        return Ok(true);
+    }
+    Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into())
+}
+
 fn validate_alias_body(
     tx: &Transaction<'_>,
     agent: &str,
     key: &Key,
     fingerprint: &Fingerprint,
-    expected: Option<&str>,
+    alias: &Alias,
 ) -> Result<()> {
+    let v113 = alias_metadata_match(key, alias, fingerprint)?;
     let payload = bounded_body_payload(tx, agent, key, fingerprint)?;
     let actual = prepare_attribution::hash(payload.as_bytes());
     legacy_brief::validate_payload_digest(tx, agent, key, fingerprint, &payload, &actual)?;
-    if expected != Some(actual.as_str()) {
+    let raw_digest_matches = alias.digest.as_deref() == Some(actual.as_str());
+    if v113 {
+        return validate_v113_work_execution_body(key, fingerprint, &payload, raw_digest_matches);
+    }
+    if !raw_digest_matches {
         return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id.clone()).into());
     }
     Ok(())
@@ -3504,16 +3592,10 @@ pub(crate) fn validate_live_recovery_operator_evidence_tx<'a>(
             .into());
         };
         if let Some(alias) = alias {
-            if !alias.present || alias.fingerprint != fingerprint {
+            if !alias.present {
                 return Err(InputEvidenceSnapshotError::ProjectionChanged(key.id).into());
             }
-            validate_alias_body(
-                tx,
-                &scope.agent_id,
-                &key,
-                &fingerprint,
-                alias.digest.as_deref(),
-            )?;
+            validate_alias_body(tx, &scope.agent_id, &key, &fingerprint, &alias)?;
         } else {
             require_eligible(tx, &binding, &key, &fingerprint)?;
         }
@@ -3713,7 +3795,29 @@ fn metadata_closure(
     }
     Ok(result)
 }
-fn decode_canonical(key: &Key, payload: &str) -> Result<CanonicalInputEvidence> {
+fn decode_canonical_on(
+    tx: &Transaction<'_>,
+    agent: &str,
+    key: &Key,
+    payload: &str,
+) -> Result<CanonicalInputEvidence> {
+    let marker = if key.family == Family::WorkExecution {
+        Some(
+            fingerprint_on(tx, agent, key)?
+                .context("WorkExecution metadata disappeared")?
+                .revision_marker,
+        )
+    } else {
+        None
+    };
+    decode_canonical(key, payload, marker.as_deref())
+}
+
+fn decode_canonical(
+    key: &Key,
+    payload: &str,
+    marker: Option<&str>,
+) -> Result<CanonicalInputEvidence> {
     let mut decode_timer = crate::diagnostics::attribution::INPUT_PREPARE_DECODE.start();
     decode_timer.rows(payload.len());
     Ok(match key.family {
@@ -3730,7 +3834,10 @@ fn decode_canonical(key: &Key, payload: &str) -> Result<CanonicalInputEvidence> 
         ),
         Family::WorkExecution => CanonicalInputEvidence::WorkExecution {
             work_item_id: key.id.clone(),
-            record: serde_json::from_str(payload)?,
+            record: holon_storage::execution::decode_work_item_record_with_migration(
+                payload,
+                marker.context("WorkExecution decode requires a revision marker")?,
+            )?,
         },
     })
 }
@@ -3759,7 +3866,9 @@ fn prepare_record_on(
     }
     let canonical = match canonical {
         Some(record) => record,
-        None => decode_canonical(
+        None => decode_canonical_on(
+            tx,
+            agent,
             key,
             &payload_on(tx, agent, key)?.context("prepared evidence payload missing")?,
         )?,
