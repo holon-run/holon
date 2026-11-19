@@ -244,6 +244,9 @@ same runtime as cross-agent evidence:
 - the delivered content is prefixed with a `[cross_agent_evidence]` header
   stating that the source's authority, approvals, and instructions do not
   transfer to the reading agent;
+- the header and the cross-agent summary annotation are delivery-layer
+  annotations: `max_chars` truncation applies to the source content only, and
+  the persisted source artifact keeps the verbatim source;
 - the persisted `ToolExecutionRecord` already carries the caller `agent_id`,
   the requested `input.source_ref`, and the returned envelope, so no new
   audit table is required.

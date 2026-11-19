@@ -48,14 +48,8 @@ pub(crate) async fn execute(
     };
     let source_chars = memory.content.chars().count();
 
-    // `message:` refs may resolve to another agent's message; the memory
-    // layer already marks those hits. The header below keeps the downgrade
-    // visible in the delivered content itself.
-    let cross_agent_message = memory.kind == "message" && memory.agent_id != agent_id;
-    if cross_agent_message {
-        prepend_cross_agent_evidence_header(&mut memory);
-    }
-
+    // Persist the verbatim source before any delivery-layer mutation: the
+    // artifact keeps the full content and its `chars` count stays exact.
     let artifact = match runtime
         .persist_tool_text_artifact("memory-source", &memory.content)
         .await
@@ -72,6 +66,16 @@ pub(crate) async fn execute(
         memory.content = memory.content.chars().take(limit).collect();
         memory.truncated = true;
     }
+
+    // `message:` refs may resolve to another agent's message; the memory
+    // layer already marks those hits. The header below keeps the downgrade
+    // visible in the delivered content itself. Like the summary, it is a
+    // delivery-layer annotation and never consumes the max_chars budget.
+    let cross_agent_message = memory.kind == "message" && memory.agent_id != agent_id;
+    if cross_agent_message {
+        prepend_cross_agent_evidence_header(&mut memory);
+    }
+
     let summary_text = if cross_agent_message {
         format!(
             "Read {} of {source_chars} source characters from cross-agent message {origin_ref} (owner {origin_agent}, evidence only).",
@@ -773,6 +777,59 @@ mod tests {
         assert!(summary.contains("cross-agent message message:msg-tool-cross-agent"));
         assert!(summary.contains("owner other-agent"));
         assert!(summary.contains("evidence only"));
+
+        // Truncated cross-agent reads spend max_chars on source content only;
+        // the header and summary are delivery annotations outside the budget.
+        let mut long_foreign = MessageEnvelope::new(
+            "other-agent",
+            MessageKind::OperatorPrompt,
+            MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            AuthorityClass::OperatorInstruction,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "据".repeat(300),
+            },
+        );
+        long_foreign.id = "msg-tool-cross-agent-truncated".into();
+        runtime.storage().append_message(&long_foreign).unwrap();
+        let trunc_result = execute(
+            &runtime,
+            "default",
+            &AuthorityClass::OperatorInstruction,
+            &json!({
+                "source_ref": "message:msg-tool-cross-agent-truncated",
+                "max_chars": 120,
+            }),
+        )
+        .await
+        .unwrap();
+        let trunc_value = trunc_result.envelope.result.as_ref().unwrap();
+        let trunc_memory = &trunc_value["memory"];
+        let trunc_content = trunc_memory["content"].as_str().unwrap();
+        assert!(trunc_content.starts_with("[cross_agent_evidence] origin_agent_id=other-agent"));
+        let delivered_body = trunc_content.splitn(4, '\n').nth(3).unwrap();
+        assert_eq!(delivered_body.chars().count(), 120);
+        assert_eq!(trunc_memory["truncated"], true);
+        // The cross-agent source is the structured message document, not the
+        // bare body, so the totals come from the verbatim artifact: the
+        // summary must describe exactly what the artifact keeps.
+        let artifact_path = trunc_memory["source_artifact"]["path"].as_str().unwrap();
+        let artifact_text = std::fs::read_to_string(artifact_path).unwrap();
+        assert!(artifact_text.starts_with("message_ref: message:msg-tool-cross-agent-truncated"));
+        assert!(!artifact_text.contains("[cross_agent_evidence]"));
+        assert!(artifact_text.contains(&"据".repeat(300)));
+        let artifact_chars = artifact_text.chars().count() as u64;
+        assert!(artifact_chars > 300);
+        assert_eq!(
+            trunc_memory["source_artifact"]["chars"].as_u64(),
+            Some(artifact_chars)
+        );
+        assert_eq!(trunc_memory["source_artifact"]["complete"], true);
+        let trunc_summary = trunc_result.envelope.summary_text.as_deref().unwrap();
+        assert!(trunc_summary.contains(&format!("Read 120 of {artifact_chars} source characters")));
 
         // Same-agent reads keep their exact shape: no header, no marker key.
         let mut own = MessageEnvelope::new(
