@@ -337,7 +337,8 @@ fn event_turn_section(message: &MessageEnvelope) -> Option<PromptSection> {
             | MessageOrigin::System { .. }
     ) && !matches!(
         &message.origin,
-        MessageOrigin::System { subsystem } if subsystem == "subagent"
+        MessageOrigin::System { subsystem }
+            if subsystem == "subagent" || subsystem == "tool_enqueue"
     );
 
     is_event_turn.then(|| {

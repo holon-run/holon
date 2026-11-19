@@ -155,7 +155,7 @@ pub fn message_body_text(body: &MessageBody) -> String {
 
 /// Build the message header, including envelope creation time (not external occurrence time).
 pub fn message_header(message: &MessageEnvelope) -> String {
-    let mut labels = vec![origin_label(&message.origin).to_string()];
+    let mut labels = vec![origin_label(&message.origin)];
     if let Some(surface) = message.delivery_surface {
         labels.push(delivery_surface_label(surface).to_string());
     }
@@ -173,6 +173,7 @@ pub fn message_header(message: &MessageEnvelope) -> String {
     }
     labels.push(authority_class_label(message.authority_class).to_string());
     labels.push(kind_label(message));
+    labels.push(format!("message_id={}", header_label_value(&message.id)));
     labels.push(format!(
         "message_created_at={} UTC",
         message
@@ -242,15 +243,19 @@ pub fn kind_label(message: &MessageEnvelope) -> String {
     format!("{:?}", message.kind)
 }
 
-pub fn origin_label(origin: &MessageOrigin) -> &'static str {
+/// Render the origin label. A `System` origin keeps its subsystem so the model
+/// can distinguish self-enqueued follow-ups from runtime or external events.
+pub fn origin_label(origin: &MessageOrigin) -> String {
     match origin {
-        MessageOrigin::Operator { .. } => "operator",
-        MessageOrigin::Channel { .. } => "channel",
-        MessageOrigin::Webhook { .. } => "webhook",
-        MessageOrigin::Callback { .. } => "callback",
-        MessageOrigin::Timer { .. } => "timer",
-        MessageOrigin::System { .. } => "system",
-        MessageOrigin::Task { .. } => "task",
+        MessageOrigin::Operator { .. } => "operator".to_string(),
+        MessageOrigin::Channel { .. } => "channel".to_string(),
+        MessageOrigin::Webhook { .. } => "webhook".to_string(),
+        MessageOrigin::Callback { .. } => "callback".to_string(),
+        MessageOrigin::Timer { .. } => "timer".to_string(),
+        MessageOrigin::System { subsystem } => {
+            format!("system:{}", header_label_value(subsystem))
+        }
+        MessageOrigin::Task { .. } => "task".to_string(),
     }
 }
 

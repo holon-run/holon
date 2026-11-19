@@ -197,8 +197,7 @@ fn compact_current_input_budget_includes_reply_expectation() {
         original_reply_to_agent_id: None,
     });
 
-    let section_budget =
-        48 + estimate_text_tokens("[message_created_at=2024-01-02T03:04:05.123Z UTC]");
+    let section_budget = 48 + estimate_text_tokens(&message_header(&message));
     let compact = render_current_input_section(&message, section_budget, None);
 
     assert!(

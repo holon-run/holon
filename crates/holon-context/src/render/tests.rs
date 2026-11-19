@@ -20,11 +20,31 @@ fn message_header_projects_envelope_creation_time() {
     message.metadata = Some(json!({"occurred_at": "2020-01-01T00:00:00Z"}));
     let header = message_header(&message);
     assert!(header.contains("[message_created_at=2024-01-02T03:04:05.123Z UTC]"));
+    assert!(header.contains(&format!("[message_id={}]", message.id)));
     assert!(!header.contains("2020-01-01"));
     for budget in [1, 256] {
         let input = super::render_current_input_section(&message, budget, None);
         assert!(input.content.contains(&header));
     }
+}
+
+#[test]
+fn message_header_preserves_system_subsystem_in_origin_label() {
+    let message = MessageEnvelope::new(
+        "target",
+        holon_domain::MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "tool_enqueue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        holon_domain::Priority::Normal,
+        MessageBody::Text {
+            text: "self enqueued".into(),
+        },
+    );
+    let header = message_header(&message);
+    assert!(header.starts_with("[system:tool_enqueue]["));
+    assert!(!header.contains("[system]["));
 }
 
 #[test]
