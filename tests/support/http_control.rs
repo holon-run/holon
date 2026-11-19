@@ -5249,3 +5249,323 @@ pub async fn auth_session_me_returns_local_control_identity() -> Result<()> {
     server.abort();
     Ok(())
 }
+
+pub async fn external_trigger_list_returns_retained_records_fingerprints_and_pagination(
+) -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+
+    let first: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/default/reset-callback"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let second: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/default/reset-callback"))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let first_id = first["external_trigger_id"].as_str().unwrap().to_string();
+    let second_id = second["external_trigger_id"].as_str().unwrap().to_string();
+
+    let list: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/default/external-triggers"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let items = list["items"].as_array().expect("items array").clone();
+    assert_eq!(items.len(), 2);
+    let by_id = |id: &str| {
+        items
+            .iter()
+            .find(|item| item["external_trigger_id"] == id)
+            .unwrap_or_else(|| panic!("trigger {id} missing from list"))
+            .clone()
+    };
+    assert_eq!(by_id(&second_id)["status"], "active");
+    assert_eq!(by_id(&first_id)["status"], "revoked");
+    assert!(by_id(&first_id)["revoked_at"].is_string());
+    for item in &items {
+        assert_eq!(item.as_object().expect("item object").len(), 6);
+        assert!(item.get("token").is_none());
+        assert!(item.get("token_hash").is_none());
+        assert!(item.get("trigger_url").is_none());
+        let fingerprint = item["token_fingerprint"].as_str().expect("fingerprint");
+        assert_eq!(fingerprint.len(), 16);
+        assert!(fingerprint
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)));
+        assert_eq!(item["delivery_mode"], "wake_hint");
+        assert!(item["created_at"].is_string());
+    }
+
+    let active_fingerprint = by_id(&second_id)["token_fingerprint"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let filtered: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/default/external-triggers?fingerprint={active_fingerprint}"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let filtered_items = filtered["items"].as_array().unwrap().clone();
+    assert_eq!(filtered_items.len(), 1);
+    assert_eq!(filtered_items[0]["external_trigger_id"], second_id.as_str());
+
+    let miss: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/default/external-triggers?fingerprint=0000000000000000"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(miss["items"].as_array().unwrap().len(), 0);
+    assert!(miss.get("next_cursor").is_none());
+
+    let page_one: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/default/external-triggers?limit=1"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(page_one["items"].as_array().unwrap().len(), 1);
+    let page_one_id = page_one["items"][0]["external_trigger_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let cursor = page_one["next_cursor"].as_str().expect("next cursor");
+    let page_two: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/default/external-triggers?limit=1&cursor={cursor}"
+        ))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(page_two["items"].as_array().unwrap().len(), 1);
+    let page_two_id = page_two["items"][0]["external_trigger_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    assert_ne!(page_one_id, page_two_id);
+    assert!({ [first_id.as_str(), second_id.as_str()] }.contains(&page_one_id.as_str()));
+    assert!({ [first_id.as_str(), second_id.as_str()] }.contains(&page_two_id.as_str()));
+    assert!(page_two.get("next_cursor").is_none());
+
+    for invalid in [
+        "limit=101",
+        "limit=0",
+        "fingerprint=XYZ",
+        "fingerprint=0123456789abcdef0",
+        "cursor=zz",
+    ] {
+        let rejected = client
+            .get(format!(
+                "{base}/api/control/agents/default/external-triggers?{invalid}"
+            ))
+            .send()
+            .await?;
+        assert_eq!(
+            rejected.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "{invalid}"
+        );
+    }
+
+    let unknown_agent = client
+        .get(format!(
+            "{base}/api/control/agents/does-not-exist/external-triggers"
+        ))
+        .send()
+        .await?;
+    assert_eq!(unknown_agent.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn external_trigger_reveal_requires_independent_control_token() -> Result<()> {
+    let (_host, base, server) = spawn_server().await?;
+    let client = reqwest::Client::new();
+    let denied = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/trigger-1/reveal"
+        ))
+        .send()
+        .await?;
+    assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
+    server.abort();
+
+    let config = TestConfigBuilder::new()
+        .with_control_token("secret")
+        .build_retained();
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+    let capability: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/default/reset-callback"))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let trigger_id = capability["external_trigger_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let missing = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/{trigger_id}/reveal"
+        ))
+        .send()
+        .await?;
+    assert_eq!(missing.status(), reqwest::StatusCode::UNAUTHORIZED);
+    let wrong = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/{trigger_id}/reveal"
+        ))
+        .bearer_auth("not-the-control-token")
+        .send()
+        .await?;
+    assert_eq!(wrong.status(), reqwest::StatusCode::UNAUTHORIZED);
+
+    let revealed_response = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/{trigger_id}/reveal"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert_eq!(revealed_response.status(), reqwest::StatusCode::OK);
+    assert_eq!(
+        revealed_response
+            .headers()
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-store")
+    );
+    let revealed: serde_json::Value = revealed_response.json().await?;
+    assert_eq!(revealed.as_object().unwrap().len(), 4);
+    assert_eq!(revealed["external_trigger_id"], trigger_id.as_str());
+    assert_eq!(revealed["delivery_mode"], "wake_hint");
+    let token = revealed["token"].as_str().expect("plain token").to_string();
+    assert!(!token.is_empty());
+    assert_eq!(revealed["trigger_url"], capability["trigger_url"]);
+    assert!(revealed["trigger_url"]
+        .as_str()
+        .unwrap()
+        .ends_with(&format!("/api/callbacks/wake/{token}")));
+
+    let repeated: serde_json::Value = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/{trigger_id}/reveal"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(repeated, revealed);
+
+    let list_after: serde_json::Value = client
+        .get(format!(
+            "{base}/api/control/agents/default/external-triggers"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let item = list_after["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["external_trigger_id"] == trigger_id.as_str())
+        .expect("active trigger still listed")
+        .clone();
+    assert_eq!(item["status"], "active");
+
+    server.abort();
+    Ok(())
+}
+
+pub async fn external_trigger_reveal_rejects_revoked_unknown_and_cross_agent_targets() -> Result<()>
+{
+    let config = TestConfigBuilder::new()
+        .with_control_token("secret")
+        .build_retained();
+    let (_host, base, server) = spawn_server_with_config(config).await?;
+    let client = reqwest::Client::new();
+    let first: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/default/reset-callback"))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let second: serde_json::Value = client
+        .post(format!("{base}/api/control/agents/default/reset-callback"))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let revoked_id = first["external_trigger_id"].as_str().unwrap().to_string();
+    let active_id = second["external_trigger_id"].as_str().unwrap().to_string();
+
+    let revoked = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/{revoked_id}/reveal"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert_eq!(revoked.status(), reqwest::StatusCode::CONFLICT);
+    let revoked_body: serde_json::Value = revoked.json().await?;
+    assert_eq!(revoked_body["code"], "trigger_not_active");
+    assert_eq!(revoked_body["external_trigger_id"], revoked_id.as_str());
+
+    let unknown = client
+        .post(format!(
+            "{base}/api/control/agents/default/external-triggers/trigger-does-not-exist/reveal"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert_eq!(unknown.status(), reqwest::StatusCode::NOT_FOUND);
+
+    let unknown_agent = client
+        .post(format!(
+            "{base}/api/control/agents/does-not-exist/external-triggers/{active_id}/reveal"
+        ))
+        .bearer_auth("secret")
+        .send()
+        .await?;
+    assert_eq!(unknown_agent.status(), reqwest::StatusCode::NOT_FOUND);
+
+    server.abort();
+    Ok(())
+}

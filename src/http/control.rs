@@ -1758,6 +1758,208 @@ pub async fn reset_callback(
     })))
 }
 
+const EXTERNAL_TRIGGER_FINGERPRINT_LEN: usize = 16;
+const EXTERNAL_TRIGGER_DEFAULT_PAGE: usize = 20;
+const EXTERNAL_TRIGGER_MAX_PAGE: usize = 100;
+
+#[derive(Debug, Default, Deserialize)]
+pub struct ExternalTriggerListQuery {
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+    pub fingerprint: Option<String>,
+}
+
+enum ExternalTriggerRevealDecision {
+    Reveal { token: String },
+    TriggerNotActive,
+    TokenUnavailable,
+}
+
+fn evaluate_external_trigger_reveal(
+    record: &crate::types::ExternalTriggerRecord,
+) -> ExternalTriggerRevealDecision {
+    use crate::types::ExternalTriggerStatus;
+    if record.status != ExternalTriggerStatus::Active {
+        return ExternalTriggerRevealDecision::TriggerNotActive;
+    }
+    let Some(token) = record
+        .token
+        .as_deref()
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+    else {
+        return ExternalTriggerRevealDecision::TokenUnavailable;
+    };
+    if !crate::callbacks::callback_token_hash_matches(&token, &record.token_hash) {
+        return ExternalTriggerRevealDecision::TokenUnavailable;
+    }
+    ExternalTriggerRevealDecision::Reveal { token }
+}
+
+fn external_trigger_fingerprint(token_hash: &str) -> String {
+    token_hash
+        .chars()
+        .take(EXTERNAL_TRIGGER_FINGERPRINT_LEN)
+        .collect()
+}
+
+fn encode_external_trigger_cursor(created_at: &str, external_trigger_id: &str) -> String {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as CURSOR_ENGINE;
+    let payload = json!({ "c": created_at, "t": external_trigger_id });
+    CURSOR_ENGINE.encode(payload.to_string().as_bytes())
+}
+
+fn decode_external_trigger_cursor(cursor: &str) -> Option<(String, String)> {
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD as CURSOR_ENGINE;
+    let decoded = CURSOR_ENGINE.decode(cursor.as_bytes()).ok()?;
+    let value = serde_json::from_slice::<Value>(&decoded).ok()?;
+    let created_at = value.get("c")?.as_str()?.to_string();
+    let external_trigger_id = value.get("t")?.as_str()?.to_string();
+    if created_at.is_empty() || external_trigger_id.is_empty() {
+        return None;
+    }
+    Some((created_at, external_trigger_id))
+}
+
+pub async fn list_external_triggers(
+    Path(agent_id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<ExternalTriggerListQuery>,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let limit = match query.limit {
+        None => EXTERNAL_TRIGGER_DEFAULT_PAGE,
+        Some(limit) if (1..=EXTERNAL_TRIGGER_MAX_PAGE).contains(&limit) => limit,
+        Some(_) => {
+            return Err(bad_request(format!(
+                "limit must be between 1 and {EXTERNAL_TRIGGER_MAX_PAGE}"
+            )))
+        }
+    };
+    let fingerprint = match query.fingerprint.as_deref() {
+        None => None,
+        Some(value)
+            if value.len() == EXTERNAL_TRIGGER_FINGERPRINT_LEN
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            Some(value.to_string())
+        }
+        Some(_) => {
+            return Err(bad_request(
+                "fingerprint must be 16 lowercase hex characters",
+            ))
+        }
+    };
+    let before = match query.cursor.as_deref() {
+        None => None,
+        Some(cursor) => decode_external_trigger_cursor(cursor),
+    };
+    let cursor = match (&query.cursor, &before) {
+        (Some(_), None) => return Err(bad_request("invalid cursor")),
+        _ => before,
+    };
+    let mut page = state
+        .host
+        .runtime_db()
+        .external_triggers()
+        .retained_page_for_agent(
+            &agent_id,
+            fingerprint.as_deref(),
+            cursor.as_ref().map(|(created_at, external_trigger_id)| {
+                (created_at.as_str(), external_trigger_id.as_str())
+            }),
+            limit.saturating_add(1),
+        )
+        .map_err(error_response)?;
+    let has_more = page.len() > limit;
+    page.truncate(limit);
+    let items: Vec<Value> = page
+        .iter()
+        .map(|(record, _)| {
+            json!({
+                "external_trigger_id": record.external_trigger_id,
+                "delivery_mode": record.delivery_mode,
+                "status": record.status,
+                "created_at": record.created_at,
+                "revoked_at": record.revoked_at,
+                "token_fingerprint": external_trigger_fingerprint(&record.token_hash),
+            })
+        })
+        .collect();
+    let mut body = json!({ "items": items });
+    if has_more {
+        if let Some((record, created_at)) = page.last() {
+            body["next_cursor"] = json!(encode_external_trigger_cursor(
+                created_at,
+                &record.external_trigger_id
+            ));
+        }
+    }
+    Ok(Json(body))
+}
+
+pub async fn reveal_external_trigger(
+    Path((agent_id, external_trigger_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
+    authorize_control_token_credential(&headers, &state).map_err(authentication_error_response)?;
+    state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let record = state
+        .host
+        .runtime_db()
+        .external_triggers()
+        .for_agent_and_id(&agent_id, &external_trigger_id)
+        .map_err(error_response)?
+        .ok_or_else(|| not_found(format!("external trigger {external_trigger_id} not found")))?;
+    match evaluate_external_trigger_reveal(&record) {
+        ExternalTriggerRevealDecision::TriggerNotActive => Err(http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "trigger_not_active",
+                format!("external trigger {external_trigger_id} is revoked"),
+            )
+            .extension("external_trigger_id", external_trigger_id.as_str()),
+        )),
+        ExternalTriggerRevealDecision::TokenUnavailable => Err(http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "token_unavailable",
+                format!("external trigger {external_trigger_id} has no safely readable token"),
+            )
+            .extension("external_trigger_id", external_trigger_id.as_str()),
+        )),
+        ExternalTriggerRevealDecision::Reveal { token } => {
+            let trigger_url = crate::callbacks::build_callback_url(
+                &state.host.config().callback_base_url,
+                &record.delivery_mode,
+                &token,
+            );
+            Ok((
+                [(CACHE_CONTROL, "no-store")],
+                Json(json!({
+                    "external_trigger_id": record.external_trigger_id,
+                    "delivery_mode": record.delivery_mode,
+                    "token": token,
+                    "trigger_url": trigger_url,
+                })),
+            ))
+        }
+    }
+}
+
 pub async fn control_prompt(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,
@@ -2823,4 +3025,107 @@ pub async fn control_wake(
         agent_id,
         disposition,
     }))
+}
+
+#[cfg(holon_lib_test_shard = "c")]
+#[cfg(test)]
+mod external_trigger_tests {
+    use super::*;
+    use crate::types::{
+        CallbackDeliveryMode, ExternalTriggerRecord, ExternalTriggerScope, ExternalTriggerStatus,
+    };
+
+    fn record(
+        status: ExternalTriggerStatus,
+        token: Option<&str>,
+        token_hash: &str,
+    ) -> ExternalTriggerRecord {
+        ExternalTriggerRecord {
+            external_trigger_id: "trigger-1".to_string(),
+            target_agent_id: "agent-1".to_string(),
+            scope: ExternalTriggerScope::Agent,
+            delivery_mode: CallbackDeliveryMode::WakeHint,
+            token: token.map(ToString::to_string),
+            token_hash: token_hash.to_string(),
+            status,
+            created_at: chrono::Utc::now(),
+            revoked_at: None,
+            last_delivered_at: None,
+            delivery_count: 0,
+        }
+    }
+
+    #[test]
+    fn reveal_decision_requires_active_token_and_matching_hash() {
+        let hash = crate::callbacks::hash_callback_token("secret-token");
+
+        let active = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Active,
+            Some("secret-token"),
+            &hash,
+        ));
+        assert!(matches!(
+            active,
+            ExternalTriggerRevealDecision::Reveal { ref token } if token == "secret-token"
+        ));
+
+        let revoked = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Revoked,
+            Some("secret-token"),
+            &hash,
+        ));
+        assert!(matches!(
+            revoked,
+            ExternalTriggerRevealDecision::TriggerNotActive
+        ));
+
+        let missing =
+            evaluate_external_trigger_reveal(&record(ExternalTriggerStatus::Active, None, &hash));
+        assert!(matches!(
+            missing,
+            ExternalTriggerRevealDecision::TokenUnavailable
+        ));
+
+        let empty = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Active,
+            Some(""),
+            &hash,
+        ));
+        assert!(matches!(
+            empty,
+            ExternalTriggerRevealDecision::TokenUnavailable
+        ));
+
+        let mismatched = evaluate_external_trigger_reveal(&record(
+            ExternalTriggerStatus::Active,
+            Some("other-token"),
+            &hash,
+        ));
+        assert!(matches!(
+            mismatched,
+            ExternalTriggerRevealDecision::TokenUnavailable
+        ));
+    }
+
+    #[test]
+    fn external_trigger_cursor_round_trips_and_rejects_malformed_input() {
+        let encoded = encode_external_trigger_cursor("2026-11-19T04:00:00.000Z", "trigger-1");
+        let decoded = decode_external_trigger_cursor(&encoded).expect("cursor decodes");
+        assert_eq!(decoded.0, "2026-11-19T04:00:00.000Z");
+        assert_eq!(decoded.1, "trigger-1");
+
+        assert!(decode_external_trigger_cursor("not-base64!!").is_none());
+        assert!(decode_external_trigger_cursor("aGk").is_none());
+        let empty_pair = encode_external_trigger_cursor("", "");
+        assert!(decode_external_trigger_cursor(&empty_pair).is_none());
+    }
+
+    #[test]
+    fn external_trigger_fingerprint_takes_sixteen_lowercase_hex_chars() {
+        assert_eq!(
+            external_trigger_fingerprint(&"a".repeat(64)),
+            "a".repeat(16)
+        );
+        assert_eq!(external_trigger_fingerprint("short"), "short");
+    }
 }
