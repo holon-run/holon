@@ -466,13 +466,21 @@ fn retired_moonshot_ids_are_excluded_from_new_and_retained_supplements() {
 #[test]
 fn excludes_retired_minimax_api_ids_without_retiring_peers_or_future_ids() {
     let legacy = legacy();
-    let ids = ["MiniMax-M2", "MiniMax-M2.1", "MiniMax-M2.1-highspeed"];
+    let ids = [
+        "MiniMax-M2",
+        "MiniMax-M2.1",
+        "MiniMax-M2.1-highspeed",
+        "MiniMax-M2.5",
+        "MiniMax-M2.5-highspeed",
+        "MiniMax-M2.7",
+        "MiniMax-M2.7-highspeed",
+    ];
     let mut parsed: ModelsDevSnapshot =
         serde_json::from_str(r#"{"minimax":{"id":"minimax","models":{}}}"#).unwrap();
     let mut previous = ModelsDevSupplement::empty();
     for id in ids {
         let model = serde_json::from_value(serde_json::json!({
-            "id": id, "release_date": "2026-10-01",
+            "id": id, "release_date": "2026-11-01",
             "modalities": {"input": ["text"], "output": ["text"]}
         }))
         .unwrap();
@@ -490,7 +498,7 @@ fn excludes_retired_minimax_api_ids_without_retiring_peers_or_future_ids() {
             .push(supplement_metadata(&format!("minimax/{id}"), id));
     }
     for previous in [None, Some(&previous)] {
-        let update = generate(&parsed, previous, &legacy, "2026-10-23", "rev", "ver").unwrap();
+        let update = generate(&parsed, previous, &legacy, "2026-11-20", "rev", "ver").unwrap();
         assert!(update.supplement.models.is_empty());
         for id in ids {
             let model_ref = format!("minimax/{id}");
@@ -508,7 +516,7 @@ fn excludes_retired_minimax_api_ids_without_retiring_peers_or_future_ids() {
         }
     }
     let model = parsed.providers["minimax"].models.values().next().unwrap();
-    for id in ["MiniMax-M2.5", "MiniMax-M2.7", "MiniMax-M3"] {
+    for id in ["MiniMax-M3", "MiniMax-M3.1-Flash"] {
         assert!(supplement_model_supported_by_provider("minimax", id, model));
     }
 }
