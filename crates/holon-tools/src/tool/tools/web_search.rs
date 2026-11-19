@@ -25,3 +25,29 @@ pub fn definition() -> Result<BuiltinToolDefinition> {
         )?,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tool::{helpers::parse_tool_args, ToolError};
+    use serde_json::json;
+
+    #[test]
+    fn web_search_uses_provider_not_a_separate_mode_argument() {
+        let args: WebSearchArgs =
+            parse_tool_args(NAME, &json!({"query": "fixture", "provider": "aggregate"}))
+                .expect("aggregate is an accepted provider selector");
+        assert_eq!(args.provider.as_deref(), Some("aggregate"));
+
+        let error = parse_tool_args::<WebSearchArgs>(
+            NAME,
+            &json!({"query": "fixture", "provider": "aggregate", "mode": "aggregate"}),
+        )
+        .err()
+        .expect("unknown fields must be rejected");
+        assert_eq!(
+            error.downcast_ref::<ToolError>().unwrap().kind,
+            "invalid_tool_input"
+        );
+    }
+}
