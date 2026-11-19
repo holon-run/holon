@@ -79,7 +79,6 @@ def selected(event, changed=(), labels=()):
 class CiEventMatrixTests(unittest.TestCase):
     def test_main_push_component_matrix(self):
         for component, expected in {
-            "rust": {"rust-build", "conversation-sdk", "docker", "timing"},
             "web": {"web", "docker"},
             "conversation_sdk": {"conversation-sdk"},
             "android": {"android"},
@@ -88,6 +87,10 @@ class CiEventMatrixTests(unittest.TestCase):
         }.items():
             with self.subTest(component=component):
                 self.assertEqual(selected("push", {component}), expected | {"changes"})
+        self.assertEqual(
+            selected("push", {"rust", "root_rust"}),
+            {"changes", "rust-build", "conversation-sdk", "docker", "timing"},
+        )
         self.assertEqual(selected("push"), {"changes"})
 
     def test_pr_and_full_sweep_coverage(self):
@@ -95,8 +98,32 @@ class CiEventMatrixTests(unittest.TestCase):
             "changes", "conversation-sdk", "rust-lint", "rust-build",
             "rust-test", "rust-concurrent", "scheduler-e2e-required", "timing",
         }
-        self.assertEqual(selected("pull_request", {"rust"}), rust)
+        self.assertEqual(selected("pull_request", {"rust", "root_rust"}), rust)
         self.assertEqual(selected("pull_request", {"web"}), {"changes", "web"})
+        self.assertEqual(
+            selected("pull_request", {"rust", "web", "crate_tests_only"}),
+            {"changes", "rust-lint", "rust-build", "timing"},
+        )
+        self.assertEqual(
+            selected("push", {"rust", "web", "crate_tests_only"}),
+            {"changes", "rust-build", "timing"},
+        )
+        opt_in = selected(
+            "pull_request",
+            {"rust", "web", "crate_tests_only"},
+            {"e2e-scheduler", "recovery-acceptance"},
+        )
+        self.assertTrue({"e2e-scheduler", "task-result-controlled-required"} <= opt_in)
+        for job, step_name in (
+            ("rust-build", "Build all targets, including benchmarks"),
+            ("rust-build", "Check complete test crate with warnings denied"),
+            ("rust-build", "Check with local-onnx feature"),
+            ("rust-build", "Check controlled recovery acceptance feature"),
+            ("rust-lint", "Clippy"),
+        ):
+            expression = field(steps(job)[step_name], "if", 8)
+            self.assertFalse(condition(expression, "pull_request", {"rust", "crate_tests_only"}))
+            self.assertTrue(condition(expression, "pull_request", {"rust", "root_rust"}))
         self.assertEqual(selected("pull_request", {"android"}), {"changes", "android"})
         for event in EVENTS[2:]:
             self.assertEqual(selected(event), set(JOBS) - {"e2e-scheduler"})
@@ -104,9 +131,9 @@ class CiEventMatrixTests(unittest.TestCase):
             self.assertFalse(selected(event, {"rust", "web", "android"}) & APPLE)
         self.assertIn(
             "task-result-controlled-required",
-            selected("pull_request", {"rust"}, {"recovery-acceptance"}),
+            selected("pull_request", {"rust", "root_rust"}, {"recovery-acceptance"}),
         )
-        self.assertIn("e2e-scheduler", selected("pull_request", {"rust"}, {"e2e-scheduler"}))
+        self.assertIn("e2e-scheduler", selected("pull_request", {"rust", "root_rust"}, {"e2e-scheduler"}))
         self.assertIn('cron: "40 2 * * *"', WORKFLOW)
 
     def test_mixed_steps_only_test_outside_push(self):
@@ -125,7 +152,7 @@ class CiEventMatrixTests(unittest.TestCase):
                 for event in EVENTS:
                     with self.subTest(job=job, step=name, event=event):
                         self.assertEqual(
-                            bool(condition(expression, event, {"rust", "docker"})),
+                            bool(condition(expression, event, {"rust", "root_rust", "docker"})),
                             event != "push",
                         )
         for job, name in [("web", "Build web GUI"), ("conversation-sdk", "Build conversation SDK")]:
@@ -166,8 +193,9 @@ class CiEventMatrixTests(unittest.TestCase):
             for event in EVENTS:
                 mode = condition(field(step, "CRATE_COMMAND", 10), event)
                 log.unlink(missing_ok=True)
-                env = {"PATH": f"{root}:{os.environ['PATH']}", "CRATE_COMMAND": mode}
-                result = self.run_shell(command(step), root, env)
+                env = {"PATH": f"{root}:{os.environ['PATH']}", "CRATE_COMMAND": mode,
+                       "RUST_CRATE_SELECTION": ""}
+                result = self.run_shell(command(step), ROOT, env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
                 self.assertEqual(len(calls), 21)
@@ -184,9 +212,21 @@ class CiEventMatrixTests(unittest.TestCase):
                         expected_flags.extend(["--features", "error-sanitization"])
                     self.assertEqual(flags, expected_flags)
                 log.unlink()
-                result = self.run_shell(command(step), root, {**env, "STUB_EXIT": "42"})
+                result = self.run_shell(command(step), ROOT, {**env, "STUB_EXIT": "42"})
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(len(log.read_text().splitlines()), 1)
+
+            log.unlink()
+            result = self.run_shell(command(step), ROOT, {
+                **env, "RUST_CRATE_SELECTION": '["holon-tui"]',
+            })
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
+            self.assertEqual(calls, [["test", "--manifest-path", "crates/holon-tui/Cargo.toml", "--locked"]])
+            log.unlink()
+            result = self.run_shell(command(step), ROOT, {**env, "RUST_CRATE_SELECTION": "[]"})
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(log.exists())
 
     def test_android_build_tasks_and_failure_propagation(self):
         step = steps("android")["Test SDK and build APKs"]
