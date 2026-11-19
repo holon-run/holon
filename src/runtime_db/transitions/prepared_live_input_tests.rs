@@ -314,3 +314,165 @@ fn prepared_live_input_recovery_freezes_original_audit_identity() -> Result<()> 
     );
     Ok(())
 }
+
+/// Counts authorizer Read events on `execution_protocol_outcomes`, the one
+/// protocol table only the full-state loader reads inside the recovery
+/// writer. The explicit load first proves the probe counts one full load
+/// (three outcome-column reads); a successful recovery must then add exactly
+/// one more full load instead of the historical two.
+fn assert_recovery_loads_protocol_state_once(f: &RecoveryFixture) -> Result<()> {
+    use rusqlite::hooks::{AuthAction, AuthContext, Authorization};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    let outcome_reads = Arc::new(AtomicUsize::new(0));
+    let mut connection = f.f.db.connection()?;
+    connection.authorizer(Some({
+        let outcome_reads = Arc::clone(&outcome_reads);
+        move |context: AuthContext<'_>| {
+            if let AuthAction::Read {
+                table_name: "execution_protocol_outcomes",
+                ..
+            } = context.action
+            {
+                outcome_reads.fetch_add(1, Ordering::SeqCst);
+            }
+            Authorization::Allow
+        }
+    }));
+    let tx = connection.transaction()?;
+    crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(
+        &tx,
+        &f.f.scope.agent_id,
+    )?;
+    assert_eq!(
+        outcome_reads.load(Ordering::SeqCst),
+        3,
+        "probe must count one full load's outcome-column reads"
+    );
+    outcome_reads.store(0, Ordering::SeqCst);
+    let value = f.f.db.transitions().commit_live_input_recovery_tx(
+        &tx,
+        None,
+        &f.attempt,
+        &f.turn,
+        &f.predecessor,
+        &f.audit_event_id,
+        None,
+        None,
+    )?;
+    assert!(value.applied);
+    assert_eq!(
+        outcome_reads.load(Ordering::SeqCst),
+        3,
+        "recovery must perform exactly one full protocol-state load"
+    );
+    tx.commit()?;
+    Ok(())
+}
+
+#[test]
+fn prepared_live_input_recovery_loads_protocol_state_once() -> Result<()> {
+    let f = RecoveryFixture::new()?;
+    assert_recovery_loads_protocol_state_once(&f)
+}
+
+#[test]
+fn prepared_live_input_recovery_loads_protocol_state_once_with_irrelevant_history() -> Result<()> {
+    let f = RecoveryFixture::new()?;
+    let filler = 150;
+    f.f.db.transaction(|tx| {
+        let mut protocol =
+            crate::runtime_db::transitions::execution_protocol_repository::load_state_tx(
+                tx,
+                &f.f.scope.agent_id,
+            )?;
+        for index in 0..filler {
+            let attempt_id = format!("live:irrelevant:{index}");
+            let mut terminal = f.attempt.clone();
+            terminal.attempt_id = attempt_id.clone();
+            terminal.turn_id = Some(format!("live:irrelevant:turn:{index}"));
+            terminal.recovery_of_attempt_id = None;
+            terminal.state = ExecutionAttemptState::Interrupted;
+            terminal.terminal_at = Some(f.attempt.admitted_at.clone());
+            let outcome = ExecutionOutcomeRecord {
+                outcome_id: format!("live:irrelevant:outcome:{index}"),
+                attempt_id: attempt_id.clone(),
+                outcome: ExecutionOutcome::Command(CommandResult::Applied {
+                    references: vec![format!("irrelevant:{index}")],
+                }),
+                created_at: f.attempt.admitted_at.clone(),
+            };
+            terminal.terminal_outcome_id = Some(outcome.outcome_id.clone());
+            protocol.attempts.insert(attempt_id, terminal);
+            protocol
+                .outcomes
+                .insert(outcome.outcome_id.clone(), outcome);
+        }
+        persist_state_tx(tx, &protocol)?;
+        Ok(())
+    })?;
+    assert_recovery_loads_protocol_state_once(&f)
+}
+
+#[test]
+fn prepared_live_input_recovery_without_predecessor_attempt_is_not_applied() -> Result<()> {
+    let f = RecoveryFixture::new()?;
+    f.f.db.transaction(|tx| {
+        // The outcomes table carries a composite foreign key into
+        // execution_protocol_attempts, so the child row must go first.
+        tx.execute(
+            "DELETE FROM execution_protocol_outcomes WHERE outcome_id = ?1",
+            ["live:interrupted:outcome"],
+        )?;
+        tx.execute(
+            "DELETE FROM execution_protocol_attempts WHERE attempt_id = ?1",
+            ["live:interrupted"],
+        )?;
+        Ok(())
+    })?;
+    let original = f.f.db.transitions().commit_live_input_recovery(
+        &f.attempt,
+        &f.turn,
+        &f.predecessor,
+        None,
+    )?;
+    assert!(!original.applied);
+    assert_eq!(f.f.receipt_count()?, 0);
+    assert_eq!(
+        f.f.db
+            .turn_records()
+            .by_id(Some(&f.f.scope.agent_id), &f.turn.turn_id)?,
+        Some(f.turn.clone())
+    );
+    Ok(())
+}
+
+#[test]
+fn prepared_live_input_recovery_fails_closed_on_invalid_protocol_state() -> Result<()> {
+    let f = RecoveryFixture::new()?;
+    f.f.db.transaction(|tx| {
+        let payload: String = tx.query_row(
+            "SELECT payload_json FROM execution_protocol_attempts WHERE attempt_id = ?1",
+            ["live:interrupted"],
+            |row| row.get(0),
+        )?;
+        let mut document: serde_json::Value = serde_json::from_str(&payload)?;
+        document["terminal_outcome_id"] = serde_json::json!("live:unknown-outcome");
+        tx.execute(
+            "UPDATE execution_protocol_attempts SET payload_json = ?1 WHERE attempt_id = ?2",
+            [document.to_string(), "live:interrupted".to_owned()],
+        )?;
+        Ok(())
+    })?;
+    let error =
+        f.f.db
+            .transitions()
+            .commit_live_input_recovery(&f.attempt, &f.turn, &f.predecessor, None)
+            .expect_err("invalid protocol state must fail closed");
+    assert!(error
+        .to_string()
+        .contains("stored execution protocol state is invalid"));
+    assert_eq!(f.f.receipt_count()?, 0);
+    Ok(())
+}

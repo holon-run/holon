@@ -1958,12 +1958,21 @@ pub(crate) fn load_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
+    let load_started = std::time::Instant::now();
     if !partition_exists_tx(tx, agent_id)? {
         bail!("execution protocol partition for agent {agent_id} is not initialized");
     }
     let state = load_state_unchecked_tx(tx, agent_id)?;
     execution_protocol::assert_invariants(&state)
         .map_err(|error| anyhow!("stored execution protocol state is invalid: {error}"))?;
+    tracing::debug!(
+        protocol_state_load_us = load_started.elapsed().as_micros(),
+        attempts = state.attempts.len() as u64,
+        work_items = state.work_items.len() as u64,
+        outcomes = state.outcomes.len() as u64,
+        agent_id,
+        "loaded full execution protocol state"
+    );
     Ok(state)
 }
 
