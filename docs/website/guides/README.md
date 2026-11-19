@@ -76,6 +76,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Configure external Webhook callbacks in natural dialogue, suspend tasks with zero token consumption, and resume securely on external events.
   <!-- mdorigin:index kind=article -->
 
+- [Unify external notifications and async events with Agent Inbox](./connect-event-inbox.md)
+  Subscribe to shared GitHub, email, and Feishu streams via AgentInbox, wake agents with low-noise wake_hint signals, triage unread batches safely, and clean up temporary follows.
+  <!-- mdorigin:index kind=article -->
+
 - [Schedule agent work](./schedule-agent-work.md)
   Schedule an authorized read-only check, verify the resulting work, and cancel the timer.
   <!-- mdorigin:index kind=article -->

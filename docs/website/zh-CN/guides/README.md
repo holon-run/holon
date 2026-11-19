@@ -74,6 +74,10 @@ order: 30
   在自然语言对话中让 Agent 配置外部 Webhook 回调，利用事件驱动与唤醒机制实现零 Token 挂起等待，并在收到外部通知后安全核验与闭环执行。
   <!-- mdorigin:index kind=article -->
 
+- [用 Agent Inbox 统一收口外部通知与异步事件](./connect-event-inbox.md)
+  通过 AgentInbox 统一订阅 GitHub、邮件与飞书等多源外部通知，以低噪 wake_hint 唤醒 Agent，在权限边界内分批拉取、去重审阅并清理临时订阅。
+  <!-- mdorigin:index kind=article -->
+
 - [调度 Agent 工作](./schedule-agent-work.md)
   定时执行已授权的只读检查，验证返回的工作结果并及时取消定时器。
   <!-- mdorigin:index kind=article -->

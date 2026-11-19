@@ -130,6 +130,7 @@ Agent 会调用运行时控制接口吊销旧的凭据，并生成全新的 URL�
 ## 另见
 
 - [事件、等待与唤醒核心概念](/zh-CN/concepts/events-and-waits.md) — 深入了解 Holon 异步事件驱动内核
+- [用 Agent Inbox 统一收口外部通知与异步事件](connect-event-inbox.md) — 多源通知统一订阅、过滤与分批收口
 - [调度 Agent 执行定时任务](schedule-agent-work.md) — 了解基于时间 Cron/Timer 的定时调度机制
 - [用自托管 changedetection.io 唤醒 Agent](changedetection-webhook-setup.md) — 网页变更监听与 Webhook 端到端实操
 - [信任边界与权限治理](/zh-CN/concepts/trust-boundaries.md) — 了解外部不可信数据源与防注入安全设计

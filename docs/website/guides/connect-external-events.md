@@ -129,6 +129,7 @@ When an ephemeral subagent completes its project and is cleaned up, Holon automa
 ## Related links
 
 - [Events, Waits, and Resumption](/concepts/events-and-waits.md) — Event-driven kernel architecture
+- [Unify external notifications and async events with Agent Inbox](connect-event-inbox.md) — Shared multi-source subscriptions, filtering, and batch triage
 - [Schedule Periodic Agent Work](schedule-agent-work.md) — Cron-like timers and recurring patrols
 - [Wake Agents on Web Page Diffs with changedetection.io](changedetection-webhook-setup.md) — Monitoring web pages with Webhook wakeups
 - [Trust Boundaries and Authorization](/concepts/trust-boundaries.md) — Safe handling of untrusted inputs
