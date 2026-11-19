@@ -1,0 +1,31 @@
+[package]
+name = "holon-server"
+version = "0.1.0"
+edition = "2021"
+description = "HTTP serving and transport for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+publish = false
+
+[dependencies]
+axum = { version = "0.8", features = ["json"] }
+holon-config = { version = "0.1.0", path = "../holon-config" }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+mime_guess = "2.0"
+percent-encoding = "2.3"
+sha2 = "0.10"
+tokio = { version = "1.43", features = ["net", "rt"] }
+tower-http = { version = "0.6.8", features = ["compression-gzip", "cors", "trace"] }
+tracing = "0.1"
+url = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+holon-system = { version = "0.1.0", path = "../holon-system" }
+hyper = { version = "1.5", features = ["server", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
+tokio = { version = "1.43", features = ["macros", "sync", "time"] }
+tower = { version = "0.5", features = ["util"] }
+
+[dev-dependencies]
+tempfile = "3.14"
+tokio = { version = "1.43", features = ["io-util", "macros", "sync", "time"] }

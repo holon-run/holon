@@ -1507,13 +1507,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
     #[cfg(unix)]
     {
         let tcp_server = async {
-            axum::serve(
+            holon_server::serve_tcp(
                 listener,
-                tcp_router
-                    .clone()
-                    .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                tcp_router.clone(),
+                wait_for_shutdown(runtime_service.shutdown_signal()),
             )
-            .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
             .await
             .context("TCP server failed")?;
             Ok::<(), anyhow::Error>(())
@@ -1527,11 +1525,11 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         let result = if let Some(local) = local_listener {
             let local_router = tcp_router.clone();
             let local_server = async {
-                axum::serve(
+                holon_server::serve_tcp(
                     local,
-                    local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    local_router,
+                    wait_for_shutdown(runtime_service.shutdown_signal()),
                 )
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
                 .await
                 .context("localhost server failed")?;
                 Ok::<(), anyhow::Error>(())
@@ -1565,27 +1563,25 @@ async fn serve(mut config: AppConfig, options: ServeOptions) -> Result<()> {
         let result = async {
             if let Some(local) = local_listener {
                 let local_router = tcp_router.clone();
-                let local_server = axum::serve(
+                let local_server = holon_server::serve_tcp(
                     local,
-                    local_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                )
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
-                let tcp_server = axum::serve(
+                    local_router,
+                    wait_for_shutdown(runtime_service.shutdown_signal()),
+                );
+                let tcp_server = holon_server::serve_tcp(
                     listener,
-                    tcp_router
-                        .clone()
-                        .into_make_service_with_connect_info::<std::net::SocketAddr>(),
-                )
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()));
+                    tcp_router.clone(),
+                    wait_for_shutdown(runtime_service.shutdown_signal()),
+                );
                 tokio::try_join!(tcp_server, local_server)
                     .map(|_| ())
                     .context("runtime servers failed")?;
             } else {
-                axum::serve(
+                holon_server::serve_tcp(
                     listener,
-                    tcp_router.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+                    tcp_router,
+                    wait_for_shutdown(runtime_service.shutdown_signal()),
                 )
-                .with_graceful_shutdown(wait_for_shutdown(runtime_service.shutdown_signal()))
                 .await
                 .context("HTTP server failed")?;
             }
