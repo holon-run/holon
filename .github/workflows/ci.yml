@@ -51,6 +51,8 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
+      - "scripts/ci_rust_selection.py"
+      - "scripts/ci_test_shards.py"
       - "scripts/validate-agent-templates*.py"
   pull_request:
     branches: [main]
@@ -102,6 +104,8 @@ on:
       - "scripts/package-macos-menu-app.sh"
       - "scripts/verify-macos-menu-app.sh"
       - "scripts/ci_timing.py"
+      - "scripts/ci_rust_selection.py"
+      - "scripts/ci_test_shards.py"
       - "scripts/validate-agent-templates*.py"
   workflow_dispatch:
   schedule:
@@ -133,6 +137,9 @@ jobs:
       full_sweep: ${{ github.event_name != 'push' && github.event_name != 'pull_request' }}
       docker: ${{ steps.filter.outputs.docker }}
       rust: ${{ steps.filter.outputs.rust }}
+      root_rust: ${{ steps.rust-selection.outputs.root || steps.filter.outputs.rust }}
+      rust_crates: ${{ steps.rust-selection.outputs.crates }}
+      crate_tests_only: ${{ steps.rust-selection.outputs.crate_tests_only }}
       template_validation: ${{ steps.filter.outputs.template_validation }}
       conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
@@ -145,6 +152,8 @@ jobs:
       src_non_tui: ${{ steps.src-scope.outputs.src_non_tui }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: dorny/paths-filter@v3
         id: filter
         if: github.event_name == 'push' || github.event_name == 'pull_request'
@@ -173,6 +182,7 @@ jobs:
               - 'packages/api-sdk/**'
               - 'packages/app-sdk/**'
               - 'scripts/ci_test_shards.py'
+              - 'scripts/ci_rust_selection.py'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'build.rs'
@@ -281,12 +291,24 @@ jobs:
               - 'Cargo.lock'
               - 'build.rs'
 
+      - name: Select Rust test packages
+        id: rust-selection
+        if: steps.filter.outputs.rust == 'true'
+        env:
+          PUSH_BASE: ${{ github.event.before }}
+        run: |
+          base=HEAD^1
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            base="$PUSH_BASE"
+          fi
+          python3 scripts/ci_rust_selection.py plan "$base"
+
   web:
     name: Web
     runs-on: ubuntu-latest
     timeout-minutes: 25
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.web == 'true'
+    if: needs.changes.outputs.full_sweep == 'true' || (needs.changes.outputs.web == 'true' && needs.changes.outputs.crate_tests_only != 'true')
     steps:
       - uses: actions/checkout@v4
 
@@ -535,7 +557,7 @@ jobs:
     # The SDK protocol gate used to run inside the Rust job whenever the SDK
     # itself did not change, which kept that job serial. The dedicated job now
     # covers the same cases, in parallel with the rest of the Rust tier.
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.conversation_sdk == 'true' || needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.conversation_sdk == 'true' || needs.changes.outputs.root_rust == 'true'
     steps:
       - uses: actions/checkout@v4
 
@@ -720,7 +742,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || (github.event_name == 'push' && (needs.changes.outputs.rust == 'true' || needs.changes.outputs.web == 'true'))
+    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || (github.event_name == 'push' && (needs.changes.outputs.root_rust == 'true' || (needs.changes.outputs.web == 'true' && needs.changes.outputs.crate_tests_only != 'true')))
     permissions:
       contents: read
       packages: write
@@ -867,10 +889,11 @@ jobs:
       - name: Audit test temp resources
         run: make test-resource-lint
 
-      - name: Test CI timing tooling
-        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards tests.test_build_script tests.test_ci_event_matrix
+      - name: Test CI tooling
+        run: python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards tests.test_build_script tests.test_ci_event_matrix tests.test_ci_rust_selection
 
       - name: Clippy
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
         run: make lint
         env:
           RUSTFLAGS: ""
@@ -910,11 +933,13 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build all targets, including benchmarks
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
         run: make build
 
       # No CI job runs the default complete test crate; keep that selector
       # warning-free. See docs/implementation-decisions/lib-test-compile-shards.md.
       - name: Check complete test crate with warnings denied
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
         run: cargo check --locked --all-targets
         env:
           HOLON_LIB_TEST_SHARD: all
@@ -922,39 +947,21 @@ jobs:
       # Release binaries build with --features local-onnx (see release.yml);
       # keep the feature-gated path compiling on CI.
       - name: Check with local-onnx feature
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
         run: cargo check --locked --features local-onnx
 
       - name: Check controlled recovery acceptance feature
+        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
         run: cargo check --locked --features recovery-acceptance
 
       - name: Check or test independent Rust crates
         env:
           CRATE_COMMAND: ${{ github.event_name == 'push' && 'check' || 'test' }}
-        run: |
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-core/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-clef/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-jev/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/decision-openai-decisions/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-client/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-domain/Cargo.toml --locked --features error-sanitization
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-github/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-agent-templates/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-system/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-storage/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-memory-index/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-observability/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-provider/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-model-catalog/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-config/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-context/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-tools/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-web-retrieval/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-client/Cargo.toml --locked
-          cargo "$CRATE_COMMAND" --manifest-path crates/holon-tui/Cargo.toml --locked
+          RUST_CRATE_SELECTION: ${{ needs.changes.outputs.rust_crates }}
+        run: python3 scripts/ci_rust_selection.py run "$CRATE_COMMAND"
 
       - name: Package check
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
         run: |
           if grep -q 'decision-core = {.*path = "crates/decision-core"' Cargo.toml; then
             echo "::notice::Skipping crates.io package dry-run because holon depends on unpublished local decision crates."
@@ -963,7 +970,7 @@ jobs:
           fi
 
       - name: Check generated snapshots
-        if: github.event_name != 'push'
+        if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
         run: make snapshots-check
 
   rust-test:
@@ -971,7 +978,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Test (${{ matrix.shard }})
     needs: changes
-    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
@@ -1046,7 +1053,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Concurrent
     needs: changes
-    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true')
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -1254,7 +1261,7 @@ jobs:
     needs:
       - changes
       - docker
-    if: always() && github.event_name != 'push' && (needs.docker.result == 'success' || needs.docker.result == 'skipped') && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.rust == 'true')
+    if: always() && github.event_name != 'push' && (needs.docker.result == 'success' || needs.docker.result == 'skipped') && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.docker == 'true' || needs.changes.outputs.root_rust == 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     steps:
