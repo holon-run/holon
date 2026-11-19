@@ -13,6 +13,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
@@ -28,6 +29,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollToIndex
 import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.test.core.app.ActivityScenario
@@ -36,6 +39,8 @@ import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -52,6 +57,30 @@ class ConversationPresentationUiTest {
         "terminal", "completed", "none", null, emptyList(), "2026-10-20T12:00:00Z",
         "2026-10-20T12:04:39Z", true, buildJsonObject {}, turnIndex = 127, durationMillis = 279000,
     )
+
+    @Test fun markdownCodeWrapsLongLinesWithoutChangingTheText() {
+        val code = "这是一行用于回归测试的示例文本，用来检查手机上的消息气泡能否正常显示较长的围栏正文内容。\n" +
+            "  id=" + "abcdefghijklmnopqrstuvwxyz0123456789".repeat(3)
+        withContent({
+            Box(Modifier.width(240.dp)) {
+                MarkdownText("```text\n$code\n```")
+            }
+        }) {
+            val layouts = mutableListOf<TextLayoutResult>()
+            compose.onNodeWithText(code).performSemanticsAction(SemanticsActions.GetTextLayoutResult) {
+                assertTrue(it(layouts))
+            }
+            val layout = layouts.single()
+            val secondLine = code.indexOf('\n') + 1
+            val secondLineStart = layout.getLineForOffset(secondLine)
+            assertTrue(secondLineStart > 1)
+            assertTrue(layout.getLineForOffset(code.lastIndex) > secondLineStart)
+            assertFalse(layout.didOverflowWidth)
+            assertEquals(code, layout.layoutInput.text.text)
+            compose.onNodeWithText("TEXT").assertExists()
+            compose.onNodeWithText(ui("复制代码")).assertHasClickAction()
+        }
+    }
 
     @Test fun sourceAndDisclosureAreIndependentAccessibleControlsAtLargeFont() {
         var sourceReads = 0

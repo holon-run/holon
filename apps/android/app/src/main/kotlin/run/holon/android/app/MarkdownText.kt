@@ -252,7 +252,6 @@ internal fun MarkdownText(markdown: String, modifier: Modifier = Modifier) {
                         }
                         Text(
                             block.text,
-                            modifier = Modifier.horizontalScroll(rememberScrollState()),
                             style = MaterialTheme.typography.bodyMedium,
                             fontFamily = FontFamily.Monospace,
                         )
