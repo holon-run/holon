@@ -129,6 +129,9 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
                 .into(),
         );
     }
+    if is_scope_already_attempted(denial) {
+        return Some(scope_already_attempted_summary(&descriptor));
+    }
     let base = match denial {
         Some(LocalDispatchDenial::ScopeCooling { .. }) => {
             "The model channel is cooling down. This send was blocked."
@@ -155,6 +158,71 @@ pub(super) fn local_dispatch_rejection_user_summary(error: &anyhow::Error) -> Op
     } else {
         format!("{base} Check the diagnostics for recovery status.")
     })
+}
+
+/// A same-scope repeat inside one recovery episode: the guard rejects the
+/// second send by design, but the summary must name the provider cause, not a
+/// local safety check. Both the dispatch guard and the candidate preview can
+/// surface this denial.
+fn is_scope_already_attempted(denial: Option<LocalDispatchDenial>) -> bool {
+    matches!(
+        denial,
+        Some(
+            LocalDispatchDenial::Dispatch(ProviderRecoveryDispatchDenial::ScopeAlreadyAttempted)
+                | LocalDispatchDenial::Reservation(
+                    ProviderRecoveryDispatchDenial::ScopeAlreadyAttempted
+                )
+        )
+    )
+}
+
+/// Build the credential/scope explanation from sanitized safe-context fields
+/// (`cause_code`, `model_ref`, `status`, `next_retry_at`). Missing fields
+/// degrade to a generic "already failed" message and never invent a retry time.
+fn scope_already_attempted_summary(
+    descriptor: &crate::runtime_error::RuntimeErrorDescriptor,
+) -> String {
+    let cause = descriptor
+        .safe_context
+        .get("cause_code")
+        .map(String::as_str);
+    let route = descriptor.safe_context.get("model_ref").map(String::as_str);
+    let retry_at = descriptor
+        .safe_context
+        .get("next_retry_at")
+        .map(String::as_str);
+    let status = descriptor.safe_context.get("status").map(String::as_str);
+
+    let mut text = match (cause, route) {
+        (Some("auth_error"), Some(route)) => {
+            format!("The provider rejected the credential for model route {route}.")
+        }
+        (Some("auth_error"), None) => {
+            "The provider rejected the credential for this model route.".to_string()
+        }
+        (Some(cause), Some(route)) => {
+            format!("Model route {route} already failed in this recovery episode (cause: {cause}).")
+        }
+        (Some(cause), None) => {
+            format!("This model route already failed in this recovery episode (cause: {cause}).")
+        }
+        (None, Some(route)) => {
+            format!("Model route {route} already failed in this recovery episode.")
+        }
+        (None, None) => "This model route already failed in this recovery episode.".to_string(),
+    };
+    if let Some(status) = status {
+        text.push_str(&format!(" The upstream returned HTTP {status}."));
+    }
+    match retry_at {
+        Some(retry_at) => text.push_str(&format!(
+            " The same quota scope is already cooling down in this episode; retry after {retry_at}."
+        )),
+        None => text.push_str(
+            " The same quota scope is already cooling down in this episode and must recover before another attempt.",
+        ),
+    }
+    text
 }
 
 #[derive(Clone, Copy)]
@@ -505,6 +573,19 @@ impl ProviderTurnAdmission {
         &self.candidate.model
     }
 
+    /// Candidate admission scopes, read only for sanitized diagnostics.
+    fn candidate_scopes(&self) -> &[ProviderAdmissionScope] {
+        &self.candidate.scopes
+    }
+
+    /// Sanitized prior-failure metadata for the credential (rate-limit) scope.
+    fn credential_failure_cause(&self) -> Option<ProviderCooldownCause> {
+        self.db
+            .provider_cooldown_cause(&self.candidate.rate_limit)
+            .ok()
+            .flatten()
+    }
+
     pub(super) fn recovery_reselection_reason(&self) -> Option<&'static str> {
         self.recovery_reselection_reason
     }
@@ -719,6 +800,17 @@ impl ProviderDispatchGuard for ProviderTurnAdmission {
                         &self.candidate.model.as_string(),
                         Some(&cause),
                     )?;
+                    if policy == ProviderCooldownPolicy::Credential {
+                        // Diagnosable credential failure: route + HTTP status
+                        // only, never a token or raw response body.
+                        self.db
+                            .record_provider_auth_failure_event(
+                                &self.attempt.agent_id,
+                                &self.candidate.model.as_string(),
+                                &cause,
+                            )
+                            .context("recording provider auth failure audit event")?;
+                    }
                     match policy {
                         ProviderCooldownPolicy::Transport => {
                             ProviderRecoveryRequestOutcome::NetworkFailure(scope)
@@ -1073,10 +1165,9 @@ impl RuntimeHandle {
         // The marker describes only this send. Earlier requests remain charged
         // and their diagnostics stay attached to the original error chain.
         let category = denial.to_string();
-        let episode = self
-            .active_provider_admission()
-            .ok()
-            .flatten()
+        let admission = self.active_provider_admission().ok().flatten();
+        let episode = admission
+            .as_ref()
             .and_then(|admission| admission.episode().ok());
         if let Err(audit_error) = self
             .append_original_audit_event(AuditEvent::legacy(
@@ -1095,19 +1186,44 @@ impl RuntimeHandle {
         {
             error = error.context(audit_error);
         }
-        error.context(
-            crate::runtime_error::RuntimeError::new(
-                crate::runtime_error::RuntimeErrorDomain::Conflict,
-                "provider_dispatch_rejected",
-                "Local provider dispatch admission rejected this send before IO.",
-            )
-            .with_safe_context("stage", "before_dispatch")
-            .with_safe_context("predicate", category)
-            .with_safe_context("recovery_disposition", disposition)
-            .with_recovery_hint(
-                "The WorkItem re-enters the queue automatically; persistent conflicts pause it until its blocker is cleared. Run `holon debug scheduler-recovery --agent <id> --json` to inspect retained input.",
-            ),
+        let mut runtime_error = crate::runtime_error::RuntimeError::new(
+            crate::runtime_error::RuntimeErrorDomain::Conflict,
+            "provider_dispatch_rejected",
+            "Local provider dispatch admission rejected this send before IO.",
         )
+        .with_safe_context("stage", "before_dispatch")
+        .with_safe_context("predicate", category)
+        .with_safe_context("recovery_disposition", disposition)
+        .with_recovery_hint(
+            "The WorkItem re-enters the queue automatically; persistent conflicts pause it until its blocker is cleared. Run `holon debug scheduler-recovery --agent <id> --json` to inspect retained input.",
+        );
+        if is_scope_already_attempted(Some(denial)) {
+            // The typed denial proves the scope repeat; enrich the summary with
+            // the retained provider cause instead of the generic local wording.
+            if let Some(admission) = admission.as_ref() {
+                runtime_error =
+                    runtime_error.with_safe_context("model_ref", admission.model().as_string());
+                if let Some(cause) = admission.credential_failure_cause() {
+                    runtime_error =
+                        runtime_error.with_safe_context("cause_code", cause.failure_kind.clone());
+                    if let Some(status) = cause.http_status {
+                        runtime_error =
+                            runtime_error.with_safe_context("status", status.to_string());
+                    }
+                }
+                if let Some(blocked) = self
+                    .inner
+                    .runtime_db
+                    .provider_admission_blocked(admission.candidate_scopes(), self.now())
+                    .ok()
+                    .flatten()
+                {
+                    runtime_error = runtime_error
+                        .with_safe_context("next_retry_at", blocked.not_before.to_rfc3339());
+                }
+            }
+        }
+        error.context(runtime_error)
     }
 
     fn provider_admission_chain(&self, state: &crate::types::AgentState) -> Result<Option<Chain>> {
