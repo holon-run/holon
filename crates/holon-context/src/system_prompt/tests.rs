@@ -500,6 +500,42 @@ fn event_turn_section_appears_for_timer_turns() {
 }
 
 #[test]
+fn event_turn_section_skips_self_enqueued_and_subagent_system_runs() {
+    let sections_for = |subsystem: &str| {
+        let mut message = sample_message();
+        message.origin = MessageOrigin::System {
+            subsystem: subsystem.into(),
+        };
+        build_system_sections(
+            &sample_identity(),
+            &message,
+            Path::new("."),
+            &LoadedAgentsMd::default(),
+            &LoadedAgentMemory::default(),
+            &SkillsRuntimeView::default(),
+            &[],
+            ToolPromptContext::default(),
+        )
+    };
+
+    for subsystem in ["tool_enqueue", "subagent"] {
+        let sections = sections_for(subsystem);
+        assert!(
+            sections.iter().all(|section| section.name != "event_turn"),
+            "{subsystem} must not be framed as an external event turn"
+        );
+    }
+
+    let wake_sections = sections_for("wake_hint");
+    assert!(
+        wake_sections
+            .iter()
+            .any(|section| section.name == "event_turn"),
+        "runtime wake hints keep the event turn framing"
+    );
+}
+
+#[test]
 fn identity_skeleton_and_scoped_workspace_preserve_default_context_contract() {
     let sections = build_system_sections(
         &sample_identity(),
