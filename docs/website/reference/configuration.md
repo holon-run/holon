@@ -572,7 +572,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `web.search.enabled` | boolean | `true` | Enable WebSearch tool |
 | `web.search.builtin_provider.enabled` | boolean | `true` | Enable provider-declared builtin web search by default when active provider supports it |
 | `web.search.provider` | string | `"auto"` | Default search provider or `auto` |
-| `web.search.mode` | enum | `"fallback"` | Routing mode: `single`, `fallback`, or `aggregate` |
+| `web.search.mode` | enum | `"fallback"` | Default routing mode: `single`, `fallback`, or `aggregate` |
 | `web.search.providers` | string_list | `[]` | Explicit auto-mode provider attempt order |
 | `web.search.max_results` | integer | `5` | Max results returned |
 | `web.search.max_provider_attempts` | integer | `3` | Max providers attempted by fallback/aggregate routing |
@@ -591,6 +591,20 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `web.providers.<name>.output.mapping.published_at` | string | unset | Optional JSON path to map result publication timestamp |
 | `web.providers.<name>.limits.timeout_ms` | integer | `10000` | Command provider execution timeout in milliseconds |
 | `web.providers.<name>.limits.max_output_bytes` | integer | `200000` | Command provider stdout byte limit |
+
+Omitting `WebSearch.provider` uses the configured provider and mode. Passing
+`"auto"` uses the automatic candidate order with the configured mode;
+`"aggregate"` uses that same order but aggregates serially for this call only,
+deduplicating by canonical URL and stopping at `max_results` or the attempt
+limit. A concrete ID queries only that provider, without fallback. If a
+registered provider has the ID `auto` or `aggregate`, passing that value
+explicitly is an error; rename the provider or omit the argument. This does
+not change configured provider IDs or `WebFetch`.
+
+Even with a default mode of `single`, explicit aggregation can send the same
+query to multiple providers, increasing disclosure, costs, or latency. To cap
+each call at one attempt, set `web.search.max_provider_attempts` to `1`. This
+is not a provider allowlist and does not limit separate calls.
 
 ## Runtime Database Retention
 

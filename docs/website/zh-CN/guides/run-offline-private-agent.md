@@ -106,17 +106,21 @@ holon config set x_search.enabled false
 在内网自托管环境，既要屏蔽公网出站，又要让 Agent 访问内网服务（例如自托管 SearXNG、GitLab CE、GlitchTip 或内部文档站）：
 
 1. **接入自托管 SearXNG 作为 `WebSearch` 后端**：
-   按[《用自托管 SearXNG 配置 Holon WebSearch 搜索后端》](./searxng-websearch-provider.md)部署单容器 SearXNG 后，将其设为唯一搜索提供商：
+   按[《用自托管 SearXNG 配置 Holon WebSearch 搜索后端》](./searxng-websearch-provider.md)部署单容器 SearXNG 后，将其设为默认提供商和首选自动候选：
 
    ```bash
    holon config set web.providers.searxng.kind searxng
    holon config set web.providers.searxng.base_url "http://127.0.0.1:8888"
    holon config set web.search.enabled true
    holon config set web.search.provider searxng
+   holon config set web.search.providers '["searxng"]'
    holon config set web.search.mode single
+   holon config set web.search.max_provider_attempts 1
    holon config set web.search.builtin_provider.enabled false
    holon config set x_search.enabled false
    ```
+
+   尝试次数上限也适用于显式聚合，但不是提供商白名单。请用网络出站控制确保查询不离开内网。
 
 2. **用 `web.fetch.allowed_hosts` 锁定 `WebFetch` 允许范围**：
    Holon 的 `WebFetch` 默认出于 SSRF 防护会拦截回环地址（`127.0.0.1`、`[::1]`）和私网地址（`10.0.0.0/8`、`192.168.0.0/16` 等）。一旦设置了非空的 `web.fetch.allowed_hosts`，它同时起到双重作用：**既显式放行列表中的内网主机与端口，又拒绝访问列表之外的所有公网域名**：

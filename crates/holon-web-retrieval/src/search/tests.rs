@@ -9,10 +9,250 @@ use axum::{
     response::Response,
 };
 use flate2::{write::GzEncoder, Compression};
+use std::sync::{Arc, Mutex};
 use std::{collections::BTreeMap, io::Write};
 
 async fn search(request: WebSearchRequest, config: &WebConfig) -> Result<WebSearchResponse> {
     super::search(test_tool_error, request, config).await
+}
+
+fn routing_request(provider: Option<&str>) -> WebSearchRequest {
+    WebSearchRequest {
+        query: "fixture query".to_string(),
+        max_results: Some(2),
+        provider: provider.map(str::to_string),
+    }
+}
+
+type RoutingCalls = Arc<Mutex<Vec<&'static str>>>;
+
+async fn routing_fixture() -> (WebConfig, RoutingCalls) {
+    let calls = RoutingCalls::default();
+    let mut router = axum::Router::new();
+    let fixtures = [
+        (
+            "first",
+            StatusCode::OK,
+            searxng_results_json(&[("Shared", "https://example.test/shared#first", "")]),
+        ),
+        (
+            "second",
+            StatusCode::OK,
+            searxng_results_json(&[
+                ("Duplicate", "https://example.test/shared#second", ""),
+                ("Unique", "https://example.test/unique", ""),
+            ]),
+        ),
+        ("broken", StatusCode::INTERNAL_SERVER_ERROR, json!({})),
+        ("empty", StatusCode::OK, searxng_results_json(&[])),
+    ];
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let mut providers = Vec::new();
+    for (id, status, body) in fixtures {
+        let calls = Arc::clone(&calls);
+        router = router.route(
+            &format!("/{id}/search"),
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move {
+                    calls.lock().unwrap().push(id);
+                    (status, axum::Json(body))
+                }
+            }),
+        );
+        providers.push((
+            id,
+            test_provider(WebProviderKind::Searxng, &format!("http://{addr}/{id}/")),
+        ));
+    }
+    tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (
+        test_search_config(
+            providers,
+            vec!["first", "second", "broken"],
+            WebSearchMode::Single,
+        ),
+        calls,
+    )
+}
+
+fn take_routing_calls(calls: &RoutingCalls) -> Vec<&'static str> {
+    std::mem::take(&mut *calls.lock().unwrap())
+}
+
+fn attempted_ids(response: &WebSearchResponse) -> Vec<&str> {
+    response
+        .provider_attempts
+        .iter()
+        .map(|attempt| attempt.provider.as_str())
+        .collect()
+}
+
+#[tokio::test]
+async fn omitted_and_auto_selectors_keep_configured_mode_and_order() {
+    let (mut config, calls) = routing_fixture().await;
+    use WebSearchMode::{Aggregate, Fallback, Single};
+    for (mode, named_default, named_calls, auto_calls) in [
+        (Single, "second", &["second"][..], &["first"][..]),
+        (Fallback, "broken", &["broken", "empty"][..], &["first"][..]),
+        (
+            Aggregate,
+            "second",
+            &["second"][..],
+            &["first", "second"][..],
+        ),
+    ] {
+        config.search.mode = mode;
+        for (default_provider, selector, expected_calls) in [
+            ("auto", None, auto_calls),
+            ("auto", Some("auto"), auto_calls),
+            (named_default, None, named_calls),
+            (named_default, Some("auto"), auto_calls),
+        ] {
+            config.search.provider = default_provider.to_string();
+
+            let result = search(routing_request(selector), &config).await.unwrap();
+            assert_eq!(result.mode, mode);
+            assert_eq!(take_routing_calls(&calls), expected_calls);
+            assert_eq!(attempted_ids(&result), expected_calls);
+            let winner = (mode != Aggregate).then(|| *expected_calls.last().unwrap());
+            assert_eq!(result.winning_provider.as_deref(), winner);
+            assert_eq!(
+                result.provider,
+                winner.or(selector).unwrap_or(default_provider)
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn named_provider_failure_does_not_query_next_provider() {
+    let (mut config, calls) = routing_fixture().await;
+    config.search.mode = WebSearchMode::Fallback;
+    let error = search(routing_request(Some("broken")), &config)
+        .await
+        .unwrap_err();
+    assert_eq!(take_routing_calls(&calls), ["broken"]);
+    let details = test_tool_error(&error).details.unwrap();
+    assert_eq!(details["provider_attempts"].as_array().unwrap().len(), 1);
+    assert_eq!(details["provider_attempts"][0]["provider"], "broken");
+}
+
+#[tokio::test]
+async fn explicit_aggregate_overrides_single_once_and_stops_at_result_limit() {
+    let (mut config, calls) = routing_fixture().await;
+    config.search.provider = "second".to_string();
+
+    let result = search(routing_request(Some("aggregate")), &config)
+        .await
+        .unwrap();
+    assert_eq!(result.mode, WebSearchMode::Aggregate);
+    assert_eq!(result.provider, "aggregate");
+    assert_eq!(result.winning_provider, None);
+    assert_eq!(attempted_ids(&result), ["first", "second"]);
+    assert_eq!(take_routing_calls(&calls), ["first", "second"]);
+    assert_eq!(
+        result
+            .results
+            .iter()
+            .map(|row| (row.source.as_str(), row.url.as_str()))
+            .collect::<Vec<_>>(),
+        [
+            ("first", "https://example.test/shared#first"),
+            ("second", "https://example.test/unique")
+        ]
+    );
+
+    let result = search(routing_request(None), &config).await.unwrap();
+    assert_eq!(result.mode, WebSearchMode::Single);
+    assert_eq!(result.provider, "second");
+    assert_eq!(attempted_ids(&result), ["second"]);
+    assert_eq!(take_routing_calls(&calls), ["second"]);
+}
+
+#[tokio::test]
+async fn explicit_aggregate_respects_enable_switch_and_provider_attempt_cap() {
+    let (mut config, calls) = routing_fixture().await;
+    config.search.max_provider_attempts = 1;
+    let result = search(routing_request(Some("aggregate")), &config)
+        .await
+        .unwrap();
+    assert_eq!(result.results.len(), 1);
+    assert_eq!(attempted_ids(&result), ["first"]);
+    assert_eq!(take_routing_calls(&calls), ["first"]);
+
+    config.search.providers = vec!["broken".into(), "second".into()];
+    let error = search(routing_request(Some("aggregate")), &config)
+        .await
+        .unwrap_err();
+    assert_eq!(take_routing_calls(&calls), ["broken"]);
+    let error = test_tool_error(&error);
+    assert_eq!(error.kind, "provider_unavailable");
+    assert_eq!(
+        error.details.unwrap()["attempted_providers"],
+        json!(["broken"])
+    );
+
+    config.search.enabled = false;
+    let error = search(routing_request(Some("aggregate")), &config)
+        .await
+        .unwrap_err();
+    assert!(take_routing_calls(&calls).is_empty());
+    let error = test_tool_error(&error);
+    assert_eq!(error.kind, "provider_unavailable");
+    assert_eq!(error.details.unwrap()["provider"], "disabled");
+}
+
+#[tokio::test]
+async fn explicit_aggregate_exhaustion_retains_errors_and_attempt_order() {
+    let (mut config, calls) = routing_fixture().await;
+    config.search.providers = vec!["empty".into(), "broken".into()];
+    let error = search(routing_request(Some("aggregate")), &config)
+        .await
+        .unwrap_err();
+
+    assert_eq!(take_routing_calls(&calls), ["empty", "broken"]);
+    let error = test_tool_error(&error);
+    assert_eq!(error.kind, "provider_unavailable");
+    let details = error.details.unwrap();
+    assert_eq!(details["attempted_providers"], json!(["empty", "broken"]));
+    assert_eq!(details["winning_provider"], Value::Null);
+    let attempts = details["provider_attempts"].as_array().unwrap();
+    assert_eq!(attempts.len(), 2);
+    for (attempt, (provider, status)) in attempts
+        .iter()
+        .zip([("empty", "success"), ("broken", "error")])
+    {
+        assert_eq!(attempt["provider"], provider);
+        assert_eq!(attempt["status"], status);
+    }
+}
+
+#[tokio::test]
+async fn registered_aliases_are_rejected_only_as_explicit_selectors() {
+    let (mut config, calls) = routing_fixture().await;
+    for alias in ["auto", "aggregate"] {
+        config
+            .providers
+            .insert(alias.into(), config.providers["first"].clone());
+        config.search.providers = vec![alias.into(), "second".into()];
+        config.search.provider = alias.into();
+
+        let error = search(routing_request(Some(alias)), &config)
+            .await
+            .unwrap_err();
+        assert!(take_routing_calls(&calls).is_empty());
+        let error = test_tool_error(&error);
+        assert_eq!(error.kind, "invalid_tool_input");
+        assert_eq!(error.details.unwrap()["provider"], alias);
+        assert!(error.recovery_hint.unwrap().contains("omit"));
+
+        let result = search(routing_request(None), &config).await.unwrap();
+        assert_eq!(result.provider, alias);
+        assert_eq!(attempted_ids(&result), [alias]);
+        assert_eq!(take_routing_calls(&calls), ["first"]);
+    }
 }
 
 #[test]

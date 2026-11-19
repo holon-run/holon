@@ -104,6 +104,25 @@ pub async fn search(
     request: WebSearchRequest,
     config: &WebConfig,
 ) -> Result<WebSearchResponse> {
+    // Interpret aliases only on the call boundary, not in configured provider IDs.
+    let (selector, order_selector, mode) = match request.provider.as_deref() {
+        Some(alias @ ("auto" | "aggregate")) if config.providers.contains_key(alias) => {
+            return Err(search_error(
+                "invalid_tool_input",
+                format!("WebSearch provider `{alias}` conflicts with a configured provider ID"),
+                alias,
+                "rename the configured provider or omit the provider argument",
+            ));
+        }
+        None => {
+            let configured = config.search.provider.as_str();
+            (configured, configured, config.search.mode)
+        }
+        Some("auto") => ("auto", "auto", config.search.mode),
+        Some("aggregate") => ("aggregate", "auto", WebSearchMode::Aggregate),
+        Some(id) => (id, id, WebSearchMode::Single),
+    };
+
     if !config.search.enabled {
         return Err(search_error(
             "provider_unavailable",
@@ -114,22 +133,13 @@ pub async fn search(
     }
 
     let max_results = normalize_max_results(request.max_results, config.search.max_results)?;
-    let provider = request
-        .provider
-        .as_deref()
-        .unwrap_or(config.search.provider.as_str());
-    let mode = if request.provider.is_some() && provider != "auto" {
-        WebSearchMode::Single
-    } else {
-        config.search.mode
-    };
-    let provider_order = provider_order(provider, config);
+    let provider_order = provider_order(order_selector, config);
     let routed = match mode {
         WebSearchMode::Single => {
             let provider_id = provider_order
                 .first()
                 .cloned()
-                .unwrap_or_else(|| provider.to_string());
+                .unwrap_or_else(|| order_selector.to_string());
             let outcome =
                 search_one_provider(map_error, &request.query, max_results, &provider_id, config)
                     .await;
@@ -171,7 +181,7 @@ pub async fn search(
         provider: routed
             .winning_provider
             .clone()
-            .unwrap_or_else(|| provider.to_string()),
+            .unwrap_or_else(|| selector.to_string()),
         mode,
         provider_attempts: routed.provider_attempts,
         winning_provider: routed.winning_provider,

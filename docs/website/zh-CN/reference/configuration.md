@@ -536,7 +536,7 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `web.search.enabled` | boolean | `true` | 启用 WebSearch 工具 |
 | `web.search.builtin_provider.enabled` | boolean | `true` | 当活跃模型提供商支持时，默认启用提供商声明的内置网页搜索 |
 | `web.search.provider` | string | `"auto"` | 默认搜索提供商，或 `auto` |
-| `web.search.mode` | enum | `"fallback"` | 路由模式：`single`、`fallback` 或 `aggregate` |
+| `web.search.mode` | enum | `"fallback"` | 默认路由模式：`single`、`fallback` 或 `aggregate` |
 | `web.search.providers` | string_list | `[]` | auto 模式下显式的提供商尝试顺序 |
 | `web.search.max_results` | integer | `5` | 返回的最大结果数 |
 | `web.search.max_provider_attempts` | integer | `3` | fallback/aggregate 路由尝试的最大提供商数 |
@@ -555,6 +555,10 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `web.providers.<name>.output.mapping.published_at` | string | unset | 用于映射发布时间戳的可选 JSON 路径 |
 | `web.providers.<name>.limits.timeout_ms` | integer | `10000` | 命令提供商执行超时（毫秒） |
 | `web.providers.<name>.limits.max_output_bytes` | integer | `200000` | 命令提供商 stdout 字节数上限 |
+
+省略 `WebSearch.provider` 时沿用配置的提供商与模式。传入 `"auto"` 时按自动候选顺序和配置模式路由；传入 `"aggregate"` 时仅在本次调用中按相同顺序串行聚合，按规范化 URL 去重，达到 `max_results` 或尝试次数上限即停止。指定具体 ID 则只查询该提供商，失败不回退。若已注册名为 `auto` 或 `aggregate` 的提供商，显式传入同名值会报错；请改名或省略该参数。此规则不改变配置中的提供商 ID 或 `WebFetch` 的行为。
+
+即使默认模式为 `single`，显式聚合也可能把同一查询发送给多家提供商，增加外发、费用或延迟。如需每次最多尝试一家，请将 `web.search.max_provider_attempts` 设为 `1`。这不是提供商白名单，也不限制多次独立调用。
 
 ## 运行时数据库保留策略（Retention）
 

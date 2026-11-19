@@ -106,17 +106,21 @@ If you still want agents to use `WebSearch` against a local offline knowledge ba
 In a self-hosted intranet setup, you want agents to reach internal services (such as SearXNG, GitLab CE, GlitchTip, or internal docs) while blocking public internet egress:
 
 1. **Connect self-hosted SearXNG for `WebSearch`**:
-   Follow [Set Up Self-Hosted SearXNG as Holon WebSearch Provider](./searxng-websearch-provider.md), then lock `WebSearch` to your local instance:
+   Follow [Set Up Self-Hosted SearXNG as Holon WebSearch Provider](./searxng-websearch-provider.md), then make your local instance the default and first automatic candidate:
 
    ```bash
    holon config set web.providers.searxng.kind searxng
    holon config set web.providers.searxng.base_url "http://127.0.0.1:8888"
    holon config set web.search.enabled true
    holon config set web.search.provider searxng
+   holon config set web.search.providers '["searxng"]'
    holon config set web.search.mode single
+   holon config set web.search.max_provider_attempts 1
    holon config set web.search.builtin_provider.enabled false
    holon config set x_search.enabled false
    ```
+
+   The attempt cap also applies to explicit aggregation. It is not a provider allowlist: use network egress controls to enforce the intranet boundary.
 
 2. **Restrict `WebFetch` with `web.fetch.allowed_hosts`**:
    By default, `WebFetch` blocks loopback (`127.0.0.1`, `[::1]`) and private network ranges (`10.0.0.0/8`, `192.168.0.0/16`, etc.) to prevent SSRF. Setting a non-empty `web.fetch.allowed_hosts` list serves two purposes at once: **it explicitly permits those listed internal hosts/ports while blocking every unlisted public internet host**:
