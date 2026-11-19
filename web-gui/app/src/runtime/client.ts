@@ -3145,7 +3145,7 @@ function normalizeBaseUrl(value: string | undefined): string | undefined {
   return base.endsWith("/api") ? base : `${base}/api`;
 }
 
-function authorizationHeaders(token: string | undefined): Record<string, string> {
+export function authorizationHeaders(token: string | undefined): Record<string, string> {
   const trimmed = token?.trim();
   return trimmed ? { Authorization: `Bearer ${trimmed}` } : {};
 }

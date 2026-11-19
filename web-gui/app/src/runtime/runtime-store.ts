@@ -518,6 +518,18 @@ export function getRuntimeConnectionConfig(): RuntimeConnectionConfig {
   return runtimeConnectionConfig;
 }
 
+/**
+ * One global agent_roster_hint frame (#4310): schedule an authoritative
+ * roster snapshot through the standard throttled coordinator cycle. The
+ * hint carries no payload, so there is nothing else to apply here.
+ */
+export function refreshRosterFromStreamHint(): void {
+  globalSyncCoordinator.refreshRosterFromStream(
+    useRuntimeStore.getState,
+    useRuntimeStore.setState,
+  );
+}
+
 function retainSkillJobs(jobs: SkillInstallJob[]): SkillInstallJob[] {
   let terminalToDrop = Math.max(
     0,
