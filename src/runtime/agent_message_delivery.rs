@@ -136,11 +136,14 @@ impl AgentMessageDeliveryService<'_> {
         let delivery_id =
             crate::ids::agent_message_delivery_id(&idempotency_scope, &idempotency_key_digest);
         let now = Utc::now();
+        let message_authority_version = caller.principal_kind.delivery_authority_version();
         let mut message = MessageEnvelope::new(
             request.target_agent_id.clone(),
             MessageKind::InternalFollowup,
             caller.origin.clone(),
-            caller.authority_class,
+            message_authority_version
+                .map(|version| version.message_authority())
+                .unwrap_or(caller.authority_class),
             priority,
             request.content,
         )
@@ -191,6 +194,7 @@ impl AgentMessageDeliveryService<'_> {
             idempotency_key_digest,
             request_digest,
             caller: caller.clone(),
+            message_authority_version,
             outcome: AgentMessageDeliveryOutcome::Rejected,
             state: AgentMessageDeliveryState::Rejected,
             state_version: 1,
@@ -698,7 +702,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_authorized_agent_message_live_follower_can_reply() -> Result<()> {
+    async fn operator_authorized_agent_message_live_follower_can_reply() -> Result<()> {
         real_agent_message_can_reply(true).await
     }
 
@@ -836,11 +840,7 @@ mod tests {
             .agent_messaging_service()
             .send(
                 request("reply-peer", "anchor"),
-                if live_follower {
-                    AuthorityClass::RuntimeInstruction
-                } else {
-                    operator_input.authority_class.clone()
-                },
+                operator_input.authority_class,
             )
             .await?;
         wait_for_provider(&target, &provider.started, "peer agent-message admission").await?;
@@ -872,33 +872,11 @@ mod tests {
                     .anchor_message_id,
                 anchor.id
             );
-            let queued = sender
-                .agent_messaging_service()
-                .send(
-                    request("reply-peer", "operator-follower"),
-                    operator_input.authority_class,
-                )
-                .await?;
-            let queued_id = queued.message_id.context("accepted operator input")?;
-            assert!(target
-                .attach_live_inputs("reply-peer", 2, 24 * 1024, false)
-                .await?
-                .is_empty());
-            assert_eq!(
-                target
-                    .inner
-                    .runtime_db
-                    .queue_entries()
-                    .latest(&queued_id)?
-                    .unwrap()
-                    .status,
-                QueueEntryStatus::Queued
-            );
             let follower = sender
                 .agent_messaging_service()
                 .send(
                     request("reply-peer", "live-follower"),
-                    AuthorityClass::RuntimeInstruction,
+                    operator_input.authority_class,
                 )
                 .await?;
             let id = follower.message_id.context("accepted live input")?;
@@ -921,12 +899,16 @@ mod tests {
             anchor.id
         };
         let input = target.storage().read_message_by_id(&selected_id)?.unwrap();
-        let expected_authority = if live_follower {
-            AuthorityClass::RuntimeInstruction
-        } else {
+        assert_eq!(input.authority_class, AuthorityClass::RuntimeInstruction);
+        let delivery = target
+            .runtime_db()
+            .agent_message_deliveries()
+            .latest_for_message(&selected_id)?
+            .context("accepted agent delivery")?;
+        assert_eq!(
+            delivery.caller.authority_class,
             AuthorityClass::OperatorInstruction
-        };
-        assert_eq!(input.authority_class, expected_authority);
+        );
         assert_eq!(
             input.admission_context,
             Some(AdmissionContext::RuntimeOwned)
@@ -948,7 +930,7 @@ mod tests {
         assert_eq!(route.recipient_agent_id, sender_id);
         assert_eq!(route.in_reply_to_message_id, Some(selected_id.clone()));
         assert_eq!(reply.causation_id, Some(selected_id));
-        assert_eq!(reply.authority_class, expected_authority);
+        assert_eq!(reply.authority_class, AuthorityClass::RuntimeInstruction);
         host.shutdown().await?;
         Ok(())
     }

@@ -119,7 +119,7 @@ pub(super) struct SenderScope {
     pub(super) sender: String,
     pub(super) principal_kind: crate::types::AgentMessagePrincipalKind,
     pub(super) origin: MessageOrigin,
-    pub(super) authority: AuthorityClass,
+    pub(super) caller_authority: AuthorityClass,
     pub(super) surface: Option<crate::types::MessageDeliverySurface>,
     pub(super) admission: Option<crate::types::AdmissionContext>,
 }
@@ -544,7 +544,7 @@ impl read::IdleRead<'_, '_> {
         if delivery.target_agent_id != message.agent_id
             || delivery.message_id.as_deref() != Some(message.id.as_str())
             || delivery.routing_context != message.routing_context
-            || delivery.caller.authority_class != message.authority_class
+            || !delivery.matches_message_authority(message.authority_class)
             || delivery.caller.origin != message.origin
             || Some(delivery.caller.delivery_surface) != message.delivery_surface
             || Some(delivery.caller.admission_context) != message.admission_context
@@ -591,7 +591,8 @@ impl read::IdleRead<'_, '_> {
             sender,
             principal_kind: delivery.caller.principal_kind,
             origin: message.origin.clone(),
-            authority: message.authority_class,
+            // Group by authenticated caller context, not the derived body label.
+            caller_authority: delivery.caller.authority_class,
             surface: message.delivery_surface,
             admission: message.admission_context,
         })))
@@ -1127,7 +1128,7 @@ impl RuntimeHandle {
             for message in &snapshot {
                 if message.priority != anchor.priority
                     || message.priority == Priority::Interject
-                    || message.authority_class == AuthorityClass::OperatorInstruction
+                    || crate::wake_contract::has_operator_queue_authority(message)
                 {
                     break;
                 }
@@ -1872,7 +1873,7 @@ impl RuntimeHandle {
                 // Do not delay pending operator/control input for a follower batch.
                 if candidate.priority != anchor.priority
                     || candidate.priority == Priority::Interject
-                    || candidate.authority_class == AuthorityClass::OperatorInstruction
+                    || crate::wake_contract::has_operator_queue_authority(&candidate)
                 {
                     break;
                 }
@@ -2028,7 +2029,7 @@ impl RuntimeHandle {
             let mut result_anchor = None;
             for message in queue.shared_messages().take(INPUT_BATCH_SCAN) {
                 if message.priority == Priority::Interject
-                    || message.authority_class == AuthorityClass::OperatorInstruction
+                    || crate::wake_contract::has_operator_queue_authority(&message)
                 {
                     break;
                 }

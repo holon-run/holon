@@ -1681,6 +1681,8 @@ mod tests {
         let mut input = request(key, "reply source");
         input.target_agent_id = message.agent_id.clone();
         let mut delivery = AgentMessageDeliveryService::prepare(input, source)?.record;
+        // This fixture takes historical envelopes whose label came from the caller.
+        delivery.message_authority_version = None;
         delivery.message_id = Some(message.id.clone());
         delivery.routing_context = message.routing_context.clone();
         delivery.outcome = AgentMessageDeliveryOutcome::Accepted;
@@ -1918,6 +1920,10 @@ mod tests {
                 assert_eq!(route.reply_to_agent_id.as_deref(), Some("caller-agent"));
                 assert_eq!(
                     prepared.message.authority_class,
+                    AuthorityClass::RuntimeInstruction
+                );
+                assert_eq!(
+                    prepared.record.caller.authority_class,
                     AuthorityClass::ExternalEvidence
                 );
                 assert_eq!(
@@ -2026,6 +2032,7 @@ mod tests {
                 .latest_for_message(&input.id)?
                 .unwrap();
             delivery.caller.authority_class = input.authority_class;
+            delivery.message_authority_version = None;
             db.messages().upsert_many(&inputs)?;
             db.transaction(|tx| replace_delivery_tx(tx, &delivery))?;
             let id = inputs[0].id.clone();

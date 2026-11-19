@@ -3703,14 +3703,26 @@ async fn p1_different_runtime_senders_are_not_combined() {
 #[tokio::test]
 async fn p1_oversize_input_preserves_utf8_preview_and_reachable_source() {
     let (_home, _host, sender, target, provider) = fixture().await;
-    let id = send_with_authority(
+    let mut legacy = prepare_sender_message(
         &sender,
         &target,
         "large",
         &"更正".repeat(40_000),
+        Priority::Normal,
         AuthorityClass::ExternalEvidence,
+        None,
     )
     .await;
+    // Only the pre-derivation envelope preserved the caller's evidence label.
+    legacy.record.message_authority_version = None;
+    legacy.message.authority_class = AuthorityClass::ExternalEvidence;
+    let id = target
+        .agent_message_delivery_service()
+        .deliver(&legacy)
+        .await
+        .unwrap()
+        .message_id
+        .unwrap();
     process_one(&target).await;
     let turn = target.storage().read_recent_turns(1).unwrap().remove(0);
     let batch = turn.idle_input_batch.unwrap();
@@ -3720,6 +3732,41 @@ async fn p1_oversize_input_preserves_utf8_preview_and_reachable_source() {
     let source = target.storage().read_message_by_id(&id).unwrap().unwrap();
     assert_eq!(message_text(&source.body), "更正".repeat(40_000));
     assert_eq!(provider.requests.lock().await.len(), 1);
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn p1_oversize_derived_peer_instruction_is_not_shortened_to_fit() {
+    let (_home, _host, sender, target, provider) = fixture().await;
+    let id = send_with_authority(
+        &sender,
+        &target,
+        "large",
+        &"更正".repeat(40_000),
+        AuthorityClass::ExternalEvidence,
+    )
+    .await;
+    let source = target.storage().read_message_by_id(&id).unwrap().unwrap();
+    assert_eq!(source.authority_class, AuthorityClass::RuntimeInstruction);
+    let outcome = scheduler_executor::SchedulerDecisionExecutor::new(&target)
+        .poll()
+        .await
+        .unwrap();
+    assert!(matches!(
+        outcome,
+        scheduler_executor::RunLoopPoll::AuthorityBlocked
+    ));
+    assert_eq!(
+        target
+            .runtime_db()
+            .queue_entries()
+            .latest(&id)
+            .unwrap()
+            .unwrap()
+            .status,
+        QueueEntryStatus::Queued
+    );
+    assert!(provider.requests.lock().await.is_empty());
 }
 
 #[cfg(holon_lib_test_shard = "a")]

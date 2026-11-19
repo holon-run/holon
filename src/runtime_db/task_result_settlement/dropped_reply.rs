@@ -175,7 +175,7 @@ pub(super) fn source_matches(
             route.message_id == reply.id && route.recipient_agent_id == record.agent_id
         })
         || reply.origin != delivery.caller.origin
-        || reply.authority_class != delivery.caller.authority_class
+        || !delivery.matches_message_authority(reply.authority_class)
         || reply.delivery_surface != Some(delivery.caller.delivery_surface)
         || reply.admission_context != Some(delivery.caller.admission_context)
         || delivery.message_id.as_deref() != Some(reply_id)

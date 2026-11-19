@@ -37,6 +37,12 @@ pub(crate) fn is_agent_message(message: &MessageEnvelope) -> bool {
 
 pub(crate) use holon_domain::agent_message_reply_reference;
 
+pub(crate) fn has_operator_queue_authority(message: &MessageEnvelope) -> bool {
+    // A pre-derivation agent envelope can retain its caller's operator label.
+    // Its recorded priority still applies, but its label cannot move it ahead.
+    message.authority_class == AuthorityClass::OperatorInstruction && !is_agent_message(message)
+}
+
 pub(crate) fn select_wait_to_trigger<'a>(
     message: &'a MessageEnvelope,
     conditions: &'a [WaitConditionRecord],

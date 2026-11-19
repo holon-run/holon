@@ -314,6 +314,31 @@ pub struct AgentMessageAdmissionEvidence {
     pub derived_grant: Option<AgentMessageDerivedGrant>,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageAuthorityVersion {
+    DerivedV1,
+}
+
+impl AgentMessagePrincipalKind {
+    pub fn delivery_authority_version(self) -> Option<AgentMessageAuthorityVersion> {
+        match self {
+            Self::PeerAgent | Self::SupervisingParent => {
+                Some(AgentMessageAuthorityVersion::DerivedV1)
+            }
+            Self::Operator | Self::ExternalIngress | Self::RuntimeCapability => None,
+        }
+    }
+}
+
+impl AgentMessageAuthorityVersion {
+    pub fn message_authority(self) -> AuthorityClass {
+        match self {
+            Self::DerivedV1 => AuthorityClass::RuntimeInstruction,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]
 pub struct AgentMessageDeliveryRecord {
     pub delivery_id: String,
@@ -336,6 +361,9 @@ pub struct AgentMessageDeliveryRecord {
     pub idempotency_key_digest: String,
     pub request_digest: String,
     pub caller: AgentMessageCallerContext,
+    /// Absent on pre-derivation deliveries and on non-agent ingress.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_authority_version: Option<AgentMessageAuthorityVersion>,
     pub outcome: AgentMessageDeliveryOutcome,
     pub state: AgentMessageDeliveryState,
     pub state_version: u64,
@@ -377,6 +405,17 @@ pub struct AgentMessageDeliveryReceipt {
 }
 
 impl AgentMessageDeliveryRecord {
+    /// Legacy records bind the original label without granting it operator authority.
+    pub fn matches_message_authority(&self, actual: AuthorityClass) -> bool {
+        match self.message_authority_version {
+            Some(version) => {
+                self.caller.principal_kind.delivery_authority_version() == Some(version)
+                    && actual == version.message_authority()
+            }
+            None => actual == self.caller.authority_class,
+        }
+    }
+
     /// Match accepted agent delivery evidence, not route-shaped input metadata.
     pub fn authenticates_agent_message(&self, message: &crate::MessageEnvelope) -> bool {
         let Some(sender) = self
@@ -409,7 +448,7 @@ impl AgentMessageDeliveryRecord {
                 MessageOrigin::System { .. } | MessageOrigin::Task { .. }
             )
             && message.origin == self.caller.origin
-            && message.authority_class == self.caller.authority_class
+            && self.matches_message_authority(message.authority_class)
             && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
             && self.caller.delivery_surface == MessageDeliverySurface::RuntimeSystem
             && message.admission_context == Some(AdmissionContext::RuntimeOwned)

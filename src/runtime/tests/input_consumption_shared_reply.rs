@@ -361,14 +361,8 @@ async fn p1_shared_reply_oversize_and_ordinary_inputs_share_identity_and_byte_li
         } else {
             "mixed-original-marker".into()
         };
-        let original = reply_with_authority(
-            runtime,
-            Some(&receiver),
-            "mixed-original",
-            &body,
-            AuthorityClass::ExternalEvidence,
-        )
-        .await;
+        let original =
+            legacy_evidence_reply(runtime, Some(&receiver), "mixed-original", &body).await;
         let mut sources = Vec::new();
         for index in 0..9 {
             let task = waiter(runtime, Some(&receiver), &format!("mixed-wait-{index}")).await;
@@ -500,12 +494,11 @@ async fn shared_reply_source_predicates_borrow_one_qualified_body_cut() -> Resul
     runtime.await_initial_resources().await;
     let receiver = owner(runtime, "shared source body loans").await;
     runtime.pick_work_item(receiver.clone()).await?;
-    let original = reply_with_authority(
+    let original = legacy_evidence_reply(
         runtime,
         Some(&receiver),
         "source-body-loan",
         &"🦀".repeat(16000),
-        AuthorityClass::ExternalEvidence,
     )
     .await;
     let mut sources = Vec::new();
@@ -740,30 +733,34 @@ async fn reply(
     key: &str,
     body: &str,
 ) -> MessageEnvelope {
-    reply_with_authority(
-        runtime,
-        owner,
-        key,
-        body,
-        AuthorityClass::RuntimeInstruction,
-    )
-    .await
+    let prepared = prepare_shared_message("default", "shared-reply-peer", key, body);
+    deliver_shared_reply(runtime, owner, prepared).await
 }
 
-async fn reply_with_authority(
+async fn legacy_evidence_reply(
     runtime: &RuntimeHandle,
     owner: Option<&str>,
     key: &str,
     body: &str,
-    authority_class: AuthorityClass,
 ) -> MessageEnvelope {
     let mut prepared = prepare_shared_message_with_authority(
         "default",
         "shared-reply-peer",
         key,
         body,
-        authority_class,
+        AuthorityClass::ExternalEvidence,
     );
+    // Preview tests need an evidence envelope, not a newly derived instruction.
+    prepared.record.message_authority_version = None;
+    prepared.message.authority_class = AuthorityClass::ExternalEvidence;
+    deliver_shared_reply(runtime, owner, prepared).await
+}
+
+async fn deliver_shared_reply(
+    runtime: &RuntimeHandle,
+    owner: Option<&str>,
+    mut prepared: crate::runtime::agent_message_delivery::PreparedAgentMessageDelivery,
+) -> MessageEnvelope {
     // Explicit receiver ownership is fixture input, never inferred from sender.
     prepared.message.work_item_id = owner.map(str::to_owned);
     prepared.message.created_at = runtime.now();
