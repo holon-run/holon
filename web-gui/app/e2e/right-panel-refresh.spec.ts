@@ -3,7 +3,7 @@ import { sessionFor } from "./test-session";
 
 const agentId = "bootstrap-agent";
 const agentPath = `/api/agents/${agentId}`;
-const forbiddenEvents = /^\/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)\/?$/;
+const forbiddenEvents = /^\/api\/agents\/[^/]+\/events(?:\/stream)?\/?$/;
 const createdAt = "2026-10-31T00:00:00.000Z";
 const work = (id: string, objective: string, overrides = {}) => ({
   id, objective, state: "open", plan_status: "ready", revision: 1,

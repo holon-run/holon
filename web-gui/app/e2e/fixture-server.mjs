@@ -49,6 +49,7 @@ function sessionFor(req, url) {
       abortResponse: null,
       briefReadAdvanceSeqs: [],
       conversationStreams: new Set(),
+      rosterHintStreams: new Set(),
       conversationData: new Map(),
       visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
       ledgerEnabledAgentIds: new Set(),
@@ -406,8 +407,9 @@ async function handleControl(req, res, url) {
   }
   if (url.pathname === "/__e2e__/disconnect-streams" && req.method === "POST") {
     const session = sessionFor(req, url);
-    // Raw global/agent event streams are retired (#3808); only the
-    // conversation read-model stream remains for this control.
+    // Per-agent raw event streams are retired (#3808); only the
+    // conversation read-model stream drops here. The roster hint stream
+    // (#4310) reconnects on its own and is intentionally left alone.
     for (const stream of session.conversationStreams) stream.end();
     session.conversationStreams.clear();
     json(res, { disconnected: true });
@@ -557,8 +559,12 @@ async function handleControl(req, res, url) {
     const events = session.eventsByAgentId.get("e2e-agent") ?? [];
     events.push(envelope);
     session.eventsByAgentId.set("e2e-agent", events);
-    // Discovery is roster-snapshot polling now (#3808): the appended
-    // canonical event only seeds server-side state for later reads.
+    // The appended canonical event only seeds server-side state for later
+    // reads; live discovery flows through the global roster hint stream
+    // (#4310), which mirrors the runtime by nudging every subscriber.
+    for (const stream of session.rosterHintStreams) {
+      stream.write(`event: agent_roster_hint\ndata: ${JSON.stringify({ agent_id: "e2e-agent" })}\n\n`);
+    }
     json(res, { emitted: true });
     return true;
   }
@@ -602,6 +608,12 @@ async function handleApi(req, res, url) {
         "agents.conversation-read.v1",
       ],
     });
+    return true;
+  }
+  if (url.pathname === "/api/events/stream" && req.method === "GET") {
+    // Global roster hint stream (#4310): idle until the control plane emits
+    // an agent event; frames carry no payload beyond the agent id.
+    openEventStream(req, res, session.rosterHintStreams);
     return true;
   }
   if (url.pathname === "/api/agents/list") {
@@ -955,6 +967,7 @@ await new Promise((resolve, reject) => {
 async function shutdown() {
   for (const session of sessions.values()) {
     for (const stream of session.conversationStreams) stream.end();
+    for (const stream of session.rosterHintStreams) stream.end();
   }
   await vite?.close();
   await new Promise((resolve) => server.close(resolve));

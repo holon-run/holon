@@ -69,6 +69,8 @@ export const ROSTER_STALE_EXTENDED_RETRY_ATTEMPTS = 6;
  * dormant global/agent SSE transports and their in-memory per-agent event
  * catch-up were removed; the conversation read model plus roster snapshots carry
  * all live data. No raw event replay is registered from roster discovery.
+ * The payload-free global roster hint stream (#4310) re-enters here as
+ * throttled snapshot refreshes only.
  */
 export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
   /** Authoritative discovery cycle: in-flight snapshot + coalescing. */
@@ -104,6 +106,20 @@ export class GlobalSyncCoordinator<State extends GlobalSyncStoreState> {
       set,
       this.dependencies.captureClientRequest(),
       "local_change",
+    );
+  }
+
+  /**
+   * Global roster hint stream (#4310): one agent_roster_hint frame pokes the
+   * same throttled snapshot cycle; the hint itself carries no payload and
+   * never bypasses the trailing merge or server backoff.
+   */
+  refreshRosterFromStream(get: () => State, set: GlobalSyncStoreSet<State>): void {
+    void this.refreshRosterInner(
+      get,
+      set,
+      this.dependencies.captureClientRequest(),
+      "stream_hint",
     );
   }
 

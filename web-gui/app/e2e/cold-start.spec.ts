@@ -89,16 +89,16 @@ test("cold start refreshes the roster and loads conversation history only on sel
     "GET /api/agents/list",
     "GET /api/agents/snapshot",
   ]));
-  expect(initialRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(0);
+  // A healthy bootstrap opens exactly one global roster hint stream (#4310);
+  // no per-agent raw event transport ever comes back.
+  expect(initialRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(1);
   expect(initialRequests.requests.indexOf("GET /api/handshake"))
     .toBeLessThan(initialRequests.requests.indexOf("GET /api/agents/list"));
 
   await request.post(controlPath("/__e2e__/emit-agent"));
 
-  // Without the dormant global event stream, roster changes surface through
-  // the next explicit dashboard refresh (#3808 slice 2).
-  await page.getByRole("button", { name: "Refresh", exact: true }).click();
-
+  // The emitted agent event rides the hint stream (#4310): the roster
+  // refreshes through the throttled snapshot cycle with no manual click.
   await expect(page.getByText("2 agents · all clear", { exact: true })).toBeVisible();
   await expect.poll(async () => page.evaluate(() => window.__HOLON_E2E__?.snapshot().agentIds))
     .toEqual(["bootstrap-agent", "e2e-agent"]);
@@ -112,7 +112,9 @@ test("cold start refreshes the roster and loads conversation history only on sel
   expect(finalRequests.requests.filter((entry: string) =>
     /\/api\/agents\/[^/]+\/(?:projection-snapshot|conversation)(?:[/?]|$)/.test(entry),
   )).toEqual([]);
-  expect(finalRequests.requests.filter((entry: string) => entry.includes("/events"))).toEqual([]);
+  expect(finalRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(1);
+  expect(finalRequests.requests.filter((entry: string) =>
+    entry.startsWith("GET /api/agents/") && entry.includes("/events"))).toEqual([]);
   expect(await page.evaluate(() => window.__HOLON_E2E__?.conversation("e2e-agent"))).toBeNull();
 
   // Opening an agent speaks the conversation read-model contract: one
@@ -141,11 +143,12 @@ test("cold start refreshes the roster and loads conversation history only on sel
   expect(conversationRequests.requests.filter(
     (entry: string) => entry === "GET /api/agents/e2e-agent/events/stream",
   )).toHaveLength(0);
+  expect(conversationRequests.requests.filter((entry: string) => entry === "GET /api/events/stream")).toHaveLength(1);
   expect(conversationRequests.requests.filter(
     (entry: string) => entry.includes("messages:batchGet")
       || entry.includes("transcript:batchGet")
       || entry.includes("/projection-snapshot")
-      || entry.includes("/events")
+      || (entry.startsWith("GET /api/agents/") && entry.includes("/events"))
   )).toHaveLength(0);
   await expect.poll(() => page.evaluate(() => window.__HOLON_E2E__?.conversation("e2e-agent")))
     .toMatchObject({ status: "ready", eventLogEpoch: "e2e-epoch" });

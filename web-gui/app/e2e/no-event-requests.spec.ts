@@ -11,10 +11,11 @@ import { sessionFor } from "./test-session";
 /**
  * #3808 slice 3: the raw event ledger is retired. Across bootstrap, agent
  * selection, refresh, reconnect, and epoch rotation the production GUI must
- * reach agents only through roster snapshots and the conversation read
- * model, never the per-agent or global raw event transports.
+ * reach agents only through roster snapshots, the conversation read model,
+ * and the payload-free global roster hint stream (#4310), never the
+ * per-agent raw event transports.
  */
-const forbiddenEventPath = /^\/api\/(?:agents\/[^/]+\/events(?:\/stream)?|events\/stream)\/?$/;
+const forbiddenEventPath = /^\/api\/agents\/[^/]+\/events(?:\/stream)?\/?$/;
 
 // Fail on the wire, not only when a retired diagnostics method is called.
 const observed = new WeakMap<Page, string[]>();

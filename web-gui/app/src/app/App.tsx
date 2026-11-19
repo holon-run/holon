@@ -64,6 +64,7 @@ import { useAgentAccess, type AgentAccessStatus } from "../runtime/useAgentAcces
 import { useConversationSession } from "../runtime/useConversationSession";
 import { useSelectedAgentRefresh } from "../runtime/useSelectedAgentRefresh";
 import { useRuntimeDashboard } from "../runtime/useRuntimeDashboard";
+import { useRosterHintStream } from "../runtime/useRosterHintStream";
 import type { AgentSummary, RouteKey, RuntimeConnection } from "../runtime/types";
 import { truncateToWidth } from "../lib/utils";
 import { isPlainLeftClick, pathForRoute, pushBrowserRoute, replaceBrowserRoute, routeFromLocation, searchQueryForLocation } from "./routes";
@@ -84,6 +85,7 @@ const AGENT_ROW_SUMMARY_MAX_WIDTH = 40;
 
 export function App() {
   const { bootstrap, loading, refresh } = useRuntimeDashboard();
+  useRosterHintStream();
   const discovery = useRuntimeStore((state) => state.discovery);
   const previousPanelIdentity = useRef<string | undefined>(undefined);
   const [panelScopeGeneration, setPanelScopeGeneration] = useState(0);

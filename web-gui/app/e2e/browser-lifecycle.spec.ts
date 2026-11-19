@@ -79,7 +79,7 @@ function observeRetiredRequests(context: BrowserContext): string[] {
   const requests: string[] = [];
   context.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (/^\/api\/(?:agents\/[^/]+\/(?:events(?:\/stream)?|projection-snapshot)|events\/stream)\/?$/.test(path)) {
+    if (/^\/api\/agents\/[^/]+\/(?:events(?:\/stream)?|projection-snapshot)\/?$/.test(path)) {
       requests.push(request.url());
     }
   });
