@@ -257,6 +257,10 @@ fn markdown_image_messages_from_sections_with_material(
     let mut inline_bytes = 0u64;
     let mut duplicates = 0usize;
     let mut omitted_history = 0usize;
+    // Required images that exceed the budget degrade to path references
+    // instead of failing the whole turn; their src strings are surfaced to
+    // the model so it knows which references carry no inline pixels.
+    let mut degraded_required: Vec<String> = Vec::new();
     // Current input reserves capacity first. A history reference to the same
     // image must not make a current attachment optional.
     for optional_history in [false, true] {
@@ -325,24 +329,10 @@ fn markdown_image_messages_from_sections_with_material(
                 if hashes.len() >= max_images || next_bytes > max_bytes {
                     if optional_history {
                         omitted_history += 1;
-                        continue;
+                    } else {
+                        degraded_required.push(image.src.to_string());
                     }
-                    let image_count = hashes.len() + 1;
-                    return Err(image_budget_error(
-                        "image_budget_exceeded",
-                        format!(
-                            "required markdown images exceed runtime attachment budget: \
-                             image_count={image_count}, decoded_bytes={next_bytes}, \
-                             max_images={max_images}, \
-                             max_decoded_bytes={max_bytes}; reduce current image attachments",
-                        ),
-                        [
-                            ("image_count", image_count.to_string()),
-                            ("decoded_bytes", next_bytes.to_string()),
-                            ("max_images", max_images.to_string()),
-                            ("max_decoded_bytes", max_bytes.to_string()),
-                        ],
-                    ));
+                    continue;
                 }
                 inline_bytes = next_bytes;
                 hashes.insert(read_image.visual_reference.sha256);
@@ -375,6 +365,7 @@ fn markdown_image_messages_from_sections_with_material(
         decoded_bytes = inline_bytes,
         duplicates,
         omitted_history,
+        degraded_required = degraded_required.len(),
         scanned_paths = paths.len(),
         max_scanned_paths = MAX_MARKDOWN_IMAGE_READS,
         max_images,
@@ -388,6 +379,18 @@ fn markdown_image_messages_from_sections_with_material(
              Original references and any existing text/observations remain; omitted \
              pixels are not available in this request. Attached {} unique image(s), \
              {inline_bytes} decoded bytes; limits {max_images} images / {max_bytes} bytes.]",
+            hashes.len(),
+        )));
+    }
+    if !degraded_required.is_empty() {
+        messages.push(ConversationMessage::UserText(format!(
+            "[Holon image attachment budget: {} required markdown image(s) exceeded the \
+             runtime attachment budget and were not inlined: {}. Original path references \
+             remain in the message text; use ViewImage to read them on demand. Attached {} \
+             unique image(s), {inline_bytes} decoded bytes; limits {max_images} images / \
+             {max_bytes} bytes.]",
+            degraded_required.len(),
+            degraded_required.join(", "),
             hashes.len(),
         )));
     }
@@ -883,25 +886,54 @@ mod tests {
 
     #[cfg(holon_lib_test_shard = "a")]
     #[test]
-    fn markdown_image_budget_rejects_required_count_overflow_before_provider_dispatch() {
+    fn markdown_image_budget_degrades_required_count_overflow_before_dispatch() {
         let workspace = tempfile::tempdir().unwrap();
         let mut prompt = image_budget_prompt(workspace.path());
         let references = write_distinct_budget_images(workspace.path(), MAX_INLINE_IMAGES + 1);
         prompt.context_sections = vec![image_section("current_input", &references.join("\n"))];
-        let error = build_provider_turn_request(&prompt, vec![], None, true).unwrap_err();
-        let typed = error
-            .downcast_ref::<crate::provider::ProviderTransportError>()
-            .unwrap();
-        assert_eq!(
-            typed.classification.kind,
-            ProviderFailureKind::ContractError
-        );
-        assert_eq!(typed.classification.disposition, RetryDisposition::FailFast);
-        assert_eq!(typed.code.as_deref(), Some("image_budget_exceeded"));
-        assert!(error.to_string().contains("image_count=9"));
+        let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
+        let inlined = request
+            .conversation
+            .iter()
+            .filter(|message| matches!(message, ConversationMessage::UserImage { .. }))
+            .count();
+        assert_eq!(inlined, MAX_INLINE_IMAGES);
+        assert!(matches!(
+            request.conversation.last(),
+            Some(ConversationMessage::UserText(note))
+                if note.contains("1 required markdown image(s) exceeded")
+                    && note.contains("budget-8.png")
+                    && note.contains("use ViewImage to read them on demand")
+        ));
         // A fallback to a text-only model must not attempt local inlining.
         let text_only = build_provider_turn_request(&prompt, vec![], None, false).unwrap();
         assert_eq!(text_only.conversation.len(), 1);
+    }
+
+    #[cfg(holon_lib_test_shard = "a")]
+    #[test]
+    fn markdown_image_budget_degrades_required_images_to_path_references() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut prompt = image_budget_prompt(workspace.path());
+        let mut references = write_distinct_budget_images(workspace.path(), 12);
+        // A repeated non-inlined reference is skipped as a duplicate path
+        // before budget checks, so the notice must still list it once.
+        references.push(references[8].clone());
+        prompt.context_sections = vec![image_section("current_input", &references.join("\n"))];
+        let request = build_provider_turn_request(&prompt, vec![], None, true).unwrap();
+        let inlined = request
+            .conversation
+            .iter()
+            .filter(|message| matches!(message, ConversationMessage::UserImage { .. }))
+            .count();
+        assert_eq!(inlined, MAX_INLINE_IMAGES);
+        assert!(matches!(
+            request.conversation.last(),
+            Some(ConversationMessage::UserText(note))
+                if note.contains("4 required markdown image(s) exceeded")
+                    && note.contains("budget-8.png")
+                    && note.contains("budget-11.png")
+        ));
     }
 
     #[cfg(holon_lib_test_shard = "a")]
@@ -958,12 +990,26 @@ mod tests {
                         if note.contains("omitted 1 optional historical")
                 ));
             } else {
-                let error = result.unwrap_err();
-                let typed = error
-                    .downcast_ref::<crate::provider::ProviderTransportError>()
-                    .unwrap();
-                assert_eq!(typed.code.as_deref(), Some("image_budget_exceeded"));
-                assert_eq!(typed.classification.disposition, RetryDisposition::FailFast);
+                let request = result.unwrap();
+                let images = request
+                    .conversation
+                    .iter()
+                    .filter_map(|message| match message {
+                        ConversationMessage::UserImage {
+                            data_base64,
+                            optional_history: false,
+                            ..
+                        } => Some(data_base64),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert_eq!(images.len(), MAX_INLINE_IMAGES);
+                assert!(images.iter().all(|image| image.material().is_some()));
+                assert!(matches!(
+                    request.conversation.last(),
+                    Some(ConversationMessage::UserText(note))
+                        if note.contains("1 required markdown image(s) exceeded")
+                ));
             }
             assert!(material.finish().is_ok());
         }
@@ -1031,19 +1077,21 @@ mod tests {
         )
         .unwrap();
         assert_eq!(messages.len(), 2);
-        let error = markdown_image_messages_from_sections(
+        let messages = markdown_image_messages_from_sections(
             &prompt.context_sections,
             &prompt.execution,
             2,
             bytes - 1,
         )
-        .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains(&format!("decoded_bytes={bytes}")));
-        assert!(error
-            .to_string()
-            .contains(&format!("max_decoded_bytes={}", bytes - 1)));
+        .unwrap();
+        assert!(matches!(messages.as_slice(), [
+            ConversationMessage::UserImage {
+                optional_history: false,
+                ..
+            },
+            ConversationMessage::UserText(note),
+        ] if note.contains("1 required markdown image(s) exceeded")
+            && note.contains("budget-1.png")));
         prompt.context_sections[0].id = "recent_turns".into();
         let messages = markdown_image_messages_from_sections(
             &prompt.context_sections,

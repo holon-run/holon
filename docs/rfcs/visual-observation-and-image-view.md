@@ -693,11 +693,14 @@ observations stay in the context.
 
 The runtime omits optional historical attachments that do not fit, with an
 explicit model-visible notice that their pixels are unavailable. It does not
-silently discard a required attachment: unreadable/invalid required images or
-required images exceeding the aggregate budget produce a typed fail-fast
-contract error before dispatch. Budget errors include image count, decoded
-bytes, and limits, never image payloads. Debug assembly diagnostics also record
-deduplication and omission counts.
+silently discard a required attachment either: required images exceeding the
+aggregate budget degrade to their original Markdown path references, and an
+explicit model-visible notice names the non-inlined paths so the model can
+read them on demand via ViewImage. Unreadable/invalid required images and
+required references exceeding the read-scan budget still produce a typed
+fail-fast contract error before dispatch. Contract errors include counts and
+limits where applicable, never image payloads. Debug assembly diagnostics
+also record deduplication, omission, and degraded-path counts.
 
 At most **16 distinct local paths** are considered for reads, including files
 later eliminated by content deduplication. The existing per-file byte cap also
