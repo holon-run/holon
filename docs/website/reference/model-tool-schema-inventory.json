@@ -6290,6 +6290,40 @@
       "stability": "experimental"
     },
     {
+      "description": "List the provider IDs you can pass unchanged to `WebSearch(provider=\"<ID>\")`. Takes no arguments. Returns `{\"providers\":[...]}` with sorted, unique IDs, or an empty array when WebSearch is disabled or no provider qualifies. Uses local configuration only; it does not search, send requests, start commands, or check provider health. Routing selectors and conversation-only native search are not listed as provider IDs.\n",
+      "family": "web",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ListWebSearchProviders",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "ListWebSearchProvidersResult",
+        "success_result_schema": {
+          "properties": {
+            "providers": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "providers"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "experimental"
+    },
+    {
       "description": "Search public X posts using xAI's hosted `x_search` in an isolated provider request. Use this for X-specific content, accounts, or discussions; use `WebSearch` for the general web. Results contain durable text and citations and do not depend on the main model conversation's provider state.\n",
       "family": "web",
       "freeform_grammar": null,

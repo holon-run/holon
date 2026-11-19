@@ -24,3 +24,11 @@ latency. A budget of one caps attempts per call; it is not an allowlist.
 The response shape is unchanged. `mode` reports the effective mode,
 `provider_attempts` lists real attempted IDs, and `provider` reports the winner
 when present or the selector otherwise. Aggregation never reports a winner.
+
+`ListWebSearchProviders` takes no arguments and returns `{"providers":[...]}`
+with sorted, unique IDs that the caller can pass unchanged to `WebSearch`.
+It shares WebSearch's tool permission and uses local configuration only; it
+does not send requests, start commands, or check provider health. It includes
+the built-in `duckduckgo` route and qualifying IDs outside the automatic
+candidate list, but not routing selectors or conversation-only native search.
+With search disabled or no eligible route, it returns `{"providers":[]}`.
