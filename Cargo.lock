@@ -1545,13 +1545,12 @@ dependencies = [
  "holon-model-catalog",
  "holon-observability",
  "holon-provider",
+ "holon-server",
  "holon-storage",
  "holon-system",
  "holon-tools",
  "holon-tui",
  "holon-web-retrieval",
- "hyper",
- "hyper-util",
  "image",
  "jsonwebtoken",
  "libc",
@@ -1576,7 +1575,6 @@ dependencies = [
  "tokio-util",
  "toml",
  "tower",
- "tower-http",
  "tracing",
  "tracing-subscriber",
  "unicode-casefold",
@@ -1774,6 +1772,26 @@ dependencies = [
  "twox-hash",
  "url",
  "uuid",
+]
+
+[[package]]
+name = "holon-server"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "holon-config",
+ "holon-domain",
+ "holon-system",
+ "hyper",
+ "hyper-util",
+ "mime_guess",
+ "percent-encoding",
+ "sha2",
+ "tokio",
+ "tower",
+ "tower-http",
+ "tracing",
+ "url",
 ]
 
 [[package]]

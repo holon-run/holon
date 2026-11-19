@@ -56,6 +56,7 @@ holon-memory-index = { version = "0.1.0", path = "crates/holon-memory-index" }
 holon-model-catalog = { version = "0.1.0", path = "crates/holon-model-catalog" }
 holon-observability = { version = "0.1.0", path = "crates/holon-observability" }
 holon-provider = { version = "0.1.0", path = "crates/holon-provider" }
+holon-server = { version = "0.1.0", path = "crates/holon-server" }
 holon-storage = { version = "0.1.0", path = "crates/holon-storage" }
 holon-system = { version = "0.1.0", path = "crates/holon-system" }
 holon-tools = { version = "0.1.0", path = "crates/holon-tools" }
@@ -63,8 +64,6 @@ holon-tui = { version = "0.1.0", path = "crates/holon-tui" }
 holon-web-retrieval = { version = "0.1.0", path = "crates/holon-web-retrieval" }
 flate2 = "1.0"
 fs2 = "0.4"
-hyper = { version = "1.5", features = ["server", "http1", "http2"] }
-hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 libc = "0.2"
 reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -87,7 +86,6 @@ tokio = { version = "1.43", features = ["full"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
 tower = { version = "0.5", features = ["util"] }
-tower-http = { version = "0.6.8", features = ["compression-gzip", "cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-casefold = "0.2"
