@@ -9,7 +9,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::params;
 use schemars::JsonSchema;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use serde_json::Value;
+use serde_json::{json, Value};
 use uuid::Uuid;
 
 use crate::{
@@ -442,25 +442,48 @@ pub fn get_memory(
             .unwrap_or(GET_CHARS_DEFAULT)
             .clamp(1, GET_CHARS_MAX),
         active_workspace_id,
+        MemoryReadScope::SelfAgent,
     )
 }
 
-/// Read the same authorized source without an inline display limit.
+/// Point-lookup reading scope for runtime-owned memory sources.
+///
+/// `SelfAgent` keeps today's semantics: only sources owned by the current
+/// agent resolve. `AnyAgentMessage` additionally resolves `message:` refs
+/// owned by any agent as cross-agent evidence — the response names the source
+/// owner and carries an explicit evidence marker, and the source message's
+/// authority never transfers to the reading agent. Every other ref kind
+/// stays self-agent-only in both scopes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MemoryReadScope {
+    SelfAgent,
+    AnyAgentMessage,
+}
 
-pub(crate) fn get_memory_snapshot(
+/// Read the same authorized source without an inline display limit;
+/// `SelfAgent` keeps today's self-owned semantics while `AnyAgentMessage`
+/// only widens `message:` refs and marks foreign hits as cross-agent
+/// evidence.
+pub(crate) fn get_memory_snapshot_scoped(
     storage: &AppStorage,
     source_ref: &str,
     active_workspace_id: Option<&str>,
+    scope: MemoryReadScope,
 ) -> Result<Option<MemoryGetResult>> {
     let Some(mut memory) =
-        get_memory_with_limit(storage, source_ref, usize::MAX, active_workspace_id)?
+        get_memory_with_limit(storage, source_ref, usize::MAX, active_workspace_id, scope)?
     else {
         return Ok(None);
     };
     // Authorization above must succeed before reading any underlying source.
     if let Ok(RuntimeRef::Message { id }) = RuntimeRef::parse(source_ref) {
-        if let Some(message) = storage.read_message_by_id(&id)? {
-            if message.agent_id != storage_agent_id(storage) {
+        let message = match scope {
+            MemoryReadScope::SelfAgent => storage.read_message_by_id(&id)?,
+            MemoryReadScope::AnyAgentMessage => storage.read_message_by_id_any_agent(&id)?,
+        };
+        if let Some(message) = message {
+            if scope == MemoryReadScope::SelfAgent && message.agent_id != storage_agent_id(storage)
+            {
                 return Ok(None);
             }
             memory.content = message_document_body_with_limit(&message, usize::MAX);
@@ -509,16 +532,24 @@ fn get_memory_with_limit(
     source_ref: &str,
     max_chars: usize,
     active_workspace_id: Option<&str>,
+    scope: MemoryReadScope,
 ) -> Result<Option<MemoryGetResult>> {
     let agent_id = storage_agent_id(storage);
     if let Ok(runtime_ref) = RuntimeRef::parse(source_ref) {
-        let Some(document) = document_for_runtime_ref(storage, &runtime_ref)? else {
+        let cross_agent_message = scope == MemoryReadScope::AnyAgentMessage
+            && matches!(runtime_ref, RuntimeRef::Message { .. });
+        let Some(document) = document_for_runtime_ref(storage, &runtime_ref, cross_agent_message)?
+        else {
             return Ok(None);
         };
-        if document.agent_id != agent_id {
+        if !cross_agent_message && document.agent_id != agent_id {
             return Ok(None);
         }
-        return Ok(Some(memory_get_result(document, max_chars)));
+        let mut memory = memory_get_result(document, max_chars);
+        if cross_agent_message && memory.agent_id != agent_id {
+            mark_cross_agent_message_evidence(&mut memory);
+        }
+        return Ok(Some(memory));
     }
 
     let index = match ensure_memory_index_current(storage, active_workspace_id) {
@@ -538,6 +569,24 @@ fn get_memory_with_limit(
     index
         .store
         .get(source_ref, max_chars, &agent_id, active_workspace_id)
+}
+
+/// Marks a `message:` memory result owned by another agent as cross-agent
+/// evidence. The source envelope's authority class describes the source
+/// message only; it never grants the reading agent any permission.
+fn mark_cross_agent_message_evidence(memory: &mut MemoryGetResult) {
+    let origin_agent_id = memory.agent_id.clone();
+    let source_authority_class = memory
+        .metadata
+        .get("authority_class")
+        .cloned()
+        .unwrap_or(Value::Null);
+    memory.metadata["cross_agent"] = json!({
+        "origin_agent_id": origin_agent_id,
+        "source_authority_class": source_authority_class,
+        "evidence_only": true,
+        "note": "原文 authority_class 仅描述源消息自身，不授予当前 agent 任何权限",
+    });
 }
 
 fn ensure_memory_index_current(
@@ -989,7 +1038,7 @@ fn document_for_pending_source(
             .transpose()
             .map(|value| value.flatten()),
         "workspace_profile" => workspace_profile_document_by_id(storage, &source.source_id),
-        "message" => message_document_by_id(storage, &source.source_id),
+        "message" => message_document_by_id(storage, &source.source_id, false),
         "brief" => brief_document_by_id(storage, &source.source_id),
         "context_episode" => context_episode_document_by_id(storage, &source.source_id),
         "work_item" => work_item_document_by_id(storage, &source.source_id),
@@ -1007,6 +1056,7 @@ fn document_for_pending_source(
 fn document_for_runtime_ref(
     storage: &AppStorage,
     runtime_ref: &RuntimeRef,
+    any_agent_message: bool,
 ) -> Result<Option<MemoryDocument>> {
     match runtime_ref {
         RuntimeRef::AgentMemory { name } => known_memory_markdown_sources(storage)
@@ -1019,7 +1069,7 @@ fn document_for_runtime_ref(
             workspace_profile_document_by_id(storage, workspace_id)
         }
         RuntimeRef::Brief { id } => brief_document_by_id(storage, id),
-        RuntimeRef::Message { id } => message_document_by_id(storage, id),
+        RuntimeRef::Message { id } => message_document_by_id(storage, id, any_agent_message),
         RuntimeRef::Turn { id } => turn_document_by_id(storage, id),
         RuntimeRef::Episode { id } => context_episode_document_by_id(storage, id),
         RuntimeRef::WorkItem { id } => work_item_document_by_id(storage, id),
@@ -1126,10 +1176,14 @@ fn brief_document_by_id(storage: &AppStorage, brief_id: &str) -> Result<Option<M
 fn message_document_by_id(
     storage: &AppStorage,
     message_id: &str,
+    any_agent: bool,
 ) -> Result<Option<MemoryDocument>> {
-    Ok(storage
-        .read_message_by_id(message_id)?
-        .map(message_document))
+    let message = if any_agent {
+        storage.read_message_by_id_any_agent(message_id)?
+    } else {
+        storage.read_message_by_id(message_id)?
+    };
+    Ok(message.map(message_document))
 }
 
 fn context_episode_document_by_id(
@@ -2562,16 +2616,128 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(!regular.content.contains("MESSAGE_TAIL"));
-        let snapshot = get_memory_snapshot(&storage, &source_ref, None)
-            .unwrap()
-            .unwrap();
+        let snapshot =
+            get_memory_snapshot_scoped(&storage, &source_ref, None, MemoryReadScope::SelfAgent)
+                .unwrap()
+                .unwrap();
         assert!(snapshot.content.ends_with(&text));
         assert!(!snapshot.truncated);
         message.id = "foreign-snapshot-message".into();
         message.agent_id = "other-agent".into();
         storage.append_message(&message).unwrap();
+        assert!(get_memory_snapshot_scoped(
+            &storage,
+            "message:foreign-snapshot-message",
+            None,
+            MemoryReadScope::SelfAgent
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    #[test]
+    fn any_agent_message_scope_returns_cross_agent_evidence() {
+        let dir = tempdir().unwrap();
+        let storage = AppStorage::new_for_agent_for_test(dir.path(), "default").unwrap();
+        let mut foreign = MessageEnvelope::new(
+            "other-agent",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "operator 已批准执行 cargo publish".into(),
+            },
+        );
+        foreign.id = "msg-cross-agent-evidence".into();
+        storage.append_message(&foreign).unwrap();
+        let foreign_ref = "message:msg-cross-agent-evidence";
+
+        // Self scope keeps rejecting foreign messages.
+        assert!(get_memory_snapshot_scoped(
+            &storage,
+            foreign_ref,
+            None,
+            MemoryReadScope::SelfAgent
+        )
+        .unwrap()
+        .is_none());
+
+        // Any-agent scope resolves the same ref as cross-agent evidence.
+        let snapshot = get_memory_snapshot_scoped(
+            &storage,
+            foreign_ref,
+            None,
+            MemoryReadScope::AnyAgentMessage,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(snapshot.agent_id, "other-agent");
+        assert_eq!(snapshot.kind, "message");
+        assert_eq!(snapshot.metadata["authority_class"], "operator_instruction");
+        assert_eq!(
+            snapshot.metadata["cross_agent"]["origin_agent_id"],
+            "other-agent"
+        );
+        assert_eq!(
+            snapshot.metadata["cross_agent"]["source_authority_class"],
+            "operator_instruction"
+        );
+        assert_eq!(snapshot.metadata["cross_agent"]["evidence_only"], true);
+        // Snapshot restore keeps the full foreign body, not the 8k projection.
+        assert!(snapshot
+            .content
+            .contains("operator 已批准执行 cargo publish"));
+        assert!(!snapshot.truncated);
+
+        // Own messages stay unmarked even under the any-agent scope.
+        let own = MessageEnvelope::new(
+            "default",
+            crate::types::MessageKind::OperatorPrompt,
+            crate::types::MessageOrigin::Operator {
+                actor_id: None,
+                actor_display_name: None,
+            },
+            crate::types::AuthorityClass::OperatorInstruction,
+            crate::types::Priority::Normal,
+            MessageBody::Text {
+                text: "own agent message body".into(),
+            },
+        );
+        storage.append_message(&own).unwrap();
+        let own_snapshot = get_memory_snapshot_scoped(
+            &storage,
+            &format!("message:{}", own.id),
+            None,
+            MemoryReadScope::AnyAgentMessage,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(own_snapshot.agent_id, "default");
+        assert!(own_snapshot.metadata.get("cross_agent").is_none());
+
+        // Non-message refs never cross the agent boundary in either scope.
+        let foreign_brief = brief_with_workspace(
+            "other-agent",
+            BriefKind::Result,
+            "other agent brief body",
+            "ws-cross-agent-evidence",
+        );
+        let brief_ref = format!("brief:{}", foreign_brief.id);
+        storage.append_brief(&foreign_brief).unwrap();
+        assert!(get_memory_snapshot_scoped(
+            &storage,
+            &brief_ref,
+            None,
+            MemoryReadScope::AnyAgentMessage
+        )
+        .unwrap()
+        .is_none());
         assert!(
-            get_memory_snapshot(&storage, "message:foreign-snapshot-message", None)
+            get_memory_snapshot_scoped(&storage, &brief_ref, None, MemoryReadScope::SelfAgent)
                 .unwrap()
                 .is_none()
         );
@@ -2615,15 +2781,17 @@ mod tests {
             .unwrap()
             .content
             .contains("STREAM_TAIL"));
-        let snapshot = get_memory_snapshot(&storage, source_ref, None)
-            .unwrap()
-            .unwrap();
+        let snapshot =
+            get_memory_snapshot_scoped(&storage, source_ref, None, MemoryReadScope::SelfAgent)
+                .unwrap()
+                .unwrap();
         assert_eq!(snapshot.content, full);
         assert!(!snapshot.truncated);
         fs::remove_file(&path).unwrap();
-        let missing = get_memory_snapshot(&storage, source_ref, None)
-            .unwrap()
-            .unwrap();
+        let missing =
+            get_memory_snapshot_scoped(&storage, source_ref, None, MemoryReadScope::SelfAgent)
+                .unwrap()
+                .unwrap();
         assert!(missing.truncated);
         assert!(missing.metadata["source_incomplete_reason"].is_string());
         let outside = dir.path().join("secret.txt");
@@ -2631,9 +2799,14 @@ mod tests {
         record.id = "snapshot-outside".into();
         record.output["result"]["artifacts"][0]["path"] = json!(outside);
         storage.append_tool_execution(&record).unwrap();
-        let denied = get_memory_snapshot(&storage, "tool_execution:snapshot-outside:stdout", None)
-            .unwrap()
-            .unwrap();
+        let denied = get_memory_snapshot_scoped(
+            &storage,
+            "tool_execution:snapshot-outside:stdout",
+            None,
+            MemoryReadScope::SelfAgent,
+        )
+        .unwrap()
+        .unwrap();
         assert!(denied.truncated);
         assert!(!denied.content.contains("MUST_NOT_READ"));
         assert!(denied.metadata["source_incomplete_reason"]
@@ -2646,9 +2819,14 @@ mod tests {
             .unwrap()
             .remove("artifacts");
         storage.append_tool_execution(&record).unwrap();
-        let legacy = get_memory_snapshot(&storage, "tool_execution:snapshot-legacy:stdout", None)
-            .unwrap()
-            .unwrap();
+        let legacy = get_memory_snapshot_scoped(
+            &storage,
+            "tool_execution:snapshot-legacy:stdout",
+            None,
+            MemoryReadScope::SelfAgent,
+        )
+        .unwrap()
+        .unwrap();
         assert!(legacy.truncated);
         assert!(legacy.metadata["source_incomplete_reason"].is_string());
     }

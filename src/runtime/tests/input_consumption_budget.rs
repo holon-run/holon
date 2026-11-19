@@ -483,10 +483,14 @@ async fn context_admission_compact_survives_restart_and_reaches_provider_with_or
     assert!(!projection.rendered.contains("ORIGINAL_UNREAD_TAIL"));
     assert!(projection.rendered.contains("external_evidence"));
     assert!(projection.rendered.contains("compact-restart-fixture"));
-    let original =
-        crate::memory::get_memory_snapshot(runtime.storage(), &projection.source_ref, None)
-            .unwrap()
-            .expect("the selected reference must resolve through authorized memory retrieval");
+    let original = crate::memory::get_memory_snapshot_scoped(
+        runtime.storage(),
+        &projection.source_ref,
+        None,
+        crate::memory::MemoryReadScope::SelfAgent,
+    )
+    .unwrap()
+    .expect("the selected reference must resolve through authorized memory retrieval");
     assert!(original.content.contains(&body));
     finish_claimed_test_run(&runtime).await;
     let database = runtime.runtime_db().clone();

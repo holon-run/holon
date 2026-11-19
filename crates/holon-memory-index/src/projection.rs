@@ -120,6 +120,11 @@ pub fn message_document(message: MessageEnvelope) -> MemoryDocument {
     let body = message_document_body(&message);
     let excerpt_body = message_body_text_for_memory(&message.body);
     let title = format!("Message {}", message.id);
+    // Exposed so callers can assemble cross-agent evidence markers without
+    // re-reading the envelope; same-agent responses are unchanged apart from
+    // this additive metadata field.
+    let authority_class =
+        serde_json::to_value(&message.authority_class).unwrap_or(serde_json::Value::Null);
     MemoryDocument {
         source_ref: format!("message:{}", message.id),
         source_kind: "message".into(),
@@ -136,6 +141,7 @@ pub fn message_document(message: MessageEnvelope) -> MemoryDocument {
             "message_seq": message.message_seq,
             "work_item_id": message.work_item_id,
             "task_id": message.task_id,
+            "authority_class": authority_class,
             "governance_surface": "runtime_evidence",
             "provenance_class": "message_envelope",
             "trust_class": "runtime_evidence",

@@ -652,6 +652,19 @@ impl AppStorage {
             .by_id(self.current_agent_id()?.as_deref(), message_id);
     }
 
+    /// Reads a message by id regardless of the owning agent.
+    ///
+    /// Message ids are a global namespace, not a secrecy boundary. This
+    /// backs cross-agent evidence reads where the returned authority never
+    /// transfers to the caller; callers must mark the result as evidence.
+    pub fn read_message_by_id_any_agent(
+        &self,
+        message_id: &str,
+    ) -> Result<Option<MessageEnvelope>> {
+        let runtime_db = self.runtime_db.clone();
+        return runtime_db.messages().by_id(None, message_id);
+    }
+
     pub fn read_messages_for_turn(
         &self,
         turn_id: &str,
