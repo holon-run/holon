@@ -8,6 +8,41 @@ use holon_model_catalog::{
 };
 
 #[test]
+fn gemini_neon_is_an_exact_native_route_with_synchronous_rest_limits() {
+    let report = generate_coverage(
+        &parse_snapshot("{}").unwrap(),
+        &BuiltInModelCatalog::new(),
+        &endpoint_associations().unwrap(),
+    )
+    .unwrap();
+    let routes: Vec<_> = report
+        .routes
+        .iter()
+        .filter(|row| row.route_ref.as_string().ends_with("/gemini-4-neon"))
+        .collect();
+    assert_eq!(routes.len(), 1);
+    let row = routes[0];
+    assert_eq!(row.route_ref.as_string(), "gemini@default/gemini-4-neon");
+    assert!(row.aliases.is_empty());
+    let facts = &row.effective;
+    assert_eq!(facts.context_window_tokens, Some(1_048_576));
+    assert_eq!(facts.default_max_output_tokens, Some(65_536));
+    assert_eq!(facts.max_output_tokens_upper_limit, Some(65_536));
+    assert_eq!(facts.runtime_max_output_tokens, 65_536);
+    assert!(facts.agent_turn);
+    assert!(facts.capabilities.image_input);
+    assert!(facts.capabilities.supports_reasoning);
+    assert!(!facts.capabilities.image_generation);
+    assert!(!facts.capabilities.parallel_tool_calls);
+    assert!(!facts.capabilities.interactive_exec);
+    assert!(!facts.decision_capable);
+    assert_eq!(
+        facts.reasoning_effort_options,
+        ["low", "medium", "high", "xhigh"]
+    );
+}
+
+#[test]
 fn seed_character_routes_keep_unconfirmed_capacity_unknown() {
     let report = generate_coverage(
         &parse_snapshot("{}").unwrap(),
