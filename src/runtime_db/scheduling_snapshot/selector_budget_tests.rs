@@ -129,7 +129,7 @@ fn borrowed_selectors_preserve_escaped_sql_and_manifest_precedence() -> Result<(
                 expected
             );
             let live_header = match family {
-                SchedulingFamily::Timer => "h.status IN ('active','scheduled')",
+                SchedulingFamily::Timer => "h.status IN ('active','scheduled','paused')",
                 SchedulingFamily::TimerWake => "h.status='pending'",
                 SchedulingFamily::ExternalTrigger => "h.status='active'",
             };
