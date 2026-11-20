@@ -240,8 +240,8 @@ impl OAuthProviderConfig {
         }
     }
 
-    /// GitHub Copilot uses Holon's OAuth app by default, with optional
-    /// installation-specific client ID overrides.
+    /// GitHub Copilot uses the bundled public OAuth app by default, with
+    /// optional installation-specific client ID overrides.
     pub fn github_copilot(client_id: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         Self {
             provider_id: GITHUB_COPILOT_PROVIDER_ID,
@@ -269,7 +269,7 @@ pub fn oauth_provider_config(provider_id: &str) -> Option<OAuthProviderConfig> {
 /// GitHub Copilot client ID overrides.
 ///
 /// `client_id_hint` is consulted before the `GITHUB_COPILOT_CLIENT_ID`
-/// environment variable for GitHub Copilot, falling back to Holon's OAuth app.
+/// environment variable for GitHub Copilot, falling back to the bundled default.
 /// The winning value is persisted in the credential profile so later refreshes
 /// do not depend on ambient configuration.
 pub fn resolve_oauth_provider_config(
@@ -573,8 +573,10 @@ const CODEX_OAUTH_CALLBACK_PORT: u16 = 1455;
 const CODEX_OAUTH_CALLBACK_FALLBACK_PORT: u16 = 1457;
 const CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS: i64 = 15 * 60;
 
-// Public client ID for Holon's OAuth app, not a first-party Copilot client.
-const GITHUB_COPILOT_OAUTH_CLIENT_ID: &str = "Ov23lioel2hHZITYyzwB";
+// Public client ID of the opencode project's OAuth app, not a first-party
+// Copilot client. GitHub admits this app to the modern Copilot catalog;
+// Holon's earlier user-owned app only reached a restricted legacy model set.
+const GITHUB_COPILOT_OAUTH_CLIENT_ID: &str = "Ov23li8tweQw6odWQebz";
 const GITHUB_COPILOT_CLIENT_ID_ENV_VAR: &str = "GITHUB_COPILOT_CLIENT_ID";
 const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";

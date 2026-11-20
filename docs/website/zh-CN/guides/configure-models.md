@@ -69,7 +69,8 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
 
 #### GitHub Copilot（实验性）
 
-Holon 已内置默认 OAuth App，无需填写 client ID：
+Holon 内置了一个公开的第三方 OAuth App（opencode 项目的 App），
+无需填写 client ID：
 
 ```bash
 holon onboard
@@ -87,9 +88,14 @@ holon config set providers.github-copilot.auth.client_id "<your-client-id>"
 Holon 将凭据和 client ID 存入自己的
 `github-copilot` profile，不读取 IDE 凭据，也不需要 client secret。
 
+凭据 profile 会保留登录时记录的 client ID。如果你曾用旧版 Holon 的默认 App
+登录，需要重新完成一次设备登录才能切换到当前内置 App；token 刷新会沿用原 App。
+
 此直连 provider 属于实验性支持：GitHub 登录成功不代表 Copilot 订阅权益、
 App／integration 准入或模型访问已验证。发现当前账户可用的模型后，选择返回的
-`github-copilot@default/<model-id>` 路由；Holon 不提供静态模型清单。
+路由；Holon 不提供静态模型清单。目录中声明 `/responses` 端点的模型通过
+`github-copilot@responses/<model-id>` 路由；其余模型使用
+`github-copilot@default/<model-id>`。
 请求使用真实身份 `Copilot-Integration-Id: holon`，不冒充编辑器。
 可接受的身份、模型、策略与用量限制由 GitHub 决定。删除本地凭据不会撤销
 GitHub 上的授权；停止访问时，还应在 GitHub 设置中撤销 App 授权。
