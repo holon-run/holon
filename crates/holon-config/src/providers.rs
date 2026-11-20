@@ -2,7 +2,7 @@ use super::*;
 pub use holon_provider::config::{
     AnthropicCacheCapabilities, AnthropicCacheStrategy, AnthropicContextManagementConfig,
     CredentialKind, CredentialSource, ProviderAuthConfig, ProviderRuntimeConfig,
-    GITHUB_COPILOT_CREDENTIAL_PROFILE, OPENAI_CODEX_CREDENTIAL_PROFILE,
+    OPENAI_CODEX_CREDENTIAL_PROFILE,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -26,7 +26,7 @@ use crate::{
         ModelDiscoveryCacheFile, ModelDiscoveryCacheStatus, DEFAULT_DISCOVERY_CACHE_TTL,
     },
     provider::{
-        build_candidate_from_model_route, build_provider_from_model_chain,
+        build_candidate_from_model_route, build_provider_for_startup,
         build_provider_from_model_chain_with_override, resolved_model_availability, AgentProvider,
         ConversationMessage, ModelBlock, ModelRouteParameterOverride, ProviderGenerateImageRequest,
         ProviderJsonSchemaResponseFormat, ProviderResponseFormatRequest, ProviderTurnRequest,
@@ -665,8 +665,11 @@ impl RuntimeHandle {
         provider_config.runtime_max_output_tokens = model_catalog
             .resolved_model_policy(&base_context_config, None)
             .runtime_max_output_tokens;
-        let provider =
-            build_provider_from_model_chain(&provider_config, &model_catalog.provider_chain(None))?;
+        let provider = build_provider_for_startup(
+            &provider_config,
+            &model_catalog.provider_chain(None),
+            None,
+        )?;
         let resolved_context_config =
             model_catalog.resolved_context_config(&base_context_config, None);
         Self::new_internal(
@@ -893,7 +896,7 @@ impl RuntimeHandle {
                     state.model_override.as_ref(),
                 )
                 .runtime_max_output_tokens;
-            provider = build_provider_from_model_chain_with_override(
+            provider = build_provider_for_startup(
                 &provider_config,
                 &chain,
                 model_route_parameter_override(&state),

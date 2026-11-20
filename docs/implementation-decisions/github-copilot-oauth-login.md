@@ -1,5 +1,10 @@
 # GitHub Copilot OAuth login boundary
 
+> Superseded: Holon retired this built-in provider. The original decision
+> below is retained as historical context. See the
+> [migration guide](../website/guides/configure-models.md#migrating-from-github-copilot)
+> for current behavior.
+
 ## Decision
 
 Holon exposes GitHub Copilot as an experimental bring-your-own-credential

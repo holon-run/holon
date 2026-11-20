@@ -1364,6 +1364,7 @@ impl RuntimeHandle {
         reasoning_effort: Option<String>,
         service_tier: Option<crate::config::ServiceTier>,
     ) -> Result<crate::types::AgentModelState> {
+        crate::provider::ensure_route_not_retired(&model_override)?;
         if let Some(tier) = service_tier {
             let snap = self.inner.config_snapshot.load();
             let route = snap

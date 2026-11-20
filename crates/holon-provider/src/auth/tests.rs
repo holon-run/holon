@@ -167,7 +167,7 @@ async fn github_refresh_uses_the_client_id_recorded_in_the_material() {
 }
 
 #[tokio::test]
-async fn github_refresh_without_a_refresh_token_requires_a_new_login() {
+async fn github_refresh_without_a_refresh_token_reports_retirement() {
     let material = json!({
         "tokens": {
             "access_token": "old-access"
@@ -185,7 +185,9 @@ async fn github_refresh_without_a_refresh_token_requires_a_new_login() {
     .unwrap_err();
 
     assert_eq!(failure.kind, CodexOAuthRefreshFailureKind::Rejected);
-    assert!(failure.message.contains("device login"));
+    assert!(failure
+        .message
+        .contains("provider github-copilot is retired; choose a supported provider"));
     assert!(!failure.message.contains("old-access"));
 }
 
@@ -466,94 +468,80 @@ fn keychain_account_matches_cli_prefix_shape() {
 }
 
 #[test]
-fn github_copilot_config_uses_the_users_own_client_id() {
-    let config = OAuthProviderConfig::github_copilot("Iv1.user-owned-client");
-
-    assert_eq!(config.provider_id, GITHUB_COPILOT_PROVIDER_ID);
-    assert_eq!(config.profile_name, GITHUB_COPILOT_CREDENTIAL_PROFILE);
-    assert_eq!(config.client_id, "Iv1.user-owned-client");
-    assert_eq!(config.device_protocol, OAuthDeviceProtocol::GitHub);
-}
-
-#[test]
-fn github_copilot_static_config_uses_holon_oauth_app() {
-    let config = oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID)
-        .expect("GitHub Copilot has a built-in OAuth app");
-    assert_eq!(config.client_id, "Ov23lioel2hHZITYyzwB");
-    assert!(provider_supports_oauth_device_login(
-        GITHUB_COPILOT_PROVIDER_ID
+fn retired_github_copilot_is_not_available_for_device_login() {
+    assert!(oauth_provider_config(RETIRED_GITHUB_COPILOT_PROVIDER).is_none());
+    assert!(!provider_supports_oauth_device_login(
+        RETIRED_GITHUB_COPILOT_PROVIDER
     ));
-}
-
-#[test]
-fn github_copilot_client_id_resolution_preserves_override_precedence() {
-    let _env = EnvVarGuard::set(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, "");
-    std::env::remove_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR);
-    let resolve = |hint| {
-        resolve_oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID, hint)
-            .expect("GitHub Copilot configuration should resolve")
-            .expect("GitHub Copilot supports OAuth")
-            .client_id
-    };
-
-    assert_eq!(resolve(None), "Ov23lioel2hHZITYyzwB");
-    assert_eq!(resolve(Some("  ")), "Ov23lioel2hHZITYyzwB");
-    for value in ["", "  "] {
-        std::env::set_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, value);
-        assert_eq!(resolve(None), "Ov23lioel2hHZITYyzwB");
+    for provider in [RETIRED_GITHUB_COPILOT_PROVIDER, " GitHub-Copilot "] {
+        for hint in [None, Some("old-app-client")] {
+            let error = resolve_oauth_provider_config(provider, hint).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "provider github-copilot is retired; choose a supported provider"
+            );
+        }
     }
-    std::env::set_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, "  Iv1.env-client  ");
-    assert_eq!(resolve(None), "Iv1.env-client");
-    assert_eq!(resolve(Some("  ")), "Iv1.env-client");
-    assert_eq!(resolve(Some("  Iv1.config-client  ")), "Iv1.config-client");
-
-    let stored = r#"{"oauth_client_id":"Iv1.stored-client"}"#;
-    let config = oauth_provider_config_for_material(GITHUB_COPILOT_PROVIDER_ID, stored)
-        .expect("stored configuration should resolve")
-        .expect("GitHub Copilot supports OAuth");
-    assert_eq!(config.client_id, "Iv1.stored-client");
 }
 
 #[test]
-fn github_copilot_material_records_client_id_and_expiry() {
-    let result = github_tokens_to_login_result(
-        &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
-        "gho_access".to_string(),
-        Some("ghr_refresh".to_string()),
-        Some(28800),
-    )
-    .expect("GitHub Copilot material should serialize");
-    let auth: AuthDotJson =
-        serde_json::from_str(&result.material).expect("material should use auth.json shape");
+fn supported_oauth_device_login_providers_are_unchanged() {
+    for (provider, expected) in [
+        ("openai-codex", "openai-codex"),
+        ("codex", "openai-codex"),
+        ("xai", "xai"),
+    ] {
+        assert!(provider_supports_oauth_device_login(provider));
+        let config = resolve_oauth_provider_config(provider, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(config.provider_id, expected);
+    }
+    assert!(resolve_oauth_provider_config("anthropic", None)
+        .unwrap()
+        .is_none());
+}
 
+#[test]
+fn stored_github_copilot_profiles_remain_readable() {
+    let stored = r#"{
+        "oauth_client_id":"old-app-client",
+        "tokens":{"access_token":"old-access-token","refresh_token":""},
+        "last_refresh":"2025-01-01T00:00:00Z"
+    }"#;
+    let profile = load_oauth_profile_credential(stored, RETIRED_GITHUB_COPILOT_PROVIDER).unwrap();
+    assert_eq!(profile.access_token, "old-access-token");
+    assert!(profile.expires_at.is_none());
+}
+
+#[tokio::test]
+async fn legacy_refresh_config_cannot_start_or_complete_device_login() {
+    let config = OAuthProviderConfig::github_copilot("old-app-client");
+    let error = request_oauth_device_code(&config).await.unwrap_err();
     assert_eq!(
-        auth.oauth_client_id.as_deref(),
-        Some("Iv1.user-owned-client")
+        error.to_string(),
+        "provider github-copilot is retired; choose a supported provider"
     );
-    let tokens = auth.tokens.expect("tokens should be present");
-    assert_eq!(tokens.access_token, "gho_access");
-    assert_eq!(tokens.refresh_token, "ghr_refresh");
-    assert!(auth.expires_at.is_some());
+    let code = CodexDeviceCode {
+        provider_id: config.provider_id.to_string(),
+        verification_url: String::new(),
+        user_code: String::new(),
+        interval: 0,
+        expires_at: Utc::now(),
+        secret: String::new(),
+        token_endpoint: None,
+    };
+    let error = complete_oauth_device_login(&config, code)
+        .await
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        "provider github-copilot is retired; choose a supported provider"
+    );
 }
 
 #[test]
-fn github_copilot_material_without_refresh_token_stays_refreshable_shaped() {
-    let result = github_tokens_to_login_result(
-        &OAuthProviderConfig::github_copilot("Iv1.user-owned-client"),
-        "gho_access".to_string(),
-        None,
-        None,
-    )
-    .expect("GitHub Copilot material should serialize");
-    let auth: AuthDotJson =
-        serde_json::from_str(&result.material).expect("material should use auth.json shape");
-
-    assert_eq!(auth.tokens.expect("tokens").refresh_token, "");
-    assert!(auth.expires_at.is_none());
-}
-
-#[test]
-fn github_device_poll_uses_oauth_standard_error_codes() {
+fn oauth_device_poll_accepts_standard_error_codes_with_http_success() {
     assert_eq!(
         classify_device_poll_status(
             reqwest::StatusCode::OK,

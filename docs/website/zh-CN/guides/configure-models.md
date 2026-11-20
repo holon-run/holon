@@ -67,32 +67,19 @@ Holon 采用统一的 `provider@endpoint/model` 路由规范（例如 `ollama@de
    holon config set model.default "deepseek@default/deepseek-chat"
    ```
 
-#### GitHub Copilot（实验性）
+#### 从 GitHub Copilot 迁移
 
-Holon 已内置默认 OAuth App，无需填写 client ID：
+Holon 已下线实验性的内置 GitHub Copilot provider。旧直连路由无法可靠提供较新的模型；
+Holon 验证过的 SDK 路径也无法在回放现有 Agent 历史时保留助手和工具消息的角色。
 
-```bash
-holon onboard
-```
+运行 `holon onboard` 接入受支持的 provider，再运行 `holon config models list` 查看可用路由。
+替换全局默认模型、单个 Agent 的配置和回退列表中的 `github-copilot/<model-id>` 或
+`github-copilot@default/<model-id>`。使用 `holon config set model.default` 更新全局默认模型，
+用 `holon agent model set` 更新 Agent 的专属模型，并检查旧的 `providers.github-copilot` 配置。
+如果首选路由已下线，Holon 不会自动改用其他 provider。
 
-选择 `github-copilot` 并完成 OAuth 设备登录。如需使用自己的 GitHub OAuth App，
-开启该 App 的设备流后配置它的 **client ID**，不要使用 App ID 或第一方编辑器的 client ID：
-
-```bash
-holon config set providers.github-copilot.auth.client_id "<your-client-id>"
-```
-
-也可以在执行登录的进程环境中设置 `GITHUB_COPILOT_CLIENT_ID`。
-优先级依次为显式配置、环境变量、内置默认值；空白覆盖值会被忽略。
-Holon 将凭据和 client ID 存入自己的
-`github-copilot` profile，不读取 IDE 凭据，也不需要 client secret。
-
-此直连 provider 属于实验性支持：GitHub 登录成功不代表 Copilot 订阅权益、
-App／integration 准入或模型访问已验证。发现当前账户可用的模型后，选择返回的
-`github-copilot@default/<model-id>` 路由；Holon 不提供静态模型清单。
-请求使用真实身份 `Copilot-Integration-Id: holon`，不冒充编辑器。
-可接受的身份、模型、策略与用量限制由 GitHub 决定。删除本地凭据不会撤销
-GitHub 上的授权；停止访问时，还应在 GitHub 设置中撤销 App 授权。
+升级不会删除已保存的 Copilot 凭据，也不会撤销 GitHub 授权。如需停止访问，请在 GitHub
+设置中撤销该 OAuth App 的授权。
 
 ### 场景三：在对话中自检实际模型与为特定 Agent 单独设模
 

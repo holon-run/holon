@@ -36,15 +36,19 @@ mod oauth_device_login_tests {
     use super::*;
 
     #[test]
-    fn custom_profile_and_client_id_are_used_together() {
+    fn retired_provider_is_rejected_even_with_legacy_auth_configuration() {
         let auth = crate::config::ProviderAuthConfig {
             profile: Some("copilot-work".into()),
             client_id: Some("own-oauth-app".into()),
             ..Default::default()
         };
-        let (config, profile) = oauth_device_login_config("github-copilot", Some(&auth)).unwrap();
-        assert_eq!(config.client_id, "own-oauth-app");
-        assert_eq!(profile, "copilot-work");
+        for auth in [None, Some(&auth)] {
+            let error = oauth_device_login_config("github-copilot", auth).unwrap_err();
+            assert_eq!(
+                error.to_string(),
+                "provider github-copilot is retired; choose a supported provider"
+            );
+        }
     }
 
     #[test]
@@ -64,21 +68,16 @@ mod oauth_device_login_tests {
     }
 
     #[test]
-    fn copilot_without_profile_uses_builtin_default() {
+    fn xai_custom_profile_and_builtin_fallback_are_preserved() {
         let auth = crate::config::ProviderAuthConfig {
-            client_id: Some("own-oauth-app".into()),
+            profile: Some("xai-work".into()),
             ..Default::default()
         };
-        let (config, profile) = oauth_device_login_config("github-copilot", Some(&auth)).unwrap();
+        let (config, profile) = oauth_device_login_config("xai", Some(&auth)).unwrap();
+        assert_eq!(config.provider_id, "xai");
+        assert_eq!(profile, "xai-work");
+        let (config, profile) = oauth_device_login_config("xai", None).unwrap();
         assert_eq!(profile, config.profile_name);
-    }
-
-    #[test]
-    fn copilot_without_auth_configuration_can_start_device_login() {
-        let (config, profile) = oauth_device_login_config("github-copilot", None)
-            .expect("GitHub Copilot login does not require client ID configuration");
-        assert!(!config.client_id.is_empty());
-        assert_eq!(profile, "github-copilot");
     }
 
     #[test]
@@ -88,24 +87,13 @@ mod oauth_device_login_tests {
 
     #[test]
     fn resolved_default_endpoint_auth_is_used_for_device_login() {
-        for provider in ["github-copilot", "openai-codex"] {
+        for provider in ["openai-codex", "xai"] {
             for root_override in [false, true] {
                 let mut stored = crate::config::HolonConfigFile::default();
-                crate::config::set_config_key(
-                    &mut stored,
-                    &format!("providers.{provider}.auth.client_id"),
-                    "root-client",
-                )
-                .unwrap();
                 let id = crate::config::ProviderId::parse(provider).unwrap();
-                let configured = stored.providers.get_mut(&id).unwrap();
-                if root_override {
-                    configured.auth.profile = Some("root-profile".into());
-                } else {
-                    configured.auth.client_id = None;
-                }
+                let configured = stored.providers.entry(id.clone()).or_default();
+                configured.auth.profile = root_override.then(|| "root-profile".into());
                 let mut endpoint_auth = configured.auth.clone();
-                endpoint_auth.client_id = Some("endpoint-client".into());
                 endpoint_auth.profile = Some("endpoint-profile".into());
                 configured.endpoints.insert(
                     crate::config::ProviderEndpointId::default_endpoint(),
@@ -120,12 +108,9 @@ mod oauth_device_login_tests {
                     &crate::config::CredentialStoreFile::default(),
                 )
                 .unwrap();
-                let (config, profile) =
+                let (_, profile) =
                     oauth_device_login_config(provider, Some(&registry[&id].auth)).unwrap();
                 assert_eq!(profile, "endpoint-profile");
-                if provider == "github-copilot" {
-                    assert_eq!(config.client_id, "endpoint-client");
-                }
             }
         }
     }
@@ -868,7 +853,8 @@ pub async fn start_oauth_device_login(
         .ok()
         .and_then(|provider_id| app_config.providers.get(&provider_id))
         .map(|provider| &provider.auth);
-    let (config, profile) = oauth_device_login_config(&provider, auth).map_err(error_response)?;
+    let (config, profile) = oauth_device_login_config(&provider, auth)
+        .map_err(|error| bad_request(error.to_string()))?;
     let device_code = crate::auth::request_oauth_device_code(&config)
         .await
         .map_err(error_response)?;

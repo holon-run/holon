@@ -620,6 +620,8 @@ describe("device login model discovery", () => {
 
   function installLoginFetch(providerId: string) {
     const control = {
+      model: providerId === "xai" ? "xai/grok-4" : "openai-codex/gpt-5.2-codex",
+      startError: undefined as string | undefined,
       completedGeneration: 1,
       reloadState: "applying",
       lastError: undefined as string | undefined,
@@ -646,6 +648,12 @@ describe("device login model discovery", () => {
         });
       }
       if (url.endsWith(`/auth/${providerId}/device/start`)) {
+        if (control.startError) {
+          return new Response(JSON.stringify({ error: control.startError, code: "bad_request" }), {
+            status: 400,
+            headers: { "content-type": "application/json" },
+          });
+        }
         return jsonResponse({ ok: true, job: { id: "login-job" }, user_code: "TEST-CODE", interval: 3 });
       }
       if (url.endsWith("/jobs/login-job")) {
@@ -689,7 +697,7 @@ describe("device login model discovery", () => {
             headers: { "content-type": "application/json" },
           });
         }
-        return jsonResponse({ available_models: [`${providerId}/gpt-4o`] });
+        return jsonResponse({ available_models: [control.model] });
       }
       throw new Error(`Unexpected request: ${url}`);
     }));
@@ -697,8 +705,8 @@ describe("device login model discovery", () => {
   }
 
   it.each([
-    { providerId: "github-copilot", reloadState: "applying" },
-    { providerId: "github-copilot", reloadState: "completed" },
+    { providerId: "xai", reloadState: "applying" },
+    { providerId: "xai", reloadState: "completed" },
     { providerId: "openai-codex", reloadState: "applying" },
   ])("waits for the login generation: $providerId, $reloadState", async ({ providerId, reloadState }) => {
     const previous = useRuntimeStore.getState();
@@ -718,7 +726,7 @@ describe("device login model discovery", () => {
       expect(control.refreshes).toBe(1);
       expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
       expect(useRuntimeStore.getState().modelCatalog.options).toEqual([
-        expect.objectContaining({ model: `${providerId}/gpt-4o` }),
+        expect.objectContaining({ model: control.model }),
       ]);
     } finally {
       useRuntimeStore.setState(previous, true);
@@ -727,13 +735,13 @@ describe("device login model discovery", () => {
 
   it.each(["failed", "applying"])("does not refresh when reload state is %s", async (reloadState) => {
     const previous = useRuntimeStore.getState();
-    const control = installLoginFetch("github-copilot");
+    const control = installLoginFetch("xai");
     control.reloadState = reloadState;
     control.lastError = reloadState === "failed" ? "reload rejected" : undefined;
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     vi.useFakeTimers();
     try {
-      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await useRuntimeStore.getState().startCodexDeviceLogin("xai");
       await vi.advanceTimersByTimeAsync(30_000);
       expect(control.refreshes).toBe(0);
       expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
@@ -747,12 +755,12 @@ describe("device login model discovery", () => {
 
   it.each(["config", "credentials"])("reports %s read errors without polling a completed login again", async (failure) => {
     const previous = useRuntimeStore.getState();
-    const control = installLoginFetch("github-copilot");
+    const control = installLoginFetch("xai");
     control.credentialsFail = failure === "credentials";
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     vi.useFakeTimers();
     try {
-      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await useRuntimeStore.getState().startCodexDeviceLogin("xai");
       await vi.advanceTimersByTimeAsync(3_000);
       expect(control.configReads).toBeGreaterThan(0);
       expect(control.refreshes).toBe(0);
@@ -781,14 +789,14 @@ describe("device login model discovery", () => {
 
   it("reports catalog errors without polling an already completed login again", async () => {
     const previous = useRuntimeStore.getState();
-    const control = installLoginFetch("github-copilot");
+    const control = installLoginFetch("xai");
     control.completedGeneration = 5;
     control.reloadState = "completed";
     control.catalogFails = true;
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     vi.useFakeTimers();
     try {
-      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await useRuntimeStore.getState().startCodexDeviceLogin("xai");
       await vi.advanceTimersByTimeAsync(30_000);
       expect(control.refreshes).toBe(1);
       expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("completed");
@@ -800,11 +808,11 @@ describe("device login model discovery", () => {
 
   it("does not publish a login cleared while its reload was pending", async () => {
     const previous = useRuntimeStore.getState();
-    const control = installLoginFetch("github-copilot");
+    const control = installLoginFetch("xai");
     await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
     vi.useFakeTimers();
     try {
-      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await useRuntimeStore.getState().startCodexDeviceLogin("xai");
       await vi.advanceTimersByTimeAsync(3_000);
       useRuntimeStore.getState().clearCodexDeviceLogin();
       control.completedGeneration = 5;
@@ -812,6 +820,27 @@ describe("device login model discovery", () => {
       await vi.advanceTimersByTimeAsync(100);
       expect(control.refreshes).toBe(0);
       expect(useRuntimeStore.getState().codexDeviceLogin.status).toBe("idle");
+    } finally {
+      useRuntimeStore.setState(previous, true);
+    }
+  });
+
+  it("shows the retired provider migration error without polling a job", async () => {
+    const previous = useRuntimeStore.getState();
+    const control = installLoginFetch("github-copilot");
+    const message = "provider github-copilot is retired; choose a supported provider";
+    control.startError = message;
+    await useRuntimeStore.getState().setRuntimeConnection({ mode: "local" });
+    vi.useFakeTimers();
+    try {
+      await useRuntimeStore.getState().startCodexDeviceLogin("github-copilot");
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(useRuntimeStore.getState().codexDeviceLogin).toMatchObject({
+        status: "failed",
+        error: expect.stringContaining(message),
+      });
+      expect(control.jobReads).toBe(0);
+      expect(control.refreshes).toBe(0);
     } finally {
       useRuntimeStore.setState(previous, true);
     }

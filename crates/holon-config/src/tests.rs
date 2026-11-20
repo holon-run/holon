@@ -90,46 +90,36 @@ fn built_in_openai_codex_defaults_to_holon_oauth_profile() {
 }
 
 #[test]
-fn built_in_github_copilot_defaults_to_oauth_profile() {
-    let settings_env = HashMap::new();
-    let registry = built_in_provider_registry_with_settings(&settings_env).unwrap();
-    let github_copilot = registry
-        .get(&ProviderId::parse("github-copilot").unwrap())
-        .unwrap();
-
-    assert_eq!(
-        github_copilot.transport,
-        ProviderTransportKind::OpenAiChatCompletions
-    );
-    assert_eq!(github_copilot.base_url, "https://api.githubcopilot.com");
-    assert_eq!(github_copilot.auth.source, CredentialSource::AuthProfile);
-    assert_eq!(github_copilot.auth.kind, CredentialKind::OAuth);
-    assert_eq!(
-        github_copilot.auth.profile.as_deref(),
-        Some(GITHUB_COPILOT_CREDENTIAL_PROFILE)
-    );
-    assert!(github_copilot.credential.is_none());
-    let integration_id = github_copilot
-        .headers
-        .iter()
-        .find(|(name, _)| *name == "copilot-integration-id")
-        .map(|(_, value)| value.to_string());
-    assert_eq!(integration_id.as_deref(), Some("holon"));
-}
-
-#[test]
-fn github_copilot_catalog_is_discovery_only() {
-    use holon_domain::model_values::{
-        provider_definition, ModelDiscoveryAuth, ModelDiscoveryRoute, ProviderCatalogPolicy,
+fn retired_copilot_config_and_named_endpoints_do_not_enter_registry() {
+    let mut config = HolonConfigFile::default();
+    let id = ProviderId::parse("github-copilot").unwrap();
+    let endpoint = ProviderEndpointId::parse("coding").unwrap();
+    let legacy = ProviderConfigFile {
+        base_url: "https://api.githubcopilot.com".into(),
+        auth: ProviderAuthConfig {
+            source: CredentialSource::AuthProfile,
+            kind: CredentialKind::OAuth,
+            profile: Some("github-copilot".into()),
+            client_id: Some("legacy-client".into()),
+            ..Default::default()
+        },
+        endpoints: BTreeMap::from([(endpoint.clone(), ProviderEndpointConfigFile::default())]),
+        plans: BTreeMap::from([(
+            "coding".into(),
+            ProviderPlanConfigFile {
+                endpoint: Some(endpoint),
+            },
+        )]),
+        ..Default::default()
     };
-    let definition = provider_definition("github-copilot").unwrap();
-    assert_eq!(
-        definition.catalog_policy,
-        ProviderCatalogPolicy::DiscoveryOnly
-    );
-    let discovery = definition.discovery.unwrap();
-    assert_eq!(discovery.auth, ModelDiscoveryAuth::Optional);
-    assert_eq!(discovery.route, ModelDiscoveryRoute::OpenAiCompatible);
+    config.providers.insert(id.clone(), legacy);
+    let registry =
+        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
+            .unwrap();
+    assert!(!registry.contains_key(&id));
+    assert!(!registry.contains_key(&ProviderId::parse("github-copilot-coding").unwrap()));
+    assert!(registry.contains_key(&ProviderId::parse("openai-codex").unwrap()));
+    assert!(config.providers.contains_key(&id));
 }
 
 #[test]
@@ -156,75 +146,9 @@ fn provider_auth_config_client_id_round_trip() {
 }
 
 #[test]
-fn github_copilot_configured_headers_keep_builtin_integration_id() {
-    let mut config = HolonConfigFile::default();
-    let id = ProviderId::parse("github-copilot").unwrap();
-    config.providers.insert(
-        id.clone(),
-        ProviderConfigFile {
-            headers: Default::default(),
-            cache_capabilities: None,
-            transport: ProviderTransportKind::OpenAiChatCompletions,
-            base_url: "https://api.githubcopilot.com".into(),
-            auth: ProviderAuthConfig {
-                source: CredentialSource::AuthProfile,
-                kind: CredentialKind::OAuth,
-                env: None,
-                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
-                external: None,
-                client_id: None,
-            },
-            reasoning_effort: None,
-            builtin_web_search: None,
-            endpoints: BTreeMap::new(),
-            plans: BTreeMap::new(),
-        },
-    );
-    let registry =
-        resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
-            .unwrap();
-    let runtime = registry.get(&id).unwrap();
-    assert_eq!(
-        runtime
-            .headers
-            .iter()
-            .find(|(name, _)| *name == "copilot-integration-id")
-            .map(|(_, value)| value),
-        Some("holon")
-    );
-
-    let mut with_override = config;
-    with_override.providers.get_mut(&id).unwrap().headers =
-        ProviderHeaders::new([("X-Copilot-Test".to_string(), "1".to_string())]).unwrap();
-    let registry = resolve_provider_registry(
-        &with_override,
-        &HashMap::new(),
-        &CredentialStoreFile::default(),
-    )
-    .unwrap();
-    let runtime = registry.get(&id).unwrap();
-    assert_eq!(
-        runtime
-            .headers
-            .iter()
-            .find(|(name, _)| *name == "copilot-integration-id")
-            .map(|(_, value)| value),
-        Some("holon")
-    );
-    assert_eq!(
-        runtime
-            .headers
-            .iter()
-            .find(|(name, _)| *name == "x-copilot-test")
-            .map(|(_, value)| value),
-        Some("1")
-    );
-}
-
-#[test]
 fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
     let mut config = HolonConfigFile::default();
-    let id = ProviderId::parse("github-copilot").unwrap();
+    let id = ProviderId::parse("example-oauth").unwrap();
     let mut endpoints = BTreeMap::new();
     endpoints.insert(
         ProviderEndpointId::parse("default").unwrap(),
@@ -243,7 +167,7 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
         ProviderEndpointId::parse("coding").unwrap(),
         ProviderEndpointConfigFile {
             transport: None,
-            base_url: Some("https://api.githubcopilot.com".to_string()),
+            base_url: Some("https://example.invalid/v1".to_string()),
             auth: None,
             headers: ProviderHeaders::new([("x-coding".to_string(), "coding-layer".to_string())])
                 .unwrap(),
@@ -266,12 +190,12 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
             .unwrap(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiChatCompletions,
-            base_url: "https://api.githubcopilot.com".into(),
+            base_url: "https://example.invalid/v1".into(),
             auth: ProviderAuthConfig {
                 source: CredentialSource::AuthProfile,
                 kind: CredentialKind::OAuth,
                 env: None,
-                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                profile: Some("example-oauth".into()),
                 external: None,
                 client_id: None,
             },
@@ -286,18 +210,9 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
         resolve_provider_registry(&config, &HashMap::new(), &CredentialStoreFile::default())
             .unwrap();
     let alias = registry
-        .get(&ProviderId::parse("github-copilot-coding").unwrap())
+        .get(&ProviderId::parse("example-oauth-coding").unwrap())
         .unwrap();
     assert_eq!(alias.route_endpoint.as_str(), "coding");
-    // The built-in identity header and the provider-level header survive.
-    assert_eq!(
-        alias
-            .headers
-            .iter()
-            .find(|(name, _)| *name == "copilot-integration-id")
-            .map(|(_, value)| value),
-        Some("holon")
-    );
     assert_eq!(
         alias
             .headers
@@ -341,19 +256,19 @@ fn plan_endpoint_alias_headers_recompute_without_default_endpoint_leak() {
 #[test]
 fn provider_auth_client_id_config_keys_round_trip() {
     let mut config = HolonConfigFile::default();
-    let id = ProviderId::parse("github-copilot").unwrap();
+    let id = ProviderId::parse("example-oauth").unwrap();
     config.providers.insert(
         id.clone(),
         ProviderConfigFile {
             headers: Default::default(),
             cache_capabilities: None,
             transport: ProviderTransportKind::OpenAiChatCompletions,
-            base_url: "https://api.githubcopilot.com".into(),
+            base_url: "https://example.invalid/v1".into(),
             auth: ProviderAuthConfig {
                 source: CredentialSource::AuthProfile,
                 kind: CredentialKind::OAuth,
                 env: None,
-                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
+                profile: Some("example-oauth".into()),
                 external: None,
                 client_id: None,
             },
@@ -366,18 +281,18 @@ fn provider_auth_client_id_config_keys_round_trip() {
 
     set_provider_config_key(
         &mut config,
-        "providers.github-copilot.auth.client_id",
+        "providers.example-oauth.auth.client_id",
         "Iv1.root-client",
     )
     .unwrap();
     assert_eq!(
-        get_provider_config_key(&config, "providers.github-copilot.auth.client_id").unwrap(),
+        get_provider_config_key(&config, "providers.example-oauth.auth.client_id").unwrap(),
         serde_json::json!("Iv1.root-client")
     );
 
     set_provider_config_key(
         &mut config,
-        "providers.github-copilot.endpoints.default.auth.client_id",
+        "providers.example-oauth.endpoints.default.auth.client_id",
         "Iv1.endpoint-client",
     )
     .unwrap();
@@ -391,7 +306,7 @@ fn provider_auth_client_id_config_keys_round_trip() {
     assert_eq!(
         get_provider_config_key(
             &config,
-            "providers.github-copilot.endpoints.default.auth.client_id"
+            "providers.example-oauth.endpoints.default.auth.client_id"
         )
         .unwrap(),
         serde_json::json!("Iv1.endpoint-client")
@@ -405,20 +320,20 @@ fn provider_auth_client_id_config_keys_round_trip() {
         Some("Iv1.endpoint-client")
     );
 
-    unset_provider_config_key(&mut config, "providers.github-copilot.auth.client_id").unwrap();
+    unset_provider_config_key(&mut config, "providers.example-oauth.auth.client_id").unwrap();
     assert_eq!(
-        get_provider_config_key(&config, "providers.github-copilot.auth.client_id").unwrap(),
+        get_provider_config_key(&config, "providers.example-oauth.auth.client_id").unwrap(),
         serde_json::Value::Null
     );
     unset_provider_config_key(
         &mut config,
-        "providers.github-copilot.endpoints.default.auth.client_id",
+        "providers.example-oauth.endpoints.default.auth.client_id",
     )
     .unwrap();
     assert_eq!(
         get_provider_config_key(
             &config,
-            "providers.github-copilot.endpoints.default.auth.client_id"
+            "providers.example-oauth.endpoints.default.auth.client_id"
         )
         .unwrap(),
         serde_json::Value::Null

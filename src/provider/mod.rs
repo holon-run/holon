@@ -9,8 +9,9 @@ mod registry;
 mod transports;
 
 pub(crate) use catalog::{
-    build_candidate_from_model_route, build_candidate_with_catalog,
-    build_provider_from_model_chain_with_override, ModelRouteParameterOverride,
+    build_candidate_from_model_route, build_candidate_with_catalog, build_provider_for_startup,
+    build_provider_from_model_chain_with_override, ensure_route_not_retired,
+    ModelRouteParameterOverride,
 };
 pub use catalog::{build_provider_from_config, build_provider_from_model_chain};
 pub use diagnostics::{

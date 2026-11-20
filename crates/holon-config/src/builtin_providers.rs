@@ -1,8 +1,8 @@
 use super::*;
 pub(crate) use holon_domain::model_values::built_in_provider_endpoint_identity;
 use holon_domain::model_values::{
-    provider_definitions, ProviderContextManagement, ProviderDefinition, ProviderMaterializer,
-    ProviderWebSearch,
+    is_retired_provider, provider_definitions, ProviderContextManagement, ProviderDefinition,
+    ProviderMaterializer, ProviderWebSearch,
 };
 
 pub fn validate_provider_config(
@@ -655,12 +655,7 @@ pub fn built_in_provider_default_config_with_settings(
         .map(|provider| ProviderConfigFile {
             transport: provider.transport,
             base_url: provider.base_url.clone(),
-            // Copilot onboarding needs its OAuth profile before a credential exists.
-            auth: if provider_id.as_str() == "github-copilot" {
-                provider.auth.clone()
-            } else {
-                ProviderAuthConfig::default()
-            },
+            auth: ProviderAuthConfig::default(),
             headers: ProviderHeaders::default(),
             reasoning_effort: None,
             builtin_web_search: None,
@@ -705,6 +700,9 @@ pub fn resolve_provider_registry(
         provider.credential = None;
     }
     for (id, provider_config) in &stored_config.providers {
+        if is_retired_provider(id) {
+            continue;
+        }
         let built_in = registry.remove(id);
         let runtime = materialize_provider_config(
             id.clone(),
@@ -716,6 +714,9 @@ pub fn resolve_provider_registry(
         registry.insert(id.clone(), runtime);
     }
     for (id, provider_config) in &stored_config.providers {
+        if is_retired_provider(id) {
+            continue;
+        }
         let Some(base_runtime) = registry.get(id).cloned() else {
             continue;
         };
@@ -944,9 +945,6 @@ pub(crate) fn populate_built_in_provider_catalog(
             ProviderMaterializer::VercelAiGateway => {
                 insert_vercel_ai_gateway_provider(catalog, definition, settings_env)?
             }
-            ProviderMaterializer::GitHubCopilot => {
-                insert_github_copilot_provider(catalog, definition, settings_env)?
-            }
             ProviderMaterializer::AliasOnly => {}
         }
     }
@@ -1008,47 +1006,6 @@ fn insert_openai_codex_provider(
             reasoning_effort,
             context_management: Default::default(),
             builtin_web_search: Some(openai_codex_builtin_web_search_config()),
-        },
-    )
-}
-
-fn insert_github_copilot_provider(
-    catalog: &mut BuiltInProviderCatalog,
-    definition: &ProviderDefinition,
-    settings_env: &HashMap<String, String>,
-) -> Result<()> {
-    let id = ProviderId::parse(definition.legacy_provider)?;
-    // Real integration identity only: no editor/IDE mimicry headers.
-    let headers = holon_provider::config::ProviderHeaders::new([(
-        "Copilot-Integration-Id".to_string(),
-        "holon".to_string(),
-    )])?;
-    insert_definition_runtime(
-        catalog,
-        definition,
-        ProviderRuntimeConfig {
-            headers,
-            id,
-            route_provider: ProviderId::parse(definition.route_provider)?,
-            route_endpoint: ProviderEndpointId::parse(definition.route_endpoint)?,
-            transport: definition.transport,
-            base_url: get_config_value("HOLON_GITHUB_COPILOT_BASE_URL", None, settings_env)
-                .unwrap_or_else(|| definition.default_base_url.to_string()),
-            auth: ProviderAuthConfig {
-                source: CredentialSource::AuthProfile,
-                kind: CredentialKind::OAuth,
-                env: None,
-                profile: Some(GITHUB_COPILOT_CREDENTIAL_PROFILE.into()),
-                external: None,
-                client_id: None,
-            },
-            credential: None,
-            credential_store_path: None,
-            codex_home: None,
-            originator: None,
-            reasoning_effort: None,
-            context_management: Default::default(),
-            builtin_web_search: None,
         },
     )
 }

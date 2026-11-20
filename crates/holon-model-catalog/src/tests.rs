@@ -84,10 +84,7 @@ fn discovery_catalog_policies_match_static_catalog_registration() {
             ),
             ProviderCatalogPolicy::DiscoveryOnly => {
                 assert!(definition.discovery.is_some());
-                assert!(matches!(
-                    definition.materializer,
-                    ProviderMaterializer::Generic | ProviderMaterializer::GitHubCopilot
-                ));
+                assert_eq!(definition.materializer, ProviderMaterializer::Generic);
             }
             ProviderCatalogPolicy::StaticOnly => {}
         }

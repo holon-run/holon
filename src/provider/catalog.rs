@@ -1,6 +1,7 @@
 use std::{path::Path, sync::Arc};
 
 use anyhow::{anyhow, Result};
+use holon_domain::model_values::{is_retired_provider, RETIRED_PROVIDER_MIGRATION};
 
 use crate::{
     config::{
@@ -16,6 +17,44 @@ pub(crate) use holon_provider::provider::fallback::ProviderCandidate;
 
 pub fn build_provider_from_config(config: &AppConfig) -> Result<Arc<dyn AgentProvider>> {
     build_provider_from_model_chain(config, &config.provider_chain())
+}
+
+pub(crate) fn ensure_route_not_retired(route: &ModelRouteRef) -> Result<()> {
+    if is_retired_provider(&route.provider) {
+        return Err(anyhow!(
+            "{}: {RETIRED_PROVIDER_MIGRATION}",
+            route.as_string()
+        ));
+    }
+    Ok(())
+}
+
+/// Hosts and agents with an old primary must still load so it can be changed.
+/// Turn construction continues to reject that primary, even with a fallback.
+pub(crate) fn build_provider_for_startup(
+    config: &AppConfig,
+    chain: &[ModelRouteRef],
+    parameter_override: Option<ModelRouteParameterOverride<'_>>,
+) -> Result<Arc<dyn AgentProvider>> {
+    if let Some(route) = chain
+        .first()
+        .filter(|route| is_retired_provider(&route.provider))
+    {
+        return Ok(Arc::new(RetiredRoute(route.as_string())));
+    }
+    build_provider_from_model_chain_with_override(config, chain, parameter_override)
+}
+
+struct RetiredRoute(String);
+
+#[async_trait::async_trait]
+impl AgentProvider for RetiredRoute {
+    async fn complete_turn(
+        &self,
+        _request: super::ProviderTurnRequest,
+    ) -> Result<super::ProviderTurnResponse> {
+        Err(anyhow!("{}: {RETIRED_PROVIDER_MIGRATION}", self.0))
+    }
 }
 
 pub fn build_provider_from_model_chain(
@@ -37,6 +76,9 @@ pub(crate) fn build_provider_from_model_chain_with_override(
     provider_chain: &[ModelRouteRef],
     parameter_override: Option<ModelRouteParameterOverride<'_>>,
 ) -> Result<Arc<dyn AgentProvider>> {
+    if let Some(primary) = provider_chain.first() {
+        ensure_route_not_retired(primary)?;
+    }
     let mut candidates = Vec::new();
     let mut errors = Vec::new();
     let disable_fallback = config.provider_fallback_disabled();
@@ -168,6 +210,7 @@ fn resolve_explicit_model_route_for_candidate_with_catalog(
     route_ref: &ModelRouteRef,
     requested_capability: ModelRouteCapability,
 ) -> Result<ResolvedModelRoute> {
+    ensure_route_not_retired(route_ref)?;
     let base_context_config = base_context_config_for_candidate(config);
     catalog
         .resolve_explicit_model_route(&base_context_config, route_ref, requested_capability)
@@ -293,6 +336,27 @@ mod tests {
             .to_string()
             .contains("openai-codex/test-limited-effort"));
         assert!(error.to_string().contains("low, medium, high, xhigh"));
+    }
+
+    #[test]
+    fn retired_primary_requires_migration_without_blocking_startup() {
+        let config = codex_config("gpt-5.6-luna", "max");
+        let supported = config.default_model.clone();
+        for legacy in [
+            "github-copilot/gpt-4o-mini",
+            "github-copilot@default/gpt-4o-mini",
+        ] {
+            let retired = ModelRouteRef::parse_compatible(legacy).unwrap();
+            let chain = [retired.clone(), supported.clone()];
+            assert!(build_provider_for_startup(&config, &chain, None).is_ok());
+            let error = build_provider_from_model_chain(&config, &chain)
+                .err()
+                .expect("a supported fallback must not replace the retired primary");
+            assert!(error.to_string().contains(RETIRED_PROVIDER_MIGRATION));
+            assert!(
+                build_provider_from_model_chain(&config, &[supported.clone(), retired]).is_ok()
+            );
+        }
     }
 
     #[test]

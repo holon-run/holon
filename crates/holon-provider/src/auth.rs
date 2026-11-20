@@ -14,7 +14,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-use crate::config::{GITHUB_COPILOT_CREDENTIAL_PROFILE, GITHUB_COPILOT_PROVIDER_ID};
+const RETIRED_GITHUB_COPILOT_PROVIDER: &str = "github-copilot";
+
+fn reject_retired_oauth_device_login(provider_id: &str) -> Result<()> {
+    if provider_id
+        .trim()
+        .eq_ignore_ascii_case(RETIRED_GITHUB_COPILOT_PROVIDER)
+    {
+        anyhow::bail!(
+            "provider {RETIRED_GITHUB_COPILOT_PROVIDER} is retired; choose a supported provider"
+        );
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OAuthDeviceProtocol {
@@ -22,7 +34,7 @@ pub enum OAuthDeviceProtocol {
     Codex,
     /// OIDC-discovery-based standard device flow (for example xAI).
     Standard,
-    /// GitHub's fixed-endpoint OAuth device flow for user-owned apps.
+    /// Legacy GitHub token refresh protocol, not a supported device login.
     GitHub,
 }
 
@@ -240,15 +252,13 @@ impl OAuthProviderConfig {
         }
     }
 
-    /// GitHub Copilot uses Holon's OAuth app by default, with optional
-    /// installation-specific client ID overrides.
-    pub fn github_copilot(client_id: impl Into<std::borrow::Cow<'static, str>>) -> Self {
+    fn github_copilot(client_id: impl Into<std::borrow::Cow<'static, str>>) -> Self {
         Self {
-            provider_id: GITHUB_COPILOT_PROVIDER_ID,
+            provider_id: RETIRED_GITHUB_COPILOT_PROVIDER,
             issuer: "https://github.com",
             client_id: client_id.into(),
             scopes: &[],
-            profile_name: GITHUB_COPILOT_CREDENTIAL_PROFILE,
+            profile_name: RETIRED_GITHUB_COPILOT_PROVIDER,
             device_protocol: OAuthDeviceProtocol::GitHub,
         }
     }
@@ -258,33 +268,16 @@ pub fn oauth_provider_config(provider_id: &str) -> Option<OAuthProviderConfig> {
     match provider_id {
         "openai-codex" | "codex" => Some(OAuthProviderConfig::codex()),
         "xai" => Some(OAuthProviderConfig::xai()),
-        GITHUB_COPILOT_PROVIDER_ID => Some(OAuthProviderConfig::github_copilot(
-            GITHUB_COPILOT_OAUTH_CLIENT_ID,
-        )),
         _ => None,
     }
 }
 
-/// Resolves the OAuth configuration for a provider, including optional
-/// GitHub Copilot client ID overrides.
-///
-/// `client_id_hint` is consulted before the `GITHUB_COPILOT_CLIENT_ID`
-/// environment variable for GitHub Copilot, falling back to Holon's OAuth app.
-/// The winning value is persisted in the credential profile so later refreshes
-/// do not depend on ambient configuration.
+/// Resolves the OAuth device login configuration for a provider.
 pub fn resolve_oauth_provider_config(
     provider_id: &str,
-    client_id_hint: Option<&str>,
+    _client_id_hint: Option<&str>,
 ) -> Result<Option<OAuthProviderConfig>> {
-    if provider_id == GITHUB_COPILOT_PROVIDER_ID {
-        let client_id = client_id_hint
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_owned)
-            .or_else(|| env_client_id(GITHUB_COPILOT_CLIENT_ID_ENV_VAR))
-            .unwrap_or_else(|| GITHUB_COPILOT_OAUTH_CLIENT_ID.to_owned());
-        return Ok(Some(OAuthProviderConfig::github_copilot(client_id)));
-    }
+    reject_retired_oauth_device_login(provider_id)?;
     Ok(oauth_provider_config(provider_id))
 }
 
@@ -306,17 +299,19 @@ pub fn oauth_client_id_from_material(material: &str) -> Option<String> {
 
 /// Resolve the OAuth configuration for a provider using a credential profile.
 ///
-/// Unlike [`resolve_oauth_provider_config`], this reads the client id from
-/// the stored material, so a refresh does not depend on the user
-/// configuration or the environment still carrying it.
+/// Unlike device login, legacy runtime callers can resolve the refresh
+/// configuration for an existing GitHub Copilot profile.
 pub fn oauth_provider_config_for_material(
     provider_id: &str,
     material: &str,
 ) -> Result<Option<OAuthProviderConfig>> {
-    resolve_oauth_provider_config(
-        provider_id,
-        oauth_client_id_from_material(material).as_deref(),
-    )
+    if provider_id == RETIRED_GITHUB_COPILOT_PROVIDER {
+        let client_id = oauth_client_id_from_material(material)
+            .or_else(|| env_client_id(GITHUB_COPILOT_CLIENT_ID_ENV_VAR))
+            .unwrap_or_else(|| GITHUB_COPILOT_OAUTH_CLIENT_ID.to_owned());
+        return Ok(Some(OAuthProviderConfig::github_copilot(client_id)));
+    }
+    resolve_oauth_provider_config(provider_id, None)
 }
 
 #[derive(Debug, Clone)]
@@ -576,7 +571,6 @@ const CODEX_DEVICE_AUTH_MAX_WAIT_SECONDS: i64 = 15 * 60;
 // Public client ID for Holon's OAuth app, not a first-party Copilot client.
 const GITHUB_COPILOT_OAUTH_CLIENT_ID: &str = "Ov23lioel2hHZITYyzwB";
 const GITHUB_COPILOT_CLIENT_ID_ENV_VAR: &str = "GITHUB_COPILOT_CLIENT_ID";
-const GITHUB_DEVICE_CODE_URL: &str = "https://github.com/login/device/code";
 const GITHUB_TOKEN_URL: &str = "https://github.com/login/oauth/access_token";
 const GITHUB_TOKEN_URL_OVERRIDE_ENV_VAR: &str = "GITHUB_TOKEN_URL_OVERRIDE";
 
@@ -618,11 +612,13 @@ pub async fn request_codex_device_code() -> Result<CodexDeviceCode> {
 }
 
 pub async fn request_oauth_device_code(config: &OAuthProviderConfig) -> Result<CodexDeviceCode> {
-    if config.device_protocol == OAuthDeviceProtocol::GitHub {
-        return request_github_device_code(config).await;
-    }
-    if config.device_protocol == OAuthDeviceProtocol::Standard {
-        return request_standard_oauth_device_code(config).await;
+    reject_retired_oauth_device_login(config.provider_id)?;
+    match config.device_protocol {
+        OAuthDeviceProtocol::GitHub => {
+            anyhow::bail!("legacy GitHub OAuth supports token refresh only, not device login");
+        }
+        OAuthDeviceProtocol::Standard => return request_standard_oauth_device_code(config).await,
+        OAuthDeviceProtocol::Codex => {}
     }
     let issuer = std::env::var(CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| CODEX_OAUTH_ISSUER.to_string());
@@ -673,6 +669,7 @@ pub async fn complete_oauth_device_login(
     config: &OAuthProviderConfig,
     device_code: CodexDeviceCode,
 ) -> Result<CodexOAuthLoginResult> {
+    reject_retired_oauth_device_login(config.provider_id)?;
     if device_code.provider_id != config.provider_id {
         anyhow::bail!(
             "OAuth device code belongs to provider {}, not {}",
@@ -680,11 +677,14 @@ pub async fn complete_oauth_device_login(
             config.provider_id
         );
     }
-    if config.device_protocol == OAuthDeviceProtocol::Standard {
-        return complete_standard_oauth_device_login(config, &device_code).await;
-    }
-    if config.device_protocol == OAuthDeviceProtocol::GitHub {
-        return complete_github_device_login(config, &device_code).await;
+    match config.device_protocol {
+        OAuthDeviceProtocol::GitHub => {
+            anyhow::bail!("legacy GitHub OAuth supports token refresh only, not device login");
+        }
+        OAuthDeviceProtocol::Standard => {
+            return complete_standard_oauth_device_login(config, &device_code).await;
+        }
+        OAuthDeviceProtocol::Codex => {}
     }
     let issuer = std::env::var(CODEX_OAUTH_ISSUER_OVERRIDE_ENV_VAR)
         .unwrap_or_else(|_| CODEX_OAUTH_ISSUER.to_string());
@@ -929,146 +929,6 @@ struct GitHubTokenResponse {
     expires_in: Option<i64>,
 }
 
-async fn request_github_device_code(config: &OAuthProviderConfig) -> Result<CodexDeviceCode> {
-    let scope = config.scopes.join(" ");
-    let mut form = vec![("client_id", config.client_id.as_ref())];
-    if !scope.is_empty() {
-        form.push(("scope", scope.as_str()));
-    }
-    let response = oauth_http_client()?
-        .post(GITHUB_DEVICE_CODE_URL)
-        .header("Accept", "application/json")
-        .form(&form)
-        .send()
-        .await
-        .with_context(|| format!("failed to request {} device code", config.provider_id))?;
-    let status = response.status();
-    if !status.is_success() {
-        let body = response.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "{} device code request failed with HTTP {status}: {}",
-            config.provider_id,
-            try_parse_refresh_error_message(&body).unwrap_or(body)
-        );
-    }
-    let body = response
-        .json::<StandardDeviceCodeResponse>()
-        .await
-        .with_context(|| format!("failed to parse {} device code", config.provider_id))?;
-    Ok(CodexDeviceCode {
-        provider_id: config.provider_id.to_string(),
-        verification_url: body
-            .verification_uri_complete
-            .unwrap_or(body.verification_uri),
-        user_code: body.user_code,
-        interval: body.interval.max(1),
-        expires_at: Utc::now() + chrono::Duration::seconds(body.expires_in.max(1)),
-        secret: body.device_code,
-        token_endpoint: Some(GITHUB_TOKEN_URL.to_string()),
-    })
-}
-
-async fn complete_github_device_login(
-    config: &OAuthProviderConfig,
-    device_code: &CodexDeviceCode,
-) -> Result<CodexOAuthLoginResult> {
-    let endpoint = device_code
-        .token_endpoint
-        .as_deref()
-        .context("OAuth device code did not retain its token endpoint")?;
-    let deadline = device_code.expires_at;
-    let mut interval = device_code.interval.max(1);
-    let client = oauth_http_client()?;
-    loop {
-        let response = client
-            .post(endpoint)
-            .header("Accept", "application/json")
-            .form(&[
-                ("grant_type", "urn:ietf:params:oauth:grant-type:device_code"),
-                ("device_code", device_code.secret.as_str()),
-                ("client_id", config.client_id.as_ref()),
-            ])
-            .send()
-            .await
-            .with_context(|| format!("failed to poll {} device login", config.provider_id))?;
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        // GitHub answers device polls with HTTP 200 plus an `error` field in
-        // the JSON body while authorization is pending or has failed.
-        let parsed = serde_json::from_str::<GitHubTokenResponse>(&body);
-        if let Ok(tokens) = &parsed {
-            if tokens.error.is_none() {
-                if let Some(access_token) = tokens
-                    .access_token
-                    .clone()
-                    .filter(|token| !token.trim().is_empty())
-                {
-                    return github_tokens_to_login_result(
-                        config,
-                        access_token,
-                        tokens
-                            .refresh_token
-                            .clone()
-                            .filter(|token| !token.trim().is_empty()),
-                        tokens.expires_in,
-                    );
-                }
-            }
-        }
-        match classify_device_poll_status(status, &body) {
-            DevicePollStatus::Pending => {}
-            DevicePollStatus::SlowDown => interval = interval.saturating_add(5),
-            DevicePollStatus::Expired => {
-                anyhow::bail!(
-                    "{} device login expired before authorization",
-                    config.provider_id
-                )
-            }
-            DevicePollStatus::AccessDenied => {
-                anyhow::bail!("{} device login was denied by the user", config.provider_id)
-            }
-            DevicePollStatus::Failed(message) => anyhow::bail!(
-                "{} device login failed with HTTP {status}: {message}",
-                config.provider_id
-            ),
-        }
-        if Utc::now() >= deadline {
-            anyhow::bail!("{} device login expired", config.provider_id);
-        }
-        tokio::time::sleep(Duration::from_secs(interval)).await;
-    }
-}
-
-fn github_tokens_to_login_result(
-    config: &OAuthProviderConfig,
-    access_token: String,
-    refresh_token: Option<String>,
-    expires_in: Option<i64>,
-) -> Result<CodexOAuthLoginResult> {
-    let auth = AuthDotJson {
-        tokens: Some(TokenData {
-            access_token,
-            refresh_token: refresh_token.unwrap_or_default(),
-            account_id: None,
-            id_token: None,
-        }),
-        last_refresh: Some(Utc::now()),
-        expires_at: expires_in
-            .filter(|seconds| *seconds > 0)
-            .map(|seconds| Utc::now() + chrono::Duration::seconds(seconds)),
-        oauth_client_id: Some(config.client_id.to_string()),
-    };
-    Ok(CodexOAuthLoginResult {
-        material: serde_json::to_string(&auth).with_context(|| {
-            format!(
-                "failed to serialize {} OAuth credential",
-                config.provider_id
-            )
-        })?,
-        account_id: None,
-    })
-}
-
 async fn refresh_github_oauth_profile_material(
     client: &reqwest::Client,
     config: &OAuthProviderConfig,
@@ -1099,7 +959,7 @@ async fn refresh_github_oauth_profile_material(
             status: None,
             message: format!(
                 "Holon credential profile {profile} has no refresh token; \
-                 run GitHub Copilot device login again"
+                 provider github-copilot is retired; choose a supported provider"
             ),
         })?;
     let endpoint = std::env::var(GITHUB_TOKEN_URL_OVERRIDE_ENV_VAR)

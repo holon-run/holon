@@ -443,6 +443,9 @@ impl RuntimeModelCatalog {
                 .model_discovery_cache
                 .models()
                 .into_iter()
+                .filter(|(model, _)| {
+                    !holon_domain::model_values::is_retired_provider(&model.provider)
+                })
                 .collect::<HashMap<_, _>>(),
             model_overrides: config.validated_model_overrides.clone(),
             model_route_overrides: resolve_model_route_overrides(config.stored_config)

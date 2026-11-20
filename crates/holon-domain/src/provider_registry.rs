@@ -8,9 +8,16 @@ pub enum ProviderMaterializer {
     Gemini,
     Generic,
     VercelAiGateway,
-    GitHubCopilot,
     AliasOnly,
 }
+
+/// Reserved provider identity kept for migration of persisted configuration.
+pub fn is_retired_provider(provider: &ProviderId) -> bool {
+    provider.as_str() == "github-copilot"
+}
+
+pub const RETIRED_PROVIDER_MIGRATION: &str =
+    "GitHub Copilot support has been removed from Holon; select a supported provider and model";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderContextManagement {
@@ -199,13 +206,6 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         "gemini" => "gemini" @ "default",
         GeminiGenerateContent, "https://generativelanguage.googleapis.com/v1beta",
         ["GEMINI_API_KEY"], Gemini, Default, None, None, None, StaticOnly
-    ),
-    provider!(
-        "github-copilot" => "github-copilot" @ "default",
-        OpenAiChatCompletions, "https://api.githubcopilot.com", [],
-        GitHubCopilot, Default, None, None,
-        discovery!(Optional, ModelDiscoveryRoute::OpenAiCompatible, OpenAiCompatible),
-        DiscoveryOnly
     ),
     provider!(
         "arcee" => "arcee" @ "default",

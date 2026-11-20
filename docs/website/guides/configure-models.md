@@ -67,36 +67,24 @@ When you need advanced cloud reasoning models, use Holon's interactive onboardin
    holon config set model.default "deepseek@default/deepseek-chat"
    ```
 
-#### GitHub Copilot (experimental)
+#### Migrating from GitHub Copilot
 
-Holon includes a default OAuth app, so no client ID configuration is required:
+Holon no longer offers the experimental built-in GitHub Copilot provider.
+The old direct route did not reliably expose newer models, and the SDK path
+tested by Holon could not preserve assistant and tool roles when replaying
+existing agent history.
 
-```bash
-holon onboard
-```
+Run `holon onboard` to connect a supported provider, then run `holon config
+models list` to find its model routes. Replace any `github-copilot/<model-id>`
+or `github-copilot@default/<model-id>` references in your global default,
+per-agent settings, and fallback lists. Use `holon config set model.default`
+to change the global default and `holon agent model set` to update an agent
+override. Review any old `providers.github-copilot` configuration as well.
+Holon does not automatically substitute another provider for a retired
+primary route.
 
-Select `github-copilot` and complete the OAuth device login. To use your own
-GitHub OAuth app instead, enable its device flow and set its **client ID**
-(not its app ID or a first-party editor's client ID):
-
-```bash
-holon config set providers.github-copilot.auth.client_id "<your-client-id>"
-```
-
-Alternatively, set `GITHUB_COPILOT_CLIENT_ID` in the login process's environment.
-Explicit configuration takes precedence over the environment variable, then
-the built-in default; blank overrides are ignored. Holon stores
-the resulting credential and client ID in its own `github-copilot` profile;
-it does not read IDE credentials or require a client secret.
-
-This direct provider is experimental: successful GitHub login does not
-confirm Copilot entitlement, app/integration admission, or model access.
-Discover the models available to your account and select a returned
-`github-copilot@default/<model-id>` route; there is no static model list.
-Holon sends `Copilot-Integration-Id: holon`, never an editor impersonation.
-GitHub controls the accepted identities, models, policies, and usage limits.
-Removing a local credential does not revoke its authorization at GitHub;
-revoke the app in GitHub settings when access should end.
+Upgrading does not delete saved Copilot credentials or revoke GitHub
+authorization. To end access, revoke the OAuth app in GitHub settings.
 
 ### Scenario 3: Verify Active Models in Chat & Override Per-Agent
 

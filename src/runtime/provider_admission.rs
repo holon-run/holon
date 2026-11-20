@@ -1232,10 +1232,19 @@ impl RuntimeHandle {
             return Ok(None); // Static/local providers have no configured HTTP path.
         };
         let config = &reconfig.config;
-        let mut candidates = Vec::new();
-        for model in snapshot
+        let chain = snapshot
             .model_catalog
-            .provider_chain(state.model_override.as_ref())
+            .provider_chain(state.model_override.as_ref());
+        if chain
+            .first()
+            .is_some_and(|route| holon_domain::model_values::is_retired_provider(&route.provider))
+        {
+            // Let turn construction surface the migration error instead of
+            // turning a retired primary into a provider wait on its fallbacks.
+            return Ok(None);
+        }
+        let mut candidates = Vec::new();
+        for model in chain
             .into_iter()
             .take(if config.provider_fallback_disabled() {
                 1

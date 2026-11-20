@@ -93,7 +93,7 @@ use crate::{
     host_registry::{RuntimeRegistry, WorkspaceCleanupLeaseGuard},
     ids,
     prompt::{build_effective_prompt_with_apply_patch_surface, EffectivePrompt},
-    provider::{build_provider_from_config, AgentProvider, BootstrapProvider},
+    provider::{build_provider_for_startup, AgentProvider, BootstrapProvider},
     runtime::{
         mutation_owner::{
             IdentityMutationFacts, KnownCommit, MutationOwner, MutationOwnerError,
@@ -1229,7 +1229,7 @@ impl RuntimeHost {
         if config.bootstrap_mode_enabled() {
             return Self::new_inner_with_bootstrap_provider(config);
         }
-        let _ = build_provider_from_config(&config)?;
+        let _ = build_provider_for_startup(&config, &config.provider_chain(), None)?;
         Self::new_inner(config, None)
     }
 
@@ -8263,9 +8263,9 @@ impl RuntimeHost {
             .lock()
             .expect("static provider lock poisoned")
             .clone();
-        let provider = static_provider
-            .map(Ok)
-            .unwrap_or_else(|| build_provider_from_config(&config))?;
+        let provider = static_provider.map(Ok).unwrap_or_else(|| {
+            build_provider_for_startup(&config, &config.provider_chain(), None)
+        })?;
         let apply_patch_surface = ApplyPatchSurface::for_model_route_ref(&model_ref.as_string());
         let registry = ToolRegistry::new(execution.execution_root.clone());
         let capability_policy = self

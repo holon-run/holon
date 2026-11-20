@@ -341,7 +341,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "providers.<id>.endpoints.<endpoint_id>.auth.client_id",
             kind: "string",
-            description: "OAuth client id used when endpoint auth.kind=oauth requires a user-owned OAuth app (github-copilot).",
+            description: "OAuth client ID for an explicitly configured endpoint OAuth app.",
             default: Value::Null,
             allowed_values: vec![],
         },
@@ -403,7 +403,7 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "providers.<id>.auth.client_id",
             kind: "string",
-            description: "OAuth client id used when auth.kind=oauth requires a user-owned OAuth app (github-copilot).",
+            description: "OAuth client ID for an explicitly configured provider OAuth app.",
             default: Value::Null,
             allowed_values: vec![],
         },
