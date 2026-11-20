@@ -27,6 +27,7 @@ class RustSelectionTests(unittest.TestCase):
         for path in (
             "crates/holon-tui/src/tui/composer/tests.rs",
             "crates/holon-daemon/src/tests/mod.rs",
+            "crates/holon-storage/src/agent_registry/tests/list.rs",
             "crates/holon-provider/src/provider/transports/openai/oauth_timeout_tests.rs",
             "crates/holon-model-catalog/tests/fixtures/models_dev/sample.json",
         ):

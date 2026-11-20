@@ -98,7 +98,7 @@ fn projection() -> Result<AgentCanonicalRelationsProjection> {
         is_child_agent_task: true,
         delegated_from_work_item_id: Some("work-汉字".into()),
     };
-    project_agent_canonical_relations(
+    RELATIONS.project_agent_canonical_relations(
         &identity(CHILD, true),
         AgentCanonicalRecordSet::default(),
         Some(&task),
@@ -150,7 +150,7 @@ fn backfill_axes_move_all_six_records_and_admit_only_exact_axis_slots() -> Resul
     let phase = ResourceReadMaterial::new(&ledger, &scope())?;
     let (records, axes, issues) = {
         let _active = phase.enter();
-        legacy_axes_without_issues(original)?
+        RELATIONS.legacy_axes_without_issues(original)?
     };
     assert!(issues.is_empty());
     assert_eq!(
@@ -203,7 +203,7 @@ fn backfill_axes_move_all_six_records_and_admit_only_exact_axis_slots() -> Resul
             )?;
             {
                 let _active = phase.enter();
-                let error = legacy_axes_without_issues(original).unwrap_err();
+                let error = RELATIONS.legacy_axes_without_issues(original).unwrap_err();
                 assert!(format!("{error:#}").contains("ResourceExhausted"));
                 assert!(ResourceReadMaterial::active_guard().is_err());
             }
@@ -224,7 +224,7 @@ fn backfill_axis_filter_preserves_canonical_and_supervision_message_constraints(
         detail: "missing-汉字\0\"\\{}[]:,".into(),
     });
     let expected_issues = original.issues.clone();
-    let (records, axes, issues) = legacy_axes_without_issues(original)?;
+    let (records, axes, issues) = RELATIONS.legacy_axes_without_issues(original)?;
     assert!(records.lineage.is_none());
     assert!(records.supervision.is_none());
     assert!(records.message_policy.is_none());
@@ -280,7 +280,7 @@ fn backfill_checkpoint_sql_json_exact_gates_and_same_phase_error_retry() -> Resu
     {
         let _active = phase.enter();
         let actual =
-            db.transaction(|tx| backfill_agent_relations_tx(tx, CHILD, true, Some(RUN)))?;
+            db.transaction(|tx| RELATIONS.backfill_agent_relations_tx(tx, CHILD, true, Some(RUN)))?;
         assert_eq!(actual, (axes.clone(), issues.clone()));
     }
     assert_eq!(phase.finish()?, exact);
@@ -298,7 +298,9 @@ fn backfill_checkpoint_sql_json_exact_gates_and_same_phase_error_retry() -> Resu
             {
                 let _active = phase.enter();
                 let error = db
-                    .transaction(|tx| backfill_agent_relations_tx(tx, CHILD, true, Some(RUN)))
+                    .transaction(|tx| {
+                        RELATIONS.backfill_agent_relations_tx(tx, CHILD, true, Some(RUN))
+                    })
                     .unwrap_err();
                 assert!(format!("{error:#}").contains("ResourceExhausted"));
             }
@@ -319,15 +321,16 @@ fn backfill_checkpoint_sql_json_exact_gates_and_same_phase_error_retry() -> Resu
                             ),
                             [],
                         )?;
-                        backfill_agent_relations_tx(tx, CHILD, true, Some(RUN))
+                        RELATIONS.backfill_agent_relations_tx(tx, CHILD, true, Some(RUN))
                     })
                     .unwrap_err();
                 assert!(
                     !format!("{error:#}").contains("ResourceExhausted"),
                     "{error:#}"
                 );
-                let actual =
-                    db.transaction(|tx| backfill_agent_relations_tx(tx, CHILD, true, Some(RUN)))?;
+                let actual = db.transaction(|tx| {
+                    RELATIONS.backfill_agent_relations_tx(tx, CHILD, true, Some(RUN))
+                })?;
                 assert_eq!(actual, (axes.clone(), issues.clone()));
             }
             assert!(phase.finish().is_ok());
@@ -378,12 +381,12 @@ fn backfill_report_sample_moves_and_original_holder_survives_clone_and_serialize
         assert_eq!(report.diagnostics.len(), limit.min(3));
         for (diagnostic, agent) in report.diagnostics.iter().zip(["a", "b", "c"]) {
             assert_eq!(diagnostic.agent_id, agent);
-            let expected = project_agent_canonical_relations(
+            let expected = RELATIONS.project_agent_canonical_relations(
                 &identity(agent, true),
                 AgentCanonicalRecordSet::default(),
                 None,
             )?;
-            let (_, axes, issues) = legacy_axes_without_issues(expected)?;
+            let (_, axes, issues) = RELATIONS.legacy_axes_without_issues(expected)?;
             assert_eq!(diagnostic.migrated_axes, axes);
             assert_eq!(diagnostic.issues, issues);
         }
@@ -532,21 +535,21 @@ fn backfill_writer_json_enum_sql_and_signed_timestamp_admit_before_allocation() 
     let value = serde_json::json!({"body": [CHILD, {}, [], {"escape": "\"{}[]:,\\\0"}]});
     let serialized = serde_json::to_string(&value)?;
     assert_string_gate(&serialized, json_cost(&serialized)?, || {
-        relation_json(&value)
+        RELATIONS.relation_json(&value)
     })?;
     let outcome = AgentRelationBackfillOutcome::Diagnostic;
     let serialized = serde_json::to_string(&outcome)?;
     assert_string_gate("diagnostic", json_cost(&serialized)?, || {
-        enum_string(&outcome)
+        RELATIONS.enum_string(&outcome)
     })?;
     let expected = format!("INSERT-汉字:{CHILD}:{}", 123);
     assert_string_gate(&expected, text_cost(&expected), || {
-        relation_formatted_text(format_args!("INSERT-汉字:{CHILD}:{}", 123))
+        RELATIONS.relation_formatted_text(format_args!("INSERT-汉字:{CHILD}:{}", 123))
     })?;
     let check_timestamp = |value| {
         let expected = timestamp(value);
         assert_string_gate(&expected, text_cost(&expected), || {
-            relation_timestamp(value)
+            RELATIONS.relation_timestamp(value)
         })
     };
     for raw in [
@@ -573,7 +576,7 @@ fn backfill_apply_rejection_rolls_back_prior_axis_and_sql_error_retries_same_pha
     let (_home, db) = fixture()?;
     db.agent_identities().upsert(&identity(CHILD, true))?;
     db.agent_identities().upsert(&identity(PARENT, false))?;
-    let (records, _, _) = legacy_axes_without_issues(projection()?)?;
+    let (records, _, _) = RELATIONS.legacy_axes_without_issues(projection()?)?;
     let lineage = records.lineage.as_ref().unwrap();
     let first = [
         json_cost(&serde_json::to_string(lineage)?)?,

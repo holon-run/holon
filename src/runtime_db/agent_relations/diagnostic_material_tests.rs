@@ -55,20 +55,20 @@ fn append(issues: &mut Vec<AgentCanonicalProjectionIssue>, index: usize) -> Resu
     let axis = AgentCanonicalRelationAxis::Lineage;
     let resolution = AgentCanonicalResolution::Contradictory;
     match index {
-        0 => issue(issues, axis, resolution, format_args!("static diagnostic")),
-        1 => issue(
+        0 => RELATIONS.issue(issues, axis, resolution, format_args!("static diagnostic")),
+        1 => RELATIONS.issue(
             issues,
             axis,
             resolution,
             format_args!("legacy lineage parent {PARENT} conflicts with parent {CHILD}"),
         ),
-        2 => issue(
+        2 => RELATIONS.issue(
             issues,
             axis,
             resolution,
             format_args!("delegated supervision task {TASK} is missing"),
         ),
-        3 => issue(
+        3 => RELATIONS.issue(
             issues,
             axis,
             resolution,
@@ -78,7 +78,7 @@ fn append(issues: &mut Vec<AgentCanonicalProjectionIssue>, index: usize) -> Resu
                 AgentRegistryStatus::Active
             ),
         ),
-        _ => issue(issues, axis, resolution, format_args!("")),
+        _ => RELATIONS.issue(issues, axis, resolution, format_args!("")),
     }
 }
 
@@ -174,13 +174,14 @@ fn rejected_diagnostic_counts_borrowed_text_without_formatting_or_reserving() ->
     let mut issues = Vec::new();
     {
         let _entry = phase.enter();
-        let error = issue(
-            &mut issues,
-            AgentCanonicalRelationAxis::Lineage,
-            AgentCanonicalResolution::Contradictory,
-            format_args!("parent {}", Counted(&calls)),
-        )
-        .unwrap_err();
+        let error = RELATIONS
+            .issue(
+                &mut issues,
+                AgentCanonicalRelationAxis::Lineage,
+                AgentCanonicalResolution::Contradictory,
+                format_args!("parent {}", Counted(&calls)),
+            )
+            .unwrap_err();
         assert!(format!("{error:#}").contains("ResourceExhausted"));
     }
     assert_eq!(calls.get(), 1);
@@ -218,11 +219,19 @@ fn legacy_diagnostic_helpers_admit_missing_and_conflicting_evidence() -> Result<
         };
         let read = |issues: &mut Vec<_>| -> Result<()> {
             match case {
-                0 => assert!(legacy_lineage(&identity, issues)?.is_none()),
-                1 => assert!(legacy_supervision(&identity, None, None, issues)?.is_none()),
-                2 => assert!(legacy_durability(&identity, None, issues)?.is_none()),
-                3 => assert!(legacy_lifecycle_attachment(&identity, None, issues)?.is_none()),
-                _ => assert!(legacy_capability_policy(&identity, issues)?.is_none()),
+                0 => assert!(RELATIONS.legacy_lineage(&identity, issues)?.is_none()),
+                1 => assert!(RELATIONS
+                    .legacy_supervision(&identity, None, None, issues)?
+                    .is_none()),
+                2 => assert!(RELATIONS
+                    .legacy_durability(&identity, None, issues)?
+                    .is_none()),
+                3 => assert!(RELATIONS
+                    .legacy_lifecycle_attachment(&identity, None, issues)?
+                    .is_none()),
+                _ => assert!(RELATIONS
+                    .legacy_capability_policy(&identity, issues)?
+                    .is_none()),
             }
             Ok(())
         };
@@ -273,7 +282,7 @@ fn projection_validators_preserve_issue_order_resolution_and_each_rejection() ->
         is_child_agent_task: true,
         delegated_from_work_item_id: None,
     };
-    let projection = project_agent_canonical_relations(
+    let projection = RELATIONS.project_agent_canonical_relations(
         &identity,
         AgentCanonicalRecordSet::default(),
         Some(&task),
@@ -295,7 +304,8 @@ fn projection_validators_preserve_issue_order_resolution_and_each_rejection() ->
     identity.profile_preset = Some(AgentProfilePreset::PublicNamed);
     identity.durability = Some(crate::types::AgentDurability::Ephemeral);
     identity.status = AgentRegistryStatus::Deleted;
-    let expected = project_agent_canonical_relations(&identity, records.clone(), Some(&task))?;
+    let expected =
+        RELATIONS.project_agent_canonical_relations(&identity, records.clone(), Some(&task))?;
     let details = [
         (
             AgentCanonicalRelationAxis::LifecycleAttachment,
@@ -348,7 +358,7 @@ fn projection_validators_preserve_issue_order_resolution_and_each_rejection() ->
         let _entry = phase.enter();
         charge_owned_metadata(13, 3)?;
         assert_eq!(
-            project_agent_canonical_relations(&identity, owned, Some(&task))?,
+            RELATIONS.project_agent_canonical_relations(&identity, owned, Some(&task))?,
             expected
         );
     }
@@ -370,8 +380,9 @@ fn projection_validators_preserve_issue_order_resolution_and_each_rejection() ->
             {
                 let _entry = phase.enter();
                 charge_owned_metadata(13, 3)?;
-                let error =
-                    project_agent_canonical_relations(&identity, owned, Some(&task)).unwrap_err();
+                let error = RELATIONS
+                    .project_agent_canonical_relations(&identity, owned, Some(&task))
+                    .unwrap_err();
                 assert!(format!("{error:#}").contains("ResourceExhausted"));
                 assert!(ResourceReadMaterial::active_guard().is_err());
             }
@@ -386,7 +397,7 @@ fn projection_validators_preserve_issue_order_resolution_and_each_rejection() ->
     identity.status = AgentRegistryStatus::Active;
     records.supervision.as_mut().unwrap().state = AgentSupervisionState::CleanupRequired;
     let mut issues = Vec::new();
-    validate_effective_relations(
+    RELATIONS.validate_effective_relations(
         &identity,
         records.supervision.as_ref(),
         None,

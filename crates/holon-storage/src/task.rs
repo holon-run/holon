@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result};
 use holon_domain::{TaskRecord, TaskStatus};
-use rusqlite::{params, OptionalExtension, Transaction};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 use crate::codec::{enum_string, timestamp};
 use crate::reclamation::ensure_work_admission_tx;
@@ -382,4 +382,23 @@ pub fn is_terminal_task_status(status: &TaskStatus) -> bool {
             | TaskStatus::Cancelled
             | TaskStatus::Interrupted
     )
+}
+
+pub fn query_tasks_for_agent(
+    connection: &Connection,
+    where_clause: &str,
+    params: [&str; 1],
+    limit: usize,
+) -> Result<Vec<TaskRecord>> {
+    if limit == 0 {
+        return Ok(Vec::new());
+    }
+    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
+    let sql = format!(
+        "SELECT payload_json FROM tasks WHERE {where_clause}
+         ORDER BY updated_at DESC, created_at DESC, task_id ASC LIMIT {limit}",
+    );
+    let mut statement = connection.prepare(&sql)?;
+    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
+    rows.map(|row| decode_task_payload(&row?)).collect()
 }

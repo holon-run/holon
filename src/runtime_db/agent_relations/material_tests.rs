@@ -148,12 +148,14 @@ fn read_axis(
 ) -> Result<AgentCanonicalRecordSet> {
     let mut records = AgentCanonicalRecordSet::default();
     match axis {
-        0 => records.lineage = latest_lineage(connection, id)?,
-        1 => records.supervision = latest_supervision(connection, id)?,
-        2 => records.durability = latest_durability(connection, id)?,
-        3 => records.lifecycle_attachment = latest_lifecycle_attachment(connection, id)?,
-        4 => records.capability_policy = latest_capability_policy(connection, id)?,
-        5 => records.message_policy = latest_message_policy(connection, id)?,
+        0 => records.lineage = RELATIONS.latest_lineage(connection, id)?,
+        1 => records.supervision = RELATIONS.latest_supervision(connection, id)?,
+        2 => records.durability = RELATIONS.latest_durability(connection, id)?,
+        3 => {
+            records.lifecycle_attachment = RELATIONS.latest_lifecycle_attachment(connection, id)?
+        }
+        4 => records.capability_policy = RELATIONS.latest_capability_policy(connection, id)?,
+        5 => records.message_policy = RELATIONS.latest_message_policy(connection, id)?,
         _ => unreachable!(),
     }
     Ok(records)

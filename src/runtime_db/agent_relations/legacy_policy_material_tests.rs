@@ -73,13 +73,17 @@ fn read_axis(
     let mut records = AgentCanonicalRecordSet::default();
     let mut issues = Vec::new();
     match axis {
-        0 => records.durability = legacy_durability(identity, supervision, &mut issues)?,
+        0 => {
+            records.durability = RELATIONS.legacy_durability(identity, supervision, &mut issues)?
+        }
         1 => {
             records.lifecycle_attachment =
-                legacy_lifecycle_attachment(identity, supervision, &mut issues)?
+                RELATIONS.legacy_lifecycle_attachment(identity, supervision, &mut issues)?
         }
-        2 => records.capability_policy = legacy_capability_policy(identity, &mut issues)?,
-        3 => records.message_policy = Some(legacy_message_policy(identity, supervision)?),
+        2 => {
+            records.capability_policy = RELATIONS.legacy_capability_policy(identity, &mut issues)?
+        }
+        3 => records.message_policy = Some(RELATIONS.legacy_message_policy(identity, supervision)?),
         _ => unreachable!(),
     }
     assert!(issues.is_empty());
@@ -192,7 +196,9 @@ fn legacy_policy_values_preserve_presets_durability_and_parent_rule_states() -> 
         identity.profile_preset = None;
         let supervision = supervision(&identity, AgentSupervisionState::Active);
         let mut issues = Vec::new();
-        let capability = legacy_capability_policy(&identity, &mut issues)?.unwrap();
+        let capability = RELATIONS
+            .legacy_capability_policy(&identity, &mut issues)?
+            .unwrap();
         assert_eq!(capability.agent_id, AGENT);
         assert_eq!(capability.revision, 0);
         assert_eq!(capability.created_at, identity.created_at);
@@ -229,7 +235,7 @@ fn legacy_policy_values_preserve_presets_durability_and_parent_rule_states() -> 
         ] {
             identity.durability = explicit;
             assert_eq!(
-                legacy_durability(&identity, Some(&supervision), &mut issues)?,
+                RELATIONS.legacy_durability(&identity, Some(&supervision), &mut issues)?,
                 Some(AgentDurabilityRecord {
                     agent_id: AGENT.into(),
                     durability: match explicit {
@@ -248,7 +254,7 @@ fn legacy_policy_values_preserve_presets_durability_and_parent_rule_states() -> 
             );
         }
         assert_eq!(
-            legacy_lifecycle_attachment(&identity, Some(&supervision), &mut issues)?,
+            RELATIONS.legacy_lifecycle_attachment(&identity, Some(&supervision), &mut issues)?,
             Some(AgentLifecycleAttachmentRecord {
                 agent_id: AGENT.into(),
                 attachment: if private {
@@ -291,7 +297,7 @@ fn legacy_policy_values_preserve_presets_durability_and_parent_rule_states() -> 
                 });
             }
             assert_eq!(
-                legacy_message_policy(&identity, Some(&supervision))?,
+                RELATIONS.legacy_message_policy(&identity, Some(&supervision))?,
                 AgentMessagePolicyRecord {
                     agent_id: AGENT.into(),
                     revision: 0,
@@ -311,12 +317,18 @@ fn legacy_policy_missing_evidence_does_not_allocate_success_material() -> Result
     identity.ownership = Some(AgentOwnership::ParentSupervised);
     identity.durability = None;
     let mut expected_issues = Vec::new();
-    assert!(legacy_durability(&identity, None, &mut expected_issues)?.is_none());
-    assert!(legacy_lifecycle_attachment(&identity, None, &mut expected_issues)?.is_none());
+    assert!(RELATIONS
+        .legacy_durability(&identity, None, &mut expected_issues)?
+        .is_none());
+    assert!(RELATIONS
+        .legacy_lifecycle_attachment(&identity, None, &mut expected_issues)?
+        .is_none());
     identity.ownership = Some(AgentOwnership::SelfOwned);
     identity.visibility = AgentVisibility::Private;
     identity.profile_preset = None;
-    assert!(legacy_capability_policy(&identity, &mut expected_issues)?.is_none());
+    assert!(RELATIONS
+        .legacy_capability_policy(&identity, &mut expected_issues)?
+        .is_none());
     assert_eq!(expected_issues.len(), 3);
     let exact = expected_issues.iter().fold(header(), |sum, issue| {
         add(
@@ -336,10 +348,16 @@ fn legacy_policy_missing_evidence_does_not_allocate_success_material() -> Result
     {
         let _entry = phase.enter();
         identity.ownership = Some(AgentOwnership::ParentSupervised);
-        assert!(legacy_durability(&identity, None, &mut issues)?.is_none());
-        assert!(legacy_lifecycle_attachment(&identity, None, &mut issues)?.is_none());
+        assert!(RELATIONS
+            .legacy_durability(&identity, None, &mut issues)?
+            .is_none());
+        assert!(RELATIONS
+            .legacy_lifecycle_attachment(&identity, None, &mut issues)?
+            .is_none());
         identity.ownership = Some(AgentOwnership::SelfOwned);
-        assert!(legacy_capability_policy(&identity, &mut issues)?.is_none());
+        assert!(RELATIONS
+            .legacy_capability_policy(&identity, &mut issues)?
+            .is_none());
     }
     // Missing evidence allocates only diagnostics, not successful relation material.
     assert_eq!(issues, expected_issues);
@@ -352,8 +370,11 @@ fn legacy_policy_missing_evidence_does_not_allocate_success_material() -> Result
 #[test]
 fn projection_id_admission_is_required_even_when_all_policy_axes_are_canonical() -> Result<()> {
     let identity = identity();
-    let baseline =
-        project_agent_canonical_relations(&identity, AgentCanonicalRecordSet::default(), None)?;
+    let baseline = RELATIONS.project_agent_canonical_relations(
+        &identity,
+        AgentCanonicalRecordSet::default(),
+        None,
+    )?;
     assert!(baseline.issues.is_empty());
     let canonical = AgentCanonicalRecordSet {
         durability: baseline.durability.clone(),
@@ -362,7 +383,8 @@ fn projection_id_admission_is_required_even_when_all_policy_axes_are_canonical()
         message_policy: baseline.message_policy.clone(),
         ..Default::default()
     };
-    let expected = project_agent_canonical_relations(&identity, canonical.clone(), None)?;
+    let expected =
+        RELATIONS.project_agent_canonical_relations(&identity, canonical.clone(), None)?;
     assert_eq!(expected.durability, baseline.durability);
     assert_eq!(expected.lifecycle_attachment, baseline.lifecycle_attachment);
     assert_eq!(expected.capability_policy, baseline.capability_policy);
@@ -386,7 +408,7 @@ fn projection_id_admission_is_required_even_when_all_policy_axes_are_canonical()
         {
             let _entry = phase.enter();
             charge_owned_metadata(13, 3)?;
-            let result = project_agent_canonical_relations(&identity, records, None);
+            let result = RELATIONS.project_agent_canonical_relations(&identity, records, None);
             if deny.is_some() {
                 let error = result.unwrap_err();
                 assert!(

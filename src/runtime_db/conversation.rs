@@ -10,13 +10,11 @@ use crate::domain::conversation::{
 };
 use crate::runtime_db::types::ConversationRepository;
 
-pub(crate) use holon_storage::conversation::{
-    active_agent_identity, assigned_turn_id_tx, SOURCE_OPERATOR, SOURCE_WAIT,
-};
 use holon_storage::conversation::{
     activities_in, canonical_shadow_metadata, change_batch_in, compare_shadow_metadata,
     conversation_snapshot_context, summary_page_in, validate_limit, ConversationSnapshotContext,
 };
+pub(crate) use holon_storage::conversation::{assigned_turn_id_tx, SOURCE_OPERATOR, SOURCE_WAIT};
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 use holon_storage::conversation::{turn_revision_tx, MAX_BRIEFS_PER_TURN};
 pub use holon_storage::conversation::{
