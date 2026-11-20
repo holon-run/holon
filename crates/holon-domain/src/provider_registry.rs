@@ -208,6 +208,11 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
         DiscoveryOnly
     ),
     provider!(
+        "github-copilot-responses" => "github-copilot" @ "responses",
+        OpenAiResponses, "https://api.githubcopilot.com", [],
+        GitHubCopilot, Default, None, None, None, StaticOnly
+    ),
+    provider!(
         "arcee" => "arcee" @ "default",
         OpenAiChatCompletions, "https://api.arcee.ai/v1", ["ARCEE_API_KEY"],
         Generic, Default, None, None,

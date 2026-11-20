@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::{
     CredentialKind, CredentialSource, ProviderEndpointId, ProviderId, ProviderRuntimeConfig,
-    ProviderTransportKind,
+    ProviderTransportKind, GITHUB_COPILOT_PROVIDER_ID,
 };
 use crate::provider::{transports::build_oauth_http_client, OpenAiBearerAuth};
 use holon_domain::model_values::{
@@ -695,6 +695,8 @@ impl OpenAiCompatibleModelsResponse {
 #[derive(Debug, Deserialize)]
 struct OpenAiCompatibleModel {
     id: String,
+    #[serde(default)]
+    supported_endpoints: Vec<String>,
 }
 
 impl OpenAiCompatibleModel {
@@ -703,6 +705,17 @@ impl OpenAiCompatibleModel {
         if id.is_empty() {
             return None;
         }
+        // Copilot's catalog declares the inference endpoint per model; modern
+        // models only serve `/responses`. Other OpenAI-compatible servers may
+        // send the same field, but their models stay on the default endpoint.
+        let endpoint = (provider.as_str() == GITHUB_COPILOT_PROVIDER_ID
+            && self
+                .supported_endpoints
+                .iter()
+                .any(|endpoint| endpoint == "/responses"))
+        .then(|| {
+            ProviderEndpointId::parse("responses").expect("valid Copilot responses endpoint id")
+        });
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),
             display_name: id.to_string(),
@@ -717,7 +730,7 @@ impl OpenAiCompatibleModel {
             capabilities: ModelCapabilityFlags::default(),
             reasoning_effort_options: Vec::new(),
             source: ModelMetadataSource::RemoteDiscovered,
-            endpoint: None,
+            endpoint,
         })
     }
 }

@@ -476,10 +476,10 @@ fn github_copilot_config_uses_the_users_own_client_id() {
 }
 
 #[test]
-fn github_copilot_static_config_uses_holon_oauth_app() {
+fn github_copilot_static_config_uses_bundled_oauth_app() {
     let config = oauth_provider_config(GITHUB_COPILOT_PROVIDER_ID)
         .expect("GitHub Copilot has a built-in OAuth app");
-    assert_eq!(config.client_id, "Ov23lioel2hHZITYyzwB");
+    assert_eq!(config.client_id, "Ov23li8tweQw6odWQebz");
     assert!(provider_supports_oauth_device_login(
         GITHUB_COPILOT_PROVIDER_ID
     ));
@@ -496,11 +496,11 @@ fn github_copilot_client_id_resolution_preserves_override_precedence() {
             .client_id
     };
 
-    assert_eq!(resolve(None), "Ov23lioel2hHZITYyzwB");
-    assert_eq!(resolve(Some("  ")), "Ov23lioel2hHZITYyzwB");
+    assert_eq!(resolve(None), "Ov23li8tweQw6odWQebz");
+    assert_eq!(resolve(Some("  ")), "Ov23li8tweQw6odWQebz");
     for value in ["", "  "] {
         std::env::set_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, value);
-        assert_eq!(resolve(None), "Ov23lioel2hHZITYyzwB");
+        assert_eq!(resolve(None), "Ov23li8tweQw6odWQebz");
     }
     std::env::set_var(GITHUB_COPILOT_CLIENT_ID_ENV_VAR, "  Iv1.env-client  ");
     assert_eq!(resolve(None), "Iv1.env-client");

@@ -1776,6 +1776,46 @@ fn openai_compatible_discovery_keeps_only_non_empty_server_model_ids() {
 }
 
 #[test]
+fn github_copilot_discovery_routes_declared_responses_models_to_responses_endpoint() {
+    let payload: OpenAiCompatibleModelsResponse = serde_json::from_str(
+        r#"{"object":"list","data":[
+                {"id":"gpt-6.2-sol","supported_endpoints":["/responses","ws:/responses"]},
+                {"id":"mai-code-2-flash","supported_endpoints":["/chat/completions","/responses"]},
+                {"id":"claude-fable-5.1","supported_endpoints":["/chat/completions","/v1/messages"]},
+                {"id":"copilot-search-a","supported_endpoints":["/chat/completions"]},
+                {"id":"gpt-4o-mini-2024-07-18"}
+            ]}"#,
+    )
+    .unwrap();
+    let models = payload.into_model_metadata(&ProviderId::parse("github-copilot").unwrap());
+    let endpoint = |id: &str| {
+        models
+            .iter()
+            .find(|model| model.model_ref.model == id)
+            .and_then(|model| model.endpoint.as_ref())
+            .map(|endpoint| endpoint.as_str().to_string())
+    };
+    assert_eq!(endpoint("gpt-6.2-sol").as_deref(), Some("responses"));
+    assert_eq!(endpoint("mai-code-2-flash").as_deref(), Some("responses"));
+    assert_eq!(endpoint("claude-fable-5.1"), None);
+    assert_eq!(endpoint("copilot-search-a"), None);
+    assert_eq!(endpoint("gpt-4o-mini-2024-07-18"), None);
+}
+
+#[test]
+fn openai_compatible_discovery_ignores_supported_endpoints_for_other_providers() {
+    let payload: OpenAiCompatibleModelsResponse = serde_json::from_str(
+        r#"{"object":"list","data":[
+                {"id":"some-model","supported_endpoints":["/responses"]}
+            ]}"#,
+    )
+    .unwrap();
+    let models = payload.into_model_metadata(&ProviderId::parse("vllm").unwrap());
+    assert_eq!(models.len(), 1);
+    assert!(models[0].endpoint.is_none());
+}
+
+#[test]
 fn only_ollama_discovery_currently_supplies_model_capabilities() {
     assert!(provider_discovers_model_capabilities(&ollama_provider(
         "http://127.0.0.1:11434".into()

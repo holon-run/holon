@@ -69,7 +69,8 @@ When you need advanced cloud reasoning models, use Holon's interactive onboardin
 
 #### GitHub Copilot (experimental)
 
-Holon includes a default OAuth app, so no client ID configuration is required:
+Holon bundles a public third-party OAuth app (the opencode project's app),
+so no client ID configuration is required:
 
 ```bash
 holon onboard
@@ -89,10 +90,16 @@ the built-in default; blank overrides are ignored. Holon stores
 the resulting credential and client ID in its own `github-copilot` profile;
 it does not read IDE credentials or require a client secret.
 
+Credential profiles keep the client ID recorded at login. If you logged in
+with an older Holon default app, repeat the device login to switch to the
+current bundled app; token refreshes keep the recorded app.
+
 This direct provider is experimental: successful GitHub login does not
 confirm Copilot entitlement, app/integration admission, or model access.
 Discover the models available to your account and select a returned
-`github-copilot@default/<model-id>` route; there is no static model list.
+route; there is no static model list. Models whose catalog entry declares the
+`/responses` endpoint route through `github-copilot@responses/<model-id>`;
+the rest use `github-copilot@default/<model-id>`.
 Holon sends `Copilot-Integration-Id: holon`, never an editor impersonation.
 GitHub controls the accepted identities, models, policies, and usage limits.
 Removing a local credential does not revoke its authorization at GitHub;
