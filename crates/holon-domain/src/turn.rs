@@ -1,6 +1,6 @@
 use super::message::{
-    admission_trigger_kind_for_message_kind, AuthorityClass, MessageEnvelope, MessageOrigin,
-    Priority,
+    admission_trigger_kind_for_message_kind, is_self_enqueued_followup, AuthorityClass,
+    MessageEnvelope, MessageOrigin, Priority,
 };
 use super::serde_helpers::is_false;
 use crate::input::{IdleInputBatchItem, IdleInputBatchRecord};
@@ -25,6 +25,14 @@ pub struct TurnTriggerSummary {
 }
 
 impl TurnTriggerSummary {
+    pub fn effective_authority_class(&self) -> AuthorityClass {
+        if is_self_enqueued_followup(&self.kind, &self.origin) {
+            self.authority_class.for_self_enqueue()
+        } else {
+            self.authority_class
+        }
+    }
+
     pub fn from_message(message: &MessageEnvelope) -> Self {
         Self {
             message_id: Some(message.id.clone()),

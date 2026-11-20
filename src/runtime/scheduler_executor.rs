@@ -4940,7 +4940,7 @@ fn canonical_execution_trust(
         // Legacy envelopes retain their original label, not its privileges.
         return ExecutionTrust::RuntimeInstruction;
     }
-    match message.authority_class {
+    match message.effective_authority_class() {
         crate::types::AuthorityClass::OperatorInstruction => ExecutionTrust::OperatorInstruction,
         crate::types::AuthorityClass::RuntimeInstruction => ExecutionTrust::RuntimeInstruction,
         crate::types::AuthorityClass::IntegrationSignal => ExecutionTrust::IntegrationSignal,
