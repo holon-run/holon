@@ -127,6 +127,21 @@ fn select_queue_message_excluding<'a>(
     (head, false)
 }
 
+/// Bounded read window for finding the unsettled obligation that owns the
+/// scheduler's recovery-root ordering boost.
+const CHARGED_ROOT_SETTLEMENT_LIMIT: usize = 8;
+
+/// Root message id recorded in a model_lineage_recovery message's provider
+/// recovery directive, if the directive carries one.
+fn provider_recovery_replay_root(message: &MessageEnvelope) -> Option<&str> {
+    message
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.get("provider_recovery"))
+        .and_then(|directive| directive.get("root_message_id"))
+        .and_then(serde_json::Value::as_str)
+}
+
 pub(super) enum RunLoopPoll {
     Shutdown,
     Stopped(AgentState, usize),
@@ -520,8 +535,57 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     return Ok((Some(source), true));
                 }
             }
+            // Older provider lineages must not starve the settlement's charged
+            // recovery root: the root's model_lineage replay carries the root's
+            // message id in its directive, and the unsettled settlement records
+            // the latest charged root attempt. Boosting only the ordering keeps
+            // the replay's episode and queue-parking gates in charge of timing.
+            if let Some(root) = self.charged_recovery_root_message_id(retry) {
+                let replay = queue.peek_next_matching(|message| {
+                    message.priority == Priority::Interject
+                        || message.authority_class == AuthorityClass::OperatorInstruction
+                        || (message.agent_id == retry.agent_id
+                            && message.work_item_id == retry.work_item_id
+                            && !parked.contains(&message.id)
+                            && scheduler::runtime_owned_internal_followup(message)
+                            && matches!(
+                                &message.origin,
+                                MessageOrigin::System { subsystem }
+                                    if subsystem == "model_lineage_recovery"
+                            )
+                            && provider_recovery_replay_root(message) == Some(root.as_str()))
+                });
+                if let Some(replay) = replay {
+                    // Like the recovery-root boost, the charged replay cannot
+                    // cross operator/interject input: the scan stops at the
+                    // first such message, parked or not, and refuses the boost.
+                    if replay.priority != Priority::Interject
+                        && replay.authority_class != AuthorityClass::OperatorInstruction
+                    {
+                        return Ok((Some(replay), true));
+                    }
+                }
+            }
         }
         Ok(selected)
+    }
+
+    /// Message id of the settlement's latest charged recovery root, if that
+    /// obligation is still unsettled for the selected lineage's owner.
+    fn charged_recovery_root_message_id(&self, retry: &MessageEnvelope) -> Option<String> {
+        let records = self
+            .runtime
+            .inner
+            .runtime_db
+            .task_result_settlements()
+            .unsettled_for_agent(&retry.agent_id, CHARGED_ROOT_SETTLEMENT_LIMIT)
+            .ok()?;
+        records
+            .iter()
+            .find(|record| record.work_item_id == retry.work_item_id)
+            .and_then(|record| record.last_recovery_root_attempt_id.as_deref())
+            .and_then(|attempt_id| attempt_id.strip_prefix("activation:message:"))
+            .map(str::to_owned)
     }
 
     async fn queue_candidate_is_selected(
@@ -5634,6 +5698,276 @@ mod tests {
 
         assert_eq!(selected.map(|message| message.id.as_str()), Some("backlog"));
         assert!(!wait_obligation);
+    }
+
+    fn lineage_replay_message(id: &str, root: &str) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "default",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "model_lineage_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "Runtime recovery: the previous turn stopped".into(),
+            },
+        );
+        message.id = id.into();
+        message.work_item_id = Some("work-a".into());
+        message.delivery_surface = Some(crate::types::MessageDeliverySurface::RuntimeSystem);
+        message.admission_context = Some(crate::types::AdmissionContext::RuntimeOwned);
+        message.metadata = Some(serde_json::json!({
+            "provider_recovery": {
+                "fallback_model_ref": "stub@default/stub-model",
+                "fallback_attempt": 1,
+                "root_message_id": root,
+                "source_turn_id": "turn-source",
+                "source_message_id": root,
+                "source_terminal_kind": "deferred_to_fallback",
+                "source_round": 1,
+            }
+        }));
+        message
+    }
+
+    fn charged_settlement_fixture(
+        charged_root: Option<&str>,
+    ) -> crate::runtime_db::task_result_settlement::TaskResultSettlementRecord {
+        let now = Utc::now();
+        crate::runtime_db::task_result_settlement::TaskResultSettlementRecord {
+            source_projection: None,
+            reply_projection: None,
+            result_identity: "result-charged".into(),
+            agent_id: "default".into(),
+            task_id: "task-charged".into(),
+            message_id: "message-charged".into(),
+            work_item_id: Some("work-a".into()),
+            rejoin_generation: 1,
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "turn-parent".into(),
+            },
+            task_status: "completed".into(),
+            state: crate::runtime_db::task_result_settlement::TaskResultSettlementState::PersistedPending,
+            activation_id: None,
+            disposition: None,
+            created_at: now,
+            updated_at: now,
+            admitted_at: None,
+            settled_at: None,
+            deferred_reason: None,
+            deferred_at: None,
+            next_recheck_at: Some(now + chrono::Duration::seconds(30)),
+            recovery_epoch: 0,
+            recovery_attempts: 1,
+            last_recovery_root_attempt_id: charged_root
+                .map(|root| format!("activation:message:{root}")),
+            last_recovery_admitted_at: None,
+            recovery_paused_at: None,
+            recovery_diagnostic_at: None,
+        }
+    }
+
+    fn insert_charged_settlement(runtime: &RuntimeHandle, charged_root: Option<&str>) {
+        let record = charged_settlement_fixture(charged_root);
+        let now = record.created_at;
+        runtime
+            .runtime_db()
+            .tasks()
+            .upsert(&TaskRecord {
+                id: record.task_id.clone(),
+                agent_id: record.agent_id.clone(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Completed,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: Some(record.message_id.clone()),
+                work_item_id: record.work_item_id.clone(),
+                summary: None,
+                detail: Some(serde_json::json!({
+                    "rejoin_obligation_id": record.task_id,
+                    "rejoin_generation": record.rejoin_generation,
+                    "parent_turn_id": "turn-parent",
+                })),
+                recovery: None,
+            })
+            .unwrap();
+        runtime
+            .runtime_db()
+            .transaction(|tx| {
+                crate::runtime_db::task_result_settlement::upsert_pending_tx(tx, &record)?;
+                Ok(())
+            })
+            .unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn charged_recovery_root_replay_overtakes_older_provider_lineages() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        insert_charged_settlement(&runtime, Some("msg-charged-root"));
+        // Queue selection reads persisted current-read records for every scanned
+        // message, so both lineage replays must be admitted before selection.
+        let older = runtime
+            .enqueue(lineage_replay_message("older-lineage", "msg-old-root"))
+            .await
+            .unwrap();
+        let charged = runtime
+            .enqueue(lineage_replay_message("charged-replay", "msg-charged-root"))
+            .await
+            .unwrap();
+        let mut queue = crate::queue::RuntimeQueue::default();
+        queue.push(older);
+        queue.push(charged);
+
+        let (selected, obligation) = SchedulerDecisionExecutor::new(&runtime)
+            .select_runtime_queue_message_from_queue(
+                &queue,
+                &Default::default(),
+                &Default::default(),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            selected.map(|message| message.id.as_str()),
+            Some("charged-replay"),
+            "the settlement's charged root replay must not be starved by older lineages"
+        );
+        assert!(obligation);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn uncharged_settlement_keeps_lineage_queue_order() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        insert_charged_settlement(&runtime, None);
+        let older = runtime
+            .enqueue(lineage_replay_message("older-lineage", "msg-old-root"))
+            .await
+            .unwrap();
+        let charged = runtime
+            .enqueue(lineage_replay_message("charged-replay", "msg-charged-root"))
+            .await
+            .unwrap();
+        let mut queue = crate::queue::RuntimeQueue::default();
+        queue.push(older);
+        queue.push(charged);
+
+        let (selected, obligation) = SchedulerDecisionExecutor::new(&runtime)
+            .select_runtime_queue_message_from_queue(
+                &queue,
+                &Default::default(),
+                &Default::default(),
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            selected.map(|message| message.id.as_str()),
+            Some("older-lineage"),
+            "without a charged root the queue order decides"
+        );
+        assert!(!obligation);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn charged_recovery_root_replay_does_not_cross_operator_or_interject_input() {
+        let dir = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let runtime = RuntimeHandle::new(
+            "default",
+            dir.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(crate::provider::StubProvider::new("unused")),
+            "default".into(),
+            context_config(),
+        )
+        .unwrap();
+        insert_charged_settlement(&runtime, Some("msg-charged-root"));
+        let older = runtime
+            .enqueue(lineage_replay_message("older-lineage", "msg-old-root"))
+            .await
+            .unwrap();
+        let charged = runtime
+            .enqueue(lineage_replay_message("charged-replay", "msg-charged-root"))
+            .await
+            .unwrap();
+        let mut operator = operator_prompt("operator");
+        operator.priority = Priority::Next;
+        let operator = runtime.enqueue(operator).await.unwrap();
+        let interject = runtime
+            .enqueue(queued_message(Priority::Interject, "interject"))
+            .await
+            .unwrap();
+        let select = |messages: &[MessageEnvelope], parked: &[String]| {
+            let mut queue = crate::queue::RuntimeQueue::default();
+            for message in messages {
+                queue.push(message.clone());
+            }
+            let (selected, obligation) = SchedulerDecisionExecutor::new(&runtime)
+                .select_runtime_queue_message_from_queue(
+                    &queue,
+                    &Default::default(),
+                    &parked.iter().cloned().collect(),
+                    None,
+                )
+                .unwrap();
+            (selected.map(|message| message.id.clone()), obligation)
+        };
+
+        // Operator input queued between the selected lineage retry and the
+        // charged replay: the boost must refuse instead of crossing it.
+        let (selected, obligation) =
+            select(&[older.clone(), operator.clone(), charged.clone()], &[]);
+        assert_eq!(selected.as_deref(), Some("older-lineage"));
+        assert!(
+            !obligation,
+            "the charged replay boost must not cross operator input behind the lineage retry"
+        );
+
+        // Operator or interject input at the queue head keeps its early return.
+        let (selected, obligation) =
+            select(&[operator.clone(), older.clone(), charged.clone()], &[]);
+        assert_eq!(selected.as_deref(), Some(operator.id.as_str()));
+        assert!(!obligation);
+        let (selected, obligation) =
+            select(&[interject.clone(), older.clone(), charged.clone()], &[]);
+        assert_eq!(selected.as_deref(), Some(interject.id.as_str()));
+        assert!(!obligation);
+
+        // A parked interject ahead of the matched replay stops the boost too,
+        // matching the recovery-root boost's parked parity.
+        let (selected, obligation) = select(
+            &[interject.clone(), older.clone(), charged.clone()],
+            &[interject.id.clone()],
+        );
+        assert_eq!(selected.as_deref(), Some("older-lineage"));
+        assert!(
+            !obligation,
+            "a parked interject must stop the charged replay boost as well"
+        );
     }
 
     #[test]
