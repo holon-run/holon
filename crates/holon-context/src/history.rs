@@ -860,7 +860,7 @@ fn turn_trigger_label(message: &MessageEnvelope) -> &'static str {
 }
 
 fn turn_trigger_summary_label(trigger: &holon_domain::TurnTriggerSummary) -> &'static str {
-    if matches!(trigger.authority_class, AuthorityClass::OperatorInstruction) {
+    if trigger.effective_authority_class() == AuthorityClass::OperatorInstruction {
         return "trusted operator input";
     }
     match trigger.trigger_kind {

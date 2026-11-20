@@ -101,6 +101,23 @@ pub enum AuthorityClass {
     ExternalEvidence,
 }
 
+impl AuthorityClass {
+    /// Self-generated follow-ups cannot carry operator authority.
+    pub fn for_self_enqueue(self) -> Self {
+        match self {
+            Self::OperatorInstruction => Self::RuntimeInstruction,
+            other => other,
+        }
+    }
+}
+
+pub const TOOL_ENQUEUE_SUBSYSTEM: &str = "tool_enqueue";
+
+pub(crate) fn is_self_enqueued_followup(kind: &MessageKind, origin: &MessageOrigin) -> bool {
+    *kind == MessageKind::InternalFollowup
+        && matches!(origin, MessageOrigin::System { subsystem } if subsystem == TOOL_ENQUEUE_SUBSYSTEM)
+}
+
 pub const HOLON_CALLER_AGENT_ID_ENV: &str = "HOLON_CALLER_AGENT_ID";
 pub const HOLON_CALLER_SOURCE_TASK_ID_ENV: &str = "HOLON_CALLER_SOURCE_TASK_ID";
 pub const HOLON_CALLER_SOURCE_TURN_ID_ENV: &str = "HOLON_CALLER_SOURCE_TURN_ID";
@@ -239,6 +256,19 @@ pub struct MessageEnvelope {
 }
 
 impl MessageEnvelope {
+    /// Authority for execution and model input, without changing audit data.
+    pub fn effective_authority_class(&self) -> AuthorityClass {
+        if self.is_self_enqueued_followup() {
+            self.authority_class.for_self_enqueue()
+        } else {
+            self.authority_class
+        }
+    }
+
+    pub fn is_self_enqueued_followup(&self) -> bool {
+        is_self_enqueued_followup(&self.kind, &self.origin)
+    }
+
     pub fn is_runtime_owned_internal_followup(&self) -> bool {
         self.kind == MessageKind::InternalFollowup
             && self.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)

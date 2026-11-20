@@ -105,7 +105,8 @@ impl RuntimeMutation {
                     .is_some_and(|abort| abort.token.is_cancelled())
                 || self.queue.peek().is_some_and(|message| {
                     message.priority == Priority::Interject
-                        || message.authority_class == AuthorityClass::OperatorInstruction
+                        || message.effective_authority_class()
+                            == AuthorityClass::OperatorInstruction
                 })
             {
                 break;
