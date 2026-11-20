@@ -30,6 +30,7 @@ implementation and tests.
 - [Deterministic Scheduler Decision Hooks](./deterministic-scheduler-decision-hooks.md)
 - [Scheduler Cutover Simplification](./scheduler-cutover-simplification.md)
 - [Scheduler–WorkItem Unified Execution Protocol](./scheduler-work-item-unified-execution-protocol.md)
+- [Agent-Owned Execution and WorkItem Attribution (draft)](./agent-owned-execution-and-work-item-attribution.md)
 - [Agent Activation, Settlement, and Dispatch](./agent-activation-settlement-and-dispatch.md)
 - [Result Closure](./result-closure.md)
 - [Task Result Content and Presentation](./task-result-content-and-presentation.md)
