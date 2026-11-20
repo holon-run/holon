@@ -11,7 +11,7 @@ use holon_tools::helpers::truncate_text;
 
 use super::{
     deepseek_tool_url,
-    fetch::{ExtractMode, WebFetchRequest, WebFetchResponse},
+    fetch::{external_content_wrapper, WebFetchRequest, WebFetchResponse},
     policy::{policy_error, timeout, validate_fetch_url},
     WebFetchConfig, WebProviderConfig,
 };
@@ -21,11 +21,23 @@ struct FetchPage {
     content: String,
 }
 
-pub(super) async fn fetch(
-    request: WebFetchRequest,
-    provider: &WebProviderConfig,
+/// Whether the local fetch policy keeps remote adapters from ever passing
+/// the shared preflight: the service does not expose its redirect chain,
+/// so custom host rules or a redirect budget cannot be enforced remotely.
+pub(super) fn remote_fetch_policy_conflict(config: &WebFetchConfig) -> bool {
+    !config.allowed_hosts.is_empty()
+        || !config.denied_hosts.is_empty()
+        || config.max_redirects != WebFetchConfig::default().max_redirects
+}
+
+/// Shared preflight for remote fetch adapters: enforce the site policy,
+/// URL shape, and credential rules before any provider request leaves the
+/// process. Mode and API-key gating stay with each adapter's caller.
+pub(super) async fn preflight_remote_url(
+    service: &str,
+    request: &WebFetchRequest,
     config: &WebFetchConfig,
-) -> Result<WebFetchResponse> {
+) -> Result<Url> {
     if !config.enabled {
         return Err(policy_error(
             "web_fetch_disabled",
@@ -34,23 +46,12 @@ pub(super) async fn fetch(
             "enable web.fetch.enabled",
         ));
     }
-    if !matches!(request.extract_mode, ExtractMode::Auto) {
-        return Err(policy_error(
-            "invalid_argument",
-            "DeepSeek Fetch returns Markdown and only supports extract_mode=auto",
-            json!({}),
-            "omit provider to use local text/raw extraction",
-        ));
-    }
     // The service does not expose its redirect chain. Never claim to enforce
     // custom host rules or redirect budgets on a remotely fetched page.
-    if !config.allowed_hosts.is_empty()
-        || !config.denied_hosts.is_empty()
-        || config.max_redirects != WebFetchConfig::default().max_redirects
-    {
+    if remote_fetch_policy_conflict(config) {
         return Err(policy_error(
             "network_denied",
-            "DeepSeek Fetch cannot enforce custom host rules or redirect limits",
+            format!("{service} cannot enforce custom host rules or redirect limits"),
             json!({}),
             "omit provider to enforce local web.fetch policy",
         ));
@@ -58,7 +59,7 @@ pub(super) async fn fetch(
     let url = Url::parse(request.url.trim()).map_err(|_| {
         policy_error(
             "invalid_url",
-            "DeepSeek Fetch requires an absolute HTTP(S) URL",
+            format!("{service} requires an absolute HTTP(S) URL"),
             json!({}),
             "provide a public HTTP(S) URL without credentials",
         )
@@ -66,7 +67,7 @@ pub(super) async fn fetch(
     if !url.username().is_empty() || url.password().is_some() {
         return Err(policy_error(
             "invalid_url",
-            "DeepSeek Fetch does not accept URLs containing credentials",
+            format!("{service} does not accept URLs containing credentials"),
             json!({}),
             "provide a public URL without credentials",
         ));
@@ -74,20 +75,36 @@ pub(super) async fn fetch(
     if url.as_str().chars().count() > 8192 {
         return Err(policy_error(
             "invalid_url",
-            "DeepSeek Fetch URLs must contain at most 8192 characters",
+            format!("{service} URLs must contain at most 8192 characters"),
             json!({}),
             "provide a shorter URL",
         ));
     }
     validate_fetch_url(&url, config).await?;
+    Ok(url)
+}
+
+/// Shared API-key gate for remote fetch adapters.
+pub(super) fn require_remote_api_key(service: &str, provider: &WebProviderConfig) -> Result<()> {
     if provider.api_key.trim().is_empty() {
         return Err(policy_error(
             "provider_unavailable",
-            "DeepSeek Fetch requires an API key",
+            format!("{service} requires an API key"),
             json!({}),
             "set credential_profile on the web provider to an API key profile",
         ));
     }
+    Ok(())
+}
+
+pub(super) async fn fetch(
+    request: WebFetchRequest,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    config: &WebFetchConfig,
+) -> Result<WebFetchResponse> {
+    let url = preflight_remote_url("DeepSeek Fetch", &request, config).await?;
+    require_remote_api_key("DeepSeek Fetch", provider)?;
     let client = Client::builder()
         .timeout(timeout(config))
         .redirect(Policy::none())
@@ -144,7 +161,9 @@ pub(super) async fn fetch(
         sha256: format!("{:x}", Sha256::digest(page.content.as_bytes())),
         fetched_at: Utc::now().to_rfc3339(),
         source: "deepseek_remote",
-        text: format!("<external_content source=\"{url}\">\n{text}\n</external_content>"),
+        provider_id: Some(provider_id.to_string()),
+        status_source: "provider_api",
+        text: external_content_wrapper(&url, &text),
         summary_text: format!("DeepSeek Fetch {} {url}", status.as_u16()),
     })
 }

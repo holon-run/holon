@@ -31,3 +31,21 @@ pub(crate) async fn execute(
     .await?;
     serialize_success(NAME, &result)
 }
+
+pub(crate) async fn list_providers(
+    runtime: &RuntimeHandle,
+    input: &Value,
+) -> Result<crate::tool::ToolResult> {
+    use holon_tools::builtins::list_web_fetch_providers as tool;
+
+    let _: tool::ListWebFetchProvidersArgs = parse_tool_args(tool::NAME, input)?;
+    let providers = holon_web_retrieval::fetch::list_fetch_providers(&runtime.web_config())
+        .into_iter()
+        .map(|info| tool::WebFetchProviderSummary {
+            provider_id: info.provider_id,
+            kind: info.kind.to_string(),
+            extract_modes: info.extract_modes.into_iter().map(str::to_string).collect(),
+        })
+        .collect();
+    serialize_success(tool::NAME, &tool::ListWebFetchProvidersResult { providers })
+}

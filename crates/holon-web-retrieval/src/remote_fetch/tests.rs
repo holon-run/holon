@@ -1,6 +1,9 @@
 use super::*;
+use crate::fetch::ExtractMode;
 use axum::{extract::Request, http::StatusCode, routing::post, Router};
 use serde_json::Value;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 fn request() -> WebFetchRequest {
     WebFetchRequest {
@@ -13,13 +16,21 @@ fn request() -> WebFetchRequest {
 async fn server(
     status: StatusCode,
     body: &str,
-) -> (WebProviderConfig, tokio::task::JoinHandle<()>) {
+) -> (
+    WebProviderConfig,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
     let body = body.to_owned();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
     let router = Router::new().route(
         "/v1/tools/fetch",
         post(move |request: Request| {
             let body = body.clone();
+            let calls = handler_calls.clone();
             async move {
+                calls.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(request.headers()["authorization"], "Bearer fixture-key");
                 let bytes = axum::body::to_bytes(request.into_body(), 100_000)
                     .await
@@ -43,6 +54,7 @@ async fn server(
             output: None,
             limits: Default::default(),
         },
+        calls,
         handle,
     )
 }
@@ -50,7 +62,7 @@ async fn server(
 #[tokio::test]
 async fn deepseek_fetch_maps_markdown_provenance_and_unicode_limit() {
     let content = "# 文档\n内容";
-    let (provider, handle) = server(
+    let (provider, _calls, handle) = server(
         StatusCode::OK,
         &json!({"title": "文档", "content": content}).to_string(),
     )
@@ -61,10 +73,12 @@ async fn deepseek_fetch_maps_markdown_provenance_and_unicode_limit() {
     };
     let mut request = request();
     request.max_chars = Some(100);
-    let page = fetch(request, &provider, &config).await.unwrap();
+    let page = fetch(request, "fixture", &provider, &config).await.unwrap();
     handle.abort();
     assert_eq!(page.final_url, None);
     assert_eq!(page.source, "deepseek_remote");
+    assert_eq!(page.provider_id.as_deref(), Some("fixture"));
+    assert_eq!(page.status_source, "provider_api");
     assert_eq!(page.status, 200);
     assert_eq!(page.content_type.as_deref(), Some("text/markdown"));
     assert_eq!(page.bytes_read, content.len());
@@ -76,11 +90,12 @@ async fn deepseek_fetch_maps_markdown_provenance_and_unicode_limit() {
     assert!(page.text.contains("# 文档"));
     assert!(!page.text.contains("内容"));
     assert!(page.text.starts_with("<external_content source="));
+    assert!(page.text.contains("untrusted"));
 }
 
 #[tokio::test]
 async fn deepseek_fetch_rejects_unsafe_or_unenforceable_requests() {
-    let (mut provider, handle) = server(StatusCode::OK, "{}").await;
+    let (mut provider, calls, handle) = server(StatusCode::OK, "{}").await;
     let config = WebFetchConfig::default();
     for url in [
         "http://127.0.0.1/private",
@@ -92,16 +107,25 @@ async fn deepseek_fetch_rejects_unsafe_or_unenforceable_requests() {
     ] {
         let mut input = request();
         input.url = url.into();
-        let error = fetch(input, &provider, &config).await.unwrap_err();
+        let error = fetch(input, "fixture", &provider, &config)
+            .await
+            .unwrap_err();
         assert!(!error.to_string().contains("secret"));
     }
     let mut input = request();
     input.url = format!("https://93.184.216.34/{}", "a".repeat(8192));
-    assert!(fetch(input, &provider, &config).await.is_err());
+    assert!(fetch(input, "fixture", &provider, &config).await.is_err());
     for mode in [ExtractMode::Raw, ExtractMode::Text] {
         let mut input = request();
         input.extract_mode = mode;
-        assert!(fetch(input, &provider, &config).await.is_err());
+        // Mode gating lives in the shared route layer before any request.
+        let mut shared = super::super::WebConfig::default();
+        shared.providers.insert("fixture".into(), provider.clone());
+        assert!(
+            super::super::fetch::fetch_with_provider(input, Some("fixture"), &shared)
+                .await
+                .is_err()
+        );
     }
     for config in [
         WebFetchConfig {
@@ -121,11 +145,17 @@ async fn deepseek_fetch_rejects_unsafe_or_unenforceable_requests() {
             ..Default::default()
         },
     ] {
-        assert!(fetch(request(), &provider, &config).await.is_err());
+        assert!(fetch(request(), "fixture", &provider, &config)
+            .await
+            .is_err());
     }
     provider.api_key.clear();
-    assert!(fetch(request(), &provider, &config).await.is_err());
+    assert!(fetch(request(), "fixture", &provider, &config)
+        .await
+        .is_err());
     handle.abort();
+    // Every rejection above must happen before the provider is contacted.
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
 
 #[tokio::test]
@@ -140,8 +170,8 @@ async fn deepseek_fetch_errors_are_bounded_redacted_and_retryable() {
         (StatusCode::OK, "{}", false),
         (StatusCode::OK, "{\"content\":\"\"}", false),
     ] {
-        let (provider, handle) = server(status, body).await;
-        let error = fetch(request(), &provider, &WebFetchConfig::default())
+        let (provider, _calls, handle) = server(status, body).await;
+        let error = fetch(request(), "fixture", &provider, &WebFetchConfig::default())
             .await
             .unwrap_err();
         handle.abort();
@@ -150,12 +180,12 @@ async fn deepseek_fetch_errors_are_bounded_redacted_and_retryable() {
         assert_eq!(value["retryable"], retryable);
         assert!(!value.to_string().contains("fixture-key"));
     }
-    let (provider, handle) = server(StatusCode::OK, "{\"content\":\"too big\"}").await;
+    let (provider, _calls, handle) = server(StatusCode::OK, "{\"content\":\"too big\"}").await;
     let config = WebFetchConfig {
         max_response_bytes: 8,
         ..Default::default()
     };
-    assert!(fetch(request(), &provider, &config)
+    assert!(fetch(request(), "fixture", &provider, &config)
         .await
         .unwrap_err()
         .to_string()
@@ -165,7 +195,7 @@ async fn deepseek_fetch_errors_are_bounded_redacted_and_retryable() {
 
 #[tokio::test]
 async fn fetch_provider_selection_rejects_unknown_or_unsupported_kind() {
-    let (mut provider, handle) = server(StatusCode::OK, "{}").await;
+    let (mut provider, calls, handle) = server(StatusCode::OK, "{}").await;
     let mut config = super::super::WebConfig::default();
     assert!(
         super::super::fetch::fetch_with_provider(request(), Some("absent"), &config)
@@ -173,11 +203,25 @@ async fn fetch_provider_selection_rejects_unknown_or_unsupported_kind() {
             .is_err()
     );
     provider.kind = super::super::WebProviderKind::Brave;
-    config.providers.insert("brave".into(), provider);
+    config.providers.insert("brave".into(), provider.clone());
+    assert!(
+        super::super::fetch::fetch_with_provider(request(), Some("brave"), &config)
+            .await
+            .is_err()
+    );
+    let mut search_only = provider.clone();
+    search_only.kind = super::super::WebProviderKind::Tavily;
+    config.providers.insert("tavily-search".into(), search_only);
+    let error = super::super::fetch::fetch_with_provider(request(), Some("tavily-search"), &config)
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("tavily"));
+    config.fetch.enabled = false;
     assert!(
         super::super::fetch::fetch_with_provider(request(), Some("brave"), &config)
             .await
             .is_err()
     );
     handle.abort();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }

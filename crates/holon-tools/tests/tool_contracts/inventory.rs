@@ -92,6 +92,7 @@ fn description_path(tool_name: &str) -> Option<&'static str> {
         "ListProviderModels" => "src/tool/tool_descriptions/list_provider_models.md",
         "ListTasks" => "src/tool/tool_descriptions/list_tasks.md",
         "ListTimers" => "src/tool/tool_descriptions/list_timers.md",
+        "ListWebFetchProviders" => "src/tool/tool_descriptions/list_web_fetch_providers.md",
         "ListWebSearchProviders" => "src/tool/tool_descriptions/list_web_search_providers.md",
         "ListWorkItems" => "src/tool/tool_descriptions/list_work_items.md",
         "MemoryGet" => "src/tool/tool_descriptions/memory_get.md",

@@ -24,6 +24,7 @@ pub mod invoke_agent;
 pub mod list_model_providers;
 pub mod list_provider_models;
 pub mod list_subagents;
+pub mod list_web_fetch_providers;
 pub mod list_web_search_providers;
 pub mod list_work_items;
 pub mod memory_get;
@@ -107,6 +108,7 @@ pub fn builtin_tool_definitions() -> Result<Vec<BuiltinToolDefinition>> {
         view_image::definition()?,
         web_fetch::definition()?,
         web_search::definition()?,
+        list_web_fetch_providers::definition()?,
         list_web_search_providers::definition()?,
         x_search::definition()?,
     ])
@@ -192,6 +194,7 @@ pub enum BuiltinTool {
     ViewImage,
     WebFetch,
     WebSearch,
+    ListWebFetchProviders,
     ListWebSearchProviders,
     XSearch,
 }
@@ -245,6 +248,7 @@ impl BuiltinTool {
             view_image::NAME => Self::ViewImage,
             web_fetch::NAME => Self::WebFetch,
             web_search::NAME => Self::WebSearch,
+            list_web_fetch_providers::NAME => Self::ListWebFetchProviders,
             list_web_search_providers::NAME => Self::ListWebSearchProviders,
             x_search::NAME => Self::XSearch,
             _ => return None,
