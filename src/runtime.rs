@@ -8600,7 +8600,7 @@ async fn observe_startup_phase_inner<T>(
     let phase_observation = observation.map(|observation| observation.phase(phase));
     #[cfg(test)]
     if let Some(observation) = observation {
-        if let Some(hook) = &observation.test_hook {
+        if let Some(hook) = observation.test_hook() {
             if let Err(error) = hook(observation.clone(), phase).await {
                 let result = Err(error);
                 if let Some(phase_observation) = phase_observation {

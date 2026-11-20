@@ -166,21 +166,20 @@ mod tests;
 pub(crate) mod write_log_probe;
 
 use std::{
-    fmt,
-    fs::{self, File, OpenOptions},
+    fmt, fs,
     path::{Path, PathBuf},
     time::Duration,
 };
 
 use anyhow::{anyhow, bail, Context, Result};
+pub use holon_storage::connection::RuntimeDbLock;
 pub(crate) use holon_storage::read_block;
 use holon_storage::{blocking, reader_pool};
 use rusqlite::{Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 
 use crate::runtime_db::connection::{
-    configure_new_database_auto_vacuum, configure_persistent_database, flock, open_connection,
-    unlock, LockMode,
+    configure_new_database_auto_vacuum, configure_persistent_database, open_connection,
 };
 use crate::runtime_db::migrations::{
     backfill_wait_condition_payload_columns, backfill_work_item_blocker_wait_provenance,
@@ -294,12 +293,6 @@ impl fmt::Debug for RuntimeDb {
             .field("lock_path", &self.lock_path)
             .finish_non_exhaustive()
     }
-}
-
-#[derive(Debug)]
-pub struct RuntimeDbLock {
-    file: File,
-    path: PathBuf,
 }
 
 impl RuntimeDb {
@@ -1549,39 +1542,4 @@ fn migration_head(connection: &Connection) -> Result<Option<(i64, String)>> {
         )
         .optional()
         .map_err(Into::into)
-}
-
-impl RuntimeDbLock {
-    pub fn lock(path: impl Into<PathBuf>) -> Result<Self> {
-        Self::open(path.into(), LockMode::Blocking)
-    }
-
-    pub fn try_lock(path: impl Into<PathBuf>) -> Result<Self> {
-        Self::open(path.into(), LockMode::NonBlocking)
-    }
-
-    fn open(path: PathBuf, mode: LockMode) -> Result<Self> {
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("creating runtime lock directory {}", parent.display()))?;
-        }
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .write(true)
-            .open(&path)
-            .with_context(|| format!("opening runtime db lock {}", path.display()))?;
-        flock(&file, mode).with_context(|| format!("locking runtime db {}", path.display()))?;
-        Ok(Self { file, path })
-    }
-
-    pub fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-impl Drop for RuntimeDbLock {
-    fn drop(&mut self) {
-        let _ = unlock(&self.file);
-    }
 }

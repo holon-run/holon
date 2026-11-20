@@ -90,7 +90,7 @@ impl AgentQuarantines {
         let run_dir = host.config().run_dir();
         let boot = QuarantineBoot::new(
             &observation.startup_id,
-            observation.started_at,
+            observation.started_at(),
             self.entries.values().map(|(_, entry)| entry),
         );
         if !matches!(

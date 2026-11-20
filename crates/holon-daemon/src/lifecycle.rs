@@ -10,27 +10,26 @@ use std::{
 
 use anyhow::{anyhow, Context, Result};
 use chrono::Utc;
-use tracing::info;
 
 #[cfg(unix)]
 use std::{io::ErrorKind, os::unix::fs::FileTypeExt};
 
-use crate::{
-    client::LocalClient,
-    config::AppConfig,
-    host::RuntimeHost,
-    runtime_db::RuntimeDbLock,
-    types::{RuntimeFailurePhase, RuntimeFailureSummary},
-};
+use holon_client::{ConnectionConfig, LocalClient};
+use holon_domain::{RuntimeFailurePhase, RuntimeFailureSummary};
+use holon_storage::connection::RuntimeDbLock;
 
-use super::state::{latest_known_runtime_failure, read_persisted_daemon_failure};
+use crate::DaemonConfig;
+
+use super::state::{
+    latest_known_runtime_failure, merge_latest_failure, read_persisted_daemon_failure,
+};
 use super::{
-    cleanup_daemon_state, clear_persisted_daemon_lifecycle_failures, config_fingerprint,
-    daemon_log_hint, daemon_paths, load_daemon_desired_running, load_daemon_metadata,
-    persist_daemon_desired_running, persist_daemon_lifecycle_failure, read_daemon_log_excerpt,
-    runtime_activity_message, stale_files, DaemonLifecycleAction, DaemonLifecycleOwner,
-    DaemonLifecycleResult, DaemonLifecycleState, DaemonStatusView, RuntimeServiceHandle,
-    RuntimeServiceMetadata, RuntimeStatusResponse, DAEMON_CONTROL_PROTOCOL_VERSION,
+    cleanup_daemon_state, clear_persisted_daemon_lifecycle_failures, daemon_log_hint, daemon_paths,
+    load_daemon_desired_running, load_daemon_metadata, persist_daemon_desired_running,
+    persist_daemon_lifecycle_failure, read_daemon_log_excerpt, runtime_activity_message,
+    stale_files, DaemonLifecycleAction, DaemonLifecycleOwner, DaemonLifecycleResult,
+    DaemonLifecycleState, DaemonStatusView, RuntimeServiceMetadata, RuntimeStatusResponse,
+    DAEMON_CONTROL_PROTOCOL_VERSION,
 };
 use super::{
     load_serve_profile, persist_serve_profile, DaemonDesiredServe, DaemonServeProfile,
@@ -74,7 +73,7 @@ fn optional_path(value: std::path::PathBuf) -> Option<std::path::PathBuf> {
     (!value.as_os_str().is_empty()).then_some(value)
 }
 
-pub(crate) async fn lifecycle_lock(config: &AppConfig) -> Result<RuntimeDbLock> {
+pub(crate) async fn lifecycle_lock(config: &dyn DaemonConfig) -> Result<RuntimeDbLock> {
     let path = daemon_paths(config).lifecycle_lock_path;
     tokio::task::spawn_blocking(move || RuntimeDbLock::lock(path))
         .await
@@ -82,17 +81,12 @@ pub(crate) async fn lifecycle_lock(config: &AppConfig) -> Result<RuntimeDbLock> 
         .context("failed to acquire daemon lifecycle lock")
 }
 
-#[cfg(test)]
-static PREPARE_RUNTIME_BEFORE_SERVER_HOOK: std::sync::Mutex<
-    Option<Box<dyn Fn(&AppConfig) -> Result<()> + Send + Sync>>,
-> = std::sync::Mutex::new(None);
-
-pub async fn daemon_status(config: &AppConfig) -> Result<DaemonStatusView> {
+pub async fn daemon_status(config: &dyn DaemonConfig) -> Result<DaemonStatusView> {
     daemon_status_with_probe_timeout(config, UNIX_PROBE_TIMEOUT).await
 }
 
 pub(crate) async fn daemon_status_with_probe_timeout(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     probe_timeout: Duration,
 ) -> Result<DaemonStatusView> {
     let desired_serve = desired_serve_status(config)?;
@@ -101,11 +95,11 @@ pub(crate) async fn daemon_status_with_probe_timeout(
 }
 
 fn daemon_status_from_probe(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     probe: &ProbeRuntime,
     desired_serve: Option<DaemonDesiredServe>,
 ) -> Result<DaemonStatusView> {
-    let fingerprint = config_fingerprint(config)?;
+    let fingerprint = config.config_fingerprint()?;
     let metadata = load_daemon_metadata(config).ok().flatten();
     // Default status never opens the runtime DB; it reports only the
     // daemon-persisted failure summary with bounded diagnostics.
@@ -168,10 +162,10 @@ fn daemon_status_from_probe(
                 ok: true,
                 state,
                 healthy: false,
-                home_dir: config.home_dir.clone(),
-                socket_path: config.socket_path.clone(),
-                http_addr: config.http_addr.clone(),
-                web_url: web_url(&config.http_addr),
+                home_dir: config.home_dir().to_owned(),
+                socket_path: config.socket_path().to_owned(),
+                http_addr: config.http_addr().to_owned(),
+                web_url: web_url(config.http_addr()),
                 product_version: metadata
                     .as_ref()
                     .and_then(|record| optional_nonempty(record.product_version.clone())),
@@ -200,10 +194,10 @@ fn daemon_status_from_probe(
             ok: true,
             state: DaemonLifecycleState::Unresponsive,
             healthy: false,
-            home_dir: config.home_dir.clone(),
-            socket_path: config.socket_path.clone(),
-            http_addr: config.http_addr.clone(),
-            web_url: web_url(&config.http_addr),
+            home_dir: config.home_dir().to_owned(),
+            socket_path: config.socket_path().to_owned(),
+            http_addr: config.http_addr().to_owned(),
+            web_url: web_url(config.http_addr()),
             product_version: metadata
                 .as_ref()
                 .and_then(|record| optional_nonempty(record.product_version.clone())),
@@ -231,10 +225,10 @@ fn daemon_status_from_probe(
             ok: true,
             state: DaemonLifecycleState::VersionMismatch,
             healthy: false,
-            home_dir: config.home_dir.clone(),
-            socket_path: config.socket_path.clone(),
-            http_addr: config.http_addr.clone(),
-            web_url: web_url(&config.http_addr),
+            home_dir: config.home_dir().to_owned(),
+            socket_path: config.socket_path().to_owned(),
+            http_addr: config.http_addr().to_owned(),
+            web_url: web_url(config.http_addr()),
             product_version: metadata
                 .as_ref()
                 .and_then(|record| optional_nonempty(record.product_version.clone())),
@@ -263,12 +257,12 @@ fn daemon_status_from_probe(
     }
 }
 
-fn validated_legacy_metadata(config: &AppConfig) -> Result<Option<RuntimeServiceMetadata>> {
+fn validated_legacy_metadata(config: &dyn DaemonConfig) -> Result<Option<RuntimeServiceMetadata>> {
     let Some(metadata) = load_daemon_metadata(config)? else {
         return Ok(None);
     };
-    if metadata.home_dir != config.home_dir
-        || metadata.socket_path != config.socket_path
+    if metadata.home_dir != config.home_dir()
+        || metadata.socket_path != config.socket_path()
         || !paths_refer_to_same_file(&metadata.executable_path, &std::env::current_exe()?)
     {
         return Err(anyhow!(
@@ -278,7 +272,7 @@ fn validated_legacy_metadata(config: &AppConfig) -> Result<Option<RuntimeService
     Ok(Some(metadata))
 }
 
-fn desired_serve_status(config: &AppConfig) -> Result<Option<DaemonDesiredServe>> {
+fn desired_serve_status(config: &dyn DaemonConfig) -> Result<Option<DaemonDesiredServe>> {
     if let Some(profile) = load_serve_profile(config)? {
         return Ok(Some(DaemonDesiredServe::Profile { profile }));
     }
@@ -298,8 +292,8 @@ fn desired_serve_status(config: &AppConfig) -> Result<Option<DaemonDesiredServe>
 }
 
 /// Resolve and validate before committing intent or touching the current process.
-pub async fn daemon_launch_with_profile<F, N>(
-    config: &AppConfig,
+pub async fn daemon_launch_with_profile<C, F, N>(
+    config: &C,
     restart: bool,
     reset: bool,
     start_timeout_secs: Option<u64>,
@@ -307,11 +301,12 @@ pub async fn daemon_launch_with_profile<F, N>(
     resolve_recorded: N,
 ) -> Result<DaemonLifecycleResult>
 where
+    C: DaemonConfig,
     F: FnOnce(
         Option<&DaemonServeProfile>,
         Option<&RuntimeServiceMetadata>,
-    ) -> Result<ResolvedDaemonServePlan>,
-    N: FnOnce(&AppConfig, &RuntimeServiceMetadata) -> Result<ResolvedDaemonServePlan>,
+    ) -> Result<ResolvedDaemonServePlan<C>>,
+    N: FnOnce(&C, &RuntimeServiceMetadata) -> Result<ResolvedDaemonServePlan<C>>,
 {
     let _lock = lifecycle_lock(config).await?;
     let timeout = resolve_start_timeout(start_timeout_secs)?;
@@ -329,7 +324,7 @@ where
     let probe = probe_runtime(&plan.config).await;
     match &probe {
         ProbeRuntime::Running(status) => {
-            if status.home_dir != config.home_dir || status.socket_path != config.socket_path {
+            if status.home_dir != config.home_dir() || status.socket_path != config.socket_path() {
                 return Err(anyhow!("runtime belongs to a different home or control socket"));
             }
             if restart {
@@ -348,25 +343,23 @@ where
                 } else {
                     profile.as_ref().is_none_or(|profile| *profile == plan.profile)
                 };
-                if status.config_fingerprint != config_fingerprint(&plan.config)?
+                if status.config_fingerprint != plan.config.config_fingerprint()?
                     || !serve_options_match
                 {
                     return Err(anyhow!("runtime is already running with different serve options; use 'holon daemon restart'"));
                 }
-                if plan.config.control_token_required(crate::config::ControlTransportKind::Tcp) {
-                    if let Some(token) = &plan.config.control_token {
-                        let client = LocalClient::remote(
-                            plan.config.clone(), web_url(&status.http_addr), token.clone(),
-                        )?;
-                        let authenticated = tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_readiness()).await;
-                        if !matches!(authenticated, Ok(Ok(ref observed))
-                            if observed.pid == status.pid
-                                && observed.home_dir == status.home_dir
-                                && observed.socket_path == status.socket_path
-                                && observed.config_fingerprint == status.config_fingerprint)
-                        {
-                            return Err(anyhow!("runtime authentication does not match the requested serve options; use 'holon daemon restart'"));
-                        }
+                if let Some(token) = plan.config.required_tcp_control_token() {
+                    let client = LocalClient::remote(
+                        plan.config.connection_config(), web_url(&status.http_addr), token,
+                    )?;
+                    let authenticated = tokio::time::timeout(UNIX_PROBE_TIMEOUT, client.runtime_readiness()).await;
+                    if !matches!(authenticated, Ok(Ok(ref observed))
+                        if observed.pid == status.pid
+                            && observed.home_dir == status.home_dir
+                            && observed.socket_path == status.socket_path
+                            && observed.config_fingerprint == status.config_fingerprint)
+                    {
+                        return Err(anyhow!("runtime authentication does not match the requested serve options; use 'holon daemon restart'"));
                     }
                 }
             }
@@ -379,7 +372,7 @@ where
         }
         _ => return Err(anyhow!("cannot accept serve intent for an occupied, foreign, incompatible or unresponsive control surface")),
     }
-    preflight_serve_dependencies(&plan).await?;
+    preflight_serve_dependencies(&plan.profile).await?;
     persist_serve_profile(config, &plan.profile)?;
     persist_daemon_desired_running(config, true)?;
     if restart {
@@ -407,8 +400,8 @@ where
     Ok(started)
 }
 
-async fn preflight_serve_dependencies(plan: &ResolvedDaemonServePlan) -> Result<()> {
-    if let Some(path) = plan.profile.cloudflare_token_file.clone() {
+async fn preflight_serve_dependencies(profile: &DaemonServeProfile) -> Result<()> {
+    if let Some(path) = profile.cloudflare_token_file.clone() {
         // Reject missing credentials/dependencies before accepting durable intent
         // or stopping a healthy runtime. The serve child rechecks before launch.
         tokio::task::spawn_blocking(move || {
@@ -420,16 +413,17 @@ async fn preflight_serve_dependencies(plan: &ResolvedDaemonServePlan) -> Result<
     Ok(())
 }
 
-pub async fn prepare_serve_with_profile<F>(
-    config: &AppConfig,
+pub async fn prepare_serve_with_profile<C, F>(
+    config: &C,
     reset: bool,
     resolve: F,
-) -> Result<(ResolvedDaemonServePlan, RuntimeDbLock)>
+) -> Result<(ResolvedDaemonServePlan<C>, RuntimeDbLock)>
 where
+    C: DaemonConfig,
     F: FnOnce(
         Option<&DaemonServeProfile>,
         Option<&RuntimeServiceMetadata>,
-    ) -> Result<ResolvedDaemonServePlan>,
+    ) -> Result<ResolvedDaemonServePlan<C>>,
 {
     let lock = lifecycle_lock(config).await?;
     let profile = if reset {
@@ -443,7 +437,7 @@ where
         None
     };
     let plan = resolve(profile.as_ref(), metadata.as_ref())?;
-    preflight_serve_dependencies(&plan).await?;
+    preflight_serve_dependencies(&plan.profile).await?;
     ensure_serve_preflight(&plan.config).await?;
     persist_serve_profile(config, &plan.profile)?;
     persist_daemon_desired_running(config, true)?;
@@ -452,7 +446,7 @@ where
 }
 
 pub async fn daemon_start(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     serve_args: &[OsString],
     control_token_env: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
@@ -460,7 +454,7 @@ pub async fn daemon_start(
 }
 
 pub async fn daemon_start_with_timeout(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     serve_args: &[OsString],
     control_token_env: Option<&str>,
     start_timeout_secs: Option<u64>,
@@ -475,23 +469,23 @@ pub async fn daemon_start_with_timeout(
 }
 
 async fn daemon_start_unlocked(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     serve_args: &[OsString],
     control_token_env: Option<&str>,
     start_timeout: Duration,
     startup_summary: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
-    let current_fingerprint = config_fingerprint(config)?;
+    let current_fingerprint = config.config_fingerprint()?;
     match probe_runtime(config).await {
         ProbeRuntime::Running(status) => {
-            if status.home_dir != config.home_dir {
+            if status.home_dir != config.home_dir() {
                 return Err(anyhow!(
                     "runtime is already running on the configured control surface for a different home: {}",
                     status.home_dir.display()
                 ));
             }
             if status.config_fingerprint != current_fingerprint {
-                let details = effective_config_mismatch_summary(config, &status);
+                let details = config.effective_config_mismatch_summary(&status);
                 return Err(anyhow!(
                     "runtime is already running with a different effective config; use 'holon daemon restart' to replace it; differing config: {details}"
                 ));
@@ -510,7 +504,7 @@ async fn daemon_start_unlocked(
         } => {
             return Err(anyhow!(
                 "control socket {} is occupied by a non-Holon process",
-                config.socket_path.display()
+                config.socket_path().display()
             ));
         }
         ProbeRuntime::Stopped {
@@ -532,7 +526,7 @@ async fn daemon_start_unlocked(
     fs::create_dir_all(config.run_dir())
         .with_context(|| format!("failed to create {}", config.run_dir().display()))?;
     let startup = crate::startup::StartupObservation::new();
-    prepare_runtime_before_server_observed(config, &startup)?;
+    config.prepare_runtime_before_server(&startup)?;
 
     let log_path = daemon_paths(config).log_path;
     let log = fs::OpenOptions::new()
@@ -563,14 +557,7 @@ async fn daemon_start_unlocked(
     if let Some(token) = control_token_env {
         command.env("HOLON_CONTROL_TOKEN", token);
     }
-    command.env(
-        "HOLON_CONTROL_AUTH_MODE",
-        match config.control_auth_mode {
-            crate::config::ControlAuthMode::Auto => "auto",
-            crate::config::ControlAuthMode::Required => "required",
-            crate::config::ControlAuthMode::Disabled => "disabled",
-        },
-    );
+    command.env("HOLON_CONTROL_AUTH_MODE", config.control_auth_mode_env());
     command.env(PRE_SERVER_PREPARED_ENV, &startup.startup_id);
     if let Some(summary) = startup_summary {
         command.env(DAEMON_SERVE_RESOLUTION_ENV, summary);
@@ -584,7 +571,7 @@ async fn daemon_start_unlocked(
         match probe_runtime(config).await {
             ProbeRuntime::Running(status) if status.healthy => {
                 if status.config_fingerprint != current_fingerprint {
-                    let details = effective_config_mismatch_summary(config, &status);
+                    let details = config.effective_config_mismatch_summary(&status);
                     best_effort_cleanup_spawned_start(config, &mut child).await;
                     let _ = persist_daemon_lifecycle_failure(
                         config,
@@ -700,7 +687,7 @@ async fn daemon_start_unlocked(
                     occurred_at: Utc::now(),
                     summary: format!(
                         "timed out waiting for healthy runtime on {} after {}s",
-                        config.socket_path.display(),
+                        config.socket_path().display(),
                         start_timeout.as_secs()
                     ),
                     phase: RuntimeFailurePhase::Startup,
@@ -710,7 +697,7 @@ async fn daemon_start_unlocked(
             );
             return Err(anyhow!(
                 "timed out waiting for healthy runtime on {} after {}s; {}",
-                config.socket_path.display(),
+                config.socket_path().display(),
                 start_timeout.as_secs(),
                 daemon_log_hint()
             ));
@@ -735,77 +722,7 @@ fn resolve_start_timeout(explicit_secs: Option<u64>) -> Result<Duration> {
     Ok(Duration::from_secs(secs))
 }
 
-pub fn prepare_runtime_before_server(config: &AppConfig) -> Result<()> {
-    prepare_runtime_before_server_observed(config, &crate::startup::StartupObservation::new())
-}
-
-pub fn prepare_runtime_before_server_observed(
-    config: &AppConfig,
-    startup: &crate::startup::StartupObservation,
-) -> Result<()> {
-    let lease = RuntimeDbLock::try_lock(config.runtime_db_maintenance_lock_path())
-        .context("pre-server preparation requires the daemon to be stopped")?;
-    prepare_runtime_before_server_observed_with_maintenance_lease(config, startup, &lease)
-}
-
-pub fn prepare_runtime_before_server_with_maintenance_lease(
-    config: &AppConfig,
-    lease: &RuntimeDbLock,
-) -> Result<()> {
-    prepare_runtime_before_server_observed_with_maintenance_lease(
-        config,
-        &crate::startup::StartupObservation::new(),
-        lease,
-    )
-}
-
-pub fn prepare_runtime_before_server_observed_with_maintenance_lease(
-    config: &AppConfig,
-    startup: &crate::startup::StartupObservation,
-    lease: &RuntimeDbLock,
-) -> Result<()> {
-    anyhow::ensure!(
-        lease.path() == config.runtime_db_maintenance_lock_path(),
-        "runtime maintenance lease path mismatch"
-    );
-    startup.observe_sync("storage_prepare", || {
-        info!(
-            startup_id = %startup.startup_id,
-            home_dir = %config.home_dir.display(),
-            "starting pre-server runtime preparation"
-        );
-        #[cfg(test)]
-        if let Some(hook) = PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap().as_ref() {
-            hook(config).with_context(|| {
-            "pre-server runtime preparation failed; fix the reported storage domain error and retry"
-        })?;
-            info!(
-                startup_id = %startup.startup_id,
-                home_dir = %config.home_dir.display(),
-                "finished pre-server runtime preparation"
-            );
-            return Ok(());
-        }
-        RuntimeHost::prepare_runtime_storage_with_maintenance_lease(config, lease).with_context(|| {
-            "pre-server runtime preparation failed; fix the reported storage domain error and retry"
-        })?;
-        info!(
-            startup_id = %startup.startup_id,
-            home_dir = %config.home_dir.display(),
-            "finished pre-server runtime preparation"
-        );
-        Ok(())
-    })
-}
-
-#[cfg(test)]
-pub(crate) fn set_prepare_runtime_before_server_hook(
-    hook: Option<Box<dyn Fn(&AppConfig) -> Result<()> + Send + Sync>>,
-) {
-    *PREPARE_RUNTIME_BEFORE_SERVER_HOOK.lock().unwrap() = hook;
-}
-
-pub async fn daemon_stop(config: &AppConfig) -> Result<DaemonLifecycleResult> {
+pub async fn daemon_stop(config: &dyn DaemonConfig) -> Result<DaemonLifecycleResult> {
     let _lock = lifecycle_lock(config).await?;
     persist_daemon_desired_running(config, false)?;
     let mut result = daemon_stop_unlocked(config).await?;
@@ -813,7 +730,7 @@ pub async fn daemon_stop(config: &AppConfig) -> Result<DaemonLifecycleResult> {
     Ok(result)
 }
 
-pub async fn daemon_prepare_update(config: &AppConfig) -> Result<DaemonLifecycleResult> {
+pub async fn daemon_prepare_update(config: &dyn DaemonConfig) -> Result<DaemonLifecycleResult> {
     let _lock = lifecycle_lock(config).await?;
     let desired_running = load_daemon_desired_running(config)?.unwrap_or(false);
     let mut result = daemon_stop_unlocked(config).await?;
@@ -822,7 +739,7 @@ pub async fn daemon_prepare_update(config: &AppConfig) -> Result<DaemonLifecycle
     Ok(result)
 }
 
-async fn daemon_stop_unlocked(config: &AppConfig) -> Result<DaemonLifecycleResult> {
+async fn daemon_stop_unlocked(config: &dyn DaemonConfig) -> Result<DaemonLifecycleResult> {
     let stop_probe = probe_runtime(config).await;
     let before = daemon_status_from_probe(
         config,
@@ -831,7 +748,8 @@ async fn daemon_stop_unlocked(config: &AppConfig) -> Result<DaemonLifecycleResul
     )?;
     match &stop_probe {
         ProbeRuntime::Running(status)
-            if status.home_dir != config.home_dir || status.socket_path != config.socket_path =>
+            if status.home_dir != config.home_dir()
+                || status.socket_path != config.socket_path() =>
         {
             return Err(anyhow!(
                 "runtime belongs to a different home or control socket; refusing to stop it"
@@ -842,7 +760,7 @@ async fn daemon_stop_unlocked(config: &AppConfig) -> Result<DaemonLifecycleResul
         } => {
             return Err(anyhow!(
                 "control socket {} is occupied by a non-Holon process; refusing to clean it up",
-                config.socket_path.display()
+                config.socket_path().display()
             ));
         }
         ProbeRuntime::Unresponsive { details } => {
@@ -906,7 +824,7 @@ Probe error: {details}",
 
     let shutdown_config = match &stop_probe {
         ProbeRuntime::Running(status) => config_for_runtime_status(config, status),
-        _ => config.clone(),
+        _ => config.connection_config(),
     };
     let client = LocalClient::new(shutdown_config)?;
     let graceful = client.runtime_shutdown().await;
@@ -982,25 +900,28 @@ Probe error: {details}",
     })
 }
 
-fn config_for_runtime_status(config: &AppConfig, status: &RuntimeStatusResponse) -> AppConfig {
-    let mut runtime_config = config.clone();
+fn config_for_runtime_status(
+    config: &dyn DaemonConfig,
+    status: &RuntimeStatusResponse,
+) -> ConnectionConfig {
+    let mut runtime_config = config.connection_config();
     runtime_config.home_dir = status.home_dir.clone();
     runtime_config.socket_path = status.socket_path.clone();
     runtime_config.http_addr = status.http_addr.clone();
     runtime_config
 }
 
-fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
+fn stopped_status(config: &dyn DaemonConfig) -> Result<DaemonStatusView> {
     // Invalid desired configuration must not prevent safe shutdown or update preparation.
     let desired_serve = desired_serve_status(config).ok().flatten();
     Ok(DaemonStatusView {
         ok: true,
         state: DaemonLifecycleState::Stopped,
         healthy: false,
-        home_dir: config.home_dir.clone(),
-        socket_path: config.socket_path.clone(),
-        http_addr: config.http_addr.clone(),
-        web_url: web_url(&config.http_addr),
+        home_dir: config.home_dir().to_owned(),
+        socket_path: config.socket_path().to_owned(),
+        http_addr: config.http_addr().to_owned(),
+        web_url: web_url(config.http_addr()),
         product_version: None,
         control_protocol_version: None,
         lifecycle_owner: Some(DaemonLifecycleOwner::Standalone),
@@ -1021,7 +942,7 @@ fn stopped_status(config: &AppConfig) -> Result<DaemonStatusView> {
 }
 
 pub async fn daemon_restart(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     serve_args: &[OsString],
     control_token_env: Option<&str>,
 ) -> Result<DaemonLifecycleResult> {
@@ -1029,7 +950,7 @@ pub async fn daemon_restart(
 }
 
 pub async fn daemon_restart_with_timeout(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     serve_args: &[OsString],
     control_token_env: Option<&str>,
     start_timeout_secs: Option<u64>,
@@ -1056,7 +977,10 @@ pub async fn daemon_restart_with_timeout(
     })
 }
 
-async fn replace_incompatible_runtime_unlocked(config: &AppConfig, details: &str) -> Result<()> {
+async fn replace_incompatible_runtime_unlocked(
+    config: &dyn DaemonConfig,
+    details: &str,
+) -> Result<()> {
     let metadata = load_daemon_metadata(config)?.ok_or_else(|| {
         anyhow!("cannot replace incompatible runtime because daemon metadata is missing: {details}")
     })?;
@@ -1094,7 +1018,7 @@ async fn replace_incompatible_runtime_unlocked(config: &AppConfig, details: &str
 }
 
 fn validate_incompatible_runtime_identity(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     metadata: &RuntimeServiceMetadata,
 ) -> Result<()> {
     let actual_executable = process_executable_path(metadata.pid).with_context(|| {
@@ -1106,12 +1030,12 @@ fn validate_incompatible_runtime_identity(
     validate_incompatible_runtime_identity_with_executable(config, metadata, &actual_executable)
 }
 
-pub(super) fn validate_incompatible_runtime_identity_with_executable(
-    config: &AppConfig,
+pub(crate) fn validate_incompatible_runtime_identity_with_executable(
+    config: &dyn DaemonConfig,
     metadata: &RuntimeServiceMetadata,
     actual_executable: &Path,
 ) -> Result<()> {
-    if metadata.home_dir != config.home_dir || metadata.socket_path != config.socket_path {
+    if metadata.home_dir != config.home_dir() || metadata.socket_path != config.socket_path() {
         return Err(anyhow!(
             "refusing to replace incompatible runtime PID {} because its recorded home or control socket does not match the current configuration",
             metadata.pid
@@ -1216,11 +1140,11 @@ fn process_executable_path(_pid: u32) -> Result<PathBuf> {
     ))
 }
 
-pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
-    let fingerprint = config_fingerprint(config)?;
+pub async fn ensure_serve_preflight(config: &dyn DaemonConfig) -> Result<()> {
+    let fingerprint = config.config_fingerprint()?;
     match probe_runtime(config).await {
         ProbeRuntime::Running(status) => {
-            if status.home_dir != config.home_dir {
+            if status.home_dir != config.home_dir() {
                 return Err(anyhow!(
                     "runtime is already running on the configured control surface for a different home: {}",
                     status.home_dir.display()
@@ -1229,10 +1153,10 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
             if status.config_fingerprint == fingerprint {
                 return Err(anyhow!(
                     "runtime is already running for {}; use 'holon daemon status' to inspect it",
-                    config.home_dir.display()
+                    config.home_dir().display()
                 ));
             }
-            let details = effective_config_mismatch_summary(config, &status);
+            let details = config.effective_config_mismatch_summary(&status);
             return Err(anyhow!(
                 "runtime is already running with a different effective config; stop or restart it explicitly; differing config: {details}"
             ));
@@ -1247,7 +1171,7 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
             occupied_socket: true,
         } => Err(anyhow!(
             "control socket {} is occupied by a non-Holon process",
-            config.socket_path.display()
+            config.socket_path().display()
         )),
         ProbeRuntime::Stopped {
             occupied_socket: false,
@@ -1265,7 +1189,7 @@ pub async fn ensure_serve_preflight(config: &AppConfig) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn recorded_daemon_process_is_missing(config: &AppConfig) -> Result<bool> {
+fn recorded_daemon_process_is_missing(config: &dyn DaemonConfig) -> Result<bool> {
     let Some(metadata) = load_daemon_metadata(config)? else {
         return Ok(false);
     };
@@ -1276,25 +1200,16 @@ fn recorded_daemon_process_is_missing(config: &AppConfig) -> Result<bool> {
 }
 
 #[cfg(not(unix))]
-fn recorded_daemon_process_is_missing(_config: &AppConfig) -> Result<bool> {
+fn recorded_daemon_process_is_missing(_config: &dyn DaemonConfig) -> Result<bool> {
     Ok(false)
 }
 
-pub async fn graceful_runtime_shutdown(
-    host: &RuntimeHost,
-    runtime_service: &RuntimeServiceHandle,
-) -> Result<()> {
-    host.shutdown().await?;
-    runtime_service.request_shutdown()?;
-    Ok(())
-}
-
-async fn best_effort_cleanup_spawned_start(config: &AppConfig, child: &mut Child) {
+async fn best_effort_cleanup_spawned_start(config: &dyn DaemonConfig, child: &mut Child) {
     let child_pid = child.id();
     match probe_runtime(config).await {
         ProbeRuntime::Running(status) => {
             if status.pid == child_pid {
-                if let Ok(client) = LocalClient::new(config.clone()) {
+                if let Ok(client) = LocalClient::new(config.connection_config()) {
                     let _ = client.runtime_shutdown().await;
                     let _ = wait_for_shutdown(config, Duration::from_secs(2)).await;
                 }
@@ -1313,7 +1228,7 @@ async fn best_effort_cleanup_spawned_start(config: &AppConfig, child: &mut Child
             return;
         }
         ProbeRuntime::Incompatible { .. } => {
-            if let Ok(client) = LocalClient::new(config.clone()) {
+            if let Ok(client) = LocalClient::new(config.connection_config()) {
                 let _ = client.runtime_shutdown().await;
                 let _ = wait_for_shutdown(config, Duration::from_secs(2)).await;
             }
@@ -1350,8 +1265,8 @@ async fn best_effort_cleanup_spawned_start(config: &AppConfig, child: &mut Child
     let _ = cleanup_daemon_state(config);
 }
 
-pub(crate) async fn wait_for_startup_stability(
-    config: &AppConfig,
+async fn wait_for_startup_stability(
+    config: &dyn DaemonConfig,
     child: &mut Child,
     expected_pid: u32,
     expected_fingerprint: &str,
@@ -1363,7 +1278,7 @@ pub(crate) async fn wait_for_startup_stability(
 }
 
 pub(crate) async fn wait_for_startup_stability_with_probe<F, Fut>(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     child: &mut Child,
     expected_pid: u32,
     expected_fingerprint: &str,
@@ -1390,7 +1305,7 @@ where
                     ));
                 }
                 if status.config_fingerprint != expected_fingerprint {
-                    let details = effective_config_mismatch_summary(config, &status);
+                    let details = config.effective_config_mismatch_summary(&status);
                     return Err(anyhow!(
                         "runtime config fingerprint changed during startup stabilization; differing config: {details}"
                     ));
@@ -1439,7 +1354,7 @@ pub(crate) fn should_retry_startup_stability_probe(
     occupied_socket && tokio::time::Instant::now() < deadline
 }
 
-async fn wait_for_shutdown(config: &AppConfig, timeout: Duration) -> Result<()> {
+async fn wait_for_shutdown(config: &dyn DaemonConfig, timeout: Duration) -> Result<()> {
     let deadline = tokio::time::Instant::now() + timeout;
     loop {
         match probe_runtime(config).await {
@@ -1460,139 +1375,6 @@ async fn wait_for_shutdown(config: &AppConfig, timeout: Duration) -> Result<()> 
             return Err(anyhow!("timed out waiting for runtime shutdown"));
         }
         tokio::time::sleep(POLL_INTERVAL).await;
-    }
-}
-
-pub(crate) fn effective_config_mismatch_summary(
-    config: &AppConfig,
-    status: &RuntimeStatusResponse,
-) -> String {
-    let mut differences = Vec::new();
-    push_diff(
-        &mut differences,
-        "home_dir",
-        config.home_dir.display().to_string(),
-        status.home_dir.display().to_string(),
-    );
-    push_diff(
-        &mut differences,
-        "socket_path",
-        config.socket_path.display().to_string(),
-        status.socket_path.display().to_string(),
-    );
-    push_diff(
-        &mut differences,
-        "http_addr",
-        config.http_addr.clone(),
-        status.http_addr.clone(),
-    );
-
-    if let Some(startup) = &status.startup_surface {
-        push_diff(
-            &mut differences,
-            "user_home_dir",
-            config
-                .user_home_dir
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".into()),
-            startup
-                .user_home_dir
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "none".into()),
-        );
-        push_diff(
-            &mut differences,
-            "workspace_dir",
-            config.workspace_dir.display().to_string(),
-            startup.workspace_dir.display().to_string(),
-        );
-        push_diff(
-            &mut differences,
-            "default_agent_id",
-            config.default_agent_id.clone(),
-            startup.default_agent_id.clone(),
-        );
-        push_diff(
-            &mut differences,
-            "callback_base_url",
-            config.callback_base_url.clone(),
-            startup.callback_base_url.clone(),
-        );
-        push_diff(
-            &mut differences,
-            "control_auth_mode",
-            format!("{:?}", config.control_auth_mode),
-            format!("{:?}", startup.control_auth_mode),
-        );
-        push_diff(
-            &mut differences,
-            "control_token_configured",
-            config.control_token.is_some().to_string(),
-            startup.control_token_configured.to_string(),
-        );
-    } else {
-        differences.push("startup_surface missing from runtime status".into());
-    }
-
-    if let Some(runtime) = &status.runtime_surface {
-        push_diff(
-            &mut differences,
-            "model.default",
-            config.default_model.as_string(),
-            runtime.model_default.clone(),
-        );
-        push_diff(
-            &mut differences,
-            "model.fallbacks",
-            config
-                .fallback_models
-                .iter()
-                .map(|model| model.as_string())
-                .collect::<Vec<_>>()
-                .join(","),
-            runtime.model_fallbacks.join(","),
-        );
-        push_diff(
-            &mut differences,
-            "runtime_max_output_tokens",
-            config.runtime_max_output_tokens.to_string(),
-            runtime.runtime_max_output_tokens.to_string(),
-        );
-        push_diff(
-            &mut differences,
-            "default_tool_output_tokens",
-            config.default_tool_output_tokens.to_string(),
-            runtime.default_tool_output_tokens.to_string(),
-        );
-        push_diff(
-            &mut differences,
-            "max_tool_output_tokens",
-            config.max_tool_output_tokens.to_string(),
-            runtime.max_tool_output_tokens.to_string(),
-        );
-        push_diff(
-            &mut differences,
-            "disable_provider_fallback",
-            config.provider_fallback_disabled().to_string(),
-            runtime.disable_provider_fallback.to_string(),
-        );
-    } else {
-        differences.push("runtime_surface missing from runtime status".into());
-    }
-
-    if differences.is_empty() {
-        "fingerprint differed, but no field-level difference was available from runtime status"
-            .into()
-    } else {
-        differences.join("; ")
-    }
-}
-
-fn push_diff(differences: &mut Vec<String>, key: &str, expected: String, actual: String) {
-    if expected != actual {
-        differences.push(format!("{key} expected={expected:?} actual={actual:?}"));
     }
 }
 
@@ -1635,12 +1417,12 @@ pub(crate) enum ProbeRuntime {
     Incompatible { details: String },
 }
 
-pub(crate) async fn probe_runtime(config: &AppConfig) -> ProbeRuntime {
+pub(crate) async fn probe_runtime(config: &dyn DaemonConfig) -> ProbeRuntime {
     probe_runtime_with_timeout(config, UNIX_PROBE_TIMEOUT).await
 }
 
 pub(crate) async fn probe_runtime_with_timeout(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     probe_timeout: Duration,
 ) -> ProbeRuntime {
     // One absolute deadline shared by every probe step: unix readiness, the
@@ -1652,15 +1434,15 @@ pub(crate) async fn probe_runtime_with_timeout(
     let deadline = tokio::time::Instant::now() + probe_timeout;
     let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
     #[cfg(unix)]
-    if config.socket_path.exists() {
-        if let Ok(metadata) = fs::symlink_metadata(&config.socket_path) {
+    if config.socket_path().exists() {
+        if let Ok(metadata) = fs::symlink_metadata(config.socket_path()) {
             if !metadata.file_type().is_socket() {
                 return ProbeRuntime::Stopped {
                     occupied_socket: false,
                 };
             }
         }
-        let client = match LocalClient::new(config.clone()) {
+        let client = match LocalClient::new(config.connection_config()) {
             Ok(client) => client,
             Err(_) => {
                 return ProbeRuntime::Stopped {
@@ -1704,7 +1486,7 @@ pub(crate) async fn probe_runtime_with_timeout(
         return compatible_runtime(status);
     }
 
-    let client = match LocalClient::new(config.clone()) {
+    let client = match LocalClient::new(config.connection_config()) {
         Ok(client) => client,
         Err(_) => {
             return ProbeRuntime::Stopped {
@@ -1725,7 +1507,7 @@ pub(crate) async fn probe_runtime_with_timeout(
 }
 
 async fn metadata_status_if_pid_alive(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     deadline: tokio::time::Instant,
 ) -> Option<RuntimeStatusResponse> {
     let Ok(Some(metadata)) = load_daemon_metadata(config) else {
@@ -1736,7 +1518,7 @@ async fn metadata_status_if_pid_alive(
     }
     // Try TCP as a secondary probe, but only trust a response that identifies
     // the daemon recorded in metadata.
-    let client = match LocalClient::new(config.clone()) {
+    let client = match LocalClient::new(config.connection_config()) {
         Ok(client) => client,
         Err(_) => return Some(status_from_metadata(metadata)),
     };
@@ -1861,22 +1643,4 @@ fn process_has_exited(_pid: u32) -> bool {
 pub(crate) fn proc_stat_state(stat: &str) -> Option<&str> {
     let after_comm = stat.rfind(')')?;
     stat[after_comm + 1..].split_whitespace().next()
-}
-
-fn merge_latest_failure(
-    left: Option<RuntimeFailureSummary>,
-    right: Option<RuntimeFailureSummary>,
-) -> Option<RuntimeFailureSummary> {
-    match (left, right) {
-        (Some(left), Some(right)) => {
-            if left.occurred_at >= right.occurred_at {
-                Some(left)
-            } else {
-                Some(right)
-            }
-        }
-        (Some(left), None) => Some(left),
-        (None, Some(right)) => Some(right),
-        (None, None) => None,
-    }
 }

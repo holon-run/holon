@@ -2,9 +2,7 @@
 
 #[cfg(target_os = "linux")]
 use std::collections::HashMap;
-#[cfg(target_os = "linux")]
-use std::fs::OpenOptions;
-use std::fs::{self, File};
+use std::fs::{self, File, OpenOptions};
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 #[cfg(target_os = "linux")]
@@ -919,6 +917,48 @@ pub fn is_retryable_db_error(error: &anyhow::Error) -> bool {
         return false;
     }
     is_retryable_state_transition_conflict(error) || is_retryable_transaction_error(error)
+}
+
+#[derive(Debug)]
+/// A held advisory lock for runtime maintenance or daemon lifecycle operations.
+pub struct RuntimeDbLock {
+    file: File,
+    path: PathBuf,
+}
+
+impl RuntimeDbLock {
+    pub fn lock(path: impl Into<PathBuf>) -> Result<Self> {
+        Self::open(path.into(), LockMode::Blocking)
+    }
+
+    pub fn try_lock(path: impl Into<PathBuf>) -> Result<Self> {
+        Self::open(path.into(), LockMode::NonBlocking)
+    }
+
+    fn open(path: PathBuf, mode: LockMode) -> Result<Self> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating runtime lock directory {}", parent.display()))?;
+        }
+        let file = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .open(&path)
+            .with_context(|| format!("opening runtime db lock {}", path.display()))?;
+        flock(&file, mode).with_context(|| format!("locking runtime db {}", path.display()))?;
+        Ok(Self { file, path })
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+}
+
+impl Drop for RuntimeDbLock {
+    fn drop(&mut self) {
+        let _ = unlock(&self.file);
+    }
 }
 
 #[cfg(unix)]

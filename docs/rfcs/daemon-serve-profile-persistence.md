@@ -136,3 +136,17 @@ No launchd / systemd ownership changes, general configuration framework,
 credential rotation, shell-history recovery, hot reload or production deployment.
 Linux isolated-process tests do not establish macOS or actual machine reboot
 acceptance.
+
+## Crate boundary
+
+The private `holon-daemon` crate owns lifecycle locking, process supervision,
+readiness probes, serve profile persistence, runtime registration, and local
+diagnostics. It uses the local client for control requests and the existing
+storage file-lock guard for lifecycle serialization.
+
+The application resolves CLI options and projects `AppConfig` into daemon
+settings. It retains storage preparation under the maintenance lease and
+`RuntimeHost` shutdown, which completes before the server receives its
+shutdown signal. The application also supplies public agent failures for
+daemon logs and shutdown results. Ordinary daemon status continues to read only daemon-local
+failure diagnostics when the runtime is unavailable.

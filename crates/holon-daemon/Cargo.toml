@@ -1,0 +1,33 @@
+[package]
+name = "holon-daemon"
+version = "0.1.0"
+edition = "2021"
+description = "Standalone daemon lifecycle and state for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+publish = false
+
+[features]
+test-support = []
+
+[dependencies]
+anyhow = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+fs2 = "0.4"
+holon-client = { version = "0.1.0", path = "../holon-client" }
+holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-storage = { version = "0.1.0", path = "../holon-storage" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tempfile = "3.14"
+tokio = { version = "1.43", features = ["io-util", "net", "process", "rt", "sync", "time"] }
+tracing = "0.1"
+url = "2.5"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+futures-util = "0.3"
+tokio = { version = "1.43", features = ["macros", "rt-multi-thread", "test-util"] }
+tracing-subscriber = "0.3"
