@@ -51,3 +51,30 @@ explicitly; Fetch does not fall back to another paid service.
 Provider errors omit response bodies and secret-bearing transport errors.
 
 Protocol source: [DeepSeek Search & Fetch documentation](https://api-docs.deepseek.com/guides/search/).
+
+## Shared routing contract and discovery
+
+`fetch_with_provider` is the shared contract for every remote adapter: a
+named provider must be a configured registry ID whose kind supports remote
+extraction (`remote_fetch_modes`; currently `deepseek` with `auto` only).
+Unknown IDs, search-only kinds, and unsupported modes fail explicitly with
+zero provider calls; there is no alias, aggregation, or fallback between
+routes, and the local route keeps no `local` selector. Adapter
+prerequisites — the enabled gate, site-policy restrictions, public URL
+shape, embedded-credential and length checks, and target validation — live
+in one shared preflight so later adapters (Tavily Extract, Exa Contents,
+Firecrawl Scrape) cannot drift.
+
+`ListWebFetchProviders` takes no arguments and returns the default local
+route (empty `provider_id`, `kind=local_http`, modes `auto`/`text`/`raw`)
+plus each callable remote ID with its `kind` and `extract_modes`, remote IDs
+sorted after the local entry. It shares WebFetch's tool permission and uses
+local configuration only; it sends no requests and never returns endpoints
+or credentials. With `web.fetch.enabled=false` it returns
+`{"providers":[]}`.
+
+Responses carry `provider_id` (null for local, the configured ID for
+remote) and `status_source` (`target_http` or `provider_api`) so callers
+can distinguish the two status domains without string-matching `source`.
+Remote output uses the same untrusted external-content wrapper as local
+Fetch.

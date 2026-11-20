@@ -702,6 +702,101 @@ async fn web_search_provider_discovery_shares_visibility_and_admission() {
 }
 
 #[tokio::test]
+async fn web_fetch_provider_discovery_shares_visibility_and_admission() {
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let mut policy = runtime.agent_capability_policy().await.unwrap().unwrap();
+    let agent_id = runtime.agent_id().await.unwrap();
+    let execute = |name: &str, input| {
+        let call = crate::tool::ToolCall {
+            id: "web-fetch-provider-discovery-test".into(),
+            name: name.into(),
+            input,
+        };
+        let runtime = &runtime;
+        let agent_id = &agent_id;
+        async move {
+            runtime
+                .inner
+                .tools
+                .execute(
+                    runtime,
+                    agent_id,
+                    &AuthorityClass::OperatorInstruction,
+                    &call,
+                )
+                .await
+        }
+    };
+
+    for (enabled, expected) in [
+        (
+            true,
+            serde_json::json!({"providers":[
+                {"provider_id":"","kind":"local_http","extract_modes":["auto","text","raw"]},
+                {"provider_id":"fixture","kind":"deepseek","extract_modes":["auto"]},
+            ]}),
+        ),
+        (false, serde_json::json!({"providers":[]})),
+    ] {
+        let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+        snapshot.web_config.fetch.enabled = enabled;
+        snapshot.web_config.providers.clear();
+        snapshot.web_config.providers.insert(
+            "fixture".into(),
+            holon_web_retrieval::WebProviderConfig {
+                kind: holon_web_retrieval::WebProviderKind::DeepSeek,
+                base_url: None,
+                api_key: "fixture-only-key".into(),
+                command: None,
+                output: None,
+                limits: Default::default(),
+                model_route: None,
+            },
+        );
+        runtime.inner.config_snapshot.store(Arc::new(snapshot));
+        let (result, _) = execute("ListWebFetchProviders", serde_json::json!({}))
+            .await
+            .unwrap();
+        let mut payload = result.envelope.result.unwrap();
+        // The runtime adds this receipt field to tool results.
+        payload.as_object_mut().unwrap().remove("output_ref");
+        assert_eq!(payload, expected);
+    }
+    let bad_input = execute(
+        "ListWebFetchProviders",
+        serde_json::json!({"provider":"fixture"}),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(
+        crate::runtime_error::describe_runtime_error(&bad_input).code,
+        "invalid_tool_input"
+    );
+
+    let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+    snapshot.web_config.fetch.enabled = true;
+    runtime.inner.config_snapshot.store(Arc::new(snapshot));
+    policy.revision += 1;
+    policy.rules.push(crate::types::AgentCapabilityPolicyRule {
+        family: crate::types::AgentCapabilityFamily::Web,
+        effect: crate::types::AgentPolicyEffect::Deny,
+    });
+    host.runtime_db()
+        .agent_canonical_relations()
+        .upsert_capability_policy(&policy)
+        .unwrap();
+    let tools = runtime.filtered_tool_specs().await.unwrap();
+    for name in ["WebFetch", "ListWebFetchProviders"] {
+        assert!(!tools.iter().any(|tool| tool.name == name));
+        let error = execute(name, serde_json::json!({})).await.unwrap_err();
+        assert_eq!(
+            crate::runtime_error::describe_runtime_error(&error).code,
+            "agent_capability_not_allowed"
+        );
+    }
+}
+
+#[tokio::test]
 async fn filtered_tool_specs_keep_local_environment_visible_when_authority_expanding_denied() {
     let (_home, host, runtime) = host_backed_test_runtime().await;
     let mut policy = runtime.agent_capability_policy().await.unwrap().unwrap();

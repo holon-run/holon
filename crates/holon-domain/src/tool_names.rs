@@ -28,6 +28,7 @@ pub const LIST_SUBAGENT_CLEANUP: &str = "ListSubagentCleanup";
 pub const LIST_SUBAGENTS: &str = "ListSubagents";
 pub const LIST_TASKS: &str = "ListTasks";
 pub const LIST_TIMERS: &str = "ListTimers";
+pub const LIST_WEB_FETCH_PROVIDERS: &str = "ListWebFetchProviders";
 pub const LIST_WEB_SEARCH_PROVIDERS: &str = "ListWebSearchProviders";
 pub const LIST_WORK_ITEMS: &str = "ListWorkItems";
 pub const MEMORY_GET: &str = "MemoryGet";

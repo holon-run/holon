@@ -65,7 +65,54 @@ async fn fetch_sends_browser_request_headers() {
     .await
     .unwrap();
 
+    // The local route carries no provider attribution and reports the
+    // target page's own HTTP status.
+    assert_eq!(response.provider_id, None);
+    assert_eq!(response.status_source, "target_http");
     assert!(response.text.contains("headers received"));
+}
+
+#[test]
+fn list_fetch_providers_mirrors_route_gating() {
+    let mut config = WebConfig::default();
+    let listed = list_fetch_providers(&config);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].provider_id, "");
+    assert_eq!(listed[0].kind, "local_http");
+    assert_eq!(listed[0].extract_modes, vec!["auto", "text", "raw"]);
+
+    let mut provider = WebProviderConfig {
+        kind: WebProviderKind::DeepSeek,
+        base_url: None,
+        api_key: "fixture-key".into(),
+        model_route: None,
+        command: None,
+        output: None,
+        limits: Default::default(),
+    };
+    config
+        .providers
+        .insert("deepseek-a".into(), provider.clone());
+    // Reserved selectors and blank or padded IDs never name a route.
+    config.providers.insert("auto".into(), provider.clone());
+    config
+        .providers
+        .insert(" deepseek-b".into(), provider.clone());
+    // Search-only kinds and missing credentials stay undiscoverable.
+    let mut search_only = provider.clone();
+    search_only.kind = WebProviderKind::Tavily;
+    config.providers.insert("tavily-search".into(), search_only);
+    provider.api_key.clear();
+    config.providers.insert("no-key".into(), provider);
+
+    let listed = list_fetch_providers(&config);
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[1].provider_id, "deepseek-a");
+    assert_eq!(listed[1].kind, "deepseek");
+    assert_eq!(listed[1].extract_modes, vec!["auto"]);
+
+    config.fetch.enabled = false;
+    assert!(list_fetch_providers(&config).is_empty());
 }
 
 #[tokio::test]

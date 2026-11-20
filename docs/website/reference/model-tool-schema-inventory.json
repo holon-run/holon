@@ -6271,7 +6271,7 @@
       "stability": "experimental"
     },
     {
-      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, content type, truncation, and hash. Omit provider for local HTTP fetching. Set provider to a configured kind=deepseek web provider to explicitly use its paid remote Fetch API (auto mode only, Markdown output). Remote fetching discloses the URL to DeepSeek, returns final_url=null and source=deepseek_remote; status is the provider API status, not the page's HTTP status. It cannot enforce custom host rules or redirect limits; use local fetching when those are configured.\n",
+      "description": "Fetch a specific http or https URL through Holon's web policy, extract readable text, wrap it as untrusted external content, and return provenance including final URL, status, status source, provider ID, content type, truncation, and hash. Omit provider for local HTTP fetching (provider_id=null, status_source=target_http). Set provider to a configured remote fetch provider ID discovered via `ListWebFetchProviders` to explicitly use its extraction API. Currently only kind=deepseek is callable remotely (auto mode only, Markdown output). Remote fetching discloses the URL to the provider, returns final_url=null with source=deepseek_remote and status_source=provider_api; status is the provider API status, not the page's HTTP status. It cannot enforce custom host rules or redirect limits; use local fetching when those are configured. Path and query in the URL are sent to the chosen service; do not pass signed, token-bearing, or non-public URLs.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
@@ -6362,6 +6362,61 @@
         "model_rendering": "canonical_json_envelope",
         "success_result": "WebSearchResult",
         "success_result_schema": null
+      },
+      "stability": "experimental"
+    },
+    {
+      "description": "List the WebFetch routes you can use right now: the default local HTTP route (empty `provider_id`) plus each callable remote provider ID with its `kind` and supported `extract_modes`. Pass a listed `provider_id` unchanged to `WebFetch(provider=\"<ID>\")`. Takes no arguments. Returns `{\"providers\":[...]}` with the local route first and remote IDs sorted, or an empty array when web fetch is disabled. Uses local configuration only; it does not fetch, send requests, or check provider health, and it never returns endpoints or credentials. Kinds that only support search are not listed.\n",
+      "family": "web",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {},
+        "required": [],
+        "type": "object"
+      },
+      "name": "ListWebFetchProviders",
+      "related_surfaces": [],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "ListWebFetchProvidersResult",
+        "success_result_schema": {
+          "properties": {
+            "providers": {
+              "items": {
+                "description": "One WebFetch route: the default local HTTP route (empty `provider_id`)\n or a configured remote provider ID, with the extract modes it accepts.",
+                "properties": {
+                  "extract_modes": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "kind": {
+                    "type": "string"
+                  },
+                  "provider_id": {
+                    "description": "Empty for the built-in local HTTP route.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider_id",
+                  "kind",
+                  "extract_modes"
+                ],
+                "type": "object"
+              },
+              "type": "array"
+            }
+          },
+          "required": [
+            "providers"
+          ],
+          "type": "object"
+        }
       },
       "stability": "experimental"
     },

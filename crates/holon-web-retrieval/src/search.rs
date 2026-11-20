@@ -243,7 +243,8 @@ pub async fn search_with_native(
     })
 }
 
-fn is_route_selector(provider: &str) -> bool {
+/// Reserved selector words that must never name a concrete provider route.
+pub(crate) fn is_route_selector(provider: &str) -> bool {
     matches!(provider, "auto" | "aggregate")
 }
 
