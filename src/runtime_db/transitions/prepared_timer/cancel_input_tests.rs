@@ -13,6 +13,8 @@ use crate::types::{TimerRecord, TimerStatus};
 fn fixture() -> Result<(Fixture, PreparedInputTransition, String)> {
     let f = Fixture::new()?;
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "cancel-input-timer".into(),
         agent_id: f.scope.agent_id.clone(),

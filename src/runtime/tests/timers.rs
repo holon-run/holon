@@ -911,6 +911,10 @@ async fn cancelled_timer_settles_only_matching_waits_and_owned_blockers() {
     foreign.agent_id = "another-agent".into();
     foreign.work_item_id = None;
     runtime.storage().append_wait_condition(&foreign).unwrap();
+    assert_eq!(
+        runtime.pause_timer(&timer.id).await.unwrap().status,
+        TimerStatus::Paused
+    );
     runtime.cancel_timer(&timer.id).await.unwrap();
     let waits = runtime.storage().latest_wait_conditions().unwrap();
     for expected in &matching {
@@ -1589,6 +1593,8 @@ async fn runtime_fires_overdue_timer_after_restart() {
             next_fire_at: Some(now - chrono::Duration::milliseconds(5)),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         }],
         &[],
@@ -1624,6 +1630,271 @@ async fn runtime_fires_overdue_timer_after_restart() {
 }
 
 #[tokio::test(start_paused = true)]
+async fn paused_timer_preserves_wake_across_admission() {
+    for (admit_before_pause, restart_while_paused) in [(false, false), (true, false), (false, true)]
+    {
+        let home = tempdir().unwrap();
+        let workspace = tempdir().unwrap();
+        let clock = controlled_clock();
+        let open = || {
+            RuntimeHandle::new_with_clock(
+                "default",
+                home.path().to_path_buf(),
+                workspace.path().to_path_buf(),
+                "http://127.0.0.1:7878".into(),
+                Arc::new(StubProvider::new("must not run")),
+                "default".into(),
+                context_config(),
+                clock.clone(),
+            )
+            .unwrap()
+        };
+        let runtime = open();
+        let mut timer = runtime
+            .schedule_timer(60_000, Some(60_000), None)
+            .await
+            .unwrap();
+        runtime
+            .register_wait_for(
+                "default",
+                None,
+                WaitForWakeKind::Timer,
+                Some(timer.id.clone()),
+                "timer admission while paused".into(),
+                None,
+            )
+            .await
+            .unwrap();
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let message_id = assert_single_durable_timer_wake(&runtime, &timer.id);
+        async fn claim_wake(runtime: &RuntimeHandle, message_id: &str, stage: &str) {
+            let result = scheduler_executor::SchedulerDecisionExecutor::new(runtime)
+                .poll()
+                .await
+                .unwrap();
+            match result {
+                scheduler_executor::RunLoopPoll::Message(scheduled) => {
+                    assert_eq!(scheduled.message.id, message_id);
+                }
+                scheduler_executor::RunLoopPoll::Idle => {
+                    panic!("Timer wake was not claimable: {stage}");
+                }
+                scheduler_executor::RunLoopPoll::AuthorityBlocked => {
+                    panic!("scheduler blocked Timer wake admission: {stage}");
+                }
+                _ => panic!("unexpected scheduler outcome for Timer wake: {stage}"),
+            }
+        }
+        if admit_before_pause {
+            claim_wake(&runtime, &message_id, "before pause").await;
+        }
+        assert_eq!(
+            runtime.pause_timer(&timer.id).await.unwrap().status,
+            TimerStatus::Paused
+        );
+        let runtime = if restart_while_paused {
+            drop(runtime);
+            open()
+        } else {
+            runtime
+        };
+        if !admit_before_pause {
+            assert_eq!(
+                assert_single_durable_timer_wake(&runtime, &timer.id),
+                message_id
+            );
+            let stage = if restart_while_paused {
+                "while paused, after restart"
+            } else {
+                "while paused"
+            };
+            claim_wake(&runtime, &message_id, stage).await;
+        }
+        let admitted = runtime
+            .runtime_db()
+            .queue_entries()
+            .latest(&message_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(admitted.status, QueueEntryStatus::Dequeued);
+        assert!(
+            runtime
+                .runtime_db()
+                .timers()
+                .pending_wake(&timer.id)
+                .unwrap()
+                .is_none(),
+            "admission must incorporate the original pending wake"
+        );
+        let resumed = runtime.resume_timer(&timer.id).await.unwrap();
+        assert_eq!(resumed.fire_count, 1);
+        assert_eq!(resumed.last_fired_at, timer.last_fired_at);
+        let timer_messages = runtime
+            .storage()
+            .read_recent_messages(100)
+            .unwrap()
+            .into_iter()
+            .filter(|message| {
+                matches!(&message.origin, MessageOrigin::Timer { timer_id } if timer_id == &timer.id)
+            })
+            .map(|message| message.id)
+            .collect::<Vec<_>>();
+        assert_eq!(timer_messages, [message_id.clone()]);
+        assert_eq!(
+            runtime
+                .runtime_db()
+                .queue_entries()
+                .latest(&message_id)
+                .unwrap()
+                .unwrap()
+                .status,
+            QueueEntryStatus::Dequeued
+        );
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn paused_timer_keeps_its_wait_across_restart() {
+    let home = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let clock = controlled_clock();
+    let open = || {
+        RuntimeHandle::new_with_clock(
+            "default",
+            home.path().to_path_buf(),
+            workspace.path().to_path_buf(),
+            "http://127.0.0.1:7878".into(),
+            Arc::new(StubProvider::new("timer done")),
+            "default".into(),
+            context_config(),
+            clock.clone(),
+        )
+        .unwrap()
+    };
+    let runtime = open();
+    let work = runtime
+        .create_work_item("wait across restart".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(work.id.clone()).await.unwrap();
+    let timer = runtime.schedule_timer(1_000, None, None).await.unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "waiting across restart".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    let wait_id = wait.condition.id;
+    let paused = runtime.pause_timer(&timer.id).await.unwrap();
+    assert_eq!(paused.paused_remaining_ms, Some(1_000));
+    drop(runtime);
+    clock.advance(std::time::Duration::from_secs(3_600));
+
+    let reopened = open();
+    let runtime_task = tokio::spawn(reopened.clone().run());
+    let persisted = reopened
+        .runtime_db()
+        .timers()
+        .latest(&timer.id)
+        .unwrap()
+        .unwrap();
+    assert_eq!(persisted, paused);
+    assert_eq!(
+        reopened
+            .storage()
+            .latest_wait_conditions()
+            .unwrap()
+            .into_iter()
+            .find(|condition| condition.id == wait_id)
+            .unwrap()
+            .status,
+        WaitConditionStatus::Active
+    );
+    let resumed = reopened.resume_timer(&timer.id).await.unwrap();
+    assert_eq!(
+        resumed.next_fire_at,
+        Some(clock.now() + chrono::Duration::seconds(1))
+    );
+    assert_eq!(resumed.fire_count, 0);
+    clock.advance(std::time::Duration::from_secs(1));
+    tokio::time::advance(std::time::Duration::from_secs(1)).await;
+    assert_timer_fire_count(&reopened, &timer.id, 1).await;
+    let wake = reopened
+        .storage()
+        .read_recent_messages(10)
+        .unwrap()
+        .into_iter()
+        .find(|message| matches!(&message.origin, MessageOrigin::Timer { timer_id } if timer_id == &timer.id))
+        .unwrap();
+    assert_eq!(wake.work_item_id.as_deref(), Some(work.id.as_str()));
+    runtime_task.abort();
+}
+
+#[tokio::test(start_paused = true)]
+async fn new_explicit_wait_can_be_registered_after_timer_resumes() {
+    let home = tempdir().unwrap();
+    let workspace = tempdir().unwrap();
+    let runtime = RuntimeHandle::new_with_clock(
+        "default",
+        home.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "http://127.0.0.1:7878".into(),
+        Arc::new(StubProvider::new("must not run")),
+        "default".into(),
+        context_config(),
+        controlled_clock(),
+    )
+    .unwrap();
+    let timer = runtime.schedule_timer(1_000, None, None).await.unwrap();
+    runtime.pause_timer(&timer.id).await.unwrap();
+    let result = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "waiting on a paused timer".into(),
+            None,
+        )
+        .await;
+    let error = result
+        .err()
+        .expect("a paused timer has no scheduled wake for a new wait");
+    assert!(matches!(
+        error.downcast_ref::<RuntimeError>(),
+        Some(error) if error.descriptor().code == "timer_invalid_state"
+    ));
+    assert!(runtime
+        .storage()
+        .latest_wait_conditions()
+        .unwrap()
+        .is_empty());
+    runtime.resume_timer(&timer.id).await.unwrap();
+    let wait = runtime
+        .register_wait_for(
+            "default",
+            None,
+            WaitForWakeKind::Timer,
+            Some(timer.id.clone()),
+            "waiting after resume".into(),
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(wait.condition.status, WaitConditionStatus::Active);
+    assert_eq!(
+        wait.condition.subject_ref.as_deref(),
+        Some(timer.id.as_str())
+    );
+    assert_eq!(wait.condition.expires_at, None);
+}
+
+#[tokio::test(start_paused = true)]
 async fn runtime_recovers_active_timer_without_next_fire_at() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1643,6 +1914,8 @@ async fn runtime_recovers_active_timer_without_next_fire_at() {
             next_fire_at: None,
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         }],
         &[],
@@ -1698,6 +1971,8 @@ async fn runtime_recovers_overdue_repeating_timer_on_original_schedule() {
             next_fire_at: Some(scheduled_fire_at),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         }],
         &[],
@@ -2268,6 +2543,16 @@ async fn completed_one_shot_wait_binds_existing_pending_wake() {
         .await
         .unwrap();
     runtime.fire_timer_record(&mut timer).await.unwrap();
+    assert_eq!(timer.status, TimerStatus::Completed);
+    for error in [
+        runtime.pause_timer(&timer.id).await.unwrap_err(),
+        runtime.resume_timer(&timer.id).await.unwrap_err(),
+    ] {
+        assert!(matches!(
+            error.downcast_ref::<RuntimeError>(),
+            Some(error) if error.descriptor().code == "timer_terminal"
+        ));
+    }
     let wake = runtime
         .inner
         .runtime_db
@@ -2368,6 +2653,8 @@ async fn recovery_normalizes_legacy_timer_backlog_idempotently() {
         next_fire_at: Some(now + chrono::Duration::seconds(10)),
         last_fired_at: Some(now),
         fire_count: 3,
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
     };
     let cancelled_timer = TimerRecord {
@@ -2515,6 +2802,8 @@ async fn recovery_reactivates_incorporated_wake_for_restored_timer_message() {
         next_fire_at: Some(now + chrono::Duration::seconds(10)),
         last_fired_at: Some(now),
         fire_count: 1,
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
     };
     let message = MessageEnvelope {

@@ -668,8 +668,25 @@ impl LocalClient {
     }
 
     pub async fn cancel_timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
+        self.change_timer(agent_id, timer_id, "cancel").await
+    }
+
+    pub async fn pause_timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
+        self.change_timer(agent_id, timer_id, "pause").await
+    }
+
+    pub async fn resume_timer(&self, agent_id: &str, timer_id: &str) -> Result<TimerRecord> {
+        self.change_timer(agent_id, timer_id, "resume").await
+    }
+
+    async fn change_timer(
+        &self,
+        agent_id: &str,
+        timer_id: &str,
+        operation: &str,
+    ) -> Result<TimerRecord> {
         self.post_control_json(
-            &format!("/control/agents/{agent_id}/timers/{timer_id}/cancel"),
+            &format!("/control/agents/{agent_id}/timers/{timer_id}/{operation}"),
             &CancelTimerRequest {
                 authority_class: Some(AuthorityClass::OperatorInstruction),
             },

@@ -1784,6 +1784,17 @@ describe("createRuntimeClient", () => {
     }
   });
 
+  it.each(["pause", "resume", "cancel"] as const)("posts timer %s to the encoded control route", async (action) => {
+    const timer = { id: "timer/one", status: { pause: "paused", resume: "active", cancel: "cancelled" }[action] };
+    const fetchImpl = vi.fn().mockImplementation(async () => Response.json(timer));
+    const client = createRuntimeClient({ mode: "local", fetchImpl });
+    await expect(client.controlAgentTimer("agent/one", "timer/one", action)).resolves.toEqual(timer);
+    expect(fetchImpl).toHaveBeenCalledExactlyOnceWith(
+      `/api/control/agents/agent%2Fone/timers/timer%2Fone/${action}`,
+      expect.objectContaining({ method: "POST", body: "{}" }),
+    );
+  });
+
   const identityFencedDetailReads = [
     {
       label: "timers",

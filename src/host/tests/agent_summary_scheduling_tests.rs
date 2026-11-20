@@ -148,6 +148,8 @@ async fn cold_summary_owned_queue_keeps_empty_fallback_and_scheduling_rejection(
         baseline
     );
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "raw-summary-queue-timer".into(),
         agent_id: identity.agent_id.clone(),

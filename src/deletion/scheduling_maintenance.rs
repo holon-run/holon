@@ -192,6 +192,8 @@ mod tests {
     ) -> Result<(AgentIdentityRecord, AgentDeletionJob, TimerRecord)> {
         let id = crate::deletion::tests::metadata_identity(&host, agent);
         let timer = TimerRecord {
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
             id: "original-known-timer".into(),
             agent_id: id.agent_id.clone(),

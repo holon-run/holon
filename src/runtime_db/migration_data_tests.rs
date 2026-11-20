@@ -142,6 +142,8 @@ fn seed(tx: &Transaction<'_>) -> Result<()> {
         }
     }
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "original-timer".into(),
         agent_id: "migration-agent".into(),

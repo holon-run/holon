@@ -1062,14 +1062,14 @@ export function createRuntimeClient(options: RuntimeClientOptions = {}) {
         { timeoutMs: OPTIONAL_DETAIL_TIMEOUT_MS, ...identityFencedGetOptions(requestHeaders, agentId, options) },
       );
     },
-    async cancelAgentTimer(agentId: string, timerId: string): Promise<components["schemas"]["TimerRecord"]> {
+    async controlAgentTimer(agentId: string, timerId: string, action: "pause" | "resume" | "cancel"): Promise<components["schemas"]["TimerRecord"]> {
       if (!baseUrl) {
         throw new Error("Timer control requires a runtime connection.");
       }
       return postJson<components["schemas"]["TimerRecord"]>(
         fetchImpl,
         baseUrl,
-        `/control/agents/${encodeURIComponent(agentId)}/timers/${encodeURIComponent(timerId)}/cancel`,
+        `/control/agents/${encodeURIComponent(agentId)}/timers/${encodeURIComponent(timerId)}/${action}`,
         {},
         requestHeaders,
       );

@@ -879,7 +879,10 @@ impl ControlCancellationRegistry {
     ) -> Arc<ControlJoinLease> {
         self.retain_join(ControlJoinLease::new(
             timer.id.clone(),
-            serde_json::json!({"created_at": timer.created_at}),
+            serde_json::json!({
+                "created_at": timer.created_at,
+                "schedule_generation": timer.schedule_generation,
+            }),
             CancellationSignal::Timer(token),
         ))
     }
@@ -936,6 +939,15 @@ impl ControlCancellationRegistry {
                     && matches!(&lease.signal, CancellationSignal::Timer(_))
             })
             .cloned()
+            .collect()
+    }
+    pub(super) fn timer_for_schedule(&self, timer: &TimerRecord) -> Vec<Arc<ControlJoinLease>> {
+        self.timer_for(&timer.id)
+            .into_iter()
+            .filter(|lease| {
+                lease.domain_generation()["schedule_generation"].as_u64()
+                    == Some(timer.schedule_generation)
+            })
             .collect()
     }
     /// Physical instance retirement only; no canonical Control/Task mutation.

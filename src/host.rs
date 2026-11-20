@@ -31823,6 +31823,8 @@ mod tests {
             next_fire_at,
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         }
     }

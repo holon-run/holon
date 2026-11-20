@@ -29,4 +29,5 @@ http_async_tests!(
     complete_work_item_route_rejects_active_execution_bound_target,
     timer_detail_route_returns_latest_timer_record,
     timer_cancel_route_is_idempotent_and_updates_projection,
+    timer_pause_resume_routes_require_control_and_preserve_identity,
 );

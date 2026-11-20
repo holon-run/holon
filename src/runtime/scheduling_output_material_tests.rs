@@ -54,6 +54,8 @@ fn fixture(count: usize) -> Result<CapturedScheduling> {
     for (index, id) in ids.into_iter().take(count).enumerate().rev() {
         let created = chrono::DateTime::from_timestamp(1000, (index % 3) as u32 * 100).unwrap();
         let timer = TimerRecord {
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
             id: id.into(),
             agent_id: scope().agent_id,

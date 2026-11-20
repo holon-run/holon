@@ -403,6 +403,14 @@ impl InputMutationOutcome {
                             && !record.id.is_empty(),
                         ReceiptError::InvalidOutcome("Timer creation scope mismatch")
                     ),
+                    TimerMutationOutcome::Rescheduled { record } => ensure!(
+                        prepared
+                            .scopes()
+                            .iter()
+                            .any(|scope| scope.agent_id == record.agent_id)
+                            && !record.id.is_empty(),
+                        ReceiptError::InvalidOutcome("Timer reschedule scope mismatch")
+                    ),
                     TimerMutationOutcome::Fired { result } => {
                         ensure!(
                             result.message.is_some() == result.wake_created

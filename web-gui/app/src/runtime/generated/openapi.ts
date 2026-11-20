@@ -1616,9 +1616,49 @@ export interface paths {
         put?: never;
         /**
          * Cancel timer
-         * @description Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.
+         * @description Cancel an active or paused timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.
          */
         post: operations["cancelTimer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/agents/{agent_id}/timers/{timer_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause timer
+         * @description Pause future triggers without retracting an already committed timer wake. Repeated pauses preserve the frozen delay; terminal timers return a conflict.
+         */
+        post: operations["pauseTimer"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/control/agents/{agent_id}/timers/{timer_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resume timer
+         * @description Resume from the frozen delay or the next calendar match, without making up missed triggers. Repeated resumes do not reschedule; terminal timers return a conflict.
+         */
+        post: operations["resumeTimer"];
         delete?: never;
         options?: never;
         head?: never;
@@ -3862,12 +3902,22 @@ export interface components {
                  * @default null
                  */
                 next_fire_at: string | null;
+                /**
+                 * Format: uint64
+                 * @description Frozen time until the next non-calendar trigger, in milliseconds.
+                 */
+                paused_remaining_ms?: number | null;
                 repeat: boolean;
+                /**
+                 * Format: uint64
+                 * @description Fences scheduler producers across a pause, even if resumed at the same instant.
+                 */
+                schedule_generation?: number;
                 /**
                  * @default active
                  * @enum {string}
                  */
-                status: "active" | "completed" | "cancelled";
+                status: "active" | "paused" | "completed" | "cancelled";
                 summary?: string | null;
             }[];
             /** @default [] */
@@ -8724,12 +8774,22 @@ export interface components {
              * @default null
              */
             next_fire_at: string | null;
+            /**
+             * Format: uint64
+             * @description Frozen time until the next non-calendar trigger, in milliseconds.
+             */
+            paused_remaining_ms?: number | null;
             repeat: boolean;
+            /**
+             * Format: uint64
+             * @description Fences scheduler producers across a pause, even if resumed at the same instant.
+             */
+            schedule_generation?: number;
             /**
              * @default active
              * @enum {string}
              */
-            status: "active" | "completed" | "cancelled";
+            status: "active" | "paused" | "completed" | "cancelled";
             summary?: string | null;
         };
         /** ToolExecutionArtifactContent */
@@ -12437,6 +12497,100 @@ export interface operations {
         };
     };
     cancelTimer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Timer id. */
+                timer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelTimerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimerRecord"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    pauseTimer: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Timer id. */
+                timer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelTimerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimerRecord"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resumeTimer: {
         parameters: {
             query?: never;
             header?: never;

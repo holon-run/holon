@@ -37,6 +37,8 @@ fn ledger() -> Result<InputEvidenceBudgetLedger> {
 }
 fn active_timer(f: &Fixture) -> TimerRecord {
     TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "original-active-timer".into(),
         agent_id: f.key.agent_id.clone(),
@@ -89,11 +91,19 @@ fn keys() -> BTreeSet<SchedulingKey> {
     ])
 }
 fn seed(f: &Fixture, ledger: &InputEvidenceBudgetLedger, qualified: bool) -> Result<()> {
+    seed_with_timer(f, ledger, qualified, &active_timer(f))
+}
+fn seed_with_timer(
+    f: &Fixture,
+    ledger: &InputEvidenceBudgetLedger,
+    qualified: bool,
+    timer: &TimerRecord,
+) -> Result<()> {
     f.db.transaction(|tx| {
         scheduling::prepare_scheduling_domain_snapshot_tx(tx, &scope(f), &request(), ledger)?
             .require_current()?;
         let proof = if qualified { Some(scheduling::prepare_scheduling_write_tx(tx, &scope(f), &keys(), &request(), ledger)?) } else { None };
-        upsert_timer_tx(tx, &active_timer(f))?;
+        upsert_timer_tx(tx, timer)?;
         upsert_timer_tx(tx, &completed_timer(f))?;
         upsert_external_trigger_tx(tx, &trigger(f))?;
         let mut message = MessageEnvelope::new(&f.key.agent_id, MessageKind::TimerTick,
@@ -215,6 +225,28 @@ fn control_stop_cancels_completed_owner_wake_and_publishes_one_final_scheduling_
     assert_eq!(fingerprint(&f)?, original);
     drop((capture, current, before, delta, command, replay, receipt));
     assert_eq!(ledger.report()?.observed_bytes, 0);
+    Ok(())
+}
+
+#[test]
+fn control_stop_cancels_paused_timer_and_discards_frozen_remaining_time() -> Result<()> {
+    let f = Fixture::new();
+    let ledger = ledger()?;
+    let mut timer = active_timer(&f);
+    timer.status = TimerStatus::Paused;
+    timer.next_fire_at = None;
+    timer.paused_remaining_ms = Some(500);
+    timer.schedule_generation = 1;
+    seed_with_timer(&f, &ledger, true, &timer)?;
+
+    let command = f.command(ControlAction::Stop);
+    assert_eq!(command.expected.timers, [timer.clone()]);
+    let ControlCommit::Applied { delta, .. } = commit(&f, &command, &ledger)? else {
+        anyhow::bail!("first Stop replayed");
+    };
+    timer.status = TimerStatus::Cancelled;
+    timer.paused_remaining_ms = None;
+    assert_eq!(delta.timers, [timer]);
     Ok(())
 }
 

@@ -3,7 +3,7 @@ use super::*;
 
 pub(super) fn live_header_predicate(family: SchedulingFamily) -> &'static str {
     match family {
-        SchedulingFamily::Timer => "h.status IN ('active','scheduled')",
+        SchedulingFamily::Timer => "h.status IN ('active','scheduled','paused')",
         SchedulingFamily::TimerWake => "h.status='pending'",
         SchedulingFamily::ExternalTrigger => "h.status='active'",
     }

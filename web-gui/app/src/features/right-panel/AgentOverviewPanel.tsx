@@ -24,6 +24,7 @@ import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
 import { AgentWorkItemsPanel } from "./AgentWorkItemsPanel";
+import { RuntimeHttpError } from "../../runtime/client";
 import { useRuntimeStore } from "../../runtime/runtime-store";
 import type { AgentSummary, AgentControlAction, AgentDeletionStatus, SkillCatalogEntry, SkillCatalogState, TaskSummary, TaskTargetRef, ToolExecutionDetailState, WorkItemDetailState, WorkItemSummary } from "../../runtime/types";
 import type { components } from "../../runtime/generated/openapi";
@@ -110,6 +111,13 @@ function ManageAgentSkillItem({
 }
 
 type TimerRecord = components["schemas"]["TimerRecord"];
+type TimerAction = Parameters<ReturnType<typeof useRuntimeStore.getState>["controlAgentTimer"]>[2];
+
+const timerActionLabels = {
+  pause: { idle: "rightPanel.pauseTimer", pending: "rightPanel.pausingTimer" },
+  resume: { idle: "rightPanel.resumeTimer", pending: "rightPanel.resumingTimer" },
+  cancel: { idle: "common.cancel", pending: "rightPanel.cancellingTimer" },
+} as const;
 
 function formatTimerDuration(milliseconds: number): string {
   if (milliseconds < 1_000) return `${milliseconds} ms`;
@@ -135,14 +143,18 @@ function formatTimerDate(value: string | null, timezone?: string): string | null
 
 function TimerRow({
   timer,
-  cancelling = false,
-  onCancel,
+  disabled,
+  pendingAction,
+  onAction,
 }: {
   timer: TimerRecord;
-  cancelling?: boolean;
-  onCancel?: () => void;
+  disabled: boolean;
+  pendingAction?: TimerAction;
+  onAction: (action: TimerAction) => void;
 }) {
   const { t } = useTranslation();
+  const paused = timer.status === "paused";
+  const primaryAction = timer.status === "active" ? "pause" : paused ? "resume" : undefined;
   const calendar = timer.calendar;
   const timerType = calendar
     ? t("rightPanel.timerTypeCron")
@@ -155,11 +167,11 @@ function TimerRow({
       ? t("rightPanel.timerInterval", { value: formatTimerDuration(timer.interval_ms) })
       : t("rightPanel.timerRelative", { value: formatTimerDuration(timer.duration_ms) });
   const ScheduleIcon = calendar ? CalendarClock : timer.interval_ms ? Repeat2 : Timer;
-  const nextFire = formatTimerDate(timer.next_fire_at, calendar?.timezone);
+  const nextFire = paused ? null : formatTimerDate(timer.next_fire_at, calendar?.timezone);
   const lastFired = formatTimerDate(timer.last_fired_at, calendar?.timezone);
 
   return (
-    <article className={`agent-timer-row${timer.status !== "active" ? " is-history" : ""}`}>
+    <article className={`agent-timer-row${primaryAction ? "" : " is-history"}`} aria-busy={pendingAction ? true : undefined}>
       <div className="agent-timer-summary">
         <div className="agent-timer-heading">
           <strong title={timer.summary || timer.id}>{timer.summary || timer.id}</strong>
@@ -168,7 +180,7 @@ function TimerRow({
             <span className="sr-only">{timerType}</span>
           </span>
         </div>
-        <StatusBadge className="state-chip" kind="task" value={timer.status} />
+        <StatusBadge className="state-chip" kind="task" value={timer.status} showLabel />
       </div>
       <div className="agent-timer-schedule">
         <ScheduleIcon size={15} aria-hidden="true" />
@@ -199,17 +211,91 @@ function TimerRow({
           </div>
         ) : null}
       </dl>
-      {onCancel ? (
-        <button
-          type="button"
-          className="secondary-button"
-          disabled={cancelling}
-          onClick={onCancel}
-        >
-          {cancelling ? t("rightPanel.cancellingTimer") : t("common.cancel")}
-        </button>
+      {paused ? (
+        <p className="inspector-muted">
+          {calendar
+            ? t("rightPanel.timerResumeCalendar")
+            : timer.paused_remaining_ms == null
+              ? t("rightPanel.timerResumeFrozen")
+              : t("rightPanel.timerResumeRemaining", { value: formatTimerDuration(timer.paused_remaining_ms) })}
+        </p>
+      ) : null}
+      {primaryAction ? (
+        <div className="agent-timer-actions">
+          {([primaryAction, "cancel"] as const).map((action) => (
+            <button key={action} type="button" className="secondary-button" disabled={disabled} onClick={() => onAction(action)}>
+              {t(timerActionLabels[action][pendingAction === action ? "pending" : "idle"])}
+            </button>
+          ))}
+        </div>
       ) : null}
     </article>
+  );
+}
+
+function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; stateIsCurrent: boolean }) {
+  const { t } = useTranslation();
+  const controlAgentTimer = useRuntimeStore((state) => state.controlAgentTimer);
+  const refreshAgentState = useRuntimeStore((state) => state.refreshAgentState);
+  const refreshState = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state);
+  const [pending, setPending] = useState<{ timerId: string; action: TimerAction }>();
+  const [error, setError] = useState<{ message: string; conflict: boolean }>();
+  const timers = agent.timers ?? [];
+  const shownActive = timers.filter((timer) => timer.status === "active").length;
+  const activeTimerCount = agent.activeTimerCount ?? shownActive;
+  const disabled = Boolean(!stateIsCurrent || pending || refreshState?.stale);
+
+  async function handleAction(timerId: string, action: TimerAction) {
+    if (disabled) return;
+    setPending({ timerId, action });
+    setError(undefined);
+    try {
+      await controlAgentTimer(agent.id, timerId, action, agent.incarnation);
+    } catch (error) {
+      setError({
+        message: error instanceof Error ? error.message : String(error),
+        conflict: error instanceof RuntimeHttpError && error.status === 409,
+      });
+    } finally {
+      setPending(undefined);
+    }
+  }
+
+  return (
+    <CollapsibleInspectorCard
+      title={activeTimerCount ? t("rightPanel.timersWithActiveCount", { count: activeTimerCount }) : t("rightPanel.timers")}
+      className="agent-timers-card"
+      badge={activeTimerCount ? <span className="inspector-card-count">{activeTimerCount}</span> : undefined}
+    >
+      {activeTimerCount > shownActive ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: shownActive, count: activeTimerCount })}</p> : null}
+      {timers.some((timer) => timer.status === "active" || timer.status === "paused") ? (
+        <p className="inspector-muted">{t("rightPanel.timerWakePolicy")}</p>
+      ) : null}
+      {error ? <p className="error-text" role="alert">{t(error.conflict ? "rightPanel.timerConflict" : "rightPanel.timerActionError", { error: error.message })}</p> : null}
+      {refreshState?.stale ? (
+        <>
+          {refreshState.error ? <p className="error-text" role="alert">{t("rightPanel.timersError", { error: refreshState.error })}</p> : null}
+          <button type="button" className="secondary-button" disabled={!stateIsCurrent || refreshState.loading || Boolean(pending)}
+            onClick={() => void refreshAgentState(agent.id, { incarnation: agent.incarnation })}>
+            {t("rightPanel.refreshTimers")}
+          </button>
+        </>
+      ) : null}
+      {!timers.length && !refreshState?.stale ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
+      {timers.length ? (
+        <div className="agent-timer-list">
+          {timers.map((timer) => (
+            <TimerRow
+              key={timer.id}
+              timer={timer}
+              disabled={disabled}
+              pendingAction={pending?.timerId === timer.id ? pending.action : undefined}
+              onAction={(action) => void handleAction(timer.id, action)}
+            />
+          ))}
+        </div>
+      ) : null}
+    </CollapsibleInspectorCard>
   );
 }
 
@@ -236,8 +322,6 @@ export function AgentOverviewPanel({
   const queryAgentRecentTasks = useRuntimeStore((state) => state.queryAgentRecentTasks);
   const stateIsCurrent = useRuntimeStore((state) => !state.bootstrap.connection.error && state.discovery.freshness === "fresh");
   const queryAgentCompletedWorkItems = useRuntimeStore((state) => state.queryAgentCompletedWorkItems);
-  const refreshAgentState = useRuntimeStore((state) => state.refreshAgentState);
-  const cancelAgentTimer = useRuntimeStore((state) => state.cancelAgentTimer);
   const workspace = agent.workspaceSummary;
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState("");
@@ -247,24 +331,8 @@ export function AgentOverviewPanel({
   const [renameText, setRenameText] = useState("");
   const [renameError, setRenameError] = useState<string | undefined>(undefined);
   const [renameSaving, setRenameSaving] = useState(false);
-  const timers = agent.timers ?? [];
-  const activeTimerCount = agent.activeTimerCount ?? timers.length;
-  const [timerError, setTimerError] = useState<string | undefined>();
-  const [cancellingTimerId, setCancellingTimerId] = useState<string | undefined>();
   const workItems = agent.workItems ?? (agent.currentWork ? [agent.currentWork] : []);
   const currentWorkItems = workItems.filter((item) => item.current);
-  async function handleCancelTimer(timerId: string) {
-    setCancellingTimerId(timerId);
-    setTimerError(undefined);
-    try {
-      await cancelAgentTimer(agent.id, timerId);
-      await refreshAgentState(agent.id, { incarnation: agent.incarnation, throwOnError: true });
-    } catch (error) {
-      setTimerError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setCancellingTimerId(undefined);
-    }
-  }
   // Stop and Start are inverse lifecycle transitions: only show the one that
   // applies to the current state. Delete is always available.
   const normalizedLifecycle = (agent.lifecycle ?? "").trim().toLowerCase().replace(/[_\s]+/g, "-");
@@ -640,27 +708,7 @@ export function AgentOverviewPanel({
         );
       })()}
 
-      <CollapsibleInspectorCard
-        title={activeTimerCount ? t("rightPanel.timersWithActiveCount", { count: activeTimerCount }) : t("rightPanel.timers")}
-        className="agent-timers-card"
-        badge={activeTimerCount ? <span className="inspector-card-count">{activeTimerCount}</span> : undefined}
-      >
-        {activeTimerCount > timers.length ? <p className="inspector-muted">{t("rightPanel.activeSnapshotTruncated", { shown: timers.length, count: activeTimerCount })}</p> : null}
-        {timerError ? <p className="error-text">{t("rightPanel.timersError", { error: timerError })}</p> : null}
-        {!timers.length && !timerError ? <p className="muted">{t("rightPanel.noTimers")}</p> : null}
-        {timers.length ? (
-          <div className="agent-timer-list">
-            {timers.map((timer) => (
-              <TimerRow
-                key={timer.id}
-                timer={timer}
-                cancelling={cancellingTimerId === timer.id}
-                onCancel={() => void handleCancelTimer(timer.id)}
-              />
-            ))}
-          </div>
-        ) : null}
-      </CollapsibleInspectorCard>
+      <AgentTimersCard key={`${agent.id}:${agent.incarnation}`} agent={agent} stateIsCurrent={stateIsCurrent} />
 
       <CollapsibleInspectorCard
         title={t("rightPanel.skillsWithCount", { count: skillCatalog?.catalog.length ?? 0 })}

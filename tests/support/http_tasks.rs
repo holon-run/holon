@@ -1113,3 +1113,93 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
     server.abort();
     Ok(())
 }
+
+pub async fn timer_pause_resume_routes_require_control_and_preserve_identity() -> Result<()> {
+    use reqwest::StatusCode;
+    use serde_json::{json, Value};
+
+    let data = tempdir()?;
+    let workspace = tempdir()?;
+    let config = test_config_with_paths(
+        data.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    host.create_named_agent("other", None).await?;
+    let runtime = host.default_runtime().await?;
+    let timer = runtime.schedule_timer(300_000, None, None).await?;
+    let client = Client::new();
+    let url = |agent: &str, id: &str, action: &str| {
+        format!("{base}/api/control/agents/{agent}/timers/{id}/{action}")
+    };
+    let post = |agent: &str, id: &str, action: &str| {
+        client
+            .post(url(agent, id, action))
+            .bearer_auth("secret")
+            .json(&json!({}))
+    };
+    for action in ["pause", "resume"] {
+        assert_eq!(
+            client
+                .post(url("default", &timer.id, action))
+                .json(&json!({}))
+                .send()
+                .await?
+                .status(),
+            StatusCode::UNAUTHORIZED
+        );
+        assert_eq!(
+            post("other", &timer.id, action).send().await?.status(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            post("default", "missing-timer", action)
+                .send()
+                .await?
+                .status(),
+            StatusCode::NOT_FOUND
+        );
+    }
+
+    let detail = format!("{base}/api/agents/default/timers/{}", timer.id);
+    for (action, status) in [("pause", "paused"), ("resume", "active")] {
+        let changed: Value = post("default", &timer.id, action)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(changed["status"], status);
+        assert_eq!(changed["id"], timer.id);
+        assert_eq!(changed["fire_count"], 0);
+        assert_eq!(changed["next_fire_at"].is_null(), action == "pause");
+        assert_eq!(changed["paused_remaining_ms"].is_u64(), action == "pause");
+        let read_back: Value = client
+            .get(&detail)
+            .bearer_auth("secret")
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(read_back, changed);
+        let repeated: Value = post("default", &timer.id, action)
+            .send()
+            .await?
+            .error_for_status()?
+            .json()
+            .await?;
+        assert_eq!(repeated, changed);
+    }
+    runtime.cancel_timer(&timer.id).await?;
+    for action in ["pause", "resume"] {
+        assert_eq!(
+            post("default", &timer.id, action).send().await?.status(),
+            StatusCode::CONFLICT
+        );
+    }
+    server.abort();
+    Ok(())
+}

@@ -70,6 +70,7 @@
       "name": "TimerStatus",
       "serialized_values": [
         "active",
+        "paused",
         "completed",
         "cancelled"
       ],

@@ -448,7 +448,7 @@ fn select_timer_output(
         let CanonicalSchedulingFact::Timer(timer) = &record.fact else {
             continue;
         };
-        if active_only && timer.status != TimerStatus::Active {
+        if active_only && !timer.status.is_live() {
             continue;
         }
         if !selected

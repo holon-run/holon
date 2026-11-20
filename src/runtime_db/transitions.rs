@@ -3219,7 +3219,7 @@ impl RuntimeTransitionRepository<'_> {
                 "SELECT EXISTS(
                        SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
                        WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
-                         AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
+                         AND w.status = 'pending' AND t.status IN ('active', 'paused', 'completed'))",
                 params![
                     timer_wake.timer_id,
                     timer_wake.message_id,
@@ -3866,12 +3866,13 @@ impl RuntimeTransitionRepository<'_> {
             }
         }
         let mut scheduling_write_keys = BTreeSet::new();
+        // Pausing fences future fires, not incorporation of a committed wake.
         if let Some(timer_wake_claim) = timer_wake_claim {
             let valid = tx.query_row(
                 "SELECT EXISTS(
                    SELECT 1 FROM timer_wakes w JOIN timers t ON t.timer_id = w.timer_id
                    WHERE w.timer_id = ?1 AND w.message_id = ?2 AND w.fire_count = ?3
-                     AND w.status = 'pending' AND t.status IN ('active', 'completed'))",
+                     AND w.status = 'pending' AND t.status IN ('active', 'paused', 'completed'))",
                 params![
                     timer_wake_claim.timer_id,
                     timer_wake_claim.message_id,
@@ -6434,7 +6435,8 @@ pub(super) fn validate_wait_condition_tx(
             "SELECT EXISTS(
                SELECT 1 FROM timers t
                WHERE t.timer_id = ?1 AND t.agent_id = ?2
-                 AND ((t.status = 'active' AND t.next_fire_at IS NOT NULL)
+                 AND (t.status = 'paused'
+                   OR (t.status = 'active' AND t.next_fire_at IS NOT NULL)
                    OR (t.status = 'completed' AND EXISTS(
                      SELECT 1 FROM timer_wakes w
                      WHERE w.timer_id = t.timer_id AND w.status = 'pending'))))",

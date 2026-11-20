@@ -48,6 +48,13 @@ pub(crate) enum PreparedTimerTransition {
         #[serde(skip)]
         fault: Option<TransitionFaultPoint>,
     },
+    Reschedule {
+        expected: Box<crate::types::TimerRecord>,
+        record: Box<crate::types::TimerRecord>,
+        changed_at: chrono::DateTime<chrono::Utc>,
+        #[serde(skip)]
+        fault: Option<TransitionFaultPoint>,
+    },
 }
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "operation", rename_all = "snake_case", deny_unknown_fields)]
@@ -60,6 +67,9 @@ pub(crate) enum TimerMutationOutcome {
     },
     Cancelled {
         result: crate::runtime_db::TimerCancelResult,
+    },
+    Rescheduled {
+        record: crate::types::TimerRecord,
     },
 }
 impl PreparedTimerTransition {
@@ -99,6 +109,7 @@ impl PreparedTimerTransition {
             Self::Create { record, .. } => record,
             Self::Fire { command, .. } => &command.record,
             Self::Cancel { command, .. } => &command.record,
+            Self::Reschedule { record, .. } => record,
         }
     }
     pub(super) fn new_wake(&self) -> Option<(&MessageEnvelope, &QueueEntryRecord)> {
@@ -189,6 +200,42 @@ impl PreparedTimerTransition {
                     command.agent_state.is_some() == pending.is_some(),
                     "Timer cancellation State differs from frozen pending branch"
                 );
+            }
+            Self::Reschedule {
+                expected, record, ..
+            } => {
+                use crate::types::TimerStatus::{Active, Paused};
+                anyhow::ensure!(
+                    matches!(
+                        (&expected.status, &record.status),
+                        (Active, Paused) | (Paused, Active)
+                    ),
+                    "Timer reschedule must change live status"
+                );
+                let mut unchanged = (**record).clone();
+                unchanged.status = expected.status.clone();
+                unchanged.next_fire_at = expected.next_fire_at;
+                unchanged.paused_remaining_ms = expected.paused_remaining_ms;
+                unchanged.schedule_generation = expected.schedule_generation;
+                anyhow::ensure!(
+                    &unchanged == expected.as_ref(),
+                    "Timer reschedule altered identity, schedule, or history"
+                );
+                let valid = match record.status {
+                    Paused => {
+                        expected.schedule_generation.checked_add(1)
+                            == Some(record.schedule_generation)
+                            && record.next_fire_at.is_none()
+                            && record.paused_remaining_ms.is_some() == record.calendar.is_none()
+                    }
+                    Active => {
+                        expected.schedule_generation == record.schedule_generation
+                            && record.next_fire_at.is_some()
+                            && record.paused_remaining_ms.is_none()
+                    }
+                    _ => false,
+                };
+                anyhow::ensure!(valid, "Timer reschedule data differs from its status");
             }
         }
         Ok(())
@@ -329,6 +376,29 @@ impl PreparedTimerTransition {
                 inject_fault(*fault, TransitionFaultPoint::AfterCanonicalWrites)?;
                 TimerMutationOutcome::Cancelled { result }
             }
+            Self::Reschedule {
+                record,
+                changed_at,
+                fault,
+                ..
+            } => {
+                inject_fault(*fault, TransitionFaultPoint::AfterValidation)?;
+                repositories::reschedule_timer_tx(tx, record, *changed_at)?;
+                value.applied = true;
+                value.effects.fault = *fault;
+                value
+                    .effects
+                    .scheduling_write_keys
+                    .insert(timer_selector(&record.id)?);
+                let actual = repositories::timer_tx(tx, &record.id)?
+                    .context("Timer reschedule ACK missing")?;
+                value
+                    .effects
+                    .timers
+                    .push(repositories::clone_timer_body(&actual)?);
+                inject_fault(*fault, TransitionFaultPoint::AfterCanonicalWrites)?;
+                TimerMutationOutcome::Rescheduled { record: actual }
+            }
         };
         Ok((
             value,
@@ -339,9 +409,10 @@ impl PreparedTimerTransition {
     }
     pub(super) fn fault(&self) -> Option<TransitionFaultPoint> {
         match self {
-            Self::Create { fault, .. } | Self::Fire { fault, .. } | Self::Cancel { fault, .. } => {
-                *fault
-            }
+            Self::Create { fault, .. }
+            | Self::Fire { fault, .. }
+            | Self::Cancel { fault, .. }
+            | Self::Reschedule { fault, .. } => *fault,
         }
     }
 }
@@ -544,6 +615,10 @@ pub(super) fn prepare_tx<'tx, 'conn>(
                 proof.fact_before(&timer_key).is_none(),
                 "Timer creation ID already exists"
             ),
+            PreparedTimerTransition::Reschedule { expected, .. } => anyhow::ensure!(
+                matches!(proof.fact_before(&timer_key), Some(CanonicalSchedulingFact::Timer(actual)) if actual == expected.as_ref()),
+                "Timer reschedule compare-and-swap mismatch"
+            ),
             PreparedTimerTransition::Fire {
                 command, pending, ..
             } => {
@@ -594,7 +669,7 @@ pub(super) fn prepare_tx<'tx, 'conn>(
             PreparedTimerTransition::Cancel {
                 command, pending, ..
             } => {
-                if matches!(proof.fact_before(&timer_key),Some(CanonicalSchedulingFact::Timer(actual)) if actual==&command.expected&&actual.status==crate::types::TimerStatus::Active)
+                if matches!(proof.fact_before(&timer_key),Some(CanonicalSchedulingFact::Timer(actual)) if actual==&command.expected&&actual.status.is_live())
                 {
                     verify_pending_presence(tx, id, pending)?;
                     if let Some(wake) = pending {

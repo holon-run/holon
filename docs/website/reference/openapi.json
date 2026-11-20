@@ -3545,13 +3545,29 @@
                     "null"
                   ]
                 },
+                "paused_remaining_ms": {
+                  "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": [
+                    "integer",
+                    "null"
+                  ]
+                },
                 "repeat": {
                   "type": "boolean"
+                },
+                "schedule_generation": {
+                  "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+                  "format": "uint64",
+                  "minimum": 0,
+                  "type": "integer"
                 },
                 "status": {
                   "default": "active",
                   "enum": [
                     "active",
+                    "paused",
                     "completed",
                     "cancelled"
                   ],
@@ -21000,13 +21016,29 @@
               "null"
             ]
           },
+          "paused_remaining_ms": {
+            "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
           "repeat": {
             "type": "boolean"
+          },
+          "schedule_generation": {
+            "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
           },
           "status": {
             "default": "active",
             "enum": [
               "active",
+              "paused",
               "completed",
               "cancelled"
             ],
@@ -26996,7 +27028,7 @@
     },
     "/api/control/agents/{agent_id}/timers/{timer_id}/cancel": {
       "post": {
-        "description": "Cancel an active timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.",
+        "description": "Cancel an active or paused timer. Cancellation is idempotent for already-cancelled timers; completed or missing timers return a shared error envelope.",
         "operationId": "cancelTimer",
         "parameters": [
           {
@@ -27066,6 +27098,160 @@
           }
         ],
         "summary": "Cancel timer",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/timers/{timer_id}/pause": {
+      "post": {
+        "description": "Pause future triggers without retracting an already committed timer wake. Repeated pauses preserve the frozen delay; terminal timers return a conflict.",
+        "operationId": "pauseTimer",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Timer id.",
+            "in": "path",
+            "name": "timer_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTimerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Pause timer",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/timers/{timer_id}/resume": {
+      "post": {
+        "description": "Resume from the frozen delay or the next calendar match, without making up missed triggers. Repeated resumes do not reschedule; terminal timers return a conflict.",
+        "operationId": "resumeTimer",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Timer id.",
+            "in": "path",
+            "name": "timer_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CancelTimerRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Resume timer",
         "tags": [
           "control"
         ]

@@ -1620,6 +1620,8 @@ fn sample_snapshot() -> AgentStateSnapshot {
             next_fire_at: Some(Utc::now()),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         }],
         work_items: {

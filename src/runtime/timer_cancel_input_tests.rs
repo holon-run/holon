@@ -27,6 +27,8 @@ pub(super) async fn fixture() -> Result<(TempDir, TempDir, RuntimeHandle, TimerR
     runtime.await_initial_resources().await;
     let now = runtime.now();
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: crate::ids::timer_id(),
         agent_id: "default".into(),

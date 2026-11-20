@@ -406,6 +406,8 @@ fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentS
                 next_fire_at: Some(Utc::now()),
                 last_fired_at: None,
                 fire_count: 0,
+                paused_remaining_ms: None,
+                schedule_generation: 0,
                 calendar: None,
             })
             .unwrap();
@@ -735,6 +737,8 @@ fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
                 next_fire_at: Some(now),
                 last_fired_at: None,
                 fire_count: 0,
+                paused_remaining_ms: None,
+                schedule_generation: 0,
                 calendar: None,
             })
             .unwrap();

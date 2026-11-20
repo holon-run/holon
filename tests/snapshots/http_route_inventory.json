@@ -2395,6 +2395,60 @@
   },
   {
     "method": "post",
+    "path": "/api/control/agents/{agent_id}/timers/{timer_id}/pause",
+    "handler": "pause_timer",
+    "operation_id": "pauseTimer",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "timer_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CancelTimerRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/control/agents/{agent_id}/timers/{timer_id}/resume",
+    "handler": "resume_timer",
+    "operation_id": "resumeTimer",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "timer_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "CancelTimerRequest",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
     "path": "/api/control/agents/{agent_id}/timezone/clear",
     "handler": "clear_agent_timezone",
     "operation_id": "clearAgentTimezone",
