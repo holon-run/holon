@@ -77,7 +77,7 @@ fn list_fetch_providers_mirrors_route_gating() {
     let mut config = WebConfig::default();
     let listed = list_fetch_providers(&config);
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].provider_id, "");
+    assert_eq!(listed[0].provider_id, None);
     assert_eq!(listed[0].kind, "local_http");
     assert_eq!(listed[0].extract_modes, vec!["auto", "text", "raw"]);
 
@@ -93,7 +93,8 @@ fn list_fetch_providers_mirrors_route_gating() {
     config
         .providers
         .insert("deepseek-a".into(), provider.clone());
-    // Reserved selectors and blank or padded IDs never name a route.
+    // WebFetch resolves named providers by registry lookup with no selector
+    // semantics, so reserved words and padded IDs still name routes here.
     config.providers.insert("auto".into(), provider.clone());
     config
         .providers
@@ -106,10 +107,23 @@ fn list_fetch_providers_mirrors_route_gating() {
     config.providers.insert("no-key".into(), provider);
 
     let listed = list_fetch_providers(&config);
-    assert_eq!(listed.len(), 2);
-    assert_eq!(listed[1].provider_id, "deepseek-a");
-    assert_eq!(listed[1].kind, "deepseek");
-    assert_eq!(listed[1].extract_modes, vec!["auto"]);
+    let remote_ids: Vec<Option<&str>> = listed[1..]
+        .iter()
+        .map(|info| info.provider_id.as_deref())
+        .collect();
+    assert_eq!(
+        remote_ids,
+        vec![Some(" deepseek-b"), Some("auto"), Some("deepseek-a")]
+    );
+    assert_eq!(listed[3].kind, "deepseek");
+    assert_eq!(listed[3].extract_modes, vec!["auto"]);
+
+    // The shared preflight rejects every remote request once custom host
+    // rules are configured, so discovery must not offer those routes.
+    config.fetch.allowed_hosts = vec!["example.com".into()];
+    let listed = list_fetch_providers(&config);
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].provider_id, None);
 
     config.fetch.enabled = false;
     assert!(list_fetch_providers(&config).is_empty());

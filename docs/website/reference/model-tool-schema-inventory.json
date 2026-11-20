@@ -6366,7 +6366,7 @@
       "stability": "experimental"
     },
     {
-      "description": "List the WebFetch routes you can use right now: the default local HTTP route (empty `provider_id`) plus each callable remote provider ID with its `kind` and supported `extract_modes`. Pass a listed `provider_id` unchanged to `WebFetch(provider=\"<ID>\")`. Takes no arguments. Returns `{\"providers\":[...]}` with the local route first and remote IDs sorted, or an empty array when web fetch is disabled. Uses local configuration only; it does not fetch, send requests, or check provider health, and it never returns endpoints or credentials. Kinds that only support search are not listed.\n",
+      "description": "List the WebFetch routes you can use right now: the default local HTTP route (`provider_id: null`) plus each callable remote provider ID with its `kind` and supported `extract_modes`. Pass a listed remote `provider_id` unchanged to `WebFetch(provider=\"<ID>\")`; only remote IDs are accepted there, and the local route is selected by omitting `provider` (an empty string is a registry lookup, not the local route). Takes no arguments. Returns `{\"providers\":[...]}` with the local route first and remote IDs sorted, or an empty array when web fetch is disabled. Uses local configuration only; it does not fetch, send requests, or check provider health, and it never returns endpoints or credentials. Kinds that only support search are not listed.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
@@ -6386,7 +6386,7 @@
           "properties": {
             "providers": {
               "items": {
-                "description": "One WebFetch route: the default local HTTP route (empty `provider_id`)\n or a configured remote provider ID, with the extract modes it accepts.",
+                "description": "One WebFetch route: the default local HTTP route (`provider_id: null`)\n or a configured remote provider ID, with the extract modes it accepts.",
                 "properties": {
                   "extract_modes": {
                     "items": {
@@ -6398,12 +6398,14 @@
                     "type": "string"
                   },
                   "provider_id": {
-                    "description": "Empty for the built-in local HTTP route.",
-                    "type": "string"
+                    "description": "`null` for the built-in local HTTP route; a configured remote\n provider ID otherwise.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
                 "required": [
-                  "provider_id",
                   "kind",
                   "extract_modes"
                 ],

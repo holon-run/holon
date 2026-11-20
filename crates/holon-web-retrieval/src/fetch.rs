@@ -16,7 +16,6 @@ use holon_tools::helpers::truncate_text;
 use crate::{
     deepseek_tool_url,
     policy::{policy_error, timeout, validate_fetch_url},
-    search::is_route_selector,
     WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
 
@@ -214,36 +213,38 @@ fn extract_mode_str(mode: ExtractMode) -> &'static str {
 /// network probe, endpoint, or credential material.
 #[derive(Debug, Clone, Serialize)]
 pub struct WebFetchProviderInfo {
-    /// Empty for the built-in local HTTP route.
-    pub provider_id: String,
+    /// `None` for the built-in local HTTP route, `Some(id)` for a remote one.
+    pub provider_id: Option<String>,
     pub kind: &'static str,
     pub extract_modes: Vec<&'static str>,
 }
 
 /// Enumerate the WebFetch routes reachable right now: the default local
 /// route first, then callable remote provider IDs in sorted order. Mirrors
-/// the gating `fetch_with_provider` applies when executing a selection.
+/// the gating `fetch_with_provider` applies when executing a selection:
+/// a named provider is resolved by registry lookup with no selector
+/// semantics, so every configured ID is enumerated as configured, and the
+/// shared offline policy gate hides remote routes the preflight would
+/// always reject.
 pub fn list_fetch_providers(config: &WebConfig) -> Vec<WebFetchProviderInfo> {
     if !config.fetch.enabled {
         return Vec::new();
     }
     let mut providers = vec![WebFetchProviderInfo {
-        provider_id: String::new(),
+        provider_id: None,
         kind: "local_http",
         extract_modes: vec!["auto", "text", "raw"],
     }];
+    let remote_policy_ok = !super::remote_fetch::remote_fetch_policy_conflict(&config.fetch);
     for (id, provider) in &config.providers {
-        if id.is_empty() || id.trim() != id || is_route_selector(id) {
-            continue;
-        }
-        if !remote_fetch_provider_callable(provider) {
+        if !remote_policy_ok || !remote_fetch_provider_callable(provider) {
             continue;
         }
         let Some(modes) = remote_fetch_modes(provider.kind) else {
             continue;
         };
         providers.push(WebFetchProviderInfo {
-            provider_id: id.clone(),
+            provider_id: Some(id.clone()),
             kind: provider.kind.as_str(),
             extract_modes: modes.iter().map(|mode| extract_mode_str(*mode)).collect(),
         });

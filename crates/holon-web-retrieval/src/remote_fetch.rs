@@ -21,6 +21,15 @@ struct FetchPage {
     content: String,
 }
 
+/// Whether the local fetch policy keeps remote adapters from ever passing
+/// the shared preflight: the service does not expose its redirect chain,
+/// so custom host rules or a redirect budget cannot be enforced remotely.
+pub(super) fn remote_fetch_policy_conflict(config: &WebFetchConfig) -> bool {
+    !config.allowed_hosts.is_empty()
+        || !config.denied_hosts.is_empty()
+        || config.max_redirects != WebFetchConfig::default().max_redirects
+}
+
 /// Shared preflight for remote fetch adapters: enforce the site policy,
 /// URL shape, and credential rules before any provider request leaves the
 /// process. Mode and API-key gating stay with each adapter's caller.
@@ -39,10 +48,7 @@ pub(super) async fn preflight_remote_url(
     }
     // The service does not expose its redirect chain. Never claim to enforce
     // custom host rules or redirect budgets on a remotely fetched page.
-    if !config.allowed_hosts.is_empty()
-        || !config.denied_hosts.is_empty()
-        || config.max_redirects != WebFetchConfig::default().max_redirects
-    {
+    if remote_fetch_policy_conflict(config) {
         return Err(policy_error(
             "network_denied",
             format!("{service} cannot enforce custom host rules or redirect limits"),

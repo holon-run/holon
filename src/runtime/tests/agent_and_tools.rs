@@ -732,7 +732,7 @@ async fn web_fetch_provider_discovery_shares_visibility_and_admission() {
         (
             true,
             serde_json::json!({"providers":[
-                {"provider_id":"","kind":"local_http","extract_modes":["auto","text","raw"]},
+                {"provider_id":null,"kind":"local_http","extract_modes":["auto","text","raw"]},
                 {"provider_id":"fixture","kind":"deepseek","extract_modes":["auto"]},
             ]}),
         ),
