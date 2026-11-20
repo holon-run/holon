@@ -568,10 +568,10 @@ jobs:
               r"^no such table: ([A-Za-z_][A-Za-z0-9_]*)"
           )
 
-          def report_before_errors_all_missing_candidate_tables(
+          def candidate_schema_missing_table_errors_only(
               errors: object,
           ) -> bool:
-              """report_before inspects the pre-migration database with the
+              """Report phases inspect the pre-migration database with the
               candidate binary, so tables only the candidate schema creates
               are legitimately absent there; allow report_errors only when
               every entry is a missing-table error for such a table."""
@@ -601,12 +601,14 @@ jobs:
               or recovery.get("migrated_snapshot_sha256")
               != migrated_snapshot_sha256
               or not report_before.get("before", {}).get("blockers")
-              or not report_before_errors_all_missing_candidate_tables(
+              or not candidate_schema_missing_table_errors_only(
                   report_before.get("report_errors")
               )
               or not apply.get("apply", {}).get("changed")
               or apply.get("after", {}).get("blockers")
-              or apply.get("report_errors")
+              or not candidate_schema_missing_table_errors_only(
+                  apply.get("report_errors")
+              )
               or report_after.get("before", {}).get("blockers")
               or report_after.get("after", {}).get("blockers")
               or report_after.get("report_errors")
