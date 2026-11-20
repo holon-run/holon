@@ -164,6 +164,8 @@ fn owning_roots_admit_each_unique_key_before_cloning() -> Result<()> {
 fn domain() -> Result<ResidentSchedulingDomain> {
     let now = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
     let timer = CanonicalSchedulingFact::Timer(TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "parent\"雪".into(),
         agent_id: scope().agent_id,

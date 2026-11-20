@@ -165,12 +165,12 @@ impl StartupSchedulingMaterial {
             // Active-only is the original bulk cancellation predicate. scheduled
             // aliases still participate in the distinct original Wait predicate.
             let projection = stored::projection(SchedulingFamily::Timer);
-            let sql=format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(c.payload_json AS BLOB))+length(CAST({projection} AS BLOB))+512),0) FROM timers c WHERE c.agent_id=?1 AND (c.status='active' OR EXISTS(SELECT 1 FROM wait_conditions w WHERE w.agent_id=c.agent_id AND w.status IN ('active','triggered') AND w.kind='timer' AND w.subject_ref=c.timer_id))");
+            let sql=format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(c.payload_json AS BLOB))+length(CAST({projection} AS BLOB))+512),0) FROM timers c WHERE c.agent_id=?1 AND (c.status IN ('active','paused') OR EXISTS(SELECT 1 FROM wait_conditions w WHERE w.agent_id=c.agent_id AND w.status IN ('active','triggered') AND w.kind='timer' AND w.subject_ref=c.timer_id))");
             let (n, bytes): (usize, usize) =
                 tx.query_row(&sql, [agent], |r| Ok((r.get(0)?, r.get(1)?)))?;
             material.charge(bytes, n)?;
             let projection = stored::projection(SchedulingFamily::TimerWake);
-            let sql=format!("SELECT COUNT(*),COALESCE(SUM(length(CAST({projection} AS BLOB))+512),0) FROM timer_wakes c JOIN timers t ON t.timer_id=c.timer_id WHERE t.agent_id=?1 AND t.status='active' AND c.status='pending'");
+            let sql=format!("SELECT COUNT(*),COALESCE(SUM(length(CAST({projection} AS BLOB))+512),0) FROM timer_wakes c JOIN timers t ON t.timer_id=c.timer_id WHERE t.agent_id=?1 AND t.status IN ('active','paused') AND c.status='pending'");
             let (n, bytes): (usize, usize) =
                 tx.query_row(&sql, [agent], |r| Ok((r.get(0)?, r.get(1)?)))?;
             material.charge(bytes, n)?;
@@ -211,9 +211,9 @@ impl StartupSchedulingMaterial {
                 .get_mut(&state.id)
                 .context("unbudgeted stopped Scheduling scope")?;
             let mut selected = Material::new(&slot.accounting, &slot.remaining, ledger);
-            let (n,bytes):(usize,usize)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(length(CAST(record_id AS BLOB))+128),0) FROM (SELECT timer_id AS record_id FROM timers WHERE agent_id=?1 AND status='active' UNION ALL SELECT json_array(w.timer_id,w.message_id) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status='active' AND w.status='pending')",[&state.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+            let (n,bytes):(usize,usize)=tx.query_row("SELECT COUNT(*),COALESCE(SUM(length(CAST(record_id AS BLOB))+128),0) FROM (SELECT timer_id AS record_id FROM timers WHERE agent_id=?1 AND status IN ('active','paused') UNION ALL SELECT json_array(w.timer_id,w.message_id) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status IN ('active','paused') AND w.status='pending')",[&state.id],|r|Ok((r.get(0)?,r.get(1)?)))?;
             selected.charge(bytes, n)?;
-            let mut statement=tx.prepare("SELECT 'timer',timer_id FROM timers WHERE agent_id=?1 AND status='active' UNION ALL SELECT 'timer_wake',json_array(w.timer_id,w.message_id) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status='active' AND w.status='pending'")?;
+            let mut statement=tx.prepare("SELECT 'timer',timer_id FROM timers WHERE agent_id=?1 AND status IN ('active','paused') UNION ALL SELECT 'timer_wake',json_array(w.timer_id,w.message_id) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status IN ('active','paused') AND w.status='pending'")?;
             let keys = statement
                 .query_map([&state.id], |r| {
                     Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))

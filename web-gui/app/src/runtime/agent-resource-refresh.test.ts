@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const reads = vi.hoisted(() => ({ state: vi.fn(), workItems: vi.fn(), detail: vi.fn(), timers: vi.fn(), recentTasks: vi.fn() }));
+const reads = vi.hoisted(() => ({ state: vi.fn(), workItems: vi.fn(), detail: vi.fn(), timers: vi.fn(), recentTasks: vi.fn(), controlTimer: vi.fn() }));
 vi.mock("./client", async (original) => {
   const actual = await original<typeof import("./client")>();
   return {
@@ -12,6 +12,7 @@ vi.mock("./client", async (original) => {
       getAgentDetail: reads.detail,
       getAgentTimers: reads.timers,
       getAgentRecentTasks: reads.recentTasks,
+      controlAgentTimer: reads.controlTimer,
     }),
   };
 });
@@ -45,6 +46,7 @@ beforeEach(() => {
   reads.detail.mockReset();
   reads.timers.mockReset().mockResolvedValue([]);
   reads.recentTasks.mockReset().mockResolvedValue([]);
+  reads.controlTimer.mockReset().mockResolvedValue(undefined);
   useRuntimeStore.setState({
     ...initial,
     bootstrap: { ...initial.bootstrap, agents: [agent()] },
@@ -54,6 +56,30 @@ beforeEach(() => {
 afterEach(() => { useRuntimeStore.setState(initial, true); });
 
 describe("selected Agent resource reads", () => {
+  it("reads state after a timer control instead of reusing a pre-mutation read", async () => {
+    const earlier = deferred<AgentSummary>();
+    reads.state.mockReturnValueOnce(earlier.promise).mockResolvedValueOnce(agent({ activeTimerCount: 0 }));
+    const earlierRead = current().refreshAgentState("agent-a");
+    await Promise.resolve();
+
+    await current().controlAgentTimer("agent-a", "timer-1", "pause", 1);
+    expect(reads.controlTimer).toHaveBeenCalledExactlyOnceWith("agent-a", "timer-1", "pause");
+    expect(reads.state).toHaveBeenCalledTimes(2);
+
+    earlier.resolve(agent({ activeTimerCount: 1 }));
+    await earlierRead;
+    expect(selected().activeTimerCount).toBe(0);
+  });
+
+  it("refreshes state after a timer conflict without swallowing the conflict", async () => {
+    const conflict = new RuntimeHttpError("POST", "/timers/timer-1/resume", 409);
+    reads.controlTimer.mockRejectedValueOnce(conflict);
+    reads.state.mockResolvedValueOnce(agent({ activeTimerCount: 1 }));
+
+    await expect(current().controlAgentTimer("agent-a", "timer-1", "resume", 1)).rejects.toBe(conflict);
+    expect(selected().activeTimerCount).toBe(1);
+  });
+
   it("loads completed work independently without changing active state", async () => {
     reads.state.mockResolvedValueOnce(agent({ currentWork: work, workItems: [work] }));
     await current().refreshAgentState("agent-a");

@@ -518,6 +518,14 @@ pub fn router(state: AppState) -> Router {
             post(tasks::cancel_timer),
         )
         .route(
+            "/control/agents/{agent_id}/timers/{timer_id}/pause",
+            post(tasks::pause_timer),
+        )
+        .route(
+            "/control/agents/{agent_id}/timers/{timer_id}/resume",
+            post(tasks::resume_timer),
+        )
+        .route(
             "/control/agents/{agent_id}/create",
             post(control::create_agent),
         )

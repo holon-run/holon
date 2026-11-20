@@ -55,6 +55,8 @@ impl Fixture {
             recovery: None,
         };
         let timer = TimerRecord {
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
             id: "timer-cache-original".into(),
             agent_id: scope.agent_id.clone(),

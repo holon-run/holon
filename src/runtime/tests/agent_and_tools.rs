@@ -2242,6 +2242,8 @@ async fn wait_for_timer_validation_returns_recoverable_tool_errors() {
             next_fire_at: Some(Utc::now() + chrono::Duration::minutes(1)),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         })
         .unwrap();

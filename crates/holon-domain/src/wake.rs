@@ -414,6 +414,12 @@ pub struct TimerRecord {
     pub last_fired_at: Option<DateTime<Utc>>,
     #[serde(default)]
     pub fire_count: u64,
+    /// Frozen time until the next non-calendar trigger, in milliseconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paused_remaining_ms: Option<u64>,
+    /// Fences scheduler producers across a pause, even if resumed at the same instant.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub schedule_generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<CalendarSchedule>,
 }
@@ -433,8 +439,19 @@ pub enum RecordListStatus {
 pub enum TimerStatus {
     #[serde(alias = "scheduled")]
     Active,
+    Paused,
     Completed,
     Cancelled,
+}
+
+impl TimerStatus {
+    pub fn is_live(&self) -> bool {
+        matches!(self, Self::Active | Self::Paused)
+    }
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Default for TimerStatus {

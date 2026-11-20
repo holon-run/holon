@@ -35,7 +35,7 @@ pub(super) fn prepare_control_scheduling_writes_tx<'tx, 'conn>(
     // target; bound its material before that snapshot decodes any new body.
     let (count, bytes): (usize, usize) = tx.query_row(
         "SELECT COUNT(*),COALESCE(SUM(material_bytes),0) FROM (
-           SELECT length(CAST(payload_json AS BLOB))+256 AS material_bytes FROM timers WHERE agent_id=?1 AND status IN ('active','scheduled')
+           SELECT length(CAST(payload_json AS BLOB))+256 AS material_bytes FROM timers WHERE agent_id=?1 AND status IN ('active','scheduled','paused')
            UNION ALL SELECT length(CAST(payload_json AS BLOB))+256 FROM external_triggers WHERE target_agent_id=?1 AND status='active'
            UNION ALL SELECT length(CAST(w.timer_id AS BLOB))+length(CAST(w.message_id AS BLOB))+length(CAST(w.status AS BLOB))+length(CAST(w.created_at AS BLOB))+length(CAST(w.updated_at AS BLOB))+COALESCE(length(CAST(w.incorporated_at AS BLOB)),0)+COALESCE(length(CAST(w.cancelled_at AS BLOB)),0)+256 FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND w.status='pending'
          )", [&scope.agent_id], |row| Ok((row.get(0)?,row.get(1)?)),

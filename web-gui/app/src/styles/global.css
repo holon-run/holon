@@ -7359,7 +7359,8 @@ code {
 .agent-timer-meta div { display: grid; gap: 2px; }
 .agent-timer-meta dt { color: var(--faint); }
 .agent-timer-meta dd { margin: 0; color: var(--text); font-variant-numeric: tabular-nums; }
-.agent-timer-row > .secondary-button { justify-self: start; padding: 5px 9px; font-size: 11px; }
+.agent-timer-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.agent-timer-actions > .secondary-button { padding: 5px 9px; font-size: 11px; }
 .agent-timer-history {
   margin-top: 12px;
   border-top: 1px solid var(--line);

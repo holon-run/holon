@@ -2053,6 +2053,8 @@ mod tests {
             next_fire_at: Some(now + chrono::Duration::seconds(1)),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         };
 
@@ -2210,6 +2212,8 @@ mod tests {
             next_fire_at: Some(now + chrono::Duration::seconds(1)),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         };
         let trigger = ExternalTriggerRecord {
@@ -2429,6 +2433,8 @@ mod tests {
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         };
         let wait_for = |agent_id: &str, id: &str| WaitConditionRecord {
@@ -4727,6 +4733,8 @@ mod tests {
             next_fire_at: Some(now),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         };
         let mut updated = older.clone();

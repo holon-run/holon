@@ -66,6 +66,8 @@ pub(super) fn identity() -> AgentIdentityRecord {
 }
 pub(super) fn timer(id: &str, status: TimerStatus) -> TimerRecord {
     TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: id.into(),
         agent_id: scope().agent_id,

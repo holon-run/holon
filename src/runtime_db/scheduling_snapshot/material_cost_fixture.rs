@@ -109,7 +109,7 @@ impl<'a> ExpectedSqlMaterial<'a> {
             ranks = 14; // WHEN '' THEN -1
         }
         let (live, heads) = match family {
-            SchedulingFamily::Timer => (649, 806),
+            SchedulingFamily::Timer => (658, 806),
             SchedulingFamily::TimerWake => (847, 821),
             SchedulingFamily::ExternalTrigger => (760, 839),
         };
@@ -129,7 +129,7 @@ impl<'a> ExpectedSqlMaterial<'a> {
         } else {
             heads
                 + match family {
-                    SchedulingFamily::Timer => 140,
+                    SchedulingFamily::Timer => 149,
                     SchedulingFamily::TimerWake => 124,
                     SchedulingFamily::ExternalTrigger => 123,
                 }
@@ -179,7 +179,7 @@ impl<'a> ExpectedSqlMaterial<'a> {
     ) -> Result<()> {
         let (_, heads) = self.selector_lengths(family)?;
         let (qualified, projection_bound, candidates_fixed, validated_fixed) = match family {
-            SchedulingFamily::Timer => (56, 616, 399, 171),
+            SchedulingFamily::Timer => (65, 616, 399, 171),
             SchedulingFamily::ExternalTrigger => (39, 505, 428, 193),
             SchedulingFamily::TimerWake => unreachable!(),
         };

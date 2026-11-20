@@ -287,6 +287,8 @@ async fn cold_lightweight_owned_state_keeps_empty_fallback_and_rejection() -> Re
         baseline
     );
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "raw-lightweight-timer".into(),
         agent_id: identity.agent_id.clone(),
@@ -674,6 +676,8 @@ async fn no_state_cold_empty_display_requires_every_original_inventory_empty() -
             match origin {
                 "raw_timer"=>{
                     let timer=TimerRecord {
+    paused_remaining_ms: None,
+    schedule_generation: 0,
     calendar: None,id:"raw-cold-timer".into(),agent_id:scope.agent_id.clone(),
                         created_at:Utc::now(),duration_ms:3600000,interval_ms:None,repeat:false,
                         status:TimerStatus::Active,summary:None,next_fire_at:None,last_fired_at:None,fire_count:0};
@@ -689,6 +693,8 @@ async fn no_state_cold_empty_display_requires_every_original_inventory_empty() -
                 "import"=>{tx.execute("INSERT INTO scheduling_import_inventory(agent_id,family,record_id,received_digest,content_digest,projection_digest) VALUES(?1,'timer','original-import',?2,?2,?2)",rusqlite::params![scope.agent_id,"0".repeat(64)])?;}
                 "wake"=>{
                     let timer=TimerRecord {
+    paused_remaining_ms: None,
+    schedule_generation: 0,
     calendar: None,id:"foreign-cold-timer".into(),agent_id:"foreign-agent".into(),
                         created_at:Utc::now(),duration_ms:3600000,interval_ms:None,repeat:false,
                         status:TimerStatus::Active,summary:None,next_fire_at:None,last_fired_at:None,fire_count:1};

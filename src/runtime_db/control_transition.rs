@@ -1432,6 +1432,7 @@ impl RuntimeDb {
                 }
                 for timer in &command.expected.timers {
                     let mut timer = timer.clone(); timer.status = TimerStatus::Cancelled;
+                    timer.paused_remaining_ms = None;
                     // Existing lifecycle Stop retains next_fire_at as history.
                     if upsert_timer_with_write_tx(tx, &timer)? {
                         if let Some(writes) = &mut scheduling_writes { writes.timer_written(&timer.id); }
@@ -1604,6 +1605,7 @@ impl RuntimeDb {
                 "Control wait cancellation was not persisted exactly");
             for (timer, before) in timers.iter().zip(&command.expected.timers) {
                 let mut expected = before.clone(); expected.status = TimerStatus::Cancelled;
+                expected.paused_remaining_ms = None;
                 ensure!(timer == &expected, "Control Timer was not persisted exactly");
             }
             for (trigger, before) in external_triggers.iter().zip(&command.expected.external_triggers) {
@@ -1697,7 +1699,7 @@ fn load_snapshot_in_with_original_scope(
     );
     let tasks = payloads(connection, "SELECT payload_json FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued','running','cancelling') ORDER BY task_id", &key.agent_id)?;
     let waits = load_waits_in(connection, &key.agent_id)?;
-    let timers = payloads(connection, "SELECT payload_json FROM timers WHERE agent_id = ?1 AND status = 'active' ORDER BY timer_id", &key.agent_id)?;
+    let timers = payloads(connection, "SELECT payload_json FROM timers WHERE agent_id = ?1 AND status IN ('active','paused') ORDER BY timer_id", &key.agent_id)?;
     let queue_entries = payloads(connection, "SELECT payload_json FROM queue_entries WHERE agent_id = ?1 AND status IN ('queued','interrupted','dequeued','interjected') ORDER BY message_id", &key.agent_id)?;
     let external_triggers = payloads(connection, "SELECT payload_json FROM external_triggers WHERE target_agent_id = ?1 AND status = 'active' ORDER BY external_trigger_id", &key.agent_id)?;
     let workspace_occupancy = if let Some(id) = state

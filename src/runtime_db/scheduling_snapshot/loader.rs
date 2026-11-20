@@ -421,7 +421,7 @@ fn fixed_live_keys(
 ) -> Result<BTreeSet<SchedulingKey>> {
     let mut keys = BTreeSet::new();
     for checkpoint in checkpoints {
-        let predicate="((family='timer' AND status IN ('active','scheduled')) OR (family='timer_wake' AND status='pending') OR (family='external_trigger' AND status='active'))";
+        let predicate="((family='timer' AND status IN ('active','scheduled','paused')) OR (family='timer_wake' AND status='pending') OR (family='external_trigger' AND status='active'))";
         let (count,bytes):(usize,usize)=tx.query_row(&format!("SELECT COUNT(*),COALESCE(SUM(length(CAST(family AS BLOB))+length(CAST(record_id AS BLOB))+64),0) FROM scheduling_fixed_members WHERE inventory_id=?1 AND {predicate}"),[&checkpoint.inventory_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
         material.charge(bytes, count)?;
         let mut statement=tx.prepare(&format!("SELECT family,record_id FROM scheduling_fixed_members WHERE inventory_id=?1 AND {predicate} ORDER BY family,record_id"))?;

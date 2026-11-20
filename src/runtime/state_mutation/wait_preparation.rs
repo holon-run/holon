@@ -96,6 +96,13 @@ impl RuntimeMutation {
                         })?,
                         None,
                     ),
+                    TimerStatus::Paused => {
+                        return Err(RuntimeError::validation(
+                            "timer_invalid_state",
+                            "wait_for timer is paused; resume it before registering a new wait",
+                        )
+                        .into())
+                    }
                     TimerStatus::Completed => {
                         let pending = read.pending.ok_or_else(|| {
                             RuntimeError::validation(

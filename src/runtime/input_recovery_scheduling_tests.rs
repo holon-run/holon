@@ -13,6 +13,8 @@ fn positive_original_receipt_installs_fresh_scheduling_and_never_replays_old_tim
     let f = Fixture::new()?;
     let at: chrono::DateTime<chrono::Utc> = "2026-10-14T00:00:00.123456789Z".parse()?;
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "original-scheduling-timer".into(),
         agent_id: f.scope.agent_id.clone(),

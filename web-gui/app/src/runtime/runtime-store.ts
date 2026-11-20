@@ -402,7 +402,7 @@ export interface RuntimeStoreState {
   queryAgentRecentTasks: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<TaskSummary[]>;
   queryAgentTimers: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
   queryAgentCompletedWorkItems: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<WorkItemSummary[]>;
-  cancelAgentTimer: (agentId: string, timerId: string) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"]>;
+  controlAgentTimer: (agentId: string, timerId: string, action: Parameters<RuntimeClient["controlAgentTimer"]>[2], incarnation?: number) => Promise<void>;
   reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
@@ -783,7 +783,7 @@ function refreshAgentResource(
   get: () => RuntimeStoreState,
   agentId: string,
   resource: AgentResource,
-  options: AgentResourceRefreshOptions,
+  options: AgentResourceRefreshOptions & { startNew?: boolean },
 ): Promise<void> {
   const inFlight = resource === "state" ? agentStateRefreshInFlight : workItemRefreshInFlight;
   const clientRequest = captureClientRequest();
@@ -791,7 +791,7 @@ function refreshAgentResource(
   const incarnation = options.incarnation ?? get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation;
   const existing = inFlight.get(agentId);
   const result = (promise: Promise<void>) => options.throwOnError ? promise : promise.catch(() => undefined);
-  if (existing && isCurrentClientRequest(existing) && existing.contextKey === contextKey
+  if (!options.startNew && existing && isCurrentClientRequest(existing) && existing.contextKey === contextKey
     && existing.incarnation === incarnation && !existing.signal?.aborted) return result(existing.promise);
   const request: AgentResourceRequest = {
     ...clientRequest, contextKey, incarnation, signal: options.signal,
@@ -3371,11 +3371,18 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
     return timers;
   },
-  cancelAgentTimer: async (agentId, timerId) => {
+  controlAgentTimer: async (agentId, timerId, action, incarnation) => {
     const request = captureClientRequest();
-    const timer = await request.client.cancelAgentTimer(agentId, timerId);
-    if (!isCurrentClientRequest(request)) return timer;
-    return timer;
+    const contextKey = agentResourceContext(get());
+    try {
+      await request.client.controlAgentTimer(agentId, timerId, action);
+    } finally {
+      // A conflict or timeout can leave the displayed state outdated too.
+      if (isCurrentClientRequest(request) && agentResourceContext(get()) === contextKey
+        && (incarnation === undefined || get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation === incarnation)) {
+        await refreshAgentResource(set, get, agentId, "state", { incarnation, startNew: true });
+      }
+    }
   },
 
   refreshAgentState: async (agentId, options = {}) => {

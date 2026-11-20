@@ -247,13 +247,29 @@
                 "null"
               ]
             },
+            "paused_remaining_ms": {
+              "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "repeat": {
               "type": "boolean"
+            },
+            "schedule_generation": {
+              "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "status": {
               "default": "active",
               "enum": [
                 "active",
+                "paused",
                 "completed",
                 "cancelled"
               ],
@@ -388,13 +404,29 @@
                       "null"
                     ]
                   },
+                  "paused_remaining_ms": {
+                    "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": [
+                      "integer",
+                      "null"
+                    ]
+                  },
                   "repeat": {
                     "type": "boolean"
+                  },
+                  "schedule_generation": {
+                    "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+                    "format": "uint64",
+                    "minimum": 0.0,
+                    "type": "integer"
                   },
                   "status": {
                     "default": "active",
                     "enum": [
                       "active",
+                      "paused",
                       "completed",
                       "cancelled"
                     ],
@@ -522,13 +554,29 @@
                 "null"
               ]
             },
+            "paused_remaining_ms": {
+              "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "repeat": {
               "type": "boolean"
+            },
+            "schedule_generation": {
+              "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "status": {
               "default": "active",
               "enum": [
                 "active",
+                "paused",
                 "completed",
                 "cancelled"
               ],
@@ -646,13 +694,29 @@
                 "null"
               ]
             },
+            "paused_remaining_ms": {
+              "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
             "repeat": {
               "type": "boolean"
+            },
+            "schedule_generation": {
+              "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
             },
             "status": {
               "default": "active",
               "enum": [
                 "active",
+                "paused",
                 "completed",
                 "cancelled"
               ],

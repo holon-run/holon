@@ -113,7 +113,8 @@ fn cancelled_version(before: &CanonicalSchedulingFact, after: &CanonicalScheduli
         (CanonicalSchedulingFact::Timer(a), CanonicalSchedulingFact::Timer(b)) => {
             let mut expected = a.clone();
             expected.status = TimerStatus::Cancelled;
-            a.status == TimerStatus::Active && *b == expected
+            expected.paused_remaining_ms = None;
+            a.status.is_live() && *b == expected
         }
         (CanonicalSchedulingFact::TimerWake(a), CanonicalSchedulingFact::TimerWake(b)) => {
             let mut expected = a.clone();

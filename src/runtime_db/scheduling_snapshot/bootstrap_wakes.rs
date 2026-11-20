@@ -321,7 +321,10 @@ impl<'tx, 'conn> BootstrapWakeMaterial<'tx, 'conn> {
             let CanonicalSchedulingFact::Timer(timer) = timer.fact else {
                 unreachable!()
             };
-            if !matches!(timer.status, TimerStatus::Active | TimerStatus::Completed) {
+            if !matches!(
+                timer.status,
+                TimerStatus::Active | TimerStatus::Paused | TimerStatus::Completed
+            ) {
                 continue;
             }
             let prior_alias = read_alias(tx, &self.scope, &wake_key, &mut material)?;

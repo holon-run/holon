@@ -8715,6 +8715,8 @@ async fn current_closure_ignores_other_agent_timers() {
             next_fire_at: Some(Utc::now()),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         })
         .unwrap();

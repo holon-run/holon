@@ -15,7 +15,7 @@ pub(super) fn source(
             "timers c",
             "c.timer_id",
             "c.agent_id",
-            "c.status IN ('active','scheduled')",
+            "c.status IN ('active','scheduled','paused')",
             "c.updated_at",
         ),
         SchedulingFamily::TimerWake => (

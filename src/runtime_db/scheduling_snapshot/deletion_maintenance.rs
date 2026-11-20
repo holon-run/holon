@@ -167,9 +167,9 @@ impl RuntimeDb {
                 DeletionSchedulingSelection::ExternalTriggers=>(format!("{id},created_at"),format!("created_at DESC,{id} ASC")),
             };
             // The original per-row Quiesce decoded the legacy scheduled alias
-            // as Active. ParentCleanup's separate bulk SQL remains active only.
+            // as Active. ParentCleanup's bulk SQL does not select that alias.
             let live=match selection {
-                DeletionSchedulingSelection::Timers=>"status IN ('active','scheduled')",
+                DeletionSchedulingSelection::Timers=>"status IN ('active','scheduled','paused')",
                 DeletionSchedulingSelection::ExternalTriggers=>"status='active'",
             };
             let from=format!("(SELECT {columns} FROM {table} WHERE {owner}=?1 AND {live} ORDER BY {order} LIMIT {BATCH})");
@@ -233,11 +233,11 @@ impl RuntimeDb {
                 Mutation::ParentTimers=>{
                     // Bound the original whole bulk decode, all pending Wake
                     // addresses and Queue payloads before collecting any IDs.
-                    let (bytes,count):(usize,usize)=tx.query_row("SELECT COALESCE((SELECT SUM(length(CAST(payload_json AS BLOB))+length(CAST(timer_id AS BLOB))+512) FROM timers WHERE agent_id=?1 AND status='active'),0)+COALESCE((SELECT SUM(length(CAST(w.timer_id AS BLOB))+length(CAST(w.message_id AS BLOB))+length(CAST(w.created_at AS BLOB))+length(CAST(w.updated_at AS BLOB))+256+COALESCE(length(CAST(q.payload_json AS BLOB)),0)) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id LEFT JOIN queue_entries q ON q.message_id=w.message_id AND q.status IN ('queued','interrupted') WHERE t.agent_id=?1 AND t.status='active' AND w.status='pending'),0),(SELECT COUNT(*) FROM timers WHERE agent_id=?1 AND status='active')+(SELECT COUNT(*) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status='active' AND w.status='pending')",[&scope.agent_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
+                    let (bytes,count):(usize,usize)=tx.query_row("SELECT COALESCE((SELECT SUM(length(CAST(payload_json AS BLOB))+length(CAST(timer_id AS BLOB))+512) FROM timers WHERE agent_id=?1 AND status IN ('active','paused')),0)+COALESCE((SELECT SUM(length(CAST(w.timer_id AS BLOB))+length(CAST(w.message_id AS BLOB))+length(CAST(w.created_at AS BLOB))+length(CAST(w.updated_at AS BLOB))+256+COALESCE(length(CAST(q.payload_json AS BLOB)),0)) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id LEFT JOIN queue_entries q ON q.message_id=w.message_id AND q.status IN ('queued','interrupted') WHERE t.agent_id=?1 AND t.status IN ('active','paused') AND w.status='pending'),0),(SELECT COUNT(*) FROM timers WHERE agent_id=?1 AND status IN ('active','paused'))+(SELECT COUNT(*) FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status IN ('active','paused') AND w.status='pending')",[&scope.agent_id],|r|Ok((r.get(0)?,r.get(1)?)))?;
                     material.charge(bytes,count.checked_mul(3).context("deletion timer bulk count overflow")?)?;
-                    let mut q=tx.prepare("SELECT timer_id FROM timers WHERE agent_id=?1 AND status='active'")?;
+                    let mut q=tx.prepare("SELECT timer_id FROM timers WHERE agent_id=?1 AND status IN ('active','paused')")?;
                     for id in q.query_map([&scope.agent_id],|r|r.get::<_,String>(0))? {keys.insert(SchedulingKey::new(SchedulingFamily::Timer,id?));}
-                    let mut q=tx.prepare("SELECT w.timer_id,w.message_id FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status='active' AND w.status='pending'")?;
+                    let mut q=tx.prepare("SELECT w.timer_id,w.message_id FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE t.agent_id=?1 AND t.status IN ('active','paused') AND w.status='pending'")?;
                     for pair in q.query_map([&scope.agent_id],|r|Ok((r.get::<_,String>(0)?,r.get::<_,String>(1)?)))? {let (timer,message)=pair?;keys.insert(SchedulingKey::wake(&timer,&message));}
                 }
                 Mutation::Timer(id)|Mutation::Trigger(id)=>{
@@ -265,8 +265,9 @@ impl RuntimeDb {
                     let key=SchedulingKey::new(family,id);
                     match stored::read_stored(tx,&key,&scope.agent_id,None)? {
                         Some(before)=>match before.fact {
-                            CanonicalSchedulingFact::Timer(mut timer) if timer.status==TimerStatus::Active=>{
+                            CanonicalSchedulingFact::Timer(mut timer) if timer.status.is_live()=>{
                                 timer.status=TimerStatus::Cancelled;
+                                timer.paused_remaining_ms=None;
                                 let changed=repositories::upsert_timer_with_write_tx(tx,&timer)?;
                                 if changed {actual.insert(key);} usize::from(changed)
                             }

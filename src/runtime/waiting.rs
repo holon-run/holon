@@ -1861,6 +1861,8 @@ impl RuntimeHandle {
             next_fire_at: Some(advance_time(created_at, duration_ms)?),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
         };
         self.commit_timer_creation_owned(mutation, timer).await
@@ -1948,6 +1950,8 @@ impl RuntimeHandle {
             next_fire_at: Some(next_fire_at),
             last_fired_at: None,
             fire_count: 0,
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: Some(calendar),
         };
         self.commit_timer_creation_owned(mutation, timer).await
@@ -1955,6 +1959,100 @@ impl RuntimeHandle {
 
     pub async fn cancel_timer(&self, timer_id: &str) -> Result<TimerRecord> {
         Ok(self.cancel_timer_with_evidence(timer_id).await?.timer)
+    }
+
+    pub async fn pause_timer(&self, timer_id: &str) -> Result<TimerRecord> {
+        self.set_timer_paused(timer_id, true).await
+    }
+
+    pub async fn resume_timer(&self, timer_id: &str) -> Result<TimerRecord> {
+        self.set_timer_paused(timer_id, false).await
+    }
+
+    async fn set_timer_paused(&self, timer_id: &str, paused: bool) -> Result<TimerRecord> {
+        let admission = self.execution_admission_lease()?;
+        let runtime = self.clone();
+        let timer_id = timer_id.to_owned();
+        let (send, receive) = tokio::sync::oneshot::channel();
+        self.spawn_owned_mutation(async move {
+            let _admission = admission;
+            let _ = send.send(runtime.set_timer_paused_owned(&timer_id, paused).await);
+        })?;
+        receive.await.context("timer reschedule worker stopped")?
+    }
+
+    async fn set_timer_paused_owned(&self, timer_id: &str, paused: bool) -> Result<TimerRecord> {
+        use crate::runtime_db::transitions::{
+            PreparedInputTransition, PreparedTimerTransition, TimerMutationOutcome,
+        };
+        let mut guard = self.begin_mutation().await?;
+        let agent_id = guard.state.id.clone();
+        let read = match guard.prepare_timer_mutation_read(timer_id, None, false).await {
+            Ok(read) => read,
+            Err(error) if matches!(error.downcast_ref::<crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError>(),
+                Some(crate::runtime_db::scheduling_snapshot::SchedulingSnapshotError::ForeignRecord(key))
+                if key.family == super::resident_scheduling::SchedulingFamily::Timer && key.id == timer_id) => None,
+            Err(error) => return Err(error),
+        }
+        .filter(|read| read.timer.agent_id == agent_id)
+        .ok_or_else(|| {
+            RuntimeError::not_found("timer_not_found", format!("timer {timer_id} not found"))
+                .with_safe_context("timer_id", timer_id)
+        })?;
+        let expected = read.timer;
+        let changed_at = self.now();
+        let Some(record) = rescheduled_timer(&expected, paused, changed_at)? else {
+            return Ok(expected);
+        };
+        let old_leases = if paused {
+            self.inner.control_cancellations.timer_for(&expected.id)
+        } else {
+            Vec::new()
+        };
+        let prepared = PreparedInputTransition::timer(
+            guard.input_evidence_scope(),
+            crate::ids::audit_event_id(),
+            changed_at,
+            PreparedTimerTransition::Reschedule {
+                expected: Box::new(expected),
+                record: Box::new(record.clone()),
+                changed_at,
+                fault: self.take_transition_fault(),
+            },
+        )?;
+        match guard.commit_prepared_timer_transition(prepared).await {
+            Ok((commit, TimerMutationOutcome::Rescheduled { record: actual })) => {
+                anyhow::ensure!(
+                    commit.applied && actual == record,
+                    "timer reschedule ACK differs"
+                );
+                drop(guard);
+                self.apply_transition_commit(commit).await;
+            }
+            Ok(_) => anyhow::bail!("timer reschedule returned another operation"),
+            Err(error) => {
+                if !guard.reconcile_known_commit().await? {
+                    return Err(error);
+                }
+                drop(guard);
+            }
+        }
+        for lease in old_leases {
+            lease.cancel();
+        }
+        if !paused {
+            self.spawn_timer_loop(record.clone()).await?;
+        }
+        self.append_original_audit_event(AuditEvent::legacy(
+            if paused {
+                "timer_paused"
+            } else {
+                "timer_resumed"
+            },
+            serde_json::json!({ "timer_id": record.id, "status": record.status }),
+        ))
+        .await?;
+        Ok(record)
     }
 
     pub(crate) async fn cancel_timer_with_evidence(
@@ -1998,13 +2096,14 @@ impl RuntimeHandle {
                     .with_safe_context("timer_id", timer_id)
                     .into())
                 }
-                TimerStatus::Active => {}
+                TimerStatus::Active | TimerStatus::Paused => {}
             }
-            let first_cancellation = expected.status == TimerStatus::Active;
+            let first_cancellation = expected.status.is_live();
 
             let mut timer = expected.clone();
             timer.status = TimerStatus::Cancelled;
             timer.next_fire_at = None;
+            timer.paused_remaining_ms = None;
 
             let pending_message_in_memory = pending_wake.as_ref().is_some_and(|wake| {
                 guard
@@ -2150,9 +2249,12 @@ impl RuntimeHandle {
         });
         for timer in active {
             anyhow::ensure!(
-                timer.status == TimerStatus::Active,
+                timer.status.is_live(),
                 "Timer recovery live coverage contains a terminal Timer"
             );
+            if timer.status == TimerStatus::Paused {
+                continue;
+            }
             let owned = super::timer_producer_reads::OwnedTimerProducerRead::from_selected(
                 &timers,
                 &timer.id,
@@ -2172,6 +2274,7 @@ impl RuntimeHandle {
         let current = owned.timer;
         if !self.accepts_execution_admission()
             || current.status != TimerStatus::Active
+            || current.schedule_generation != timer.schedule_generation
             || _registration.state.status == AgentStatus::Stopped
         {
             return Ok(());
@@ -2179,7 +2282,7 @@ impl RuntimeHandle {
         if !self
             .inner
             .control_cancellations
-            .timer_for(&timer.id)
+            .timer_for_schedule(&timer)
             .is_empty()
         {
             return Ok(());
@@ -2207,6 +2310,7 @@ impl RuntimeHandle {
                 if token.is_cancelled() {
                     break;
                 }
+                let generation = timer.schedule_generation;
                 if let Err(err) = runtime.fire_timer_record(&mut timer).await {
                     let _ = runtime
                         .append_original_audit_event(AuditEvent::legacy(
@@ -2219,7 +2323,7 @@ impl RuntimeHandle {
                         .await;
                     break;
                 }
-                if timer.status != TimerStatus::Active {
+                if timer.status != TimerStatus::Active || timer.schedule_generation != generation {
                     break;
                 }
             }
@@ -2241,7 +2345,9 @@ impl RuntimeHandle {
         {
             let mut overdue = timer.clone();
             self.fire_timer_record(&mut overdue).await?;
-            if overdue.status == TimerStatus::Active {
+            if overdue.status == TimerStatus::Active
+                && overdue.schedule_generation == timer.schedule_generation
+            {
                 self.spawn_timer_loop(overdue).await?;
             }
         } else {
@@ -2259,7 +2365,9 @@ impl RuntimeHandle {
         // Keep the first frozen Timer/source copies covered across State OCC retries.
         let _original_material = first_read.material.clone();
         let expected = first_read.timer.clone();
-        if expected.status != TimerStatus::Active {
+        if expected.status != TimerStatus::Active
+            || expected.schedule_generation != timer.schedule_generation
+        {
             *timer = expected;
             return Ok(());
         }
@@ -2328,6 +2436,12 @@ impl RuntimeHandle {
                 (guard, route)
             };
             let _route_material = route.material;
+            if route.timer.schedule_generation != timer.schedule_generation
+                || route.timer.status != TimerStatus::Active
+            {
+                *timer = route.timer;
+                return Ok(());
+            }
             let pending = route.pending;
 
             let expected_state = guard.committed_state().clone();
@@ -2860,6 +2974,61 @@ fn next_repeating_fire_at(
     )
 }
 
+fn rescheduled_timer(
+    expected: &TimerRecord,
+    paused: bool,
+    now: DateTime<Utc>,
+) -> Result<Option<TimerRecord>> {
+    let mut timer = expected.clone();
+    match (&expected.status, paused) {
+        (TimerStatus::Paused, true) | (TimerStatus::Active, false) => return Ok(None),
+        (TimerStatus::Active, true) => {
+            timer.status = TimerStatus::Paused;
+            timer.schedule_generation = expected
+                .schedule_generation
+                .checked_add(1)
+                .context("timer schedule generation exhausted")?;
+            if expected.calendar.is_none() {
+                let deadline = normalize_recovered_timer(expected.clone(), now)?
+                    .next_fire_at
+                    .context("relative timer deadline missing")?;
+                let remaining = (deadline - now).to_std().unwrap_or_default();
+                // Round up rather than bring the deadline forward at sub-ms precision.
+                timer.paused_remaining_ms =
+                    Some(u64::try_from(remaining.as_nanos().div_ceil(1_000_000))?);
+            }
+            timer.next_fire_at = None;
+        }
+        (TimerStatus::Paused, false) => {
+            timer.status = TimerStatus::Active;
+            timer.next_fire_at = Some(match &timer.calendar {
+                Some(calendar) => calendar.next_after(now)?.utc,
+                None => advance_time(
+                    now,
+                    timer
+                        .paused_remaining_ms
+                        .context("paused timer has no frozen delay")?,
+                )?,
+            });
+            timer.paused_remaining_ms = None;
+        }
+        (TimerStatus::Completed | TimerStatus::Cancelled, _) => {
+            return Err(RuntimeError::new(
+                crate::runtime_error::RuntimeErrorDomain::Conflict,
+                "timer_terminal",
+                format!(
+                    "cannot {} terminal timer {}",
+                    if paused { "pause" } else { "resume" },
+                    timer.id
+                ),
+            )
+            .with_safe_context("timer_id", &timer.id)
+            .into());
+        }
+    }
+    Ok(Some(timer))
+}
+
 fn normalize_recovered_timer(mut timer: TimerRecord, now: DateTime<Utc>) -> Result<TimerRecord> {
     if timer.next_fire_at.is_some() {
         return Ok(timer);
@@ -2897,6 +3066,8 @@ mod mutation_tests {
         .unwrap();
         let now = runtime.now();
         let timer = TimerRecord {
+            paused_remaining_ms: None,
+            schedule_generation: 0,
             calendar: None,
             id: crate::ids::timer_id(),
             agent_id: "default".into(),
@@ -2914,6 +3085,122 @@ mod mutation_tests {
             .await
             .unwrap();
         (home, workspace, runtime, timer)
+    }
+
+    #[tokio::test]
+    async fn timer_pause_resume_fences_stale_producer() {
+        let (_home, _workspace, runtime, _) = timer_runtime().await;
+        let original = runtime
+            .schedule_timer(60_000, None, Some("pause".into()))
+            .await
+            .unwrap();
+        let paused = runtime.pause_timer(&original.id).await.unwrap();
+        assert_eq!(paused.status, TimerStatus::Paused);
+        assert!(paused.next_fire_at.is_none());
+        assert!(paused
+            .paused_remaining_ms
+            .is_some_and(|ms| ms > 0 && ms <= 60_000));
+        assert_eq!(runtime.pause_timer(&original.id).await.unwrap(), paused);
+        let resumed = runtime.resume_timer(&original.id).await.unwrap();
+        assert_eq!(resumed.status, TimerStatus::Active);
+        assert_eq!(resumed.id, original.id);
+        assert_eq!(resumed.summary, original.summary);
+        assert_eq!(resumed.duration_ms, original.duration_ms);
+        assert_eq!(resumed.last_fired_at, None);
+        assert_eq!(runtime.resume_timer(&original.id).await.unwrap(), resumed);
+        let mut stale = original;
+        runtime.fire_timer_record(&mut stale).await.unwrap();
+        assert_eq!(stale, resumed);
+        assert!(runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&resumed.id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn timer_pause_keeps_committed_wake_and_fire_history() {
+        let (_home, _workspace, runtime, mut timer) = timer_runtime().await;
+        runtime.fire_timer_record(&mut timer).await.unwrap();
+        let original = runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap();
+        let paused = runtime.pause_timer(&timer.id).await.unwrap();
+        assert_eq!(paused.fire_count, 1);
+        assert_eq!(paused.last_fired_at, timer.last_fired_at);
+        let pending = runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(pending, original);
+        assert_eq!(
+            runtime.cancel_timer(&timer.id).await.unwrap().status,
+            TimerStatus::Cancelled
+        );
+        assert!(runtime
+            .runtime_db()
+            .timers()
+            .pending_wake(&timer.id)
+            .unwrap()
+            .is_none());
+        assert!(runtime.resume_timer(&timer.id).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn overdue_timer_pause_freezes_zero_and_interval_resumes_from_new_anchor() {
+        let (_home, _workspace, _runtime, timer) = timer_runtime().await;
+        let due = timer.next_fire_at.unwrap();
+        let paused = rescheduled_timer(&timer, true, due + chrono::Duration::seconds(5))
+            .unwrap()
+            .unwrap();
+        assert_eq!(paused.paused_remaining_ms, Some(0));
+        let restart = due + chrono::Duration::hours(3);
+        let resumed = rescheduled_timer(&paused, false, restart).unwrap().unwrap();
+        assert_eq!(resumed.next_fire_at, Some(restart));
+        assert_eq!(resumed.fire_count, 0);
+        assert_eq!(resumed.interval_ms, Some(1_000));
+        assert!(resumed.paused_remaining_ms.is_none());
+        assert_eq!(
+            next_repeating_fire_at(
+                resumed.next_fire_at.unwrap(),
+                restart,
+                resumed.interval_ms.unwrap()
+            )
+            .unwrap(),
+            restart + chrono::Duration::seconds(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn calendar_timer_resume_skips_missed_and_exact_occurrences_across_dst() {
+        let (_home, _workspace, _runtime, mut timer) = timer_runtime().await;
+        let utc = |value: &str| value.parse::<DateTime<Utc>>().unwrap();
+        timer.calendar =
+            Some(crate::calendar::CalendarSchedule::new("0 9 * * *", "America/New_York").unwrap());
+        timer.interval_ms = None;
+        timer.next_fire_at = Some(utc("2026-03-06T14:00:00Z"));
+        let paused = rescheduled_timer(&timer, true, utc("2026-03-06T13:50:00Z"))
+            .unwrap()
+            .unwrap();
+        assert!(paused.paused_remaining_ms.is_none());
+        assert_eq!(paused.calendar, timer.calendar);
+        for (now, next) in [
+            ("2026-03-07T14:00:00Z", "2026-03-08T13:00:00Z"),
+            ("2026-03-09T13:00:00Z", "2026-03-10T13:00:00Z"),
+        ] {
+            let resumed = rescheduled_timer(&paused, false, utc(now))
+                .unwrap()
+                .unwrap();
+            assert_eq!(resumed.next_fire_at, Some(utc(next)));
+            assert_eq!(resumed.fire_count, 0);
+            assert_eq!(resumed.calendar, timer.calendar);
+        }
     }
 
     #[tokio::test]

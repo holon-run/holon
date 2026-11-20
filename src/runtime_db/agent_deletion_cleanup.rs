@@ -841,7 +841,7 @@ fn assert_no_live_resources_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<(
     for sql in [
         "SELECT EXISTS(SELECT 1 FROM tasks WHERE owner_agent_id = ?1 AND status IN ('queued','running','cancelling'))",
         "SELECT EXISTS(SELECT 1 FROM work_items WHERE agent_id = ?1 AND state != 'completed')",
-        "SELECT EXISTS(SELECT 1 FROM timers WHERE agent_id = ?1 AND status = 'active')",
+        "SELECT EXISTS(SELECT 1 FROM timers WHERE agent_id = ?1 AND status IN ('active','paused'))",
         "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE agent_id = ?1 AND status IN ('active','triggered'))",
         "SELECT EXISTS(SELECT 1 FROM workspace_occupancies WHERE holder_agent_id = ?1 AND released_at IS NULL)",
         "SELECT EXISTS(SELECT 1 FROM destructive_operations d JOIN turn_records t ON t.turn_id = d.owner_turn_id
@@ -1646,6 +1646,8 @@ mod tests {
                     id: format!("legacy-timer-{agent}"),
                     agent_id: agent.into(),
                     created_at: Utc::now(),
+                    paused_remaining_ms: None,
+                    schedule_generation: 0,
                     calendar: None,
                     duration_ms: 1000,
                     interval_ms: None,

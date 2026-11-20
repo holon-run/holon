@@ -196,6 +196,8 @@ async fn cold_identity_entrypoints_keep_missing_identity_and_scheduling_rejectio
         assert!(matches!(error, PublicAgentError::NotFound { agent_id } if agent_id == "missing"));
     }
     let timer = TimerRecord {
+        paused_remaining_ms: None,
+        schedule_generation: 0,
         calendar: None,
         id: "unqualified-cold-identity".into(),
         agent_id: identity.agent_id.clone(),

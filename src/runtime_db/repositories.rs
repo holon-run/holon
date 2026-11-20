@@ -483,7 +483,7 @@ impl AgentStateRepository<'_> {
              UNION SELECT agent_id FROM task_result_settlements WHERE state != 'settled'
              UNION SELECT agent_id FROM wait_conditions WHERE status IN ('active', 'triggered')
              UNION SELECT owner_agent_id FROM tasks WHERE status IN ('queued', 'running', 'cancelling')
-             UNION SELECT agent_id FROM timers WHERE status IN ('active', 'scheduled')
+             UNION SELECT agent_id FROM timers WHERE status IN ('active', 'scheduled', 'paused')
              UNION SELECT t.agent_id FROM timer_wakes w JOIN timers t ON t.timer_id=w.timer_id WHERE w.status='pending'
              UNION SELECT target_agent_id FROM external_triggers WHERE status='active'
              UNION SELECT agent_id FROM dispatch_memory_checkpoints WHERE state != 'done'
@@ -640,7 +640,7 @@ impl AgentStateRepository<'_> {
                 let timer_stale = wait.kind == WaitConditionKind::Timer
                     && wait.subject_ref.as_ref().is_none_or(|timer_id| {
                         !timers.iter().any(|timer| timer.id == *timer_id
-                            && timer.agent_id == wait.agent_id && timer.status == TimerStatus::Active)
+                            && timer.agent_id == wait.agent_id && timer.status.is_live())
                     });
                 let wait_recheck_survives_stop =
                     wait.work_item_id.is_none() && wait.recheck_at().is_some();
@@ -3841,7 +3841,7 @@ pub(in crate::runtime_db) fn cancel_active_timers_with_writes_tx(
     let mut statement = tx.prepare(
         "SELECT payload_json
              FROM timers
-             WHERE agent_id = ?1 AND status = 'active'",
+             WHERE agent_id = ?1 AND status IN ('active','paused')",
     )?;
     let records = statement
         .query_map([agent_id], |row| row.get::<_, String>(0))?
@@ -3852,6 +3852,7 @@ pub(in crate::runtime_db) fn cancel_active_timers_with_writes_tx(
     let mut writes = TimerCancellationWrites::default();
     for mut record in records {
         record.status = TimerStatus::Cancelled;
+        record.paused_remaining_ms = None;
         if upsert_timer_with_write_tx(tx, &record)? {
             writes.timer_ids.insert(record.id.clone());
         }
@@ -4035,7 +4036,10 @@ pub(in crate::runtime_db) fn normalize_timer_wakes_at_with_writes_tx(
     for (timer_id, messages) in messages_by_timer {
         let timer = timer_tx(tx, &timer_id)?;
         let timer_accepts_wake = timer.as_ref().is_some_and(|timer| {
-            matches!(timer.status, TimerStatus::Active | TimerStatus::Completed)
+            matches!(
+                timer.status,
+                TimerStatus::Active | TimerStatus::Paused | TimerStatus::Completed
+            )
         });
         let existing_wake = wakes_by_timer.remove(&timer_id);
         let mut first_recoverable = None;
@@ -4776,7 +4780,7 @@ impl TimerRepository<'_> {
         if timer_tx(tx, &command.expected.id)?.as_ref() != Some(&command.expected)
             || !matches!(
                 command.expected.status,
-                TimerStatus::Active | TimerStatus::Cancelled
+                TimerStatus::Active | TimerStatus::Paused | TimerStatus::Cancelled
             )
         {
             return Ok(TimerCancelResult {
@@ -4805,7 +4809,7 @@ impl TimerRepository<'_> {
                 .into());
             }
         }
-        if command.expected.status == TimerStatus::Active {
+        if command.expected.status.is_live() {
             upsert_timer_updated_at_tx(tx, &command.record, command.cancelled_at)?;
         }
         let now = timestamp(command.cancelled_at);
@@ -4842,7 +4846,7 @@ impl TimerRepository<'_> {
         }
         let mut settlement =
             settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at, scope)?;
-        if command.expected.status == TimerStatus::Active {
+        if command.expected.status.is_live() {
             let mut event = AuditEvent::legacy(
                 "timer_cancelled",
                 serde_json::json!({
@@ -4967,7 +4971,7 @@ pub(super) fn filtered_timers_for_agent(
     let limit = i64::try_from(limit).unwrap_or(i64::MAX);
     let predicate = match status {
         crate::types::RecordListStatus::All => "1",
-        crate::types::RecordListStatus::Active => "status IN ('active', 'scheduled')",
+        crate::types::RecordListStatus::Active => "status IN ('active', 'scheduled', 'paused')",
         crate::types::RecordListStatus::Terminal => "status IN ('completed', 'cancelled')",
     };
     let mut records = timer_list_on(
@@ -7649,6 +7653,34 @@ pub(crate) fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Res
     upsert_timer_with_write_tx(tx, record).map(|_| ())
 }
 
+/// Called only after the prepared Timer transition proves the exact old record.
+pub(in crate::runtime_db) fn reschedule_timer_tx(
+    tx: &Transaction<'_>,
+    record: &TimerRecord,
+    changed_at: DateTime<Utc>,
+) -> Result<()> {
+    let status = match record.status {
+        TimerStatus::Active => "active",
+        TimerStatus::Paused => "paused",
+        _ => anyhow::bail!("timer reschedule target is not live"),
+    };
+    crate::diagnostics::resource_io::admit_serialized_value(record)?;
+    let changed = tx.execute(
+        "UPDATE timers SET status=?3, next_fire_at=?4, updated_at=?5, payload_json=?6
+         WHERE timer_id=?1 AND agent_id=?2",
+        params![
+            record.id,
+            record.agent_id,
+            status,
+            record.next_fire_at.map(timer_sql_timestamp).transpose()?,
+            timer_sql_timestamp(changed_at)?,
+            serde_json::to_string(record)?,
+        ],
+    )?;
+    anyhow::ensure!(changed == 1, "timer disappeared during reschedule");
+    Ok(())
+}
+
 pub(crate) fn upsert_timer_with_write_tx(
     tx: &Transaction<'_>,
     record: &TimerRecord,
@@ -7676,6 +7708,7 @@ fn upsert_timer_updated_at_with_write_tx(
     let payload_json = serde_json::to_string(record)?;
     let status = match record.status {
         TimerStatus::Active => "active",
+        TimerStatus::Paused => "paused",
         TimerStatus::Cancelled => "cancelled",
         TimerStatus::Completed => "completed",
     };

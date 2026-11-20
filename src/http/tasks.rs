@@ -963,6 +963,67 @@ pub async fn cancel_timer(
     Ok(Json(timer))
 }
 
+pub async fn pause_timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CancelTimerRequest>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    set_timer_paused(state, headers, agent_id, timer_id, request, true).await
+}
+
+pub async fn resume_timer(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(request): ApiJson<CancelTimerRequest>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    set_timer_paused(state, headers, agent_id, timer_id, request, false).await
+}
+
+async fn set_timer_paused(
+    state: Arc<AppState>,
+    headers: HeaderMap,
+    agent_id: String,
+    timer_id: String,
+    request: CancelTimerRequest,
+    paused: bool,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = if paused {
+        runtime.pause_timer(&timer_id).await
+    } else {
+        runtime.resume_timer(&timer_id).await
+    }
+    .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            if paused {
+                "timer_pause_requested"
+            } else {
+                "timer_resume_requested"
+            },
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": control_admission_context(&state),
+                "provided_trust": request.authority_class,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
 fn timer_lifecycle_error(err: anyhow::Error) -> (StatusCode, Json<Value>) {
     error_response(err)
 }

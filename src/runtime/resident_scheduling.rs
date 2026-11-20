@@ -688,8 +688,7 @@ impl ResidentSchedulingDomain {
                 .context("complete live Scheduling body missing")?;
             let valid = match &record.fact {
                 CanonicalSchedulingFact::Timer(x) => {
-                    self.coverage.active_timers.contains(key)
-                        && x.status == crate::types::TimerStatus::Active
+                    self.coverage.active_timers.contains(key) && x.status.is_live()
                 }
                 CanonicalSchedulingFact::TimerWake(x) => {
                     self.coverage.pending_wakes.contains(key)
@@ -1017,7 +1016,17 @@ impl CapturedScheduling {
             self.coverage.active_timers_complete,
             SchedulingReadError::IncompleteLive
         );
-        Ok(self.coverage.active_timers.len())
+        // Live coverage also retains paused timers for waits and management.
+        // Only running timers count as future wake sources for dispatch.
+        Ok(self
+            .records
+            .iter()
+            .filter(|record| {
+                self.coverage.active_timers.contains(&record.locator.key)
+                    && matches!(&record.fact, CanonicalSchedulingFact::Timer(timer)
+                        if timer.status == crate::types::TimerStatus::Active)
+            })
+            .count())
     }
     pub(crate) fn pending_wake(&self, timer_id: &str) -> Result<Option<&SchedulingWakeFact>> {
         ensure!(
