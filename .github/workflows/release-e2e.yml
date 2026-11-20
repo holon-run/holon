@@ -399,6 +399,10 @@ jobs:
       - name: Write release E2E attestation
         run: |
           set -euo pipefail
+          # The suite runs from the harness checkout, so identity gates must
+          # expect its resolved commit even when harness_ref is a branch name.
+          HARNESS_SHA="$(git rev-parse HEAD)"
+          export HARNESS_SHA
           python3 - <<'PY'
           import hashlib
           import json
@@ -429,13 +433,13 @@ jobs:
           lifecycle_cases = lifecycle_report["case_results"]
           if (
               lifecycle_report["status"] != "pass"
-              or lifecycle_report["git_sha"] != os.environ["CANDIDATE_SHA"]
+              or lifecycle_report["git_sha"] != os.environ["HARNESS_SHA"]
               or lifecycle_report["image_digest"] != summary["image_digest"]
               or len(lifecycle_cases) != len(expected_lifecycle_cases)
               or {case["id"] for case in lifecycle_cases} != expected_lifecycle_cases
               or any(case["status"] != "pass" for case in lifecycle_cases)
           ):
-              raise SystemExit("Runtime lifecycle acceptance is incomplete or from another candidate")
+              raise SystemExit("Runtime lifecycle acceptance is incomplete or from another harness checkout")
           if scheduler_report["status"] != "pass":
               raise SystemExit(
                   f"Scheduler acceptance did not pass: {scheduler_report['status']}"
@@ -444,12 +448,12 @@ jobs:
               raise SystemExit(
                   f"Scheduler coverage did not pass: {coverage_report['status']}"
               )
-          if scheduler_report["git_sha"] != os.environ["CANDIDATE_SHA"]:
-              raise SystemExit("Scheduler acceptance Git SHA does not match candidate")
+          if scheduler_report["git_sha"] != os.environ["HARNESS_SHA"]:
+              raise SystemExit("Scheduler acceptance Git SHA does not match harness checkout")
           if scheduler_report["image_digest"] != summary["image_digest"]:
               raise SystemExit("Scheduler acceptance image digest does not match summary")
-          if coverage_report["git_sha"] != os.environ["CANDIDATE_SHA"]:
-              raise SystemExit("Scheduler coverage Git SHA does not match candidate")
+          if coverage_report["git_sha"] != os.environ["HARNESS_SHA"]:
+              raise SystemExit("Scheduler coverage Git SHA does not match harness checkout")
           if coverage_report["image_digest"] != summary["image_digest"]:
               raise SystemExit("Scheduler coverage image digest does not match summary")
           if coverage_report["profile"] != "scheduler-required":
@@ -519,6 +523,8 @@ jobs:
               "release_tag": os.environ["RELEASE_TAG"],
               "candidate_ref": os.environ["CANDIDATE_REF"],
               "git_sha": os.environ["CANDIDATE_SHA"],
+              "harness_ref": os.environ["HARNESS_REF"] or None,
+              "harness_sha": os.environ["HARNESS_SHA"],
               "workflow_run_id": os.environ["GITHUB_RUN_ID"],
               "workflow_run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
               "status": summary["status"],
@@ -563,6 +569,7 @@ jobs:
         env:
           CANDIDATE_REF: ${{ inputs.candidate_ref }}
           CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
+          HARNESS_REF: ${{ inputs.harness_ref }}
           PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
           PREVIOUS_SOURCE: ${{ steps.previous.outputs.source }}
           PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
