@@ -128,7 +128,11 @@ class UpgradeHistoryTests(unittest.TestCase):
         turns = [
             {
                 "turn_id": turn_id,
-                "settled": True,
+                # Previous-release Result turns read back unsettled: no
+                # release settles Result turns in production, and the
+                # upgrade preserves the stored flag instead of producing
+                # settlement.
+                "settled": False,
                 "inputs": [{"message_id": item["message_id"]}],
                 "brief_ids": [f"brief-{turn_id}"],
             }
@@ -208,13 +212,21 @@ class UpgradeHistoryTests(unittest.TestCase):
         with self.assertRaisesRegex(AssertionError, "cannot read old Result"):
             self.read(pages, expected, missing_result=True)
 
-    def test_missing_input_brief_or_settlement_is_rejected(self) -> None:
-        for field, value in (("inputs", []), ("brief_ids", []), ("settled", False)):
+    def test_missing_input_or_brief_is_rejected(self) -> None:
+        for field, value in (("inputs", []), ("brief_ids", [])):
             with self.subTest(field=field):
                 pages, expected = self.history()
                 pages[0]["turns"][0][field] = value
-                with self.assertRaisesRegex(AssertionError, "lost a settled old input"):
+                with self.assertRaisesRegex(AssertionError, "lost an old input"):
                     self.read(pages, expected)
+
+    def test_cold_read_detects_settlement_change(self) -> None:
+        pages, expected = self.history()
+        warm = self.read(pages, expected)
+        cold_pages = copy.deepcopy(pages)
+        cold_pages[0]["turns"][0]["settled"] = True
+        cold = self.read(cold_pages, expected)
+        self.assertNotEqual(warm["old_turns"], cold["old_turns"])
 
     def test_history_marker_cannot_consume_a_new_stub_phase(self) -> None:
         scenario = stub.Scenario("runtime-upgrade-v030")

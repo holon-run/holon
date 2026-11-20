@@ -3077,9 +3077,14 @@ def require_upgrade_history(
             brief_ids.update(results)
             expected = expected_turns.get(turn_id)
             if expected is not None:
+                # No release settles Result turns in production and
+                # migration preserves the stored settlement flag as-is, so
+                # old-turn preservation means the input and durable Result
+                # stay readable; the settled value itself is pinned only
+                # across the cold restart through the old_turns report.
                 require(
-                    turn["settled"] and expected["message_id"] in inputs and results,
-                    f"{label} lost a settled old input or Result: {turn}",
+                    expected["message_id"] in inputs and results,
+                    f"{label} lost an old input or Result: {turn}",
                 )
                 result_texts = [
                     harness.brief(brief_id, f"{label}-{page_index}-{index}").get("text", "")
@@ -3093,6 +3098,7 @@ def require_upgrade_history(
                     "message_id": expected["message_id"],
                     "brief_ids": sorted(results),
                     "marker": expected["marker"],
+                    "settled": turn["settled"],
                 }
         coverage = page["coverage"]
         next_cursor = page.get("next_before_cursor")
