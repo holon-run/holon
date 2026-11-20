@@ -8,6 +8,7 @@ use crate::system::{
     CaptureSpec, ProcessHost, ProcessPurpose, ProcessRequest, ProgramInvocation, StdioSpec,
     WorkspaceView,
 };
+use crate::tool::error::LifecycleRejection;
 use crate::types::{
     AttachWorkspaceResult, CreateWorktreeResult, DetachWorkspaceResult, ExecutionRootEntry,
     RemoveWorktreeResult, SwitchWorkspaceResult, WorkspaceStateResult, WorktreeArtifactMetadata,
@@ -1040,7 +1041,7 @@ impl RuntimeHandle {
             .is_some_and(|active| active.execution_root_id == resolved_execution_root_id);
         let return_target = if active_target {
             let return_to =
-                return_to.ok_or_else(|| anyhow!("active worktree requires `return_to`"))?;
+                return_to.ok_or_else(|| LifecycleRejection::ReturnToRequired.into_error())?;
             if return_to == resolved_execution_root_id {
                 return Err(anyhow!("return_to must select a different execution root"));
             }
@@ -1110,9 +1111,7 @@ impl RuntimeHandle {
             })
             .collect::<Vec<_>>();
         if !blocking_holders.is_empty() {
-            return Err(anyhow!(
-                "worktree has active occupancy outside the current projection"
-            ));
+            return Err(LifecycleRejection::WorktreeOccupied.into_error());
         }
 
         let records = self.git_worktree_records(&workspace).await?;
@@ -1151,19 +1150,15 @@ impl RuntimeHandle {
                 record.path.join(actual_git_dir_text)
             })?;
         if actual_common_dir != *expected_common_dir || actual_git_dir != *expected_git_dir {
-            return Err(anyhow!(
-                "registered worktree generation does not match live git state"
-            ));
+            return Err(LifecycleRejection::WorktreeGenerationMismatch.into_error());
         }
         if worktree_metadata.branch_ref != record.branch_ref
             || worktree_metadata.detached != record.detached
         {
-            return Err(anyhow!(
-                "registered worktree checkout identity does not match live git state"
-            ));
+            return Err(LifecycleRejection::CheckoutIdentityMismatch.into_error());
         }
-        if let Some(locked) = record.locked.as_deref() {
-            return Err(anyhow!("worktree is locked: {locked}"));
+        if record.locked.is_some() {
+            return Err(LifecycleRejection::WorktreeLocked.into_error());
         }
         let changed_files = self.changed_files(&workspace, &record.path).await?;
         if !changed_files.is_empty() {
@@ -1208,7 +1203,7 @@ impl RuntimeHandle {
         }
         if branch_policy == WorktreeBranchPolicy::DeleteIfMerged || record.detached {
             let merged_into =
-                merged_into.ok_or_else(|| anyhow!("`merged_into` is required by branch policy"))?;
+                merged_into.ok_or_else(|| LifecycleRejection::MergedIntoRequired.into_error())?;
             let tip = tip
                 .as_deref()
                 .ok_or_else(|| anyhow!("worktree HEAD commit is unavailable"))?;

@@ -5,6 +5,87 @@ use anyhow::Error as AnyhowError;
 pub use holon_domain::ToolError;
 use serde_json::json;
 
+/// Expected lifecycle refusals. Project only static diagnostics, including
+/// in the source chain collected by `tool_error_from_anyhow`.
+pub(crate) enum LifecycleRejection {
+    RuntimeExecutionOrWake,
+    UnregisteredHomeArtifact,
+    CheckoutIdentityMismatch,
+    MergedIntoRequired,
+    ReturnToRequired,
+    WorktreeOccupied,
+    WorktreeLocked,
+    WorktreeGenerationMismatch,
+    AgentDeleted,
+}
+
+impl LifecycleRejection {
+    pub(crate) fn into_error(self) -> AnyhowError {
+        use RuntimeErrorDomain::{Conflict, NotFound, Validation};
+
+        let (domain, kind, reason, message) = match self {
+            Self::RuntimeExecutionOrWake => (
+                Conflict,
+                "agent_cleanup_blocked",
+                "runtime_execution_or_wake",
+                "agent_cleanup_blocked: runtime_execution_or_wake",
+            ),
+            Self::UnregisteredHomeArtifact => (
+                Conflict,
+                "agent_cleanup_blocked",
+                "unregistered_home_artifact",
+                "agent cleanup blocked: agent home contains an unregistered artifact",
+            ),
+            Self::CheckoutIdentityMismatch => (
+                Conflict,
+                "worktree_removal_blocked",
+                "checkout_identity_mismatch",
+                "registered worktree checkout identity does not match live git state",
+            ),
+            Self::MergedIntoRequired => (
+                Validation,
+                "worktree_removal_precondition_required",
+                "merged_into_required",
+                "`merged_into` is required by branch policy",
+            ),
+            Self::ReturnToRequired => (
+                Validation,
+                "worktree_removal_precondition_required",
+                "return_to_required",
+                "active worktree requires `return_to`",
+            ),
+            Self::WorktreeOccupied => (
+                Conflict,
+                "worktree_removal_blocked",
+                "worktree_occupied",
+                "worktree has active occupancy outside the current projection",
+            ),
+            Self::WorktreeLocked => (
+                Conflict,
+                "worktree_removal_blocked",
+                "worktree_locked",
+                "worktree is locked",
+            ),
+            Self::WorktreeGenerationMismatch => (
+                Conflict,
+                "worktree_removal_blocked",
+                "worktree_generation_mismatch",
+                "registered worktree generation does not match live git state",
+            ),
+            Self::AgentDeleted => (
+                NotFound,
+                "agent_deleted",
+                "agent_deleted",
+                "agent was deleted",
+            ),
+        };
+        ToolError::new(kind, message)
+            .with_domain(domain)
+            .with_details(json!({"reason": reason}))
+            .into()
+    }
+}
+
 pub fn tool_error_from_anyhow(error: &AnyhowError) -> ToolError {
     if let Some(mut tool_error) = error
         .chain()

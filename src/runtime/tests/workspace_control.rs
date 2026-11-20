@@ -977,6 +977,139 @@ async fn remove_worktree_requires_caller_binding_for_ids_paths_and_tombstones() 
 }
 
 #[tokio::test]
+async fn lifecycle_rejections_preserve_worktree_receipts_and_state() -> Result<()> {
+    use crate::provider::test_support::ScriptedProviderStep;
+    use crate::tool::names::REMOVE_WORKTREE;
+    use serde_json::json;
+
+    let (_home, _host, runtime) = host_backed_test_runtime().await;
+    let repo = init_git_repo();
+    let rows = runtime.inner.runtime_db.execution_root_entries();
+    let workspace = runtime
+        .attach_workspace_path(repo.path().to_path_buf())
+        .await?
+        .workspace;
+    let cases = [
+        ("checkout_identity_mismatch", "worktree_removal_blocked"),
+        ("worktree_generation_mismatch", "worktree_removal_blocked"),
+        ("worktree_occupied", "worktree_removal_blocked"),
+        ("worktree_locked", "worktree_removal_blocked"),
+        (
+            "merged_into_required",
+            "worktree_removal_precondition_required",
+        ),
+        (
+            "return_to_required",
+            "worktree_removal_precondition_required",
+        ),
+        ("retained_dirty", ""),
+        ("already_removed", ""),
+    ];
+    let lock_reason = "fixture private lock message";
+    let mut fixtures = Vec::new();
+    let mut calls = Vec::new();
+    let mut active_root = None;
+    for (reason, kind) in cases {
+        let created = runtime
+            .create_worktree_for_workspace(
+                &workspace.workspace_id,
+                reason,
+                "main",
+                None,
+                reason == "return_to_required",
+                ExistingWorktreePolicy::Error,
+                None,
+            )
+            .await?;
+        let root = created.execution_root_id.unwrap();
+        let path = created.worktree_path.unwrap();
+        let mut args = json!({"execution_root_id": root, "return_to": "canonical"});
+        match reason {
+            "checkout_identity_mismatch" => {
+                git(&path, &["switch", "--detach"]);
+            }
+            "worktree_generation_mismatch" => {
+                let mut entry = rows.get(&root)?.unwrap();
+                entry.worktree.as_mut().unwrap().git_dir = Some(path.join("wrong-generation"));
+                rows.upsert(&entry)?;
+            }
+            "worktree_occupied" => {
+                runtime.inner.runtime_db.workspace_occupancies().upsert(
+                    &WorkspaceOccupancyRecord {
+                        occupancy_id: crate::ids::workspace_occupancy_id(),
+                        execution_root_id: root.clone(),
+                        workspace_id: workspace.workspace_id.clone(),
+                        holder_agent_id: runtime.agent_id().await?,
+                        access_mode: WorkspaceAccessMode::SharedRead,
+                        acquired_at: chrono::Utc::now(),
+                        released_at: None,
+                    },
+                )?;
+            }
+            "worktree_locked" => {
+                git(
+                    repo.path(),
+                    &[
+                        "worktree",
+                        "lock",
+                        "--reason",
+                        lock_reason,
+                        path.to_str().unwrap(),
+                    ],
+                );
+            }
+            "merged_into_required" => args["branch_policy"] = json!("delete_if_merged"),
+            "return_to_required" => {
+                args.as_object_mut().unwrap().remove("return_to");
+                active_root = Some(root);
+            }
+            "retained_dirty" => std::fs::write(path.join("dirty"), b"keep me")?,
+            "already_removed" => {
+                let removed = runtime
+                    .remove_registered_worktree(&root, None, WorktreeBranchPolicy::Keep, None)
+                    .await?;
+                assert!(removed.removed);
+            }
+            _ => unreachable!(),
+        }
+        fixtures.push((reason, kind, path));
+        calls.push(ScriptedProviderStep::tool_use(
+            reason,
+            REMOVE_WORKTREE,
+            args,
+        ));
+    }
+
+    run_lifecycle_tool_calls(&runtime, calls).await?;
+
+    let active = runtime.workspace_state_result().await?.active.unwrap();
+    assert_eq!(Some(active.execution_root_id), active_root);
+    for (reason, kind, path) in fixtures {
+        if kind.is_empty() {
+            let (_, record) = lifecycle_tool_record(&runtime, "tool_executed", reason)?;
+            assert_eq!(record.status, ToolExecutionStatus::Success);
+            let result = &record.output["envelope"]["result"];
+            assert_eq!(result["disposition"], reason);
+            assert_eq!(result["removed"], false);
+        } else {
+            assert_lifecycle_rejection(
+                &runtime,
+                reason,
+                kind,
+                reason,
+                &[path.to_str().unwrap(), lock_reason],
+            )?;
+        }
+        assert_eq!(path.exists(), reason != "already_removed", "{reason}");
+        git(
+            repo.path(),
+            &["show-ref", "--verify", &format!("refs/heads/{reason}")],
+        );
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn remove_worktree_rejects_extra_same_agent_occupancy() {
     let (_home, _host, runtime) = host_backed_test_runtime().await;
     let repo = init_git_repo();
