@@ -1706,8 +1706,10 @@ pub(crate) fn validate_parent_cleanup_tx(
             )),
             "agent_cleanup_supervision_closed"
         );
-        if let Some(blocker) = super::reclamation::parent_cleanup_blocker_tx(tx, agent_id)? {
-            return Err(anyhow!("agent_cleanup_blocked: {blocker}"));
+        if let Some(blocker) =
+            super::reclamation::parent_cleanup_admission_blocker_tx(tx, agent_id)?
+        {
+            return Err(blocker.into_admission_error());
         }
     }
     Ok(())

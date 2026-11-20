@@ -381,6 +381,90 @@ pub(crate) async fn host_backed_test_runtime() -> (TempDir, RuntimeHost, Runtime
     (home, host, runtime)
 }
 
+pub(crate) async fn run_lifecycle_tool_calls(
+    runtime: &RuntimeHandle,
+    calls: Vec<crate::provider::test_support::ScriptedProviderStep>,
+) -> Result<()> {
+    use crate::provider::test_support::{ScriptedAgentProvider, ScriptedProviderStep};
+
+    let provider = Arc::new(
+        ScriptedAgentProvider::new(
+            calls
+                .into_iter()
+                .chain([ScriptedProviderStep::text("done")]),
+        )
+        .with_configured_model_refs(["openai/gpt-5.4"]),
+    );
+    *runtime.inner.provider.write().await = provider.clone();
+    let agent_id = runtime.agent_id().await?;
+    let mut prompt = test_effective_prompt();
+    prompt.identity.agent_id.clone_from(&agent_id);
+    prompt.cache_identity.agent_id.clone_from(&agent_id);
+    prompt.projection_owner = crate::projection_eval::ProjectionOwner::AgentLifecycle {
+        agent_id: agent_id.clone(),
+    };
+    let outcome = runtime
+        .run_agent_loop(
+            &agent_id,
+            AuthorityClass::OperatorInstruction,
+            prompt,
+            crate::runtime::turn::LoopControlOptions {
+                max_tool_rounds: None,
+            },
+        )
+        .await?;
+    assert_eq!(outcome.final_text, "done");
+    assert_eq!(provider.remaining_steps(), 0);
+    Ok(())
+}
+
+pub(crate) fn lifecycle_tool_record(
+    runtime: &RuntimeHandle,
+    event_kind: &str,
+    call: &str,
+) -> Result<(serde_json::Value, ToolExecutionRecord)> {
+    let event = runtime
+        .storage()
+        .read_recent_events(200)?
+        .into_iter()
+        .find(|event| event.kind == event_kind && event.data["tool_call_id"] == call)
+        .with_context(|| format!("missing {event_kind} event for {call}"))?;
+    let execution_id = event.data["tool_execution_id"].as_str().unwrap();
+    let record = runtime
+        .storage()
+        .read_tool_execution_by_id(execution_id)?
+        .with_context(|| format!("missing tool execution record for {call}"))?;
+    Ok((event.data, record))
+}
+
+pub(crate) fn assert_lifecycle_rejection(
+    runtime: &RuntimeHandle,
+    call: &str,
+    kind: &str,
+    reason: &str,
+    secrets: &[&str],
+) -> Result<()> {
+    let (audit, record) = lifecycle_tool_record(runtime, "tool_execution_failed", call)?;
+    assert_eq!(record.status, ToolExecutionStatus::Error);
+    let error = &record.output["tool_error"];
+    assert_eq!(error["kind"], kind, "{call}: {error}");
+    assert_eq!(audit["error_kind"], kind, "{call}");
+    assert_eq!(
+        error["details"],
+        serde_json::json!({"reason": reason}),
+        "{call}"
+    );
+    assert_eq!(error["retryable"], false, "{call}");
+    assert_eq!(audit["tool_error"], *error, "{call}");
+    for secret in secrets {
+        assert!(
+            !error.to_string().contains(secret),
+            "unsafe error for {call}: {error}"
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn private_child_identity(agent_id: &str) -> AgentIdentityView {
     AgentIdentityView {
         agent_id: agent_id.into(),

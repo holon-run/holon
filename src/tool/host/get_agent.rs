@@ -1,6 +1,7 @@
 use super::serialize_success;
 use crate::http_dto::SlimAgentDto;
 use crate::runtime::RuntimeHandle;
+use crate::tool::error::LifecycleRejection;
 use crate::tool::helpers::parse_tool_args;
 use crate::types::GetAgentResult;
 use anyhow::Result;
@@ -38,6 +39,14 @@ pub(crate) async fn execute(
                 if tokio::time::Instant::now() >= retry_deadline {
                     return Err(error);
                 }
+            }
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<crate::host::PublicAgentError>(),
+                    Some(crate::host::PublicAgentError::Deleted { .. })
+                ) =>
+            {
+                return Err(LifecycleRejection::AgentDeleted.into_error());
             }
             Err(error) => return Err(error),
         }

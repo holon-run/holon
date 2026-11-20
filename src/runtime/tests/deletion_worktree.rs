@@ -8,6 +8,126 @@ use crate::runtime::workspace_control::{ExistingWorktreePolicy, WorkspaceSwitchT
 use crate::runtime_db::task_snapshot::TaskDomainLoadRequest;
 use crate::types::AgentIdentityRecord;
 
+#[tokio::test]
+async fn lifecycle_rejections_preserve_agent_receipts_and_state() -> Result<()> {
+    use crate::provider::test_support::ScriptedProviderStep;
+    use crate::runtime_db::agent_relations::supervised_creation_records;
+    use crate::tool::names::{DELETE_AGENT, GET_AGENT};
+    use serde_json::json;
+
+    let (_home, host, runtime) = host_backed_test_runtime().await;
+    let db = host.runtime_db();
+    let parent = runtime.agent_id().await?;
+    let retained_child = |id, current_run_id| -> Result<AgentIdentityRecord> {
+        let task = format!("task-{id}");
+        let child = AgentIdentityRecord::new(
+            id,
+            AgentKind::Child,
+            AgentVisibility::Private,
+            AgentOwnership::ParentSupervised,
+            AgentProfilePreset::PrivateChild,
+            Some(parent.clone()),
+            Some(task.clone()),
+        );
+        let relations = supervised_creation_records(&child, &parent, &task, None);
+        db.agent_identities()
+            .create_with_relations(&child, &relations)?;
+        host.cache_agent_identity(&child)?;
+        let mut state = AgentState::new(child.agent_id.clone());
+        state.status = AgentStatus::AwakeIdle;
+        state.current_run_id = current_run_id;
+        db.agent_states().upsert_for_fixture(&state)?;
+        std::fs::create_dir_all(host.agent_data_dir(&child.agent_id))?;
+        Ok(child)
+    };
+    let protected = retained_child("fixture-protected-child", None)?;
+    // Persist the first execution blocker without starting an invocation.
+    let busy = retained_child("fixture-busy-child", Some("fixture-run".into()))?;
+    let private_path = host
+        .agent_data_dir(&protected.agent_id)
+        .join("fixture-private-file");
+    std::fs::write(&private_path, b"fixture business material")?;
+    let deleted = "fixture-deleted-agent";
+    host.create_named_agent(deleted, None).await?;
+    let (_, job, _) = host
+        .begin_public_agent_deletion(deleted, false, "test-operator")
+        .await?;
+    host.execute_deletion_job(job).await?;
+
+    let delete = |call, child: &AgentIdentityRecord| {
+        ScriptedProviderStep::tool_use(
+            call,
+            DELETE_AGENT,
+            json!({"agent_id": child.agent_id, "incarnation": child.incarnation}),
+        )
+    };
+    run_lifecycle_tool_calls(
+        &runtime,
+        vec![
+            delete("protected", &protected),
+            delete("busy", &busy),
+            ScriptedProviderStep::tool_use("deleted", GET_AGENT, json!({"agent_id": deleted})),
+            ScriptedProviderStep::tool_use(
+                "missing",
+                GET_AGENT,
+                json!({"agent_id": "fixture-missing"}),
+            ),
+        ],
+    )
+    .await?;
+    assert_lifecycle_rejection(
+        &runtime,
+        "protected",
+        "agent_cleanup_blocked",
+        "unregistered_home_artifact",
+        &[
+            private_path.to_str().unwrap(),
+            "fixture-private-file",
+            "fixture business material",
+        ],
+    )?;
+    assert_lifecycle_rejection(
+        &runtime,
+        "busy",
+        "agent_cleanup_blocked",
+        "runtime_execution_or_wake",
+        &["fixture-run"],
+    )?;
+    assert_lifecycle_rejection(
+        &runtime,
+        "deleted",
+        "agent_deleted",
+        "agent_deleted",
+        &[deleted],
+    )?;
+    let (audit, missing) = lifecycle_tool_record(&runtime, "tool_execution_failed", "missing")?;
+    assert_eq!(
+        missing.output["tool_error"]["kind"],
+        "tool_execution_failed"
+    );
+    assert_eq!(missing.output["tool_error"]["domain"], "unknown");
+    assert_eq!(audit["tool_error"], missing.output["tool_error"]);
+    for child in [&protected, &busy] {
+        assert!(db
+            .agent_deletions()
+            .latest_for_agent(&child.agent_id)?
+            .is_none());
+        assert_eq!(
+            db.agent_identities()
+                .latest(&child.agent_id)?
+                .unwrap()
+                .status,
+            AgentRegistryStatus::Active,
+        );
+        assert!(matches!(
+            host.public_agent_detail(&child.agent_id),
+            Err(crate::host::PublicAgentError::Private { .. })
+        ));
+    }
+    assert_eq!(std::fs::read(private_path)?, b"fixture business material");
+    Ok(())
+}
+
 fn git(repo: &Path, args: &[&str]) -> String {
     let output = std::process::Command::new("git")
         .args(args)

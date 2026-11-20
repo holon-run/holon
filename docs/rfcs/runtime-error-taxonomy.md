@@ -124,6 +124,20 @@ projects the shared descriptor.
 Canonical tool failure output and audit events retain the structured
 `ToolError`. Existing model-visible receipt fields remain compatible.
 
+Expected lifecycle refusals use static `details.reason` values in both
+receipts and `tool_execution_failed` audit events:
+
+| Tool | `kind` | `details.reason` |
+| --- | --- | --- |
+| `DeleteAgent` | `agent_cleanup_blocked` | `runtime_execution_or_wake`, `unregistered_home_artifact` |
+| `RemoveWorktree` | `worktree_removal_blocked` | `checkout_identity_mismatch`, `worktree_generation_mismatch`, `worktree_occupied`, `worktree_locked` |
+| `RemoveWorktree` | `worktree_removal_precondition_required` | `merged_into_required`, `return_to_required` |
+| `GetAgent` | `agent_deleted` | `agent_deleted` |
+
+These are non-retryable tool errors. They do not change admission checks,
+visibility, asynchronous deletion jobs, or successful cleanup dispositions.
+The structured diagnostics do not include artifact paths or Git lock text.
+
 ### HTTP and local client
 
 The HTTP error envelope retains required `ok`, `error`, and optional `code` and

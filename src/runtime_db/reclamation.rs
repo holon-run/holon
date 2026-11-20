@@ -5,6 +5,29 @@ use rusqlite::{OptionalExtension, Transaction};
 
 pub(crate) use holon_storage::reclamation::ensure_work_admission_tx;
 
+pub(crate) enum CleanupBlocker {
+    RuntimeExecutionOrWake,
+    Other(&'static str),
+}
+
+impl CleanupBlocker {
+    fn reason(self) -> &'static str {
+        match self {
+            Self::RuntimeExecutionOrWake => "runtime_execution_or_wake",
+            Self::Other(reason) => reason,
+        }
+    }
+
+    pub(crate) fn into_admission_error(self) -> anyhow::Error {
+        match self {
+            Self::RuntimeExecutionOrWake => {
+                crate::tool::error::LifecycleRejection::RuntimeExecutionOrWake.into_error()
+            }
+            Self::Other(reason) => anyhow::anyhow!("agent_cleanup_blocked: {reason}"),
+        }
+    }
+}
+
 /// Durable state that proves live execution or scheduling. These block both
 /// deletion admission and reminder delivery because the agent is not idle.
 const EXECUTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
@@ -31,7 +54,10 @@ const RETENTION_BLOCKER_CHECKS: &[(&str, &str)] = &[
 /// `last_runtime_failure` is a diagnostic and is intentionally not an execution
 /// obligation: a settled idle agent remains deletable and idle even if the last
 /// turn failed and no later turn succeeded.
-fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
+fn runtime_state_blocker_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<CleanupBlocker>> {
     let state: Option<String> = tx
         .query_row(
             "SELECT payload_json FROM agent_states WHERE agent_id = ?1",
@@ -40,7 +66,7 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
         )
         .optional()?;
     let Some(state) = state else {
-        return Ok(Some("unknown_runtime_state".into()));
+        return Ok(Some(CleanupBlocker::Other("unknown_runtime_state")));
     };
     let state: crate::types::AgentState = serde_json::from_str(&state)?;
     if !matches!(
@@ -52,7 +78,7 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
         || state.sleeping_until.is_some()
         || state.pending_wake_hint.is_some()
     {
-        return Ok(Some("runtime_execution_or_wake".into()));
+        return Ok(Some(CleanupBlocker::RuntimeExecutionOrWake));
     }
     Ok(None)
 }
@@ -62,11 +88,11 @@ fn runtime_state_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Opti
 fn first_blocker_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
-    checks: &[(&str, &str)],
-) -> Result<Option<String>> {
+    checks: &[(&'static str, &str)],
+) -> Result<Option<CleanupBlocker>> {
     for (reason, sql) in checks {
         if tx.query_row(sql, [agent_id], |row| row.get::<_, bool>(0))? {
-            return Ok(Some((*reason).into()));
+            return Ok(Some(CleanupBlocker::Other(reason)));
         }
     }
     Ok(None)
@@ -75,19 +101,24 @@ fn first_blocker_tx(
 /// Full idle safety facts. Used by idle runtime retirement, which must keep
 /// considering retention state before exiting a runtime.
 pub(crate) fn idle_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
-    if let Some(blocker) = runtime_state_blocker_tx(tx, agent_id)? {
+    if let Some(blocker) = execution_blocker_tx(tx, agent_id)? {
         return Ok(Some(blocker));
     }
-    if let Some(blocker) = first_blocker_tx(tx, agent_id, EXECUTION_BLOCKER_CHECKS)? {
-        return Ok(Some(blocker));
-    }
-    first_blocker_tx(tx, agent_id, RETENTION_BLOCKER_CHECKS)
+    Ok(first_blocker_tx(tx, agent_id, RETENTION_BLOCKER_CHECKS)?
+        .map(|blocker| blocker.reason().into()))
 }
 
 /// Execution-only blockers: live runtime state plus active, queued, or waiting
 /// work. Retention state (open work items, timers, timer wakes) is excluded so
 /// callers can treat it as a hint instead of a hard stop.
 pub(crate) fn execution_blocker_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Option<String>> {
+    Ok(execution_cleanup_blocker_tx(tx, agent_id)?.map(|blocker| blocker.reason().into()))
+}
+
+fn execution_cleanup_blocker_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<CleanupBlocker>> {
     if let Some(blocker) = runtime_state_blocker_tx(tx, agent_id)? {
         return Ok(Some(blocker));
     }
@@ -103,16 +134,20 @@ pub(crate) fn parent_cleanup_blocker_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<Option<String>> {
-    if let Some(blocker) = execution_blocker_tx(tx, agent_id)? {
+    Ok(parent_cleanup_admission_blocker_tx(tx, agent_id)?.map(|blocker| blocker.reason().into()))
+}
+
+pub(crate) fn parent_cleanup_admission_blocker_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<Option<CleanupBlocker>> {
+    if let Some(blocker) = execution_cleanup_blocker_tx(tx, agent_id)? {
         return Ok(Some(blocker));
     }
-    for (reason, sql) in [
+    first_blocker_tx(tx, agent_id, &[
         ("descendant_responsibility", "SELECT EXISTS(SELECT 1 FROM agent_supervisions WHERE supervisor_agent_id = ?1 AND state != 'closed')"),
         ("protected_artifact", "SELECT EXISTS(SELECT 1 FROM artifact_metadata WHERE agent_id = ?1)"),
-    ] {
-        if tx.query_row(sql, [agent_id], |row| row.get::<_, bool>(0))? { return Ok(Some(reason.into())); }
-    }
-    Ok(None)
+    ])
 }
 
 pub(crate) fn retirable_child_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<bool> {

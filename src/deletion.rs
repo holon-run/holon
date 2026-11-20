@@ -1852,14 +1852,16 @@ pub(crate) fn ensure_agent_home_deletion_safe(
         let empty_scaffold = matches!(name.to_str(), Some("notes" | "work" | "media" | "apps"))
             && kind.is_dir()
             && std::fs::read_dir(entry.path())?.next().is_none();
-        anyhow::ensure!(
-            disposable_tmp || empty_scaffold,
-            "agent_cleanup_blocked: unregistered_home_artifact {}",
-            entry.path().display()
-        );
+        if !(disposable_tmp || empty_scaffold) {
+            return Err(UnregisteredHomeArtifact(entry.path()).into());
+        }
     }
     Ok(())
 }
+
+#[derive(Debug, thiserror::Error)]
+#[error("agent_cleanup_blocked: unregistered_home_artifact {}", .0.display())]
+pub(crate) struct UnregisteredHomeArtifact(std::path::PathBuf);
 
 fn agent_home_present(path: &Path) -> Result<bool> {
     match std::fs::symlink_metadata(path) {
