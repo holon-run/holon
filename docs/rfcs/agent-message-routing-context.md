@@ -26,6 +26,10 @@ Missing optional values are omitted for compatibility with older persisted
 messages. Consumers must not infer routing from the message body or allow body
 text to override these fields.
 
+Routing decides who receives a reply; it does not decide which delivery
+allowance is charged. Delivery chains and their shared allowance are defined by
+[agent identity relations and message delivery](./agent-identity-relations-and-message-delivery.md).
+
 ## Forwarding semantics
 
 For a direct delivery, the immediate sender is also the default reply target.

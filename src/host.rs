@@ -9239,6 +9239,22 @@ impl RuntimeHost {
                 }
                 return Err(anyhow!(error));
             }
+            if matches!(
+                receipt.rejection_code,
+                Some(AgentMessageDeliveryRejectionCode::MessageChainBudgetExhausted)
+            ) {
+                let mut error = RuntimeError::policy(
+                    "message_chain_budget_exhausted",
+                    "this agent message chain has exhausted its shared delivery allowance",
+                )
+                .with_recovery_hint(
+                    "stop sending from this activation; any further delivery requires an independent input",
+                );
+                if let Some(task_id) = task_id {
+                    error = error.with_safe_context("task_id", task_id);
+                }
+                return Err(anyhow!(error));
+            }
             return Err(anyhow!(
                 "agent message delivery {} was rejected: {:?}",
                 receipt.delivery_id,

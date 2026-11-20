@@ -4512,6 +4512,21 @@ ALTER TABLE execution_protocol_work_items_retired_needs_repair
         name: "repair_retired_outcome_current_fingerprint",
         sql: "",
     },
+    Migration {
+        version: 117,
+        name: "agent_message_chain_budgets",
+        // One row per accepted message chain. Every branch of the chain shares
+        // the delivery allowance; no historical delivery is backfilled.
+        sql: r#"
+CREATE TABLE IF NOT EXISTS agent_message_chain_budgets (
+  chain_id TEXT NOT NULL PRIMARY KEY,
+  max_deliveries INTEGER NOT NULL CHECK (max_deliveries > 0),
+  accepted_count INTEGER NOT NULL
+    CHECK (accepted_count >= 1 AND accepted_count <= max_deliveries),
+  created_at TEXT NOT NULL
+);
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -1745,6 +1745,7 @@
                 "agent_deleting",
                 "agent_deleted",
                 "queue_unavailable",
+                "message_chain_budget_exhausted",
                 null
               ],
               "type": [

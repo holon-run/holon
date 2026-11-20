@@ -216,6 +216,8 @@ pub enum AgentMessageDeliveryRejectionCode {
     AgentDeleting,
     AgentDeleted,
     QueueUnavailable,
+    // The shared delivery budget of the message chain is exhausted.
+    MessageChainBudgetExhausted,
 }
 
 impl AgentMessageDeliveryRejectionCode {
@@ -343,6 +345,12 @@ impl AgentMessageAuthorityVersion {
 pub struct AgentMessageDeliveryRecord {
     pub delivery_id: String,
     pub target_agent_id: String,
+    /// Shared delivery-chain budget this accepted delivery was charged to.
+    ///
+    /// Runtime-derived; never accepted from a client request body and never
+    /// part of the idempotency request digest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_chain_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expected_incarnation: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
