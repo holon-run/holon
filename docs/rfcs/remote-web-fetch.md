@@ -57,7 +57,7 @@ Protocol source: [DeepSeek Search & Fetch documentation](https://api-docs.deepse
 `fetch_with_provider` is the shared contract for every remote adapter: a
 named provider must be a configured registry ID whose kind supports remote
 extraction (`remote_fetch_modes`; `deepseek` with `auto` only, `tavily`
-with `auto` and `text`).
+with `auto` and `text`, `firecrawl` with `auto` only).
 Unknown IDs, search-only kinds, and unsupported modes fail explicitly with
 zero provider calls; there is no alias, aggregation, or fallback between
 routes, and the local route keeps no `local` selector. Adapter
@@ -138,3 +138,36 @@ extraction. `text` and `raw` fail without calling Exa.
   extraction, not Holon's plain text conversion or original HTML. A page
   URL reported by Exa does not verify a redirect. Shared size limits,
   credential redaction, and the untrusted-content wrapper apply.
+
+## Firecrawl Scrape adapter
+
+`kind=firecrawl` providers are callable through the shared contract for
+`auto` extraction only, reusing the same configured ID, base URL, and API
+key as Firecrawl Search; no second provider entry is introduced and Search
+behavior (including keyless free-tier requests) is unchanged.
+
+- One WebFetch call performs exactly one `POST /v2/scrape` with
+  `Authorization: Bearer <api_key>` and the body `{"url": "<url>",
+  "formats": ["markdown"], "onlyMainContent": true}`. No crawl, browser
+  interaction, custom header, or auxiliary-fetch options are sent, and
+  `text`/`raw` are rejected before anything leaves the process. A trailing
+  `/v1` or `/v2` version segment in the configured base URL is normalized
+  away before appending `/v2/scrape`, so an official base containing `/v2`
+  never ends up doubled.
+- Firecrawl reports page failures inside HTTP 200 responses, so success
+  requires `success=true`, no non-empty page-level `metadata.error`, and
+  non-empty `data.markdown`. `success=false`, a missing or blank body, or a
+  reported page failure is a provider error regardless of the API 2xx
+  status; there is never a fallback to another route.
+- Successful responses use `source=firecrawl_remote`,
+  `status_source=provider_api`, `content_type` `text/markdown`, and
+  `final_url` from the provider-reported post-redirect `metadata.url` when
+  it parses as an absolute URL (otherwise `final_url=null`). `status` is
+  the Firecrawl API HTTP status, never the page metadata `statusCode`.
+- Errors map to `provider_error` with `retryable` only for rate limiting
+  (HTTP 429/408) and upstream 5xx; authentication and content failures are
+  not retryable. Shared limits (`max_chars`, `max_response_bytes`), the
+  untrusted wrapper, and credential redaction follow the shared contract.
+- `ListWebFetchProviders` lists a Firecrawl ID with `auto` only when its
+  API key is configured; the keyless free tier that Search allows does not
+  extend to Scrape.

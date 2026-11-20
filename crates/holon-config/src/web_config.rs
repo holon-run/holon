@@ -56,6 +56,38 @@ pub fn tavily_extract_url(provider: &WebProviderConfig) -> Result<url::Url> {
     Ok(url)
 }
 
+/// Builds the documented Firecrawl Scrape v2 endpoint from a provider's base URL.
+///
+/// Mirrors the DeepSeek/Tavily endpoint builders so provider discovery and the
+/// outbound call share one base URL shape check. A trailing `/v1` or `/v2`
+/// version segment is normalized away before appending `/v2/scrape`, so the
+/// official base (which already contains `/v2`) never ends up doubled.
+pub fn firecrawl_scrape_url(provider: &WebProviderConfig) -> Result<url::Url> {
+    let base = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.firecrawl.dev");
+    let mut url = url::Url::parse(base).map_err(|_| anyhow!("invalid Firecrawl base URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "Firecrawl base URL must be HTTP(S) with a host and no credentials, query, or fragment"
+        ));
+    }
+    let path = url.path().trim_end_matches('/');
+    let path = path
+        .strip_suffix("/v1")
+        .or_else(|| path.strip_suffix("/v2"))
+        .unwrap_or(path);
+    url.set_path(&format!("{path}/v2/scrape"));
+    Ok(url)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebConfig {
     pub fetch: WebFetchConfig,

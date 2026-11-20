@@ -12,6 +12,7 @@ use holon_tools::helpers::truncate_text;
 use super::{
     deepseek_tool_url,
     fetch::{external_content_wrapper, ExtractMode, WebFetchRequest, WebFetchResponse},
+    firecrawl_scrape_url,
     policy::{policy_error, timeout, validate_fetch_url},
     tavily_extract_url, WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
@@ -109,6 +110,9 @@ pub(super) async fn fetch(
             tavily_extract_fetch(request, provider_id, provider, config).await
         }
         WebProviderKind::Exa => exa_contents_fetch(request, provider_id, provider, config).await,
+        WebProviderKind::Firecrawl => {
+            firecrawl_scrape_fetch(request, provider_id, provider, config).await
+        }
         kind => Err(policy_error(
             "provider_unavailable",
             format!(
@@ -485,6 +489,153 @@ fn exa_error(message: &str, retryable: bool) -> anyhow::Error {
     ToolError::new("provider_error", message)
         .with_retryable(retryable)
         .with_recovery_hint("check the Exa API key, subscription, or service availability")
+        .into()
+}
+
+#[derive(Deserialize)]
+struct FirecrawlScrapeMetadata {
+    #[serde(default)]
+    url: Option<String>,
+    #[serde(default)]
+    error: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct FirecrawlScrapeData {
+    #[serde(default)]
+    markdown: Option<String>,
+    #[serde(default)]
+    metadata: Option<FirecrawlScrapeMetadata>,
+}
+
+#[derive(Deserialize)]
+struct FirecrawlScrapeResponse {
+    #[serde(default)]
+    success: bool,
+    #[serde(default)]
+    data: Option<FirecrawlScrapeData>,
+}
+
+/// Firecrawl Scrape v2 sends exactly one `POST /v2/scrape` per WebFetch call
+/// with `formats: ["markdown"]` and `onlyMainContent: true`; the first version
+/// exposes only `auto` extraction reading `data.markdown`.
+async fn firecrawl_scrape_fetch(
+    request: WebFetchRequest,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    config: &WebFetchConfig,
+) -> Result<WebFetchResponse> {
+    let url = preflight_remote_url("Firecrawl Scrape", &request, config).await?;
+    require_remote_api_key("Firecrawl Scrape", provider)?;
+    let endpoint = firecrawl_scrape_url(provider)?;
+    let client = Client::builder()
+        .timeout(timeout(config))
+        .redirect(Policy::none())
+        .build()?;
+    let mut response = client
+        .post(endpoint)
+        .bearer_auth(&provider.api_key)
+        .json(&json!({
+            "url": url.as_str(),
+            "formats": ["markdown"],
+            "onlyMainContent": true,
+        }))
+        .send()
+        .await
+        .map_err(|_| firecrawl_error("Firecrawl Scrape request failed", true))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(firecrawl_error(
+            &format!("Firecrawl Scrape returned HTTP {}", status.as_u16()),
+            status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| firecrawl_error("Firecrawl Scrape response read failed", true))?
+    {
+        if chunk.len() > config.max_response_bytes.saturating_sub(bytes.len()) {
+            return Err(firecrawl_error(
+                "Firecrawl Scrape response exceeds web.fetch.max_response_bytes",
+                false,
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let payload: FirecrawlScrapeResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| firecrawl_error("Firecrawl Scrape returned invalid JSON", false))?;
+    // HTTP 200 does not mean the page was scraped: `success=false` and a
+    // page-level `metadata.error` are provider failures regardless of the
+    // API status.
+    if !payload.success {
+        return Err(firecrawl_error(
+            "Firecrawl Scrape returned success=false",
+            false,
+        ));
+    }
+    let data = payload
+        .data
+        .as_ref()
+        .ok_or_else(|| firecrawl_error("Firecrawl Scrape returned no scrape data", false))?;
+    if let Some(error) = data
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.error.as_deref())
+    {
+        if !error.trim().is_empty() {
+            return Err(firecrawl_error(
+                "Firecrawl Scrape reported the page as failed",
+                false,
+            ));
+        }
+    }
+    let Some(content) = data
+        .markdown
+        .as_deref()
+        .filter(|content| !content.trim().is_empty())
+    else {
+        return Err(firecrawl_error(
+            "Firecrawl Scrape returned no non-empty markdown for the requested URL",
+            false,
+        ));
+    };
+    // metadata.url is the provider-observed final URL after redirects; keep
+    // final_url null when it is missing or not a parseable absolute URL.
+    let final_url = data
+        .metadata
+        .as_ref()
+        .and_then(|metadata| metadata.url.as_deref())
+        .and_then(|value| Url::parse(value.trim()).ok())
+        .map(|value| value.to_string());
+    let max_chars = request
+        .max_chars
+        .unwrap_or(config.max_chars)
+        .min(config.max_chars);
+    let truncated = content.chars().count() > max_chars;
+    let text = truncate_text(content, max_chars);
+    Ok(WebFetchResponse {
+        url: url.to_string(),
+        final_url,
+        status: status.as_u16(),
+        content_type: Some("text/markdown".into()),
+        bytes_read: content.len(),
+        truncated,
+        sha256: format!("{:x}", Sha256::digest(content.as_bytes())),
+        fetched_at: Utc::now().to_rfc3339(),
+        source: "firecrawl_remote",
+        provider_id: Some(provider_id.to_string()),
+        status_source: "provider_api",
+        text: external_content_wrapper(&url, &text),
+        summary_text: format!("Firecrawl Scrape {} {url}", status.as_u16()),
+    })
+}
+
+fn firecrawl_error(message: &str, retryable: bool) -> anyhow::Error {
+    ToolError::new("provider_error", message)
+        .with_retryable(retryable)
+        .with_recovery_hint("check the Firecrawl API key, plan credits, or service availability")
         .into()
 }
 

@@ -317,6 +317,60 @@ fn tavily_extract_endpoint_contract() {
 }
 
 #[test]
+fn firecrawl_scrape_endpoint_contract() {
+    let mut provider =
+        WebProviderConfig::from_file("firecrawl", &provider_file(WebProviderKind::Firecrawl))
+            .unwrap();
+    assert_eq!(serde_json::to_value(provider.kind).unwrap(), "firecrawl");
+    assert_eq!(
+        firecrawl_scrape_url(&provider).unwrap().as_str(),
+        "https://api.firecrawl.dev/v2/scrape"
+    );
+    // A version segment in the base URL is normalized to the scrape v2
+    // endpoint instead of being doubled.
+    for (base, expected) in [
+        (
+            "https://api.firecrawl.dev/",
+            "https://api.firecrawl.dev/v2/scrape",
+        ),
+        (
+            "https://api.firecrawl.dev/v2",
+            "https://api.firecrawl.dev/v2/scrape",
+        ),
+        (
+            "https://api.firecrawl.dev/v2/",
+            "https://api.firecrawl.dev/v2/scrape",
+        ),
+        (
+            "https://api.firecrawl.dev/v1",
+            "https://api.firecrawl.dev/v2/scrape",
+        ),
+        (
+            "https://proxy.internal/firecrawl",
+            "https://proxy.internal/firecrawl/v2/scrape",
+        ),
+        (
+            "https://proxy.internal/firecrawl/",
+            "https://proxy.internal/firecrawl/v2/scrape",
+        ),
+    ] {
+        provider.base_url = Some(base.into());
+        assert_eq!(firecrawl_scrape_url(&provider).unwrap().as_str(), expected,);
+    }
+    for base in [
+        "not a url",
+        "file:///etc/passwd",
+        "https://user:secret@example.com",
+        "https://example.com?secret=1",
+        "https://example.com/#secret",
+    ] {
+        provider.base_url = Some(base.into());
+        let error = firecrawl_scrape_url(&provider).unwrap_err().to_string();
+        assert!(!error.contains("secret"), "{base}");
+    }
+}
+
+#[test]
 fn deepseek_reuses_llm_credential_profile_without_serializing_key() {
     let mut file = crate::WebConfigFile::default();
     let mut provider = provider_file(WebProviderKind::DeepSeek);
