@@ -1,8 +1,11 @@
 use super::super::*;
 use super::compaction::error_status;
 use super::parse::{
+    parse_native_web_search_response_with_transport_state,
     parse_openai_response_with_transport_state, read_openai_streaming_response_with_material,
 };
+
+type OpenAiResponsesParseFn = fn(Value) -> Result<ParsedOpenAiResponse>;
 
 pub(in super::super) async fn send_openai_responses_request(
     client: &Client,
@@ -41,6 +44,66 @@ pub async fn send_openai_responses_request_with_material(
     model_ref: &str,
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
     material: &crate::provider::ProviderRequestMaterial,
+) -> Result<ParsedOpenAiResponse> {
+    send_openai_responses_request_with_material_and_parse(
+        client,
+        url,
+        body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+        dispatch_guard,
+        material,
+        parse_openai_response_with_transport_state,
+    )
+    .await
+}
+
+/// Standalone native web search variant of [`send_openai_responses_request`]:
+/// identical transport validation and error classification, but parsed with
+/// the standalone search parser so a completed search without answer text
+/// is a successful outcome instead of a parse failure.
+pub(in super::super) async fn send_native_web_search_request(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+) -> Result<ParsedOpenAiResponse> {
+    send_openai_responses_request_with_material_and_parse(
+        client,
+        url,
+        body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+        dispatch_guard,
+        &Default::default(),
+        parse_native_web_search_response_with_transport_state,
+    )
+    .await
+}
+
+async fn send_openai_responses_request_with_material_and_parse(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &crate::provider::ProviderRequestMaterial,
+    parse: OpenAiResponsesParseFn,
 ) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
         let request_trace = trace
@@ -141,7 +204,7 @@ pub async fn send_openai_responses_request_with_material(
         material.read(|| crate::resource_io::admit_json_payload(&body))?;
         let parsed: Value = serde_json::from_str(&body)
             .map_err(|error| invalid_response_error("invalid OpenAI-style JSON", error))?;
-        let parsed = parse_openai_response_with_transport_state(parsed)?;
+        let parsed = parse(parsed)?;
         let parse_completed_at = chrono::Utc::now();
         Ok(parsed
             .with_provider_request_id(provider_request_id)
@@ -264,6 +327,67 @@ pub async fn send_openai_responses_streaming_request_with_material(
     dispatch_guard: Option<&dyn ProviderDispatchGuard>,
     material: &crate::provider::ProviderRequestMaterial,
 ) -> Result<ParsedOpenAiResponse> {
+    send_openai_responses_streaming_request_with_material_and_parse(
+        client,
+        url,
+        body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+        dispatch_guard,
+        material,
+        parse_openai_response_with_transport_state,
+    )
+    .await
+}
+
+/// Standalone native web search variant of
+/// [`send_openai_responses_streaming_request`]: identical transport
+/// validation (including the terminal response event) and error
+/// classification, but parsed with the standalone search parser so a
+/// completed search without answer text is a successful outcome.
+pub(in super::super) async fn send_native_web_search_streaming_request(
+    client: &Client,
+    url: String,
+    body: Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+) -> Result<ParsedOpenAiResponse> {
+    send_openai_responses_streaming_request_with_material_and_parse(
+        client,
+        url,
+        &body,
+        headers,
+        trace,
+        agent_id,
+        provider,
+        model_ref,
+        dispatch_guard,
+        &Default::default(),
+        parse_native_web_search_response_with_transport_state,
+    )
+    .await
+}
+
+async fn send_openai_responses_streaming_request_with_material_and_parse(
+    client: &Client,
+    url: String,
+    body: &Value,
+    headers: Vec<(&str, String)>,
+    trace: Option<&ProviderHttpTrace>,
+    agent_id: Option<&str>,
+    provider: &str,
+    model_ref: &str,
+    dispatch_guard: Option<&dyn ProviderDispatchGuard>,
+    material: &crate::provider::ProviderRequestMaterial,
+    parse: OpenAiResponsesParseFn,
+) -> Result<ParsedOpenAiResponse> {
     let result: Result<ParsedOpenAiResponse> = async {
         let request_trace = trace
             .map(|trace| {
@@ -354,7 +478,7 @@ pub async fn send_openai_responses_streaming_request_with_material(
         let response_body_completed_at = chrono::Utc::now();
         let parsed = material.read(|| {
             crate::resource_io::admit_serialized_value(&terminal_response)?;
-            parse_openai_response_with_transport_state(terminal_response)
+            parse(terminal_response)
         })?;
         let parse_completed_at = chrono::Utc::now();
         Ok(parsed

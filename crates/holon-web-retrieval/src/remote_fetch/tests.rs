@@ -38,6 +38,7 @@ async fn server(
             kind: super::super::WebProviderKind::DeepSeek,
             base_url: Some(base_url),
             api_key: "fixture-key".into(),
+            model_route: None,
             command: None,
             output: None,
             limits: Default::default(),

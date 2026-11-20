@@ -655,6 +655,7 @@ async fn web_search_provider_discovery_shares_visibility_and_admission() {
                 command: None,
                 output: None,
                 limits: Default::default(),
+                model_route: None,
             },
         );
         runtime.inner.config_snapshot.store(Arc::new(snapshot));

@@ -306,6 +306,23 @@ pub struct ProviderNativeWebSearchRequest {
     pub max_results: Option<usize>,
 }
 
+/// Outcome of one standalone native web search request. `citations` come only
+/// from structured upstream sources; `search_executed` reflects explicit
+/// upstream evidence that the search tool ran.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProviderNativeSearchOutcome {
+    pub search_executed: bool,
+    pub citations: Vec<crate::types::Citation>,
+}
+
+/// Typed failure of one standalone native web search request, mapped to the
+/// WebSearch error-kind vocabulary by the transport layer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderNativeSearchFailure {
+    pub error_kind: &'static str,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProviderNativeWebSearchDiagnostics {
     pub kind: ProviderNativeWebSearchKind,
@@ -689,6 +706,20 @@ pub trait AgentProvider: Send + Sync {
         ))
     }
 
+    /// Run one standalone native web search. Only the query and the native
+    /// search request cross the boundary: no conversation history, workspace
+    /// data, tools, or response format are attached.
+    async fn native_web_search(
+        &self,
+        _request: ProviderNativeWebSearchRequest,
+        _query: &str,
+    ) -> std::result::Result<ProviderNativeSearchOutcome, ProviderNativeSearchFailure> {
+        Err(ProviderNativeSearchFailure {
+            error_kind: "provider_unavailable",
+            message: "active provider does not support standalone native web search".to_string(),
+        })
+    }
+
     fn native_web_search_kind(&self) -> Option<ProviderNativeWebSearchKind> {
         self.builtin_web_search().map(|capability| capability.kind)
     }
@@ -728,6 +759,24 @@ pub fn builtin_web_search_probe_turn_request(
         conversation: vec![ConversationMessage::UserText(
             "Reply with exactly OK.".into(),
         )],
+        tools: Vec::new(),
+        native_web_search: Some(native_web_search),
+        response_format: None,
+    }
+}
+
+/// Minimal standalone native web search turn request carrying only the query.
+pub fn native_web_search_turn_request(
+    native_web_search: ProviderNativeWebSearchRequest,
+    query: &str,
+) -> ProviderTurnRequest {
+    ProviderTurnRequest {
+        dispatch_guard: None,
+        material: Default::default(),
+        continuation_scope_id: None,
+        provider_session_id: None,
+        prompt_frame: ProviderPromptFrame::plain(query),
+        conversation: vec![ConversationMessage::UserText(query.to_string())],
         tools: Vec::new(),
         native_web_search: Some(native_web_search),
         response_format: None,

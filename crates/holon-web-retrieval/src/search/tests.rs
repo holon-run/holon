@@ -165,6 +165,33 @@ fn discovery_filters_unaddressable_or_incomplete_providers() {
     assert!(list_search_providers(&config).is_empty());
 }
 
+#[test]
+fn discovery_lists_native_providers_only_with_bound_model_route() {
+    let mut reserved_anthropic =
+        test_provider(WebProviderKind::AnthropicNative, "https://reserved.example");
+    reserved_anthropic.model_route = Some("anthropic@default/claude-test".into());
+    let mut reserved_gemini =
+        test_provider(WebProviderKind::GeminiNative, "https://reserved.example");
+    reserved_gemini.model_route = Some("gemini@default/gemini-test".into());
+    let config = test_search_config(
+        vec![
+            (
+                "openai-search",
+                native_provider_config(Some("openai@default/gpt-test")),
+            ),
+            ("unrouted-native", native_provider_config(None)),
+            ("reserved-anthropic", reserved_anthropic),
+            ("reserved-gemini", reserved_gemini),
+        ],
+        vec![],
+        WebSearchMode::Single,
+    );
+    assert_eq!(
+        list_search_providers(&config),
+        ["duckduckgo", "openai-search"]
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn discovery_does_not_start_command_providers() {
@@ -449,6 +476,7 @@ async fn fallback_mode_tries_explicit_order_until_success() {
                     kind: WebProviderKind::Searxng,
                     base_url: None,
                     api_key: String::new(),
+                    model_route: None,
                     command: None,
                     output: None,
                     limits: Default::default(),
@@ -606,6 +634,7 @@ async fn single_provider_request_does_not_fallback() {
                     kind: WebProviderKind::Searxng,
                     base_url: None,
                     api_key: String::new(),
+                    model_route: None,
                     command: None,
                     output: None,
                     limits: Default::default(),
@@ -710,6 +739,7 @@ async fn command_provider_executes_fixed_argv_and_maps_json_results() {
             kind: WebProviderKind::Command,
             base_url: None,
             api_key: String::new(),
+            model_route: None,
             command: Some(crate::WebCommandProviderConfig {
                 argv: vec![
                     "printf".into(),
@@ -864,6 +894,7 @@ fn test_provider(kind: WebProviderKind, base_url: &str) -> WebProviderConfig {
         kind,
         base_url: Some(base_url.to_string()),
         api_key: "test-key-123".to_string(),
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -875,6 +906,7 @@ fn command_test_provider(argv: Vec<String>) -> WebProviderConfig {
         kind: WebProviderKind::Command,
         base_url: None,
         api_key: String::new(),
+        model_route: None,
         command: Some(crate::WebCommandProviderConfig { argv }),
         output: Some(crate::WebCommandOutputConfig {
             format: crate::WebCommandOutputFormat::Json,
@@ -1826,6 +1858,7 @@ async fn perplexity_search_missing_api_key_is_error() {
         kind: WebProviderKind::Perplexity,
         base_url: Some("http://localhost:1".to_string()),
         api_key: String::new(),
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -1930,6 +1963,7 @@ async fn firecrawl_search_missing_api_key_is_error() {
         kind: WebProviderKind::Firecrawl,
         base_url: Some("http://localhost:1".to_string()),
         api_key: String::new(),
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -2016,6 +2050,7 @@ async fn brave_search_missing_api_key_is_error() {
         kind: WebProviderKind::Brave,
         base_url: Some("http://localhost:1".to_string()),
         api_key: String::new(),
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -2141,6 +2176,7 @@ async fn tencent_cloud_wsa_search_missing_api_key_is_error() {
         kind: WebProviderKind::TencentCloudWsa,
         base_url: Some("http://localhost:1".to_string()),
         api_key: String::new(),
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -2255,6 +2291,7 @@ async fn bocha_search_missing_api_key_is_error() {
         kind: WebProviderKind::Bocha,
         base_url: Some("http://localhost:1".to_string()),
         api_key: String::new(),
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -2334,6 +2371,7 @@ async fn brave_search_live_integration() {
         kind: WebProviderKind::Brave,
         base_url: None, // use default https://api.search.brave.com
         api_key,
+        model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
@@ -2387,4 +2425,266 @@ fn gzip_response(body: Vec<u8>, content_type: &'static str) -> Response {
         .headers_mut()
         .insert(CONTENT_TYPE, HeaderValue::from_static(content_type));
     response
+}
+
+// ---------------------------------------------------------------------------
+// Native search providers (explicit-only dispatch boundary)
+// ---------------------------------------------------------------------------
+
+fn native_provider_config(model_route: Option<&str>) -> WebProviderConfig {
+    WebProviderConfig {
+        kind: WebProviderKind::OpenAiNative,
+        base_url: None,
+        api_key: String::new(),
+        model_route: model_route.map(str::to_string),
+        command: None,
+        output: None,
+        limits: Default::default(),
+    }
+}
+
+struct RecordingNativeDispatcher {
+    calls: Mutex<Vec<String>>,
+    outcome: std::result::Result<Vec<WebSearchResult>, WebSearchNativeDispatchError>,
+}
+
+impl RecordingNativeDispatcher {
+    fn ok(results: Vec<WebSearchResult>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            outcome: Ok(results),
+        }
+    }
+
+    fn err(kind: &'static str, message: &str) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            outcome: Err(WebSearchNativeDispatchError {
+                kind,
+                message: message.to_string(),
+                recovery_hint: None,
+            }),
+        }
+    }
+
+    fn dispatched(&self) -> Vec<String> {
+        self.calls.lock().unwrap().clone()
+    }
+}
+
+#[async_trait::async_trait]
+impl WebSearchNativeDispatcher for RecordingNativeDispatcher {
+    async fn dispatch(
+        &self,
+        provider_id: &str,
+        model_route: &str,
+        query: &str,
+        max_results: usize,
+    ) -> std::result::Result<Vec<WebSearchResult>, WebSearchNativeDispatchError> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push(format!("{provider_id}|{model_route}|{query}|{max_results}"));
+        self.outcome.clone()
+    }
+}
+
+fn native_search_result(url: &str) -> WebSearchResult {
+    WebSearchResult {
+        title: format!("Native result {url}"),
+        url: url.to_string(),
+        snippet: None,
+        source: "openai-search".to_string(),
+        published_at: None,
+        canonical_url: None,
+        display_url: None,
+        rank: None,
+        language: None,
+        region: None,
+        metadata: None,
+    }
+}
+
+#[tokio::test]
+async fn native_default_provider_requires_explicit_selection() {
+    let mut config = test_search_config(
+        vec![(
+            "openai-search",
+            native_provider_config(Some("openai@default/gpt-test")),
+        )],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+    config.search.provider = "openai-search".to_string();
+    let error = super::search_with_native(test_tool_error, routing_request(None), &config, None)
+        .await
+        .unwrap_err();
+    let tool_error = test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(tool_error.message.contains("explicit provider argument"));
+}
+
+#[tokio::test]
+async fn native_provider_without_model_route_never_dispatches() {
+    let config = test_search_config(
+        vec![("openai-search", native_provider_config(None))],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+    let dispatcher =
+        RecordingNativeDispatcher::ok(vec![native_search_result("https://example.test/native")]);
+    let error = super::search_with_native(
+        test_tool_error,
+        routing_request(Some("openai-search")),
+        &config,
+        Some(&dispatcher),
+    )
+    .await
+    .unwrap_err();
+    let tool_error = test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(tool_error.message.contains("no model_route bound"));
+    assert!(dispatcher.dispatched().is_empty());
+}
+
+#[tokio::test]
+async fn native_provider_without_attached_runtime_fails() {
+    let config = test_search_config(
+        vec![(
+            "openai-search",
+            native_provider_config(Some("openai@default/gpt-test")),
+        )],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+    let error = super::search_with_native(
+        test_tool_error,
+        routing_request(Some("openai-search")),
+        &config,
+        None,
+    )
+    .await
+    .unwrap_err();
+    let tool_error = test_tool_error(&error);
+    assert_eq!(tool_error.kind, "provider_unavailable");
+    assert!(tool_error.message.contains("no native search runtime"));
+}
+
+#[tokio::test]
+async fn explicit_native_provider_dispatches_and_maps_results() {
+    let config = test_search_config(
+        vec![(
+            "openai-search",
+            native_provider_config(Some("openai@default/gpt-test")),
+        )],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+    let dispatcher = RecordingNativeDispatcher::ok(vec![
+        native_search_result("https://example.test/first"),
+        native_search_result("https://example.test/second"),
+    ]);
+    let response = super::search_with_native(
+        test_tool_error,
+        routing_request(Some("openai-search")),
+        &config,
+        Some(&dispatcher),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.provider, "openai-search");
+    assert_eq!(response.results.len(), 2);
+    assert_eq!(response.results[0].url, "https://example.test/first");
+    assert_eq!(response.provider_attempts.len(), 1);
+    assert_eq!(
+        response.provider_attempts[0].status,
+        WebSearchProviderAttemptStatus::Success
+    );
+    assert_eq!(response.winning_provider.as_deref(), Some("openai-search"));
+    assert_eq!(
+        dispatcher.dispatched(),
+        vec!["openai-search|openai@default/gpt-test|fixture query|2".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn native_search_not_executed_fails_without_fallback() {
+    let config = test_search_config(
+        vec![(
+            "openai-search",
+            native_provider_config(Some("openai@default/gpt-test")),
+        )],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+    let dispatcher = RecordingNativeDispatcher::err(
+        "search_not_executed",
+        "upstream returned no search evidence",
+    );
+    let error = super::search_with_native(
+        test_tool_error,
+        routing_request(Some("openai-search")),
+        &config,
+        Some(&dispatcher),
+    )
+    .await
+    .unwrap_err();
+    let tool_error = test_tool_error(&error);
+    assert_eq!(tool_error.kind, "search_not_executed");
+    assert_eq!(dispatcher.dispatched().len(), 1);
+}
+
+#[test]
+fn provider_order_auto_excludes_native_providers() {
+    let config = test_search_config(
+        vec![
+            (
+                "openai-search",
+                native_provider_config(Some("openai@default/gpt-test")),
+            ),
+            (
+                "duck",
+                test_provider(WebProviderKind::DuckDuckGo, "https://example.test"),
+            ),
+        ],
+        vec!["openai-search", "duck"],
+        WebSearchMode::Fallback,
+    );
+    assert_eq!(provider_order("auto", &config), vec!["duck".to_string()]);
+}
+
+#[tokio::test]
+async fn auto_mode_never_dispatches_native_providers() {
+    let base_url = searxng_mock_base_url(searxng_results_json(&[(
+        "Managed result",
+        "https://example.test/managed",
+        "ok",
+    )]))
+    .await;
+    let config = test_search_config(
+        vec![
+            (
+                "openai-search",
+                native_provider_config(Some("openai@default/gpt-test")),
+            ),
+            (
+                "managed",
+                test_provider(WebProviderKind::Searxng, &base_url),
+            ),
+        ],
+        vec!["openai-search", "managed"],
+        WebSearchMode::Fallback,
+    );
+    let dispatcher =
+        RecordingNativeDispatcher::ok(vec![native_search_result("https://example.test/native")]);
+    let response = super::search_with_native(
+        test_tool_error,
+        routing_request(Some("auto")),
+        &config,
+        Some(&dispatcher),
+    )
+    .await
+    .unwrap();
+    assert!(dispatcher.dispatched().is_empty());
+    assert_eq!(response.winning_provider.as_deref(), Some("managed"));
 }

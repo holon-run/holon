@@ -256,6 +256,9 @@ pub struct WebProviderConfig {
     /// Empty when no credential profile is configured.
     #[serde(skip)]
     pub api_key: String,
+    /// Model route binding for native search kinds; `None` for other kinds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_route: Option<String>,
     pub command: Option<WebCommandProviderConfig>,
     pub output: Option<WebCommandOutputConfig>,
     pub limits: WebProviderLimitsConfig,
@@ -308,6 +311,7 @@ impl WebProviderConfig {
             kind: value.kind,
             base_url: value.base_url.clone(),
             api_key: String::new(),
+            model_route: value.model_route.clone(),
             command: value
                 .command
                 .as_ref()
@@ -389,6 +393,23 @@ fn validate_provider_config(id: &str, provider: &crate::WebProviderConfigFile) -
         if provider.limits.timeout_ms.is_some() || provider.limits.max_output_bytes.is_some() {
             return Err(anyhow!(
                 "web provider `{id}` kind={} must not configure command limits; limits are only supported for kind=command",
+                provider.kind.as_str()
+            ));
+        }
+        if !provider.kind.is_native_search() {
+            if provider.model_route.is_some() {
+                return Err(anyhow!(
+                    "web provider `{id}` kind={} must not configure model_route; model_route is only supported for native search kinds",
+                    provider.kind.as_str()
+                ));
+            }
+        } else if provider
+            .model_route
+            .as_ref()
+            .is_some_and(|route| route.trim().is_empty())
+        {
+            return Err(anyhow!(
+                "web provider `{id}` kind={} has an empty model_route; bind a configured model route or remove model_route",
                 provider.kind.as_str()
             ));
         }

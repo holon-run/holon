@@ -627,6 +627,62 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
     })
 }
 
+/// Parse one standalone native web search response. Transport shape is
+/// validated exactly like a conversation response, but answer text is not
+/// required: search-call-only output and citation-only messages are
+/// successful outcomes whose interpretation belongs to the search layer,
+/// not transport failures.
+pub fn parse_native_web_search_response_with_transport_state(
+    response: Value,
+) -> Result<ParsedOpenAiResponse> {
+    let response_id = response
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let output = response
+        .get("output")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_response_error(
+                "OpenAI-style response did not contain an output array",
+                "missing output array",
+            )
+        })?;
+    let output_items = output
+        .iter()
+        .map(canonicalize_openai_provider_item)
+        .collect::<Vec<_>>();
+    let usage = response.get("usage").and_then(Value::as_object);
+    let input_tokens = usage
+        .and_then(|usage| usage.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok(ParsedOpenAiResponse {
+        served_service_tier: response
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        response: ProviderTurnResponse {
+            material: Default::default(),
+            blocks: Vec::new(),
+            stop_reason: None,
+            input_tokens,
+            output_tokens,
+            cache_usage: None,
+            provider_message_id: response_id.clone(),
+            provider_request_id: None,
+            request_diagnostics: None,
+        },
+        response_id,
+        output_items,
+        transport_timeline: None,
+    })
+}
+
 fn openai_url_citations(content_item: &Value) -> Vec<Citation> {
     let mut seen = HashSet::new();
     content_item
@@ -660,6 +716,42 @@ fn openai_url_citations(content_item: &Value) -> Vec<Citation> {
             Some(Citation { url, title })
         })
         .collect()
+}
+
+/// Parse one standalone native web search response: `search_executed` is true
+/// only when the output carries explicit search-tool evidence, and citations
+/// come only from structured `url_citation` annotations.
+pub(in super::super) fn parse_native_web_search_output(
+    output_items: &[Value],
+) -> crate::provider::ProviderNativeSearchOutcome {
+    let search_executed = output_items
+        .iter()
+        .any(|item| item.get("type").and_then(Value::as_str) == Some("web_search_call"));
+    let mut citations = Vec::new();
+    for item in output_items {
+        if item.get("type").and_then(Value::as_str) != Some("message") {
+            continue;
+        }
+        let Some(content) = item.get("content").and_then(Value::as_array) else {
+            continue;
+        };
+        for content_item in content {
+            let item_type = content_item.get("type").and_then(Value::as_str);
+            if !matches!(
+                item_type,
+                Some("output_text") | Some("text") | Some("input_text")
+            ) {
+                continue;
+            }
+            if content_item.get("text").and_then(Value::as_str).is_some() {
+                citations.extend(openai_url_citations(content_item));
+            }
+        }
+    }
+    crate::provider::ProviderNativeSearchOutcome {
+        search_executed,
+        citations,
+    }
 }
 
 fn strip_openai_citation_sentinels(text: &str) -> String {

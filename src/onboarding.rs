@@ -1595,6 +1595,7 @@ mod tests {
                 base_url: None,
                 api_key: String::new(),
                 command: None,
+                model_route: None,
                 output: None,
                 limits: WebProviderLimitsConfig::default(),
             },
