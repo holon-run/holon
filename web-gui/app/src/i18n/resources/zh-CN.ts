@@ -1001,7 +1001,7 @@ const zh: Record<string, any> = {
       },
       firecrawl: {
         label: "Firecrawl",
-        description: "面向抓取工作流的搜索与页面内容提取服务。",
+        description: "面向抓取工作流的搜索与页面内容提取服务，也可免密钥使用。",
       },
       tencent_cloud_wsa: {
         label: "腾讯云 WSA",

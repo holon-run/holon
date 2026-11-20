@@ -252,6 +252,7 @@ type StandardSearchProviderDefinition = {
   kind: string;
   category: "api" | "selfHosted";
   requiresApiKey: boolean;
+  supportsApiKey: boolean;
   requiresBaseUrl: boolean;
   defaultCredentialProfile?: string;
   capabilities: RuntimeWebSearchProviderKindSummary["capabilities"];
@@ -263,17 +264,22 @@ export function buildStandardSearchProviderDefinitions(
   return kinds
     .filter(({ capabilities }) =>
       capabilities.status !== "unsupported"
-      && (capabilities.auth === "api_key" || capabilities.auth === "self_hosted")
+      && (capabilities.auth === "api_key" || capabilities.auth === "api_key_optional" || capabilities.auth === "self_hosted")
     )
-    .map(({ kind, capabilities }) => ({
-      id: kind.replaceAll("_", "-"),
-      kind,
-      category: capabilities.auth === "self_hosted" ? "selfHosted" as const : "api" as const,
-      requiresApiKey: capabilities.auth === "api_key",
-      requiresBaseUrl: capabilities.auth === "self_hosted",
-      defaultCredentialProfile: capabilities.auth === "api_key" ? `${kind}:default` : undefined,
-      capabilities,
-    }))
+    .map(({ kind, capabilities }) => {
+      const requiresApiKey = capabilities.auth === "api_key";
+      const supportsApiKey = requiresApiKey || capabilities.auth === "api_key_optional";
+      return {
+        id: kind.replaceAll("_", "-"),
+        kind,
+        category: capabilities.auth === "self_hosted" ? "selfHosted" as const : "api" as const,
+        requiresApiKey,
+        supportsApiKey,
+        requiresBaseUrl: capabilities.auth === "self_hosted",
+        defaultCredentialProfile: supportsApiKey ? `${kind}:default` : undefined,
+        capabilities,
+      };
+    })
     .sort((left, right) => right.capabilities.defaultPriority - left.capabilities.defaultPriority);
 }
 
@@ -1640,7 +1646,7 @@ export function SettingsPage({
                         </label>
                       </div>
                     ) : null}
-                    {definition.requiresApiKey ? (
+                    {definition.supportsApiKey ? (
                       <label>
                         <span>{t("settings.credentialProfile")}</span>
                         <input
@@ -1650,7 +1656,7 @@ export function SettingsPage({
                         />
                       </label>
                     ) : null}
-                    {definition.requiresApiKey && credentialProfile ? (
+                    {definition.supportsApiKey && credentialProfile ? (
                       <div className="settings-api-key-section">
                         <div className="settings-api-key-header">
                           <span>{t("settings.apiKeyFor", { profile: credentialProfile })}</span>
@@ -1703,7 +1709,7 @@ export function SettingsPage({
                           <span>{t("settings.kindLabel")}</span>
                           <input value={definition.kind} readOnly disabled />
                         </label>
-                        {definition.requiresApiKey ? (
+                        {definition.supportsApiKey ? (
                           <label>
                             <span>{t("settings.baseUrl")}</span>
                             <input value={draft.baseUrl ?? ""} onChange={(event) => updateSearchProviderDraft(definition.id, { baseUrl: event.target.value })} placeholder={t("settings.optionalProviderDefault")} />
