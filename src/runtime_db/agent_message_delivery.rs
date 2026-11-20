@@ -4517,6 +4517,8 @@ mod tests {
         seed_target(&db, AgentStatus::AwakeIdle)?;
         let (_turn, inputs) = seed_reply_turn(&db, &["sender-a", "sender-b"])?;
         let chain_a = promote_source_chain(&db, &inputs[0].id)?;
+        let secondary_chain = promote_source_chain(&db, &inputs[1].id)?;
+        assert_ne!(chain_a, secondary_chain);
         // A second replyable source whose selected route points at the target.
         let source_b = append_input(&db, &reply_envelope("source-b", "sender-b", "target-agent"))?;
         let delivery = accepted_reply_delivery(&source_b, "sender-b", "source-b-delivery")?;
@@ -4535,6 +4537,23 @@ mod tests {
         }
         assert_eq!(chain_budget(&db, &chain_a)?, Some((16, 3)));
 
+        // Selecting a route does not make a direct send a reply.
+        let direct = prepare_reply(
+            &db,
+            "target-agent",
+            Some(&inputs[1].id),
+            false,
+            "selected-direct",
+        )?;
+        let receipt = admit(&db, &direct)?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+        assert_eq!(
+            stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+            Some(chain_a.as_str())
+        );
+        assert_eq!(chain_budget(&db, &chain_a)?, Some((16, 4)));
+        assert_eq!(chain_budget(&db, &secondary_chain)?, Some((16, 1)));
+
         // A selected reply binds the selected source instead.
         let reply = prepare_reply_on_source(&db, &source_b.id, "target-agent", "selected-reply")?;
         assert_eq!(
@@ -4552,7 +4571,7 @@ mod tests {
             Some(chain_b.as_str())
         );
         assert_eq!(chain_budget(&db, &chain_b)?, Some((16, 2)));
-        assert_eq!(chain_budget(&db, &chain_a)?, Some((16, 3)));
+        assert_eq!(chain_budget(&db, &chain_a)?, Some((16, 4)));
         Ok(())
     }
 

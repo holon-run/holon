@@ -31,8 +31,21 @@ pub(crate) fn resolve_delivery_chain_tx(
     tx: &Transaction<'_>,
     candidate: &AgentMessageDeliveryRecord,
 ) -> Result<String> {
-    if let Some(route) = candidate.caller.inherited_routing_context.as_ref() {
-        return source_chain_tx(tx, &route.message_id).map(|anchor| anchor.chain_id);
+    // The selected route is retained for admission revalidation even when
+    // preparation makes a direct send. Only the outgoing route proves inheritance.
+    if let Some(source_id) = candidate
+        .routing_context
+        .as_ref()
+        .and_then(|route| route.in_reply_to_message_id.as_deref())
+        .filter(|source_id| {
+            candidate
+                .caller
+                .inherited_routing_context
+                .as_ref()
+                .is_some_and(|route| route.message_id == *source_id)
+        })
+    {
+        return source_chain_tx(tx, source_id).map(|anchor| anchor.chain_id);
     }
     if let (Some(agent_id), Some(turn_id)) = (
         candidate.caller.caller_agent_id.as_deref(),

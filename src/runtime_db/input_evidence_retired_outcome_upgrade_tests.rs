@@ -26,26 +26,32 @@ fn bootstrap(directory: &tempfile::TempDir) -> Result<crate::runtime::RuntimeHan
 }
 
 type StoredAliases = Vec<(i64, i64, String, String)>;
+const RETIRE_OUTCOME_VERSION: i64 = 115;
 
 fn fixture(old_v115: bool) -> Result<(tempfile::TempDir, InputEvidenceLoadRequest, StoredAliases)> {
     let directory = tempfile::tempdir()?;
-    let db = open(&directory)?;
-    let request = db.transaction(|tx| {
+    let mut connection = crate::runtime_db::connection::open_connection(
+        &state_dir(&directory).join("runtime.sqlite"),
+    )?;
+    ensure_migration_table(&connection)?;
+    // Build an actual pre-115 database so later migrations cannot leak into the fixture.
+    for migration in MIGRATIONS
+        .iter()
+        .take_while(|m| m.version < RETIRE_OUTCOME_VERSION)
+    {
+        apply_migration(&mut connection, migration)?;
+    }
+    let (request, before) = {
+        let tx = connection.transaction()?;
         tx.execute_batch(INPUT_EVIDENCE_SCHEMA)?;
-        capture_input_evidence_upgrade_tx(tx, time())?;
-        upsert_agent_identity_tx(tx, &identity())?;
+        capture_input_evidence_upgrade_tx(&tx, time())?;
+        upsert_agent_identity_tx(&tx, &identity())?;
         let mut state = AgentState::new("agent-a");
         state.pending = 1;
-        upsert_agent_state_tx(tx, &state)?;
-        // Both are data-only migrations. Unrecord them before the writer
-        // writes on this otherwise empty schema so the reopen really runs them.
-        tx.execute(
-            "DELETE FROM schema_migrations WHERE version IN (115, 116)",
-            [],
-        )?;
-        let source = install_provider_lineage_with_legacy_outcome(tx, true)?;
+        upsert_agent_state_tx(&tx, &state)?;
+        let source = install_provider_lineage_with_legacy_outcome(&tx, true)?;
         crate::runtime_db::repositories::upsert_queue_entry_tx(
-            tx,
+            &tx,
             &crate::types::QueueEntryRecord {
                 message_id: source.id.clone(),
                 agent_id: source.agent_id.clone(),
@@ -56,14 +62,14 @@ fn fixture(old_v115: bool) -> Result<(tempfile::TempDir, InputEvidenceLoadReques
             },
         )?;
         let key = Key::new(Family::Outcome, OUTCOME);
-        let alias = alias_on(tx, &scope(), &key)?.context("writer did not qualify Outcome")?;
+        let alias = alias_on(&tx, &scope(), &key)?.context("writer did not qualify Outcome")?;
         assert_eq!(
             alias.fingerprint,
-            fingerprint_on(tx, "agent-a", &key)?.unwrap()
+            fingerprint_on(&tx, "agent-a", &key)?.unwrap()
         );
         assert_eq!(
             alias.digest.as_deref(),
-            Some(bytes_digest(payload_on(tx, "agent-a", &key)?.unwrap().as_bytes()).as_str())
+            Some(bytes_digest(payload_on(&tx, "agent-a", &key)?.unwrap().as_bytes()).as_str())
         );
         assert!(alias.fingerprint.frozen_payload_digest.is_none());
         tx.execute(
@@ -74,13 +80,15 @@ fn fixture(old_v115: bool) -> Result<(tempfile::TempDir, InputEvidenceLoadReques
              WHERE agent_id='agent-a' AND identity_incarnation=1 AND family='outcome'",
             [],
         )?;
-        Ok(provider_lineage_request(&source))
-    })?;
-    let before = outcome_aliases(&db, "lineage-outcome-1")?;
-    drop(db);
+        let before = outcome_aliases_on(&tx, "lineage-outcome-1")?;
+        tx.commit()?;
+        (provider_lineage_request(&source), before)
+    };
     if old_v115 {
-        let mut connection = Connection::open(state_dir(&directory).join("runtime.sqlite"))?;
-        let migration = MIGRATIONS.iter().find(|m| m.version == 115).unwrap();
+        let migration = MIGRATIONS
+            .iter()
+            .find(|m| m.version == RETIRE_OUTCOME_VERSION)
+            .context("missing retired Outcome migration")?;
         apply_migration(&mut connection, migration)?;
         // Recreate the only divergent write in old, already-recorded v115.
         connection.execute(
@@ -94,16 +102,17 @@ fn fixture(old_v115: bool) -> Result<(tempfile::TempDir, InputEvidenceLoadReques
 }
 
 fn outcome_aliases(db: &RuntimeDb, id: &str) -> Result<StoredAliases> {
-    db.transaction(|tx| {
-        let mut statement = tx.prepare(
-            "SELECT identity_incarnation, revision, content_digest, fingerprint_json
+    db.transaction(|tx| outcome_aliases_on(tx, id))
+}
+
+fn outcome_aliases_on(connection: &Connection, id: &str) -> Result<StoredAliases> {
+    let mut statement = connection.prepare(
+        "SELECT identity_incarnation, revision, content_digest, fingerprint_json
              FROM input_evidence_current WHERE agent_id='agent-a' AND family='outcome'
                AND record_id=?1 ORDER BY identity_incarnation",
-        )?;
-        let rows =
-            statement.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
-        Ok(rows.collect::<rusqlite::Result<_>>()?)
-    })
+    )?;
+    let rows = statement.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+    Ok(rows.collect::<rusqlite::Result<_>>()?)
 }
 
 #[tokio::test]
