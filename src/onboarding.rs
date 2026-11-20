@@ -412,7 +412,9 @@ pub fn onboarding_search_choices(config: &AppConfig) -> Vec<OnboardingSearchChoi
         OnboardingSearchChoice {
             selection: OnboardingSearchSelection::Auto,
             title: OnboardingSearchSelection::Auto.label().into(),
-            detail: format!("{native_detail}; DuckDuckGo is used as the default managed fallback"),
+            detail: format!(
+                "{native_detail}; managed fallback chain: Firecrawl (keyless) -> Keenable -> DuckDuckGo"
+            ),
         },
         OnboardingSearchChoice {
             selection: OnboardingSearchSelection::ManagedDuckDuckGo,
@@ -918,6 +920,7 @@ fn web_provider_auth(auth: WebProviderAuthClass) -> &'static str {
     match auth {
         WebProviderAuthClass::None => "none",
         WebProviderAuthClass::ApiKey => "api_key",
+        WebProviderAuthClass::ApiKeyOptional => "api_key_optional",
         WebProviderAuthClass::NativeProvider => "native_provider",
         WebProviderAuthClass::SelfHosted => "self_hosted",
     }

@@ -103,11 +103,13 @@ structured results with citations.
 
 ### Search providers
 
-Holon uses a provider-based search model with multiple provider options:
+Holon uses a provider-based search model with multiple provider options. With
+no providers configured, `auto` mode uses a built-in keyless fallback chain:
+Firecrawl -> Keenable -> DuckDuckGo. Explicitly configured providers always
+take precedence over this chain.
 
-- **DuckDuckGo (managed)** — Holon's built-in managed search provider. No
-  API key required. Enabled during onboarding with "Managed WebSearch:
-  DuckDuckGo" or "Auto" mode.
+- **DuckDuckGo (managed)** — Holon's built-in HTML search provider. No
+  API key required; it is the final fallback of the keyless chain.
 - **Tencent Cloud WSA** — Tencent Cloud SearchPro / Web Search API. Requires an
   API key set via credential profile. Configure with
   `holon config set web.providers.tencent.kind tencent_cloud_wsa` and
@@ -120,6 +122,11 @@ Holon uses a provider-based search model with multiple provider options:
   without an API key; a key switches it to the authenticated endpoint. Configure
   with `holon config set web.providers.keenable.kind keenable` and, for keyed
   access, `holon config set web.providers.keenable.credential_profile <profile>`.
+- **Firecrawl** — works without an API key on the search endpoint's free tier;
+  a configured key raises rate limits. It is the first choice of the keyless
+  fallback chain. Configure with
+  `holon config set web.providers.firecrawl.kind firecrawl` and, for keyed
+  access, `holon config set web.providers.firecrawl.credential_profile <profile>`.
 - **DeepSeek** — independent Search/Fetch APIs using a DeepSeek API key profile
   (`kind=deepseek`), available to any conversation model.
 - **Model-native search** — Some model providers (OpenAI, Anthropic) support

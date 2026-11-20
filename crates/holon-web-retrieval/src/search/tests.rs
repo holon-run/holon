@@ -556,7 +556,7 @@ fn provider_order_defaults_to_configured_providers() {
 
     assert_eq!(
         provider_order("auto", &config),
-        vec!["alpha", "zeta", DUCKDUCKGO_PROVIDER_ID]
+        vec!["alpha", "zeta", FIRECRAWL_PROVIDER_ID]
     );
 }
 
@@ -583,7 +583,7 @@ fn provider_order_defaults_skip_unsupported_configured_providers() {
 
     assert_eq!(
         provider_order("auto", &config),
-        vec!["searx", DUCKDUCKGO_PROVIDER_ID]
+        vec!["searx", FIRECRAWL_PROVIDER_ID, KEENABLE_PROVIDER_ID]
     );
 }
 
@@ -616,6 +616,60 @@ fn provider_order_defaults_to_capability_priority() {
         provider_order("auto", &config),
         vec!["brave", "tavily", "exa"]
     );
+}
+
+#[test]
+fn provider_order_defaults_to_keyless_builtin_chain() {
+    let config = test_search_config(vec![], vec![], WebSearchMode::Fallback);
+
+    assert_eq!(
+        provider_order("auto", &config),
+        vec![
+            FIRECRAWL_PROVIDER_ID,
+            KEENABLE_PROVIDER_ID,
+            DUCKDUCKGO_PROVIDER_ID
+        ]
+    );
+}
+
+#[test]
+fn provider_order_builtin_chain_skips_configured_ids() {
+    let config = test_search_config(
+        vec![(
+            FIRECRAWL_PROVIDER_ID,
+            test_provider(WebProviderKind::Firecrawl, "https://firecrawl.example"),
+        )],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+
+    assert_eq!(
+        provider_order("auto", &config),
+        vec![
+            FIRECRAWL_PROVIDER_ID,
+            KEENABLE_PROVIDER_ID,
+            DUCKDUCKGO_PROVIDER_ID
+        ]
+    );
+}
+
+#[test]
+fn builtin_keyless_provider_kinds_and_configs() {
+    assert_eq!(
+        builtin_keyless_provider_kind(FIRECRAWL_PROVIDER_ID),
+        Some(WebProviderKind::Firecrawl)
+    );
+    assert_eq!(
+        builtin_keyless_provider_kind(KEENABLE_PROVIDER_ID),
+        Some(WebProviderKind::Keenable)
+    );
+    assert_eq!(builtin_keyless_provider_kind("other"), None);
+
+    let firecrawl = builtin_keyless_provider_config(FIRECRAWL_PROVIDER_ID).unwrap();
+    assert_eq!(firecrawl.kind, WebProviderKind::Firecrawl);
+    assert!(firecrawl.api_key.is_empty());
+    assert!(firecrawl.base_url.is_none());
+    assert_eq!(builtin_keyless_provider_config("other"), None);
 }
 
 #[tokio::test]
@@ -1957,24 +2011,54 @@ async fn firecrawl_search_http_429_is_error() {
     assert_eq!(tool_error.kind, "rate_limited");
 }
 
+#[test]
+fn firecrawl_request_is_keyless_without_api_key() {
+    let client = Client::new();
+    let request = firecrawl_request(&client, "https://api.firecrawl.dev/", " ", "q", 50)
+        .build()
+        .unwrap();
+    assert_eq!(
+        request.url().as_str(),
+        "https://api.firecrawl.dev/v1/search"
+    );
+    assert!(request.headers().get("Authorization").is_none());
+
+    let request = firecrawl_request(&client, "https://api.firecrawl.dev", "k", "q", 5)
+        .build()
+        .unwrap();
+    assert_eq!(
+        request.url().as_str(),
+        "https://api.firecrawl.dev/v1/search"
+    );
+    assert_eq!(request.headers()["Authorization"], "Bearer k");
+}
+
 #[tokio::test]
-async fn firecrawl_search_missing_api_key_is_error() {
+async fn firecrawl_search_keyless_without_api_key_uses_free_tier() {
+    let router = axum::Router::new().route(
+        "/v1/search",
+        axum::routing::post(|| async { axum::Json(firecrawl_results_json()) }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{}", addr);
+
     let provider = WebProviderConfig {
         kind: WebProviderKind::Firecrawl,
-        base_url: Some("http://localhost:1".to_string()),
+        base_url: Some(base_url),
         api_key: String::new(),
         model_route: None,
         command: None,
         output: None,
         limits: Default::default(),
     };
-
-    let err = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
+    let results = firecrawl_search("test", 5, "firecrawl_test", &provider, &test_fetch_config())
         .await
-        .unwrap_err();
-    let tool_error = crate::test_tool_error(&err);
-    assert_eq!(tool_error.kind, "provider_unavailable");
-    assert!(err.to_string().contains("API key"));
+        .unwrap();
+    assert_eq!(results.len(), 2);
 }
 
 #[tokio::test]

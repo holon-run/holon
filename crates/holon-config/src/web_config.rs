@@ -203,6 +203,9 @@ impl WebSearchMode {
 pub enum WebProviderAuthClass {
     None,
     ApiKey,
+    /// Works without a key (public endpoint or free tier); a configured key
+    /// only raises rate limits or unlocks paid usage.
+    ApiKeyOptional,
     NativeProvider,
     SelfHosted,
 }
@@ -605,9 +608,9 @@ impl WebProviderKind {
                 default_priority: 75,
                 status: WebProviderSupportStatus::Supported,
             },
-            // Keenable also works without a key (public endpoint); a key raises limits.
+            // Keenable's public endpoint needs no key; a key only raises limits.
             WebProviderKind::Keenable => WebProviderCapabilityMetadata {
-                auth: WebProviderAuthClass::ApiKey,
+                auth: WebProviderAuthClass::ApiKeyOptional,
                 cost_class: WebProviderCostClass::Paid,
                 quality_hint: WebProviderQualityHint::Keyword,
                 supports_domain_filter: false,
@@ -642,8 +645,9 @@ impl WebProviderKind {
                 default_priority: 60,
                 status: WebProviderSupportStatus::Supported,
             },
+            // Firecrawl search works without a key (free tier); a key raises limits.
             WebProviderKind::Firecrawl => WebProviderCapabilityMetadata {
-                auth: WebProviderAuthClass::ApiKey,
+                auth: WebProviderAuthClass::ApiKeyOptional,
                 cost_class: WebProviderCostClass::Paid,
                 quality_hint: WebProviderQualityHint::Research,
                 supports_domain_filter: true,

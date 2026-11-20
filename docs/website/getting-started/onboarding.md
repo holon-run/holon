@@ -84,8 +84,8 @@ search modes:
 | Mode | Behavior |
 |------|----------|
 | **Disabled** | No web search capability |
-| **Auto** | Prefer model-native search if available, fall back to managed DuckDuckGo |
-| **Managed (DuckDuckGo)** | Use Holon's built-in DuckDuckGo search provider |
+| **Auto** | Prefer model-native search if available, fall back to the managed keyless chain (Firecrawl -> Keenable -> DuckDuckGo) |
+| **Managed (DuckDuckGo)** | Use Holon's built-in DuckDuckGo search provider only |
 
 Search configuration can be changed later with `holon config set`.
 
