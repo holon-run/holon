@@ -212,10 +212,12 @@ jobs:
           fi
 
       - name: Pull and smoke candidate digest
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
         run: |
           set -euo pipefail
           docker pull "${CANDIDATE_IMAGE}"
-          scripts/docker-smoke.sh "${CANDIDATE_IMAGE}"
+          scripts/docker-smoke.sh "${CANDIDATE_IMAGE}" "${RELEASE_TAG#v}"
 
       - name: Prepare previous release image
         id: previous
