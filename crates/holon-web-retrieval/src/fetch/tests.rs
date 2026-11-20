@@ -117,6 +117,16 @@ fn list_fetch_providers_mirrors_route_gating() {
         .insert("exa-invalid-key".into(), invalid_key);
     exa.api_key.clear();
     config.providers.insert("exa-no-key".into(), exa);
+    // Firecrawl Scrape is callable for auto extraction only and requires a
+    // key even though Firecrawl Search works keyless.
+    let mut firecrawl = provider.clone();
+    firecrawl.kind = WebProviderKind::Firecrawl;
+    let mut firecrawl_no_key = firecrawl.clone();
+    firecrawl_no_key.api_key.clear();
+    config.providers.insert("firecrawl-a".into(), firecrawl);
+    config
+        .providers
+        .insert("firecrawl-no-key".into(), firecrawl_no_key);
     // Search-only kinds and missing credentials stay undiscoverable.
     let mut search_only = provider.clone();
     search_only.kind = WebProviderKind::Brave;
@@ -136,6 +146,7 @@ fn list_fetch_providers_mirrors_route_gating() {
             Some("auto"),
             Some("deepseek-a"),
             Some("exa-a"),
+            Some("firecrawl-a"),
             Some("tavily-a")
         ]
     );
@@ -143,8 +154,10 @@ fn list_fetch_providers_mirrors_route_gating() {
     assert_eq!(listed[3].extract_modes, vec!["auto"]);
     assert_eq!(listed[4].kind, "exa");
     assert_eq!(listed[4].extract_modes, vec!["auto"]);
-    assert_eq!(listed[5].kind, "tavily");
-    assert_eq!(listed[5].extract_modes, vec!["auto", "text"]);
+    assert_eq!(listed[5].kind, "firecrawl");
+    assert_eq!(listed[5].extract_modes, vec!["auto"]);
+    assert_eq!(listed[6].kind, "tavily");
+    assert_eq!(listed[6].extract_modes, vec!["auto", "text"]);
 
     // The shared preflight rejects every remote request once custom host
     // rules are configured, so discovery must not offer those routes.

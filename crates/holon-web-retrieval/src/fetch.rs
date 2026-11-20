@@ -14,7 +14,7 @@ use wreq_util::Emulation;
 use holon_tools::helpers::truncate_text;
 
 use crate::{
-    deepseek_tool_url,
+    deepseek_tool_url, firecrawl_scrape_url,
     policy::{policy_error, timeout, validate_fetch_url},
     tavily_extract_url, WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
@@ -198,6 +198,7 @@ pub(crate) fn remote_fetch_modes(kind: WebProviderKind) -> Option<&'static [Extr
     match kind {
         WebProviderKind::DeepSeek | WebProviderKind::Exa => Some(&[ExtractMode::Auto]),
         WebProviderKind::Tavily => Some(&[ExtractMode::Auto, ExtractMode::Text]),
+        WebProviderKind::Firecrawl => Some(&[ExtractMode::Auto]),
         _ => None,
     }
 }
@@ -264,6 +265,11 @@ fn remote_fetch_provider_callable(provider: &WebProviderConfig) -> bool {
         WebProviderKind::Exa => {
             super::remote_fetch::exa_api_key(provider).is_ok()
                 && super::remote_fetch::exa_contents_url(provider).is_ok()
+        }
+        // Firecrawl Search works without a key, but Scrape v2 requires
+        // Bearer auth, so only keyed providers are callable fetch routes.
+        WebProviderKind::Firecrawl => {
+            !provider.api_key.trim().is_empty() && firecrawl_scrape_url(provider).is_ok()
         }
         _ => false,
     }
