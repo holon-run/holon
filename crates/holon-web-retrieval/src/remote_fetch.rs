@@ -1,6 +1,6 @@
 use anyhow::Result;
 use chrono::Utc;
-use reqwest::{redirect::Policy, Client};
+use reqwest::{header::HeaderValue, redirect::Policy, Client};
 use serde::Deserialize;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -108,6 +108,7 @@ pub(super) async fn fetch(
         WebProviderKind::Tavily => {
             tavily_extract_fetch(request, provider_id, provider, config).await
         }
+        WebProviderKind::Exa => exa_contents_fetch(request, provider_id, provider, config).await,
         kind => Err(policy_error(
             "provider_unavailable",
             format!(
@@ -115,7 +116,7 @@ pub(super) async fn fetch(
                 kind.as_str()
             ),
             json!({ "provider": provider_id, "kind": kind.as_str() }),
-            "select a deepseek or tavily provider or omit provider for local HTTP",
+            "select a provider from ListWebFetchProviders or omit provider for local HTTP",
         )),
     }
 }
@@ -322,6 +323,168 @@ fn tavily_error(message: &str, retryable: bool) -> anyhow::Error {
     ToolError::new("provider_error", message)
         .with_retryable(retryable)
         .with_recovery_hint("check the Tavily API key, subscription, or service availability")
+        .into()
+}
+
+pub(super) fn exa_contents_url(provider: &WebProviderConfig) -> Result<Url> {
+    let invalid_base = || {
+        policy_error(
+            "provider_unavailable",
+            "Exa Contents requires an HTTP(S) base URL without credentials, query, or fragment",
+            json!({}),
+            "check the configured Exa base URL",
+        )
+    };
+    let base = provider.base_url.as_deref().unwrap_or("https://api.exa.ai");
+    let mut url = Url::parse(base).map_err(|_| invalid_base())?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(invalid_base());
+    }
+    url.set_path(&format!("{}/contents", url.path().trim_end_matches('/')));
+    Ok(url)
+}
+
+pub(super) fn exa_api_key(provider: &WebProviderConfig) -> Result<HeaderValue> {
+    require_remote_api_key("Exa Contents", provider)?;
+    let mut key = HeaderValue::from_str(&provider.api_key).map_err(|_| {
+        policy_error(
+            "provider_unavailable",
+            "Exa Contents API key is not a valid HTTP header value",
+            json!({}),
+            "check the configured Exa credential profile",
+        )
+    })?;
+    key.set_sensitive(true);
+    Ok(key)
+}
+
+#[derive(Deserialize)]
+struct ExaContentsStatus {
+    id: String,
+    status: String,
+}
+
+#[derive(Deserialize)]
+struct ExaContentsEntry {
+    id: String,
+    url: Option<String>,
+    text: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ExaContentsResponse {
+    #[serde(default)]
+    results: Vec<ExaContentsEntry>,
+    #[serde(default)]
+    statuses: Vec<ExaContentsStatus>,
+}
+
+async fn exa_contents_fetch(
+    request: WebFetchRequest,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    config: &WebFetchConfig,
+) -> Result<WebFetchResponse> {
+    let url = preflight_remote_url("Exa Contents", &request, config).await?;
+    let key = exa_api_key(provider)?;
+    let endpoint = exa_contents_url(provider)?;
+    let client = Client::builder()
+        .timeout(timeout(config))
+        .redirect(Policy::none())
+        .retry(reqwest::retry::never())
+        .build()?;
+    let mut response = client
+        .post(endpoint)
+        .header("x-api-key", key)
+        .json(&json!({ "ids": [url.as_str()], "text": true }))
+        .send()
+        .await
+        .map_err(|_| exa_error("Exa Contents request failed", true))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(exa_error(
+            &format!("Exa Contents returned HTTP {}", status.as_u16()),
+            status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| exa_error("Exa Contents response read failed", true))?
+    {
+        if chunk.len() > config.max_response_bytes.saturating_sub(bytes.len()) {
+            return Err(exa_error(
+                "Exa Contents response exceeds web.fetch.max_response_bytes",
+                false,
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+
+    let payload: ExaContentsResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| exa_error("Exa Contents returned invalid JSON", false))?;
+    let requested = url.as_str();
+    // HTTP success does not establish extraction success for the requested ID.
+    if !matches!(payload.statuses.as_slice(), [entry] if entry.id == requested && entry.status == "success")
+    {
+        return Err(exa_error(
+            "Exa Contents did not report a unique successful status for the requested URL",
+            false,
+        ));
+    }
+    // Exa may report a different page URL. A matching result ID still binds
+    // the text to this request, but never establishes a final redirect target.
+    let [entry] = payload.results.as_slice() else {
+        return Err(exa_error(
+            "Exa Contents did not return exactly one result",
+            false,
+        ));
+    };
+    if entry.id != requested && entry.url.as_deref() != Some(requested) {
+        return Err(exa_error(
+            "Exa Contents returned an unexpected result",
+            false,
+        ));
+    }
+    let content = entry
+        .text
+        .as_deref()
+        .filter(|text| !text.trim().is_empty())
+        .ok_or_else(|| exa_error("Exa Contents returned no non-empty text", false))?;
+    let max_chars = request
+        .max_chars
+        .unwrap_or(config.max_chars)
+        .min(config.max_chars);
+    let truncated = content.chars().count() > max_chars;
+    let text = truncate_text(content, max_chars);
+    Ok(WebFetchResponse {
+        url: url.to_string(),
+        final_url: None,
+        status: status.as_u16(),
+        content_type: Some("text/plain".into()),
+        bytes_read: content.len(),
+        truncated,
+        sha256: format!("{:x}", Sha256::digest(content.as_bytes())),
+        fetched_at: Utc::now().to_rfc3339(),
+        source: "exa_remote",
+        provider_id: Some(provider_id.to_string()),
+        status_source: "provider_api",
+        text: external_content_wrapper(&url, &text),
+        summary_text: format!("Exa Contents {} {url}", status.as_u16()),
+    })
+}
+
+fn exa_error(message: &str, retryable: bool) -> anyhow::Error {
+    ToolError::new("provider_error", message)
+        .with_retryable(retryable)
+        .with_recovery_hint("check the Exa API key, subscription, or service availability")
         .into()
 }
 

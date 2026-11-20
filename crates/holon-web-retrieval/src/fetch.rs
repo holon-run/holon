@@ -161,11 +161,11 @@ pub async fn fetch_with_provider(
         policy_error(
             "provider_unavailable",
             format!(
-                "WebFetch remote extraction is not available for provider kind {} (the kind may only support search); remote fetch currently supports kind=deepseek and kind=tavily",
+                "WebFetch remote extraction is not available for provider kind {} (the kind may only support search)",
                 provider.kind.as_str()
             ),
             json!({ "provider": provider_id, "kind": provider.kind.as_str() }),
-            "select a deepseek or tavily provider or omit provider for local HTTP",
+            "select a provider from ListWebFetchProviders or omit provider for local HTTP",
         )
     })?;
     if !modes.contains(&request.extract_mode) {
@@ -196,7 +196,7 @@ pub async fn fetch_with_provider(
 /// WebFetch yet; later adapter issues extend the mapping.
 pub(crate) fn remote_fetch_modes(kind: WebProviderKind) -> Option<&'static [ExtractMode]> {
     match kind {
-        WebProviderKind::DeepSeek => Some(&[ExtractMode::Auto]),
+        WebProviderKind::DeepSeek | WebProviderKind::Exa => Some(&[ExtractMode::Auto]),
         WebProviderKind::Tavily => Some(&[ExtractMode::Auto, ExtractMode::Text]),
         _ => None,
     }
@@ -260,6 +260,10 @@ fn remote_fetch_provider_callable(provider: &WebProviderConfig) -> bool {
         }
         WebProviderKind::Tavily => {
             !provider.api_key.trim().is_empty() && tavily_extract_url(provider).is_ok()
+        }
+        WebProviderKind::Exa => {
+            super::remote_fetch::exa_api_key(provider).is_ok()
+                && super::remote_fetch::exa_contents_url(provider).is_ok()
         }
         _ => false,
     }

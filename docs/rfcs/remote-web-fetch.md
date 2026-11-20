@@ -27,14 +27,14 @@ redirect limits, rather than silently bypassing them. Use local Fetch when
 those policies are needed. The DeepSeek API connection itself never follows
 redirects.
 
-The service returns Markdown only, so remote Fetch accepts `extract_mode=auto`
+DeepSeek returns Markdown only, so its adapter accepts `extract_mode=auto`
 and rejects `text` or `raw`. Holon bounds the API response bytes, applies its
 character limit, hashes the complete returned Markdown before character
 truncation, and wraps output as untrusted external content.
 
 ## Provenance
 
-Remote responses set `source=deepseek_remote`; `status` is the provider API's
+DeepSeek responses set `source=deepseek_remote`; `status` is the provider API's
 HTTP status, and `content_type=text/markdown` describes its extracted content.
 DeepSeek does not return the source page status or final URL. `final_url` is
 therefore nullable (null for remote Fetch), not fabricated from the input URL.
@@ -117,3 +117,24 @@ Search behavior is unchanged.
   untrusted wrapper, and credential redaction follow the shared contract.
 - `ListWebFetchProviders` lists a Tavily ID with `auto`/`text` only when
   its API key is configured.
+
+## Exa Contents adapter
+
+`kind=exa` reuses the configured Exa Search provider ID, base URL, and API
+key without changing Search. Discovery offers `auto` only when the Exa
+endpoint and key are usable and the shared fetch policy allows remote
+extraction. `text` and `raw` fail without calling Exa.
+
+- One WebFetch call sends one `POST {base_url}/contents` with `x-api-key`
+  and the body `{"ids":["<url>"],"text":true}`. Exa chooses its default
+  cache and crawl strategy; Holon does not request a live refresh or
+  guarantee freshness.
+- HTTP success is not enough: require a single successful status for the
+  requested URL and exactly one corresponding result with non-blank `text`.
+  An unsuccessful status, missing text, or unexpected result fails the
+  call without fallback. Provider error details are not returned.
+- Successful receipts use `source=exa_remote`, `status_source=provider_api`,
+  `content_type=text/plain`, and `final_url=null`. The content is Exa's
+  extraction, not Holon's plain text conversion or original HTML. A page
+  URL reported by Exa does not verify a redirect. Shared size limits,
+  credential redaction, and the untrusted-content wrapper apply.

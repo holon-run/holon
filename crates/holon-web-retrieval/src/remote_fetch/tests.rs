@@ -209,13 +209,6 @@ async fn fetch_provider_selection_rejects_unknown_or_unsupported_kind() {
             .await
             .is_err()
     );
-    let mut search_only = provider.clone();
-    search_only.kind = super::super::WebProviderKind::Exa;
-    config.providers.insert("exa-search".into(), search_only);
-    let error = super::super::fetch::fetch_with_provider(request(), Some("exa-search"), &config)
-        .await
-        .unwrap_err();
-    assert!(error.to_string().contains("exa"));
     config.fetch.enabled = false;
     assert!(
         super::super::fetch::fetch_with_provider(request(), Some("brave"), &config)
@@ -413,4 +406,208 @@ async fn tavily_extract_rejects_raw_mode_before_sending() {
     handle.abort();
     // Nothing left the process for either rejection.
     assert!(seen.lock().unwrap().is_empty());
+}
+
+async fn exa_server(
+    status: StatusCode,
+    body: String,
+) -> (
+    crate::WebConfig,
+    Arc<AtomicUsize>,
+    tokio::task::JoinHandle<()>,
+) {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let handler_calls = calls.clone();
+    let router = Router::new().route(
+        "/api/contents",
+        post(move |outbound: Request| {
+            let calls = handler_calls.clone();
+            let body = body.clone();
+            async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                assert_eq!(outbound.headers()["x-api-key"], "fixture-key");
+                let bytes = axum::body::to_bytes(outbound.into_body(), 100_000)
+                    .await
+                    .unwrap();
+                let value: Value = serde_json::from_slice(&bytes).unwrap();
+                assert_eq!(value, json!({"ids": [request().url], "text": true}));
+                (status, body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let mut provider = tavily_provider(format!("http://{}/api/", listener.local_addr().unwrap()));
+    provider.kind = WebProviderKind::Exa;
+    let mut config = crate::WebConfig::default();
+    config.providers.insert("exa-fixture".into(), provider);
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (config, calls, handle)
+}
+
+async fn fetch_exa(input: WebFetchRequest, config: &crate::WebConfig) -> Result<WebFetchResponse> {
+    crate::fetch::fetch_with_provider(input, Some("exa-fixture"), config).await
+}
+
+#[test]
+fn exa_contents_uses_the_default_endpoint_and_sanitizes_invalid_base_urls() {
+    let mut provider = tavily_provider("https://unused.example".into());
+    provider.kind = WebProviderKind::Exa;
+    provider.base_url = None;
+    assert_eq!(
+        exa_contents_url(&provider).unwrap().as_str(),
+        "https://api.exa.ai/contents"
+    );
+    provider.base_url = Some("https://name:fixture-secret@exa.example".into());
+    let error = exa_contents_url(&provider).unwrap_err();
+    let receipt = serde_json::to_value(error.downcast_ref::<ToolError>().unwrap()).unwrap();
+    assert_eq!(receipt["kind"], "provider_unavailable");
+    assert!(!receipt.to_string().contains("fixture-secret"));
+}
+
+#[tokio::test]
+async fn exa_contents_extracts_only_text_and_keeps_provider_provenance() {
+    let mut input = request();
+    input.max_chars = Some(500);
+    let content = "网页正文 with more text";
+    let (mut config, calls, handle) = exa_server(
+        StatusCode::OK,
+        json!({
+            "results": [{
+                "id": input.url,
+                "url": "https://exa-reported.example/page",
+                "text": content,
+                "summary": "not delivered"
+            }],
+            "statuses": [{"id": input.url, "status": "success", "source": "cached"}],
+        })
+        .to_string(),
+    )
+    .await;
+    config.fetch.max_chars = 4;
+    let response = fetch_exa(input, &config).await.unwrap();
+    handle.abort();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(response.url, request().url);
+    assert!(response.final_url.is_none());
+    assert_eq!(response.status, 200);
+    assert_eq!(response.status_source, "provider_api");
+    assert_eq!(response.source, "exa_remote");
+    assert_eq!(response.provider_id.as_deref(), Some("exa-fixture"));
+    assert_eq!(response.content_type.as_deref(), Some("text/plain"));
+    assert_eq!(response.bytes_read, content.len());
+    assert_eq!(response.sha256, format!("{:x}", Sha256::digest(content)));
+    assert!(response.truncated);
+    assert_eq!(
+        response.text,
+        external_content_wrapper(&Url::parse(&request().url).unwrap(), "网页正文...")
+    );
+}
+
+#[tokio::test]
+async fn exa_contents_rejects_unsuccessful_or_unexpected_responses() {
+    let url = request().url;
+    let good_status = json!({"id": url, "status": "success"});
+    let good_result = json!({"id": url, "text": "body"});
+    let failed_status = json!({
+        "id": url,
+        "status": "error",
+        "error": {"tag": "secret-provider-detail", "httpStatusCode": 404}
+    });
+    let foreign_result = json!({"id": "https://other.example", "text": "body"});
+    for (name, statuses, results) in [
+        (
+            "status failure wins over usable text",
+            vec![failed_status.clone()],
+            vec![good_result.clone()],
+        ),
+        (
+            "conflicting statuses",
+            vec![good_status.clone(), failed_status],
+            vec![good_result.clone()],
+        ),
+        ("missing status", vec![], vec![good_result.clone()]),
+        (
+            "wrong status ID",
+            vec![json!({"id": "https://other.example", "status": "success"})],
+            vec![good_result.clone()],
+        ),
+        ("missing results", vec![good_status.clone()], vec![]),
+        (
+            "missing text",
+            vec![good_status.clone()],
+            vec![json!({"id": url})],
+        ),
+        (
+            "blank text",
+            vec![good_status.clone()],
+            vec![json!({"id": url, "text": "  "})],
+        ),
+        (
+            "unrelated result",
+            vec![good_status.clone()],
+            vec![foreign_result.clone()],
+        ),
+        (
+            "extra result",
+            vec![good_status],
+            vec![good_result, foreign_result],
+        ),
+    ] {
+        let (config, calls, handle) = exa_server(
+            StatusCode::OK,
+            json!({"statuses": statuses, "results": results}).to_string(),
+        )
+        .await;
+        let error = fetch_exa(request(), &config).await.unwrap_err();
+        handle.abort();
+        let receipt = serde_json::to_value(error.downcast_ref::<ToolError>().unwrap()).unwrap();
+        assert_eq!(receipt["kind"], "provider_error", "{name}");
+        assert_eq!(receipt["retryable"], false, "{name}");
+        assert!(
+            !receipt.to_string().contains("secret-provider-detail"),
+            "{name}"
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "{name}");
+    }
+}
+
+#[tokio::test]
+async fn exa_contents_rejects_http_errors_and_caps_json_without_leaking_details() {
+    for (status, body_limit, retryable, message) in [
+        (StatusCode::UNAUTHORIZED, 4096, false, "HTTP 401"),
+        (StatusCode::TOO_MANY_REQUESTS, 4096, true, "HTTP 429"),
+        (StatusCode::OK, 4, false, "max_response_bytes"),
+    ] {
+        let (mut config, calls, handle) =
+            exa_server(status, "fixture-key and private response body".into()).await;
+        config.fetch.max_response_bytes = body_limit;
+        let error = fetch_exa(request(), &config).await.unwrap_err();
+        handle.abort();
+        let receipt = serde_json::to_value(error.downcast_ref::<ToolError>().unwrap()).unwrap();
+        assert_eq!(receipt["kind"], "provider_error");
+        assert_eq!(receipt["retryable"], retryable);
+        let receipt = receipt.to_string();
+        assert!(receipt.contains(message));
+        assert!(!receipt.contains("fixture-key"));
+        assert!(!receipt.contains("private response body"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[tokio::test]
+async fn exa_contents_never_sends_unsupported_modes_or_policy_rejections() {
+    let (mut config, calls, handle) = exa_server(StatusCode::OK, "{}".into()).await;
+    for mode in [ExtractMode::Text, ExtractMode::Raw] {
+        let mut input = request();
+        input.extract_mode = mode;
+        let error = fetch_exa(input, &config).await.unwrap_err();
+        let receipt = serde_json::to_value(error.downcast_ref::<ToolError>().unwrap()).unwrap();
+        assert_eq!(receipt["kind"], "invalid_argument");
+    }
+    config.fetch.allowed_hosts = vec!["example.com".into()];
+    let error = fetch_exa(request(), &config).await.unwrap_err();
+    let receipt = serde_json::to_value(error.downcast_ref::<ToolError>().unwrap()).unwrap();
+    assert_eq!(receipt["kind"], "network_denied");
+    handle.abort();
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
 }
