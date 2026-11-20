@@ -56,7 +56,8 @@ Protocol source: [DeepSeek Search & Fetch documentation](https://api-docs.deepse
 
 `fetch_with_provider` is the shared contract for every remote adapter: a
 named provider must be a configured registry ID whose kind supports remote
-extraction (`remote_fetch_modes`; currently `deepseek` with `auto` only).
+extraction (`remote_fetch_modes`; `deepseek` with `auto` only, `tavily`
+with `auto` and `text`).
 Unknown IDs, search-only kinds, and unsupported modes fail explicitly with
 zero provider calls; there is no alias, aggregation, or fallback between
 routes, and the local route keeps no `local` selector. Adapter
@@ -83,3 +84,34 @@ remote) and `status_source` (`target_http` or `provider_api`) so callers
 can distinguish the two status domains without string-matching `source`.
 Remote output uses the same untrusted external-content wrapper as local
 Fetch.
+
+## Tavily Extract adapter
+
+`kind=tavily` providers are callable through the shared contract for
+`auto` and `text` extraction, reusing the same configured ID, base URL,
+and API key as Tavily Search; no second provider entry is introduced and
+Search behavior is unchanged.
+
+- One WebFetch call performs exactly one `POST {base_url}/extract` with
+  `Authorization: Bearer <api_key>` and the body
+  `{"urls": ["<url>"], "format": "markdown" | "text"}` (`auto` maps to
+  `markdown`, `text` maps to `text`). No `query`, chunking, depth, or
+  media options are sent, and `raw` is rejected before anything leaves the
+  process.
+- Tavily may report per-URL failures inside an HTTP 200 response, so
+  `failed_results` is checked first: an entry matching the requested URL
+  fails the request. Success requires exactly one `results` entry with a
+  matching URL and non-empty `raw_content`; HTTP 200 with no usable entry,
+  empty content, or only foreign URLs is a provider error, never a
+  fallback to another route.
+- Successful responses use `source=tavily_remote`,
+  `status_source=provider_api`, `content_type` `text/markdown` or
+  `text/plain` per the requested format, and `final_url=null` because the
+  result URL is not a verified redirect target. `status` is the Tavily API
+  HTTP status, not the page's own status.
+- Errors map to `provider_error` with `retryable` only for rate limiting
+  (HTTP 429/408) and upstream 5xx; authentication and content failures are
+  not retryable. Shared limits (`max_chars`, `max_response_bytes`), the
+  untrusted wrapper, and credential redaction follow the shared contract.
+- `ListWebFetchProviders` lists a Tavily ID with `auto`/`text` only when
+  its API key is configured.

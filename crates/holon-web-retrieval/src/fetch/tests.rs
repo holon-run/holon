@@ -99,9 +99,13 @@ fn list_fetch_providers_mirrors_route_gating() {
     config
         .providers
         .insert(" deepseek-b".into(), provider.clone());
+    // Tavily is callable remotely with both documented extract formats.
+    let mut tavily = provider.clone();
+    tavily.kind = WebProviderKind::Tavily;
+    config.providers.insert("tavily-a".into(), tavily);
     // Search-only kinds and missing credentials stay undiscoverable.
     let mut search_only = provider.clone();
-    search_only.kind = WebProviderKind::Tavily;
+    search_only.kind = WebProviderKind::Exa;
     config.providers.insert("tavily-search".into(), search_only);
     provider.api_key.clear();
     config.providers.insert("no-key".into(), provider);
@@ -113,10 +117,17 @@ fn list_fetch_providers_mirrors_route_gating() {
         .collect();
     assert_eq!(
         remote_ids,
-        vec![Some(" deepseek-b"), Some("auto"), Some("deepseek-a")]
+        vec![
+            Some(" deepseek-b"),
+            Some("auto"),
+            Some("deepseek-a"),
+            Some("tavily-a")
+        ]
     );
     assert_eq!(listed[3].kind, "deepseek");
     assert_eq!(listed[3].extract_modes, vec!["auto"]);
+    assert_eq!(listed[4].kind, "tavily");
+    assert_eq!(listed[4].extract_modes, vec!["auto", "text"]);
 
     // The shared preflight rejects every remote request once custom host
     // rules are configured, so discovery must not offer those routes.

@@ -11,9 +11,9 @@ use holon_tools::helpers::truncate_text;
 
 use super::{
     deepseek_tool_url,
-    fetch::{external_content_wrapper, WebFetchRequest, WebFetchResponse},
+    fetch::{external_content_wrapper, ExtractMode, WebFetchRequest, WebFetchResponse},
     policy::{policy_error, timeout, validate_fetch_url},
-    WebFetchConfig, WebProviderConfig,
+    WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
 
 #[derive(Deserialize)]
@@ -103,6 +103,29 @@ pub(super) async fn fetch(
     provider: &WebProviderConfig,
     config: &WebFetchConfig,
 ) -> Result<WebFetchResponse> {
+    match provider.kind {
+        WebProviderKind::DeepSeek => deepseek_fetch(request, provider_id, provider, config).await,
+        WebProviderKind::Tavily => {
+            tavily_extract_fetch(request, provider_id, provider, config).await
+        }
+        kind => Err(policy_error(
+            "provider_unavailable",
+            format!(
+                "WebFetch remote extraction is not available for provider kind {}",
+                kind.as_str()
+            ),
+            json!({ "provider": provider_id, "kind": kind.as_str() }),
+            "select a deepseek or tavily provider or omit provider for local HTTP",
+        )),
+    }
+}
+
+async fn deepseek_fetch(
+    request: WebFetchRequest,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    config: &WebFetchConfig,
+) -> Result<WebFetchResponse> {
     let url = preflight_remote_url("DeepSeek Fetch", &request, config).await?;
     require_remote_api_key("DeepSeek Fetch", provider)?;
     let client = Client::builder()
@@ -172,6 +195,140 @@ fn remote_error(message: &str, retryable: bool) -> anyhow::Error {
     ToolError::new("provider_error", message)
         .with_retryable(retryable)
         .with_recovery_hint("check the DeepSeek credential, balance, or service availability")
+        .into()
+}
+
+#[derive(Deserialize)]
+struct TavilyExtractEntry {
+    url: Option<String>,
+    raw_content: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TavilyExtractResponse {
+    #[serde(default)]
+    results: Vec<TavilyExtractEntry>,
+    #[serde(default)]
+    failed_results: Vec<TavilyExtractEntry>,
+}
+
+/// Tavily Extract maps `auto`/`text` to the documented body `format` values
+/// and sends exactly one URL per request; `raw` never leaves the process.
+async fn tavily_extract_fetch(
+    request: WebFetchRequest,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    config: &WebFetchConfig,
+) -> Result<WebFetchResponse> {
+    let url = preflight_remote_url("Tavily Extract", &request, config).await?;
+    require_remote_api_key("Tavily Extract", provider)?;
+    let (format, content_type) = match request.extract_mode {
+        ExtractMode::Auto => ("markdown", "text/markdown"),
+        ExtractMode::Text => ("text", "text/plain"),
+        ExtractMode::Raw => {
+            return Err(policy_error(
+                "invalid_argument",
+                "Tavily Extract does not send raw page requests",
+                json!({}),
+                "use extract_mode auto or text, or omit provider for local HTTP",
+            ));
+        }
+    };
+    let endpoint = format!(
+        "{}/extract",
+        provider
+            .base_url
+            .as_deref()
+            .unwrap_or("https://api.tavily.com")
+            .trim_end_matches('/')
+    );
+    let client = Client::builder()
+        .timeout(timeout(config))
+        .redirect(Policy::none())
+        .build()?;
+    let mut response = client
+        .post(&endpoint)
+        .bearer_auth(&provider.api_key)
+        .json(&json!({ "urls": [url.as_str()], "format": format }))
+        .send()
+        .await
+        .map_err(|_| tavily_error("Tavily Extract request failed", true))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(tavily_error(
+            &format!("Tavily Extract returned HTTP {}", status.as_u16()),
+            status.as_u16() == 408 || status.as_u16() == 429 || status.is_server_error(),
+        ));
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| tavily_error("Tavily Extract response read failed", true))?
+    {
+        if chunk.len() > config.max_response_bytes.saturating_sub(bytes.len()) {
+            return Err(tavily_error(
+                "Tavily Extract response exceeds web.fetch.max_response_bytes",
+                false,
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let payload: TavilyExtractResponse = serde_json::from_slice(&bytes)
+        .map_err(|_| tavily_error("Tavily Extract returned invalid JSON", false))?;
+    // HTTP 200 does not mean the URL was extracted: check failed_results
+    // first; an entry matching the requested URL fails the whole request.
+    let requested = url.as_str();
+    if payload
+        .failed_results
+        .iter()
+        .any(|entry| entry.url.as_deref() == Some(requested))
+    {
+        return Err(tavily_error(
+            "Tavily Extract reported the requested URL as failed",
+            false,
+        ));
+    }
+    let Some(entry) = payload.results.iter().find(|entry| {
+        entry.url.as_deref() == Some(requested)
+            && entry
+                .raw_content
+                .as_deref()
+                .is_some_and(|content| !content.trim().is_empty())
+    }) else {
+        return Err(tavily_error(
+            "Tavily Extract returned no non-empty content for the requested URL",
+            false,
+        ));
+    };
+    let content = entry.raw_content.as_deref().unwrap_or_default();
+    let max_chars = request
+        .max_chars
+        .unwrap_or(config.max_chars)
+        .min(config.max_chars);
+    let truncated = content.chars().count() > max_chars;
+    let text = truncate_text(content, max_chars);
+    Ok(WebFetchResponse {
+        url: url.to_string(),
+        final_url: None,
+        status: status.as_u16(),
+        content_type: Some(content_type.into()),
+        bytes_read: content.len(),
+        truncated,
+        sha256: format!("{:x}", Sha256::digest(content.as_bytes())),
+        fetched_at: Utc::now().to_rfc3339(),
+        source: "tavily_remote",
+        provider_id: Some(provider_id.to_string()),
+        status_source: "provider_api",
+        text: external_content_wrapper(&url, &text),
+        summary_text: format!("Tavily Extract {} {url}", status.as_u16()),
+    })
+}
+
+fn tavily_error(message: &str, retryable: bool) -> anyhow::Error {
+    ToolError::new("provider_error", message)
+        .with_retryable(retryable)
+        .with_recovery_hint("check the Tavily API key, subscription, or service availability")
         .into()
 }
 
