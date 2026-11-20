@@ -4092,6 +4092,53 @@ impl RuntimeTransitionRepository<'_> {
             )?;
         }
         inject_fault(command.fault, TransitionFaultPoint::AfterValidation)?;
+        // Reject an exhausted chain before any target queue or wait writes.
+        let mut message_chain = None;
+        if let Some(AgentMessageDeliveryAdmissionDecision::Queue {
+            record,
+            replace_existing,
+        }) = delivery.as_ref()
+        {
+            message_chain = record.message_chain_id.as_deref();
+            let exhausted = message_chain
+                .map(|chain_id| {
+                    super::agent_message_delivery::exhausted_chain_limit_tx(tx, chain_id)
+                })
+                .transpose()?
+                .flatten();
+            if let (Some(chain_id), Some(max_deliveries)) = (message_chain, exhausted) {
+                let receipt = super::agent_message_delivery::record_chain_budget_rejection_tx(
+                    tx,
+                    record,
+                    *replace_existing,
+                    chain_id,
+                    max_deliveries,
+                )?;
+                let audit = AuditEvent::legacy(
+                    "agent_message_chain_budget_exhausted",
+                    serde_json::json!({
+                        "agent_id": command.agent_id,
+                        "delivery_id": receipt.delivery_id,
+                        "chain_id": chain_id,
+                        "max_deliveries": max_deliveries,
+                        "reason": "message_chain_budget_exhausted",
+                    }),
+                );
+                let (audit, inserted) = append_audit_event_tx(tx, Some(&command.agent_id), &audit)?;
+                return Ok(TransitionCommit {
+                    applied: true,
+                    effects: Box::new(PostCommitEffects {
+                        audit_events: if inserted {
+                            vec![AuditEventAck::new(audit)?]
+                        } else {
+                            Vec::new()
+                        },
+                        ..Default::default()
+                    }),
+                    delivery_receipt: Some(receipt),
+                });
+            }
+        }
         let mut trigger_wait_and_enqueue = if command.operation == QueueOperation::Admit
             && !command.message_evidence.is_empty()
         {
@@ -4169,6 +4216,16 @@ impl RuntimeTransitionRepository<'_> {
                 }),
                 ..Default::default()
             });
+        }
+        if let Some(chain_id) = message_chain {
+            let queue_applied = trigger_wait_and_enqueue
+                .as_ref()
+                .map_or(mutation_applied, |result| result.queue_applied);
+            anyhow::ensure!(
+                queue_applied,
+                "agent message delivery did not apply its queue write"
+            );
+            super::agent_message_delivery::charge_chain_budget_tx(tx, chain_id)?;
         }
         if let Some(timer_wake_claim) = timer_wake_claim {
             let changed = tx.execute(

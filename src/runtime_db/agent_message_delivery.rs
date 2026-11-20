@@ -41,6 +41,11 @@ pub(crate) use replies::{
     MessageWaitOutcome, MessageWaitReply,
 };
 
+mod chains;
+pub(crate) use chains::{
+    charge_chain_budget_tx, exhausted_chain_limit_tx, resolve_delivery_chain_tx,
+};
+
 pub(crate) struct ResolvedAgentMessageReplyContext {
     pub activation_id: String,
     pub turn_id: String,
@@ -984,6 +989,7 @@ pub(crate) fn prepare_delivery_admission_tx(
     record.message_id.clone_from(&candidate.message_id);
     record.correlation_id.clone_from(&candidate.correlation_id);
     record.causation_id.clone_from(&candidate.causation_id);
+    record.message_chain_id = Some(resolve_delivery_chain_tx(tx, candidate)?);
     record.outcome = AgentMessageDeliveryOutcome::Accepted;
     record.state = AgentMessageDeliveryState::Queued;
     record.rejection_code = None;
@@ -1069,6 +1075,40 @@ pub(in crate::runtime_db) fn persist_queued_admission_tx(
         insert_delivery_tx(tx, record)?;
     }
     bind_message_wait_tx(tx, record, binding)
+}
+
+/// Record the durable rejection of an admission whose chain has no allowance.
+///
+/// Nothing is queued, no reply wait is touched and no wake follows; the same
+/// request replays this rejection instead of consuming another attempt.
+pub(in crate::runtime_db) fn record_chain_budget_rejection_tx(
+    tx: &Transaction<'_>,
+    queued: &AgentMessageDeliveryRecord,
+    replace_existing: bool,
+    chain_id: &str,
+    max_deliveries: i64,
+) -> Result<AgentMessageDeliveryReceipt> {
+    let now = Utc::now();
+    let mut record = queued.clone();
+    record.message_id = None;
+    record.outcome = AgentMessageDeliveryOutcome::Rejected;
+    record.state = AgentMessageDeliveryState::Rejected;
+    record.rejection_code = Some(AgentMessageDeliveryRejectionCode::MessageChainBudgetExhausted);
+    record.retryable = false;
+    record.message_chain_id = Some(chain_id.to_owned());
+    record.diagnostic = Some(bounded_diagnostic(&format!(
+        "message chain {chain_id} exhausted at {max_deliveries} accepted deliveries"
+    )));
+    record.accepted_at = None;
+    record.terminal_at = Some(now);
+    record.updated_at = now;
+    record.state_version = record.state_version.saturating_add(1);
+    if replace_existing {
+        replace_delivery_tx(tx, &record)?;
+    } else {
+        insert_delivery_tx(tx, &record)?;
+    }
+    Ok(record.receipt(false))
 }
 
 pub(in crate::runtime_db) struct MessageWaitTaskWriteBudget<'a> {
@@ -3846,6 +3886,7 @@ mod tests {
     fn routed_message_round_trips_through_message_repository_and_legacy_decode() -> Result<()> {
         let (dir, db) = runtime_db()?;
         seed_target(&db, AgentStatus::AwakeIdle)?;
+        seed_routed_source_delivery(&db)?;
         let mut request = request("routing-roundtrip", "forwarded payload");
         request.forward = true;
         let prepared = AgentMessageDeliveryService::prepare(request, routed_caller())?;
@@ -3885,6 +3926,34 @@ mod tests {
         let decoded: MessageEnvelope = serde_json::from_value(legacy)?;
         assert_eq!(decoded.routing_context, None);
         Ok(())
+    }
+
+    /// A pre-upgrade accepted source delivery: no chain id was recorded, so the
+    /// source delivery id becomes the compatibility chain anchor.
+    fn seed_routed_source_delivery(db: &RuntimeDb) -> Result<()> {
+        let route = routed_caller()
+            .inherited_routing_context
+            .context("routed caller is missing its route")?;
+        let mut message = MessageEnvelope::new(
+            "caller-agent",
+            MessageKind::InternalFollowup,
+            MessageOrigin::Task {
+                task_id: "incoming-task".into(),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text {
+                text: "incoming request".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.id = route.message_id.clone();
+        message.routing_context = Some(route);
+        let delivery = accepted_reply_delivery(&message, "origin-agent", "incoming-source")?;
+        db.transaction(|tx| insert_delivery_tx(tx, &delivery))
     }
 
     #[test]
@@ -4169,6 +4238,832 @@ mod tests {
                 .chars()
                 .count(),
             DELIVERY_DIAGNOSTIC_LIMIT
+        );
+        Ok(())
+    }
+
+    // ---------------------------------------------------------------------
+    // Shared message-chain delivery budgets
+    // ---------------------------------------------------------------------
+
+    fn chain_budget(db: &RuntimeDb, chain_id: &str) -> Result<Option<(i64, i64)>> {
+        Ok(db
+            .connection()?
+            .query_row(
+                "SELECT max_deliveries, accepted_count
+                 FROM agent_message_chain_budgets WHERE chain_id = ?1",
+                [chain_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    fn chain_row_count(db: &RuntimeDb) -> Result<i64> {
+        Ok(db.connection()?.query_row(
+            "SELECT COUNT(*) FROM agent_message_chain_budgets",
+            [],
+            |row| row.get(0),
+        )?)
+    }
+
+    fn stored_chain(db: &RuntimeDb, delivery_id: &str) -> Result<Option<String>> {
+        Ok(db
+            .agent_message_deliveries()
+            .latest(delivery_id)?
+            .context("missing accepted delivery")?
+            .message_chain_id)
+    }
+
+    /// Mirror the post-upgrade first delivery of a seeded source: the chain is
+    /// that delivery id and already counts one delivery.
+    fn promote_source_chain(db: &RuntimeDb, source_message_id: &str) -> Result<String> {
+        let mut delivery = db
+            .agent_message_deliveries()
+            .latest_for_message(source_message_id)?
+            .context("seeded source delivery is missing")?;
+        let chain_id = delivery.delivery_id.clone();
+        delivery.message_chain_id = Some(chain_id.clone());
+        db.transaction(|tx| {
+            replace_delivery_tx(tx, &delivery)?;
+            tx.execute(
+                "INSERT INTO agent_message_chain_budgets
+                   (chain_id, max_deliveries, accepted_count, created_at)
+                 VALUES (?1, ?2, 1, ?3)",
+                params![
+                    chain_id,
+                    super::chains::MESSAGE_CHAIN_MAX_DELIVERIES,
+                    timestamp(Utc::now())
+                ],
+            )?;
+            Ok(())
+        })?;
+        Ok(chain_id)
+    }
+
+    fn prepare_send_in_turn(
+        _db: &RuntimeDb,
+        turn_id: &str,
+        target: &str,
+        key: &str,
+    ) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
+        let mut sender = caller();
+        sender.current_turn_id = Some(turn_id.to_owned());
+        let mut send = request(key, "chain follow-up");
+        send.target_agent_id = target.to_owned();
+        send.correlation_id = None;
+        send.causation_id = None;
+        AgentMessageDeliveryService::prepare(send, sender)
+    }
+
+    fn admit_commit(
+        db: &RuntimeDb,
+        prepared: &crate::runtime::PreparedAgentMessageDelivery,
+    ) -> Result<crate::runtime_db::transitions::TransitionCommit> {
+        db.transitions()
+            .commit_delivery_admission(&admission_command(prepared), &prepared.record)
+    }
+
+    fn admit(
+        db: &RuntimeDb,
+        prepared: &crate::runtime::PreparedAgentMessageDelivery,
+    ) -> Result<AgentMessageDeliveryReceipt> {
+        admit_commit(db, prepared)?
+            .delivery_receipt
+            .context("missing delivery receipt")
+    }
+
+    fn admit_concurrently(
+        db: &RuntimeDb,
+        pair: [crate::runtime::PreparedAgentMessageDelivery; 2],
+    ) -> Result<Vec<AgentMessageDeliveryReceipt>> {
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let workers = pair.map(|prepared| {
+            let db = db.clone();
+            let barrier = barrier.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                admit(&db, &prepared)
+            })
+        });
+        workers
+            .into_iter()
+            .map(|worker| worker.join().expect("chain race worker panicked"))
+            .collect()
+    }
+
+    fn set_turn_inputs(db: &RuntimeDb, turn_id: &str, message_ids: &[String]) -> Result<()> {
+        let mut turn = db
+            .turn_records()
+            .by_id(Some("caller-agent"), turn_id)?
+            .context("seeded turn is missing")?;
+        turn.input_message_ids = message_ids.to_vec();
+        db.turn_records().upsert(&turn)
+    }
+
+    /// Re-anchor the live activation on another admitted input.
+    fn anchor_turn_on_message(db: &RuntimeDb, message_id: &str) -> Result<()> {
+        db.transaction(|tx| {
+            let payload: String = tx.query_row(
+                "SELECT payload_json FROM execution_protocol_attempts
+                 WHERE agent_id = 'caller-agent' AND lifecycle_state = 'open'",
+                [],
+                |row| row.get(0),
+            )?;
+            let mut attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
+            attempt.source_message_id = Some(message_id.to_owned());
+            tx.execute(
+                "UPDATE execution_protocol_attempts SET payload_json = ?1
+                 WHERE agent_id = 'caller-agent' AND attempt_id = ?2",
+                params![serde_json::to_string(&attempt)?, attempt.attempt_id],
+            )?;
+            Ok(())
+        })?;
+        let mut state = db
+            .agent_states()
+            .latest("caller-agent")?
+            .context("seeded caller state is missing")?;
+        state
+            .current_execution_binding
+            .as_mut()
+            .context("seeded caller binding is missing")?
+            .source_message_id = message_id.to_owned();
+        db.agent_states().upsert_for_fixture(&state)
+    }
+
+    fn append_input(db: &RuntimeDb, message: &MessageEnvelope) -> Result<MessageEnvelope> {
+        db.messages().append_with_index_changes(message, &[])
+    }
+
+    fn reply_envelope(id: &str, sender: &str, reply_to: &str) -> MessageEnvelope {
+        let mut message = MessageEnvelope::new(
+            "caller-agent",
+            MessageKind::InternalFollowup,
+            MessageOrigin::Task {
+                task_id: format!("task-{id}"),
+            },
+            AuthorityClass::ExternalEvidence,
+            Priority::Normal,
+            MessageBody::Text {
+                text: format!("request {id}"),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.id = id.to_owned();
+        message.routing_context = Some(AgentMessageRoutingContext {
+            message_id: id.to_owned(),
+            sender_agent_id: Some(sender.to_owned()),
+            recipient_agent_id: "caller-agent".into(),
+            reply_to_agent_id: Some(reply_to.to_owned()),
+            correlation_id: None,
+            in_reply_to_message_id: None,
+            original_sender_agent_id: None,
+            original_reply_to_agent_id: None,
+        });
+        message
+    }
+
+    fn prepare_reply_on_source(
+        db: &RuntimeDb,
+        source_message_id: &str,
+        target: &str,
+        key: &str,
+    ) -> Result<crate::runtime::PreparedAgentMessageDelivery> {
+        let source = db
+            .messages()
+            .recent(Some("caller-agent"), 64)?
+            .into_iter()
+            .find(|message| message.id == source_message_id)
+            .context("seeded source message is missing")?;
+        let mut sender = caller();
+        sender.inherited_routing_context = source.routing_context.clone();
+        let mut send = request(key, "reply");
+        send.target_agent_id = target.to_owned();
+        send.correlation_id = None;
+        send.causation_id = None;
+        AgentMessageDeliveryService::prepare(send, sender)
+    }
+
+    #[test]
+    fn chain_budget_bounds_one_shared_chain_and_isolates_other_chains() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let chain = promote_source_chain(&db, &inputs[0].id)?;
+
+        // The chain allows 16 deliveries in total, and this source is one of them.
+        for index in 1..=15 {
+            let prepared = prepare_send_in_turn(
+                &db,
+                "routing-turn",
+                "target-agent",
+                &format!("chain-{index}"),
+            )?;
+            let receipt = admit(&db, &prepared)?;
+            assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+            assert_eq!(
+                stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+                Some(chain.as_str())
+            );
+        }
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 16)));
+
+        let refused = prepare_send_in_turn(&db, "routing-turn", "target-agent", "chain-16")?;
+        let commit = admit_commit(&db, &refused)?;
+        let receipt = commit
+            .delivery_receipt
+            .clone()
+            .context("missing delivery receipt")?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Rejected);
+        assert_eq!(
+            receipt.rejection_code,
+            Some(AgentMessageDeliveryRejectionCode::MessageChainBudgetExhausted)
+        );
+        assert!(!receipt.retryable);
+        assert_eq!(commit.effects.audit_events.len(), 1);
+        assert_eq!(
+            commit.effects.audit_events[0].kind,
+            "agent_message_chain_budget_exhausted"
+        );
+        assert!(db.queue_entries().latest(&refused.message.id)?.is_none());
+        assert!(db
+            .messages()
+            .recent(Some("target-agent"), 64)?
+            .iter()
+            .all(|message| message.id != refused.message.id));
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 16)));
+
+        // An unrelated send opens its own chain and keeps working.
+        let mut fresh = caller();
+        fresh.current_turn_id = Some("turn-without-live-activation".into());
+        let mut send = request("independent-chain", "independent");
+        send.target_agent_id = "target-agent".into();
+        let prepared = AgentMessageDeliveryService::prepare(send, fresh)?;
+        let receipt = admit(&db, &prepared)?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+        assert_eq!(
+            stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+            Some(receipt.delivery_id.as_str())
+        );
+        assert_eq!(chain_budget(&db, &receipt.delivery_id)?, Some((16, 1)));
+        Ok(())
+    }
+
+    #[test]
+    fn unrelated_sends_and_selected_replies_bind_deterministic_chains() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a", "sender-b"])?;
+        let chain_a = promote_source_chain(&db, &inputs[0].id)?;
+        // A second replyable source whose selected route points at the target.
+        let source_b = append_input(&db, &reply_envelope("source-b", "sender-b", "target-agent"))?;
+        let delivery = accepted_reply_delivery(&source_b, "sender-b", "source-b-delivery")?;
+        db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
+        let chain_b = promote_source_chain(&db, &source_b.id)?;
+        assert_ne!(chain_a, chain_b);
+
+        // Unrelated sends share the activation's main-input chain.
+        for key in ["main-input-one", "main-input-two"] {
+            let prepared = prepare_send_in_turn(&db, "routing-turn", "target-agent", key)?;
+            let receipt = admit(&db, &prepared)?;
+            assert_eq!(
+                stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+                Some(chain_a.as_str())
+            );
+        }
+        assert_eq!(chain_budget(&db, &chain_a)?, Some((16, 3)));
+
+        // A selected reply binds the selected source instead.
+        let reply = prepare_reply_on_source(&db, &source_b.id, "target-agent", "selected-reply")?;
+        assert_eq!(
+            reply
+                .message
+                .routing_context
+                .as_ref()
+                .and_then(|route| route.in_reply_to_message_id.as_deref()),
+            Some(source_b.id.as_str())
+        );
+        let receipt = admit(&db, &reply)?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+        assert_eq!(
+            stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+            Some(chain_b.as_str())
+        );
+        assert_eq!(chain_budget(&db, &chain_b)?, Some((16, 2)));
+        assert_eq!(chain_budget(&db, &chain_a)?, Some((16, 3)));
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_last_allowance_has_exactly_one_winner() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let chain = promote_source_chain(&db, &inputs[0].id)?;
+        for index in 1..=14 {
+            let prepared = prepare_send_in_turn(
+                &db,
+                "routing-turn",
+                "target-agent",
+                &format!("fill-{index}"),
+            )?;
+            admit(&db, &prepared)?;
+        }
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 15)));
+
+        let left = prepare_send_in_turn(&db, "routing-turn", "target-agent", "race-left")?;
+        let right = prepare_send_in_turn(&db, "routing-turn", "target-agent", "race-right")?;
+        let mut accepted = 0;
+        let mut refused = 0;
+        for receipt in admit_concurrently(&db, [left, right])? {
+            match receipt.outcome {
+                AgentMessageDeliveryOutcome::Accepted => accepted += 1,
+                AgentMessageDeliveryOutcome::Rejected => {
+                    assert_eq!(
+                        receipt.rejection_code,
+                        Some(AgentMessageDeliveryRejectionCode::MessageChainBudgetExhausted)
+                    );
+                    refused += 1;
+                }
+            }
+        }
+        assert_eq!((accepted, refused), (1, 1));
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 16)));
+        Ok(())
+    }
+
+    #[test]
+    fn activation_anchor_skips_a_non_chainable_main_input() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let chain = promote_source_chain(&db, &inputs[0].id)?;
+
+        // A runtime-owned follow-up that carries no chainable source stays first
+        // in admission order without becoming the anchor.
+        let mut refill = MessageEnvelope::new(
+            "caller-agent",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "scheduler_refill".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "continue".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        refill.turn_id = Some("routing-turn".into());
+        let refill = append_input(&db, &refill)?;
+        set_turn_inputs(
+            &db,
+            "routing-turn",
+            &[refill.id.clone(), inputs[0].id.clone()],
+        )?;
+        anchor_turn_on_message(&db, &refill.id)?;
+
+        let prepared = prepare_send_in_turn(&db, "routing-turn", "target-agent", "after-refill")?;
+        let receipt = admit(&db, &prepared)?;
+        assert_eq!(
+            stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+            Some(chain.as_str())
+        );
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 2)));
+        Ok(())
+    }
+
+    /// Seed the parent-side request delivery of an existing-agent invocation.
+    fn seed_invocation_request_delivery(db: &RuntimeDb) -> Result<AgentMessageDeliveryRecord> {
+        let mut sender = caller();
+        sender.current_task_id = Some("invoke-task".into());
+        let mut send = request("invocation-request", "please answer");
+        send.target_agent_id = "target-agent".into();
+        send.correlation_id = Some("invoke-task".into());
+        send.causation_id = None;
+        let mut delivery = AgentMessageDeliveryService::prepare(send, sender)?.record;
+        delivery.outcome = AgentMessageDeliveryOutcome::Accepted;
+        delivery.state = AgentMessageDeliveryState::Queued;
+        delivery.accepted_at = Some(Utc::now());
+        let task = crate::types::TaskRecord {
+            id: "invoke-task".into(),
+            agent_id: "caller-agent".into(),
+            kind: crate::types::TaskKind::AgentMessageWait,
+            status: crate::types::TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: None,
+            summary: None,
+            detail: Some(serde_json::json!({
+                "request_delivery_id": delivery.delivery_id.clone(),
+                "target_agent_id": "target-agent",
+            })),
+            recovery: None,
+        };
+        db.tasks().upsert(&task)?;
+        db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
+        Ok(delivery)
+    }
+
+    fn seed_task_result_settlement(
+        db: &RuntimeDb,
+        result_message_id: &str,
+        activation_id: &str,
+    ) -> Result<()> {
+        let now = Utc::now();
+        let record = crate::runtime_db::task_result_settlement::TaskResultSettlementRecord {
+            result_identity: format!("task_result_{result_message_id}"),
+            agent_id: "caller-agent".into(),
+            task_id: "invoke-task".into(),
+            message_id: result_message_id.into(),
+            work_item_id: None,
+            rejoin_generation: 1,
+            source: crate::domain::execution_protocol::TaskRejoinSource::ParentTurn {
+                parent_turn_id: "routing-turn".into(),
+            },
+            task_status: "completed".into(),
+            state:
+                crate::runtime_db::task_result_settlement::TaskResultSettlementState::CallerAdmitted,
+            activation_id: Some(activation_id.into()),
+            disposition: None,
+            created_at: now,
+            updated_at: now,
+            admitted_at: Some(now),
+            settled_at: None,
+            deferred_reason: None,
+            deferred_at: None,
+            next_recheck_at: None,
+            recovery_epoch: 0,
+            recovery_attempts: 0,
+            last_recovery_root_attempt_id: None,
+            last_recovery_admitted_at: None,
+            recovery_paused_at: None,
+            recovery_diagnostic_at: None,
+            source_projection: None,
+            reply_projection: None,
+        };
+        db.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO task_result_settlements (
+                   result_identity, agent_id, task_id, message_id, rejoin_generation,
+                   parent_turn_id, state, activation_id, created_at, updated_at,
+                   admitted_at, payload_json
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                params![
+                    record.result_identity,
+                    record.agent_id,
+                    record.task_id,
+                    record.message_id,
+                    record.rejoin_generation as i64,
+                    "routing-turn",
+                    "caller_admitted",
+                    activation_id,
+                    timestamp(now),
+                    timestamp(now),
+                    timestamp(now),
+                    serde_json::to_string(&record)?,
+                ],
+            )?;
+            Ok(())
+        })
+    }
+
+    fn seed_task_result_input(db: &RuntimeDb, result_message_id: &str) -> Result<MessageEnvelope> {
+        let mut message = MessageEnvelope::new(
+            "caller-agent",
+            MessageKind::InternalFollowup,
+            MessageOrigin::System {
+                subsystem: "task_result_recovery".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Background,
+            MessageBody::Text {
+                text: "Handle the pending task result.".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        message.turn_id = Some("routing-turn".into());
+        message
+            .source_refs
+            .insert("task_result_message_id".into(), result_message_id.into());
+        message.source_refs.insert(
+            "task_result_identity".into(),
+            format!("task_result_{result_message_id}"),
+        );
+        message
+            .source_refs
+            .insert("task_result_rejoin_generation".into(), "1".into());
+        message
+            .source_refs
+            .insert("task_result_parent_turn_id".into(), "routing-turn".into());
+        append_input(db, &message)
+    }
+
+    #[test]
+    fn admitted_task_rejoin_main_input_outranks_other_agent_messages() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let request = seed_invocation_request_delivery(&db)?;
+        let mut result = MessageEnvelope::new(
+            "caller-agent",
+            MessageKind::TaskResult,
+            MessageOrigin::Task {
+                task_id: "invoke-task".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "A final brief was accepted.".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::TaskRejoin,
+            AdmissionContext::RuntimeOwned,
+        );
+        result.task_id = Some("invoke-task".into());
+        let input = append_input(&db, &result)?;
+        seed_task_result_settlement(&db, &input.id, "routing-activation")?;
+        set_turn_inputs(
+            &db,
+            "routing-turn",
+            &[inputs[0].id.clone(), input.id.clone()],
+        )?;
+        anchor_turn_on_message(&db, &input.id)?;
+        assert_eq!(chain_row_count(&db)?, 0);
+
+        let prepared = prepare_send_in_turn(&db, "routing-turn", "target-agent", "after-rejoin")?;
+        let receipt = admit(&db, &prepared)?;
+        assert_eq!(
+            stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+            Some(request.delivery_id.as_str())
+        );
+        assert_eq!(chain_budget(&db, &request.delivery_id)?, Some((16, 2)));
+        Ok(())
+    }
+
+    #[test]
+    fn existing_agent_task_result_continuation_keeps_the_request_chain() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        seed_reply_turn(&db, &["sender-a"])?;
+        let request = seed_invocation_request_delivery(&db)?;
+        seed_task_result_settlement(&db, "result-precise", "routing-activation")?;
+        let input = seed_task_result_input(&db, "result-precise")?;
+        set_turn_inputs(&db, "routing-turn", &[input.id.clone()])?;
+        anchor_turn_on_message(&db, &input.id)?;
+
+        let prepared = prepare_send_in_turn(&db, "routing-turn", "target-agent", "after-result")?;
+        let receipt = admit(&db, &prepared)?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+        assert_eq!(
+            stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+            Some(request.delivery_id.as_str())
+        );
+        // The pre-upgrade request delivery is the compatibility anchor, so this
+        // continuation is the second delivery of the chain.
+        assert_eq!(chain_budget(&db, &request.delivery_id)?, Some((16, 2)));
+
+        // A result that this activation did not admit is not a chain source.
+        let (_dir, unadmitted) = runtime_db()?;
+        seed_target(&unadmitted, AgentStatus::AwakeIdle)?;
+        seed_reply_turn(&unadmitted, &["sender-a"])?;
+        seed_invocation_request_delivery(&unadmitted)?;
+        seed_task_result_settlement(&unadmitted, "result-historical", "another-activation")?;
+        let input = seed_task_result_input(&unadmitted, "result-historical")?;
+        set_turn_inputs(&unadmitted, "routing-turn", &[input.id.clone()])?;
+        anchor_turn_on_message(&unadmitted, &input.id)?;
+        let prepared =
+            prepare_send_in_turn(&unadmitted, "routing-turn", "target-agent", "unrelated")?;
+        let receipt = admit(&unadmitted, &prepared)?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+        assert_eq!(
+            stored_chain(&unadmitted, &receipt.delivery_id)?.as_deref(),
+            Some(receipt.delivery_id.as_str())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn chain_budget_survives_restart_and_replays_terminal_receipts() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let chain = promote_source_chain(&db, &inputs[0].id)?;
+        let mut last_accepted = None;
+        for index in 1..=15 {
+            let prepared = prepare_send_in_turn(
+                &db,
+                "routing-turn",
+                "target-agent",
+                &format!("restart-{index}"),
+            )?;
+            last_accepted = Some(admit(&db, &prepared)?.delivery_id);
+        }
+        let refused = prepare_send_in_turn(&db, "routing-turn", "target-agent", "restart-16")?;
+        let rejected = admit(&db, &refused)?.delivery_id;
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 16)));
+
+        let database_path = dir.path().join("state/runtime.sqlite");
+        let lock_path = dir.path().join("state/runtime.lock");
+        drop(db);
+        let reopened = RuntimeDb::open_and_migrate(database_path, lock_path)?;
+        assert_eq!(chain_budget(&reopened, &chain)?, Some((16, 16)));
+
+        // A replay of the last accepted delivery returns its original receipt
+        // without consuming another allowance.
+        let replay = prepare_send_in_turn(&reopened, "routing-turn", "target-agent", "restart-15")?;
+        let receipt = admit(&reopened, &replay)?;
+        assert_eq!(
+            receipt.delivery_id,
+            last_accepted.context("no accepted delivery")?
+        );
+        assert!(receipt.idempotent_replay);
+        assert_eq!(chain_budget(&reopened, &chain)?, Some((16, 16)));
+
+        // A replay of the rejection returns the same durable rejection.
+        let replay = prepare_send_in_turn(&reopened, "routing-turn", "target-agent", "restart-16")?;
+        let commit = admit_commit(&reopened, &replay)?;
+        let receipt = commit
+            .delivery_receipt
+            .context("missing rejection receipt")?;
+        assert_eq!(receipt.delivery_id, rejected);
+        assert_eq!(
+            receipt.rejection_code,
+            Some(AgentMessageDeliveryRejectionCode::MessageChainBudgetExhausted)
+        );
+        assert!(receipt.idempotent_replay);
+        assert!(commit.effects.audit_events.is_empty());
+        let count: i64 = reopened.connection()?.query_row(
+            "SELECT COUNT(*) FROM audit_events
+             WHERE kind = 'agent_message_chain_budget_exhausted'
+               AND json_extract(data_json, '$.data.delivery_id') = ?1",
+            [&rejected],
+            |row| row.get(0),
+        )?;
+        assert_eq!(count, 1);
+        assert_eq!(chain_budget(&reopened, &chain)?, Some((16, 16)));
+        Ok(())
+    }
+
+    #[test]
+    fn chain_budget_is_not_consumed_by_rejections_or_unapplied_transitions() -> Result<()> {
+        let (_dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+
+        // A target-policy rejection never reaches the chain ledger.
+        db.agent_identities().upsert(&AgentIdentityRecord::new(
+            "stopped-agent",
+            AgentKind::Named,
+            AgentVisibility::Private,
+            AgentOwnership::SelfOwned,
+            AgentProfilePreset::PublicNamed,
+            None,
+            None,
+        ))?;
+        let mut stopped = AgentState::new("stopped-agent");
+        stopped.status = AgentStatus::Stopped;
+        db.agent_states().upsert_for_fixture(&stopped)?;
+        let mut denied_request = request("stopped-denied", "denied");
+        denied_request.target_agent_id = "stopped-agent".into();
+        let denied = AgentMessageDeliveryService::prepare(denied_request, caller())?;
+        let receipt = admit(&db, &denied)?;
+        assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Rejected);
+        assert_eq!(
+            receipt.rejection_code,
+            Some(AgentMessageDeliveryRejectionCode::AgentStopped)
+        );
+        assert_eq!(chain_row_count(&db)?, 0);
+
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let chain = promote_source_chain(&db, &inputs[0].id)?;
+
+        // A queue transition whose CAS does not apply releases its charge.
+        let prepared = prepare_send_in_turn(&db, "routing-turn", "target-agent", "unapplied")?;
+        let now = Utc::now();
+        let entry = QueueEntryRecord {
+            message_id: prepared.message.id.clone(),
+            agent_id: "target-agent".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Dequeued,
+            created_at: now,
+            updated_at: now,
+        };
+        let mut next = entry.clone();
+        next.status = QueueEntryStatus::Queued;
+        next.updated_at = now;
+        let mut command = admission_command(&prepared);
+        command.operation = QueueOperation::Requeue;
+        command.mutation = QueueMutation::CompareAndSet {
+            expected: entry,
+            record: next,
+        };
+        command.notify_scheduler = false;
+        let commit = db
+            .transitions()
+            .commit_delivery_admission(&command, &prepared.record)?;
+        assert!(!commit.applied);
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 1)));
+        assert!(db
+            .agent_message_deliveries()
+            .latest(&prepared.record.delivery_id)?
+            .is_none());
+
+        // Cancelling an accepted delivery does not return its allowance.
+        let prepared = prepare_send_in_turn(&db, "routing-turn", "target-agent", "cancel-me")?;
+        admit(&db, &prepared)?;
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 2)));
+        let entry = db
+            .queue_entries()
+            .latest(&prepared.message.id)?
+            .context("accepted delivery was not queued")?;
+        queue_transition(
+            &db,
+            &entry,
+            QueueOperation::Discard,
+            QueueEntryStatus::Aborted,
+        )?;
+        assert_eq!(chain_budget(&db, &chain)?, Some((16, 2)));
+        Ok(())
+    }
+
+    #[test]
+    fn chain_budget_migration_keeps_legacy_anchors_and_rejects_missing_rows() -> Result<()> {
+        let (dir, db) = runtime_db()?;
+        seed_target(&db, AgentStatus::AwakeIdle)?;
+        assert_eq!(chain_row_count(&db)?, 0);
+        let (_turn, inputs) = seed_reply_turn(&db, &["sender-a"])?;
+        let legacy = db
+            .agent_message_deliveries()
+            .latest_for_message(&inputs[0].id)?
+            .context("seeded source delivery is missing")?;
+        assert!(legacy.message_chain_id.is_none());
+        assert_eq!(chain_row_count(&db)?, 0);
+
+        // The fixture contains only legacy deliveries. Rewind the append-only
+        // schema step, then exercise a normal runtime open against that database.
+        db.transaction(|tx| {
+            assert_eq!(
+                tx.execute(
+                    "DELETE FROM schema_migrations WHERE name = 'agent_message_chain_budgets'",
+                    [],
+                )?,
+                1
+            );
+            tx.execute("DROP TABLE agent_message_chain_budgets", [])?;
+            Ok(())
+        })?;
+        drop(db);
+        let db = RuntimeDb::open_and_migrate(
+            dir.path().join("state/runtime.sqlite"),
+            dir.path().join("state/runtime.lock"),
+        )?;
+        assert_eq!(chain_row_count(&db)?, 0);
+        assert!(stored_chain(&db, &legacy.delivery_id)?.is_none());
+
+        // The first two continuations race to share one compatibility row,
+        // which counts the pre-upgrade anchor as its first delivery.
+        let first = prepare_send_in_turn(&db, "routing-turn", "target-agent", "legacy-one")?;
+        let second = prepare_send_in_turn(&db, "routing-turn", "target-agent", "legacy-two")?;
+        for receipt in admit_concurrently(&db, [first, second])? {
+            assert_eq!(receipt.outcome, AgentMessageDeliveryOutcome::Accepted);
+            assert_eq!(
+                stored_chain(&db, &receipt.delivery_id)?.as_deref(),
+                Some(legacy.delivery_id.as_str())
+            );
+        }
+        assert_eq!(chain_row_count(&db)?, 1);
+        assert_eq!(chain_budget(&db, &legacy.delivery_id)?, Some((16, 3)));
+
+        // A recorded chain id without its budget row is an internal error.
+        let source = reply_envelope("broken-source", "sender-a", "target-agent");
+        let source = append_input(&db, &source)?;
+        let delivery = accepted_reply_delivery(&source, "sender-a", "broken-source")?;
+        db.transaction(|tx| insert_delivery_tx(tx, &delivery))?;
+        let broken_chain = promote_source_chain(&db, &source.id)?;
+        db.transaction(|tx| {
+            tx.execute(
+                "DELETE FROM agent_message_chain_budgets WHERE chain_id = ?1",
+                [&broken_chain],
+            )?;
+            Ok(())
+        })?;
+        let reply = prepare_reply_on_source(&db, &source.id, "target-agent", "broken")?;
+        let error = admit(&db, &reply)
+            .err()
+            .context("a recorded chain without its ledger row must fail")?;
+        assert!(
+            error.to_string().contains("without its budget row"),
+            "{error}"
         );
         Ok(())
     }

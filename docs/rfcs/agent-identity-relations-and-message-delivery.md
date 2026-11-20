@@ -948,6 +948,79 @@ sequence. If capacity or durable queue admission is unavailable, the request is
 rejected with a retryable `queue_unavailable` result rather than accepted into
 an untracked backlog.
 
+## 9.1 Message Chain Delivery Budget
+
+Two agents that are prompted to acknowledge each other's messages can wake each
+other without bound: every admitted message is one real activation. The first
+guard is a shared delivery allowance per message chain inside one runtime and
+one SQLite database. It is not a per-agent or global rate limit, not a
+cross-runtime guarantee, and not a hop countdown on routing metadata.
+
+`SendAgentMessage` and `InvokeAgent(existing_agent)` charge one unit per first
+successful enqueue, including the first message of the chain. The first release
+fixes the allowance at 16 accepted deliveries per chain, shared by every branch,
+so `A -> B -> A` stays allowed until the chain allowance is spent. No tool
+accepts a chain identifier, and chain membership never derives from message
+bodies, caller-supplied causation/correlation values, or the target agent.
+
+### Chain Resolution
+
+A delivery belongs to exactly one chain. The runtime resolves it from durable
+evidence in a fixed order:
+
+1. A reply or forward inherits the canonical delivery of the source message the
+   reply route already verified.
+2. Otherwise the caller's live, verified activation supplies one anchor: its
+   main input when that input is a chain source, else the first chain source in
+   persisted admission order. Unrelated sends therefore share one anchor instead
+   of opening a new allowance, and a multi-source batch does not merge distinct
+   chains.
+3. A precise `InvokeAgent(existing_agent)` `TaskResult` continuation, including a
+   formal final-brief completion, takes the chain of the verified
+   `request_delivery_id` recorded for its waiting task. The result itself is not
+   charged and gains no reply route; it only constrains what that activation
+   sends afterwards. Ordinary task results, operator prompts, and historical
+   results that this activation did not admit are not chain sources.
+4. Without a source, the delivery opens a new chain whose ID is its own runtime
+   `delivery_id`. This includes an independent operator turn.
+
+Chain membership does not propagate to timers, `Enqueue`, command or task
+callbacks, subagent creation, or another runtime. A later turn inherits only by
+consuming a message that is already part of the chain.
+
+### Durable Accounting
+
+Accepted deliveries store an internal optional `message_chain_id` inside the
+existing delivery payload. The chain allowance lives in one additional table,
+`agent_message_chain_budgets`, with one row per opened chain. The allowance is
+written when the chain opens, so changing the default later never rewrites an
+existing chain. The table adds no historical backfill, TTL, cascade delete, or
+time-based refill; cancelling an already queued delivery does not return its
+unit.
+
+An accepted delivery is charged in the same write transaction that commits the
+canonical delivery ledger, the target queue entry, and any reply wait. A queue
+transition that does not apply is not charged. Wake and scheduler notification
+still happen only after commit.
+
+The first successful continuation of a pre-upgrade source delivery, which has no
+recorded chain id, uses that source `delivery_id` as a fixed compatibility
+anchor and counts it as the chain's first delivery in the same transaction. A
+recorded chain id whose budget row is missing, or a missing canonical delivery
+for a claimed chain source, is an internal consistency error rather than a new
+allowance. Binaries that predate this contract do not enforce it.
+
+### Exhaustion
+
+An exhausted chain keeps the existing identity, policy, routing, and idempotency
+order. Only a new delivery that would actually be enqueued is refused; a valid
+replay of an accepted delivery still returns its stored receipt even at zero
+remaining allowance. The refusal is recorded in the existing rejection ledger
+with `message_chain_budget_exhausted` and `retryable = false`, together with the
+chain id, delivery id, allowance, and reason and without the message body. The
+target queue, reply waits, and wakes are untouched. Internal consistency or
+database failures are never reported as an exhausted allowance.
+
 ## 10. Lifecycle Fence
 
 Message admission linearizes in the same database transaction that validates
@@ -1009,6 +1082,7 @@ agent_stopped
 agent_deleting
 agent_deleted
 queue_unavailable
+message_chain_budget_exhausted
 ```
 
 Each adapter maps these to its protocol while preserving:
