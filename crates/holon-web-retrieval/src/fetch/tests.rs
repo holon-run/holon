@@ -99,9 +99,13 @@ fn list_fetch_providers_mirrors_route_gating() {
     config
         .providers
         .insert(" deepseek-b".into(), provider.clone());
+    // Tavily is callable remotely with both documented extract formats.
+    let mut tavily = provider.clone();
+    tavily.kind = WebProviderKind::Tavily;
+    config.providers.insert("tavily-a".into(), tavily);
     // Search-only kinds and missing credentials stay undiscoverable.
     let mut search_only = provider.clone();
-    search_only.kind = WebProviderKind::Tavily;
+    search_only.kind = WebProviderKind::Exa;
     config.providers.insert("tavily-search".into(), search_only);
     provider.api_key.clear();
     config.providers.insert("no-key".into(), provider);
@@ -113,10 +117,17 @@ fn list_fetch_providers_mirrors_route_gating() {
         .collect();
     assert_eq!(
         remote_ids,
-        vec![Some(" deepseek-b"), Some("auto"), Some("deepseek-a")]
+        vec![
+            Some(" deepseek-b"),
+            Some("auto"),
+            Some("deepseek-a"),
+            Some("tavily-a")
+        ]
     );
     assert_eq!(listed[3].kind, "deepseek");
     assert_eq!(listed[3].extract_modes, vec!["auto"]);
+    assert_eq!(listed[4].kind, "tavily");
+    assert_eq!(listed[4].extract_modes, vec!["auto", "text"]);
 
     // The shared preflight rejects every remote request once custom host
     // rules are configured, so discovery must not offer those routes.
@@ -127,6 +138,37 @@ fn list_fetch_providers_mirrors_route_gating() {
 
     config.fetch.enabled = false;
     assert!(list_fetch_providers(&config).is_empty());
+}
+
+#[test]
+fn list_fetch_providers_hides_malformed_tavily_base_url() {
+    let mut config = WebConfig::default();
+    let provider = WebProviderConfig {
+        kind: WebProviderKind::Tavily,
+        base_url: Some("not a url".into()),
+        api_key: "fixture-key".into(),
+        model_route: None,
+        command: None,
+        output: None,
+        limits: Default::default(),
+    };
+    config
+        .providers
+        .insert("tavily-bad".into(), provider.clone());
+    assert_eq!(list_fetch_providers(&config).len(), 1);
+
+    // The same provider is discoverable once the base URL is a valid endpoint.
+    config.providers.insert(
+        "tavily-bad".into(),
+        WebProviderConfig {
+            base_url: Some("https://api.tavily.com".into()),
+            ..provider
+        },
+    );
+    let listed = list_fetch_providers(&config);
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[1].provider_id.as_deref(), Some("tavily-bad"));
+    assert_eq!(listed[1].extract_modes, vec!["auto", "text"]);
 }
 
 #[tokio::test]

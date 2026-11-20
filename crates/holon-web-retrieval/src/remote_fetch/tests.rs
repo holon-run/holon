@@ -210,12 +210,12 @@ async fn fetch_provider_selection_rejects_unknown_or_unsupported_kind() {
             .is_err()
     );
     let mut search_only = provider.clone();
-    search_only.kind = super::super::WebProviderKind::Tavily;
-    config.providers.insert("tavily-search".into(), search_only);
-    let error = super::super::fetch::fetch_with_provider(request(), Some("tavily-search"), &config)
+    search_only.kind = super::super::WebProviderKind::Exa;
+    config.providers.insert("exa-search".into(), search_only);
+    let error = super::super::fetch::fetch_with_provider(request(), Some("exa-search"), &config)
         .await
         .unwrap_err();
-    assert!(error.to_string().contains("tavily"));
+    assert!(error.to_string().contains("exa"));
     config.fetch.enabled = false;
     assert!(
         super::super::fetch::fetch_with_provider(request(), Some("brave"), &config)
@@ -224,4 +224,193 @@ async fn fetch_provider_selection_rejects_unknown_or_unsupported_kind() {
     );
     handle.abort();
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+// ---- Tavily Extract ----
+
+fn tavily_provider(base_url: String) -> WebProviderConfig {
+    WebProviderConfig {
+        kind: super::super::WebProviderKind::Tavily,
+        base_url: Some(base_url),
+        api_key: "fixture-key".into(),
+        model_route: None,
+        command: None,
+        output: None,
+        limits: Default::default(),
+    }
+}
+
+async fn tavily_server(
+    status: StatusCode,
+    body: &str,
+) -> (
+    WebProviderConfig,
+    Arc<std::sync::Mutex<Vec<Value>>>,
+    tokio::task::JoinHandle<()>,
+) {
+    let body = body.to_owned();
+    let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let handler_seen = seen.clone();
+    let router = Router::new().route(
+        "/extract",
+        post(move |request: Request| {
+            let body = body.clone();
+            let seen = handler_seen.clone();
+            async move {
+                assert_eq!(request.headers()["authorization"], "Bearer fixture-key");
+                let bytes = axum::body::to_bytes(request.into_body(), 100_000)
+                    .await
+                    .unwrap();
+                let value: Value = serde_json::from_slice(&bytes).unwrap();
+                seen.lock().unwrap().push(value);
+                (status, body)
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("http://{}", listener.local_addr().unwrap());
+    let handle = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    (tavily_provider(base_url), seen, handle)
+}
+
+#[tokio::test]
+async fn tavily_extract_maps_markdown_and_text_provenance() {
+    let content = "# 页面\n正文";
+    let (provider, seen, handle) = tavily_server(
+        StatusCode::OK,
+        &json!({"results": [{"url": "https://93.184.216.34/docs", "raw_content": content}]})
+            .to_string(),
+    )
+    .await;
+    let config = WebFetchConfig {
+        max_chars: 4,
+        ..Default::default()
+    };
+    let mut first = request();
+    first.max_chars = Some(100);
+    let page = fetch(first, "fixture", &provider, &config).await.unwrap();
+    handle.abort();
+    assert_eq!(page.final_url, None);
+    assert_eq!(page.source, "tavily_remote");
+    assert_eq!(page.provider_id.as_deref(), Some("fixture"));
+    assert_eq!(page.status_source, "provider_api");
+    assert_eq!(page.status, 200);
+    assert_eq!(page.content_type.as_deref(), Some("text/markdown"));
+    assert_eq!(page.bytes_read, content.len());
+    assert_eq!(
+        page.sha256,
+        format!("{:x}", Sha256::digest(content.as_bytes()))
+    );
+    assert!(page.truncated);
+    assert!(page.text.starts_with("<external_content source="));
+    assert!(page.text.contains("untrusted"));
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        &[json!({"urls": ["https://93.184.216.34/docs"], "format": "markdown"})]
+    );
+
+    // text mode maps to the documented plain-text format.
+    let (provider, seen, handle) = tavily_server(
+        StatusCode::OK,
+        &json!({"results": [{"url": "https://93.184.216.34/docs", "raw_content": "plain body"}]})
+            .to_string(),
+    )
+    .await;
+    let mut input = request();
+    input.extract_mode = ExtractMode::Text;
+    let page = fetch(input, "fixture", &provider, &WebFetchConfig::default())
+        .await
+        .unwrap();
+    handle.abort();
+    assert_eq!(page.content_type.as_deref(), Some("text/plain"));
+    assert!(!page.truncated);
+    assert_eq!(
+        seen.lock().unwrap().as_slice(),
+        &[json!({"urls": ["https://93.184.216.34/docs"], "format": "text"})]
+    );
+}
+
+#[tokio::test]
+async fn tavily_extract_rejects_provider_failures_without_fallback() {
+    let url = "https://93.184.216.34/docs";
+    for (status, body) in [
+        // HTTP 200 with the requested URL in failed_results.
+        (
+            StatusCode::OK,
+            json!({
+                "results": [],
+                "failed_results": [{"url": url, "error": "extraction failed"}]
+            })
+            .to_string(),
+        ),
+        // HTTP 200 with no results at all.
+        (
+            StatusCode::OK,
+            json!({"results": [], "failed_results": []}).to_string(),
+        ),
+        // HTTP 200 with empty content for the requested URL.
+        (
+            StatusCode::OK,
+            json!({"results": [{"url": url, "raw_content": "  "}]}).to_string(),
+        ),
+        // HTTP 200 whose only result is for a different URL.
+        (
+            StatusCode::OK,
+            json!({"results": [{"url": "https://other.example/x", "raw_content": "body"}]})
+                .to_string(),
+        ),
+        // Transport-level provider errors.
+        (StatusCode::UNAUTHORIZED, "unauthorized".into()),
+        (StatusCode::TOO_MANY_REQUESTS, "rate limited".into()),
+        (StatusCode::BAD_GATEWAY, "bad gateway".into()),
+        // Invalid JSON body.
+        (StatusCode::OK, "{\"results\":".into()),
+    ] {
+        let (provider, seen, handle) = tavily_server(status, &body).await;
+        let error = fetch(request(), "fixture", &provider, &WebFetchConfig::default())
+            .await
+            .unwrap_err();
+        handle.abort();
+        let tool_error = error.downcast_ref::<ToolError>().unwrap();
+        let value = serde_json::to_value(tool_error).unwrap();
+        // Rate limiting and upstream 5xx map to retryable; content and
+        // authentication failures do not.
+        let expected_retryable = matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS | StatusCode::BAD_GATEWAY
+        );
+        assert_eq!(value["retryable"], expected_retryable, "{status}");
+        assert_eq!(value["kind"], "provider_error", "{status}");
+        assert!(!value.to_string().contains("fixture-key"));
+        // Exactly one /extract call happened and no local fallback retried it.
+        assert_eq!(seen.lock().unwrap().len(), 1, "{status}");
+    }
+}
+
+#[tokio::test]
+async fn tavily_extract_rejects_raw_mode_before_sending() {
+    let (provider, seen, handle) = tavily_server(StatusCode::OK, "{}").await;
+    let mut config = super::super::WebConfig::default();
+    config.providers.insert("fixture".into(), provider.clone());
+    let mut input = request();
+    input.extract_mode = ExtractMode::Raw;
+    assert!(
+        super::super::fetch::fetch_with_provider(input, Some("fixture"), &config)
+            .await
+            .is_err()
+    );
+    let mut provider = provider;
+    provider.api_key.clear();
+    config.providers.insert("fixture".into(), provider);
+    assert!(fetch(
+        request(),
+        "fixture",
+        &config.providers["fixture"],
+        &config.fetch
+    )
+    .await
+    .is_err());
+    handle.abort();
+    // Nothing left the process for either rejection.
+    assert!(seen.lock().unwrap().is_empty());
 }

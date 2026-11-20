@@ -279,6 +279,44 @@ fn deepseek_kind_and_endpoint_contract() {
 }
 
 #[test]
+fn tavily_extract_endpoint_contract() {
+    let mut provider =
+        WebProviderConfig::from_file("tavily", &provider_file(WebProviderKind::Tavily)).unwrap();
+    assert_eq!(
+        tavily_extract_url(&provider).unwrap().as_str(),
+        "https://api.tavily.com/extract"
+    );
+    for base in [
+        "https://api.tavily.com",
+        "https://api.tavily.com/",
+        "https://proxy.internal/tavily",
+        "https://proxy.internal/tavily/",
+    ] {
+        provider.base_url = Some(base.into());
+        assert!(tavily_extract_url(&provider)
+            .unwrap()
+            .as_str()
+            .ends_with("/extract"));
+    }
+    provider.base_url = Some("https://proxy.internal/tavily".into());
+    assert_eq!(
+        tavily_extract_url(&provider).unwrap().as_str(),
+        "https://proxy.internal/tavily/extract"
+    );
+    for base in [
+        "not a url",
+        "file:///etc/passwd",
+        "https://user:secret@example.com",
+        "https://example.com?secret=1",
+        "https://example.com/#secret",
+    ] {
+        provider.base_url = Some(base.into());
+        let error = tavily_extract_url(&provider).unwrap_err().to_string();
+        assert!(!error.contains("secret"));
+    }
+}
+
+#[test]
 fn deepseek_reuses_llm_credential_profile_without_serializing_key() {
     let mut file = crate::WebConfigFile::default();
     let mut provider = provider_file(WebProviderKind::DeepSeek);

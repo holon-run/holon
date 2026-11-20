@@ -16,7 +16,7 @@ use holon_tools::helpers::truncate_text;
 use crate::{
     deepseek_tool_url,
     policy::{policy_error, timeout, validate_fetch_url},
-    WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
+    tavily_extract_url, WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
 
 const WEB_FETCH_USER_AGENT: &str =
@@ -161,11 +161,11 @@ pub async fn fetch_with_provider(
         policy_error(
             "provider_unavailable",
             format!(
-                "WebFetch remote extraction is not available for provider kind {} (the kind may only support search); remote fetch currently supports kind=deepseek",
+                "WebFetch remote extraction is not available for provider kind {} (the kind may only support search); remote fetch currently supports kind=deepseek and kind=tavily",
                 provider.kind.as_str()
             ),
             json!({ "provider": provider_id, "kind": provider.kind.as_str() }),
-            "select a deepseek provider or omit provider for local HTTP",
+            "select a deepseek or tavily provider or omit provider for local HTTP",
         )
     })?;
     if !modes.contains(&request.extract_mode) {
@@ -197,6 +197,7 @@ pub async fn fetch_with_provider(
 pub(crate) fn remote_fetch_modes(kind: WebProviderKind) -> Option<&'static [ExtractMode]> {
     match kind {
         WebProviderKind::DeepSeek => Some(&[ExtractMode::Auto]),
+        WebProviderKind::Tavily => Some(&[ExtractMode::Auto, ExtractMode::Text]),
         _ => None,
     }
 }
@@ -256,6 +257,9 @@ fn remote_fetch_provider_callable(provider: &WebProviderConfig) -> bool {
     match provider.kind {
         WebProviderKind::DeepSeek => {
             !provider.api_key.trim().is_empty() && deepseek_tool_url(provider, "fetch").is_ok()
+        }
+        WebProviderKind::Tavily => {
+            !provider.api_key.trim().is_empty() && tavily_extract_url(provider).is_ok()
         }
         _ => false,
     }
