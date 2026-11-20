@@ -31,27 +31,43 @@ jobs:
           api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
           mkdir -p release-e2e-gate
 
-          runs_json="$(curl -fsSL \
+          # release-e2e.yml dispatches run against a harness_ref checkout (#4357),
+          # so run head_sha is the harness branch SHA, not the release candidate
+          # SHA. The attestation artifact name already embeds the candidate SHA and
+          # tag, so discover it by exact artifact name, then bind it back to a
+          # successful workflow_dispatch run of release-e2e.yml.
+          artifacts_json="$(curl -fsSL \
             -H "Authorization: Bearer ${GH_TOKEN}" \
             -H "Accept: application/vnd.github+json" \
-            "${api}/actions/workflows/release-e2e.yml/runs?event=workflow_dispatch&status=success&per_page=100")"
+            "${api}/actions/artifacts?name=${artifact_name}&per_page=100")"
 
           artifact_url=""
           e2e_run_id=""
-          for run_id in $(jq -r --arg sha "${sha}" '.workflow_runs[] | select(.head_sha == $sha and .conclusion == "success") | .id' <<<"${runs_json}"); do
-            artifacts_json="$(curl -fsSL \
+          for run_id in $(jq -r --arg name "${artifact_name}" \
+            '.artifacts[] | select(.name == $name and .expired == false and .workflow_run.id != null) | .workflow_run.id' <<<"${artifacts_json}"); do
+            run_json="$(curl -fsSL \
               -H "Authorization: Bearer ${GH_TOKEN}" \
               -H "Accept: application/vnd.github+json" \
-              "${api}/actions/runs/${run_id}/artifacts?per_page=100")"
-            artifact_url="$(jq -r --arg name "${artifact_name}" '.artifacts[] | select(.name == $name and .expired == false) | .archive_download_url' <<<"${artifacts_json}" | head -n1)"
-            if [ -n "${artifact_url}" ]; then
+              "${api}/actions/runs/${run_id}")"
+            if jq -e \
+              '(.path == ".github/workflows/release-e2e.yml")
+               and (.event == "workflow_dispatch")
+               and (.conclusion == "success")' <<<"${run_json}" >/dev/null; then
+              artifact_url="$(jq -r --arg name "${artifact_name}" --argjson run_id "${run_id}" \
+                '.artifacts[] | select(.name == $name and .expired == false and .workflow_run.id == $run_id) | .archive_download_url' <<<"${artifacts_json}" | head -n1)"
               e2e_run_id="${run_id}"
               break
             fi
           done
 
           if [ -z "${artifact_url}" ]; then
-            echo "No successful Release E2E attestation artifact named ${artifact_name} was found for ${sha}." >&2
+            unexpired_count="$(jq -r --arg name "${artifact_name}" \
+              '[.artifacts[] | select(.name == $name and .expired == false)] | length' <<<"${artifacts_json}")"
+            if [ "${unexpired_count}" -gt 0 ]; then
+              echo "Release E2E attestation artifact ${artifact_name} exists for ${sha}, but none of its owning runs passed validation (expected workflow=.github/workflows/release-e2e.yml, event=workflow_dispatch, conclusion=success)." >&2
+            else
+              echo "No successful Release E2E attestation artifact named ${artifact_name} was found for ${sha}." >&2
+            fi
             exit 1
           fi
 
