@@ -219,7 +219,7 @@ pub async fn generic_webhook(
     ApiJson(payload): ApiJson<Value>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
     authorize_remote_access(&headers, &state).map_err(authentication_error_response)?;
-    let trace_context = super::state::trace_context_from_headers(&headers)?;
+    let trace_context = holon_server::trace::trace_context_from_headers(&headers)?;
     enqueue_internal(
         state,
         agent_id,

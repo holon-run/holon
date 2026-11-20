@@ -73,3 +73,48 @@ fn immutable_assets_still_honor_conditional_requests() {
         "public, max-age=31536000, immutable"
     );
 }
+
+fn generated_artifact(relative_path: &str) -> Option<Vec<u8>> {
+    let repository = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    match std::fs::read(repository.join(relative_path)) {
+        Ok(bytes) => Some(bytes),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => panic!("could not read {relative_path}: {error}"),
+    }
+}
+
+#[tokio::test]
+async fn generated_web_and_app_sdk_bundles_use_the_repository_build_paths() {
+    let response = web_asset_response(None, "index.html", &HeaderMap::new(), false).await;
+    match generated_artifact("web-gui/app/dist/index.html") {
+        Some(expected) => {
+            let response = response.expect("generated Web index must be served");
+            assert_eq!(response.headers()[CONTENT_TYPE], "text/html");
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(bytes, expected);
+        }
+        None => assert!(response.is_none()),
+    }
+
+    let response = app_sdk_response("test-version");
+    match generated_artifact("packages/app-sdk/dist/holon.js") {
+        Some(expected) => {
+            let response = response.expect("generated App SDK must be served");
+            assert_eq!(
+                response.headers()["x-holon-app-sdk-version"],
+                "test-version"
+            );
+            assert_eq!(
+                response.headers()[CONTENT_TYPE],
+                "application/javascript; charset=utf-8"
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+            assert_eq!(bytes, expected);
+        }
+        None => assert!(response.is_none()),
+    }
+}

@@ -1,19 +1,25 @@
 # Server transport boundary
 
-The private holon-server crate owns TCP and Unix socket serving, shared HTTP
-layers, and helpers for browser navigation and static asset responses. It
-accepts an assembled Axum router and configuration. Root server composition
-passes the router and shutdown signal into this crate. TCP request handlers
-continue to receive peer addresses through Axum ConnectInfo.
+The private holon-server crate owns TCP and Unix socket serving and the
+shared HTTP layers. Root server composition passes an assembled Axum router,
+configuration and shutdown signal into the crate. TCP request handlers
+receive peer addresses through Axum ConnectInfo.
 
-Shared response behavior includes CORS, compression, tracing, retry headers,
-and conditional caching. The root continues to resolve configured or embedded
-assets and to make session and bootstrap decisions before selecting the
-appropriate response. Asset embedding remains relative to the root Cargo
-manifest, where the release and Docker builds stage the generated Web bundle.
+The server crate owns transport-level behavior for requests and responses.
+This includes browser origin and credential header parsing, JSON rejection
+and error envelopes, request trace context, conditional file responses, the
+avatar renderer and cache, and SSE framing, heartbeats and public event
+encoding. Callers supply already-open files, authorized avatar identities and
+admitted event streams. Request authentication, file and workspace access,
+session admission, event replay and subscriptions, and runtime error
+classification are decided by the root runtime.
 
-Handlers, route registration, and OpenAPI generation currently compose
-RuntimeHost, RuntimeDb, and daemon services in the root package. Moving those
-handlers requires a stable runtime service boundary. Runtime persistence,
-session admission, and SSE event semantics stay with their current owners
-during the transport move.
+The server crate resolves and serves the Web and App SDK bundles from their
+existing repository build paths. A fresh checkout can build without either
+artifact. A configured Web distribution override remains authoritative for
+Web requests.
+
+OpenAPI route metadata and document generation live in the server crate.
+The root supplies its API version, runtime limits, and schemas for the
+concrete endpoint types. Route registration and handlers stay with the root
+while they compose RuntimeHost, RuntimeDb, and daemon services.

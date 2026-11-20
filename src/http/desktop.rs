@@ -1,5 +1,6 @@
 //! Explicit host desktop integration. File identity uses the browsing resolver.
 use super::*;
+use holon_server::origin::desktop_origin_allowed;
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub(crate) struct DesktopCapabilities {
@@ -12,54 +13,6 @@ pub(crate) struct RevealFileRequest {
     workspace_id: String,
     execution_root_id: String,
     path: String,
-}
-
-fn same_origin_request(headers: &HeaderMap, mutation: bool, authenticated_remote: bool) -> bool {
-    let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
-        return false;
-    };
-    let Ok(url) = url::Url::parse(&format!("http://{host}")) else {
-        return false;
-    };
-    if !url.username().is_empty()
-        || url.password().is_some()
-        || url.authority() != host
-        || url.path() != "/"
-        || url.query().is_some()
-        || url.fragment().is_some()
-    {
-        return false;
-    }
-    // Local mode without credentials must not trust a DNS-rebound Host.
-    if !authenticated_remote
-        && !match url.host() {
-            Some(url::Host::Domain(host)) => {
-                let host = host.trim_end_matches('.');
-                host == "localhost" || host.ends_with(".localhost")
-            }
-            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(url::Host::Ipv6(ip)) => {
-                ip.is_loopback() || ip.to_ipv4_mapped().is_some_and(|ip| ip.is_loopback())
-            }
-            None => false,
-        }
-    {
-        return false;
-    }
-    if headers
-        .get("sec-fetch-site")
-        .is_some_and(|v| v != "same-origin")
-    {
-        return false;
-    }
-    match headers.get("origin").and_then(|v| v.to_str().ok()) {
-        Some(origin) => url::Url::parse(origin).is_ok_and(|origin_url| {
-            matches!(origin_url.scheme(), "http" | "https")
-                && origin_url.authority() == host
-                && origin_url.origin().ascii_serialization() == origin
-        }),
-        None => !mutation,
-    }
 }
 
 pub(crate) async fn capabilities(
@@ -80,7 +33,7 @@ pub(crate) async fn reveal(
     authorize_control(&headers, &state).map_err(authentication_error_response)?;
     let authenticated_remote = state.require_control_token
         || state.host.config().auth.mode == crate::authentication::AuthenticationMode::Oidc;
-    if !state.desktop_integration || !same_origin_request(&headers, true, authenticated_remote) {
+    if !state.desktop_integration || !desktop_origin_allowed(&headers, true, authenticated_remote) {
         return Err(forbidden(
             "desktop integration is unavailable for this connection",
         ));
@@ -119,6 +72,7 @@ pub(crate) async fn reveal(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use holon_server::origin::desktop_origin_allowed;
 
     #[test]
     fn desktop_requires_same_origin_without_restricting_host_location() {
@@ -131,12 +85,12 @@ mod tests {
         ] {
             let mut headers = HeaderMap::new();
             headers.insert("host", host.parse().unwrap());
-            assert!(same_origin_request(&headers, false, true));
-            assert!(!same_origin_request(&headers, true, true));
+            assert!(desktop_origin_allowed(&headers, false, true));
+            assert!(!desktop_origin_allowed(&headers, true, true));
             headers.insert("origin", format!("http://{host}").parse().unwrap());
-            assert!(same_origin_request(&headers, true, true));
+            assert!(desktop_origin_allowed(&headers, true, true));
             headers.insert("sec-fetch-site", "cross-site".parse().unwrap());
-            assert!(!same_origin_request(&headers, true, true));
+            assert!(!desktop_origin_allowed(&headers, true, true));
         }
         for (host, origin) in [
             ("host.tailnet.ts.net", "https://evil.test"),
@@ -148,7 +102,7 @@ mod tests {
             let mut headers = HeaderMap::new();
             headers.insert("host", host.parse().unwrap());
             headers.insert("origin", origin.parse().unwrap());
-            assert!(!same_origin_request(&headers, true, true));
+            assert!(!desktop_origin_allowed(&headers, true, true));
         }
     }
 
@@ -168,7 +122,7 @@ mod tests {
             headers.insert("host", host.parse().unwrap());
             headers.insert("origin", format!("http://{host}").parse().unwrap());
             assert_eq!(
-                same_origin_request(&headers, true, false),
+                desktop_origin_allowed(&headers, true, false),
                 allowed,
                 "{host}"
             );

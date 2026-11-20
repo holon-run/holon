@@ -1,3 +1,5 @@
+use holon_server::events::borrowed_event_envelope;
+
 use super::*;
 
 pub async fn events(
@@ -127,86 +129,6 @@ impl Serialize for BorrowedEventEnvelopes<'_> {
         sequence.end()
     }
 }
-
-#[derive(Serialize)]
-struct BorrowedEventEnvelope<'a> {
-    id: &'a str,
-    event_seq: u64,
-    event_log_epoch: &'a str,
-    ts: chrono::DateTime<Utc>,
-    agent_id: &'a str,
-    #[serde(rename = "type")]
-    event_type: &'a str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payload_schema: Option<&'a str>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    payload_schema_version: Option<u32>,
-    payload: PublicEventPayload<'a>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    projection_effect: Option<crate::runtime_event::ProjectionEffect>,
-}
-
-fn borrowed_event_envelope<'a>(
-    agent_id: &'a str,
-    event_log_epoch: &'a str,
-    event: &'a AuditEvent,
-    emit_projection_effect: bool,
-) -> BorrowedEventEnvelope<'a> {
-    let legacy =
-        crate::runtime_event::is_legacy_event_shape(&event.payload_schema, event.contract_version);
-    BorrowedEventEnvelope {
-        id: &event.id,
-        event_seq: event.event_seq,
-        event_log_epoch: if event.event_log_epoch.is_empty() {
-            event_log_epoch
-        } else {
-            &event.event_log_epoch
-        },
-        ts: event.created_at,
-        agent_id,
-        event_type: &event.kind,
-        payload_schema: (!legacy).then_some(event.payload_schema.as_str()),
-        payload_schema_version: (!legacy).then_some(event.payload_schema_version),
-        payload: PublicEventPayload(&event.data),
-        projection_effect: emit_projection_effect.then(|| {
-            crate::runtime_event::projection_effect_of(
-                &event.kind,
-                event.contract_version,
-                &event.payload_schema,
-                event.payload_schema_version,
-            )
-        }),
-    }
-}
-
-struct PublicEventPayload<'a>(&'a Value);
-
-impl Serialize for PublicEventPayload<'_> {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        use serde::ser::SerializeMap;
-        let Value::Object(object) = self.0 else {
-            return self.0.serialize(serializer);
-        };
-        let mut map = serializer.serialize_map(None)?;
-        for (key, value) in object {
-            if !PRIVATE_EVENT_PAYLOAD_KEYS.contains(&key.as_str()) {
-                map.serialize_entry(key, value)?;
-            }
-        }
-        map.end()
-    }
-}
-
-const PRIVATE_EVENT_PAYLOAD_KEYS: &[&str] = &[
-    "prompt_cache_key",
-    "context_fingerprint",
-    "compression_epoch",
-    "provider_request_id",
-    "provider_message_id",
-    "provider_request_diagnostics",
-    "provider_attempt_timeline",
-    "only_sleep_tools",
-];
 
 pub async fn message(
     Path((agent_id, message_id)): Path<(String, String)>,
@@ -389,26 +311,7 @@ pub async fn events_stream(
             }
         }
     });
-    let stream = futures_util::stream::unfold(out_rx, |mut receiver| async move {
-        match tokio::time::timeout(EVENT_STREAM_HEARTBEAT_INTERVAL, receiver.recv()).await {
-            Ok(Some(frame)) => Some((frame, receiver)),
-            Ok(None) => None,
-            Err(_) => Some((Ok(Bytes::from_static(b": heartbeat\n\n")), receiver)),
-        }
-    });
-    Ok((
-        [
-            (
-                axum::http::HeaderName::from_static(
-                    crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
-                ),
-                crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
-            ),
-            (CONTENT_TYPE, "text/event-stream".into()),
-            (CACHE_CONTROL, "no-cache".into()),
-        ],
-        Body::from_stream(stream),
-    ))
+    Ok(holon_server::sse::runtime_event_stream(out_rx))
 }
 
 pub async fn global_events_stream(
@@ -447,26 +350,7 @@ pub async fn global_events_stream(
             }
         }
     });
-    let stream = futures_util::stream::unfold(rx_out, |mut receiver| async move {
-        match tokio::time::timeout(EVENT_STREAM_HEARTBEAT_INTERVAL, receiver.recv()).await {
-            Ok(Some(frame)) => Some((frame, receiver)),
-            Ok(None) => None,
-            Err(_) => Some((Ok(Bytes::from_static(b": heartbeat\n\n")), receiver)),
-        }
-    });
-    Ok((
-        [
-            (
-                axum::http::HeaderName::from_static(
-                    crate::runtime_event::EVENT_CONTRACT_VERSION_HEADER,
-                ),
-                crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION.to_string(),
-            ),
-            (CONTENT_TYPE, "text/event-stream".into()),
-            (CACHE_CONTROL, "no-cache".into()),
-        ],
-        Body::from_stream(stream),
-    ))
+    Ok(holon_server::sse::runtime_event_stream(rx_out))
 }
 
 fn initial_buffered_events(
@@ -490,64 +374,6 @@ fn initial_buffered_events(
         page.events().len()
     };
     Ok(start_index)
-}
-
-#[cfg(test)]
-fn stream_event_envelope(
-    agent_id: &str,
-    event_log_epoch: &str,
-    event: &AuditEvent,
-    emit_projection_effect: bool,
-) -> StreamEventEnvelope {
-    let legacy =
-        crate::runtime_event::is_legacy_event_shape(&event.payload_schema, event.contract_version);
-    StreamEventEnvelope {
-        id: event.id.clone(),
-        event_seq: event.event_seq,
-        event_log_epoch: if event.event_log_epoch.is_empty() {
-            event_log_epoch.to_string()
-        } else {
-            event.event_log_epoch.clone()
-        },
-        ts: event.created_at,
-        agent_id: agent_id.to_string(),
-        event_type: event.kind.clone(),
-        // Schema-less legacy events omit constant envelope metadata.
-        payload_schema: (!legacy).then(|| event.payload_schema.clone()),
-        payload_schema_version: (!legacy).then_some(event.payload_schema_version),
-        payload: public_event_payload(&event.data),
-        projection_effect: emit_projection_effect.then(|| {
-            crate::runtime_event::projection_effect_of(
-                &event.kind,
-                event.contract_version,
-                &event.payload_schema,
-                event.payload_schema_version,
-            )
-        }),
-    }
-}
-
-/// Keep provider diagnostics available in the durable audit record while
-/// keeping them out of the default public event contract.
-#[cfg(test)]
-fn public_event_payload(payload: &Value) -> Value {
-    let Value::Object(object) = payload else {
-        return payload.clone();
-    };
-    let mut public = object.clone();
-    for key in [
-        "prompt_cache_key",
-        "context_fingerprint",
-        "compression_epoch",
-        "provider_request_id",
-        "provider_message_id",
-        "provider_request_diagnostics",
-        "provider_attempt_timeline",
-        "only_sleep_tools",
-    ] {
-        public.remove(key);
-    }
-    Value::Object(public)
 }
 
 /// Whether event pages and SSE should emit the additive `projection_effect`
@@ -574,40 +400,4 @@ fn event_seq_not_found(
         .extension("oldest_retained_seq", recovery_window.oldest_retained_seq)
         .extension("event_head_seq", recovery_window.event_head_seq),
     )
-}
-
-#[cfg(holon_lib_test_shard = "c")]
-#[cfg(test)]
-mod material_tests {
-    use super::*;
-
-    #[test]
-    fn borrowed_event_wire_matches_original_schema_and_top_level_privacy_without_body_copy(
-    ) -> Result<()> {
-        for payload in [
-            serde_json::json!({"visible": {"provider_request_id": "nested"}, "provider_request_id": "private", "only_sleep_tools": true}),
-            serde_json::json!(["opaque", {"provider_request_id": "nested"}]),
-            serde_json::json!("opaque"),
-        ] {
-            let mut event = AuditEvent::legacy("future-unknown", payload);
-            for typed in [false, true] {
-                if typed {
-                    event.payload_schema = "holon.future.v1".to_owned();
-                    event.payload_schema_version = 1;
-                    event.contract_version = crate::runtime_event::RUNTIME_EVENT_CONTRACT_VERSION;
-                    event.event_log_epoch = "original-epoch".to_owned();
-                }
-                for emit in [false, true] {
-                    let borrowed =
-                        borrowed_event_envelope("agent-a", "fallback-epoch", &event, emit);
-                    let original = stream_event_envelope("agent-a", "fallback-epoch", &event, emit);
-                    assert_eq!(
-                        serde_json::to_value(borrowed)?,
-                        serde_json::to_value(original)?
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
 }

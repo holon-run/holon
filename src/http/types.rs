@@ -185,12 +185,7 @@ pub struct EventStreamQuery {
     pub(crate) limit: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, JsonSchema, PartialEq, Eq)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum EventPageOrder {
-    Asc,
-    Desc,
-}
+pub(crate) use holon_server::events::{EventPageOrder, EventsPageResponse, StreamEventEnvelope};
 
 impl From<EventPageOrder> for EventLogPageOrder {
     fn from(order: EventPageOrder) -> Self {
@@ -199,53 +194,6 @@ impl From<EventPageOrder> for EventLogPageOrder {
             EventPageOrder::Desc => Self::Desc,
         }
     }
-}
-
-#[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct EventsPageResponse {
-    pub(crate) events: Vec<StreamEventEnvelope>,
-    pub(crate) event_log_epoch: String,
-    /// Stream-level envelope contract version for every event in this page.
-    /// Per-event `contract_version` was removed; this is its single source.
-    pub(crate) contract_version: u32,
-    pub(crate) oldest_seq: Option<u64>,
-    pub(crate) newest_seq: Option<u64>,
-    /// Exclusive descending continuation after the last scanned candidate, if more remain.
-    pub(crate) next_before_seq: Option<u64>,
-    /// Exclusive ascending continuation after the last scanned candidate, if more remain.
-    pub(crate) next_after_seq: Option<u64>,
-    pub(crate) cursor_seq: Option<u64>,
-    pub(crate) has_older: bool,
-    pub(crate) has_newer: bool,
-    pub(crate) order: EventPageOrder,
-    pub(crate) limit: usize,
-}
-
-/// One event on the public event surface. The `payload` object is the only
-/// data source: correlation ids such as `message_id`, `task_id`,
-/// `work_item_id`, `correlation_id`, and `causation_id` live in the payload
-/// itself and are no longer duplicated into an envelope `provenance` object.
-#[derive(Debug, Serialize, JsonSchema)]
-pub(crate) struct StreamEventEnvelope {
-    pub(crate) id: String,
-    pub(crate) event_seq: u64,
-    pub(crate) event_log_epoch: String,
-    pub(crate) ts: chrono::DateTime<Utc>,
-    pub(crate) agent_id: String,
-    #[serde(rename = "type")]
-    pub(crate) event_type: String,
-    /// Registry payload schema. Present only on typed events; legacy audit
-    /// events are schema-less and carry their data as-is. The envelope
-    /// contract version is declared per stream, not per event.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) payload_schema: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) payload_schema_version: Option<u32>,
-    pub(crate) payload: Value,
-    /// Additive classification derived from the runtime event registry.
-    /// Present only while `events.projection-effect.v1` is advertised.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) projection_effect: Option<crate::runtime_event::ProjectionEffect>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

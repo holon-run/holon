@@ -504,13 +504,7 @@ pub async fn stream(
     bind_response(
         &headers,
         &identity,
-        Sse::new(ReceiverStream::new(rx))
-            .keep_alive(
-                KeepAlive::new()
-                    .interval(EVENT_STREAM_HEARTBEAT_INTERVAL)
-                    .text("heartbeat"),
-            )
-            .into_response(),
+        holon_server::sse::heartbeat_sse(rx, EVENT_STREAM_HEARTBEAT_INTERVAL),
     )
 }
 
@@ -1400,11 +1394,13 @@ mod tests {
             TurnRecord, TurnTerminalKind, TurnTerminalSummary, TurnTriggerSummary,
         },
     };
+    use axum::response::sse::Sse;
     use axum::{
         body::{to_bytes, Body},
         http::Request,
     };
     use chrono::TimeZone;
+    use tokio_stream::wrappers::ReceiverStream;
     use tokio_stream::StreamExt;
     use tower::ServiceExt;
 

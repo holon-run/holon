@@ -4,6 +4,11 @@ use crate::types::{
     AgentVisibility,
 };
 use axum::{body::to_bytes, http::Request};
+use holon_server::avatar::test_support::benchmark_resources;
+use holon_server::avatar::{
+    artwork::{self, Expression},
+    MAX_IMAGE_BYTES,
+};
 use tower::ServiceExt;
 
 const ID: &str = "avatar-http-fixture";
@@ -239,20 +244,7 @@ async fn parameters_are_strict_and_target_access_matches_operator_reads() {
 async fn overload_has_retry_after_and_does_not_bypass_authentication() {
     let (_home, host, _) = fixture();
     let state = AppState::for_tcp(host);
-    let builders = state
-        .avatar_resources
-        .builders
-        .clone()
-        .acquire_many_owned(2)
-        .await
-        .unwrap();
-    let waiters = state
-        .avatar_resources
-        .waiters
-        .clone()
-        .acquire_many_owned(16)
-        .await
-        .unwrap();
+    let held = state.avatar_resources.hold_capacity().await;
     let app = router(state);
     let response = app
         .clone()
@@ -268,7 +260,7 @@ async fn overload_has_retry_after_and_does_not_bypass_authentication() {
             .status(),
         StatusCode::UNAUTHORIZED
     );
-    drop((builders, waiters));
+    drop(held);
 }
 
 #[tokio::test]
@@ -344,29 +336,6 @@ async fn stopped_runtime_is_not_started_or_enqueued_by_an_image_read() {
         before
     );
     host.shutdown().await.unwrap();
-}
-
-#[cfg(unix)]
-fn benchmark_resources() -> (u64, u64) {
-    let mut usage = std::mem::MaybeUninit::<libc::rusage>::uninit();
-    // SAFETY: getrusage initializes the value on success and retains no pointer.
-    let usage = unsafe {
-        if libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) != 0 {
-            return (0, 0);
-        }
-        usage.assume_init()
-    };
-    let micros = |time: libc::timeval| time.tv_sec as u64 * 1_000_000 + time.tv_usec as u64;
-    #[cfg(target_os = "macos")]
-    let rss = usage.ru_maxrss as u64;
-    #[cfg(not(target_os = "macos"))]
-    let rss = usage.ru_maxrss as u64 * 1024;
-    (micros(usage.ru_utime) + micros(usage.ru_stime), rss)
-}
-
-#[cfg(not(unix))]
-fn benchmark_resources() -> (u64, u64) {
-    (0, 0)
 }
 
 /// Reproducible offline router benchmark; never connects to a running daemon.
@@ -487,46 +456,6 @@ async fn avatar_http_benchmark() {
                     }
                 }
             }
-        }
-    }
-}
-
-#[tokio::test]
-#[ignore = "offline release measurement, not a timing assertion"]
-async fn avatar_cache_churn_benchmark() {
-    use std::time::Instant;
-
-    for group in 0..3 {
-        let resources = AvatarResources::default();
-        for phase in ["cold", "evicted", "hot"] {
-            // Cycling all recipes exceeds the 512-entry cap. The last 512
-            // remain resident, so the final phase isolates cache-hit overhead.
-            let indices = if phase == "hot" { 640..1152 } else { 0..1152 };
-            let mut samples = Vec::new();
-            let mut bytes = 0;
-            let cpu_before = benchmark_resources().0;
-            for recipe in indices {
-                let key = Key {
-                    recipe,
-                    ..Key::parse(ID, "format=svg").unwrap()
-                };
-                let start = Instant::now();
-                let image = resources.get(key).await.unwrap();
-                samples.push(start.elapsed().as_nanos() as u64);
-                bytes += image.bytes.len();
-            }
-            let (cpu_us, rss_bytes) = benchmark_resources();
-            samples.sort_unstable();
-            println!(
-                "{}",
-                json!({
-                    "benchmark":"avatar_cache_churn","group":group,"phase":phase,
-                    "count":samples.len(),"p50_us":samples[samples.len()/2] as f64/1000.0,
-                    "p95_us":samples[samples.len()*95/100] as f64/1000.0,
-                    "process_cpu_us":cpu_us.saturating_sub(cpu_before),
-                    "process_peak_rss_bytes":rss_bytes,"bytes":bytes
-                })
-            );
         }
     }
 }
