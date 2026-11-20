@@ -100,10 +100,12 @@ Search behavior is unchanged.
   process.
 - Tavily may report per-URL failures inside an HTTP 200 response, so
   `failed_results` is checked first: an entry matching the requested URL
-  fails the request. Success requires exactly one `results` entry with a
-  matching URL and non-empty `raw_content`; HTTP 200 with no usable entry,
-  empty content, or only foreign URLs is a provider error, never a
-  fallback to another route.
+  fails the request. Success requires a matching `results` entry with
+  non-empty `raw_content` (the first match is used); HTTP 200 with no
+  usable entry, empty content, or only foreign URLs is a provider error,
+  never a fallback to another route.
+- Provider discovery validates the base URL shape for both `deepseek` and
+  `tavily`, so a malformed `base_url` is not listed as a callable route.
 - Successful responses use `source=tavily_remote`,
   `status_source=provider_api`, `content_type` `text/markdown` or
   `text/plain` per the requested format, and `final_url=null` because the

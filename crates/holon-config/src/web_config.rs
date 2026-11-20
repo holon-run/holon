@@ -30,6 +30,32 @@ pub fn deepseek_tool_url(provider: &WebProviderConfig, tool: &str) -> Result<url
     Ok(url)
 }
 
+/// Builds the documented Tavily Extract endpoint from a provider's base URL.
+///
+/// Mirrors `deepseek_tool_url` so provider discovery and the outbound call share
+/// one base URL shape check instead of an unchecked string concatenation.
+pub fn tavily_extract_url(provider: &WebProviderConfig) -> Result<url::Url> {
+    let base = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://api.tavily.com");
+    let mut url = url::Url::parse(base).map_err(|_| anyhow!("invalid Tavily base URL"))?;
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host_str().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(anyhow!(
+            "Tavily base URL must be HTTP(S) with a host and no credentials, query, or fragment"
+        ));
+    }
+    let path = url.path().trim_end_matches('/').to_string();
+    url.set_path(&format!("{path}/extract"));
+    Ok(url)
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WebConfig {
     pub fetch: WebFetchConfig,

@@ -16,7 +16,7 @@ use holon_tools::helpers::truncate_text;
 use crate::{
     deepseek_tool_url,
     policy::{policy_error, timeout, validate_fetch_url},
-    WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
+    tavily_extract_url, WebConfig, WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
 
 const WEB_FETCH_USER_AGENT: &str =
@@ -258,7 +258,9 @@ fn remote_fetch_provider_callable(provider: &WebProviderConfig) -> bool {
         WebProviderKind::DeepSeek => {
             !provider.api_key.trim().is_empty() && deepseek_tool_url(provider, "fetch").is_ok()
         }
-        WebProviderKind::Tavily => !provider.api_key.trim().is_empty(),
+        WebProviderKind::Tavily => {
+            !provider.api_key.trim().is_empty() && tavily_extract_url(provider).is_ok()
+        }
         _ => false,
     }
 }

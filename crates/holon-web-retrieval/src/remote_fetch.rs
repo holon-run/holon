@@ -13,7 +13,7 @@ use super::{
     deepseek_tool_url,
     fetch::{external_content_wrapper, ExtractMode, WebFetchRequest, WebFetchResponse},
     policy::{policy_error, timeout, validate_fetch_url},
-    WebFetchConfig, WebProviderConfig, WebProviderKind,
+    tavily_extract_url, WebFetchConfig, WebProviderConfig, WebProviderKind,
 };
 
 #[derive(Deserialize)]
@@ -234,20 +234,13 @@ async fn tavily_extract_fetch(
             ));
         }
     };
-    let endpoint = format!(
-        "{}/extract",
-        provider
-            .base_url
-            .as_deref()
-            .unwrap_or("https://api.tavily.com")
-            .trim_end_matches('/')
-    );
+    let endpoint = tavily_extract_url(provider)?;
     let client = Client::builder()
         .timeout(timeout(config))
         .redirect(Policy::none())
         .build()?;
     let mut response = client
-        .post(&endpoint)
+        .post(endpoint)
         .bearer_auth(&provider.api_key)
         .json(&json!({ "urls": [url.as_str()], "format": format }))
         .send()
