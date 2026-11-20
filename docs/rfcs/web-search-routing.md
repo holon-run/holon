@@ -25,6 +25,14 @@ The response shape is unchanged. `mode` reports the effective mode,
 `provider_attempts` lists real attempted IDs, and `provider` reports the winner
 when present or the selector otherwise. Aggregation never reports a winner.
 
+`ListWebSearchProviders` takes no arguments and returns `{"providers":[...]}`
+with sorted, unique IDs that the caller can pass unchanged to `WebSearch`.
+It shares WebSearch's tool permission and uses local configuration only; it
+does not send requests, start commands, or check provider health. It includes
+the built-in `duckduckgo` route and qualifying IDs outside the automatic
+candidate list, but not routing selectors or conversation-only native search.
+With search disabled or no eligible route, it returns `{"providers":[]}`.
+
 ## Standalone native search providers
 
 Native server-side search providers registered under `web.providers` with a
@@ -48,3 +56,14 @@ unresolvable routes, missing capability, auth, rate-limit, and timeout
 conditions, which map onto the existing WebSearch error kinds without leaking
 credentials or raw upstream requests. Every failure is terminal: native
 dispatch never retries across routes or falls back to other providers.
+
+A native provider with a bound `model_route` joins `ListWebSearchProviders`
+as an explicit-callable ID; without a bound route it stays unlisted, and the
+reserved native kinds remain undiscoverable until their dispatch lands.
+
+Standalone responses are parsed with a dedicated search parser: a completed
+search without answer text (search-call-only output, or citations attached to
+blank text) is a successful search outcome, while malformed transport shape
+still fails. Failure messages are sanitized through the provider error
+redactor before they reach WebSearch diagnostics, and result dedupe keys use
+the canonical URL so one page cited with different fragments occupies one slot.

@@ -627,6 +627,62 @@ pub fn parse_openai_response_with_transport_state(response: Value) -> Result<Par
     })
 }
 
+/// Parse one standalone native web search response. Transport shape is
+/// validated exactly like a conversation response, but answer text is not
+/// required: search-call-only output and citation-only messages are
+/// successful outcomes whose interpretation belongs to the search layer,
+/// not transport failures.
+pub fn parse_native_web_search_response_with_transport_state(
+    response: Value,
+) -> Result<ParsedOpenAiResponse> {
+    let response_id = response
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToString::to_string);
+    let output = response
+        .get("output")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            invalid_response_error(
+                "OpenAI-style response did not contain an output array",
+                "missing output array",
+            )
+        })?;
+    let output_items = output
+        .iter()
+        .map(canonicalize_openai_provider_item)
+        .collect::<Vec<_>>();
+    let usage = response.get("usage").and_then(Value::as_object);
+    let input_tokens = usage
+        .and_then(|usage| usage.get("input_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let output_tokens = usage
+        .and_then(|usage| usage.get("output_tokens"))
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    Ok(ParsedOpenAiResponse {
+        served_service_tier: response
+            .get("service_tier")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        response: ProviderTurnResponse {
+            material: Default::default(),
+            blocks: Vec::new(),
+            stop_reason: None,
+            input_tokens,
+            output_tokens,
+            cache_usage: None,
+            provider_message_id: response_id.clone(),
+            provider_request_id: None,
+            request_diagnostics: None,
+        },
+        response_id,
+        output_items,
+        transport_timeline: None,
+    })
+}
+
 fn openai_url_citations(content_item: &Value) -> Vec<Citation> {
     let mut seen = HashSet::new();
     content_item

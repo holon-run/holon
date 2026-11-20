@@ -88,6 +88,7 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::GET_WORKSPACE_STATE => "WorkspaceStateResult",
         tn::LIST_MODEL_PROVIDERS => "ListModelProvidersResult",
         tn::LIST_PROVIDER_MODELS => "ListProviderModelsResult",
+        tn::LIST_WEB_SEARCH_PROVIDERS => "ListWebSearchProvidersResult",
         tn::LIST_WORK_ITEMS => "ListWorkItemsResult",
         tn::LIST_TIMERS => "ListTimersResult",
         tn::MEMORY_GET => "MemoryGetResponse",
@@ -135,6 +136,9 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
         tn::TASK_INPUT => schema::tool_result_schema::<TaskInputResult>()?,
         tn::TASK_STATUS => schema::tool_result_schema::<TaskStatusResult>()?,
         tn::TASK_STOP => schema::tool_result_schema::<TaskStopResult>()?,
+        tn::LIST_WEB_SEARCH_PROVIDERS => schema::tool_result_schema::<
+            tools::list_web_search_providers::ListWebSearchProvidersResult,
+        >()?,
         _ => return Ok(None),
     };
     Ok(Some(schema))

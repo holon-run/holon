@@ -1,48 +1,67 @@
 ---
-title: Run a GitHub task with holon solve
-summary: Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
+title: Run or follow GitHub issues and PR fixes with Holon
+summary: Choose between a conversational, worktree-isolated workflow in the Web GUI for multi-round issues and PRs or one-shot holon solve runs from CLI and CI, with explicit preflight checks, publication gates, and cleanup.
 order: 90
 ---
 
-# Run a GitHub task with holon solve
+# Run or follow GitHub issues and PR fixes with Holon
 
-`holon solve` runs a one-shot agent task against a GitHub issue or pull request.
-Choose the goal and publication boundary before starting, then check both the
-local output and any GitHub changes. A completed run does not mean a PR merged.
+Use this guide to run a single-pass GitHub task or manage multi-round issue and
+pull-request work with explicit scope, repository isolation, and publication
+boundaries. A completed task never means a pull request was merged automatically.
 
-## When to use solve
+## Choose the right workflow
 
-Use it to implement an issue, review a PR, or address review feedback. For an
-ongoing review cycle or CI watch, see [Build a local Code Reviewer that follows PRs](build-code-reviewer.md)
-or use a [long-lived WorkItem](run-long-lived-task.md) with an explicit event subscription.
-The solve preset does not keep monitoring a PR after its run ends.
+| Need | Recommended path | Why |
+|---|---|---|
+| Multi-round PR feedback, CI waits, or ongoing follow-up | **Web GUI + long-lived agent** | Keeps `WorkItem` state, isolates work in linked `git worktree`s, and waits on CI/reviews without polling |
+| Dedicated automated PR review lifecycle | [Build a local Code Reviewer](build-code-reviewer.md) | Uses the `code-reviewer` contract and event subscriptions end-to-end |
+| Bounded one-shot CLI run or CI job | **`holon solve`** | Runs the `github-solver` preset once and writes `run.json`, `summary.md`, and `manifest.json`, then exits |
 
-## Configuration
+## Prerequisites
 
-Before starting:
+- A running Holon runtime with a working model route ([Configure models](configure-models.md)).
+- Authenticated GitHub access (`gh` logged in, or `GITHUB_TOKEN` / `GH_TOKEN` scoped strictly to the needed read or PR actions—never log tokens).
+- A clean local repository checkout (or path ready to attach). Resolve conflicting uncommitted edits before authorizing changes.
 
-```bash
-holon config doctor
-holon config models list
-gh auth status
-```
+## Path A: Conversational issue & PR workflow in the Web GUI
 
-Configure a usable model and credentials through the
-[model setup guide](configure-models.md). Make `GITHUB_TOKEN` or `GH_TOKEN`
-available securely when the task needs GitHub access. Confirm that it has only
-the permissions required for the requested read or publication operation.
-Never echo the token into logs.
+For interactive fixes, multi-round review comments, or tasks that wait on CI,
+drive the workflow directly in the [Web GUI](use-web-gui.md) instead of running
+a chain of CLI diagnostic commands up front.
 
-Prepare the repository checkout yourself and inspect its current branch and
-working tree:
+### 1. Run preflight checks and isolate a worktree in conversation
 
-```bash
-git status --short --branch
-```
+Open your agent (for example `main`, or a dedicated agent created from
+`software-developer` or `code-reviewer`) and give it one scoped instruction:
 
-Run from the intended checkout or pass its path with `--workspace`. The solve
-prompt expects a checkout prepared by the caller; it does not promise to clone
-one. Resolve conflicting local changes before authorizing edits.
+> "Attach `/path/to/my-repo` as a workspace. Before making changes, verify your model route and `gh auth status`, inspect issue `#42` (or PR `#123`), and create a dedicated linked GitHub worktree branch (for example `fix/issue-42`) from `main`. Keep your changes scoped to this issue, run the affected tests, and pause before pushing or opening a PR—or open a draft PR without merging."
+
+The agent attaches the workspace, confirms GitHub access, creates an isolated
+`git worktree` via `CreateWorktree` (leaving your main checkout clean), and
+records any standing boundaries in its `AGENTS.md`. See
+[Work with workspaces and Git worktrees](work-with-workspaces.md).
+
+### 2. Follow CI, review rounds, and cleanup
+
+After tests pass and you approve opening or updating the PR:
+
+- **Track review & CI across turns:** Ask the agent to track the PR via a
+  [long-lived WorkItem](run-long-lived-task.md) or connect GitHub events via
+  [Agent Inbox](connect-event-inbox.md) so it wakes only when reviews or CI
+  checks arrive.
+- **Verify deliverables:** Check the PR URL, head commit SHA, and local test
+  output reported in the brief—do not rely on summary prose alone.
+- **Clean up after merge:** Once the PR merges, ask the agent to verify the
+  branch is merged and safely remove the linked worktree (`RemoveWorktree`).
+
+## Path B: One-shot CLI & CI tasks with `holon solve`
+
+Use `holon solve` when you want a single headless pass from the terminal or CI.
+Before running it, prepare your checkout (`git status --short --branch`) and
+confirm `holon config doctor` and `gh auth status` pass. Run from the checkout
+or pass `--workspace`: `solve` expects an existing local checkout and does not
+promise to clone one.
 
 ## Target reference formats
 
@@ -196,6 +215,8 @@ Report an unresolved blocker rather than claiming the issue is fixed.
 ## See also
 
 - [Build a local Code Reviewer that follows PRs](build-code-reviewer.md)
-- [CLI reference](../reference/cli.md)
+- [Work with workspaces and Git worktrees](work-with-workspaces.md)
+- [Connect external events with Agent Inbox](connect-event-inbox.md)
 - [Run a long-lived task](run-long-lived-task.md)
+- [CLI reference](../reference/cli.md)
 - [Troubleshooting](troubleshooting.md)

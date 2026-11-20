@@ -79,6 +79,7 @@ fn stable_tool_specs_expose_canonical_coding_tools() {
         "ViewImage",
         "WebFetch",
         "WebSearch",
+        "ListWebSearchProviders",
     ] {
         assert!(names.iter().any(|name| name == expected));
     }
@@ -331,6 +332,10 @@ fn stable_tool_specs_cover_expected_capability_families() {
     );
     assert_eq!(family_for("WebFetch"), ToolCapabilityFamily::Web);
     assert_eq!(family_for("WebSearch"), ToolCapabilityFamily::Web);
+    assert_eq!(
+        family_for("ListWebSearchProviders"),
+        ToolCapabilityFamily::Web
+    );
 }
 
 #[test]

@@ -605,13 +605,19 @@ fn supplement_model_supported_by_provider(
     if provider == "xiaomi" && matches!(model_id, "mimo-v2.5-pro" | "mimo-v2.5") {
         return false;
     }
-    // Explicitly retired on the international API; M2.5/M2.7 remain available
-    // to existing API users until 2026-11-18 despite the FAQ's conflicting table.
+    // Explicitly retired on the international pay-as-you-go API. The M2.5/M2.7
+    // retirement on 2026-11-18 does not apply to subscription compatibility names.
     // https://platform.minimax.io/docs/faq/models.md
     if provider == "minimax"
         && matches!(
             model_id,
-            "MiniMax-M2" | "MiniMax-M2.1" | "MiniMax-M2.1-highspeed"
+            "MiniMax-M2"
+                | "MiniMax-M2.1"
+                | "MiniMax-M2.1-highspeed"
+                | "MiniMax-M2.5"
+                | "MiniMax-M2.5-highspeed"
+                | "MiniMax-M2.7"
+                | "MiniMax-M2.7-highspeed"
         )
     {
         return false;

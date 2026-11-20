@@ -79,6 +79,14 @@ macro_rules! delegate_provider {
                 self.0.probe_builtin_web_search(request).await
             }
 
+            async fn native_web_search(
+                &self,
+                request: ProviderNativeWebSearchRequest,
+                query: &str,
+            ) -> std::result::Result<ProviderNativeSearchOutcome, ProviderNativeSearchFailure> {
+                self.0.native_web_search(request, query).await
+            }
+
             fn context_management_policy(&self) -> Option<ProviderContextManagementPolicy> {
                 self.0.context_management_policy()
             }

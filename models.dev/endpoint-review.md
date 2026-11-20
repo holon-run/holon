@@ -9,6 +9,60 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-20 incremental review
+
+The November 20 Beijing cycle uses main `7af698c0d` and the models.dev
+payload sampled November 19 at 20:32:49 UTC, SHA256
+`521966d0ab124ef2dc6ebe444415a0ac682cfab97b0d3746c4e547126202d97e`.
+
+Admit `gemini@default/gemini-4-neon` on the existing native Gemini
+`generateContent` route only. Google's [model card](https://aistudio.google.com/docs/models/gemini-4-neon)
+and [GenerateContent output guide](https://aistudio.google.com/docs/long-decode?generate-content=true)
+distinguish the 1,048,576-token unified window from the 65,536-token single
+direct REST response limit without continuation. No Vertex, Interactions API,
+long-decode, explicit caching, or new media mode is added. See the
+[field evidence](metadata-evidence.md#incremental-review-2026-11-20).
+
+The [international](https://platform.minimax.io/docs/faq/models.md) and
+[China](https://platform.minimax.cn/docs/faq/models.md) MiniMax FAQs give
+November 18, 2026 as the pay-as-you-go retirement date and list
+`MiniMax-M2.5`, `MiniMax-M2.5-highspeed`, `MiniMax-M2.7`, and
+`MiniMax-M2.7-highspeed` as retired. That date has elapsed even in UTC−12;
+no exact switch-off time or live account check is claimed. Remove the four
+built-in `minimax@default` routes and prevent refresh from drafting them
+again. `minimax-cn@default` already has none of the four. The same FAQ
+specifies subscription compatibility forwarding; do not change existing
+M Plan aliases or third-party routes.
+
+Keep TokenHub's current routes until their separate public deadlines:
+[`hy4-preview`](https://cloud.tencent.com/announce/detail/2559) retires
+December 7, 2026 at 00:00 UTC+8, and
+[four older DeepSeek Flash IDs](https://cloud.tencent.com/announce/detail/2568)
+retire December 10 at 00:00 UTC+8. Both notices cover the same three
+TokenHub protocol routes per ID. Provider-side migration is conditional;
+no unconditional local aliases or early removals are introduced.
+Volcengine's [`kimi-k3` Coding Plan](https://ark.volcengine.com/region:cn-beijing/docs/coding-plan-personal-model-deprecation.md)
+and [Agent Plan](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-model-deprecation-announcement.md)
+full retirement is still November 25 at 14:00 UTC+8. Seed Character
+capacity remains unknown; the older published reference tables will need
+a separate full regeneration rather than a manual edit.
+
+Xiaomi documents [limited Pro/Max Token Plan eligibility](https://mimo.mi.com/docs/en-US/tokenplan/Token%20Plan/subscription)
+for `mimo-v2.6-pro-ultraspeed`. Do not advertise that as an unconditional
+plan route or reuse ordinary API capacities. The current [ordinary API
+Responses reference](https://mimo.mi.com/docs/en-US/api/chat/responses-post)
+still requires full history replay and does not support remote compaction.
+Keep Qianfan ERNIE Flash deferred: the request path does not yet enforce
+its required fixed `high` reasoning.
+
+Public model discovery no longer lists five previously reviewed NVIDIA
+IDs or OpenCode Go's `glm-5.2` Chat ID. Keep those routes pending
+endpoint-specific retirement or access confirmation; the absent public
+list entries do not establish that existing credentials have lost access.
+Go Qwen4 still lacks an executable Messages thinking-control contract;
+Kimi Code has conflicting documented default effort for `k3.1-pro`.
+Fireworks model-level access was not independently verified this cycle.
+
 ## 2026-11-19 incremental review
 
 Baseline main is `50a4e1e2`. The fixed models.dev payload was sampled on

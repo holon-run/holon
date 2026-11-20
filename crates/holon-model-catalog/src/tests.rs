@@ -1509,7 +1509,7 @@ fn xiaomi_v26_reasoning_controls_are_route_scoped() {
 }
 
 #[test]
-fn xiaomi_ultraspeed_is_api_only() {
+fn xiaomi_ultraspeed_has_no_unconditional_token_plan_route() {
     let catalog = BuiltInModelCatalog::new();
     assert!(catalog
         .get(&ModelRef::parse("xiaomi/mimo-v2.6-pro-ultraspeed").unwrap())
@@ -1619,14 +1619,7 @@ fn minimax_catalog_tracks_current_anthropic_models_and_modalities() {
             .iter()
             .map(|entry| entry.model_ref.model.as_str())
             .collect::<Vec<_>>(),
-        vec![
-            "MiniMax-M2.5",
-            "MiniMax-M2.5-highspeed",
-            "MiniMax-M2.7",
-            "MiniMax-M2.7-highspeed",
-            "MiniMax-M3",
-            "MiniMax-M3.1-Flash",
-        ]
+        vec!["MiniMax-M3", "MiniMax-M3.1-Flash"]
     );
 
     let m3 = catalog
@@ -1638,18 +1631,6 @@ fn minimax_catalog_tracks_current_anthropic_models_and_modalities() {
     assert!(m3.capabilities.supports_reasoning);
     assert!(m3.capabilities.image_input);
     assert!(!m3.reasoning_effort_options.contains(&"max".into()));
-
-    for model in models.into_iter().filter(|entry| {
-        !matches!(
-            entry.model_ref.model.as_str(),
-            "MiniMax-M3" | "MiniMax-M3.1-Flash"
-        )
-    }) {
-        assert_eq!(model.context_window_tokens, Some(204_800));
-        assert_eq!(model.max_output_tokens_upper_limit, Some(128_000));
-        assert!(model.capabilities.supports_reasoning);
-        assert!(!model.capabilities.image_input);
-    }
 }
 
 #[test]
@@ -1678,10 +1659,20 @@ fn minimax_m3_api_eligibility_and_retirements_are_region_scoped() {
                 .get(&ModelRef::new(provider_id("minimax"), model))
                 .is_none());
         }
-        for model in ["MiniMax-M2.5", "MiniMax-M2.7"] {
-            assert!(catalog
-                .get_route(&ModelRouteRef::parse(&format!("minimax@default/{model}")).unwrap())
-                .is_some());
+        for provider in ["minimax", "minimax-cn"] {
+            for model in [
+                "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
+                "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed",
+            ] {
+                let route = ModelRouteRef::parse(&format!("{provider}@default/{model}")).unwrap();
+                assert!(catalog.get_route(&route).is_none());
+            }
+            let preview =
+                ModelRouteRef::parse(&format!("{provider}@m-plan/MiniMax-M3.1-Flash-Preview"))
+                    .unwrap();
+            assert!(catalog.get_route(&preview).is_some());
         }
     }
 }

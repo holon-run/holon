@@ -122,7 +122,8 @@ use responses::{
 use responses::{
     maybe_compact_openai_provider_window, maybe_compact_openai_request_plan,
     parse_native_web_search_output, plan_openai_responses_request,
-    retry_openai_responses_with_lossless_replay, send_openai_responses_request,
+    retry_openai_responses_with_lossless_replay, send_native_web_search_request,
+    send_native_web_search_streaming_request, send_openai_responses_request,
     send_openai_responses_request_with_material, send_openai_responses_streaming_request,
     send_openai_responses_streaming_request_with_material, update_openai_continuation,
 };
@@ -1029,7 +1030,7 @@ impl AgentProvider for OpenAiProvider {
             "{}@{}/{}",
             self.route_provider, self.route_endpoint, self.model
         );
-        let parsed = match send_openai_responses_request(
+        let parsed = match send_native_web_search_request(
             &self.client,
             openai_responses_url(&self.base_url),
             body.clone(),
@@ -1052,7 +1053,7 @@ impl AgentProvider for OpenAiProvider {
                     return Err(native_search_transport_failure(error));
                 };
                 headers = refreshed_headers;
-                send_openai_responses_request(
+                send_native_web_search_request(
                     &self.client,
                     openai_responses_url(&self.base_url),
                     body,
@@ -1074,11 +1075,15 @@ impl AgentProvider for OpenAiProvider {
 const NATIVE_SEARCH_MAX_OUTPUT_TOKENS: u32 = 256;
 
 /// Map transport failures of standalone native web search onto the WebSearch
-/// error-kind vocabulary. The mapped message keeps only the transport error
-/// display; credentials and raw request bodies are never included.
+/// error-kind vocabulary. The message is sanitized like other provider error
+/// surfaces: credential-shaped tokens and endpoint URLs are redacted before
+/// the text reaches WebSearch diagnostics.
 pub(in super::super) fn native_search_transport_failure(
     error: anyhow::Error,
 ) -> crate::provider::ProviderNativeSearchFailure {
+    let message = crate::provider::retry::sanitized_provider_error(&error)
+        .map(|detail| format!("native web search request failed: {detail}"))
+        .unwrap_or_else(|| "native web search request failed".to_string());
     if let Some(transport) = error.downcast_ref::<crate::provider::retry::ProviderTransportError>()
     {
         let error_kind = match &transport.classification.kind {
@@ -1091,12 +1096,12 @@ pub(in super::super) fn native_search_transport_failure(
         };
         return crate::provider::ProviderNativeSearchFailure {
             error_kind,
-            message: format!("native web search request failed: {error}"),
+            message,
         };
     }
     crate::provider::ProviderNativeSearchFailure {
         error_kind: "network_failed",
-        message: format!("native web search request failed: {error}"),
+        message,
     }
 }
 
@@ -1531,7 +1536,7 @@ impl AgentProvider for OpenAiCodexProvider {
             .map_err(native_search_transport_failure)?;
         let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
         let model_ref = format!("openai-codex@default/{}", self.model);
-        let parsed = send_openai_responses_streaming_request(
+        let parsed = send_native_web_search_streaming_request(
             &self.client,
             openai_codex_responses_url(&self.base_url),
             body,

@@ -5,6 +5,34 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-20
+
+`gemini@default/gemini-4-neon`: the native `generateContent` API supports text
+and image input with text output and function calling. Keep only the inputs
+and capabilities already implemented in the Holon transport. The unified
+context is **1,048,576**, and the default and ceiling for one direct
+non-streaming REST request without continuation are **65,536**. The four
+thinking levels are model metadata; the transport does not send a level
+override, so Google applies its default (`high`). The prompt budget of
+996,147 is Holon's 95% policy, not a vendor input limit.
+
+- [Exact model card](https://aistudio.google.com/docs/models/gemini-4-neon),
+  November 19, 2026 20:35:44 UTC, SHA256 `1ba63d467f68138528c75610a69977555f339170c4e1b2261d1f6d79b1e2ea01`.
+- [Neon guide](https://aistudio.google.com/docs/whats-new-gemini-4-neon),
+  20:37:00 UTC, SHA256 `42a17b8f84840f9f03b68b98a21337e5516542b6c0ef4023909add13b3728618`.
+- [GenerateContent long-decode guide](https://aistudio.google.com/docs/long-decode?generate-content=true),
+  20:37:01 UTC, SHA256 `cbe313080aec5003687aca40dc946a1d329f003950047ab62061bfa3feda2bb3`.
+
+The four retired `minimax@default` routes no longer have active metadata
+records. Their absence is endpoint-specific, not a change to the
+capacities of MiniMax models on unrelated routes. The sampled
+[international FAQ](https://platform.minimax.io/docs/faq/models.md)
+has SHA256 `0183792f121a53fe2ad6bb724a4fc464b20543959175d85a707025884f37a96d`;
+the [China FAQ](https://platform.minimax.cn/docs/faq/models.md)
+has SHA256 `ad27a06064bd5ea1130bc38ed6c95383a363e1e9485174c96310dde2c664d3dc`.
+See the [endpoint review](endpoint-review.md#2026-11-20-incremental-review)
+for the date and subscription boundary.
+
 ## Incremental review: 2026-11-19
 
 Pinned models.dev SHA256

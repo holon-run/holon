@@ -459,3 +459,238 @@ async fn codex_native_web_search_classifies_auth_and_rate_limit_failures() {
         assert_eq!(failure.error_kind, expected_kind);
     }
 }
+
+fn native_search_response_without_answer_text(response_id: &str) -> Value {
+    json!({
+        "id": response_id,
+        "status": "completed",
+        "usage": { "input_tokens": 9, "output_tokens": 2 },
+        "output": [
+            { "type": "web_search_call", "id": "ws_1", "status": "completed" },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "   ",
+                    "annotations": [
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/page#frag-a",
+                            "title": "Fragment A"
+                        },
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/page#frag-b"
+                        }
+                    ]
+                }]
+            }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn openai_native_web_search_accepts_search_call_only_response() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move || async {
+            Json(json!({
+                "id": "resp_search_only",
+                "status": "completed",
+                "usage": { "input_tokens": 6, "output_tokens": 1 },
+                "output": [
+                    { "type": "web_search_call", "id": "ws_1", "status": "completed" }
+                ]
+            }))
+        }),
+    ))
+    .await;
+    let fixture = ProviderFixture::openai("native-search-key");
+    let mut config = fixture.config.clone();
+    config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &config,
+        "gpt-search",
+        1024,
+        fixture.home.path(),
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+
+    let outcome = provider
+        .native_web_search(
+            openai_native_search_request(
+                "openai-search",
+                "openai-search/gpt-search",
+                "web_search_preview",
+                "openai_web_search",
+            ),
+            "standalone query",
+        )
+        .await
+        .expect("search-call-only response is a successful standalone search");
+
+    assert!(outcome.search_executed);
+    assert!(outcome.citations.is_empty());
+}
+
+#[tokio::test]
+async fn openai_native_web_search_accepts_citations_without_answer_text() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move || async { Json(native_search_response_without_answer_text("resp_cite_only")) }),
+    ))
+    .await;
+    let fixture = ProviderFixture::openai("native-search-key");
+    let mut config = fixture.config.clone();
+    config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &config,
+        "gpt-search",
+        1024,
+        fixture.home.path(),
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+
+    let outcome = provider
+        .native_web_search(
+            openai_native_search_request(
+                "openai-search",
+                "openai-search/gpt-search",
+                "web_search_preview",
+                "openai_web_search",
+            ),
+            "standalone query",
+        )
+        .await
+        .expect("citations without answer text are a successful standalone search");
+
+    assert!(outcome.search_executed);
+    let urls: Vec<&str> = outcome
+        .citations
+        .iter()
+        .map(|citation| citation.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://example.com/page#frag-a",
+            "https://example.com/page#frag-b"
+        ]
+    );
+    assert_eq!(outcome.citations[0].title.as_deref(), Some("Fragment A"));
+    assert_eq!(outcome.citations[1].title, None);
+}
+
+#[tokio::test]
+async fn codex_native_web_search_accepts_completed_search_without_answer_text() {
+    let sse_body = format!(
+        "event: response.completed\ndata: {}\n\n",
+        json!({
+            "type": "response.completed",
+            "response": native_search_response_without_answer_text("resp_codex_cite_only"),
+        })
+    );
+    let base_url = spawn_test_server(Router::new().route(
+        "/codex/responses",
+        post(move || {
+            let body = sse_body.clone();
+            async move { ([("content-type", "text/event-stream")], body) }
+        }),
+    ))
+    .await;
+    let mut fixture = ProviderFixture::codex();
+    fixture.config.base_url = base_url;
+    let provider = codex_provider(&fixture, 2048);
+
+    let outcome = provider
+        .native_web_search(
+            openai_native_search_request(
+                "openai-codex-search",
+                "openai-codex/gpt-codex",
+                "web_search",
+                "openai_codex_web_search",
+            ),
+            "codex standalone query",
+        )
+        .await
+        .expect("completed search without answer text is a successful standalone search");
+
+    assert!(outcome.search_executed);
+    let urls: Vec<&str> = outcome
+        .citations
+        .iter()
+        .map(|citation| citation.url.as_str())
+        .collect();
+    assert_eq!(
+        urls,
+        [
+            "https://example.com/page#frag-a",
+            "https://example.com/page#frag-b"
+        ]
+    );
+}
+
+#[tokio::test]
+async fn native_web_search_failures_redact_credentials_and_private_endpoints() {
+    let base_url = spawn_test_server(Router::new().route(
+        "/responses",
+        post(move || async {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({
+                    "error": {
+                        "message": "upstream rejected key sk-live-abcdef123456 for http://10.1.2.3:9000/v1/responses",
+                        "type": "server_error"
+                    }
+                })),
+            )
+        }),
+    ))
+    .await;
+    let fixture = ProviderFixture::openai("native-search-key");
+    let mut config = fixture.config.clone();
+    config.base_url = base_url;
+    let provider = OpenAiProvider::from_runtime_config(
+        &config,
+        "gpt-search",
+        1024,
+        fixture.home.path(),
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+
+    let failure = provider
+        .native_web_search(
+            openai_native_search_request(
+                "openai-search",
+                "openai-search/gpt-search",
+                "web_search_preview",
+                "openai_web_search",
+            ),
+            "query",
+        )
+        .await
+        .expect_err("upstream failure must surface as a typed failure");
+
+    assert_eq!(failure.error_kind, "network_failed");
+    assert!(
+        !failure.message.contains("sk-live-abcdef123456"),
+        "failure message must not leak credentials: {}",
+        failure.message
+    );
+    assert!(
+        !failure.message.contains("10.1.2.3"),
+        "failure message must not leak private endpoints: {}",
+        failure.message
+    );
+    assert!(
+        failure.message.contains("[REDACTED]"),
+        "sanitized detail keeps the diagnosable shape: {}",
+        failure.message
+    );
+}

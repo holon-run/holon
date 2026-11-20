@@ -74,4 +74,8 @@ order: 20
   宿主本地执行、工作区边界、认证访问以及能力凭证风险。
   <!-- mdorigin:index kind=article -->
 
+- [架构对比](./architecture-comparison.md)
+  对比 Holon 自有 Rust Agent 运行时与基于外部 CLI 编排的自托管 AI 助手、嵌入式 Harness 及闭源云端 Bot 平台。
+  <!-- mdorigin:index kind=article -->
+
 <!-- INDEX:END -->

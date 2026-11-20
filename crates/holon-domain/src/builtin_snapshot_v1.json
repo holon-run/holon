@@ -2810,90 +2810,6 @@
       "source": "built_in_catalog"
     },
     {
-      "model_ref": "minimax/MiniMax-M2.5",
-      "display_name": "MiniMax M2.5",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2.5 compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.5-highspeed",
-      "display_name": "MiniMax M2.5 Highspeed",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2.5-highspeed compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.7",
-      "display_name": "MiniMax M2.7",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2.7 compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.7-highspeed",
-      "display_name": "MiniMax M2.7 Highspeed",
-      "description": "Holon built-in runtime metadata for the minimax/MiniMax-M2.7-highspeed compatible provider model.",
-      "context_window_tokens": 204800,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "source": "built_in_catalog"
-    },
-    {
       "model_ref": "minimax/MiniMax-M3",
       "display_name": "MiniMax M3",
       "description": "Holon built-in runtime metadata for the minimax/MiniMax-M3 compatible provider model.",
@@ -9949,46 +9865,6 @@
       }
     },
     {
-      "route_ref": "minimax@default/MiniMax-M2.5",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "minimax@default/MiniMax-M2.5-highspeed",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "minimax@default/MiniMax-M2.7",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
-      "route_ref": "minimax@default/MiniMax-M2.7-highspeed",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "minimax@default/MiniMax-M3",
       "policy": {
         "cache_capabilities": {
@@ -16638,22 +16514,6 @@
     {
       "model_ref": "minimax-cn/MiniMax-M3.1-Flash-Preview",
       "route_ref": "minimax-cn@m-plan/MiniMax-M3.1-Flash-Preview"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.5",
-      "route_ref": "minimax@default/MiniMax-M2.5"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.5-highspeed",
-      "route_ref": "minimax@default/MiniMax-M2.5-highspeed"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.7",
-      "route_ref": "minimax@default/MiniMax-M2.7"
-    },
-    {
-      "model_ref": "minimax/MiniMax-M2.7-highspeed",
-      "route_ref": "minimax@default/MiniMax-M2.7-highspeed"
     },
     {
       "model_ref": "minimax/MiniMax-M3",

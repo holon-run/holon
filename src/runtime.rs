@@ -3931,7 +3931,11 @@ impl RuntimeHandle {
         let mut seen = std::collections::BTreeSet::new();
         let mut results = Vec::new();
         for citation in outcome.citations {
-            if !seen.insert(citation.url.clone()) {
+            // Dedupe on the canonical URL so one page cited with different
+            // fragments occupies a single result slot; the original citation
+            // URL is kept in the returned result.
+            let dedupe_key = holon_web_retrieval::search::canonical_search_url_key(&citation.url);
+            if !seen.insert(dedupe_key) {
                 continue;
             }
             results.push(crate::web::search::WebSearchResult {

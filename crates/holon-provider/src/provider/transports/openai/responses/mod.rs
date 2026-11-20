@@ -27,7 +27,8 @@ pub use plan::build_openai_input;
 pub use plan::build_openai_responses_request;
 pub(super) use plan::plan_openai_responses_request;
 pub(super) use send::{
-    retry_openai_responses_with_lossless_replay, send_openai_responses_request,
+    retry_openai_responses_with_lossless_replay, send_native_web_search_request,
+    send_native_web_search_streaming_request, send_openai_responses_request,
     send_openai_responses_request_with_material, send_openai_responses_streaming_request,
     send_openai_responses_streaming_request_with_material,
 };

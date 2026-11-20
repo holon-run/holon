@@ -1,36 +1,50 @@
 ---
-title: 使用 holon solve 处理 GitHub 任务
-summary: 明确 issue、评审或 PR 修复的目标与交付边界；单次执行并验证本地产物与 GitHub 副作用。
+title: 用 Holon 一次跑通或持续跟进 GitHub Issue 与 PR 修复
+summary: 根据场景选择 Web GUI 对话式工作流（适合多轮 PR 反馈、CI 等待与独立 worktree 隔离）或单次执行的 holon solve（适合 CLI 与 CI 批处理），明确前置核验、发布门禁与收尾清理。
 order: 90
 ---
 
-# 使用 holon solve 处理 GitHub 任务
+# 用 Holon 一次跑通或持续跟进 GitHub Issue 与 PR 修复
 
-`holon solve` 针对 GitHub issue 或 Pull Request 发起单次执行的 Agent 任务。在启动前明确目标与发布边界，任务结束后核实本地产物与 GitHub 上的实际变更。执行成功并不代表 PR 已被合并。
+本指南介绍如何根据任务周期选择合适的工作流，完成从环境核验、隔离修改到 PR 交付与工作树清理的 GitHub 协作闭环。任务执行完成绝不等于自动合并 PR。
 
-## 何时使用 solve
+## 先选对工作流
 
-适用于实现单个 issue、评审单个 PR 或修复审查反馈。对于持续跟踪的审查闭环或 CI 监控，请参阅[搭建持续跟进 PR 的本地 Code Reviewer](build-code-reviewer.md)或使用带有显式事件订阅的[长生命周期工作项](run-long-lived-task.md)。`solve` 预设在单次运行结束后不会持续监听 PR。
+| 使用场景 | 推荐路径 | 原因 |
+|---|---|---|
+| 多轮 Review 修改、等待 CI 或持续跟进 PR | **Web GUI + 长驻 Agent** | 保留 `WorkItem` 进度，在关联 `git worktree` 中隔离改动，无需轮询即可等待 CI 与评审唤醒 |
+| 专职持续评审多个 PR | [搭建持续跟进 PR 的本地 Code Reviewer](build-code-reviewer.md) | 直接复用 `code-reviewer` 契约与事件订阅闭环 |
+| 单次限定范围的命令行修复或 CI 自动化 | **`holon solve`** | 使用 `github-solver` 预设单次运行并生成 `run.json`、`summary.md`、`manifest.json` 后退出 |
 
-## 环境配置
+## 前置条件
 
-启动前检查：
+- Holon 运行时已启动，并已配置可用模型（见[配置模型](configure-models.md)）。
+- 已完成 GitHub 鉴权（本机 `gh` 已登录，或仅具备所需读/写最小权限的 `GITHUB_TOKEN` / `GH_TOKEN`——切勿打印到日志）。
+- 本地已有仓库检出（或准备好待挂载路径）；授权改动前先处理掉与当前任务冲突的未提交变更。
 
-```bash
-holon config doctor
-holon config models list
-gh auth status
-```
+## 路径 A：在 Web GUI 中通过对话持续推进 Issue 与 PR
 
-按照[模型配置指南](configure-models.md)配置可用模型与凭据。在任务需要访问 GitHub 时，安全注入 `GITHUB_TOKEN` 或 `GH_TOKEN`。确保 Token 仅具备当前读写或发布操作所需的最小权限。切勿将 Token 打印到日志中。
+对于需要多轮确认、跟踪 CI 或持续根据评审意见迭代的任务，直接在 [Web GUI](use-web-gui.md) 对话窗口启动即可，不必提前手动执行一长串终端诊断命令。
 
-自行准备好本地仓库检出，并检查当前分支与工作区状态：
+### 1. 对话完成自检并创建隔离 worktree
 
-```bash
-git status --short --branch
-```
+打开负责开发的 Agent（例如 `main`，或基于 `software-developer` 创建的专用开发 Agent），发送一段包含范围与边界的指令：
 
-在目标检出目录下执行命令，或通过 `--workspace` 显式传入其路径。`solve` 提示词假定由调用者自行准备好仓库环境，并不承诺会在执行前自动 clone。授权编辑前先处理好工作区冲突改动。
+> “请挂载本地仓库 `/path/to/my-repo`。动代码前先自检模型连通性与 `gh auth status`，读取 issue `#42`（或 PR `#123`），并基于 `main` 创建独立的关联 worktree 分支（如 `fix/issue-42`）。只改动与该问题直接相关的文件，跑通受影响的测试；在 push 或创建 PR 前停下来请我确认（或仅创建 Draft PR，不要合并）。”
+
+Agent 会自动挂载工作区、核验 GitHub 登录状态、调用 `CreateWorktree` 开出独立分支（不污染主目录），并遵守不自动合并的发布边界。详见[在项目工作区或 Git worktree 中工作](work-with-workspaces.md)。
+
+### 2. 跟进 CI、评审回复与收尾清理
+
+本地测试通过并批准发布 PR 后：
+
+- **跨轮次等待 CI 与 Review**：让 Agent 通过[长生命周期工作项](run-long-lived-task.md)或[用 Agent Inbox 统一收口外部事件](connect-event-inbox.md)订阅仓库变更，仅在 CI 或新评论到达时唤醒处理。
+- **验收交付物**：对照输出中的 PR 链接、最新 Commit SHA 与实测命令输出进行核验，不以口头摘要代替实证。
+- **合并后清理**：PR 合入后，让 Agent 核实合并状态并安全清理临时 worktree（`RemoveWorktree`）与分支。
+
+## 路径 B：使用 `holon solve` 执行单次 CLI / CI 任务
+
+如果需要在终端或 CI 流水线中一次跑通单个任务，使用 `holon solve`。执行前请先确认本地检出干净（`git status --short --branch`）且 `holon config doctor`、`gh auth status` 正常；在目标检出目录执行或通过 `--workspace` 传入路径（`solve` 假定调用方已准备好本地目录，不承诺自动 clone）。
 
 ## 目标引用格式
 
@@ -143,6 +157,8 @@ fi
 ## 另见
 
 - [搭建持续跟进 PR 的本地 Code Reviewer](build-code-reviewer.md)
-- [CLI 参考](../reference/cli.md)
+- [在项目工作区或 Git worktree 中工作](work-with-workspaces.md)
+- [用 Agent Inbox 统一收口外部通知与异步事件](connect-event-inbox.md)
 - [运行长生命周期任务](run-long-lived-task.md)
+- [CLI 参考](../reference/cli.md)
 - [故障排查](troubleshooting.md)

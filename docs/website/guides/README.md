@@ -21,7 +21,7 @@ Use [Reference](../reference/) for complete command syntax and schemas.
 <!-- INDEX:START -->
 
 - [Create an agent from a template](./create-agent.md)
-  Pick a template, create an agent, and confirm it can take a task.
+  Instantiate a dedicated role agent in the Web GUI from an inspected template, confirm its isolated home and skills, and verify it with one read-only task.
   <!-- mdorigin:index kind=article -->
 
 - [Create and customize a dedicated role agent with permission boundaries](./customize-agent.md)
@@ -56,6 +56,10 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Reuse the Research Steward template and multi-workspace mechanism. Learn the autonomous knowledge base design, auto-clone workspace attach, concise task prompts, and mobile link sharing workflows.
   <!-- mdorigin:index kind=article -->
 
+- [Build a traceable research and decision-brief workflow with research-steward](./build-research-steward.md)
+  Instantiate the research-steward template in the Web GUI, drive question framing, primary-source ledgers, citation verification, and structured decision briefs in conversation, and track unresolved follow-ups across sessions.
+  <!-- mdorigin:index kind=article -->
+
 - [Build a local Code Reviewer that follows PRs](./build-code-reviewer.md)
   Create a reviewer agent from the code-reviewer template, then ask it in conversation to attach your repository, record merge permissions, subscribe to GitHub events, and follow commits and CI through merge.
   <!-- mdorigin:index kind=article -->
@@ -68,8 +72,8 @@ Use [Reference](../reference/) for complete command syntax and schemas.
   Avoid tool clutter and instruction conflicts by giving each long-lived agent its own focused skills, boundaries, and workspace permissions.
   <!-- mdorigin:index kind=article -->
 
-- [Run a GitHub task with holon solve](./run-github-task.md)
-  Scope an issue, review, or PR fix; run it once; then verify its artifacts and GitHub side effects.
+- [Run or follow GitHub issues and PR fixes with Holon](./run-github-task.md)
+  Choose between a conversational, worktree-isolated workflow in the Web GUI for multi-round issues and PRs or one-shot holon solve runs from CLI and CI, with explicit preflight checks, publication gates, and cleanup.
   <!-- mdorigin:index kind=article -->
 
 - [Connect external events: Webhooks from GitHub to incident alerts](./connect-external-events.md)

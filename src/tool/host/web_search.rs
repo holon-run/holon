@@ -32,6 +32,21 @@ impl holon_web_retrieval::search::WebSearchNativeDispatcher for RuntimeNativeSea
     }
 }
 
+pub(crate) async fn list_providers(
+    runtime: &RuntimeHandle,
+    input: &Value,
+) -> Result<crate::tool::ToolResult> {
+    use holon_tools::builtins::list_web_search_providers as tool;
+
+    let _: tool::ListWebSearchProvidersArgs = parse_tool_args(tool::NAME, input)?;
+    serialize_success(
+        tool::NAME,
+        &tool::ListWebSearchProvidersResult {
+            providers: holon_web_retrieval::search::list_search_providers(&runtime.web_config()),
+        },
+    )
+}
+
 pub(crate) async fn execute(
     runtime: &RuntimeHandle,
     _agent_id: &str,

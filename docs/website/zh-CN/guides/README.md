@@ -14,8 +14,8 @@ order: 30
 
 <!-- INDEX:START -->
 
-- [从模板创建 Agent](./create-agent.md)
-  挑选模板、创建 Agent 并确认其能正常接收处理任务。
+- [在 Web GUI 中从模板创建首个专用 Agent 并跑通测试任务](./create-agent.md)
+  在 Web GUI 中审阅并实例化角色模板，确认独立 agent_home 与预置 Skill 到位，并用一个只读测试任务完成初始化验收。
   <!-- mdorigin:index kind=article -->
 
 - [使用 Web GUI](./use-web-gui.md)
@@ -54,6 +54,10 @@ order: 30
   复用 Research Steward 模板与多 Workspace 机制。深入剖析 Agent 自动维护知识库的底层原理，展示让 Agent 自动克隆挂载仓库、精简指令交互，以及移动端随手转发链接的异步调研工作流。
   <!-- mdorigin:index kind=article -->
 
+- [用 research-steward 模板构建可溯源的调研与决策简报工作流](./build-research-steward.md)
+  在 Web GUI 中从 research-steward 模板创建专用调研 Agent，通过自然语言驱动问题界定、一手来源台账、引用核验与结构化决策简报生成，并跨会话跟进待核验队列。
+  <!-- mdorigin:index kind=article -->
+
 - [搭建持续跟进 PR 的本地 Code Reviewer](./build-code-reviewer.md)
   从 code-reviewer 模板创建审阅 Agent，直接通过对话让它挂载代码库、记录合并权限并订阅 GitHub 事件，持续跟进新提交与 CI 直至合并。
   <!-- mdorigin:index kind=article -->
@@ -66,8 +70,8 @@ order: 30
   避免工具泛滥与指令互斥：通过自然语言为不同长期 Agent 分配专属技能、工作边界与权限，保持上下文干净。
   <!-- mdorigin:index kind=article -->
 
-- [使用 holon solve 处理 GitHub 任务](./run-github-task.md)
-  明确 issue、评审或 PR 修复的目标与交付边界；单次执行并验证本地产物与 GitHub 副作用。
+- [用 Holon 一次跑通或持续跟进 GitHub Issue 与 PR 修复](./run-github-task.md)
+  根据场景选择 Web GUI 对话式工作流（适合多轮 PR 反馈、CI 等待与独立 worktree 隔离）或单次执行的 holon solve（适合 CLI 与 CI 批处理），明确前置核验、发布门禁与收尾清理。
   <!-- mdorigin:index kind=article -->
 
 - [为 Agent 配置外部事件 Webhook：从 GitHub 到即时通讯通知响应](./connect-external-events.md)

@@ -90,6 +90,135 @@ fn attempted_ids(response: &WebSearchResponse) -> Vec<&str> {
 }
 
 #[tokio::test]
+async fn listed_fixture_ids_are_callable_individually_without_enumeration_requests() {
+    let (mut config, calls) = routing_fixture().await;
+    config
+        .providers
+        .retain(|id, _| matches!(id.as_str(), "first" | "second"));
+    config.search.providers = vec!["first".into()];
+    config.search.max_provider_attempts = 1;
+    config.search.mode = WebSearchMode::Aggregate;
+
+    let ids = list_search_providers(&config);
+    assert_eq!(ids, ["duckduckgo", "first", "second"]);
+    assert!(take_routing_calls(&calls).is_empty());
+
+    for id in ids.iter().filter(|id| *id != "duckduckgo") {
+        let response = search(routing_request(Some(id)), &config).await.unwrap();
+        assert_eq!(response.mode, WebSearchMode::Single);
+        assert_eq!(attempted_ids(&response), [id.as_str()]);
+        assert_eq!(take_routing_calls(&calls), [id.as_str()]);
+    }
+}
+
+#[test]
+fn discovery_filters_unaddressable_or_incomplete_providers() {
+    const FIXTURE_URL: &str = "http://127.0.0.1:1";
+    let searxng = test_provider(WebProviderKind::Searxng, FIXTURE_URL);
+    let missing_endpoint = WebProviderConfig {
+        base_url: None,
+        ..searxng.clone()
+    };
+    let mut missing_key = test_provider(WebProviderKind::Brave, FIXTURE_URL);
+    missing_key.api_key.clear();
+    let mut public_keenable = test_provider(WebProviderKind::Keenable, FIXTURE_URL);
+    public_keenable.api_key.clear();
+    let missing_mapping = WebProviderConfig {
+        output: None,
+        ..command_test_provider(vec!["unused-fixture".into()])
+    };
+    let mut config = test_search_config(
+        vec![
+            ("keenable", public_keenable),
+            (
+                "deepseek",
+                test_provider(WebProviderKind::DeepSeek, FIXTURE_URL),
+            ),
+            ("broken-brave", missing_key),
+            ("no-base-url", missing_endpoint),
+            (
+                "bad-base-url",
+                test_provider(WebProviderKind::Tavily, "not a URL"),
+            ),
+            ("missing-mapping", missing_mapping),
+            ("empty-argv", command_test_provider(vec![])),
+            ("auto", searxng.clone()),
+            ("aggregate", searxng.clone()),
+            (" spaced ", searxng),
+            (
+                "conversation-only",
+                test_provider(WebProviderKind::OpenAiNative, FIXTURE_URL),
+            ),
+            (
+                "duckduckgo",
+                test_provider(WebProviderKind::Searxng, FIXTURE_URL),
+            ),
+        ],
+        vec!["auto"],
+        WebSearchMode::Fallback,
+    );
+    assert_eq!(
+        list_search_providers(&config),
+        ["deepseek", "duckduckgo", "keenable"]
+    );
+    config.search.enabled = false;
+    assert!(list_search_providers(&config).is_empty());
+}
+
+#[test]
+fn discovery_lists_native_providers_only_with_bound_model_route() {
+    let mut reserved_anthropic =
+        test_provider(WebProviderKind::AnthropicNative, "https://reserved.example");
+    reserved_anthropic.model_route = Some("anthropic@default/claude-test".into());
+    let mut reserved_gemini =
+        test_provider(WebProviderKind::GeminiNative, "https://reserved.example");
+    reserved_gemini.model_route = Some("gemini@default/gemini-test".into());
+    let config = test_search_config(
+        vec![
+            (
+                "openai-search",
+                native_provider_config(Some("openai@default/gpt-test")),
+            ),
+            ("unrouted-native", native_provider_config(None)),
+            ("reserved-anthropic", reserved_anthropic),
+            ("reserved-gemini", reserved_gemini),
+        ],
+        vec![],
+        WebSearchMode::Single,
+    );
+    assert_eq!(
+        list_search_providers(&config),
+        ["duckduckgo", "openai-search"]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn discovery_does_not_start_command_providers() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_MARKER: AtomicUsize = AtomicUsize::new(0);
+    let marker = std::env::temp_dir().join(format!(
+        "holon-search-discovery-{}-{}",
+        std::process::id(),
+        NEXT_MARKER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let config = test_search_config(
+        vec![(
+            "command-fixture",
+            command_test_provider(vec!["touch".into(), marker.to_str().unwrap().into()]),
+        )],
+        vec![],
+        WebSearchMode::Single,
+    );
+    assert_eq!(
+        list_search_providers(&config),
+        ["command-fixture", "duckduckgo"]
+    );
+    assert!(!marker.exists());
+}
+
+#[tokio::test]
 async fn omitted_and_auto_selectors_keep_configured_mode_and_order() {
     let (mut config, calls) = routing_fixture().await;
     use WebSearchMode::{Aggregate, Fallback, Single};
