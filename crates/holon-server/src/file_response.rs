@@ -6,7 +6,8 @@ use axum::{
     http::{header::*, HeaderMap, HeaderValue, Method, StatusCode},
     response::Response,
 };
-use std::io;
+use std::io::{self, Read};
+use std::path::Path;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::SystemTime;
@@ -44,6 +45,7 @@ impl Stream for FileStream {
                 match result {
                     None if self.remaining != 0 => {
                         tracing::warn!(
+                            target: "holon::http::file_response",
                             remaining = self.remaining,
                             "file response truncated during transfer"
                         );
@@ -54,7 +56,7 @@ impl Stream for FileStream {
                         ))))
                     }
                     Some(Err(ref error)) => {
-                        tracing::warn!(%error, "file response read failed");
+                        tracing::warn!(target: "holon::http::file_response", %error, "file response read failed");
                         Poll::Ready(result)
                     }
                     _ => Poll::Ready(result),
@@ -184,7 +186,7 @@ fn http_date(time: SystemTime) -> String {
         .to_string()
 }
 
-pub(super) struct FileResponseOptions {
+pub struct FileResponseOptions {
     pub content_type: String,
     pub disposition: Option<String>,
     pub csp: Option<HeaderValue>,
@@ -195,7 +197,7 @@ pub(super) struct FileResponseOptions {
 /// The body owns the permit until EOF, error or disconnect; bodyless replies
 /// release it immediately. HEAD deliberately ignores Range (GET-only).
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn serve_file(
+pub async fn serve_file(
     mut file: File,
     metadata: &std::fs::Metadata,
     identity: &str,
@@ -287,237 +289,188 @@ pub(super) async fn serve_file(
     builder.body(body).map_err(io::Error::other)
 }
 
-#[cfg(holon_lib_test_shard = "c")]
-#[cfg(test)]
-mod tests {
-    use super::*;
+const SNIFF_LIMIT_BYTES: usize = 8000;
 
-    fn options() -> FileResponseOptions {
-        FileResponseOptions {
-            content_type: "application/octet-stream".into(),
-            disposition: None,
-            csp: None,
-            cache_control: Some(HeaderValue::from_static("no-store")),
+/// Infer MIME type from file extension.
+pub fn guess_mime(path: &Path) -> String {
+    // Override extensions that mime_guess maps to non-text types
+    // (e.g., .ts -> video/mp2t, which prevents inline text rendering).
+    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+        if let Some(mime) = custom_mime_for_ext(&ext.to_lowercase()) {
+            return mime.to_string();
         }
     }
-
-    #[tokio::test]
-    async fn bounded_body_releases_permits_on_eof_drop_and_read_error() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("asset");
-        tokio::fs::write(&path, b"abc").await.unwrap();
-        let file = File::open(&path).await.unwrap();
-        let metadata = file.metadata().await.unwrap();
-        // Growth after checking metadata cannot increase the sent body.
-        tokio::fs::write(&path, b"abcdef").await.unwrap();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(16));
-        let response = serve_file(
-            file,
-            &metadata,
-            "asset",
-            &HeaderMap::new(),
-            &Method::GET,
-            options(),
-            Some(semaphore.clone().try_acquire_owned().unwrap()),
-        )
-        .await
-        .unwrap();
-        assert_eq!(semaphore.available_permits(), 15);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        assert_eq!(&bytes[..], b"abc");
-        assert_eq!(semaphore.available_permits(), 16);
-
-        let mut bodies = Vec::new();
-        for _ in 0..16 {
-            let file = File::open(&path).await.unwrap();
-            bodies.push(
-                serve_file(
-                    file,
-                    &metadata,
-                    "asset",
-                    &HeaderMap::new(),
-                    &Method::GET,
-                    options(),
-                    Some(semaphore.clone().try_acquire_owned().unwrap()),
-                )
-                .await
-                .unwrap(),
-            );
-        }
-        assert!(semaphore.clone().try_acquire_owned().is_err());
-        bodies.pop();
-        assert_eq!(
-            semaphore.available_permits(),
-            1,
-            "disconnect drops the body lease"
-        );
-        drop(bodies);
-        assert_eq!(semaphore.available_permits(), 16);
-
-        let file = File::open(&path).await.unwrap();
-        let response = serve_file(
-            file,
-            &metadata,
-            "asset",
-            &HeaderMap::new(),
-            &Method::GET,
-            options(),
-            Some(semaphore.clone().try_acquire_owned().unwrap()),
-        )
-        .await
-        .unwrap();
-        tokio::fs::write(&path, b"").await.unwrap();
-        assert!(axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .is_err());
-        assert_eq!(
-            semaphore.available_permits(),
-            16,
-            "read error releases the lease"
-        );
+    let mime = mime_guess::from_path(path)
+        .first_or_octet_stream()
+        .essence_str()
+        .to_string();
+    if mime != "application/octet-stream" {
+        return mime;
     }
-
-    #[tokio::test]
-    async fn bodyless_responses_release_permits_without_reading() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("asset");
-        tokio::fs::write(&path, b"abc").await.unwrap();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(1));
-        for (method, range, validator, status) in [
-            (Method::HEAD, "bytes=1-2", false, StatusCode::OK),
-            (
-                Method::GET,
-                "bytes=100-",
-                false,
-                StatusCode::RANGE_NOT_SATISFIABLE,
-            ),
-            (Method::GET, "bytes=1-2", true, StatusCode::NOT_MODIFIED),
-        ] {
-            tokio::fs::write(&path, b"abc").await.unwrap();
-            let file = File::open(&path).await.unwrap();
-            let metadata = file.metadata().await.unwrap();
-            let mut headers = HeaderMap::new();
-            headers.insert(RANGE, HeaderValue::from_static(range));
-            if validator {
-                headers.insert(
-                    IF_NONE_MATCH,
-                    HeaderValue::from_str(&build_etag(
-                        "asset",
-                        metadata.len(),
-                        metadata.modified().ok(),
-                    ))
-                    .unwrap(),
-                );
+    // Extension-based detection failed; sniff content.
+    match std::fs::File::open(path) {
+        Ok(mut file) => {
+            let mut buf = vec![0u8; SNIFF_LIMIT_BYTES];
+            match file.read(&mut buf) {
+                Ok(0) => "text/plain".to_string(),
+                Ok(n) => {
+                    if sniff_is_text(&buf[..n]) {
+                        "text/plain".to_string()
+                    } else {
+                        mime
+                    }
+                }
+                Err(_) => mime,
             }
-            // A streaming body would now fail with UnexpectedEof.
-            tokio::fs::write(&path, b"").await.unwrap();
-            let response = serve_file(
-                file,
-                &metadata,
-                "asset",
-                &headers,
-                &method,
-                options(),
-                Some(semaphore.clone().try_acquire_owned().unwrap()),
-            )
-            .await
-            .unwrap();
-            assert_eq!(response.status(), status);
-            assert_eq!(semaphore.available_permits(), 1);
-            assert!(axum::body::to_bytes(response.into_body(), usize::MAX)
-                .await
-                .unwrap()
-                .is_empty());
         }
-    }
-    #[test]
-    fn parse_range_header_forms() {
-        assert_eq!(
-            parse_range_header("bytes=0-3", 26),
-            RangeOutcome::Partial(ByteRange { start: 0, end: 3 })
-        );
-        assert_eq!(
-            parse_range_header("bytes=20-", 26),
-            RangeOutcome::Partial(ByteRange { start: 20, end: 25 })
-        );
-        // End beyond length is clamped.
-        assert_eq!(
-            parse_range_header("bytes=20-100", 26),
-            RangeOutcome::Partial(ByteRange { start: 20, end: 25 })
-        );
-        assert_eq!(
-            parse_range_header("bytes=-4", 26),
-            RangeOutcome::Partial(ByteRange { start: 22, end: 25 })
-        );
-        // Suffix longer than the resource covers it entirely.
-        assert_eq!(
-            parse_range_header("bytes=0-", 26),
-            RangeOutcome::Partial(ByteRange { start: 0, end: 25 })
-        );
-    }
-    #[test]
-    fn parse_range_header_degenerate() {
-        // Out of bounds and empty-suffix ranges are unsatisfiable.
-        assert_eq!(
-            parse_range_header("bytes=26-", 26),
-            RangeOutcome::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range_header("bytes=100-200", 26),
-            RangeOutcome::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range_header("bytes=-0", 26),
-            RangeOutcome::Unsatisfiable
-        );
-        assert_eq!(
-            parse_range_header("bytes=0-1", 0),
-            RangeOutcome::Unsatisfiable
-        );
-        // Unknown units, multi-range, and malformed values fall back to full.
-        assert_eq!(parse_range_header("items=0-3", 26), RangeOutcome::Full);
-        assert_eq!(parse_range_header("bytes=0-1,3-4", 26), RangeOutcome::Full);
-        // Reversed ranges are invalid specs, ignored per RFC 9110 §14.1.2.
-        assert_eq!(parse_range_header("bytes=5-3", 26), RangeOutcome::Full);
-        assert_eq!(parse_range_header("bytes=25-24", 26), RangeOutcome::Full);
-        assert_eq!(parse_range_header("bytes=abc", 26), RangeOutcome::Full);
-        assert_eq!(parse_range_header("bytes=", 26), RangeOutcome::Full);
-    }
-    #[test]
-    fn entity_tag_matchers() {
-        let etag = "\"abc-123\"";
-        assert!(if_none_match_matches(etag, etag));
-        assert!(if_none_match_matches(&format!("W/{etag}"), etag));
-        assert!(if_none_match_matches("\"other\", W/\"abc-123\"", etag));
-        assert!(if_none_match_matches("*", etag));
-        assert!(!if_none_match_matches("\"stale\"", etag));
-
-        assert!(if_range_matches(etag, etag, None));
-        // If-Range uses strong comparison: weak tags never match.
-        assert!(!if_range_matches("W/\"abc-123\"", etag, None));
-        assert!(!if_range_matches(&format!("W/{etag}"), etag, None));
-        assert!(if_range_matches(
-            "Sun, 06 Nov 1994 08:49:37 GMT",
-            etag,
-            Some("Sun, 06 Nov 1994 08:49:37 GMT")
-        ));
-        assert!(!if_range_matches("\"stale\"", etag, None));
-        assert!(!if_range_matches(
-            "Sun, 06 Nov 1994 08:49:37 GMT",
-            etag,
-            Some("Mon, 07 Nov 1994 08:49:37 GMT")
-        ));
-    }
-    #[test]
-    fn build_etag_is_deterministic() {
-        let modified = SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
-        let etag = build_etag("src/lib.rs", 1024, Some(modified));
-        assert_eq!(etag, build_etag("src/lib.rs", 1024, Some(modified)));
-        assert!(etag.starts_with('"') && etag.ends_with('"'));
-        assert_ne!(etag, build_etag("src/other.rs", 1024, Some(modified)));
-        assert_ne!(etag, build_etag("src/lib.rs", 2048, Some(modified)));
-        assert_ne!(etag, build_etag("src/lib.rs", 1024, None));
+        Err(_) => mime,
     }
 }
+
+/// Heuristic content sniff: returns `true` if the bytes look like text.
+///
+/// Uses the same approach as git/file(1): a NUL byte or a high proportion
+/// of non-printable control characters (excluding \t \n \r) indicates binary.
+fn sniff_is_text(data: &[u8]) -> bool {
+    if data.is_empty() {
+        return true;
+    }
+    if data.contains(&0x00) {
+        return false;
+    }
+    // Invalid UTF-8 → binary (catches most non-text formats).
+    if std::str::from_utf8(data).is_err() {
+        return false;
+    }
+    let non_printable = data
+        .iter()
+        .filter(|&&b| (b < 0x20 || b == 0x7f) && b != 0x09 && b != 0x0a && b != 0x0d)
+        .count();
+    (non_printable as f64 / data.len() as f64) < 0.30
+}
+
+/// Override MIME types for file extensions that `mime_guess` maps to
+/// non-text types. The notable case is `.ts`, which the IANA registry
+/// maps to `video/mp2t` (MPEG-2 Transport Stream) rather than TypeScript.
+/// Without this override, the server streams raw bytes for `.ts` files,
+/// causing the web GUI's JSON content negotiation to fail.
+fn custom_mime_for_ext(ext: &str) -> Option<&'static str> {
+    match ext {
+        "ts" => Some("text/typescript"),
+        "tsx" => Some("text/tsx"),
+        _ => None,
+    }
+}
+
+/// Determine whether a MIME type represents a text file suitable for inline reading.
+pub fn is_text_mime(mime: &str) -> bool {
+    mime.starts_with("text/")
+        || mime == "application/json"
+        || mime == "application/javascript"
+        || mime == "application/xml"
+        || mime == "application/x-yaml"
+        || mime == "application/x-sh"
+        || mime == "application/x-toml"
+}
+
+/// MIME types that execute scripts or host active content when rendered
+/// inline. Served with a sandboxing CSP so direct same-origin navigation
+/// cannot run workspace-controlled scripts.
+pub fn needs_script_sandbox(mime_type: &str) -> bool {
+    matches!(
+        mime_type,
+        "text/html" | "application/xhtml+xml" | "image/svg+xml" | "application/xml" | "text/xml"
+    ) || mime_type.ends_with("+xml")
+}
+
+/// Content-Type used when serving raw bytes directly to a browser. Non-standard
+/// text subtypes used only for JSON negotiation render as plain text, and
+/// text responses get an explicit UTF-8 charset.
+pub fn served_content_type(mime_type: &str) -> String {
+    match mime_type {
+        "text/typescript" | "text/tsx" => "text/plain; charset=utf-8".to_string(),
+        m if m.starts_with("text/") => format!("{m}; charset=utf-8"),
+        m => m.to_string(),
+    }
+}
+
+/// Build a `Content-Disposition` value for a download. ASCII filenames use the
+/// quoted form with quoting characters replaced; other filenames use the
+/// RFC 5987/8187 extended form.
+pub fn attachment_disposition(filename: &str) -> String {
+    if filename.is_ascii() {
+        let safe: String = filename
+            .chars()
+            .map(|c| match c {
+                '"' | '\\' | '\r' | '\n' => '_',
+                other => other,
+            })
+            .collect();
+        format!("attachment; filename=\"{safe}\"")
+    } else {
+        let encoded: String = filename
+            .bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric()
+                    || matches!(
+                        b,
+                        b'!' | b'#'
+                            | b'$'
+                            | b'&'
+                            | b'+'
+                            | b'-'
+                            | b'.'
+                            | b'^'
+                            | b'_'
+                            | b'`'
+                            | b'|'
+                            | b'~'
+                    )
+                {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect();
+        format!("attachment; filename*=UTF-8''{encoded}")
+    }
+}
+
+/// MIME describes a file, not whether it may be published. Unknown files are
+/// opaque downloads; nothing on this route executes server-side code.
+pub fn app_asset_content_type(path: &Path) -> String {
+    let extension = path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default();
+    match extension.to_ascii_lowercase().as_str() {
+        "html" | "htm" => Some("text/html; charset=utf-8"),
+        "js" | "mjs" => Some("text/javascript; charset=utf-8"),
+        "css" => Some("text/css; charset=utf-8"),
+        "json" | "map" => Some("application/json; charset=utf-8"),
+        "txt" => Some("text/plain; charset=utf-8"),
+        "svg" => Some("image/svg+xml"),
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        "ico" => Some("image/x-icon"),
+        "woff" => Some("font/woff"),
+        "woff2" => Some("font/woff2"),
+        "ttf" => Some("font/ttf"),
+        "otf" => Some("font/otf"),
+        "wasm" => Some("application/wasm"),
+        "data" => Some("application/octet-stream"),
+        _ => None,
+    }
+    .map(str::to_string)
+    .unwrap_or_else(|| {
+        mime_guess::from_path(path)
+            .first_or_octet_stream()
+            .to_string()
+    })
+}
+
+#[cfg(test)]
+mod tests;

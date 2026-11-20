@@ -1,14 +1,15 @@
-use std::io::Read;
 use std::path::Path as FsPath;
 
-use super::file_response::{serve_file, FileResponseOptions};
 use super::*;
 use axum::http::Method;
+use holon_server::file_response::{
+    attachment_disposition, guess_mime, is_text_mime, needs_script_sandbox, serve_file,
+    served_content_type, FileResponseOptions,
+};
 
 /// Maximum bytes to read for text file content before truncating.
 const READ_LIMIT_BYTES: usize = 1024 * 1024; // 1 MB
 /// Maximum bytes to sniff for content-based MIME detection.
-const SNIFF_LIMIT_BYTES: usize = 8000;
 const MAX_RESOLVE_REFERENCES: usize = 64;
 const MAX_REFERENCE_LENGTH: usize = 16 * 1024;
 pub(crate) const FILE_REFERENCE_BODY_LIMIT_BYTES: usize = 2 * 1024 * 1024;
@@ -505,88 +506,6 @@ pub(crate) async fn resolve_file_references(
     Ok(Json(json!(ResolveFileReferencesResponse { results })))
 }
 
-/// Infer MIME type from file extension.
-fn guess_mime(path: &FsPath) -> String {
-    // Override extensions that mime_guess maps to non-text types
-    // (e.g., .ts -> video/mp2t, which prevents inline text rendering).
-    if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-        if let Some(mime) = custom_mime_for_ext(&ext.to_lowercase()) {
-            return mime.to_string();
-        }
-    }
-    let mime = mime_guess::from_path(path)
-        .first_or_octet_stream()
-        .essence_str()
-        .to_string();
-    if mime != "application/octet-stream" {
-        return mime;
-    }
-    // Extension-based detection failed; sniff content.
-    match std::fs::File::open(path) {
-        Ok(mut file) => {
-            let mut buf = vec![0u8; SNIFF_LIMIT_BYTES];
-            match file.read(&mut buf) {
-                Ok(0) => "text/plain".to_string(),
-                Ok(n) => {
-                    if sniff_is_text(&buf[..n]) {
-                        "text/plain".to_string()
-                    } else {
-                        mime
-                    }
-                }
-                Err(_) => mime,
-            }
-        }
-        Err(_) => mime,
-    }
-}
-
-/// Heuristic content sniff: returns `true` if the bytes look like text.
-///
-/// Uses the same approach as git/file(1): a NUL byte or a high proportion
-/// of non-printable control characters (excluding \t \n \r) indicates binary.
-fn sniff_is_text(data: &[u8]) -> bool {
-    if data.is_empty() {
-        return true;
-    }
-    if data.contains(&0x00) {
-        return false;
-    }
-    // Invalid UTF-8 → binary (catches most non-text formats).
-    if std::str::from_utf8(data).is_err() {
-        return false;
-    }
-    let non_printable = data
-        .iter()
-        .filter(|&&b| (b < 0x20 || b == 0x7f) && b != 0x09 && b != 0x0a && b != 0x0d)
-        .count();
-    (non_printable as f64 / data.len() as f64) < 0.30
-}
-
-/// Override MIME types for file extensions that `mime_guess` maps to
-/// non-text types. The notable case is `.ts`, which the IANA registry
-/// maps to `video/mp2t` (MPEG-2 Transport Stream) rather than TypeScript.
-/// Without this override, the server streams raw bytes for `.ts` files,
-/// causing the web GUI's JSON content negotiation to fail.
-fn custom_mime_for_ext(ext: &str) -> Option<&'static str> {
-    match ext {
-        "ts" => Some("text/typescript"),
-        "tsx" => Some("text/tsx"),
-        _ => None,
-    }
-}
-
-/// Determine whether a MIME type represents a text file suitable for inline reading.
-fn is_text_mime(mime: &str) -> bool {
-    mime.starts_with("text/")
-        || mime == "application/json"
-        || mime == "application/javascript"
-        || mime == "application/xml"
-        || mime == "application/x-yaml"
-        || mime == "application/x-sh"
-        || mime == "application/x-toml"
-}
-
 /// Convert a filesystem modification time to whole Unix-epoch seconds for
 /// JSON metadata responses. None when the platform does not report mtime.
 fn modified_unix_seconds(metadata: &std::fs::Metadata) -> Option<u64> {
@@ -596,70 +515,6 @@ fn modified_unix_seconds(metadata: &std::fs::Metadata) -> Option<u64> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()
         .map(|d| d.as_secs())
-}
-
-/// MIME types that execute scripts or host active content when rendered
-/// inline. Served with a sandboxing CSP so direct same-origin navigation
-/// cannot run workspace-controlled scripts.
-fn needs_script_sandbox(mime_type: &str) -> bool {
-    matches!(
-        mime_type,
-        "text/html" | "application/xhtml+xml" | "image/svg+xml" | "application/xml" | "text/xml"
-    ) || mime_type.ends_with("+xml")
-}
-
-/// Content-Type used when serving raw bytes directly to a browser. Non-standard
-/// text subtypes used only for JSON negotiation render as plain text, and
-/// text responses get an explicit UTF-8 charset.
-fn served_content_type(mime_type: &str) -> String {
-    match mime_type {
-        "text/typescript" | "text/tsx" => "text/plain; charset=utf-8".to_string(),
-        m if m.starts_with("text/") => format!("{m}; charset=utf-8"),
-        m => m.to_string(),
-    }
-}
-
-/// Build a `Content-Disposition` value for a download. ASCII filenames use the
-/// quoted form with quoting characters replaced; other filenames use the
-/// RFC 5987/8187 extended form.
-fn attachment_disposition(filename: &str) -> String {
-    if filename.is_ascii() {
-        let safe: String = filename
-            .chars()
-            .map(|c| match c {
-                '"' | '\\' | '\r' | '\n' => '_',
-                other => other,
-            })
-            .collect();
-        format!("attachment; filename=\"{safe}\"")
-    } else {
-        let encoded: String = filename
-            .bytes()
-            .map(|b| {
-                if b.is_ascii_alphanumeric()
-                    || matches!(
-                        b,
-                        b'!' | b'#'
-                            | b'$'
-                            | b'&'
-                            | b'+'
-                            | b'-'
-                            | b'.'
-                            | b'^'
-                            | b'_'
-                            | b'`'
-                            | b'|'
-                            | b'~'
-                    )
-                {
-                    (b as char).to_string()
-                } else {
-                    format!("%{b:02X}")
-                }
-            })
-            .collect();
-        format!("attachment; filename*=UTF-8''{encoded}")
-    }
 }
 
 /// Handler for workspace root (no sub-path).
@@ -886,66 +741,4 @@ async fn workspace_files_inner(
         content: Some(content),
     };
     Ok(Json(json!(file_content)).into_response())
-}
-
-#[cfg(holon_lib_test_shard = "c")]
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sniff_detects_text() {
-        assert!(sniff_is_text(b""));
-        assert!(sniff_is_text(b"Hello, world!\n"));
-        assert!(sniff_is_text(b"all: build\n\tcargo build\n"));
-        assert!(sniff_is_text(
-            "UTF-8: \u{4e2d}\u{6587}\u{6d4b}\u{8bd5}\n".as_bytes()
-        ));
-        // Tabs, newlines, carriage returns are fine.
-        assert!(sniff_is_text(b"col1\tcol2\r\nval1\tval2\r\n"));
-    }
-
-    #[test]
-    fn sniff_detects_binary() {
-        // NUL byte → binary.
-        assert!(!sniff_is_text(&[0x00, 0x01, 0x02, 0x03]));
-        // PNG header.
-        assert!(!sniff_is_text(&[
-            0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
-        ]));
-        // ELF header.
-        assert!(!sniff_is_text(&[
-            0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00
-        ]));
-    }
-
-    #[test]
-    fn sniff_threshold_boundary() {
-        // 3 control bytes out of 13 total ≈ 23% → still text (< 30%).
-        let mut data = b"normal text\n".to_vec();
-        data.extend_from_slice(&[0x01, 0x02, 0x03]);
-        assert!(sniff_is_text(&data));
-        // 5 control bytes out of 13 ≈ 38% → binary (>= 30%).
-        let mut data = b"normal tex\n".to_vec();
-        data.extend_from_slice(&[0x01, 0x02, 0x03, 0x04, 0x05]);
-        assert!(!sniff_is_text(&data));
-    }
-
-    #[test]
-    fn attachment_disposition_forms() {
-        assert_eq!(
-            attachment_disposition("notes.txt"),
-            "attachment; filename=\"notes.txt\""
-        );
-        // Quote characters are replaced, never emitted raw.
-        assert_eq!(
-            attachment_disposition("bad\"name.txt"),
-            "attachment; filename=\"bad_name.txt\""
-        );
-        // Non-ASCII names use the extended form.
-        assert_eq!(
-            attachment_disposition("笔记.txt"),
-            "attachment; filename*=UTF-8''%E7%AC%94%E8%AE%B0.txt"
-        );
-    }
 }

@@ -1,9 +1,10 @@
 use super::*;
 
 fn fixture() -> serde_json::Value {
-    serde_json::from_str(include_str!(
-        "../../tests/fixtures/agent-avatar-golden.json"
-    ))
+    serde_json::from_str(include_str!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../../tests/fixtures/agent-avatar-golden.json"
+    )))
     .unwrap()
 }
 

@@ -67,12 +67,9 @@ fs2 = "0.4"
 libc = "0.2"
 reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
-resvg = { version = "0.45.1", default-features = false }
 rpassword = "7.3"
-rust-embed = "8.11"
 rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
 percent-encoding = "2.3"
-mime_guess = "2.0"
 schemars = { version = "0.9", features = ["chrono04"] }
 serde = { version = "1.0", features = ["derive", "rc"] }
 serde_json = "1.0"
@@ -91,7 +88,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-casefold = "0.2"
 url = "2.5"
 uuid = { version = "1.11", features = ["serde", "v4"] }
-aide = { version = "0.15.1", features = ["axum"] }
 
 [features]
 default = []
@@ -99,6 +95,7 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
+holon-server = { version = "0.1.0", path = "crates/holon-server", features = ["test-support"] }
 holon-agent-templates = { version = "0.1.0", path = "crates/holon-agent-templates", features = ["test-support"] }
 holon-memory-index = { version = "0.1.0", path = "crates/holon-memory-index", features = ["test-support"] }
 holon-tui = { version = "0.1.0", path = "crates/holon-tui", features = ["test-support"] }

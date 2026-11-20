@@ -1,7 +1,5 @@
 use super::*;
-use holon_server::web::{
-    accepts_spa_html, asset_response, login_page_response, normalize_web_asset_path,
-};
+use holon_server::web::{accepts_spa_html, login_page_response, normalize_web_asset_path};
 
 pub async fn web_or_not_found_handler(
     State(state): State<Arc<AppState>>,
@@ -71,13 +69,13 @@ pub(crate) async fn web_asset_response(
     headers: &HeaderMap,
     head_only: bool,
 ) -> Option<AxumResponse> {
-    let path = normalize_web_asset_path(request_path)?;
-    let bytes = if let Some(web_dist) = &state.web_dist {
-        tokio::fs::read(web_dist.join(&path)).await.ok()?
-    } else {
-        EmbeddedWebAssets::get(&path)?.data.into_owned()
-    };
-    Some(asset_response(bytes, &path, headers, head_only))
+    holon_server::web::web_asset_response(
+        state.web_dist.as_deref().map(PathBuf::as_path),
+        request_path,
+        headers,
+        head_only,
+    )
+    .await
 }
 
 #[cfg(holon_lib_test_shard = "c")]
