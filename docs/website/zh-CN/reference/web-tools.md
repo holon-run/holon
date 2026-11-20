@@ -95,10 +95,12 @@ Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运�
 
 ### 搜索提供商
 
-Holon 使用基于提供商的搜索模型，有多种提供商可选：
+Holon 使用基于提供商的搜索模型，有多种提供商可选。未配置任何提供商时，`auto`
+模式使用内置的免 key 回退链：Firecrawl -> Keenable -> DuckDuckGo；显式配置的
+提供商始终优先于该链。
 
-- **DuckDuckGo（托管）**：Holon 内置的托管搜索提供商，不需要 API key。在引导流程中选择
-  "Managed WebSearch: DuckDuckGo" 或 "Auto" 模式即可启用。
+- **DuckDuckGo（托管）**：Holon 内置的 HTML 搜索提供商，不需要 API key，是免 key
+  回退链的最后一环。
 - **腾讯云 WSA**：腾讯云 SearchPro / Web Search API。需要把 API key 存为凭据 profile。
   配置方式：`holon config set web.providers.tencent.kind tencent_cloud_wsa` 和
   `holon config set web.providers.tencent.credential_profile <profile>`。
@@ -106,9 +108,13 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选：
   `holon config set web.providers.bocha.kind bocha` 和
   `holon config set web.providers.bocha.credential_profile <profile>`。
 - **Keenable**：面向 Agent 的独立网页索引。公共端点无需 API key，配置密钥后改用
-  认证端点。配置方式：`holon config set web.providers.keenable.kind keenable`；
+  认证端点，且属于默认免 key 回退链。配置方式：`holon config set web.providers.keenable.kind keenable`；
   需要密钥时再加
   `holon config set web.providers.keenable.credential_profile <profile>`。
+- **Firecrawl**：搜索端点的免费额度无需 API key，配置密钥可提升限额，是免 key
+  回退链的第一选择。配置方式：`holon config set web.providers.firecrawl.kind firecrawl`；
+  需要密钥时再加
+  `holon config set web.providers.firecrawl.credential_profile <profile>`。
 - **模型原生搜索**：部分模型提供商（OpenAI、Anthropic）通过自家 API 支持原生网络搜索。
   在 "Auto" 模式下，对话轮次会优先使用它们。独立的 `WebSearch` 原生提供商是另一回事：
   只有通过 `WebSearch.provider` 显式点名才会运行，且需要绑定

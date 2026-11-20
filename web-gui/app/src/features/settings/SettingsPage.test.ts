@@ -132,6 +132,25 @@ describe("buildStandardSearchProviderDefinitions", () => {
       { id: "future-self-hosted", category: "selfHosted", requiresApiKey: false, requiresBaseUrl: true },
     ]);
   });
+
+  it("lists keyless-capable API providers with optional credentials", () => {
+    const capabilities = searchCapabilities("api_key_optional", 72);
+    const definitions = buildStandardSearchProviderDefinitions([
+      { kind: "firecrawl", capabilities },
+      { kind: "duck_duck_go", capabilities: searchCapabilities("none", 10) },
+    ]);
+
+    expect(definitions).toEqual([{
+      id: "firecrawl",
+      kind: "firecrawl",
+      category: "api",
+      requiresApiKey: false,
+      supportsApiKey: true,
+      requiresBaseUrl: false,
+      defaultCredentialProfile: "firecrawl:default",
+      capabilities,
+    }]);
+  });
 });
 
 describe("sortProvidersForSettings", () => {

@@ -15221,13 +15221,22 @@
                     "capabilities": {
                       "properties": {
                         "auth": {
-                          "enum": [
-                            "none",
-                            "api_key",
-                            "native_provider",
-                            "self_hosted"
-                          ],
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "enum": [
+                                "none",
+                                "api_key",
+                                "native_provider",
+                                "self_hosted"
+                              ],
+                              "type": "string"
+                            },
+                            {
+                              "const": "api_key_optional",
+                              "description": "Works without a key (public endpoint or free tier); a configured key\n only raises rate limits or unlocks paid usage.",
+                              "type": "string"
+                            }
+                          ]
                         },
                         "cost_class": {
                           "enum": [
@@ -15920,13 +15929,22 @@
                     "capabilities": {
                       "properties": {
                         "auth": {
-                          "enum": [
-                            "none",
-                            "api_key",
-                            "native_provider",
-                            "self_hosted"
-                          ],
-                          "type": "string"
+                          "oneOf": [
+                            {
+                              "enum": [
+                                "none",
+                                "api_key",
+                                "native_provider",
+                                "self_hosted"
+                              ],
+                              "type": "string"
+                            },
+                            {
+                              "const": "api_key_optional",
+                              "description": "Works without a key (public endpoint or free tier); a configured key\n only raises rate limits or unlocks paid usage.",
+                              "type": "string"
+                            }
+                          ]
                         },
                         "cost_class": {
                           "enum": [

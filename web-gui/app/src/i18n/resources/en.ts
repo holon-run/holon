@@ -1000,7 +1000,7 @@ const en = {
       },
       firecrawl: {
         label: "Firecrawl",
-        description: "Search and page extraction for crawl-oriented workflows.",
+        description: "Search and page extraction for crawl-oriented workflows; also works without a key.",
       },
       tencent_cloud_wsa: {
         label: "Tencent Cloud WSA",

@@ -362,7 +362,7 @@ The TUI flow guides you through:
 2. **Credential** — for OpenAI Codex: browser-based OAuth login; for other
    providers: enter your API key (input never echoed or stored in logs)
 3. **Model** — pick a default model for your provider, or enter a custom model id
-4. **Search** — enable DuckDuckGo managed search, model-native search, or disable
+4. **Search** — enable managed web search (keyless fallback chain), model-native search, or disable
 5. **Apply** — writes config, stores credentials, and prints a summary
 
 The JSON report includes `status`, `sections` (home, agent, model_provider,

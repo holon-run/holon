@@ -531,7 +531,7 @@ interface RuntimeWebSearchProviderKindSummaryDto {
 }
 
 interface RuntimeWebSearchProviderCapabilitiesDto {
-  auth?: "none" | "api_key" | "native_provider" | "self_hosted";
+  auth?: "none" | "api_key" | "api_key_optional" | "native_provider" | "self_hosted";
   cost_class?: "free" | "self_hosted" | "paid" | "provider_metered";
   quality_hint?: "html_fallback" | "keyword" | "semantic" | "research" | "native";
   supports_domain_filter?: boolean;

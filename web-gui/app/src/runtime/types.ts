@@ -558,7 +558,7 @@ export interface RuntimeWebSearchProviderKindSummary {
 }
 
 export interface RuntimeWebSearchProviderCapabilities {
-  auth: "none" | "api_key" | "native_provider" | "self_hosted";
+  auth: "none" | "api_key" | "api_key_optional" | "native_provider" | "self_hosted";
   costClass: "free" | "self_hosted" | "paid" | "provider_metered";
   qualityHint: "html_fallback" | "keyword" | "semantic" | "research" | "native";
   supportsDomainFilter: boolean;

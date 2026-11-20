@@ -7237,8 +7237,7 @@ export interface components {
                 /** @default [] */
                 available_search_provider_kinds: {
                     capabilities: {
-                        /** @enum {string} */
-                        auth: "none" | "api_key" | "native_provider" | "self_hosted";
+                        auth: ("none" | "api_key" | "native_provider" | "self_hosted") | "api_key_optional";
                         /** @enum {string} */
                         cost_class: "free" | "self_hosted" | "paid" | "provider_metered";
                         /** Format: uint16 */
@@ -7436,8 +7435,7 @@ export interface components {
                 /** @default [] */
                 available_search_provider_kinds: {
                     capabilities: {
-                        /** @enum {string} */
-                        auth: "none" | "api_key" | "native_provider" | "self_hosted";
+                        auth: ("none" | "api_key" | "native_provider" | "self_hosted") | "api_key_optional";
                         /** @enum {string} */
                         cost_class: "free" | "self_hosted" | "paid" | "provider_metered";
                         /** Format: uint16 */

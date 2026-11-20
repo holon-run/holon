@@ -19,6 +19,21 @@ use crate::{
 };
 
 const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
+const FIRECRAWL_PROVIDER_ID: &str = "firecrawl";
+const KEENABLE_PROVIDER_ID: &str = "keenable";
+
+/// Zero-configuration managed fallback chain, most preferred first.
+///
+/// Every entry works without credentials: Firecrawl's search endpoint and
+/// Keenable's public endpoint allow keyless requests (a configured API key
+/// only raises limits), and DuckDuckGo remains the final HTML fallback.
+/// Explicitly configured providers always sort ahead of this chain.
+const BUILTIN_KEYLESS_SEARCH_PROVIDERS: [(&str, WebProviderKind); 3] = [
+    (FIRECRAWL_PROVIDER_ID, WebProviderKind::Firecrawl),
+    (KEENABLE_PROVIDER_ID, WebProviderKind::Keenable),
+    (DUCKDUCKGO_PROVIDER_ID, WebProviderKind::DuckDuckGo),
+];
+
 const SEARCH_RESPONSE_BYTES: usize = 1_000_000;
 const COMMAND_QUERY_TEMPLATE: &str = "{{query}}";
 const COMMAND_MAX_RESULTS_TEMPLATE: &str = "{{max_results}}";
@@ -315,7 +330,6 @@ fn search_api_key<'a>(id: &str, provider: &'a WebProviderConfig) -> Result<&'a s
         WebProviderKind::Tavily => "Tavily",
         WebProviderKind::Exa => "Exa",
         WebProviderKind::Perplexity => "Perplexity",
-        WebProviderKind::Firecrawl => "Firecrawl",
         _ => return Ok(key),
     };
     let empty = if provider.kind == WebProviderKind::DeepSeek {
@@ -479,7 +493,11 @@ fn provider_order(provider: &str, config: &WebConfig) -> Vec<String> {
         configured
     };
     if providers.is_empty() {
-        providers.push(DUCKDUCKGO_PROVIDER_ID.to_string());
+        providers.extend(
+            BUILTIN_KEYLESS_SEARCH_PROVIDERS
+                .iter()
+                .map(|(id, _)| id.to_string()),
+        );
     }
     providers.truncate(config.search.max_provider_attempts.max(1));
     providers
@@ -499,11 +517,6 @@ fn default_provider_order(config: &WebConfig) -> Vec<String> {
                 )
             })
         })
-        .chain(std::iter::once((
-            DUCKDUCKGO_PROVIDER_ID.to_string(),
-            WebProviderKind::DuckDuckGo.capabilities().default_priority,
-            WebProviderKind::DuckDuckGo.as_str().to_string(),
-        )))
         .collect::<Vec<_>>();
     providers.sort_by(|left, right| {
         right
@@ -512,13 +525,46 @@ fn default_provider_order(config: &WebConfig) -> Vec<String> {
             .then_with(|| left.2.cmp(&right.2))
             .then_with(|| left.0.cmp(&right.0))
     });
-    dedupe_provider_order(providers.into_iter().map(|(id, _, _)| id))
+    let mut order = providers
+        .into_iter()
+        .map(|(id, _, _)| id)
+        .collect::<Vec<_>>();
+    for (builtin_id, _) in BUILTIN_KEYLESS_SEARCH_PROVIDERS {
+        if !config.providers.contains_key(builtin_id) {
+            order.push(builtin_id.to_string());
+        }
+    }
+    dedupe_provider_order(order)
 }
 
 fn provider_kind(provider: &str, config: &WebConfig) -> Option<WebProviderKind> {
-    (provider == DUCKDUCKGO_PROVIDER_ID)
-        .then_some(WebProviderKind::DuckDuckGo)
-        .or_else(|| config.providers.get(provider).map(|provider| provider.kind))
+    config
+        .providers
+        .get(provider)
+        .map(|provider| provider.kind)
+        .or_else(|| builtin_keyless_provider_kind(provider))
+}
+
+/// Kind of a builtin keyless provider id (see `BUILTIN_KEYLESS_SEARCH_PROVIDERS`).
+fn builtin_keyless_provider_kind(provider_id: &str) -> Option<WebProviderKind> {
+    BUILTIN_KEYLESS_SEARCH_PROVIDERS
+        .iter()
+        .find(|(id, _)| *id == provider_id)
+        .map(|(_, kind)| *kind)
+}
+
+/// Config used when a builtin keyless provider id participates in the fallback
+/// chain without an explicit `web.providers` entry.
+fn builtin_keyless_provider_config(provider_id: &str) -> Option<WebProviderConfig> {
+    Some(WebProviderConfig {
+        kind: builtin_keyless_provider_kind(provider_id)?,
+        base_url: None,
+        api_key: String::new(),
+        model_route: None,
+        command: None,
+        output: None,
+        limits: Default::default(),
+    })
 }
 
 fn is_native_provider(provider_id: &str, config: &WebConfig) -> bool {
@@ -785,20 +831,25 @@ async fn search_one_provider(
             .await
             .map(ProviderSearchOutput::new),
         provider_id => {
-            let provider_config = config.providers.get(provider_id).ok_or_else(|| {
-                search_error(
-                    "provider_unavailable",
-                    format!("WebSearch provider `{provider_id}` is not configured"),
-                    provider_id,
-                    "configure web.providers or use provider=duckduckgo",
-                )
-            })?;
+            let provider_config = config
+                .providers
+                .get(provider_id)
+                .cloned()
+                .or_else(|| builtin_keyless_provider_config(provider_id))
+                .ok_or_else(|| {
+                    search_error(
+                        "provider_unavailable",
+                        format!("WebSearch provider `{provider_id}` is not configured"),
+                        provider_id,
+                        "configure web.providers or use provider=duckduckgo",
+                    )
+                })?;
             search_configured_provider(
                 map_error,
                 query,
                 max_results,
                 provider_id,
-                provider_config,
+                &provider_config,
                 &config.fetch,
                 native,
             )
@@ -2233,6 +2284,28 @@ async fn perplexity_search(
     Ok(results)
 }
 
+fn firecrawl_request(
+    client: &Client,
+    base_url: &str,
+    api_key: &str,
+    query: &str,
+    max_results: usize,
+) -> reqwest::RequestBuilder {
+    let body = serde_json::json!({
+        "query": query,
+        "limit": max_results.min(20),
+    });
+    // Firecrawl allows unauthenticated search requests on a free tier; an API
+    // key only raises rate limits, so it is sent when present.
+    let mut request = client
+        .post(format!("{}/v1/search", base_url.trim_end_matches('/')))
+        .header("Content-Type", "application/json");
+    if !api_key.trim().is_empty() {
+        request = request.bearer_auth(api_key.trim());
+    }
+    request.json(&body)
+}
+
 async fn firecrawl_search(
     query: &str,
     max_results: usize,
@@ -2242,19 +2315,11 @@ async fn firecrawl_search(
 ) -> Result<Vec<WebSearchResult>> {
     let api_key = search_api_key(provider_id, provider)?;
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
-    let body = serde_json::json!({
-        "query": query,
-        "limit": max_results.min(20),
-    });
     let base_url = provider
         .base_url
         .as_deref()
         .unwrap_or("https://api.firecrawl.dev");
-    let response = client
-        .post(format!("{}/v1/search", base_url.trim_end_matches('/')))
-        .header("Content-Type", "application/json")
-        .bearer_auth(api_key)
-        .json(&body)
+    let response = firecrawl_request(&client, base_url, api_key, query, max_results)
         .send()
         .await
         .map_err(|error| {
@@ -2278,7 +2343,7 @@ async fn firecrawl_search(
             kind,
             format!("Firecrawl returned HTTP {status}"),
             provider_id,
-            "check the API key or retry later",
+            "configure an api_key on the provider or retry later",
         ));
     }
     let body = read_search_response(response, provider_id).await?;

@@ -559,6 +559,8 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 
 省略 `WebSearch.provider` 时沿用配置的提供商与模式。传入 `"auto"` 时按自动候选顺序和配置模式路由；传入 `"aggregate"` 时仅在本次调用中按相同顺序串行聚合，按规范化 URL 去重，达到 `max_results` 或尝试次数上限即停止。指定具体 ID 则只查询该提供商，失败不回退。若已注册名为 `auto` 或 `aggregate` 的提供商，显式传入同名值会报错；请改名或省略该参数。此规则不改变配置中的提供商 ID 或 `WebFetch` 的行为。
 
+未配置任何提供商时，自动顺序为内置的免 key 回退链 Firecrawl -> Keenable -> DuckDuckGo；显式配置的提供商始终优先于该链。
+
 即使默认模式为 `single`，显式聚合也可能把同一查询发送给多家提供商，增加外发、费用或延迟。如需每次最多尝试一家，请将 `web.search.max_provider_attempts` 设为 `1`。这不是提供商白名单，也不限制多次独立调用。
 
 原生服务端搜索提供商（如 `open_ai_native` 这类 native `web.providers` 类型，含经 Codex 传输绑定的路由）仅在显式点名时运行。省略 `WebSearch.provider`、传入 `auto`/`aggregate` 或配置 `web.search.providers` 都不会触发它们；只有以 `provider` 显式传入其 ID 才会执行，且绑定的 `model_route` 必须可解析并声明 builtin web search。独立请求只携带查询与必要的搜索参数——不含对话历史、工作区数据或其他工具。结果仅取厂商结构化引用来源，按 URL 去重后最多返回 `max_results` 条；已执行搜索但无可映射来源时返回空结果列表，未执行搜索的纯回答则显式失败。任何失败对本次调用都是终态：native 派发绝不回退到其他提供商或路由。

@@ -68,8 +68,8 @@ Holon Agent 可以把 WebSearch 作为内置工具使用。向导提供三种搜
 | 模式 | 行为 |
 |------|----------|
 | **禁用** | 不提供网页搜索能力 |
-| **自动** | 优先使用模型原生搜索（如可用），否则回退到托管 DuckDuckGo |
-| **托管（DuckDuckGo）** | 使用 Holon 内置的 DuckDuckGo 搜索提供商 |
+| **自动** | 优先使用模型原生搜索（如可用），否则回退到托管免 key 回退链（Firecrawl -> Keenable -> DuckDuckGo） |
+| **托管（DuckDuckGo）** | 仅使用 Holon 内置的 DuckDuckGo 搜索提供商 |
 
 搜索配置之后可以用 `holon config set` 修改。
 

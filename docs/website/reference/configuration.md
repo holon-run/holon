@@ -602,6 +602,10 @@ registered provider has the ID `auto` or `aggregate`, passing that value
 explicitly is an error; rename the provider or omit the argument. This does
 not change configured provider IDs or `WebFetch`.
 
+When no providers are configured, the automatic order is the built-in keyless
+fallback chain Firecrawl -> Keenable -> DuckDuckGo; explicitly configured
+providers always take precedence over it.
+
 Even with a default mode of `single`, explicit aggregation can send the same
 query to multiple providers, increasing disclosure, costs, or latency. To cap
 each call at one attempt, set `web.search.max_provider_attempts` to `1`. This

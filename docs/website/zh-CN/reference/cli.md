@@ -310,7 +310,7 @@ TUI 流程会依次引导你完成：
 2. **Credential** — 对 OpenAI Codex：用浏览器完成 OAuth 登录；对其他提供商：
    输入你的 API key（输入内容不会被回显，也不写入日志）
 3. **Model** — 为所选提供商选择默认模型，或输入自定义模型 id
-4. **Search** — 启用 DuckDuckGo 托管搜索、模型原生搜索，或关闭搜索
+4. **Search** — 启用托管搜索（免 key 回退链）、模型原生搜索，或关闭搜索
 5. **Apply** — 写入配置、存储凭据并打印摘要
 
 JSON 报告包含 `status`、`sections`（home、agent、model_provider、search、
