@@ -26,6 +26,7 @@ class RustSelectionTests(unittest.TestCase):
     def test_isolated_unit_and_integration_tests(self):
         for path in (
             "crates/holon-tui/src/tui/composer/tests.rs",
+            "crates/holon-daemon/src/tests/mod.rs",
             "crates/holon-provider/src/provider/transports/openai/oauth_timeout_tests.rs",
             "crates/holon-model-catalog/tests/fixtures/models_dev/sample.json",
         ):
@@ -33,6 +34,8 @@ class RustSelectionTests(unittest.TestCase):
                 self.assertEqual(self.select(path), (False, [path.split("/")[1]], True))
 
     def test_leaf_and_reverse_dependencies(self):
+        self.assertEqual(self.select("crates/holon-daemon/src/lifecycle.rs"),
+                         (True, ["holon-daemon"], False))
         self.assertEqual(self.select("crates/holon-tui/src/lib.rs"),
                          (True, ["holon-tui"], False))
         self.assertEqual(self.select("crates/holon-github/src/lib.rs"),

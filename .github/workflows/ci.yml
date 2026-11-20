@@ -618,10 +618,9 @@ jobs:
       - name: Test standalone log ownership and bounded tails on macOS
         env:
           CARGO_TARGET_DIR: target/macos-aarch64
-          HOLON_LIB_TEST_SHARD: c
         run: |
-          cargo test --locked --lib daemon::logging -- --test-threads=2
-          cargo test --locked --lib daemon_logs -- --test-threads=2
+          cargo test --manifest-path crates/holon-daemon/Cargo.toml --locked --lib logging:: -- --test-threads=2
+          cargo test --manifest-path crates/holon-daemon/Cargo.toml --locked --lib daemon_logs -- --test-threads=2
 
   macos-rust-cross-check:
     name: Rust darwin cross-check
@@ -866,6 +865,7 @@ jobs:
 
       - name: Check independent crate formatting
         run: |
+          cargo fmt --manifest-path crates/holon-daemon/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-domain/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-github/Cargo.toml -- --check
           cargo fmt --manifest-path crates/holon-agent-templates/Cargo.toml -- --check

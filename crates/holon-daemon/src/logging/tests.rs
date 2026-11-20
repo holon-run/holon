@@ -266,7 +266,7 @@ fn managed_stdio_captures_native_output_and_drains_without_helper_process() {
     let child = std::process::Command::new(std::env::current_exe().unwrap())
         .args([
             "--exact",
-            "daemon::logging::tests::managed_stdio_child",
+            "logging::tests::managed_stdio_child",
             "--nocapture",
         ])
         .env("HOLON_TEST_LOG_CAPTURE", &path)

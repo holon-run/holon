@@ -1538,6 +1538,7 @@ dependencies = [
  "holon-client",
  "holon-config",
  "holon-context",
+ "holon-daemon",
  "holon-domain",
  "holon-github",
  "holon-memory-index",
@@ -1650,6 +1651,25 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.18",
+]
+
+[[package]]
+name = "holon-daemon"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "fs2",
+ "holon-client",
+ "holon-domain",
+ "holon-storage",
+ "libc",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "url",
 ]
 
 [[package]]

@@ -13,3 +13,15 @@ impl From<AppConfig> for ConnectionConfig {
         }
     }
 }
+
+impl From<&AppConfig> for ConnectionConfig {
+    fn from(config: &AppConfig) -> Self {
+        Self {
+            home_dir: config.home_dir.clone(),
+            default_agent_id: config.default_agent_id.clone(),
+            socket_path: config.socket_path.clone(),
+            control_token: config.control_token.clone(),
+            http_addr: config.http_addr.clone(),
+        }
+    }
+}

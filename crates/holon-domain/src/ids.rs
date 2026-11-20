@@ -6,6 +6,40 @@ use uuid::Uuid;
 pub const SHORT_RANDOM_HEX_LEN: usize = 15; // 15 random hex nibbles ~= 60 bits
 const UUID_VERSION_NIBBLE_INDEX: usize = 12;
 
+pub fn validate_agent_id_format(agent_id: &str) -> anyhow::Result<()> {
+    use anyhow::anyhow;
+    use std::path::Component;
+
+    if agent_id.is_empty() {
+        return Err(anyhow!("agent id must not be empty"));
+    }
+    if !agent_id
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+    {
+        return Err(anyhow!(
+            "agent id must contain only ASCII letters, digits, '.', '-', or '_'"
+        ));
+    }
+    if agent_id.ends_with(".deleting_trash") {
+        // `deletion_phase_home` renames agent homes to
+        // `<agent_id>.deleting_trash` before removal, and the orphan-trash
+        // sweep matches that suffix. Reserving the suffix keeps live agent
+        // homes distinguishable from trash directories.
+        return Err(anyhow!(
+            "agent id must not end with the reserved suffix '.deleting_trash'"
+        ));
+    }
+
+    let mut components = Path::new(agent_id).components();
+    let valid_component =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if !valid_component {
+        return Err(anyhow!("agent id must be a single normal path component"));
+    }
+    Ok(())
+}
+
 fn short_random_hex() -> String {
     Uuid::new_v4()
         .simple()

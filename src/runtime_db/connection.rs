@@ -8,7 +8,7 @@ use super::storage_diagnostics::DIAGNOSTICS;
 pub use holon_storage::connection::{is_retryable_db_error, is_sqlite_locked};
 
 pub(crate) use holon_storage::connection::{
-    configure_new_database_auto_vacuum, configure_persistent_database, flock, unlock, LockMode,
+    configure_new_database_auto_vacuum, configure_persistent_database,
 };
 
 pub(crate) fn open_connection(path: &Path) -> Result<Connection> {

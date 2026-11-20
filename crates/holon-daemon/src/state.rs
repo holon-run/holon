@@ -7,15 +7,10 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use holon_domain::{RuntimeFailurePhase, RuntimeFailureSummary};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
-use crate::{
-    config::AppConfig,
-    runtime_db::RuntimeDb,
-    storage::AppStorage,
-    types::{AgentRegistryStatus, AgentVisibility, RuntimeFailurePhase, RuntimeFailureSummary},
-};
+use crate::DaemonConfig;
 
 use super::{DaemonServeProfile, RuntimeActivitySummary, RuntimeServiceMetadata};
 
@@ -93,7 +88,7 @@ impl DaemonFailureDiagnostics {
 
 /// Result of the bounded read of the daemon-persisted failure summary.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PersistedDaemonFailure {
+pub(crate) struct PersistedDaemonFailure {
     pub failure: Option<RuntimeFailureSummary>,
     pub diagnostics: DaemonFailureDiagnostics,
 }
@@ -201,11 +196,11 @@ pub struct DaemonLogsView {
     pub message: String,
 }
 
-pub fn daemon_paths(config: &AppConfig) -> DaemonPaths {
+pub fn daemon_paths(config: &dyn DaemonConfig) -> DaemonPaths {
     let run_dir = config.run_dir();
     DaemonPaths {
         run_dir: run_dir.clone(),
-        socket_path: config.socket_path.clone(),
+        socket_path: config.socket_path().to_owned(),
         pid_path: run_dir.join("holon.pid"),
         metadata_path: run_dir.join("daemon.json"),
         log_path: run_dir.join("daemon.log"),
@@ -222,7 +217,7 @@ struct DaemonDesiredState {
     desired_running: bool,
 }
 
-pub fn load_daemon_desired_running(config: &AppConfig) -> Result<Option<bool>> {
+pub(crate) fn load_daemon_desired_running(config: &dyn DaemonConfig) -> Result<Option<bool>> {
     let path = daemon_paths(config).desired_state_path;
     if !path.exists() {
         return Ok(None);
@@ -233,7 +228,10 @@ pub fn load_daemon_desired_running(config: &AppConfig) -> Result<Option<bool>> {
     Ok(Some(state.desired_running))
 }
 
-pub fn persist_daemon_desired_running(config: &AppConfig, desired_running: bool) -> Result<()> {
+pub(crate) fn persist_daemon_desired_running(
+    config: &dyn DaemonConfig,
+    desired_running: bool,
+) -> Result<()> {
     let paths = daemon_paths(config);
     fs::create_dir_all(&paths.run_dir)
         .with_context(|| format!("failed to create {}", paths.run_dir.display()))?;
@@ -257,7 +255,7 @@ pub(crate) fn daemon_log_hint() -> String {
     "run `holon daemon logs` for details".into()
 }
 
-fn merge_latest_failure(
+pub fn merge_latest_failure(
     left: Option<RuntimeFailureSummary>,
     right: Option<RuntimeFailureSummary>,
 ) -> Option<RuntimeFailureSummary> {
@@ -275,62 +273,7 @@ fn merge_latest_failure(
     }
 }
 
-pub fn config_fingerprint(config: &AppConfig) -> Result<String> {
-    let payload = serde_json::json!({
-        "default_agent_id": config.default_agent_id,
-        "http_addr": config.http_addr,
-        "callback_base_url": config.callback_base_url,
-        "home_dir": config.home_dir,
-        "socket_path": config.socket_path,
-        "workspace_dir": config.workspace_dir,
-        "context_window_messages": config.context_window_messages,
-        "context_window_briefs": config.context_window_briefs,
-        "compaction_trigger_messages": config.compaction_trigger_messages,
-        "compaction_keep_recent_messages": config.compaction_keep_recent_messages,
-        "prompt_budget_estimated_tokens": config.prompt_budget_estimated_tokens,
-        "compaction_trigger_estimated_tokens": config.compaction_trigger_estimated_tokens,
-        "compaction_keep_recent_estimated_tokens": config.compaction_keep_recent_estimated_tokens,
-        "recent_episode_candidates": config.recent_episode_candidates,
-        "max_relevant_episodes": config.max_relevant_episodes,
-        "control_auth_mode": format!("{:?}", config.control_auth_mode),
-        "control_token_configured": config.control_token.is_some(),
-        "runtime_max_output_tokens": config.runtime_max_output_tokens,
-        "default_tool_output_tokens": config.default_tool_output_tokens,
-        "max_tool_output_tokens": config.max_tool_output_tokens,
-        "disable_provider_fallback": config.provider_fallback_disabled(),
-        "default_model": {
-            "provider": config.default_model.provider.as_str(),
-            "model": config.default_model.model,
-        },
-        "fallback_models": config.fallback_models.iter().map(|model| {
-            serde_json::json!({
-                "provider": model.provider.as_str(),
-                "model": model.model,
-            })
-        }).collect::<Vec<_>>(),
-        "providers": config.providers.iter().map(|(id, provider)| {
-            serde_json::json!({
-                "id": id.as_str(),
-                "base_url": provider.base_url,
-                "transport": provider.transport.as_str(),
-                "auth": {
-                    "source": provider.auth.source.as_str(),
-                    "kind": provider.auth.kind.as_str(),
-                    "env": provider.auth.env,
-                    "profile": provider.auth.profile,
-                    "external": provider.auth.external,
-                    "credential_configured": provider.has_configured_credential(),
-                },
-            })
-        }).collect::<Vec<_>>()
-    });
-    let encoded = serde_json::to_vec(&payload)?;
-    let mut hasher = Sha256::new();
-    hasher.update(encoded);
-    Ok(format!("{:x}", hasher.finalize()))
-}
-
-pub fn load_daemon_metadata(config: &AppConfig) -> Result<Option<RuntimeServiceMetadata>> {
+pub fn load_daemon_metadata(config: &dyn DaemonConfig) -> Result<Option<RuntimeServiceMetadata>> {
     let path = daemon_paths(config).metadata_path;
     if !path.exists() {
         return Ok(None);
@@ -341,7 +284,9 @@ pub fn load_daemon_metadata(config: &AppConfig) -> Result<Option<RuntimeServiceM
     Ok(Some(metadata))
 }
 
-pub fn load_last_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFailureSummary>> {
+pub fn load_last_runtime_failure(
+    config: &dyn DaemonConfig,
+) -> Result<Option<RuntimeFailureSummary>> {
     let path = daemon_paths(config).last_failure_path;
     if !path.exists() {
         return Ok(None);
@@ -358,7 +303,7 @@ const PERSISTED_FAILURE_READ_LIMIT: u64 = 64 * 1024;
 ///
 /// This never opens the runtime DB, so lock contention cannot stall the default
 /// `holon daemon status` path. A missing file is an available empty source.
-pub fn read_persisted_daemon_failure(config: &AppConfig) -> PersistedDaemonFailure {
+pub(crate) fn read_persisted_daemon_failure(config: &dyn DaemonConfig) -> PersistedDaemonFailure {
     let path = daemon_paths(config).last_failure_path;
     let unavailable = |reason| PersistedDaemonFailure {
         failure: None,
@@ -412,19 +357,19 @@ pub fn read_persisted_daemon_failure(config: &AppConfig) -> PersistedDaemonFailu
     }
 }
 
-pub(crate) fn persist_last_runtime_failure(
-    config: &AppConfig,
+pub fn persist_last_runtime_failure(
+    config: &dyn DaemonConfig,
     failure: &RuntimeFailureSummary,
 ) -> Result<()> {
     let path = daemon_paths(config).last_failure_path;
     persist_runtime_failure_file(config, &path, failure)
 }
 
-fn load_startup_failure(config: &AppConfig) -> Result<Option<RuntimeFailureSummary>> {
+fn load_startup_failure(config: &dyn DaemonConfig) -> Result<Option<RuntimeFailureSummary>> {
     load_runtime_failure_file(&daemon_paths(config).startup_failure_path)
 }
 
-fn load_shutdown_failure(config: &AppConfig) -> Result<Option<RuntimeFailureSummary>> {
+fn load_shutdown_failure(config: &dyn DaemonConfig) -> Result<Option<RuntimeFailureSummary>> {
     load_runtime_failure_file(&daemon_paths(config).shutdown_failure_path)
 }
 
@@ -439,7 +384,7 @@ fn load_runtime_failure_file(path: &Path) -> Result<Option<RuntimeFailureSummary
 }
 
 fn persist_runtime_failure_file(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     path: &Path,
     failure: &RuntimeFailureSummary,
 ) -> Result<()> {
@@ -450,7 +395,7 @@ fn persist_runtime_failure_file(
 }
 
 pub(crate) fn persist_daemon_lifecycle_failure(
-    config: &AppConfig,
+    config: &dyn DaemonConfig,
     failure: &RuntimeFailureSummary,
 ) -> Result<()> {
     persist_last_runtime_failure(config, failure)?;
@@ -462,7 +407,7 @@ pub(crate) fn persist_daemon_lifecycle_failure(
     persist_runtime_failure_file(config, &phase_path, failure)
 }
 
-pub(crate) fn clear_persisted_daemon_lifecycle_failures(config: &AppConfig) -> Result<()> {
+pub(crate) fn clear_persisted_daemon_lifecycle_failures(config: &dyn DaemonConfig) -> Result<()> {
     let paths = daemon_paths(config);
     remove_path_if_exists(&paths.last_failure_path)?;
     remove_path_if_exists(&paths.startup_failure_path)?;
@@ -470,42 +415,16 @@ pub(crate) fn clear_persisted_daemon_lifecycle_failures(config: &AppConfig) -> R
     Ok(())
 }
 
-fn latest_public_runtime_failure(config: &AppConfig) -> Result<Option<RuntimeFailureSummary>> {
-    let runtime_db =
-        RuntimeDb::open_and_migrate(config.runtime_db_path(), config.runtime_db_lock_path())?;
-    let host_storage = AppStorage::new_global(config.home_dir.join("host"), runtime_db.clone())?;
-    let mut latest = None;
-    for identity in host_storage
-        .latest_agent_identities()?
-        .into_iter()
-        .filter(|record| {
-            record.status == AgentRegistryStatus::Active
-                && record.visibility == AgentVisibility::Public
-        })
-    {
-        let storage = AppStorage::new_for_agent(
-            config.agent_root_dir().join(&identity.agent_id),
-            identity.agent_id.clone(),
-            runtime_db.clone(),
-        )?;
-        let failure = storage
-            .read_agent()?
-            .and_then(|agent| agent.last_runtime_failure);
-        latest = merge_latest_failure(latest, failure);
-    }
-    Ok(latest)
-}
-
-pub(crate) fn latest_known_runtime_failure(
-    config: &AppConfig,
+pub fn latest_known_runtime_failure(
+    config: &dyn DaemonConfig,
 ) -> Result<Option<RuntimeFailureSummary>> {
     Ok(merge_latest_failure(
-        latest_public_runtime_failure(config)?,
+        config.latest_public_runtime_failure()?,
         load_last_runtime_failure(config)?,
     ))
 }
 
-pub fn cleanup_daemon_state(config: &AppConfig) -> Result<()> {
+pub fn cleanup_daemon_state(config: &dyn DaemonConfig) -> Result<()> {
     let paths = daemon_paths(config);
     remove_path_if_exists(&paths.pid_path)?;
     remove_path_if_exists(&paths.metadata_path)?;
@@ -514,7 +433,7 @@ pub fn cleanup_daemon_state(config: &AppConfig) -> Result<()> {
     Ok(())
 }
 
-fn read_daemon_log_tail(config: &AppConfig, tail_lines: usize) -> Result<Vec<String>> {
+fn read_daemon_log_tail(config: &dyn DaemonConfig, tail_lines: usize) -> Result<Vec<String>> {
     let log_path = daemon_paths(config).log_path;
     if tail_lines == 0 {
         return Ok(Vec::new());
@@ -607,7 +526,7 @@ fn truncate_tail_line(line: &str) -> String {
     format!("...{suffix}")
 }
 
-pub fn daemon_logs(config: &AppConfig, tail_lines: usize) -> Result<DaemonLogsView> {
+pub fn daemon_logs(config: &dyn DaemonConfig, tail_lines: usize) -> Result<DaemonLogsView> {
     let paths = daemon_paths(config);
     let runtime_metadata = load_daemon_metadata(config).ok().flatten();
     let last_failure = latest_known_runtime_failure(config).ok().flatten();
@@ -672,7 +591,7 @@ fn remove_path_if_exists(path: &Path) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn stale_files(config: &AppConfig) -> Vec<PathBuf> {
+pub(crate) fn stale_files(config: &dyn DaemonConfig) -> Vec<PathBuf> {
     let paths = daemon_paths(config);
     let mut stale = Vec::new();
     if paths.pid_path.exists() {
@@ -688,7 +607,7 @@ pub(crate) fn stale_files(config: &AppConfig) -> Vec<PathBuf> {
     stale
 }
 
-pub(crate) fn read_daemon_log_excerpt(config: &AppConfig) -> String {
+pub(crate) fn read_daemon_log_excerpt(config: &dyn DaemonConfig) -> String {
     read_daemon_log_tail(config, 20)
         .ok()
         .and_then(|lines| {

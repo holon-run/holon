@@ -43,7 +43,7 @@ async fn quarantine_startup_recovery_continues_past_isolated_candidate() {
         after.unwrap().status,
         "skipped constructor must not fabricate a task transition"
     );
-    let report = serde_json::to_value(read_quarantine_report(&host.config())).unwrap();
+    let report = serde_json::to_value(read_quarantine_report(host.config().as_ref())).unwrap();
     assert_eq!(report["status"], "available", "{report}");
     assert_eq!(
         report["summary"]["current"]["startup_id"],
@@ -98,7 +98,7 @@ async fn quarantine_default_first_activation_can_bind_but_unknown_failure_cannot
         if listener.is_ok() {
             host.publish_quarantine_report().await;
         }
-        let report = serde_json::to_value(read_quarantine_report(&host.config())).unwrap();
+        let report = serde_json::to_value(read_quarantine_report(host.config().as_ref())).unwrap();
         assert_eq!(report["status"], "available", "{report}");
         let entries = report["summary"]["current"]["entries"].as_array().unwrap();
         if isolated {

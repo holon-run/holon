@@ -437,7 +437,7 @@ async fn failed_activity_save_does_not_block_listener_shutdown_or_final_retry() 
         .find_session(&digest)
         .unwrap()
         .unwrap();
-    let service = RuntimeServiceHandle::new(&host.config()).unwrap();
+    let service = RuntimeServiceHandle::new(host.config().as_ref()).unwrap();
     let mut shutdown = service.shutdown_signal();
     let state = AppState::for_tcp(host.clone());
     tokio::time::sleep(Duration::from_millis(5)).await;

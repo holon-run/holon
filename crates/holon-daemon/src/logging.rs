@@ -16,7 +16,6 @@ const BUFFER_BYTES: usize = 64 * 1024;
 const STATUS_BYTES: usize = 4096;
 const RETRY_INTERVAL: Duration = Duration::from_secs(1);
 
-#[cfg(holon_lib_test_shard = "c")]
 #[cfg(test)]
 mod tests;
 

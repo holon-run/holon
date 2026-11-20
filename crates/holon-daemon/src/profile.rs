@@ -9,7 +9,7 @@ use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use super::RuntimeControlAuthMode;
-use crate::config::AppConfig;
+use crate::DaemonConfig;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -68,8 +68,8 @@ impl DaemonServeProfile {
             bail!("daemon serve profile host must be a host name or address without credentials");
         }
         if let Some(advertise) = &self.advertise {
-            let url = reqwest::Url::parse(advertise)
-                .context("invalid daemon serve profile advertise URL")?;
+            let url =
+                url::Url::parse(advertise).context("invalid daemon serve profile advertise URL")?;
             if !matches!(url.scheme(), "http" | "https")
                 || url.host_str().is_none()
                 || !url.username().is_empty()
@@ -117,17 +117,17 @@ impl DaemonServeProfile {
     }
 }
 
-pub struct ResolvedDaemonServePlan {
-    pub config: AppConfig,
+pub struct ResolvedDaemonServePlan<C> {
+    pub config: C,
     pub profile: DaemonServeProfile,
     pub serve_args: Vec<OsString>,
     pub control_token_env: Option<String>,
     pub startup_summary: String,
 }
 
-impl ResolvedDaemonServePlan {
+impl<C: DaemonConfig> ResolvedDaemonServePlan<C> {
     pub(crate) fn matches_effective_serve_options(&self, recorded: &Self) -> bool {
-        self.config.http_addr == recorded.config.http_addr
+        self.config.http_addr() == recorded.config.http_addr()
             && self.profile.access == recorded.profile.access
             && self.profile.advertise == recorded.profile.advertise
             && self.profile.cloudflare_token_file == recorded.profile.cloudflare_token_file
@@ -141,7 +141,7 @@ impl ResolvedDaemonServePlan {
 /// Named Tunnel hostnames are preconfigured; no URL or credential discovery.
 pub fn validate_cloudflare_url(value: Option<&str>) -> Result<()> {
     let url =
-        reqwest::Url::parse(value.context(
+        url::Url::parse(value.context(
             "Cloudflare Named Tunnel requires --advertise https://<configured-hostname>",
         )?)?;
     let host = url.domain().unwrap_or_default();
@@ -162,14 +162,14 @@ pub fn validate_cloudflare_url(value: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-pub fn serve_profile_path(config: &AppConfig) -> PathBuf {
-    config.home_dir.join("daemon").join("serve_profile.json")
+pub fn serve_profile_path(config: &dyn DaemonConfig) -> PathBuf {
+    config.home_dir().join("daemon").join("serve_profile.json")
 }
 
-fn profile_directory(config: &AppConfig, create: bool) -> Result<Option<File>> {
-    let path = config.home_dir.join("daemon");
+fn profile_directory(config: &dyn DaemonConfig, create: bool) -> Result<Option<File>> {
+    let path = config.home_dir().join("daemon");
     if create {
-        fs::create_dir_all(&config.home_dir)?;
+        fs::create_dir_all(config.home_dir())?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::DirBuilderExt;
@@ -183,7 +183,7 @@ fn profile_directory(config: &AppConfig, create: bool) -> Result<Option<File>> {
         }
         #[cfg(not(unix))]
         fs::create_dir_all(&path)?;
-        File::open(&config.home_dir)?.sync_all()?;
+        File::open(config.home_dir())?.sync_all()?;
     }
     let mut options = OpenOptions::new();
     options.read(true);
@@ -228,7 +228,7 @@ fn open_profile_at(dir: &File, name: &str, flags: i32) -> Result<File, std::io::
     Ok(unsafe { File::from_raw_fd(fd) })
 }
 
-pub fn load_serve_profile(config: &AppConfig) -> Result<Option<DaemonServeProfile>> {
+pub fn load_serve_profile(config: &dyn DaemonConfig) -> Result<Option<DaemonServeProfile>> {
     let Some(dir) = profile_directory(config, false)? else {
         return Ok(None);
     };
@@ -256,7 +256,10 @@ pub fn load_serve_profile(config: &AppConfig) -> Result<Option<DaemonServeProfil
     Ok(Some(profile))
 }
 
-pub fn persist_serve_profile(config: &AppConfig, profile: &DaemonServeProfile) -> Result<()> {
+pub fn persist_serve_profile(
+    config: &dyn DaemonConfig,
+    profile: &DaemonServeProfile,
+) -> Result<()> {
     profile.validate()?;
     let dir = profile_directory(config, true)?.expect("created profile directory");
     // Refuse symlink/special-file targets even though rename itself would not follow them.
@@ -284,7 +287,7 @@ pub fn persist_serve_profile(config: &AppConfig, profile: &DaemonServeProfile) -
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(config.home_dir.join("daemon").join(&name))?;
+        .open(config.home_dir().join("daemon").join(&name))?;
     let result = (|| -> Result<()> {
         file.write_all(&serde_json::to_vec_pretty(profile)?)?;
         file.sync_all()?;
@@ -307,7 +310,7 @@ pub fn persist_serve_profile(config: &AppConfig, profile: &DaemonServeProfile) -
         }
         #[cfg(not(unix))]
         fs::rename(
-            config.home_dir.join("daemon").join(&name),
+            config.home_dir().join("daemon").join(&name),
             serve_profile_path(config),
         )?;
         dir.sync_all()
@@ -322,7 +325,7 @@ pub fn persist_serve_profile(config: &AppConfig, profile: &DaemonServeProfile) -
             }
         }
         #[cfg(not(unix))]
-        let _ = fs::remove_file(config.home_dir.join("daemon").join(name));
+        let _ = fs::remove_file(config.home_dir().join("daemon").join(name));
     }
     result
 }

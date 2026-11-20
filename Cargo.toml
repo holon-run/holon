@@ -50,6 +50,7 @@ holon-agent-templates = { version = "0.1.0", path = "crates/holon-agent-template
 holon-client = { version = "0.1.0", path = "crates/holon-client" }
 holon-config = { version = "0.1.0", path = "crates/holon-config" }
 holon-context = { version = "0.1.0", path = "crates/holon-context" }
+holon-daemon = { version = "0.1.0", path = "crates/holon-daemon" }
 holon-domain = { version = "0.1.0", path = "crates/holon-domain", features = ["error-sanitization"] }
 holon-github = { version = "0.1.0", path = "crates/holon-github" }
 holon-memory-index = { version = "0.1.0", path = "crates/holon-memory-index" }
@@ -63,7 +64,6 @@ holon-tools = { version = "0.1.0", path = "crates/holon-tools" }
 holon-tui = { version = "0.1.0", path = "crates/holon-tui" }
 holon-web-retrieval = { version = "0.1.0", path = "crates/holon-web-retrieval" }
 flate2 = "1.0"
-fs2 = "0.4"
 libc = "0.2"
 reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
 image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
@@ -95,6 +95,8 @@ local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
 recovery-acceptance = []
 
 [dev-dependencies]
+fs2 = "0.4"
+holon-daemon = { version = "0.1.0", path = "crates/holon-daemon", features = ["test-support"] }
 holon-server = { version = "0.1.0", path = "crates/holon-server", features = ["test-support"] }
 holon-agent-templates = { version = "0.1.0", path = "crates/holon-agent-templates", features = ["test-support"] }
 holon-memory-index = { version = "0.1.0", path = "crates/holon-memory-index", features = ["test-support"] }
