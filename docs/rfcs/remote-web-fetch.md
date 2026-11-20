@@ -66,12 +66,17 @@ in one shared preflight so later adapters (Tavily Extract, Exa Contents,
 Firecrawl Scrape) cannot drift.
 
 `ListWebFetchProviders` takes no arguments and returns the default local
-route (empty `provider_id`, `kind=local_http`, modes `auto`/`text`/`raw`)
+route (`provider_id: null`, `kind=local_http`, modes `auto`/`text`/`raw`)
 plus each callable remote ID with its `kind` and `extract_modes`, remote IDs
-sorted after the local entry. It shares WebFetch's tool permission and uses
-local configuration only; it sends no requests and never returns endpoints
-or credentials. With `web.fetch.enabled=false` it returns
-`{"providers":[]}`.
+sorted after the local entry. Discovery mirrors the execution gating: every
+configured registry ID names a route (WebFetch has no selector words), and
+remote routes the shared preflight would always reject — custom
+`allowed_hosts`/`denied_hosts` rules or a non-default redirect budget —
+are not listed as callable. Only remote IDs can be passed to
+`WebFetch(provider=...)`; the local route is selected by omitting
+`provider`. It shares WebFetch's tool permission and uses local
+configuration only; it sends no requests and never returns endpoints or
+credentials. With `web.fetch.enabled=false` it returns `{"providers":[]}`.
 
 Responses carry `provider_id` (null for local, the configured ID for
 remote) and `status_source` (`target_http` or `provider_api`) so callers
