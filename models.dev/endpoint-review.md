@@ -9,6 +9,54 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-21 incremental review
+
+The November 21 Beijing cycle uses main `3413f4d8d` and the models.dev
+payload sampled November 20 at 20:31 UTC (6,779,085 bytes, SHA256
+`2e27cd6ba2500aff8229e7ac17094faab080a9dd1a0227f4a0669bad16694b81`).
+No route is admitted or removed this cycle: the fixed refresh reports zero
+reviewed-record changes, and the upstream projection's four additions, four
+removals, and twelve edits all fall on unreviewed entries.
+
+Qianfan's [retirement mechanism page](https://cloud.baidu.com/doc/qianfan/s/zmh4stou3),
+updated November 20, adds a row for `DeepSeek-V4-Flash-0731`: notice date
+2026-11-04, retirement 2026-12-04 (day granularity, UTC+8), recommended
+replacement `DeepSeek-V4.1-Flash-1017`. Register the boundary and keep
+`qianfan@default/deepseek-v4-flash-0731` until it elapses; the replacement
+route already exists. This follows the TokenHub timed-retirement handling.
+
+Moonshot's [international](https://platform.moonshot.ai/docs/models.md) and
+[China](https://platform.moonshot.cn/docs/models.md) model lists now both
+mark the K2 series as closed to new users since 2026-10-31 (accounts
+registered before November 1 keep access) with full shutdown planned by the
+end of December 2026; the [China pricing page](https://platform.moonshot.cn/docs/pricing/chat.md)
+carries the same end-of-December note. That window covers
+`moonshot@default/{kimi-k2.6,kimi-k2.7-code,kimi-k2.7-code-highspeed}` and
+corroborates `nvidia@default/moonshotai/kimi-k2.6`, whose vendor NIM
+reference page returned 404 this cycle. Keep every route until an exact
+removal boundary is published; today only records the announced window.
+
+NVIDIA's public [model listing](https://integrate.api.nvidia.com/v1/models)
+grew from 32 to 33 entries with `fastino/gliner2-pii`, a non-chat tool
+model; the six built-in NVIDIA routes are unchanged. OpenCode Go's
+[model listing](https://opencode.ai/inference/go/v1/models) still omits
+`glm-5.2` for a second day while its documentation data-retention table
+still lists GLM-5.2 and llms.txt has no changelog or retirement entry, so
+the route stays pending an official announcement; the new `gemini-4-argon`
+Interactions block in that listing does not add an Interactions API surface
+here. Volcengine's
+[Agent Plan opencode guide](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-opencode.md)
+sample output moved from 32000 to 65536 and its image-generation quota
+tier from Medium to Small-or-above; both are sample-level edits with no
+route or capacity change.
+
+The MiniMax retired-model tables did not swing back and the M Plan pages
+are unchanged. Kimi Code's documented default-effort conflict, Qianfan
+ERNIE Flash's fixed-`high` enforcement gap, and Go `qwen4-max` Messages
+admission remain deferred. Fireworks' four router billing edits sit under
+`accounts/fireworks/routers/*` and touch none of the nine built-in
+`models/*` IDs; price-page visibility alone is not admission evidence.
+
 ## 2026-11-20 incremental review
 
 The November 20 Beijing cycle uses main `7af698c0d` and the models.dev

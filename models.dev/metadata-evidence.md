@@ -5,6 +5,44 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-21
+
+Pinned models.dev SHA256
+`2e27cd6ba2500aff8229e7ac17094faab080a9dd1a0227f4a0669bad16694b81`,
+sampled **November 20, 2026 20:31 UTC**, against main `3413f4d8`.
+No reviewed capacity or metadata record changed; zero reviewed records
+appeared in the refresh coverage delta. Two lifecycle boundaries are
+registered without route or metadata edits:
+
+- Qianfan `deepseek-v4-flash-0731` retirement row (notice 2026-11-04,
+  retirement 2026-12-04, replacement `deepseek-v4.1-flash-1017`):
+  [retirement mechanism page](https://cloud.baidu.com/doc/qianfan/s/zmh4stou3),
+  sampled 20:35:13 UTC, HTTP 200, SHA256
+  `b6357c80ff422e4a7d873a6fc18dcde16c038a72124e7f57f97e5565718e8733`.
+- Moonshot K2 end-of-December shutdown, dual-site: [China models
+  list](https://platform.moonshot.cn/docs/models.md), 20:41:37 UTC, SHA256
+  `21418a87b2990f9f43a9ac549d71ae1019eab0a55e3abd7d5c6bb51f28141cbf`;
+  [China pricing page](https://platform.moonshot.cn/docs/pricing/chat.md),
+  20:41:36 UTC, SHA256
+  `9e0e32590e671bc5478fd350107f4ca9b40949e1e631352cd1f626fe688d95d0`;
+  [international models list](https://platform.moonshot.ai/docs/models.md),
+  20:41:39 UTC, SHA256
+  `ea4ea54487c283ae304e7da20660efe21e7b9b45c38fdfc14168fe5f1e16e194`.
+
+Corroborating samples with no metadata effect: NVIDIA public listing
+32→33 entries (+`fastino/gliner2-pii`, non-chat tool model),
+[sample](https://integrate.api.nvidia.com/v1/models) 20:41:38 UTC, SHA256
+`f6408d63795f970ed8f96a7ef2643d1eb9890a2ef7f2e05a8a2927e693c150fe`;
+OpenCode Go listing timestamp-only churn with `glm-5.2` still absent,
+[sample](https://opencode.ai/inference/go/v1/models) 20:41:41 UTC, SHA256
+`33aa8f2c99d4845b2f901d5821a16525a80e1265429a503051c3430158dcb0f2`.
+Volcengine Agent Plan opencode sample output 32000→65536 and image quota
+tier Small, [sample](https://ark.volcengine.com/region:cn-beijing/docs/agent-plan-personal-opencode.md)
+20:35:17 UTC, SHA256
+`463fae09ead08f0de1e55c61c7db75d0e655f2897bf0f85f6790508725e4b789`;
+sample-level edits, no route capacity change. See the
+[endpoint review](endpoint-review.md#2026-11-21-incremental-review).
+
 ## Incremental review: 2026-11-20
 
 `gemini@default/gemini-4-neon`: the native `generateContent` API supports text
