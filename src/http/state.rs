@@ -1,5 +1,6 @@
 use super::*;
 use anyhow::Context as _;
+use holon_server::trace::trace_context_from_headers;
 
 const STATE_BOOTSTRAP_FAILURE_ARTIFACT_ENTRY_LIMIT: usize = 16;
 
@@ -264,25 +265,6 @@ pub(crate) async fn enqueue_internal(
         message_id: queued.id,
         disposition: None,
     }))
-}
-
-pub(crate) fn trace_context_from_headers(
-    headers: &HeaderMap,
-) -> Result<Option<crate::observability::TraceContext>, (StatusCode, Json<Value>)> {
-    let Some(trace_parent) = headers.get("traceparent") else {
-        return Ok(None);
-    };
-    let trace_parent = trace_parent
-        .to_str()
-        .map_err(|_| bad_request("invalid traceparent header"))?;
-    let trace_state = headers
-        .get("tracestate")
-        .map(|value| value.to_str())
-        .transpose()
-        .map_err(|_| bad_request("invalid tracestate header"))?;
-    crate::observability::TraceContext::parse(trace_parent, trace_state)
-        .map(Some)
-        .map_err(|error| bad_request(error.to_string()))
 }
 
 pub async fn status_default(

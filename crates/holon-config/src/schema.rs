@@ -965,6 +965,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "web.providers.<name>.model_route",
+            kind: "string",
+            description: "Model route bound to a native search provider. Native search providers are callable only by an explicit WebSearch provider ID.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
             key: "web.providers.<name>.command.argv",
             kind: "string_list",
             description: "Fixed command argv template for kind=command WebSearch providers. Supports {{query}} and {{max_results}} substitutions.",
@@ -1579,6 +1586,15 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
                     .map(|v| Value::String(v.clone()))
                     .unwrap_or(Value::Null));
             }
+            if let Some(provider_name) = name.strip_suffix(".model_route") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.model_route.as_ref())
+                    .map(|v| Value::String(v.clone()))
+                    .unwrap_or(Value::Null));
+            }
             if let Some(provider_name) = name.strip_suffix(".command.argv") {
                 return Ok(config
                     .web
@@ -2102,11 +2118,30 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                     kind,
                     base_url: None,
                     credential_profile: None,
+                    model_route: None,
                     command: None,
                     output: None,
                     limits: Default::default(),
                 })
                 .kind = kind;
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".model_route") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".model_route").unwrap();
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name>.model_route requires a non-empty provider name"
+                ));
+            }
+            let provider = config.web.providers.get_mut(name).ok_or_else(|| {
+                anyhow!("web provider {name} not found; set web.providers.{name}.kind first")
+            })?;
+            let value = raw_value.trim();
+            provider.model_route = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
         }
         key if key.starts_with("web.providers.") && key.ends_with(".capabilities") => {
             return Err(read_only_web_provider_capabilities_key_error(key));
@@ -2447,6 +2482,15 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
                 return Err(anyhow!("web provider {name} not found"));
             }
         }
+        key if key.starts_with("web.providers.") && key.ends_with(".model_route") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".model_route").unwrap();
+            if let Some(provider) = config.web.providers.get_mut(name) {
+                provider.model_route = None;
+            } else {
+                return Err(anyhow!("web provider {name} not found"));
+            }
+        }
         key if key.starts_with("web.providers.") && key.ends_with(".command.argv") => {
             let provider = web_provider_config_mut(config, key, ".command.argv")?;
             provider.command = None;
@@ -2745,7 +2789,7 @@ pub(crate) fn unknown_config_key(key: &str) -> anyhow::Error {
         return startup_only_config_key_error(key);
     }
     if key.starts_with("web.providers.") {
-        return anyhow!("unknown web providers config key {key}; mutable fields: .kind, .base_url, .credential_profile; .capabilities is derived read-only metadata; use web.providers.<name>.kind to create a provider first");
+        return anyhow!("unknown web providers config key {key}; mutable fields: .kind, .base_url, .credential_profile, .model_route; .capabilities is derived read-only metadata; use web.providers.<name>.kind to create a provider first");
     }
     let supported = config_schema()
         .into_iter()

@@ -11,6 +11,7 @@ use crate::types::MessageKind;
 use crate::types::MessageOrigin;
 use crate::types::Priority;
 use anyhow::Result;
+use holon_domain::TOOL_ENQUEUE_SUBSYSTEM;
 use serde_json::Value;
 
 pub(crate) use holon_tools::builtins::enqueue::*;
@@ -39,9 +40,9 @@ pub(crate) async fn execute(
         agent_id.to_string(),
         MessageKind::InternalFollowup,
         MessageOrigin::System {
-            subsystem: "tool_enqueue".into(),
+            subsystem: TOOL_ENQUEUE_SUBSYSTEM.into(),
         },
-        authority_class.clone(),
+        authority_class.for_self_enqueue(),
         priority.clone(),
         MessageBody::Text { text: text.clone() },
     )

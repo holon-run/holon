@@ -7,14 +7,29 @@ license = "Apache-2.0"
 repository = "https://github.com/holon-run/holon"
 publish = false
 
+[features]
+test-support = ["dep:libc"]
+
 [dependencies]
+aide = { version = "0.15.1", features = ["axum"] }
+anyhow = "1.0"
 axum = { version = "0.8", features = ["json"] }
+chrono = "0.4"
+futures-util = "0.3"
 holon-config = { version = "0.1.0", path = "../holon-config" }
 holon-domain = { version = "0.1.0", path = "../holon-domain" }
+holon-observability = { version = "0.1.0", path = "../holon-observability" }
 mime_guess = "2.0"
 percent-encoding = "2.3"
+resvg = { version = "0.45.1", default-features = false }
+rust-embed = "8.11"
+schemars = { version = "0.9", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 sha2 = "0.10"
-tokio = { version = "1.43", features = ["net", "rt"] }
+tokio = { version = "1.43", features = ["fs", "io-util", "net", "rt", "sync", "time"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
 tower-http = { version = "0.6.8", features = ["compression-gzip", "cors", "trace"] }
 tracing = "0.1"
 url = "2.5"
@@ -23,9 +38,14 @@ url = "2.5"
 holon-system = { version = "0.1.0", path = "../holon-system" }
 hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
-tokio = { version = "1.43", features = ["macros", "sync", "time"] }
+tokio = { version = "1.43", features = ["macros"] }
+libc = { version = "0.2", optional = true }
 tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
+image = { version = "0.25.9", default-features = false, features = ["png"] }
 tempfile = "3.14"
-tokio = { version = "1.43", features = ["io-util", "macros", "sync", "time"] }
+tokio = { version = "1.43", features = ["macros", "test-util"] }
+
+[target.'cfg(unix)'.dev-dependencies]
+libc = "0.2"

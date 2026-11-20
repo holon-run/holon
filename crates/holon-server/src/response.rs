@@ -2,10 +2,10 @@ use std::time::Duration;
 
 use axum::{
     http::{
-        header::{CACHE_CONTROL, IF_NONE_MATCH},
+        header::{CACHE_CONTROL, ETAG, IF_NONE_MATCH},
         HeaderMap, HeaderValue, StatusCode,
     },
-    response::Response as AxumResponse,
+    response::{IntoResponse, Response as AxumResponse},
 };
 
 const HTTP_SLOW_RESPONSE_WARN_AFTER: Duration = Duration::from_secs(2);
@@ -82,6 +82,10 @@ pub fn if_none_match_satisfied(headers: &HeaderMap, etag: &str) -> bool {
         let candidate = candidate.trim();
         candidate == "*" || opaque_tag(candidate) == current
     })
+}
+
+pub fn not_modified_response(etag: String) -> AxumResponse {
+    (StatusCode::NOT_MODIFIED, [(ETAG, etag.as_str())]).into_response()
 }
 
 #[cfg(test)]

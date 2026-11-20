@@ -386,7 +386,7 @@ impl RuntimeHandle {
         let mut outcome = self
             .run_agent_loop_deferred(
                 &message.agent_id,
-                message.authority_class.clone(),
+                message.effective_authority_class(),
                 built,
                 model_selection,
                 loop_control,

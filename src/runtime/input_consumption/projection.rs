@@ -172,7 +172,7 @@ impl serde::Serialize for ProjectionProvenance<'_> {
         let mut map = serializer.serialize_map(Some(18))?;
         map.serialize_entry("admission_context", &message.admission_context)?;
         map.serialize_entry("agent_id", &message.agent_id)?;
-        map.serialize_entry("authority_class", &message.authority_class)?;
+        map.serialize_entry("authority_class", &message.effective_authority_class())?;
         map.serialize_entry("causation_id", &message.causation_id)?;
         map.serialize_entry("content_version", self.content_version)?;
         map.serialize_entry("correlation_id", &message.correlation_id)?;
@@ -274,7 +274,7 @@ impl<'a> PreparedProjection<'a> {
         let may_preview = !matches!(message.origin, MessageOrigin::Operator { .. })
             && message.kind != MessageKind::OperatorPrompt
             && (matches!(
-                message.authority_class,
+                message.effective_authority_class(),
                 AuthorityClass::ExternalEvidence | AuthorityClass::IntegrationSignal
             ) || message.kind == MessageKind::TaskResult);
         Ok(Self {
@@ -743,7 +743,7 @@ mod tests {
             "created_at": message.created_at,
             "kind": message.kind,
             "origin": message.origin,
-            "authority_class": message.authority_class,
+            "authority_class": message.effective_authority_class(),
             "priority": message.priority,
             "delivery_surface": message.delivery_surface,
             "admission_context": message.admission_context,

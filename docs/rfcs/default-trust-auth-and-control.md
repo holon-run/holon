@@ -314,6 +314,16 @@ either:
 Remote operator transport is the explicit exception: it may project to
 `operator_instruction` only after authenticated operator binding admission.
 
+### Self-enqueued follow-ups
+
+The `Enqueue` tool creates an agent-authored continuation, not fresh operator
+input. It preserves provenance, priority, and WorkItem binding, but caps
+`operator_instruction` at `runtime_instruction`; other authority classes are
+unchanged. Source references are for traceability, not authorization.
+For historical records, execution and model input apply the same cap using the
+recorded `tool_enqueue` system origin and internal-follow-up kind. The ledger
+keeps the original authority for audit.
+
 ## Relationship To Tool-Fetched Evidence
 
 Not all content needs to become a queued `MessageEnvelope`.

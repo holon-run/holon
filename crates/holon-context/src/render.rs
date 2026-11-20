@@ -171,7 +171,7 @@ pub fn message_header(message: &MessageEnvelope) -> String {
     if let Some(task_id) = message.task_id.as_deref() {
         labels.push(format!("task:{}", header_label_value(task_id)));
     }
-    labels.push(authority_class_label(message.authority_class).to_string());
+    labels.push(authority_class_label(message.effective_authority_class()).to_string());
     labels.push(kind_label(message));
     labels.push(format!("message_id={}", header_label_value(&message.id)));
     labels.push(format!(
