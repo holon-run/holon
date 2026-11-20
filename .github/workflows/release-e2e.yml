@@ -367,7 +367,8 @@ jobs:
               "",
               f"- Status: **{summary['status']}**",
               f"- Candidate: `{summary['image']['ref']}`",
-              f"- Git SHA: `{summary['git_sha']}`",
+              f"- Candidate SHA: `{os.environ['CANDIDATE_SHA']}`",
+              f"- Harness Git SHA: `{summary['git_sha']}`",
               f"- Previous release image: `{os.environ['PREVIOUS_IMAGE']}`",
               f"- Previous release source: `{os.environ['PREVIOUS_SOURCE']}`",
               f"- Previous release ref: `{os.environ['PREVIOUS_REF'] or 'n/a'}`",
@@ -394,6 +395,7 @@ jobs:
           )
           PY
         env:
+          CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}
           PREVIOUS_IMAGE: ${{ steps.previous.outputs.image }}
           PREVIOUS_SOURCE: ${{ steps.previous.outputs.source }}
           PREVIOUS_REF: ${{ steps.previous.outputs.ref }}
@@ -619,14 +621,19 @@ jobs:
               )
           recovery_sha256 = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
           # release.yml gates scheduler_acceptance.git_sha on the release
-          # candidate commit. The scheduler suite runs from the harness
-          # checkout (#4357), so the raw report's git_sha is the harness SHA.
-          # Re-key at the embed boundary: git_sha names the tested candidate;
-          # harness_git_sha preserves the harness checkout provenance that the
-          # HARNESS_SHA check above verified for this report.
-          scheduler_acceptance = dict(scheduler_report)
-          scheduler_acceptance["git_sha"] = os.environ["CANDIDATE_SHA"]
-          scheduler_acceptance["harness_git_sha"] = os.environ["HARNESS_SHA"]
+          # candidate commit. Every suite here runs from the harness
+          # checkout (#4357), so each raw report's git_sha is the harness
+          # SHA. Re-key report identity at the embed boundary only: git_sha
+          # names the tested candidate; harness_git_sha preserves the harness
+          # checkout provenance the HARNESS_SHA checks above verified. Raw
+          # evidence files on disk keep their original identity.
+          def rekey_report_identity(report: dict) -> dict:
+              rekeyed = dict(report)
+              rekeyed["git_sha"] = os.environ["CANDIDATE_SHA"]
+              rekeyed["harness_git_sha"] = os.environ["HARNESS_SHA"]
+              return rekeyed
+
+          scheduler_acceptance = rekey_report_identity(scheduler_report)
           attestation = {
               "schema_version": 1,
               "release_tag": os.environ["RELEASE_TAG"],
@@ -646,13 +653,17 @@ jobs:
                   "ref": os.environ["PREVIOUS_REF"] or None,
               },
               "scheduler_acceptance": scheduler_acceptance,
-              "scheduler_coverage": coverage_report,
+              "scheduler_coverage": rekey_report_identity(coverage_report),
               "runtime_lifecycle": {
-                  "summary": lifecycle_report,
+                  "summary": rekey_report_identity(lifecycle_report),
                   "evidence_path": str(lifecycle_report_path),
                   "evidence_sha256": hashlib.sha256(lifecycle_report_path.read_bytes()).hexdigest(),
               },
-              "scheduler_live_canary": canary_report,
+              "scheduler_live_canary": (
+                  rekey_report_identity(canary_report)
+                  if canary_report is not None
+                  else None
+              ),
               "interrupted_schema47_upgrade": {
                   "case": interrupted_case,
                   "evidence_path": str(recovery_path),

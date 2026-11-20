@@ -907,6 +907,30 @@ class DockerE2ERunnerTests(unittest.TestCase):
             publish,
         )
 
+    def test_release_e2e_attestation_rekeys_report_identity_to_candidate(self) -> None:
+        release = (ROOT / ".github/workflows/release-e2e.yml").read_text()
+
+        # Every embedded suite report is produced from the harness checkout,
+        # so git_sha is re-keyed to the tested candidate and the harness
+        # provenance moves to a dedicated harness_git_sha field.
+        for report in (
+            "scheduler_report",
+            "coverage_report",
+            "lifecycle_report",
+            "canary_report",
+        ):
+            self.assertIn(f"rekey_report_identity({report})", release)
+        self.assertIn('rekeyed["git_sha"] = os.environ["CANDIDATE_SHA"]', release)
+        self.assertIn(
+            'rekeyed["harness_git_sha"] = os.environ["HARNESS_SHA"]', release
+        )
+        # The run summary must not present the harness checkout SHA as the
+        # release identity.
+        self.assertIn('f"- Candidate SHA: `{os.environ[\'CANDIDATE_SHA\']}`"', release)
+        self.assertIn('f"- Harness Git SHA: `{summary[\'git_sha\']}`"', release)
+        self.assertNotIn('f"- Git SHA: `{summary[\'git_sha\']}`"', release)
+        self.assertIn("CANDIDATE_SHA: ${{ needs.candidate.outputs.sha }}", release)
+
     def test_scheduler_required_profile_selects_all_stub_cases(self) -> None:
         profile = runner.resolve_profile(self.manifest, "scheduler-required")
         selected = runner.select_cases(
