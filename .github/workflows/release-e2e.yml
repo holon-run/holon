@@ -409,6 +409,8 @@ jobs:
           import hashlib
           import json
           import os
+          import re
+          import subprocess
           from pathlib import Path
 
           summary_path = Path("target/docker-e2e/release-core/summary.json")
@@ -494,6 +496,98 @@ jobs:
           report_before = recovery.get("report_before", {})
           apply = recovery.get("apply", {})
           report_after = recovery.get("report_after", {})
+
+          def candidate_added_schema_tables() -> set[str]:
+              """Tables the candidate schema CREATEs that the previous release
+              schema does not, derived by scanning each ref's own tree for
+              CREATE TABLE statements, so a repository restructure between
+              releases cannot inflate the set; empty when derivation refs
+              are unavailable, which keeps the gate strict."""
+              previous_ref = os.environ.get("PREVIOUS_REF") or ""
+              if not previous_ref:
+                  return set()
+              fetch = subprocess.run(
+                  [
+                      "git",
+                      "fetch",
+                      "--quiet",
+                      "--no-tags",
+                      "--depth=1",
+                      "origin",
+                      f"+refs/tags/{previous_ref}:refs/holon-e2e/previous-schema",
+                      f"+{os.environ['CANDIDATE_SHA']}:refs/holon-e2e/candidate-schema",
+                  ],
+                  capture_output=True,
+                  text=True,
+              )
+              if fetch.returncode != 0:
+                  return set()
+
+              def schema_tables(ref):
+                  grep = subprocess.run(
+                      [
+                          "git",
+                          "grep",
+                          "-h",
+                          "-i",
+                          "-E",
+                          "CREATE[[:space:]]+TABLE",
+                          ref,
+                          "--",
+                          "*.sql",
+                          "*.rs",
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if grep.returncode not in (0, 1):
+                      return None
+                  tables = set()
+                  for line in grep.stdout.splitlines():
+                      created = re.search(
+                          r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?"
+                          r"[\"'`\[]?([A-Za-z_][A-Za-z0-9_]*)",
+                          line,
+                          re.IGNORECASE,
+                      )
+                      if created:
+                          tables.add(created.group(1))
+                  return tables
+
+              previous_tables = schema_tables(
+                  "refs/holon-e2e/previous-schema"
+              )
+              candidate_tables = schema_tables(
+                  "refs/holon-e2e/candidate-schema"
+              )
+              if previous_tables is None or candidate_tables is None:
+                  return set()
+              return candidate_tables - previous_tables
+
+          missing_table_error = re.compile(
+              r"^no such table: ([A-Za-z_][A-Za-z0-9_]*)"
+          )
+
+          def report_before_errors_all_missing_candidate_tables(
+              errors: object,
+          ) -> bool:
+              """report_before inspects the pre-migration database with the
+              candidate binary, so tables only the candidate schema creates
+              are legitimately absent there; allow report_errors only when
+              every entry is a missing-table error for such a table."""
+              entries = errors if isinstance(errors, list) else []
+              allowed = candidate_added_schema_tables() if entries else set()
+              for entry in entries:
+                  error = entry.get("error") if isinstance(entry, dict) else None
+                  match = (
+                      missing_table_error.match(error)
+                      if isinstance(error, str)
+                      else None
+                  )
+                  if match is None or match.group(1) not in allowed:
+                      return False
+              return True
+
           if (
               recovery["previous_schema_revision"]
               != old_snapshot.get("schema_revision")
@@ -507,7 +601,9 @@ jobs:
               or recovery.get("migrated_snapshot_sha256")
               != migrated_snapshot_sha256
               or not report_before.get("before", {}).get("blockers")
-              or report_before.get("report_errors")
+              or not report_before_errors_all_missing_candidate_tables(
+                  report_before.get("report_errors")
+              )
               or not apply.get("apply", {}).get("changed")
               or apply.get("after", {}).get("blockers")
               or apply.get("report_errors")
