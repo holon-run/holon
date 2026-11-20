@@ -79,6 +79,8 @@ SUITES = (
 )
 
 # Two CI jobs each build two smaller libtest binaries, serially.
+RUNTIME_MANIFEST = "crates/holon-runtime/Cargo.toml"
+RUNTIME_LIB = ["cargo", "test", "--manifest-path", RUNTIME_MANIFEST, "--locked", "--lib"]
 LIB_SHARDS = ("lib-a", "lib-b")
 LIB_COMPILE_GROUPS = {"lib-a": ("a", "c"), "lib-b": ("b", "d")}
 TASK_FIXTURE_MODULES = (
@@ -101,7 +103,12 @@ LIB_C_OWNERS = frozenset(
 
 
 def lib_compile_group(name: str) -> str:
-    owner = name.split("::", 1)[0]
+    parts = name.split("::")
+    owner = parts[0]
+    if owner in ("runtime", "runtime_db") and (
+        "http_tests" in parts or "reader_pool_http_tests" in parts
+    ):
+        return "c"
     if owner == "runtime":
         return "a"
     if owner == "runtime_db":
@@ -112,7 +119,19 @@ def lib_compile_group(name: str) -> str:
 def lib_group_environment(group: str) -> dict[str, str]:
     if group not in ("a", "b", "c", "d"):
         raise ValueError(f"unknown lib compile group: {group}")
-    return {**os.environ, "HOLON_LIB_TEST_SHARD": group}
+    return {**lib_environment(), "HOLON_LIB_TEST_SHARD": group}
+
+
+def lib_environment() -> dict[str, str]:
+    # Use one cache for the application and its separately tested runtime.
+    return {"CARGO_TARGET_DIR": str(REPO_ROOT / "target"), **os.environ}
+
+
+def lib_test_commands(group: str | None) -> list[list[str]]:
+    commands = [RUNTIME_LIB]
+    if group is None or group == "d":
+        commands.append(["cargo", "test", "--locked", "--lib"])
+    return commands
 
 
 def validate_lib_group(names: list[str], group: str) -> None:
@@ -234,19 +253,20 @@ def suite_command(suite: str, all_targets: list[str], test_threads: str | None) 
 
 def lib_test_names(group: str | None = None) -> list[str]:
     """Return every unit-test name in the lib target, spelled as libtest does."""
-    completed = subprocess.run(
-        ["cargo", "test", "--lib", "--", "--list"],
-        cwd=REPO_ROOT,
-        stdout=subprocess.PIPE,
-        text=True,
-        check=True,
-        env=lib_group_environment(group) if group else None,
-    )
     names: list[str] = []
-    for line in completed.stdout.splitlines():
-        name, separator, kind = line.partition(": ")
-        if separator and kind == "test" and name:
-            names.append(name)
+    for command in lib_test_commands(group):
+        completed = subprocess.run(
+            command + ["--", "--list"],
+            cwd=REPO_ROOT,
+            stdout=subprocess.PIPE,
+            text=True,
+            check=True,
+            env=lib_group_environment(group) if group else lib_environment(),
+        )
+        for line in completed.stdout.splitlines():
+            name, separator, kind = line.partition(": ")
+            if separator and kind == "test" and name:
+                names.append(name)
     return names
 
 
@@ -266,13 +286,14 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
             json.dumps(sorted(names), indent=2) + "\n"
         )
         print(f"lib compile group {group}: {len(names)} tests", file=sys.stderr)
-        completed = subprocess.run(
-            ["cargo", "test", "--lib", "--", f"--test-threads={threads}"],
-            cwd=REPO_ROOT,
-            env=lib_group_environment(group),
-        )
-        if completed.returncode:
-            failures.append(completed)
+        for command in lib_test_commands(group):
+            completed = subprocess.run(
+                command + ["--", f"--test-threads={threads}"],
+                cwd=REPO_ROOT,
+                env=lib_group_environment(group),
+            )
+            if completed.returncode:
+                failures.append(completed)
     if shard == LIB_SHARDS[0]:
         # Binary unit tests are independent of the library's test-only cfg.
         completed = subprocess.run(
@@ -307,7 +328,7 @@ def command_task_fixtures(_: argparse.Namespace) -> None:
     failures = []
     for module, selected in zip(TASK_FIXTURE_MODULES, selections):
         command = [
-            "cargo", "test", "--lib", f"{module}::",
+            *RUNTIME_LIB, f"{module}::",
             "--", "--test-threads=2",
         ]
         print(f"task fixture module {module}: {len(selected)} tests", file=sys.stderr)
@@ -325,7 +346,10 @@ def suite_commands(
     suite: str, all_targets: list[str], test_threads: str | None
 ) -> list[list[str]]:
     """Return every cargo command a suite runs, in order."""
-    return [suite_command(suite, all_targets, test_threads)]
+    command = suite_command(suite, all_targets, test_threads)
+    if suite == "lib":
+        return [RUNTIME_LIB + command[-2:], command]
+    return [command]
 
 
 def command_list(args: argparse.Namespace) -> None:
@@ -353,12 +377,14 @@ def command_args(args: argparse.Namespace) -> None:
     if args.suite in LIB_SHARDS:
         threads = args.test_threads or THREAD_DEFAULTS.get("lib", SERIAL_TEST_THREADS)
         for group in LIB_COMPILE_GROUPS[args.suite]:
-            print(
-                f"HOLON_LIB_TEST_SHARD={group} "
-                f"cargo test --lib -- --test-threads={threads}"
-            )
+            for command in lib_test_commands(group):
+                print(
+                    f"HOLON_LIB_TEST_SHARD={group} "
+                    f"{' '.join(command)} -- --test-threads={threads}"
+                )
         return
-    print(" ".join(suite_command(args.suite, all_targets, args.test_threads)))
+    for command in suite_commands(args.suite, all_targets, args.test_threads):
+        print(" ".join(command))
 
 
 def command_run(args: argparse.Namespace) -> None:
@@ -377,7 +403,9 @@ def command_run(args: argparse.Namespace) -> None:
         if len(printable) > 200:
             printable = f"{' '.join(command[:6])} <{len(command) - 7} test names>"
         print(f"$ {printable}", file=sys.stderr)
-        completed = subprocess.run(command, cwd=REPO_ROOT)
+        completed = subprocess.run(
+            command, cwd=REPO_ROOT, env=lib_environment() if args.suite == "lib" else None,
+        )
         if completed.returncode != 0:
             sys.exit(completed.returncode)
     sys.exit(0)

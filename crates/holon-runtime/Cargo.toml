@@ -1,0 +1,89 @@
+[package]
+name = "holon-runtime"
+version = "0.1.0"
+edition = "2021"
+description = "Agent runtime, host and transactional persistence for Holon"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+axum = { version = "0.8", features = ["json"] }
+base64 = "0.22"
+arc-swap = "1.7"
+chrono = { version = "0.4", features = ["serde"] }
+chrono-tz = "0.10"
+cron = "0.17"
+clap = { version = "4.5", features = ["derive", "env"] }
+decision-core = { version = "0.1.0", path = "../decision-core" }
+decision-clef = { version = "0.1.0", path = "../decision-clef" }
+decision-jev = { version = "0.1.0", path = "../decision-jev" }
+decision-openai = { version = "0.1.0", path = "../decision-openai" }
+decision-openai-decisions = { version = "0.1.0", path = "../decision-openai-decisions" }
+futures-util = "0.3"
+decision-local-onnx = { version = "0.1.0", path = "../decision-local-onnx", optional = true }
+holon-agent-templates = { version = "0.1.0", path = "../holon-agent-templates" }
+holon-client = { version = "0.1.0", path = "../holon-client" }
+holon-config = { version = "0.1.0", path = "../holon-config" }
+holon-context = { version = "0.1.0", path = "../holon-context" }
+holon-daemon = { version = "0.1.0", path = "../holon-daemon" }
+holon-domain = { version = "0.1.0", path = "../holon-domain", features = ["error-sanitization"] }
+holon-github = { version = "0.1.0", path = "../holon-github" }
+holon-memory-index = { version = "0.1.0", path = "../holon-memory-index" }
+holon-model-catalog = { version = "0.1.0", path = "../holon-model-catalog" }
+holon-observability = { version = "0.1.0", path = "../holon-observability" }
+holon-provider = { version = "0.1.0", path = "../holon-provider" }
+holon-server = { version = "0.1.0", path = "../holon-server" }
+holon-storage = { version = "0.1.0", path = "../holon-storage" }
+holon-system = { version = "0.1.0", path = "../holon-system" }
+holon-tools = { version = "0.1.0", path = "../holon-tools" }
+holon-tui = { version = "0.1.0", path = "../holon-tui" }
+holon-web-retrieval = { version = "0.1.0", path = "../holon-web-retrieval" }
+flate2 = "1.0"
+libc = "0.2"
+reqwest = { version = "0.12", features = ["blocking", "gzip", "json", "rustls-tls", "stream"], default-features = false }
+image = { version = "0.25.9", default-features = false, features = ["png", "jpeg", "webp"] }
+rusqlite = { version = "0.31", features = ["bundled", "hooks", "trace"] }
+percent-encoding = "2.3"
+schemars = { version = "0.9", features = ["chrono04"] }
+serde = { version = "1.0", features = ["derive", "rc"] }
+serde_json = "1.0"
+tar = "0.4"
+tempfile = "3.14"
+toml = "1.0"
+sha2 = "0.10"
+jsonwebtoken = { version = ">=10.3.0, <11", features = ["rust_crypto"] }
+thiserror = "2.0"
+tokio = { version = "1.43", features = ["full"] }
+tokio-stream = "0.1"
+tokio-util = { version = "0.7", features = ["io"] }
+tower = { version = "0.5", features = ["util"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+unicode-casefold = "0.2"
+url = "2.5"
+uuid = { version = "1.11", features = ["serde", "v4"] }
+
+[features]
+default = []
+local-onnx = ["dep:decision-local-onnx", "decision-local-onnx/onnx"]
+recovery-acceptance = []
+
+[dev-dependencies]
+fs2 = "0.4"
+holon-daemon = { version = "0.1.0", path = "../holon-daemon", features = ["test-support"] }
+holon-server = { version = "0.1.0", path = "../holon-server", features = ["test-support"] }
+holon-agent-templates = { version = "0.1.0", path = "../holon-agent-templates", features = ["test-support"] }
+holon-memory-index = { version = "0.1.0", path = "../holon-memory-index", features = ["test-support"] }
+holon-tui = { version = "0.1.0", path = "../holon-tui", features = ["test-support"] }
+holon-model-catalog = { version = "0.1.0", path = "../holon-model-catalog", features = ["test-support"] }
+holon-provider = { version = "0.1.0", path = "../holon-provider", features = ["runtime-tests"] }
+holon-storage = { version = "0.1.0", path = "../holon-storage", features = ["test-support"] }
+proptest = "1.6"
+rusqlite = { version = "0.31", features = ["hooks", "trace"] }
+tokio = { version = "1.43", features = ["test-util"] }
+
+[build-dependencies]
+toml = "1.0"

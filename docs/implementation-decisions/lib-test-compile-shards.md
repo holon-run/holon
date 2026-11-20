@@ -1,6 +1,6 @@
 # Compile-time library test groups
 
-The library's inline tests use private APIs and shared fixtures. A test-name
+The runtime library's inline tests use private APIs and shared fixtures. A test-name
 filter runs after compilation, so splitting only the libtest command line does
 not reduce the memory needed to compile its complete test binary.
 
@@ -10,11 +10,15 @@ not reduce the memory needed to compile its complete test binary.
 suite. Invalid selectors fail the build. This selector changes no production
 behavior and does not set dependency-wide `RUSTFLAGS`.
 
-Test modules select one compile group. `runtime` belongs to `a`, `runtime_db`
-to `b`, the explicit `LIB_C_OWNERS` set in `scripts/ci_test_shards.py` to `c`,
-and other top-level modules to `d`. Shared fixtures retain their private paths;
-only their test functions are gated when a whole module cannot be gated.
-Names, assertions, ignored tests, and the two-thread libtest setting are unchanged.
+The runtime crate's unit tests use the same compile groups. Most tests in
+`runtime` belong to `a` and tests in `runtime_db` to `b`. Tests in those
+modules that instantiate the application HTTP routes run with the HTTP
+tests in `c`. This lets `a` and `b` skip compiling the routes and OpenAPI.
+`LIB_C_OWNERS` lists the remaining owners in `c`. The other top-level
+modules belong to `d`, which also runs the application's CLI and tail unit
+tests. Shared fixtures retain their private paths. Tests are gated
+individually when a whole module cannot be gated.
+The two-thread libtest setting applies to both crates.
 
 Partial libtests retain helper-only modules and mixed modules exporting fixtures.
 This includes exported inherent `impl` methods and the full ancestor paths of
@@ -33,16 +37,14 @@ It saves the real lists as timing artifacts for union/overlap verification.
 compares all four real enumerations with an original libtest name multiset,
 rejecting missing, extra, or duplicate names rather than just checking counts.
 Binary unit tests run once, in `lib-a`. Integration test partitioning is unchanged.
-The all-target build and filtered models.dev job select `c`, and `rust-build`
-additionally checks the explicit `all` selector with `cargo check --locked
---all-targets` under the job's `-D warnings`, so the default complete test
-crate stays warning-free; all library test groups are still compiled and
-executed by the two library test jobs.
+The all-target build selects `c` for `holon-runtime`, and `rust-build`
+also checks the explicit `all` selector with `cargo check --locked
+--all-targets` in both crates under `-D warnings`. The two library test
+jobs compile and run all four groups.
 
 `make build` first compiles the production library, then the selected libtest
-without running it, and finally retains the original `cargo build --all-targets`.
-The models.dev job likewise precompiles its libtest before the unchanged
-filtered all-target test command. This separates the two large Rust targets
+from `holon-runtime` without running it, and then compiles the application
+with `cargo build --all-targets`. This separates the two large Rust targets
 without reducing Cargo's job count or dropping targets. The build script watches
 existing Git paths resolved by `git rev-parse --git-path`, including worktree
 HEAD and common refs, rather than nonexistent `.git/HEAD` paths that invalidate
@@ -52,5 +54,5 @@ the original constrained cold-build verification before any memory claim.
 When adding a test module, use its owner's existing cfg; a new top-level
 subsystem defaults to `d`. Tests added within a gated module inherit its group.
 Do not add `ignore`, remove assertions, or increase resource/time budgets to make
-a group pass. No peak-memory reduction is claimed until measured with the full
-test-name union preserved under the original CI profile and resource limits.
+a group pass. Compare peak memory with the full test coverage preserved under
+the same compiler profile and resource limits.

@@ -4,6 +4,19 @@
 
 Accepted for implementation by GitHub issue #2475.
 
+## Crate boundary
+
+The private `holon-runtime` crate owns the runtime host, loaded agent handles and
+scheduler, runtime-aware database facade and transitions, and resource
+accounting. It calls the existing domain, storage, provider, and tool crates.
+Runtime-backed HTTP handlers and daemon hooks compose these same objects.
+`holon-server` owns transport, and `holon-daemon` owns process lifecycle.
+
+The application owns the binary, CLI, and terminal entrypoints. Its library
+re-exports the runtime API for existing callers. Runtime fixtures use crate
+visibility so they can exercise transitions and admission without exposing
+the implementation to the application.
+
 ## Problem
 
 `RuntimeHost` historically exposed runtime handles to both read-only queries and

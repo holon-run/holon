@@ -157,7 +157,7 @@ snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, and mode
 
 build: ## Build all Rust targets (cargo build --all-targets)
 	cargo build --lib
-	cargo test --lib --no-run
+	CARGO_TARGET_DIR="$(abspath $(or $(CARGO_TARGET_DIR),target))" cargo test --locked --manifest-path crates/holon-runtime/Cargo.toml --lib --no-run
 	cargo build --all-targets
 
 all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust
@@ -300,15 +300,19 @@ docker-live-acceptance: docker-e2e ## Compatibility alias for docker-e2e
 
 fmt:
 	cargo fmt
+	cargo fmt --manifest-path crates/holon-runtime/Cargo.toml
 
 fmt-check: ## Check formatting without modifying files
 	cargo fmt --all -- --check
+	cargo fmt --manifest-path crates/holon-runtime/Cargo.toml -- --check
 
 lint: ## Run clippy
 	cargo clippy --all-targets
+	CARGO_TARGET_DIR="$(abspath $(or $(CARGO_TARGET_DIR),target))" cargo clippy --manifest-path crates/holon-runtime/Cargo.toml --all-targets
 
 check: ## Quick local check (formatting + clippy + compile check)
 	RUSTFLAGS="-D warnings" cargo check --all-targets
+	RUSTFLAGS="-D warnings" CARGO_TARGET_DIR="$(abspath $(or $(CARGO_TARGET_DIR),target))" cargo check --locked --manifest-path crates/holon-runtime/Cargo.toml --all-targets
 
 ci: web-ci conversation-sdk-ci fmt-check lint build snapshots-check test-resource-lint test ## Run the local deterministic CI subset (platform, Docker, coverage, and live gates are separate)
 

@@ -276,10 +276,10 @@ jobs:
               - '!src/tui.rs'
               - '!src/tui_markdown.rs'
               - '!src/onboarding_tui.rs'
-              - '!src/runtime/tests/tui_pipeline_e2e.rs'
             crates_non_tui:
               - 'crates/**'
               - '!crates/holon-tui/**'
+              - '!crates/holon-runtime/src/runtime/tests/tui_pipeline_e2e.rs'
       # Changes to the root Rust build inputs join the same ios_compat tier.
       - uses: dorny/paths-filter@v3
         id: ios-compat
@@ -941,7 +941,9 @@ jobs:
       # warning-free. See docs/implementation-decisions/lib-test-compile-shards.md.
       - name: Check complete test crate with warnings denied
         if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
-        run: cargo check --locked --all-targets
+        run: |
+          cargo check --locked --all-targets
+          cargo check --locked --manifest-path crates/holon-runtime/Cargo.toml --target-dir target --all-targets
         env:
           HOLON_LIB_TEST_SHARD: all
 
@@ -964,8 +966,8 @@ jobs:
       - name: Package check
         if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
         run: |
-          if grep -q 'decision-core = {.*path = "crates/decision-core"' Cargo.toml; then
-            echo "::notice::Skipping crates.io package dry-run because holon depends on unpublished local decision crates."
+          if grep -qx 'publish = false' crates/holon-runtime/Cargo.toml; then
+            echo "::notice::Skipping crates.io package dry-run because holon depends on private holon-runtime."
           else
             cargo publish --dry-run --locked
           fi

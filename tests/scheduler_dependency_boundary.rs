@@ -6,7 +6,7 @@ const CANONICAL_SCHEDULER_EXECUTOR: &str = "src/runtime/scheduler_executor.rs";
 
 #[test]
 fn retired_scheduler_wire_types_are_not_a_domain_module() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/holon-runtime");
     let domain = fs::read_to_string(root.join("src/domain/mod.rs")).expect("read domain modules");
     assert!(
         !domain.contains("scheduler_protocol"),
@@ -25,7 +25,7 @@ fn retired_scheduler_wire_types_are_not_a_domain_module() {
 
 #[test]
 fn normal_queue_transition_does_not_carry_legacy_scheduler_payload() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/holon-runtime");
     let source = fs::read_to_string(root.join("src/runtime_db/transitions.rs"))
         .expect("read runtime transitions");
     let normal_start = source
@@ -51,7 +51,7 @@ fn normal_queue_transition_does_not_carry_legacy_scheduler_payload() {
 
 #[test]
 fn canonical_scheduler_executor_does_not_reference_legacy_scheduler_protocol() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/holon-runtime");
     let source = fs::read_to_string(root.join(CANONICAL_SCHEDULER_EXECUTOR))
         .expect("read canonical scheduler executor");
 

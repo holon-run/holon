@@ -5,13 +5,13 @@ on:
     branches: [main]
     paths:
       - "models.dev/**"
-      - "src/model_catalog.rs"
+      - "crates/holon-runtime/src/model_catalog.rs"
       - "crates/holon-model-catalog/**"
       - "crates/holon-domain/**"
       - "crates/holon-system/src/resource_material.rs"
       - "crates/holon-config/src/models.rs"
-      - "src/context/**"
-      - "src/provider/registry/providers.rs"
+      - "crates/holon-runtime/src/context/**"
+      - "crates/holon-runtime/src/provider/registry/providers.rs"
       - "tests/cli_exit_codes.rs"
       - ".github/workflows/models-dev-validate.yml"
       - "Cargo.toml"

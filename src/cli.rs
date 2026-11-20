@@ -1828,3 +1828,6 @@ mod tests {
         assert!(Cli::try_parse_from(["holon", "task", "output", "task-old"]).is_err());
     }
 }
+
+#[cfg(all(test, holon_lib_test_shard = "d"))]
+mod prompt_tests;

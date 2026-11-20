@@ -127,7 +127,7 @@ baseline reset is allowed. Historical failures remain failures.
 The bounded latest-Brief workload uses the production SQL and bundled SQLite:
 
 ```bash
-cargo test --lib runtime_db::brief_latest_tests::brief_latest_history_benchmark \
+cargo test --manifest-path crates/holon-runtime/Cargo.toml --lib runtime_db::brief_latest_tests::brief_latest_history_benchmark \
   -- --exact --ignored --nocapture
 ```
 

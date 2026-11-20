@@ -1,10 +1,13 @@
 use std::process::Command;
 
 fn main() {
+    let version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into());
+    configure_build(&version);
+}
+
+pub(crate) fn configure_build(pkg_version: &str) {
     configure_lib_test_shard();
     configure_git_tracking();
-
-    let pkg_version = std::env::var("CARGO_PKG_VERSION").unwrap_or_else(|_| "unknown".into());
 
     let sha = Command::new("git")
         .args(["rev-parse", "--short", "HEAD"])
@@ -28,7 +31,7 @@ fn main() {
                 format!("{} ({})", pkg_version, s)
             }
         }
-        _ => pkg_version.clone(),
+        _ => pkg_version.to_owned(),
     };
 
     let version = if std::env::var_os("CARGO_FEATURE_RECOVERY_ACCEPTANCE").is_some() {
