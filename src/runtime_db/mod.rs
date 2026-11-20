@@ -190,6 +190,13 @@ use crate::runtime_db::migrations::{
 use crate::runtime_db::storage_domain::{read_storage_domain_connection, upsert_storage_domain};
 use crate::runtime_db::write_queue::{RuntimeDbWriteContext, RuntimeDbWriter};
 
+pub(crate) const AGENT_REGISTRY_MATERIAL: holon_storage::agent_registry::AgentRegistryMaterial =
+    holon_storage::agent_registry::AgentRegistryMaterial {
+        admit_json_payload: crate::diagnostics::resource_io::admit_json_payload,
+        charge_owned_metadata: crate::diagnostics::resource_io::charge_owned_metadata,
+        admit_serialized: holon_system::resource_material::admit_serialized_material_with,
+    };
+
 pub(crate) const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
 pub(crate) use holon_storage::RUNTIME_DB_BUSY_TIMEOUT;
 pub use holon_storage::{

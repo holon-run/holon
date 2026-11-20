@@ -114,11 +114,16 @@ fn legacy_relation_ids_admit_each_copy_and_format_with_exact_remaining_budget() 
             let read = || -> Result<_> {
                 let mut issues = Vec::new();
                 let result = if axis == 0 {
-                    (legacy_lineage(&identity, &mut issues)?, None)
+                    (RELATIONS.legacy_lineage(&identity, &mut issues)?, None)
                 } else {
                     (
                         None,
-                        legacy_supervision(&identity, Some(&lineage), Some(&task), &mut issues)?,
+                        RELATIONS.legacy_supervision(
+                            &identity,
+                            Some(&lineage),
+                            Some(&task),
+                            &mut issues,
+                        )?,
                     )
                 };
                 assert!(issues.is_empty());
@@ -199,7 +204,7 @@ fn legacy_supervision_borrows_parent_until_all_evidence_matches() -> Result<()> 
             _ => {}
         }
         let read = |issues: &mut Vec<_>| {
-            legacy_supervision(
+            RELATIONS.legacy_supervision(
                 &identity,
                 (case != 0).then_some(&lineage),
                 (case != 2).then_some(&task),
@@ -248,7 +253,8 @@ fn legacy_projection_propagates_admission_and_canonical_axes_skip_derivation() -
         supervision: Some(supervision(&identity, true)),
         ..Default::default()
     };
-    let baseline = project_agent_canonical_relations(&identity, records.clone(), Some(&task))?;
+    let baseline =
+        RELATIONS.project_agent_canonical_relations(&identity, records.clone(), Some(&task))?;
     // The other four legacy axes and projection ID are independently admitted.
     let additional = [
         cost(CHILD), // durability
@@ -278,15 +284,16 @@ fn legacy_projection_propagates_admission_and_canonical_axes_skip_derivation() -
     {
         let _entry = phase.enter();
         assert_eq!(
-            project_agent_canonical_relations(&identity, records, Some(&task))?,
+            RELATIONS.project_agent_canonical_relations(&identity, records, Some(&task))?,
             baseline
         );
-        let error = project_agent_canonical_relations(
-            &identity,
-            AgentCanonicalRecordSet::default(),
-            Some(&task),
-        )
-        .unwrap_err();
+        let error = RELATIONS
+            .project_agent_canonical_relations(
+                &identity,
+                AgentCanonicalRecordSet::default(),
+                Some(&task),
+            )
+            .unwrap_err();
         assert!(
             format!("{error:#}").contains("ResourceExhausted"),
             "{error:#}"
@@ -345,7 +352,7 @@ fn legacy_lineage_admission_reaches_children_and_backfill_callers() -> Result<()
         {
             let _entry = phase.enter();
             let error = if backfill {
-                db.transaction(|tx| backfill_agent_relations_tx(tx, CHILD, true, None))
+                db.transaction(|tx| RELATIONS.backfill_agent_relations_tx(tx, CHILD, true, None))
                     .unwrap_err()
             } else {
                 db.agent_canonical_relations()

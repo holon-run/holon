@@ -225,11 +225,26 @@ pub fn admit_json_buffer(value: &impl serde::Serialize) -> Result<()> {
 
 #[track_caller]
 pub fn admit_serialized_value(value: &impl serde::Serialize) -> Result<()> {
+    admit_serialized_material(|writer| serde_json::to_writer(writer, value))
+}
+
+/// Admit a value serialized by a caller in another crate using the same counter.
+#[track_caller]
+pub fn admit_serialized_material_with(
+    serialize: &dyn Fn(&mut dyn std::io::Write) -> serde_json::Result<()>,
+) -> Result<()> {
+    admit_serialized_material(|writer| serialize(writer))
+}
+
+#[track_caller]
+fn admit_serialized_material(
+    serialize: impl FnOnce(&mut StructuredMaterialCounter) -> serde_json::Result<()>,
+) -> Result<()> {
     if !OBSERVERS.with(|slot| slot.get().is_some()) {
         return Ok(());
     }
     let mut counter = StructuredMaterialCounter::default();
-    serde_json::to_writer(&mut counter, value)?;
+    serialize(&mut counter)?;
     counter.admit()
 }
 

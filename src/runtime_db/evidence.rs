@@ -3,7 +3,9 @@
 use anyhow::Context;
 use anyhow::{anyhow, Result};
 use chrono::{DateTime, Utc};
-use rusqlite::{params, OptionalExtension, Transaction};
+#[cfg(test)]
+use rusqlite::params;
+use rusqlite::Transaction;
 use std::borrow::Cow;
 
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
@@ -25,11 +27,20 @@ pub(crate) use holon_storage::evidence::MESSAGE_SEQUENCE_DOMAIN;
 
 const EVIDENCE_WRITES: holon_storage::evidence::EvidenceWrites =
     holon_storage::evidence::EvidenceWrites::new(super::conversation::REVISION_WRITES);
-use crate::types::AgentRegistryStatus;
 use crate::types::{
-    AgentIdentityRecord, AgentKind, AgentState, AuditEvent, BriefRecord, DeliverySummaryRecord,
+    AgentIdentityRecord, AgentState, AuditEvent, BriefRecord, DeliverySummaryRecord,
     MessageEnvelope, ToolExecutionRecord, TranscriptEntry,
 };
+
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+use crate::types::{AgentKind, AgentRegistryStatus};
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+use holon_storage::codec::timestamp;
+
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+fn registry_timestamp(value: DateTime<Utc>) -> Result<String> {
+    super::AGENT_REGISTRY_MATERIAL.timestamp(value)
+}
 
 pub(crate) const AUDIT_EVENT_SEQUENCE_DOMAIN: &str = "audit_event";
 
@@ -123,81 +134,19 @@ pub(crate) fn upsert_agent_state_at_tx(
     )
 }
 
-/// Enforces the durable Agent identity reservation invariant inside every
-/// registry write: an id retired in this runtime event-log epoch can never
-/// regain availability. Deletion only moves the reservation to `retired`;
-/// the reservation row itself is never removed.
+#[cfg(test)]
 pub(crate) fn reserve_agent_identity_tx(
     tx: &Transaction<'_>,
     record: &AgentIdentityRecord,
 ) -> Result<()> {
-    let retired: Option<bool> = tx
-        .query_row(
-            "SELECT reservation_state = 'retired'
-             FROM agent_identity_reservations
-             WHERE agent_id = ?1",
-            [&record.agent_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let now = Utc::now();
-    if retired == Some(true) {
-        if record.status != AgentRegistryStatus::Deleted {
-            return Err(anyhow!(
-                "agent id {} was retired in this runtime event-log epoch; \
-                 retired agent ids are never reused",
-                record.agent_id
-            ));
-        }
-        // Re-asserting the tombstone keeps the reservation retired; the
-        // registry write below remains an idempotent stale-safe no-op.
-        return Ok(());
-    }
-    let now = registry_timestamp(now)?;
-    if record.status == AgentRegistryStatus::Deleted {
-        tx.execute(
-            "INSERT INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
-             VALUES (?1, 'retired', ?2, ?2, 'agent_registry')
-             ON CONFLICT(agent_id) DO UPDATE SET
-               reservation_state = 'retired',
-               retired_at = excluded.retired_at",
-            params![record.agent_id, now],
-        )?;
-        return Ok(());
-    }
-    tx.execute(
-        "INSERT OR IGNORE INTO agent_identity_reservations (agent_id, reservation_state, reserved_at, retired_at, source)
-         VALUES (?1, 'active', ?2, NULL, 'agent_registry')",
-        params![record.agent_id, now],
-    )?;
-    Ok(())
+    super::AGENT_REGISTRY_MATERIAL.reserve_agent_identity_tx(tx, record)
 }
 
-/// Re-activates a retired identity reservation. This is the only sanctioned
-/// `retired -> active` transition: it runs inside the reincarnation
-/// transaction, after the latest deletion job for the agent id has fully
-/// completed, and in the same transaction as the fresh Active registry
-/// write. Every other registry write path keeps the standing invariant that
-/// a retired id never regains availability implicitly.
 pub(crate) fn release_agent_identity_reservation_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
 ) -> Result<()> {
-    let now = registry_timestamp(Utc::now())?;
-    let released = tx.execute(
-        "UPDATE agent_identity_reservations
-         SET reservation_state = 'active',
-             reserved_at = ?2,
-             retired_at = NULL,
-             source = 'reincarnation'
-         WHERE agent_id = ?1 AND reservation_state = 'retired'",
-        params![agent_id, now],
-    )?;
-    anyhow::ensure!(
-        released == 1,
-        "agent_reincarnation_rejected: agent {agent_id} identity reservation is not retired"
-    );
-    Ok(())
+    super::AGENT_REGISTRY_MATERIAL.release_agent_identity_reservation_tx(tx, agent_id)
 }
 
 fn registry_agent_name_key(name: &str) -> Result<String> {
@@ -214,116 +163,16 @@ fn registry_agent_name_key(name: &str) -> Result<String> {
     Ok(crate::types::agent_name_key(name))
 }
 
-fn registry_timestamp(value: chrono::DateTime<Utc>) -> Result<String> {
-    let year = chrono::Datelike::year(&value);
-    let year_bytes = if (0..=9999).contains(&year) {
-        4
-    } else {
-        (year.unsigned_abs().ilog10() as usize + 1).max(4) + 1
-    };
-    // UTC RFC3339 milliseconds: year plus "-MM-DDTHH:MM:SS.sssZ".
-    crate::diagnostics::resource_io::charge_owned_metadata(
-        (year_bytes + 20 + std::mem::size_of::<String>()) as u64,
-        1,
-    )?;
-    Ok(timestamp(value))
-}
-
 pub(crate) fn upsert_agent_identity_tx(
     tx: &Transaction<'_>,
     record: &AgentIdentityRecord,
 ) -> Result<()> {
-    let previous_incarnation = {
-        let mut statement =
-            tx.prepare("SELECT payload_json FROM agent_identities WHERE agent_id = ?1")?;
-        let mut rows = statement.query([&record.agent_id])?;
-        if let Some(row) = rows.next()? {
-            let payload = row.get_ref(0)?.as_str()?;
-            crate::diagnostics::resource_io::admit_json_payload(payload)?;
-            Some(serde_json::from_str::<AgentIdentityRecord>(payload)?.incarnation)
-        } else {
-            None
-        }
-    };
-    // The reservation guard runs before the registry write so a retired id
-    // can never regain availability, not even through a stale replay.
-    reserve_agent_identity_tx(tx, record)?;
-    let payload_json = serde_json::to_string(record)?;
-    let name_key = record
-        .name
-        .as_deref()
-        .map(registry_agent_name_key)
-        .transpose()?;
-    let kind = match record.kind {
-        AgentKind::Default => "default",
-        AgentKind::Named => "named",
-        AgentKind::Child => "child",
-    };
-    let visibility = record.visibility.label();
-    let ownership = record.ownership.map(|value| value.label());
-    let profile_preset = record.profile_preset.map(|value| value.label());
-    let status = match record.status {
-        AgentRegistryStatus::Active => "active",
-        AgentRegistryStatus::Deleting => "deleting",
-        AgentRegistryStatus::Deleted => "deleted",
-    };
-    tx.execute(
-        "INSERT INTO agent_identities (
-            agent_id, name, name_key, kind, visibility, ownership, profile_preset, status,
-            parent_agent_id, lineage_parent_agent_id, delegated_from_task_id,
-            created_at, updated_at, archived_at, payload_json
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
-         ON CONFLICT(agent_id) DO UPDATE SET
-            name = excluded.name,
-            name_key = excluded.name_key,
-            kind = excluded.kind,
-            visibility = excluded.visibility,
-            ownership = excluded.ownership,
-            profile_preset = excluded.profile_preset,
-            status = excluded.status,
-            parent_agent_id = excluded.parent_agent_id,
-            lineage_parent_agent_id = excluded.lineage_parent_agent_id,
-            delegated_from_task_id = excluded.delegated_from_task_id,
-            created_at = excluded.created_at,
-            updated_at = excluded.updated_at,
-            archived_at = excluded.archived_at,
-            payload_json = excluded.payload_json
-         WHERE excluded.updated_at >= agent_identities.updated_at",
-        params![
-            record.agent_id,
-            record.name,
-            name_key,
-            kind,
-            visibility,
-            ownership,
-            profile_preset,
-            status,
-            record.parent_agent_id,
-            record.lineage_parent_agent_id,
-            record.delegated_from_task_id,
-            registry_timestamp(record.created_at)?,
-            registry_timestamp(record.updated_at)?,
-            record.deleted_at.map(registry_timestamp).transpose()?,
-            payload_json,
-        ],
-    )?;
-    if previous_incarnation != Some(record.incarnation) {
-        let matches_record = {
-            let mut statement =
-                tx.prepare("SELECT payload_json FROM agent_identities WHERE agent_id = ?1")?;
-            let mut rows = statement.query([&record.agent_id])?;
-            let row = rows.next()?.ok_or(rusqlite::Error::QueryReturnedNoRows)?;
-            let payload = row.get_ref(0)?.as_str()?;
-            crate::diagnostics::resource_io::admit_json_payload(payload)?;
-            serde_json::from_str::<AgentIdentityRecord>(payload)? == *record
-        };
-        if matches_record {
-            super::episode_snapshot::ensure_fresh_episode_continuity_tx(
-                tx,
-                record,
-                record.updated_at,
-            )?;
-        }
+    if super::AGENT_REGISTRY_MATERIAL.upsert_agent_identity_tx(
+        tx,
+        record,
+        registry_agent_name_key,
+    )? {
+        super::episode_snapshot::ensure_fresh_episode_continuity_tx(tx, record, record.updated_at)?;
     }
     Ok(())
 }
@@ -628,11 +477,6 @@ fn insert_audit_event_with_sequence_tx(
     )?;
     crate::runtime_db::observer_sync::record_appended_event_projection_effect(tx, event)?;
     Ok(())
-}
-
-/// Convert a DateTime<Utc> to an RFC 3339 timestamp string.
-fn timestamp(value: chrono::DateTime<chrono::Utc>) -> String {
-    value.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 #[cfg(holon_lib_test_shard = "b")]

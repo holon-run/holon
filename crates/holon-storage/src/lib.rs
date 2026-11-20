@@ -1,5 +1,6 @@
 //! SQLite infrastructure for Holon's runtime storage.
 
+pub mod agent_registry;
 pub mod agent_state;
 pub mod blocking;
 pub mod codec;

@@ -4,7 +4,12 @@ pub(crate) use holon_storage::workspace_context::{
     decode_execution_root_entry_payload, decode_workspace_entry_payload,
 };
 
+pub(crate) use holon_storage::agent_registry::{
+    decode_external_trigger_payload, decode_work_item_continuation_payload,
+};
 pub(crate) use holon_storage::codec::{enum_string, timestamp};
+pub(crate) use holon_storage::codec::{parse_optional_timestamp, parse_timestamp};
+pub(crate) use holon_storage::wait::{decode_wait_condition_row, wait_condition_decode_error};
 
 pub(crate) use holon_storage::task::{
     decode_task_payload, is_active_task_status, is_terminal_task_status,
@@ -1307,19 +1312,8 @@ impl AgentIdentityRepository<'_> {
     }
 
     pub fn latest_all(&self) -> Result<Vec<AgentIdentityRecord>> {
-        self.db.with_read(|connection| {
-            let mut statement = connection.prepare(
-                "SELECT payload_json
-             FROM agent_identities
-             ORDER BY updated_at DESC, created_at DESC, agent_id ASC",
-            )?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
-            let mut records: Vec<_> = rows
-                .map(|row| decode_agent_identity_payload(&row?))
-                .collect::<Result<_>>()?;
-            records.reverse();
-            Ok(records)
-        })
+        self.db
+            .with_read(|connection| holon_storage::agent_registry::agent_identities_on(connection))
     }
 
     pub(crate) fn next_legacy_deletion_scan_batch(
@@ -1419,31 +1413,18 @@ impl AgentIdentityRepository<'_> {
     }
 
     pub fn latest(&self, agent_id: &str) -> Result<Option<AgentIdentityRecord>> {
-        self.db
-            .with_read(|connection| Self::latest_on(&connection, agent_id))
+        self.db.with_read(|connection| {
+            holon_storage::agent_registry::agent_identity_on(&connection, agent_id)
+        })
     }
 
     pub(crate) fn latest_for_mutation(
         &self,
         agent_id: &str,
     ) -> Result<Option<AgentIdentityRecord>> {
-        self.db
-            .read_for_preparation(|tx| Self::latest_on(tx, agent_id))
-    }
-
-    fn latest_on(
-        connection: &rusqlite::Connection,
-        agent_id: &str,
-    ) -> Result<Option<AgentIdentityRecord>> {
-        connection
-            .query_row(
-                "SELECT payload_json FROM agent_identities WHERE agent_id = ?1",
-                [agent_id],
-                |row| row.get::<_, String>(0),
-            )
-            .optional()?
-            .map(|payload| decode_agent_identity_payload(&payload))
-            .transpose()
+        self.db.read_for_preparation(|tx| {
+            holon_storage::agent_registry::agent_identity_on(tx, agent_id)
+        })
     }
 
     pub(crate) fn rename(
@@ -1457,7 +1438,7 @@ impl AgentIdentityRepository<'_> {
         let name_key = agent_name_key(&name);
         self.db.transaction(|tx| {
             let agent_id = &before.agent_id;
-            let mut identity = Self::latest_on(tx, agent_id)?
+            let mut identity = holon_storage::agent_registry::agent_identity_on(tx, agent_id)?
                 .ok_or_else(|| anyhow!("agent {agent_id} not found"))?;
             anyhow::ensure!(
                 identity == *before && identity.status == AgentRegistryStatus::Active,
@@ -3247,25 +3228,6 @@ impl TaskRepository<'_> {
             context_tasks_query_on(&connection, _agent_id, where_clause, params, limit)
         })
     }
-}
-
-pub(super) fn query_tasks_for_agent(
-    connection: &Connection,
-    where_clause: &str,
-    params: [&str; 1],
-    limit: usize,
-) -> Result<Vec<TaskRecord>> {
-    if limit == 0 {
-        return Ok(Vec::new());
-    }
-    let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-    let sql = format!(
-        "SELECT payload_json FROM tasks WHERE {where_clause}
-         ORDER BY updated_at DESC, created_at DESC, task_id ASC LIMIT {limit}",
-    );
-    let mut statement = connection.prepare(&sql)?;
-    let rows = statement.query_map(params, |row| row.get::<_, String>(0))?;
-    rows.map(|row| decode_task_payload(&row?)).collect()
 }
 
 impl WaitConditionRepository<'_> {
@@ -7898,9 +7860,7 @@ pub(crate) fn decode_workspace_occupancy_payload(
     serde_json::from_str(payload).context("decoding workspace occupancy payload from runtime db")
 }
 
-pub(crate) fn decode_agent_identity_payload(payload: &str) -> Result<AgentIdentityRecord> {
-    serde_json::from_str(payload).context("decoding agent identity payload from runtime db")
-}
+pub(crate) use holon_storage::agent_registry::decode_agent_identity_payload;
 
 /// Drives an identity to the canonical deleted tombstone during deletion
 /// finalization; returns `true` when a registry write was performed. The
@@ -7937,18 +7897,8 @@ pub(crate) fn decode_work_item_delegation_payload(
     serde_json::from_str(payload).context("decoding work item delegation payload from runtime db")
 }
 
-pub(crate) fn decode_work_item_continuation_payload(
-    payload: &str,
-) -> Result<WorkItemContinuationFrame> {
-    serde_json::from_str(payload).context("decoding work item continuation payload from runtime db")
-}
-
 pub(crate) fn decode_context_episode_payload(payload: &str) -> Result<ContextEpisodeRecord> {
     serde_json::from_str(payload).context("decoding context episode payload from runtime db")
-}
-
-pub(crate) fn decode_external_trigger_payload(payload: &str) -> Result<ExternalTriggerRecord> {
-    serde_json::from_str(payload).context("decoding external trigger payload from runtime db")
 }
 
 pub(crate) fn decode_operator_notification_payload(
@@ -7969,81 +7919,6 @@ pub(crate) fn decode_operator_delivery_record_payload(
 ) -> Result<OperatorDeliveryRecord> {
     serde_json::from_str(payload)
         .context("decoding operator delivery record payload from runtime db")
-}
-
-pub(crate) fn parse_timestamp(value: &str) -> Result<DateTime<Utc>> {
-    DateTime::parse_from_rfc3339(value)
-        .map(|dt| dt.with_timezone(&Utc))
-        .with_context(|| format!("parsing timestamp: {value}"))
-}
-
-pub(crate) fn parse_optional_timestamp(value: Option<&str>) -> Result<Option<DateTime<Utc>>> {
-    value.map(parse_timestamp).transpose()
-}
-
-/// Convert an [`anyhow::Error`] from row decoding into a [`rusqlite::Error`]
-/// that preserves the original message. Previously these errors were mapped to
-/// [`rusqlite::Error::InvalidQuery`] whose Display text ("Query is not
-/// read-only") is completely unrelated to the actual failure (e.g. a malformed
-/// timestamp or invalid enum value), making diagnosis nearly impossible.
-pub(crate) fn wait_condition_decode_error(e: anyhow::Error) -> rusqlite::Error {
-    rusqlite::Error::FromSqlConversionFailure(
-        0,
-        rusqlite::types::Type::Text,
-        format!("{e:#}").into(),
-    )
-}
-
-pub(crate) fn decode_wait_condition_row(row: &rusqlite::Row<'_>) -> Result<WaitConditionRecord> {
-    let id: String = row.get(0)?;
-    let agent_id: String = row.get(1)?;
-    let work_item_id: Option<String> = row.get(2)?;
-    let status_str: String = row.get(3)?;
-    let kind_str: String = row.get(4)?;
-    let source: Option<String> = row.get(5)?;
-    let subject_ref: Option<String> = row.get(6)?;
-    let waiting_for: String = row.get(7)?;
-    let created_at_str: String = row.get(8)?;
-    let updated_at_str: String = row.get(9)?;
-    let expires_at_str: Option<String> = row.get(10)?;
-    let resolved_at_str: Option<String> = row.get(11)?;
-    let cancelled_at_str: Option<String> = row.get(12)?;
-    let turn_id: Option<String> = row.get(13)?;
-    let trigger_message_id: Option<String> = row.get(14)?;
-    let triggered_at_str: Option<String> = row.get(15)?;
-    let wake_sources_json: String = row.get(16)?;
-    let continuation_json: Option<String> = row.get(17)?;
-    let status: WaitConditionStatus = serde_json::from_value(serde_json::Value::String(status_str))
-        .context("parsing wait condition status")?;
-    let kind: WaitConditionKind = serde_json::from_value(serde_json::Value::String(kind_str))
-        .context("parsing wait condition kind")?;
-    let wake_sources: Vec<WakeSource> =
-        serde_json::from_str(&wake_sources_json).context("parsing wake_sources_json")?;
-    let continuation: Option<serde_json::Value> = continuation_json
-        .as_deref()
-        .map(serde_json::from_str)
-        .transpose()
-        .context("parsing continuation_json")?;
-    Ok(WaitConditionRecord {
-        id,
-        agent_id,
-        work_item_id,
-        status,
-        kind,
-        source,
-        subject_ref,
-        waiting_for,
-        wake_sources,
-        continuation,
-        created_at: parse_timestamp(&created_at_str)?,
-        updated_at: parse_timestamp(&updated_at_str)?,
-        expires_at: parse_optional_timestamp(expires_at_str.as_deref())?,
-        resolved_at: parse_optional_timestamp(resolved_at_str.as_deref())?,
-        cancelled_at: parse_optional_timestamp(cancelled_at_str.as_deref())?,
-        turn_id,
-        trigger_message_id,
-        triggered_at: parse_optional_timestamp(triggered_at_str.as_deref())?,
-    })
 }
 
 fn upsert_agent_bootstrap_tx(tx: &Transaction<'_>, record: &AgentBootstrapRecord) -> Result<()> {

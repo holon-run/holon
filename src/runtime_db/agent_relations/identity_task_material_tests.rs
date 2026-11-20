@@ -115,9 +115,13 @@ enum Evidence {
 
 fn read(connection: &rusqlite::Connection, identity: bool, id: &str) -> Result<Evidence> {
     if identity {
-        projection_identity(connection, id).map(Evidence::Identity)
+        RELATIONS
+            .projection_identity(connection, id)
+            .map(Evidence::Identity)
     } else {
-        legacy_task_evidence(connection, id).map(Evidence::Task)
+        RELATIONS
+            .legacy_task_evidence(connection, id)
+            .map(Evidence::Task)
     }
 }
 
@@ -224,12 +228,12 @@ fn identity_task_missing_null_and_kind_work_fallback_are_unchanged() -> Result<(
     let phase = ResourceReadMaterial::new(&ledger, &scope())?;
     {
         let _entry = phase.enter();
-        assert_eq!(projection_identity(&connection, "absent")?, None);
+        assert_eq!(RELATIONS.projection_identity(&connection, "absent")?, None);
         assert_eq!(
             canonical_relations_from_connection(&connection, "absent")?,
             None
         );
-        assert_eq!(legacy_task_evidence(&connection, "absent")?, None);
+        assert_eq!(RELATIONS.legacy_task_evidence(&connection, "absent")?, None);
     }
     assert_eq!(phase.finish()?, header());
     drop(phase);
@@ -253,7 +257,7 @@ fn identity_task_missing_null_and_kind_work_fallback_are_unchanged() -> Result<(
         }
         let (_case_home, db) = fixture_with_task(&record)?;
         let connection = db.connection()?;
-        let baseline = legacy_task_evidence(&connection, TASK)?.unwrap();
+        let baseline = RELATIONS.legacy_task_evidence(&connection, TASK)?.unwrap();
         assert_eq!(baseline.is_child_agent_task, expected_child);
         assert_eq!(baseline.child_agent_id.as_deref(), child.then_some(AGENT));
         assert_eq!(
@@ -263,7 +267,10 @@ fn identity_task_missing_null_and_kind_work_fallback_are_unchanged() -> Result<(
         let phase = ResourceReadMaterial::new(&ledger, &scope())?;
         {
             let _entry = phase.enter();
-            assert_eq!(legacy_task_evidence(&connection, TASK)?, Some(baseline));
+            assert_eq!(
+                RELATIONS.legacy_task_evidence(&connection, TASK)?,
+                Some(baseline)
+            );
         }
         let exact = steps(&connection, false)?.into_iter().fold(header(), add);
         assert_eq!(phase.finish()?, exact);

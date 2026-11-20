@@ -1,7 +1,7 @@
 #[cfg(test)]
 pub(crate) use holon_storage::write_queue::RuntimeDbWriterState;
 pub(crate) use holon_storage::write_queue::{
-    begin_capability_policy_write, record_audit_insert, RuntimeDbWriteContext, RuntimeDbWriter,
+    record_audit_insert, RuntimeDbWriteContext, RuntimeDbWriter,
 };
 
 #[cfg(all(test, holon_lib_test_shard = "b"))]

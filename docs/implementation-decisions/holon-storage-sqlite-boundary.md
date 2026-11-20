@@ -29,6 +29,18 @@ the offline maintenance lock and migrates the database before compaction.
 Online retention commits canonical removals and publishes their deltas before
 the separate space-reclamation pass.
 
+Agent registry storage owns identity rows and reservations, canonical
+relation persistence and legacy projection, backfill checkpoints, and Agent
+list facts. Identity-fenced list reads use the original deferred transaction
+for both the identity and its records. The runtime selects the history
+window and owns the read lease and Agent posture projection.
+
+The runtime supplies the original resource accounting callbacks before
+storage allocation and retains returned material guards. It composes
+identity, episode continuity, audit and lifecycle changes in the same
+transaction, and owns the per-Agent transaction sequence for relation
+backfill.
+
 Run the independent storage tests with
 `cargo test --locked --manifest-path crates/holon-storage/Cargo.toml`.
 Root tests continue to cover the facade, runtime-qualified upgrades, and
