@@ -196,7 +196,22 @@
         "required": false
       }
     ],
-    "flags": [],
+    "flags": [
+      {
+        "long": "reasoning-effort",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      },
+      {
+        "long": "service-tier",
+        "short": null,
+        "default_value": null,
+        "possible_values": null,
+        "required": false
+      }
+    ],
     "aliases": []
   },
   {

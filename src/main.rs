@@ -2541,7 +2541,10 @@ mod tests {
         let Commands::Agent {
             command:
                 Some(AgentCommands::Model {
-                    command: AgentModelCommands::Set { model, agent_id },
+                    command:
+                        AgentModelCommands::Set {
+                            model, agent_id, ..
+                        },
                 }),
         } = cli.command
         else {
@@ -7104,9 +7107,36 @@ async fn handle_agent_command(config: &AppConfig, command: Option<AgentCommands>
                     let model = client.agent_model(&agent).await?;
                     print_json(&serde_json::to_value(&model)?)
                 }
-                AgentModelCommands::Set { model, agent_id } => {
+                AgentModelCommands::Set {
+                    model,
+                    agent_id,
+                    reasoning_effort,
+                    service_tier,
+                } => {
                     let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());
-                    print_json(&client.set_agent_model_override(&agent, model, None).await?)
+                    // Read-modify-write: omitted flags keep the current
+                    // override values so switching models no longer silently
+                    // clears them (#4363).
+                    let current = client.agent_model(&agent).await?;
+                    let (effort, effort_cleared) = holon::cli::resolve_effort_override(
+                        reasoning_effort.as_deref(),
+                        current.override_reasoning_effort.as_deref(),
+                    );
+                    let (tier, tier_cleared) = holon::cli::resolve_tier_override(
+                        service_tier.as_deref(),
+                        current.override_service_tier,
+                    )
+                    .map_err(|error| anyhow::anyhow!(error))?;
+                    let result = client
+                        .set_agent_model_override(&agent, model, effort, tier)
+                        .await?;
+                    if effort_cleared {
+                        eprintln!("Cleared reasoning_effort override for agent {agent}");
+                    }
+                    if tier_cleared {
+                        eprintln!("Cleared service_tier override for agent {agent}");
+                    }
+                    print_json(&result)
                 }
                 AgentModelCommands::Clear { agent_id } => {
                     let agent = agent_id.unwrap_or_else(|| config.default_agent_id.clone());

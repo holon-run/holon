@@ -2404,7 +2404,14 @@ impl TuiApp {
         reasoning_effort: Option<String>,
     ) -> Result<()> {
         self.client
-            .set_agent_model_override(agent_id, model.to_string(), reasoning_effort.clone())
+            .set_agent_model_override(
+                agent_id,
+                model.to_string(),
+                reasoning_effort.clone(),
+                // TUI keeps its historical behavior of clearing the service
+                // tier when applying an effort picker selection.
+                None,
+            )
             .await?;
         let suffix = reasoning_effort
             .as_deref()

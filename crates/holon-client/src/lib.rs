@@ -1050,13 +1050,14 @@ impl LocalClient {
         agent_id: &str,
         model: impl Into<String>,
         reasoning_effort: Option<String>,
+        service_tier: Option<holon_domain::model_values::ServiceTier>,
     ) -> Result<Value> {
         self.post_control_json(
             &format!("/control/agents/{agent_id}/model"),
             &SetAgentModelRequest {
-                service_tier: None,
                 model: model.into(),
                 reasoning_effort,
+                service_tier,
                 authority_class: Some(AuthorityClass::OperatorInstruction),
             },
         )

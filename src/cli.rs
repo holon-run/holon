@@ -17,6 +17,50 @@ fn parse_positive_usize(value: &str) -> Result<usize, String> {
     }
 }
 
+/// Sentinel accepted by `holon agent model set` override flags to remove the
+/// existing override instead of replacing it.
+pub const MODEL_OVERRIDE_CLEAR: &str = "clear";
+
+/// Parse a `--service-tier` flag value into a [`crate::config::ServiceTier`].
+pub fn parse_service_tier_flag(value: &str) -> Result<crate::config::ServiceTier, String> {
+    match value {
+        "default" => Ok(crate::config::ServiceTier::Default),
+        "fast" | "priority" => Ok(crate::config::ServiceTier::Fast),
+        _ => Err(format!(
+            "invalid service_tier '{value}'; supported values: default, fast (alias: priority), \
+             or '{MODEL_OVERRIDE_CLEAR}' to remove the override"
+        )),
+    }
+}
+
+/// Resolve the tri-state meaning of `--reasoning-effort` against the current
+/// override: omitted keeps the current value, `clear` removes it, and any
+/// other value replaces it. Returns the value to submit and whether an
+/// explicit clear happened (for the user-visible confirmation).
+pub fn resolve_effort_override(
+    flag: Option<&str>,
+    current: Option<&str>,
+) -> (Option<String>, bool) {
+    match flag {
+        None => (current.map(str::to_string), false),
+        Some(MODEL_OVERRIDE_CLEAR) => (None, true),
+        Some(value) => (Some(value.to_string()), false),
+    }
+}
+
+/// Resolve the tri-state meaning of `--service-tier` against the current
+/// override, with the same semantics as [`resolve_effort_override`].
+pub fn resolve_tier_override(
+    flag: Option<&str>,
+    current: Option<crate::config::ServiceTier>,
+) -> Result<(Option<crate::config::ServiceTier>, bool), String> {
+    match flag {
+        None => Ok((current, false)),
+        Some(MODEL_OVERRIDE_CLEAR) => Ok((None, true)),
+        Some(value) => Ok((Some(parse_service_tier_flag(value)?), false)),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum AgentDetailArg {
     Compact,
@@ -1095,9 +1139,24 @@ pub enum AgentModelCommands {
     Get {
         agent_id: Option<String>,
     },
+    /// Set the model override for an agent.
+    ///
+    /// Omitted override flags keep the agent's current reasoning-effort and
+    /// service-tier overrides, a passed value replaces them, and `clear`
+    /// removes them.
     Set {
         model: String,
         agent_id: Option<String>,
+        /// Reasoning effort for the new override (model-supported values,
+        /// e.g. `low`, `medium`, `high`, `xhigh`). Omitted: keep the existing
+        /// override. `clear`: remove it.
+        #[arg(long, value_name = "VALUE|clear")]
+        reasoning_effort: Option<String>,
+        /// Service tier for the new override (`default`, `fast`, alias
+        /// `priority`). Omitted: keep the existing override. `clear`: remove
+        /// it.
+        #[arg(long, value_name = "VALUE|clear")]
+        service_tier: Option<String>,
     },
     Clear {
         agent_id: Option<String>,
@@ -1298,6 +1357,128 @@ fn snapshot_entry_for_command(cmd: &clap::Command, path: &str) -> CommandSnapsho
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_service_tier_flag_accepts_supported_values_and_lists_them_on_error() {
+        assert!(matches!(
+            parse_service_tier_flag("default"),
+            Ok(crate::config::ServiceTier::Default)
+        ));
+        assert!(matches!(
+            parse_service_tier_flag("fast"),
+            Ok(crate::config::ServiceTier::Fast)
+        ));
+        assert!(matches!(
+            parse_service_tier_flag("priority"),
+            Ok(crate::config::ServiceTier::Fast)
+        ));
+        let error = parse_service_tier_flag("bogus").expect_err("invalid tier must fail");
+        assert!(error.contains("default"), "error lists 'default': {error}");
+        assert!(error.contains("fast"), "error lists 'fast': {error}");
+        assert!(error.contains("clear"), "error mentions 'clear': {error}");
+    }
+
+    #[test]
+    fn resolve_effort_override_tri_state_semantics() {
+        // Omitted flag keeps the current override.
+        assert_eq!(
+            resolve_effort_override(None, Some("xhigh")),
+            (Some("xhigh".to_string()), false)
+        );
+        assert_eq!(resolve_effort_override(None, None), (None, false));
+        // `clear` removes the override.
+        assert_eq!(
+            resolve_effort_override(Some("clear"), Some("xhigh")),
+            (None, true)
+        );
+        // Any other value replaces it.
+        assert_eq!(
+            resolve_effort_override(Some("low"), Some("xhigh")),
+            (Some("low".to_string()), false)
+        );
+        assert_eq!(
+            resolve_effort_override(Some("medium"), None),
+            (Some("medium".to_string()), false)
+        );
+    }
+
+    #[test]
+    fn resolve_tier_override_tri_state_semantics() {
+        use crate::config::ServiceTier;
+        // Omitted flag keeps the current override.
+        assert_eq!(
+            resolve_tier_override(None, Some(ServiceTier::Fast)),
+            Ok((Some(ServiceTier::Fast), false))
+        );
+        assert_eq!(resolve_tier_override(None, None), Ok((None, false)));
+        // `clear` removes the override.
+        assert_eq!(
+            resolve_tier_override(Some("clear"), Some(ServiceTier::Fast)),
+            Ok((None, true))
+        );
+        // Any other value replaces it (with parsing and alias support).
+        assert_eq!(
+            resolve_tier_override(Some("default"), Some(ServiceTier::Fast)),
+            Ok((Some(ServiceTier::Default), false))
+        );
+        assert_eq!(
+            resolve_tier_override(Some("priority"), None),
+            Ok((Some(ServiceTier::Fast), false))
+        );
+        // Invalid values surface the parse error.
+        assert!(resolve_tier_override(Some("bogus"), None).is_err());
+    }
+
+    #[test]
+    fn agent_model_set_parses_override_flags() {
+        let cli = Cli::try_parse_from([
+            "holon",
+            "agent",
+            "model",
+            "set",
+            "openai/gpt-5.1",
+            "--reasoning-effort",
+            "xhigh",
+            "--service-tier",
+            "fast",
+        ])
+        .unwrap();
+        let Commands::Agent {
+            command:
+                Some(AgentCommands::Model {
+                    command:
+                        AgentModelCommands::Set {
+                            reasoning_effort,
+                            service_tier,
+                            ..
+                        },
+                }),
+        } = cli.command
+        else {
+            panic!("expected agent model set");
+        };
+        assert_eq!(reasoning_effort.as_deref(), Some("xhigh"));
+        assert_eq!(service_tier.as_deref(), Some("fast"));
+
+        let cli =
+            Cli::try_parse_from(["holon", "agent", "model", "set", "openai/gpt-5.1"]).unwrap();
+        let Commands::Agent {
+            command:
+                Some(AgentCommands::Model {
+                    command:
+                        AgentModelCommands::Set {
+                            reasoning_effort,
+                            service_tier,
+                            ..
+                        },
+                }),
+        } = cli.command
+        else {
+            panic!("expected agent model set");
+        };
+        assert_eq!(reasoning_effort, None);
+        assert_eq!(service_tier, None);
+    }
 
     #[test]
     fn provider_header_commands_parse_repeated_entries_and_redact_debug() {
