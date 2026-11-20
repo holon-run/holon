@@ -618,6 +618,15 @@ jobs:
                   f"Interrupted schema 47 recovery evidence is invalid: {recovery}"
               )
           recovery_sha256 = hashlib.sha256(recovery_path.read_bytes()).hexdigest()
+          # release.yml gates scheduler_acceptance.git_sha on the release
+          # candidate commit. The scheduler suite runs from the harness
+          # checkout (#4357), so the raw report's git_sha is the harness SHA.
+          # Re-key at the embed boundary: git_sha names the tested candidate;
+          # harness_git_sha preserves the harness checkout provenance that the
+          # HARNESS_SHA check above verified for this report.
+          scheduler_acceptance = dict(scheduler_report)
+          scheduler_acceptance["git_sha"] = os.environ["CANDIDATE_SHA"]
+          scheduler_acceptance["harness_git_sha"] = os.environ["HARNESS_SHA"]
           attestation = {
               "schema_version": 1,
               "release_tag": os.environ["RELEASE_TAG"],
@@ -636,7 +645,7 @@ jobs:
                   "source": os.environ["PREVIOUS_SOURCE"],
                   "ref": os.environ["PREVIOUS_REF"] or None,
               },
-              "scheduler_acceptance": scheduler_report,
+              "scheduler_acceptance": scheduler_acceptance,
               "scheduler_coverage": coverage_report,
               "runtime_lifecycle": {
                   "summary": lifecycle_report,
