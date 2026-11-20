@@ -1,7 +1,7 @@
 # models.dev refresh summary
 
 - Supplement models: 57 (drafted this run: 0, retained: 57, removed: 0)
-- Deferred candidates: 194 (not auto-drafted; see below)
+- Deferred candidates: 193 (not auto-drafted; see below)
 - Mapped providers without auto-supplement (aggregators etc.): 9
 
 ## Auto-drafted supplement models
@@ -50,7 +50,7 @@
 - `dashscope/qwen3-vl-235b-a22b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-vl-30b-a3b` — ReleaseOutsideWindow (release 2025-04)
 - `dashscope/qwen3-vl-plus` — ReleaseOutsideWindow (release 2025-09-23)
-- … and 154 more (see `holon models-dev audit`)
+- … and 153 more (see `holon models-dev audit`)
 
 ## Route metadata review (offline)
 
