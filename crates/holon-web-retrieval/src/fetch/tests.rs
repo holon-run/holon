@@ -103,10 +103,24 @@ fn list_fetch_providers_mirrors_route_gating() {
     let mut tavily = provider.clone();
     tavily.kind = WebProviderKind::Tavily;
     config.providers.insert("tavily-a".into(), tavily);
+    // Exa is callable only in auto mode.
+    let mut exa = provider.clone();
+    exa.kind = WebProviderKind::Exa;
+    config.providers.insert("exa-a".into(), exa.clone());
+    let mut malformed = exa.clone();
+    malformed.base_url = Some("https://exa.example/api?secret=fixture".into());
+    config.providers.insert("exa-bad-url".into(), malformed);
+    let mut invalid_key = exa.clone();
+    invalid_key.api_key = "fixture\nkey".into();
+    config
+        .providers
+        .insert("exa-invalid-key".into(), invalid_key);
+    exa.api_key.clear();
+    config.providers.insert("exa-no-key".into(), exa);
     // Search-only kinds and missing credentials stay undiscoverable.
     let mut search_only = provider.clone();
-    search_only.kind = WebProviderKind::Exa;
-    config.providers.insert("tavily-search".into(), search_only);
+    search_only.kind = WebProviderKind::Brave;
+    config.providers.insert("brave-search".into(), search_only);
     provider.api_key.clear();
     config.providers.insert("no-key".into(), provider);
 
@@ -121,13 +135,16 @@ fn list_fetch_providers_mirrors_route_gating() {
             Some(" deepseek-b"),
             Some("auto"),
             Some("deepseek-a"),
+            Some("exa-a"),
             Some("tavily-a")
         ]
     );
     assert_eq!(listed[3].kind, "deepseek");
     assert_eq!(listed[3].extract_modes, vec!["auto"]);
-    assert_eq!(listed[4].kind, "tavily");
-    assert_eq!(listed[4].extract_modes, vec!["auto", "text"]);
+    assert_eq!(listed[4].kind, "exa");
+    assert_eq!(listed[4].extract_modes, vec!["auto"]);
+    assert_eq!(listed[5].kind, "tavily");
+    assert_eq!(listed[5].extract_modes, vec!["auto", "text"]);
 
     // The shared preflight rejects every remote request once custom host
     // rules are configured, so discovery must not offer those routes.
