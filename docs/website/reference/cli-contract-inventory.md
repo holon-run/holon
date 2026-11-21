@@ -207,6 +207,7 @@ that visibly affect CLI behavior while invoking commands.
 |---|---|---|---:|
 | `HOLON_HOME` | config/credentials and runtime config loading | Selects Holon home/config/credential paths. | `stable` candidate |
 | `HOLON_HTTP_ADDR` | runtime/control-plane commands | Selects local control-plane HTTP address when loading `AppConfig`. | `stable` candidate |
+| `PORT` | `serve`, daemon start resolution | Container-platform convention: without explicit CLI/`HOLON_HTTP_ADDR`, listen on `0.0.0.0:$PORT`; outranks profile inheritance. | `experimental` |
 | `HOLON_CALLBACK_BASE_URL` | `serve`, runtime config | Sets callback base URL default. | `experimental` |
 | `HOLON_SOCKET_PATH` | daemon/serve | Selects local control socket path. | `experimental` |
 | `HOLON_WORKSPACE_DIR` | runtime commands | Sets default workspace directory. | `experimental` |

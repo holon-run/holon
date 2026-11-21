@@ -329,6 +329,12 @@ then the profile, validated legacy metadata (migration only), and defaults.
 `HOLON_HTTP_ADDR` and `HOLON_CONTROL_TOKEN` are explicit environment overrides;
 an unset variable is not an override. Startup logs name the configuration source
 and overridden fields / environment variables without printing credential values.
+For `serve`, `daemon start`, and `daemon restart`, a numeric `PORT` variable
+(the container-platform convention) is honored as a wildcard listen default
+(`0.0.0.0:$PORT`) below `HOLON_HTTP_ADDR` and explicit CLI flags but above the
+inherited profile, so a persistent `HOLON_HOME` cannot pin an old port across
+redeployments. An invalid `PORT` fails startup instead of silently falling
+back to the loopback default.
 Service managers that keep passing flags or environment inputs keep overriding
 the saved configuration; inspect these diagnostics when troubleshooting.
 

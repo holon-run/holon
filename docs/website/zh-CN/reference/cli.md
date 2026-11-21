@@ -488,6 +488,11 @@ holon run --agent builder --workspace-root /path/to/project "Fix build errors"
 优先级为：显式 CLI > 明确提供的启动环境变量 > profile >
 仅迁移时使用的有效旧 metadata > 默认。`HOLON_HTTP_ADDR` 和
 `HOLON_CONTROL_TOKEN` 可显式覆盖；环境变量未设置不算覆盖。
+对 `serve`、`daemon start` 与 `daemon restart`，数字型 `PORT` 变量
+（容器平台通用约定）作为通配监听默认值（`0.0.0.0:$PORT`）生效：低于
+`HOLON_HTTP_ADDR` 与显式 CLI，高于继承的 profile，因此持久化的
+`HOLON_HOME` 不会把旧端口钉死在重新部署之间。非法 `PORT` 直接启动
+失败，而不是静默回退到 loopback 默认值。
 启动日志说明来源、覆盖字段及变量名，不输出凭据值。服务管理器持续传入的
 CLI/env 仍会覆盖保存值，排查时先看这些诊断。
 

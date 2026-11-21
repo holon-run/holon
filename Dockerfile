@@ -78,11 +78,15 @@ COPY --from=rust-builder /tmp/holon /usr/local/bin/holon
 
 ENV HOME=/var/lib/holon \
     HOLON_HOME=/var/lib/holon \
-    HOLON_WORKSPACE_DIR=/workspace
+    HOLON_WORKSPACE_DIR=/workspace \
+    PORT=7878
 
 WORKDIR /workspace
 USER holon
+
+# serve listens on 0.0.0.0:$PORT (image default 7878); container platforms
+# such as Railway inject PORT and take precedence over this default.
 EXPOSE 7878
 
 ENTRYPOINT ["holon"]
-CMD ["serve", "--listen", "0.0.0.0:7878"]
+CMD ["serve"]

@@ -940,6 +940,7 @@ fn restart_serve_launch_options(
         None,
         metadata,
         parse_serve_options_from_args(&[])?,
+        None,
         false,
     )?;
     *config = plan.config;
@@ -1007,12 +1008,23 @@ fn resolve_daemon_serve_plan(
     metadata: Option<&holon::daemon::RuntimeServiceMetadata>,
 ) -> Result<ResolvedDaemonServePlan> {
     let mut environment = parse_serve_options_from_args(&[])?;
+    let mut environment_listen_source = None;
     if let Some(value) = std::env::var_os("HOLON_HTTP_ADDR") {
         environment.listen = Some(
             value
                 .into_string()
                 .map_err(|_| anyhow!("HOLON_HTTP_ADDR is not UTF-8"))?,
         );
+        environment_listen_source = Some("HOLON_HTTP_ADDR");
+    } else {
+        // Container platforms (Railway and friends) inject PORT and require
+        // serving on it. PORT ranks below HOLON_HTTP_ADDR and CLI flags, but
+        // above inherited serve profiles so a persistent HOLON_HOME cannot
+        // pin an old port across redeployments.
+        if let Some(listen) = port_env_listen(std::env::var_os("PORT"))? {
+            environment.listen = Some(listen);
+            environment_listen_source = Some("PORT");
+        }
     }
     if let Some(value) = std::env::var_os("HOLON_CONTROL_TOKEN") {
         environment.token = Some(
@@ -1028,10 +1040,31 @@ fn resolve_daemon_serve_plan(
         profile,
         metadata,
         environment,
+        environment_listen_source,
         explicit_auth_mode,
     )?;
     eprintln!("{}", plan.startup_summary);
     Ok(plan)
+}
+
+/// Resolve the container-platform `PORT` convention into a wildcard listen
+/// address. Unset or blank values mean "no PORT intent"; invalid values fail
+/// fast so platform port-wiring problems surface at startup.
+fn port_env_listen(var: Option<OsString>) -> Result<Option<String>> {
+    let Some(var) = var else {
+        return Ok(None);
+    };
+    let raw = var
+        .into_string()
+        .map_err(|_| anyhow!("PORT is not UTF-8"))?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let port: u16 = trimmed.parse().with_context(|| {
+        format!("PORT must be a port number between 0 and 65535, got {trimmed:?}")
+    })?;
+    Ok(Some(format!("0.0.0.0:{port}")))
 }
 
 fn resolve_daemon_serve_plan_with_inputs(
@@ -1040,6 +1073,7 @@ fn resolve_daemon_serve_plan_with_inputs(
     profile: Option<&DaemonServeProfile>,
     metadata: Option<&holon::daemon::RuntimeServiceMetadata>,
     environment: ServeOptions,
+    environment_listen_source: Option<&'static str>,
     explicit_auth_mode: bool,
 ) -> Result<ResolvedDaemonServePlan> {
     if explicit.reset_serve_options && explicit.desktop_integration_if_unconfigured {
@@ -1059,14 +1093,14 @@ fn resolve_daemon_serve_plan_with_inputs(
     }
     let cli_fields = explicit_serve_fields(&explicit);
     let mut env_fields = Vec::new();
-    if environment.listen.is_some() {
-        env_fields.push("HOLON_HTTP_ADDR(listen)");
+    if let Some(source) = environment_listen_source {
+        env_fields.push(format!("{source}(listen)"));
     }
     if environment.token.is_some() {
-        env_fields.push("HOLON_CONTROL_TOKEN(authentication)");
+        env_fields.push("HOLON_CONTROL_TOKEN(authentication)".to_string());
     }
     if explicit_auth_mode {
-        env_fields.push("HOLON_CONTROL_AUTH_MODE(control_auth_mode)");
+        env_fields.push("HOLON_CONTROL_AUTH_MODE(control_auth_mode)".to_string());
     } else if let Some(profile) = profile {
         config.control_auth_mode = match profile.control_auth_mode {
             RuntimeControlAuthMode::Auto => ControlAuthMode::Auto,
@@ -1251,6 +1285,7 @@ fn resolve_recorded_daemon_serve_plan(
         None,
         Some(metadata),
         environment,
+        None,
         true,
     )
 }
@@ -1749,14 +1784,119 @@ mod tests {
         let parse = |args: &[&str]| {
             parse_serve_options_from_args(&args.iter().map(OsString::from).collect::<Vec<_>>())
         };
+        let parsed_environment = parse(environment)?;
+        let environment_listen_source = parsed_environment
+            .listen
+            .is_some()
+            .then_some("HOLON_HTTP_ADDR");
         resolve_daemon_serve_plan_with_inputs(
             test_config(),
             parse(cli)?,
             profile,
             None,
-            parse(environment)?,
+            parsed_environment,
+            environment_listen_source,
             false,
         )
+    }
+
+    fn serve_profile_plan_with_environment_listen(
+        cli: &[&str],
+        environment_listen: Option<&str>,
+        environment_listen_source: Option<&'static str>,
+        profile: Option<&DaemonServeProfile>,
+    ) -> Result<ResolvedDaemonServePlan> {
+        let mut environment = parse_serve_options_from_args(&[])?;
+        environment.listen = environment_listen.map(str::to_string);
+        resolve_daemon_serve_plan_with_inputs(
+            test_config(),
+            parse_serve_options_from_args(&cli.iter().map(OsString::from).collect::<Vec<_>>())?,
+            profile,
+            None,
+            environment,
+            environment_listen_source,
+            false,
+        )
+    }
+
+    #[test]
+    fn port_env_listen_parses_platform_port_convention() {
+        assert_eq!(port_env_listen(None).unwrap(), None);
+        assert_eq!(port_env_listen(Some("".into())).unwrap(), None);
+        assert_eq!(port_env_listen(Some("  ".into())).unwrap(), None);
+        assert_eq!(
+            port_env_listen(Some("8081".into())).unwrap().as_deref(),
+            Some("0.0.0.0:8081")
+        );
+        assert_eq!(
+            port_env_listen(Some(" 8081 ".into())).unwrap().as_deref(),
+            Some("0.0.0.0:8081")
+        );
+        for invalid in ["http", "8081.5", "70000", "-1"] {
+            let error = port_env_listen(Some(invalid.into())).unwrap_err();
+            assert!(
+                error.to_string().contains("PORT must be a port number"),
+                "invalid value {invalid} must fail fast, got: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn serve_listen_priority_explicit_over_port_env_over_defaults() {
+        // Explicit --listen outranks the PORT environment tier.
+        let explicit_listen = serve_profile_plan_with_environment_listen(
+            &["--listen", "127.0.0.1:9001"],
+            Some("0.0.0.0:8081"),
+            Some("PORT"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(explicit_listen.config.http_addr, "127.0.0.1:9001");
+
+        // Explicit --port outranks the PORT environment tier as well.
+        let explicit_port = serve_profile_plan_with_environment_listen(
+            &["--port", "9002"],
+            Some("0.0.0.0:8081"),
+            Some("PORT"),
+            None,
+        )
+        .unwrap();
+        assert_eq!(explicit_port.config.http_addr, "127.0.0.1:9002");
+
+        // PORT outranks an inherited serve profile, so a persistent
+        // HOLON_HOME cannot pin an old port across redeployments.
+        let initial = serve_profile_plan(
+            &["--listen", "0.0.0.0:7000", "--token", "profile-secret"],
+            &[],
+            None,
+        )
+        .unwrap();
+        let port_tier = serve_profile_plan_with_environment_listen(
+            &["--token", "tier-secret"],
+            Some("0.0.0.0:8081"),
+            Some("PORT"),
+            Some(&initial.profile),
+        )
+        .unwrap();
+        assert_eq!(port_tier.config.http_addr, "0.0.0.0:8081");
+        assert_eq!(port_tier.profile.listen.as_deref(), Some("0.0.0.0:8081"));
+        assert!(port_tier.startup_summary.contains("PORT(listen)"));
+
+        // PORT never weakens the non-loopback authentication requirement.
+        let error = serve_profile_plan_with_environment_listen(
+            &[],
+            Some("0.0.0.0:8081"),
+            Some("PORT"),
+            None,
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("requires --token"));
+
+        // Without flags and without PORT the loopback default is unchanged.
+        let plain = serve_profile_plan(&[], &[], None).unwrap();
+        assert_eq!(plain.config.http_addr, "127.0.0.1:7878");
+        assert_eq!(plain.profile.listen.as_deref(), Some("127.0.0.1:7878"));
     }
 
     #[test]
@@ -2018,6 +2158,7 @@ mod tests {
                 None,
                 Some(&metadata),
                 parse_serve_options_from_args(&[]).unwrap(),
+                None,
                 false,
             )
             .unwrap();
@@ -2049,6 +2190,7 @@ mod tests {
                 profile,
                 metadata,
                 parse_serve_options_from_args(&[])?,
+                None,
                 false,
             )
         });
@@ -2092,6 +2234,7 @@ mod tests {
             None,
             None,
             parse_serve_options_from_args(&[]).unwrap(),
+            None,
             false,
         )
         .err()
@@ -3735,6 +3878,7 @@ mod tests {
             None,
             None,
             empty(),
+            None,
             false,
         )
         .unwrap();
@@ -3756,6 +3900,7 @@ mod tests {
             Some(&profile),
             None,
             empty(),
+            None,
             false,
         )
         .unwrap();
@@ -3777,6 +3922,7 @@ mod tests {
             Some(&profile),
             None,
             empty(),
+            None,
             false,
         )
         .unwrap();
@@ -3846,6 +3992,7 @@ mod tests {
                             profile,
                             metadata,
                             parse_serve_options_from_args(&[])?,
+                            None,
                             false,
                         )
                     },
