@@ -23,7 +23,7 @@ order: 1
 <h2 id="clients-title">下载手机客户端</h2>
 <div class="home-actions">
 <a class="home-button home-button--quiet" href="https://apps.apple.com/us/app/holon-agent-remote/id6819978897">iOS · App Store ↗</a>
-<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.60.0/holon-android-v0.60.0.apk">下载 Android APK ↗</a>
+<a class="home-button home-button--quiet" href="https://github.com/holon-run/holon/releases/download/v0.61.0/holon-android-v0.61.0.apk">下载 Android APK ↗</a>
 </div>
 <p>连接电脑或服务器上的 Holon，使用时请保持 Holon 服务运行。</p>
 <p>备用渠道：<a href="https://testflight.apple.com/join/XkTfN12S">iOS · TestFlight 测试版 ↗</a>（以测试名额和版本可用性为准）。</p>
@@ -70,7 +70,7 @@ order: 1
 
 打开 `http://localhost:7878`，或运行 `holon tui`，创建第一个助手并安排任务。
 
-<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.60.0">v0.60.0</a></p>
+<p class="home-start__boundary">推荐版本：<a href="https://github.com/holon-run/holon/releases/tag/v0.61.0">v0.61.0</a></p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="/zh-CN/getting-started/">完整安装指南 · 各平台</a>
