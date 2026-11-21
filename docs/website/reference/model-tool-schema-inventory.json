@@ -6323,12 +6323,19 @@
       "stability": "experimental"
     },
     {
-      "description": "Search the web through Holon's web provider registry and return structured results and citations. Use WebFetch after search when full page content is needed.\n\n- Omit `provider` to use the instance's configured provider and routing mode.\n- Use `provider: \"auto\"` to use the automatic candidate order with the configured mode.\n- Use `provider: \"aggregate\"` to query the same automatic candidates in order for this call only. Results are deduplicated by canonical URL, and querying stops when enough unique results are found or the attempt limit is reached.\n- Use a concrete provider ID to query only that provider, with no fallback.\n\n`auto` and `aggregate` are reserved WebSearch argument values. If that ID is also registered, passing it explicitly is an error; rename the configured provider or omit the argument.\n\nExplicit aggregation can send the same query to multiple providers even when the default mode is `single`, increasing disclosure, costs, or latency. Set `web.search.max_provider_attempts` to `1` to cap each call at one attempt. This is not a provider allowlist and does not limit separate calls.\n",
+      "description": "Search the web through Holon's web provider registry and return structured results and citations. Use WebFetch after search when full page content is needed.\n\n- Omit `provider` to use the instance's configured provider and routing mode.\n- Use `provider: \"auto\"` to use the automatic candidate order with the configured mode.\n- Use `provider: \"aggregate\"` to query the same automatic candidates in order for this call only. Results are deduplicated by canonical URL, and querying stops when enough unique results are found or the attempt limit is reached.\n- Use a concrete provider ID to query only that provider, with no fallback.\n- Optional `language` and `region` hints bias results toward a language or a country. Only providers whose capability metadata declares region-or-language support consume them (Google maps `language` to `hl` and `region` to `gl`); other providers ignore both.\n\n`auto` and `aggregate` are reserved WebSearch argument values. If that ID is also registered, passing it explicitly is an error; rename the configured provider or omit the argument.\n\nExplicit aggregation can send the same query to multiple providers even when the default mode is `single`, increasing disclosure, costs, or latency. Set `web.search.max_provider_attempts` to `1` to cap each call at one attempt. This is not a provider allowlist and does not limit separate calls.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
         "additionalProperties": false,
         "properties": {
+          "language": {
+            "description": "Optional language hint; only providers whose capability metadata declares region-or-language support consume it.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "max_results": {
             "format": "uint",
             "minimum": 0.0,
@@ -6345,6 +6352,13 @@
           },
           "query": {
             "type": "string"
+          },
+          "region": {
+            "description": "Optional region hint consumed by the same providers.",
+            "type": [
+              "string",
+              "null"
+            ]
           }
         },
         "required": [

@@ -14,8 +14,7 @@ pub struct WebSearchArgs {
     pub query: String,
     pub max_results: Option<usize>,
     pub provider: Option<String>,
-    /// Optional language hint; only providers whose capability metadata
-    /// declares region-or-language support consume it.
+    /// Optional language hint; only providers whose capability metadata declares region-or-language support consume it.
     pub language: Option<String>,
     /// Optional region hint consumed by the same providers.
     pub region: Option<String>,
