@@ -9,6 +9,9 @@ import textwrap
 import unittest
 from pathlib import Path
 
+from scripts.ci_rust_selection import plan_outputs
+from scripts.ci_test_shards import CLI_SHARD, LIB_COMPILE_GROUPS, RUNTIME_MANIFEST
+
 
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOW = (ROOT / ".github/workflows/ci.yml").read_text()
@@ -144,7 +147,6 @@ class CiEventMatrixTests(unittest.TestCase):
                 "Smoke test image", "Validate Docker E2E runner",
                 "Export image for downstream E2E jobs", "Upload image for downstream E2E jobs",
             ],
-            "rust-build": ["Check generated snapshots"],
             "android": ["Verify Android screenshots and lint"],
         }.items():
             for name in names:
@@ -175,10 +177,6 @@ class CiEventMatrixTests(unittest.TestCase):
         self.assertIn("scheduler-e2e-required", jobs)
         for name in ("Build all targets, including benchmarks", "Check complete test crate with warnings denied"):
             self.assertFalse(condition(field(steps("rust-build")[name], "if", 8), "pull_request", cli))
-        self.assertFalse(condition(
-            field(steps("rust-build")["Check generated snapshots"], "if", 8),
-            "pull_request", cli,
-        ))
         self.assertTrue(condition(
             field(steps("rust-build")["Build application binaries"], "if", 8),
             "push", cli,
@@ -198,6 +196,20 @@ class CiEventMatrixTests(unittest.TestCase):
             JOBS["rust-test"],
         )
 
+    def test_full_rust_test_matrix_covers_the_shared_checks(self):
+        plan = plan_outputs(["Makefile"], {}, None)
+        self.assertIn("lib-a", plan["rust_test_shards"])
+        self.assertIn("c", plan["runtime_test_groups"])
+        self.assertIn("c", LIB_COMPILE_GROUPS["lib-a"])
+        self.assertIn("cli", plan["rust_test_shards"])
+
+        makefile = (ROOT / "Makefile").read_text()
+        snapshot_recipe = makefile.split("\nsnapshots-check:", 1)[1].split("\n\n", 1)[0]
+        snapshots = re.findall(r"(?m)^\tcargo test --test (\w+)$", snapshot_recipe)
+        self.assertTrue(snapshots)
+        self.assertTrue(set(snapshots) <= set(CLI_SHARD))
+        self.assertNotIn("make snapshots-check", JOBS["rust-build"])
+
     def run_shell(self, script, cwd, env):
         return subprocess.run(
             ["bash", "-e", "-o", "pipefail", "-c", script],
@@ -214,6 +226,35 @@ class CiEventMatrixTests(unittest.TestCase):
             "sys.exit(code)\n"
         )
         path.chmod(0o755)
+
+    def test_rust_build_compiles_runtime_libtest_when_full_test_matrix_is_skipped(self):
+        step = steps("rust-build")["Build all targets, including benchmarks"]
+        changed = {"rust", "root_rust"}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            log = root / "commands.jsonl"
+            self.stub(root / "cargo", log)
+            for event in EVENTS:
+                with self.subTest(event=event):
+                    jobs = selected(event, changed)
+                    self.assertIn("rust-build", jobs)
+                    self.assertTrue(condition(field(step, "if", 8), event, changed))
+                    skip = condition(field(step, "SKIP_RUNTIME_LIBTEST_BUILD", 10), event)
+                    log.unlink(missing_ok=True)
+                    result = self.run_shell(command(step), ROOT, {
+                        "PATH": f"{root}:{os.environ['PATH']}",
+                        "SKIP_RUNTIME_LIBTEST_BUILD": skip,
+                    })
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    expected = [["build", "--lib"]]
+                    if "rust-test" not in jobs:
+                        expected.append([
+                            "test", "--locked", "--manifest-path", RUNTIME_MANIFEST,
+                            "--lib", "--no-run",
+                        ])
+                    expected.append(["build", "--all-targets"])
+                    calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
+                    self.assertEqual(calls, expected)
 
     def test_independent_crates_check_on_push_and_test_elsewhere(self):
         step = steps("rust-build")["Check or test independent Rust crates"]

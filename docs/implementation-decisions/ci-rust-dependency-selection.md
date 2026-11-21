@@ -31,6 +31,9 @@ the tail and daemon CLI cases normally assigned to `misc`. The application
 still builds its runtime dependency and exercises the production binary
 through the existing downstream gates.
 
+The `cli` Rust Test job runs the five generated snapshot checks. Local
+snapshot validation is available through `make snapshots-check`.
+
 Changes confined to runtime test files with a single explicit compile
 group run that group on PRs and pushes. The selector reads the existing
 module cfg in source. Shared fixtures, module declarations, sources with
