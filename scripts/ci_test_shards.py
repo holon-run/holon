@@ -62,6 +62,13 @@ CLI_SHARD = (
     "cli_exit_codes",
     "release_version_contract",
 )
+# These application-facing targets stay in misc during a full sweep.
+APP_CLI_TARGETS = (
+    "agent_relation_backfill_cli",
+    "daemon_provider_recovery",
+    "tail_observation",
+    "tui_startup",
+)
 
 EXPLICIT_TARGETS = frozenset(CONCURRENT_TEST_TARGETS)
 EXPLICIT_TARGETS |= frozenset(CONTROL_SHARD)
@@ -127,11 +134,27 @@ def lib_environment() -> dict[str, str]:
     return {"CARGO_TARGET_DIR": str(REPO_ROOT / "target"), **os.environ}
 
 
-def lib_test_commands(group: str | None) -> list[list[str]]:
-    commands = [RUNTIME_LIB]
-    if group is None or group == "d":
+def lib_test_commands(
+    group: str | None, *, runtime: bool = True, application: bool = True,
+) -> list[list[str]]:
+    commands = [RUNTIME_LIB] if runtime else []
+    if application and group in (None, "d"):
         commands.append(["cargo", "test", "--locked", "--lib"])
     return commands
+
+
+def lib_shard_scope() -> tuple[list[str], bool]:
+    groups = json.loads(os.environ.get("CI_RUNTIME_TEST_GROUPS") or '["a","b","c","d"]')
+    if not isinstance(groups, list) or any(group not in ("a", "b", "c", "d") for group in groups):
+        raise ValueError("CI_RUNTIME_TEST_GROUPS must be a list of compile group names")
+    application = os.environ.get("CI_RUNTIME_TESTS_ONLY") != "true"
+    return groups, application
+
+
+def application_bin_shard() -> str:
+    # When only the application is affected, reuse the runtime dependency build
+    # for the application library and its binaries in the same job.
+    return "lib-b" if os.environ.get("CI_CLI_ONLY") == "true" else "lib-a"
 
 
 def validate_lib_group(names: list[str], group: str) -> None:
@@ -241,6 +264,11 @@ def suite_command(suite: str, all_targets: list[str], test_threads: str | None) 
     if suite in LIB_SHARDS:
         raise ValueError("lib CI shards must use run_lib_shard, not a full libtest build")
     members = suite_members(suite, all_targets)
+    if suite == "cli" and os.environ.get("CI_CLI_ONLY") == "true":
+        missing = set(APP_CLI_TARGETS) - set(all_targets)
+        if missing:
+            raise ValueError(f"unknown application integration targets: {sorted(missing)}")
+        members += APP_CLI_TARGETS
     command = ["cargo", "test"]
     if members is None:
         command += ["--lib", "--bins"]
@@ -251,10 +279,14 @@ def suite_command(suite: str, all_targets: list[str], test_threads: str | None) 
     return command + ["--", f"--test-threads={threads}"]
 
 
-def lib_test_names(group: str | None = None) -> list[str]:
+def lib_test_names(
+    group: str | None = None, commands: list[list[str]] | None = None,
+) -> list[str]:
     """Return every unit-test name in the lib target, spelled as libtest does."""
     names: list[str] = []
-    for command in lib_test_commands(group):
+    if commands is None:
+        commands = lib_test_commands(group)
+    for command in commands:
         completed = subprocess.run(
             command + ["--", "--list"],
             cwd=REPO_ROOT,
@@ -272,9 +304,19 @@ def lib_test_names(group: str | None = None) -> list[str]:
 
 def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
     threads = test_threads or THREAD_DEFAULTS["lib"]
+    runtime_groups, application = lib_shard_scope()
+    groups = LIB_COMPILE_GROUPS[shard]
+    run_bins = application and shard == application_bin_shard()
+    if not (set(groups).intersection(runtime_groups) or (application and "d" in groups) or run_bins):
+        raise ValueError(f"no library or binary targets selected for {shard}")
     failures = []
-    for group in LIB_COMPILE_GROUPS[shard]:
-        names = lib_test_names(group)
+    for group in groups:
+        commands = lib_test_commands(
+            group, runtime=group in runtime_groups, application=application,
+        )
+        if not commands:
+            continue
+        names = lib_test_names(group, commands)
         validate_lib_group(names, group)
         # Keep the real enumerations for cross-job union/overlap auditing.
         output = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
@@ -286,7 +328,7 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
             json.dumps(sorted(names), indent=2) + "\n"
         )
         print(f"lib compile group {group}: {len(names)} tests", file=sys.stderr)
-        for command in lib_test_commands(group):
+        for command in commands:
             completed = subprocess.run(
                 command + ["--", f"--test-threads={threads}"],
                 cwd=REPO_ROOT,
@@ -294,12 +336,12 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
             )
             if completed.returncode:
                 failures.append(completed)
-    if shard == LIB_SHARDS[0]:
+    if run_bins:
         # Binary unit tests are independent of the library's test-only cfg.
         completed = subprocess.run(
             ["cargo", "test", "--bins", "--", f"--test-threads={threads}"],
             cwd=REPO_ROOT,
-            env=lib_group_environment(LIB_COMPILE_GROUPS[shard][-1]),
+            env=lib_group_environment(groups[-1]),
         )
         if completed.returncode:
             failures.append(completed)
@@ -376,12 +418,18 @@ def command_args(args: argparse.Namespace) -> None:
         sys.exit(1)
     if args.suite in LIB_SHARDS:
         threads = args.test_threads or THREAD_DEFAULTS.get("lib", SERIAL_TEST_THREADS)
+        runtime_groups, application = lib_shard_scope()
         for group in LIB_COMPILE_GROUPS[args.suite]:
-            for command in lib_test_commands(group):
+            for command in lib_test_commands(
+                group, runtime=group in runtime_groups, application=application,
+            ):
                 print(
                     f"HOLON_LIB_TEST_SHARD={group} "
                     f"{' '.join(command)} -- --test-threads={threads}"
                 )
+        if application and args.suite == application_bin_shard():
+            group = LIB_COMPILE_GROUPS[args.suite][-1]
+            print(f"HOLON_LIB_TEST_SHARD={group} cargo test --bins -- --test-threads={threads}")
         return
     for command in suite_commands(args.suite, all_targets, args.test_threads):
         print(" ".join(command))

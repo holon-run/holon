@@ -197,7 +197,10 @@ class CiTestShardsTests(unittest.TestCase):
                     run.return_value.returncode = 0
                     ci_test_shards.run_lib_shard(job)
                 groups = ci_test_shards.LIB_COMPILE_GROUPS[job]
-                self.assertEqual(listing.call_args_list, [mock.call(g) for g in groups])
+                self.assertEqual(
+                    listing.call_args_list,
+                    [mock.call(g, ci_test_shards.lib_test_commands(g)) for g in groups],
+                )
                 self.assertEqual(run.call_count, 2 + (job == "lib-b") + expected_bins)
                 for call, group in zip(run.call_args_list, groups):
                     self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], group)
@@ -215,6 +218,48 @@ class CiTestShardsTests(unittest.TestCase):
                         ["cargo", "test", "--locked", "--lib", "--", "--test-threads=2"],
                     )
                     self.assertEqual(run.call_args_list[-1].kwargs["env"]["HOLON_LIB_TEST_SHARD"], "d")
+
+    def test_focused_library_jobs_only_use_the_selected_test_targets(self):
+        import tempfile
+        runtime = ci_test_shards.RUNTIME_LIB
+        app_lib = ["cargo", "test", "--locked", "--lib"]
+        app_bin = ["cargo", "test", "--bins"]
+        cli = {"CI_RUNTIME_TEST_GROUPS": "[]", "CI_RUNTIME_TESTS_ONLY": "false", "CI_CLI_ONLY": "true"}
+        db = {"CI_RUNTIME_TEST_GROUPS": '["b"]', "CI_RUNTIME_TESTS_ONLY": "true"}
+        for job, scope, names, commands in (
+            ("lib-b", cli, ["tail::tests::one"], [app_lib, app_bin]),
+            ("lib-b", db, ["runtime_db::tests::one"], [runtime]),
+        ):
+            with self.subTest(job=job, scope=scope), tempfile.TemporaryDirectory() as target:
+                with mock.patch.dict(ci_test_shards.os.environ, {**scope, "CARGO_TARGET_DIR": target}), \
+                     mock.patch.object(ci_test_shards, "lib_test_names", return_value=names) as listing, \
+                     mock.patch.object(ci_test_shards.subprocess, "run") as run:
+                    run.return_value.returncode = 0
+                    ci_test_shards.run_lib_shard(job)
+                if names:
+                    group = "b" if scope is db else "d"
+                    listing.assert_called_once_with(group, commands[:1])
+                else:
+                    listing.assert_not_called()
+                self.assertEqual(
+                    [call.args[0] for call in run.call_args_list],
+                    [command + ["--", "--test-threads=2"] for command in commands],
+                )
+
+    def test_cli_focus_includes_application_integrations_from_misc(self):
+        all_targets = sorted({*FAKE_TARGETS, *ci_test_shards.CLI_SHARD, *ci_test_shards.APP_CLI_TARGETS})
+        with mock.patch.dict(ci_test_shards.os.environ, {"CI_CLI_ONLY": "true"}):
+            command = ci_test_shards.suite_command("cli", all_targets, None)
+        self.assertEqual(
+            command[3:-2:2],
+            [*ci_test_shards.CLI_SHARD, *ci_test_shards.APP_CLI_TARGETS],
+        )
+
+    def test_mismatched_runtime_group_fails_rather_than_running_no_tests(self):
+        with mock.patch.dict(ci_test_shards.os.environ, {
+            "CI_RUNTIME_TEST_GROUPS": '["a"]', "CI_RUNTIME_TESTS_ONLY": "true",
+        }), self.assertRaisesRegex(ValueError, "no library or binary targets"):
+            ci_test_shards.run_lib_shard("lib-b")
 
     def test_missing_source_cfg_fails_before_running_tests(self):
         with mock.patch.object(ci_test_shards, "lib_test_names", return_value=["host::one"]), \

@@ -23,6 +23,9 @@ class RustSelectionTests(unittest.TestCase):
     def select(self, *paths):
         return selection.select(paths, self.manifests, lambda: self.graph)
 
+    def plan(self, *paths):
+        return selection.plan_outputs(paths, self.manifests, lambda: self.graph)
+
     def test_isolated_unit_and_integration_tests(self):
         for path in (
             "crates/holon-tui/src/tui/composer/tests.rs",
@@ -45,11 +48,53 @@ class RustSelectionTests(unittest.TestCase):
         self.assertEqual(self.select("crates/decision-local-onnx/src/lib.rs"),
                          (True, [], False))
 
-    def test_runtime_unit_tests_use_the_root_shards(self):
-        self.assertEqual(
-            self.select("crates/holon-runtime/src/runtime/tests/scheduler.rs"),
-            (True, [], False),
-        )
+    def test_cli_sources_select_application_targets(self):
+        plan = self.plan("src/cli.rs", "src/tail/stdout.rs", "docs/rfcs/tui-command-surface.md")
+        self.assertTrue(plan["root"])
+        self.assertTrue(plan["cli_only"])
+        self.assertFalse(plan["runtime_tests_only"])
+        self.assertEqual(plan["runtime_test_groups"], [])
+        self.assertEqual(plan["rust_test_shards"], ["lib-b", "cli"])
+
+    def test_runtime_unit_files_follow_explicit_module_gates(self):
+        for paths, groups, jobs in (
+            (["runtime/tests/scheduler.rs"], ["a"], ["lib-a"]),
+            (["runtime_db/reader_pool_tests.rs"], ["b"], ["lib-b"]),
+            (["runtime_db/reader_pool_http_tests.rs"], ["c"], ["lib-a"]),
+            (["worktree_tests.rs"], ["d"], ["lib-b"]),
+            (
+                ["runtime/tests/scheduler.rs", "runtime_db/reader_pool_tests.rs"],
+                ["a", "b"], ["lib-a", "lib-b"],
+            ),
+        ):
+            with self.subTest(paths=paths):
+                plan = self.plan(*(f"crates/holon-runtime/src/{path}" for path in paths))
+                self.assertFalse(plan["root"])
+                self.assertTrue(plan["runtime_tests_only"])
+                self.assertTrue(plan["crate_tests_only"])
+                self.assertEqual(plan["runtime_test_groups"], groups)
+                self.assertEqual(plan["rust_test_shards"], jobs)
+
+    def test_shared_or_unclassified_changes_keep_the_full_runtime_scope(self):
+        for path in (
+            "src/main.rs",
+            "crates/holon-runtime/src/runtime/tests/support.rs",
+            "crates/holon-runtime/src/runtime/tests/runtime_state.rs",
+            "crates/holon-runtime/src/runtime_db/test_support/task_fixture_tests.rs",
+            "crates/holon-runtime/src/runtime_db/tests.rs",
+            "crates/holon-runtime/src/runtime_db/missing_tests.rs",
+            "crates/holon-runtime/Cargo.lock",
+            "tests/support/runtime_helpers.rs",
+            "crates/holon-storage/src/lib.rs",
+        ):
+            with self.subTest(path=path):
+                plan = self.plan(path)
+                self.assertTrue(plan["root"])
+                self.assertFalse(plan["cli_only"])
+                self.assertFalse(plan["runtime_tests_only"])
+                self.assertEqual(plan["runtime_test_groups"], list("abcd"))
+                self.assertEqual(plan["rust_test_shards"], list(selection.RUST_TEST_SHARDS))
+        self.assertFalse(self.plan("src/cli.rs", "crates/holon-runtime/src/runtime/tests/scheduler.rs")["cli_only"])
 
     def test_dev_only_consumer_is_a_terminal_edge(self):
         graph = (
@@ -155,7 +200,10 @@ class RustSelectionTests(unittest.TestCase):
                 plan = {key: json.loads(value) for key, value in (
                     line.split("=", 1) for line in output.read_text().splitlines()
                 )}
-                self.assertEqual(plan, {"root": True, "crates": None, "crate_tests_only": False})
+                self.assertEqual(plan, self.plan())
+                self.assertTrue(plan["root"])
+                self.assertIsNone(plan["crates"])
+                self.assertEqual(plan["runtime_test_groups"], list("abcd"))
 
 
 if __name__ == "__main__":

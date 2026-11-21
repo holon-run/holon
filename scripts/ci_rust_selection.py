@@ -4,6 +4,7 @@
 import argparse
 import json
 import os
+import re
 import subprocess
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # Root Rust jobs check local-onnx through its feature and run the runtime
 # tests through the memory-bounded library shards.
 SKIP_STANDALONE = {"decision-local-onnx", "holon-runtime"}
+RUST_TEST_SHARDS = ("lib-a", "lib-b", "control", "cli", "misc")
 
 
 def crate_manifests():
@@ -109,27 +111,100 @@ def changed_paths(base):
     return [os.fsdecode(path) for path in output.split(b"\0") if path]
 
 
+def cli_source(path):
+    return path in (PurePosixPath("src/cli.rs"), PurePosixPath("src/tail.rs")) or (
+        path.parts[:2] in (("src", "cli"), ("src", "tail")) and path.suffix == ".rs"
+    )
+
+
+def runtime_test_group(path):
+    """Recognize an existing test file with a single explicit module gate."""
+    if path.parts[:2] != ("crates", "holon-runtime"):
+        return None
+    relative = PurePosixPath(*path.parts[2:])
+    if relative.suffix != ".rs" or relative.name == "mod.rs" or not test_only(relative):
+        return None
+    source = ROOT / path
+    if not source.is_file():
+        return None
+
+    group = r'holon_lib_test_shard = "([abcd])"'
+    gates = [
+        rf'#\[cfg\(all\(test, {group}\)\)\]',
+        rf'#\[cfg\({group}\)\]\s*#\[cfg\(test\)\]',
+        rf'#\[cfg\(test\)\]\s*#\[cfg\({group}\)\]',
+    ]
+    # runtime::tests is itself test-only, but some of its fixture modules
+    # are shared across compile groups. Only a gated child can be selected.
+    if relative.parent == PurePosixPath("src/runtime/tests"):
+        gates.append(rf'#\[cfg\({group}\)\]')
+    declaration = re.compile(
+        rf'(?m)^(?:{"|".join(gates)})\s*mod {re.escape(source.stem)};[ \t]*$'
+    )
+    parents = [source.parent / "mod.rs", source.parent.with_suffix(".rs")]
+    if relative.parent == PurePosixPath("src"):
+        parents.append(source.parent / "lib.rs")
+    groups = {
+        group
+        for parent in parents
+        if parent.is_file()
+        for match in declaration.finditer(parent.read_text(encoding="utf-8"))
+        for group in match.groups()
+        if group is not None
+    }
+    if len(groups) == 1:
+        return groups.pop()
+    return None
+
+
+def plan_outputs(paths, manifests, dependency_graph):
+    rust_paths = [
+        PurePosixPath(path) for path in paths
+        if not (path.startswith("docs/rfcs/") and path.endswith(".md"))
+    ]
+    cli_only = bool(rust_paths) and all(map(cli_source, rust_paths))
+    groups = [runtime_test_group(path) for path in rust_paths]
+    runtime_tests_only = bool(groups) and all(groups)
+    if cli_only:
+        root, crates, tests_only = True, [], False
+        runtime_groups = []
+        shards = ["lib-b", "cli"]
+    elif runtime_tests_only:
+        root, crates, tests_only = False, [], True
+        runtime_groups = sorted(set(groups))
+        owners = {"a": "lib-a", "b": "lib-b", "c": "lib-a", "d": "lib-b"}
+        shards = sorted({owners[group] for group in runtime_groups})
+    else:
+        root, crates, tests_only = select(paths, manifests, dependency_graph)
+        runtime_groups = list("abcd")
+        shards = list(RUST_TEST_SHARDS)
+
+    return {
+        "root": root,
+        "crates": crates,
+        "crate_tests_only": tests_only,
+        "cli_only": cli_only,
+        "runtime_tests_only": runtime_tests_only,
+        "runtime_test_groups": runtime_groups,
+        "rust_test_shards": shards,
+    }
+
+
 def plan(base):
     manifests = crate_manifests()
     try:
-        root, crates, tests_only = select(
+        outputs = plan_outputs(
             changed_paths(base), manifests,
             lambda: reverse_dependencies({"holon": ROOT / "Cargo.toml", **manifests}),
         )
     except (subprocess.SubprocessError, ValueError, KeyError, OSError) as error:
         print(f"::warning::Rust selection fell back to all checks ({type(error).__name__})")
-        root, crates, tests_only = True, None, False
-    outputs = {
-        "root": json.dumps(root),
-        "crates": json.dumps(crates),
-        "crate_tests_only": json.dumps(tests_only),
-    }
-    for key, value in outputs.items():
-        print(f"{key}={value}")
+        outputs = plan_outputs([], manifests, None)
+    lines = [f"{key}={json.dumps(value)}\n" for key, value in outputs.items()]
+    print("".join(lines), end="")
     if output := os.environ.get("GITHUB_OUTPUT"):
         with open(output, "a", encoding="utf-8") as file:
-            for key, value in outputs.items():
-                file.write(f"{key}={value}\n")
+            file.writelines(lines)
 
 
 def run_crates(command):
