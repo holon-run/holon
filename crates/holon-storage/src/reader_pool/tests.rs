@@ -569,12 +569,23 @@ fn reader_pool_diagnostics_record_lifecycle_and_success() -> Result<()> {
             && matches!(event, ReaderPoolEvent::LeaseFinished { .. })));
 
     drop(db);
-    let events = recorded_events();
+    let mut events = recorded_events();
     assert!(events.contains(&(
         ReaderPoolRole::Ordinary,
         ReaderPoolEvent::Dropped { capacity: 1 }
     )));
-    assert!(events.contains(&(ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionClosed)));
+
+    // A background connect can outlive the pool and close its connection later.
+    let closed = (ReaderPoolRole::Ordinary, ReaderPoolEvent::ConnectionClosed);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !events.contains(&closed) && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(5));
+        events = recorded_events();
+    }
+    assert!(
+        events.contains(&closed),
+        "missing ConnectionClosed after dropping the reader pool: {events:?}"
+    );
     Ok(())
 }
 
