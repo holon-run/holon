@@ -611,7 +611,6 @@ pub async fn observe<W: AsyncWrite + Unpin>(
     result.map(|_| ())
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod tests {
     use super::*;

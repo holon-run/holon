@@ -16,9 +16,8 @@ tests. The remaining database tests belong to `b`. Tests in either module
 that instantiate the application HTTP routes run with the HTTP tests in `c`.
 The test builds for `a`, `b`, and `e` omit the routes and OpenAPI.
 `LIB_C_OWNERS` lists the remaining owners in `c`. The other top-level
-modules belong to `d`, which also runs the application's CLI and tail unit
-tests. Shared fixtures retain their private paths. Tests are gated
-individually when a whole module cannot be gated.
+modules belong to `d`. Shared fixtures retain their private paths. Tests are
+gated individually when a whole module cannot be gated.
 The two-thread libtest setting applies to both crates.
 
 Partial libtests retain helper-only modules and mixed modules exporting fixtures.
@@ -35,11 +34,15 @@ job runs `b` and `d` in sequence. Scheduling the smaller transaction build in
 enumeration, and CI logs the listing command's elapsed time and peak RSS.
 The runner rejects empty lists, duplicate names, and tests outside their group,
 including a new ungated test that would otherwise run in all five groups.
-It saves the real lists as timing artifacts for union/overlap verification.
-`verify-lib-lists --baseline <original-name-list> --directory <list-directory>`
-compares all five real enumerations with an original libtest name multiset and
+It saves the runtime lists as timing artifacts for union and overlap verification.
+`verify-lib-lists --baseline <runtime-name-list> --directory <list-directory>`
+compares all five lists with a baseline runtime libtest enumeration and
 rejects missing, extra, or duplicate names.
-Binary unit tests run once, in `lib-a`. Integration test partitioning is unchanged.
+
+The application library and binary unit tests run together after groups `b`
+and `d` in `lib-b`. One Cargo invocation shares their dependency build and
+uses the complete application test targets. CI logs its elapsed time and peak RSS.
+
 The two library test jobs compile and run all five groups. In full PR,
 scheduled, and manual runs, `rust-build` relies on `lib-a` to compile group
 `c`. On main pushes with the all-target build, `rust-build` compiles
