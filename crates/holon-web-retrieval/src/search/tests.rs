@@ -21,6 +21,8 @@ fn routing_request(provider: Option<&str>) -> WebSearchRequest {
         query: "fixture query".to_string(),
         max_results: Some(2),
         provider: provider.map(str::to_string),
+        language: None,
+        region: None,
     }
 }
 
@@ -545,6 +547,8 @@ async fn fallback_mode_tries_explicit_order_until_success() {
             query: "test".to_string(),
             max_results: Some(5),
             provider: None,
+            language: None,
+            region: None,
         },
         &config,
     )
@@ -758,6 +762,8 @@ async fn single_provider_request_does_not_fallback() {
             query: "test".to_string(),
             max_results: Some(5),
             provider: Some("bad".to_string()),
+            language: None,
+            region: None,
         },
         &config,
     )
@@ -807,6 +813,8 @@ async fn aggregate_mode_deduplicates_urls_and_keeps_provenance() {
             query: "test".to_string(),
             max_results: Some(5),
             provider: None,
+            language: None,
+            region: None,
         },
         &config,
     )
@@ -1107,6 +1115,8 @@ async fn search_mock_searxng(base_url: &str) -> Result<WebSearchResponse> {
             query: "test".to_string(),
             max_results: Some(1),
             provider: Some("local_searxng".to_string()),
+            language: None,
+            region: None,
         },
         &config,
     )
@@ -1422,9 +1432,17 @@ async fn google_search_integration_success() {
     let base_url = google_mock_server(router).await;
 
     let provider = google_test_provider(&base_url);
-    let results = google_search("test", 5, "google_test", &provider, &test_fetch_config())
-        .await
-        .unwrap();
+    let results = google_search(
+        "test",
+        5,
+        None,
+        None,
+        "google_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].title, "Google");
     assert_eq!(results[0].url, "https://www.google.com");
@@ -1450,6 +1468,8 @@ async fn google_search_returns_empty_when_items_missing() {
     let results = google_search(
         "no matches",
         5,
+        None,
+        None,
         "google_test",
         &provider,
         &test_fetch_config(),
@@ -1463,9 +1483,17 @@ async fn google_search_returns_empty_when_items_missing() {
 async fn google_search_requires_engine_id() {
     let mut provider = test_provider(WebProviderKind::Google, "https://google.example");
     provider.engine_id = None;
-    let error = google_search("test", 5, "google_test", &provider, &test_fetch_config())
-        .await
-        .unwrap_err();
+    let error = google_search(
+        "test",
+        5,
+        None,
+        None,
+        "google_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
     assert_eq!(crate::test_tool_error(&error).kind, "provider_unavailable");
     let diagnostic = format!("{error:?}");
     assert!(diagnostic.contains("engine_id"));
@@ -1487,9 +1515,17 @@ async fn google_search_http_errors_are_redacted() {
         );
         let base_url = google_mock_server(router).await;
         let provider = google_test_provider(&base_url);
-        let error = google_search("test", 5, "google_test", &provider, &test_fetch_config())
-            .await
-            .unwrap_err();
+        let error = google_search(
+            "test",
+            5,
+            None,
+            None,
+            "google_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap_err();
         assert_eq!(crate::test_tool_error(&error).kind, expected_kind);
         let diagnostic = format!("{error:?}");
         assert!(!diagnostic.contains("test-key-123"));
@@ -1517,9 +1553,17 @@ async fn google_search_sends_engine_id_and_caps_num() {
     let base_url = google_mock_server(router).await;
 
     let provider = google_test_provider(&base_url);
-    let results = google_search("test", 25, "google_test", &provider, &test_fetch_config())
-        .await
-        .unwrap();
+    let results = google_search(
+        "test",
+        25,
+        None,
+        None,
+        "google_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 2);
     let queries = queries.lock().unwrap();
     assert_eq!(queries.len(), 1);
@@ -1527,6 +1571,118 @@ async fn google_search_sends_engine_id_and_caps_num() {
     assert!(queries[0].contains("num=10"));
     assert!(queries[0].contains("q=test"));
     assert!(!queries[0].contains("test-key-123"));
+    assert!(!queries[0].contains("hl="));
+    assert!(!queries[0].contains("gl="));
+}
+
+#[tokio::test]
+async fn google_search_sends_language_and_region_as_hl_gl() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(google_results_json())
+            }
+        }),
+    );
+    let base_url = google_mock_server(router).await;
+
+    let provider = google_test_provider(&base_url);
+    let results = google_search(
+        "test",
+        5,
+        Some("zh"),
+        Some("cn"),
+        "google_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+    {
+        let captured = queries.lock().unwrap();
+        assert_eq!(captured.len(), 1);
+        assert!(captured[0].contains("hl=zh"));
+        assert!(captured[0].contains("gl=cn"));
+    }
+
+    // Absent hints must not append empty hl/gl parameters.
+    let results = google_search(
+        "test",
+        5,
+        None,
+        None,
+        "google_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+    let captured = queries.lock().unwrap();
+    assert_eq!(captured.len(), 2);
+    assert!(!captured[1].contains("hl="));
+    assert!(!captured[1].contains("gl="));
+}
+
+#[tokio::test]
+async fn google_search_hl_gl_single_sided_trimmed_and_encoded() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(google_results_json())
+            }
+        }),
+    );
+    let base_url = google_mock_server(router).await;
+
+    let provider = google_test_provider(&base_url);
+    for (language, region) in [
+        // Language-only maps to hl; region stays absent.
+        (Some(" fr "), None),
+        // Region-only maps to gl; language stays absent.
+        (None, Some(" de ")),
+        // Values are URL-encoded when appended.
+        (Some("en US"), Some("x&y")),
+    ] {
+        let results = google_search(
+            "test",
+            5,
+            language,
+            region,
+            "google_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    let captured = queries.lock().unwrap();
+    assert_eq!(captured.len(), 3);
+    assert!(captured[0].contains("hl=fr"));
+    assert!(!captured[0].contains("gl="));
+    assert!(!captured[1].contains("hl="));
+    assert!(captured[1].contains("gl=de"));
+    assert!(captured[2].contains("hl=en+US"));
+    assert!(captured[2].contains("gl=x%26y"));
 }
 
 #[tokio::test]
@@ -1709,6 +1865,8 @@ async fn deepseek_search_empty_results_succeeds() {
             query: "no matches".to_string(),
             max_results: Some(5),
             provider: Some("deepseek_test".to_string()),
+            language: None,
+            region: None,
         },
         &config,
     )

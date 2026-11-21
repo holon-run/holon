@@ -37,6 +37,8 @@ mod tests {
                 query: "test query".into(),
                 max_results: None,
                 provider: Some("missing-search-provider".into()),
+                language: None,
+                region: None,
             },
             &config,
         )

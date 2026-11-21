@@ -4,6 +4,7 @@ Search the web through Holon's web provider registry and return structured resul
 - Use `provider: "auto"` to use the automatic candidate order with the configured mode.
 - Use `provider: "aggregate"` to query the same automatic candidates in order for this call only. Results are deduplicated by canonical URL, and querying stops when enough unique results are found or the attempt limit is reached.
 - Use a concrete provider ID to query only that provider, with no fallback.
+- Optional `language` and `region` hints bias results toward a language or a country. Only providers whose capability metadata declares region-or-language support consume them (Google maps `language` to `hl` and `region` to `gl`); other providers ignore both.
 
 `auto` and `aggregate` are reserved WebSearch argument values. If that ID is also registered, passing it explicitly is an error; rename the configured provider or omit the argument.
 

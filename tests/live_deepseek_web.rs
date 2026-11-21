@@ -119,6 +119,8 @@ async fn live_deepseek_web_search_and_fetch() -> Result<()> {
                 .into(),
             max_results: Some(2),
             provider: Some("deepseek".into()),
+            language: None,
+            region: None,
         },
         &config,
     )

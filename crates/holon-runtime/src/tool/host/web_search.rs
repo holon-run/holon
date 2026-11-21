@@ -62,6 +62,8 @@ pub(crate) async fn execute(
             query,
             max_results: args.max_results,
             provider: args.provider,
+            language: args.language,
+            region: args.region,
         },
         &web_config,
         Some(&dispatcher),

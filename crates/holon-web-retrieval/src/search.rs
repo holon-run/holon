@@ -68,6 +68,11 @@ pub struct WebSearchRequest {
     pub query: String,
     pub max_results: Option<usize>,
     pub provider: Option<String>,
+    /// Optional language hint; only providers whose capability metadata
+    /// declares `supports_region_or_language` consume it.
+    pub language: Option<String>,
+    /// Optional region hint consumed by the same providers.
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -204,6 +209,8 @@ pub async fn search_with_native(
                 map_error,
                 &request.query,
                 max_results,
+                request.language.as_deref(),
+                request.region.as_deref(),
                 &provider_id,
                 config,
                 native,
@@ -217,6 +224,8 @@ pub async fn search_with_native(
                 map_error,
                 &request.query,
                 max_results,
+                request.language.as_deref(),
+                request.region.as_deref(),
                 provider_order,
                 config,
                 native,
@@ -228,6 +237,8 @@ pub async fn search_with_native(
                 map_error,
                 &request.query,
                 max_results,
+                request.language.as_deref(),
+                request.region.as_deref(),
                 provider_order,
                 config,
                 native,
@@ -616,6 +627,8 @@ async fn search_fallback(
     map_error: fn(&anyhow::Error) -> ToolError,
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_order: Vec<String>,
     config: &WebConfig,
     native: Option<&dyn WebSearchNativeDispatcher>,
@@ -623,7 +636,17 @@ async fn search_fallback(
     let mut attempts = Vec::new();
     for provider_id in provider_order {
         let kind = provider_kind(&provider_id, config);
-        match search_one_provider(map_error, query, max_results, &provider_id, config, native).await
+        match search_one_provider(
+            map_error,
+            query,
+            max_results,
+            language,
+            region,
+            &provider_id,
+            config,
+            native,
+        )
+        .await
         {
             Ok(output) => {
                 attempts.push(successful_attempt(
@@ -648,6 +671,8 @@ async fn search_aggregate(
     map_error: fn(&anyhow::Error) -> ToolError,
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_order: Vec<String>,
     config: &WebConfig,
     native: Option<&dyn WebSearchNativeDispatcher>,
@@ -658,7 +683,17 @@ async fn search_aggregate(
 
     for provider_id in provider_order {
         let kind = provider_kind(&provider_id, config);
-        match search_one_provider(map_error, query, max_results, &provider_id, config, native).await
+        match search_one_provider(
+            map_error,
+            query,
+            max_results,
+            language,
+            region,
+            &provider_id,
+            config,
+            native,
+        )
+        .await
         {
             Ok(output) => {
                 attempts.push(successful_attempt(
@@ -827,6 +862,8 @@ async fn search_one_provider(
     map_error: fn(&anyhow::Error) -> ToolError,
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_id: &str,
     config: &WebConfig,
     native: Option<&dyn WebSearchNativeDispatcher>,
@@ -853,6 +890,8 @@ async fn search_one_provider(
                 map_error,
                 query,
                 max_results,
+                language,
+                region,
                 provider_id,
                 &provider_config,
                 &config.fetch,
@@ -867,6 +906,8 @@ async fn search_configured_provider(
     map_error: fn(&anyhow::Error) -> ToolError,
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_id: &str,
     provider_config: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
@@ -881,7 +922,16 @@ async fn search_configured_provider(
             brave_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
         WebProviderKind::Google => {
-            google_search(query, max_results, provider_id, provider_config, fetch_config).await
+            google_search(
+                query,
+                max_results,
+                language,
+                region,
+                provider_id,
+                provider_config,
+                fetch_config,
+            )
+            .await
         }
         WebProviderKind::TencentCloudWsa => {
             tencent_cloud_wsa_search(query, max_results, provider_id, provider_config, fetch_config)
@@ -1416,9 +1466,19 @@ async fn brave_search(
     Ok(results)
 }
 
+/// Append one `key=value` pair to a query string that was built by `format!`.
+fn append_encoded_pair(url: &mut String, key: &str, value: &str) {
+    url.push('&');
+    url.push_str(key);
+    url.push('=');
+    url.push_str(&form_urlencoded::byte_serialize(value.as_bytes()).collect::<String>());
+}
+
 async fn google_search(
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_id: &str,
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
@@ -1443,13 +1503,21 @@ async fn google_search(
         .as_deref()
         .unwrap_or("https://www.googleapis.com/customsearch/v1");
     // The Custom Search JSON API caps `num` at 10 results per request.
-    let url = format!(
+    let mut url = format!(
         "{}/?cx={}&num={}&q={}",
         base_url.trim_end_matches('/'),
         form_urlencoded::byte_serialize(engine_id.as_bytes()).collect::<String>(),
         max_results.min(10),
         form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>(),
     );
+    // Google's `supports_region_or_language` capability: `hl` biases the
+    // interface language and `gl` the result geolocation.
+    if let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) {
+        append_encoded_pair(&mut url, "hl", language);
+    }
+    if let Some(region) = region.map(str::trim).filter(|value| !value.is_empty()) {
+        append_encoded_pair(&mut url, "gl", region);
+    }
     let response = client
         .get(&url)
         .header("Accept", "application/json")

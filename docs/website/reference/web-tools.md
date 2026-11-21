@@ -108,6 +108,8 @@ structured results with citations.
 | `query` | yes | Search query string |
 | `max_results` | no | Maximum number of results to return |
 | `provider` | no | Omit for configured default/mode; `"auto"` for automatic candidate order; `"aggregate"` to query automatic candidates in order and deduplicate by canonical URL; or a specific provider ID (no fallback) |
+| `language` | no | Optional language hint; only providers whose capability metadata declares region-or-language support consume it (Google maps it to the `hl` parameter); other providers ignore it |
+| `region` | no | Optional region hint consumed by the same providers (Google maps it to the `gl` parameter) |
 
 ### Routing and provider discovery
 
