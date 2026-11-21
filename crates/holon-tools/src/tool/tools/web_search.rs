@@ -14,6 +14,11 @@ pub struct WebSearchArgs {
     pub query: String,
     pub max_results: Option<usize>,
     pub provider: Option<String>,
+    /// Optional language hint; only providers whose capability metadata
+    /// declares region-or-language support consume it.
+    pub language: Option<String>,
+    /// Optional region hint consumed by the same providers.
+    pub region: Option<String>,
 }
 
 pub fn definition() -> Result<BuiltinToolDefinition> {
@@ -49,5 +54,21 @@ mod tests {
             error.downcast_ref::<ToolError>().unwrap().kind,
             "invalid_tool_input"
         );
+    }
+
+    #[test]
+    fn web_search_accepts_optional_language_and_region_hints() {
+        let args: WebSearchArgs = parse_tool_args(
+            NAME,
+            &json!({
+                "query": "fixture",
+                "provider": "google",
+                "language": "zh",
+                "region": "cn"
+            }),
+        )
+        .expect("language and region are optional search hints");
+        assert_eq!(args.language.as_deref(), Some("zh"));
+        assert_eq!(args.region.as_deref(), Some("cn"));
     }
 }
