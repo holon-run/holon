@@ -5,6 +5,7 @@ use std::time::Duration;
 use anyhow::{anyhow, Result};
 use chrono::Utc;
 use reqwest::{Client, Response, StatusCode};
+use scraper::{Html, Selector};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tokio::{io::AsyncReadExt, process::Command, time};
@@ -19,6 +20,7 @@ use crate::{
 };
 
 const DUCKDUCKGO_PROVIDER_ID: &str = "duckduckgo";
+const DUCKDUCKGO_LITE_URL: &str = "https://lite.duckduckgo.com/lite/";
 const FIRECRAWL_PROVIDER_ID: &str = "firecrawl";
 const KEENABLE_PROVIDER_ID: &str = "keenable";
 
@@ -1220,19 +1222,10 @@ async fn duckduckgo_search(
     fetch_config: &crate::WebFetchConfig,
 ) -> Result<Vec<WebSearchResult>> {
     let encoded = form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>();
-    let url = format!("https://lite.duckduckgo.com/lite/?q={encoded}");
+    let url = format!("{DUCKDUCKGO_LITE_URL}?q={encoded}");
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let html = send_search_text(client.get(&url), DUCKDUCKGO_PROVIDER_ID, None).await?;
-    let results = parse_duckduckgo_lite_results(&html, max_results);
-    if results.is_empty() {
-        return Err(search_error(
-            "parse_failed",
-            "DuckDuckGo returned no parseable search results",
-            DUCKDUCKGO_PROVIDER_ID,
-            "configure SearXNG or an API-backed provider if DuckDuckGo HTML is unavailable",
-        ));
-    }
-    Ok(results)
+    parse_duckduckgo_lite_results(&html, max_results)
 }
 
 fn searxng_endpoint(provider_id: &str, provider: &WebProviderConfig) -> Result<Url> {
@@ -2599,84 +2592,83 @@ fn searxng_search_url(base_url: &str) -> Result<Url> {
     Ok(base.join("search")?)
 }
 
-fn parse_duckduckgo_lite_results(html: &str, max_results: usize) -> Vec<WebSearchResult> {
+fn parse_duckduckgo_lite_results(html: &str, max_results: usize) -> Result<Vec<WebSearchResult>> {
+    let document = Html::parse_document(html);
+    // Lite can return its bot challenge with a successful HTTP status.
+    let challenge = Selector::parse("form#challenge-form").expect("valid static selector");
+    if document.select(&challenge).next().is_some() {
+        return Err(search_error(
+            "provider_blocked",
+            "DuckDuckGo Lite returned an anti-bot challenge instead of search results",
+            DUCKDUCKGO_PROVIDER_ID,
+            "use another WebSearch provider, such as SearXNG or an API-backed provider",
+        ));
+    }
+
+    // Navigation (including "More at …") may have rel=nofollow too; use the
+    // result role rather than depending on attribute order or rel.
+    let result_links = Selector::parse("a.result-link[href]").expect("valid static selector");
+    let base_url = Url::parse(DUCKDUCKGO_LITE_URL).expect("valid DuckDuckGo Lite URL");
     let mut results = Vec::new();
-    let marker = "<a rel=\"nofollow\" href=\"";
-    let mut rest = html;
-    while let Some(start) = rest.find(marker) {
-        let after_marker = &rest[start + marker.len()..];
-        let Some(href_end) = after_marker.find('"') else {
-            break;
-        };
-        let href = decode_html_entities(&after_marker[..href_end]);
-        let after_href = &after_marker[href_end..];
-        let Some(text_start) = after_href.find('>') else {
-            break;
-        };
-        let after_text_start = &after_href[text_start + 1..];
-        let Some(text_end) = after_text_start.find("</a>") else {
-            break;
-        };
-        let title = decode_html_entities(&strip_tags(&after_text_start[..text_end]));
-        if let Some(url) = normalize_duckduckgo_url(&href) {
-            if let Some(result) = normalize_search_result(
-                DUCKDUCKGO_PROVIDER_ID,
-                results.len() + 1,
-                ProviderRawSearchResult {
-                    title,
-                    url,
-                    snippet: None,
-                    published_at: None,
-                    ..ProviderRawSearchResult::default()
-                },
-            ) {
-                results.push(result);
-            }
-        }
+    let mut seen_urls = BTreeSet::new();
+    for link in document.select(&result_links) {
         if results.len() >= max_results {
             break;
         }
-        rest = &after_text_start[text_end + "</a>".len()..];
+        let Some(url) = link
+            .value()
+            .attr("href")
+            .and_then(|href| normalize_duckduckgo_url(&base_url, href))
+        else {
+            continue;
+        };
+        let title = link.text().collect::<String>();
+        if let Some(result) = normalize_search_result(
+            DUCKDUCKGO_PROVIDER_ID,
+            results.len() + 1,
+            ProviderRawSearchResult {
+                title: title.split_whitespace().collect::<Vec<_>>().join(" "),
+                url,
+                ..ProviderRawSearchResult::default()
+            },
+        ) {
+            if seen_urls.insert(search_result_dedupe_key(&result)) {
+                results.push(result);
+            }
+        }
     }
-    results
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "DuckDuckGo Lite returned no recognized search results; the page may be empty or its markup may have changed",
+            DUCKDUCKGO_PROVIDER_ID,
+            "configure another WebSearch provider if DuckDuckGo Lite HTML is unavailable",
+        ));
+    }
+    Ok(results)
 }
 
-fn normalize_duckduckgo_url(value: &str) -> Option<String> {
-    if let Ok(url) = Url::parse(value) {
-        if let Some(target) = url
+fn normalize_duckduckgo_url(base: &Url, value: &str) -> Option<String> {
+    let value = value.trim();
+    let mut url = base.join(value).ok()?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return None;
+    }
+    let host = url.host_str()?;
+    if (host == "duckduckgo.com" || host.ends_with(".duckduckgo.com"))
+        && matches!(url.path(), "/l" | "/l/")
+    {
+        let target = url
             .query_pairs()
-            .find(|(key, _)| key == "uddg")
-            .map(|(_, value)| value.into_owned())
-        {
-            return Some(target);
-        }
-        return Some(url.to_string());
+            .find(|(key, _)| key == "uddg")?
+            .1
+            .into_owned();
+        url = Url::parse(&target).ok()?;
+    } else if Url::parse(value).is_err() {
+        // Only redirect wrappers are expected to have relative URLs.
+        return None;
     }
-    None
-}
-
-fn strip_tags(value: &str) -> String {
-    let mut output = String::new();
-    let mut in_tag = false;
-    for ch in value.chars() {
-        match ch {
-            '<' => in_tag = true,
-            '>' => in_tag = false,
-            _ if !in_tag => output.push(ch),
-            _ => {}
-        }
-    }
-    output
-}
-
-fn decode_html_entities(value: &str) -> String {
-    value
-        .replace("&amp;", "&")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&quot;", "\"")
-        .replace("&#x2F;", "/")
-        .replace("&#39;", "'")
+    matches!(url.scheme(), "http" | "https").then(|| url.to_string())
 }
 
 fn mapped_json_string(entry: &Value, path: &str) -> Option<String> {
