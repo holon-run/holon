@@ -361,54 +361,428 @@ jobs:
           # release-prep commit; never reuse the previous version's notes.
           # See docs/release.md ("Release notes").
           cat > release-notes.md <<EOF
-          This release concentrates on task lifecycle correctness and a current provider catalog: terminal task result commits fenced off by the task-row last-write-wins guard are now rejected, keeping late results from being misclassified under load; Tencent's exactly-retired endpoint IDs drop 33 stale routes after the official announcement; and the daily catalog adds Tencent Hy4, OpenCode Go Hy4, Bailian K3.1, and Fireworks K3.1 IDs with precise Tencent and Bailian effort adaptation. Web search gains a key-free Keenable provider, a composable chief-of-staff agent template arrives for explicitly delegated coordination, and test stability bounds the restart-path task result poll and unifies the observe_result observation window at 60 seconds with near-miss evidence. Documentation trims implementation detail from concepts, guides, and reference, folds in the v0.58.0 release documentation, and adds a conversation-driven code reviewer guide with a simplified reviewer blog.
+          This release lands the runtime-reliability milestone. The serialized shared writer is systematically unloaded: pure reads for prompt assembly, idle inputs, live input recovery, deferred-tool probes, and recent-tool qualification move off the writer queue or onto indexed, bounded paths; events pagination decodes by kind with bounded continuation; task re-preparation and live-input preparation skip work they do not need; and per-round provider tool-call and payload admission is bounded. Startup and recovery gain deterministic ordering with dispatch gated until recovery completes, safely rollback-able agent startup faults are isolated, and storage migrations converge legacy state forward (v113 pause records and WorkExecution fingerprints, the v115 Current alias fingerprint, retiring persisted needs_repair outcomes and the WorkItem NeedsRepair state). Cross-task shared system-prompt prefixes make provider prefix caches effective. The provider catalog adds GitHub Copilot OAuth login and per-provider request headers with refreshed endpoint capacities; clients unify agent status projection, avatars, and update delivery across web, iOS, and Android; and a dedicated reorganization moves roughly a hundred test suites into dedicated crate files while long-standing flakes get deterministic settling. Late in the release window, provider failure classification and operator-error evidence fidelity are hardened, over-budget inline images degrade to path references instead of failing the round, self-enqueue follow-ups keep their subsystem attribution in the model projection, read-only external-trigger diagnostic endpoints arrive, and the web roster goes live on the global hint stream. Final freeze additions keep the charged task-result recovery root replay ahead of older queued lineages, make cross-agent memory reads evidence-only (MemoryGet by message id plus a MemorySearch agent_ids scope), make WebSearch routing provider-addressable with a read-only provider listing, move the HTTP transport into a dedicated holon-server crate, derive agent-delivery authority as its own RuntimeInstruction instead of inheriting the calling turn, refresh the model catalog (Gemini 4 Neon in, retired MiniMax routes out), and let CI select Rust tests by changed-crate dependency impact.
 
           Supported binary assets for this release are Linux amd64, macOS amd64, macOS arm64, and Android. The macOS app DMG is a universal binary supporting both x86_64 and arm64. The Linux amd64 binary supports Ubuntu 22.04 or newer (glibc 2.35 or newer). The signed Android APK requires Android 8.0 (API 26) or newer; the AAB is for store submission, not direct installation.
 
           ## Summary
 
-          ### Task lifecycle correctness
-          - Terminal task result commits fenced off by the task-row last-write-wins guard are rejected ([#3915](https://github.com/holon-run/holon/pull/3915), fixing [#3910](https://github.com/holon-run/holon/issues/3910)), so a late task result is no longer misclassified as reducer-only under load.
+          ### Shared-writer contention and read-path performance
+          - Idle-input pure reads leave the shared writer queue ([#4294](https://github.com/holon-run/holon/pull/4294)), and live input recovery loads execution protocol state once instead of re-scanning full history inside the writer ([#4288](https://github.com/holon-run/holon/pull/4288), addressing [#4269](https://github.com/holon-run/holon/issues/4269)).
+          - Deferred-report probes are scoped to the tool_executions agent/turn index instead of scanning tool history inside the shared writer ([#4285](https://github.com/holon-run/holon/pull/4285), fixing [#4268](https://github.com/holon-run/holon/issues/4268)).
+          - Events pagination decodes by kind with bounded continuation pages ([#4246](https://github.com/holon-run/holon/pull/4246), addressing [#4190](https://github.com/holon-run/holon/issues/4190)), and display-level event filtering becomes a client-side behavior ([#4239](https://github.com/holon-run/holon/pull/4239), addressing [#4231](https://github.com/holon-run/holon/issues/4231)).
+          - Task re-preparation moves off the shared writer with incremental finalization ([#4228](https://github.com/holon-run/holon/pull/4228)), ordinary live inputs skip unnecessary task preparation ([#4247](https://github.com/holon-run/holon/pull/4247), addressing [#4043](https://github.com/holon-run/holon/issues/4043)), and prompt assembly gains a stable cross-task shared system-prompt prefix so provider prefix caches hit ([#4223](https://github.com/holon-run/holon/pull/4223), addressing [#4214](https://github.com/holon-run/holon/issues/4214)).
+          - Per-round provider tool-call and payload admission is bounded ([#4205](https://github.com/holon-run/holon/pull/4205), fixing [#4192](https://github.com/holon-run/holon/issues/4192)).
+          - State reads drop the sub-agent summary fan-out ([#4057](https://github.com/holon-run/holon/pull/4057)), per-agent message counts move into SQLite ([#4049](https://github.com/holon-run/holon/pull/4049)), recent-tools qualification becomes eligibility-key driven without linear history scans ([#4179](https://github.com/holon-run/holon/pull/4179), fixing [#4165](https://github.com/holon-run/holon/issues/4165)), and input closure preparation attributes slow reads by family and source ([#4221](https://github.com/holon-run/holon/pull/4221), fixing [#4191](https://github.com/holon-run/holon/issues/4191)).
 
-          ### Provider catalog
-          - The 2026-11-04 catalog refresh removes 33 routes across 14 exactly-retired Tencent endpoint IDs per the official announcement, keeping not-yet-expired M2.7 routes and surviving default mappings ([#3913](https://github.com/holon-run/holon/pull/3913)).
-          - The 2026-11-05 catalog refresh adds Tencent Hy4, OpenCode Go Hy4, Bailian K3.1, and Fireworks exact K3.1 IDs, and adapts Tencent and Bailian Chat effort lists precisely ([#3918](https://github.com/holon-run/holon/pull/3918)).
+          ### Startup, recovery, and migration correctness
+          - Runtime dispatch is retained through daemon startup and deferred until startup recovery completes (commits [c6b26f33](https://github.com/holon-run/holon/commit/c6b26f33d04efb0d18d58cce38dd113ad80be90b) and [4f9bfc4d](https://github.com/holon-run/holon/commit/4f9bfc4df5a7cb2e6a265279fe62360def03b82d)), startup recovery history lookups are bounded ([#4113](https://github.com/holon-run/holon/pull/4113), addressing [#4070](https://github.com/holon-run/holon/issues/4070)), and stale Current reads are released with bounded recovery scans ([#4118](https://github.com/holon-run/holon/pull/4118)).
+          - Safely rollback-able agent startup faults are isolated ([#4282](https://github.com/holon-run/holon/pull/4282), addressing [#4250](https://github.com/holon-run/holon/issues/4250)), and startup queue reentry resolves through canonical Turn attachment ([#3985](https://github.com/holon-run/holon/pull/3985)).
+          - Storage migrations converge legacy state forward: v113 WorkExecution pause records and qualification fingerprints ([#4279](https://github.com/holon-run/holon/pull/4279), addressing [#4270](https://github.com/holon-run/holon/issues/4270)), the v115 Current alias fingerprint no longer writes a frozen digest ([#4277](https://github.com/holon-run/holon/pull/4277), fixing the [#4264](https://github.com/holon-run/holon/issues/4264) upgrade crash-loop), and persisted needs_repair outcomes are retired with converged reads ([#4258](https://github.com/holon-run/holon/pull/4258), fixing [#4254](https://github.com/holon-run/holon/issues/4254)); the WorkItem NeedsRepair execution state is retired with bounded readmission and deterministic multi-wait adjudication ([#4230](https://github.com/holon-run/holon/pull/4230), fixing [#4217](https://github.com/holon-run/holon/issues/4217)).
 
-          ### Web search
-          - Web search gains the Keenable provider kind next to Brave, Tavily, Exa, Perplexity, and Firecrawl, working key-free with an optional credential profile ([#3911](https://github.com/holon-run/holon/pull/3911)).
+          ### Task lifecycle and scheduling correctness
+          - Charged task-result recovery roots keep their replay ahead of older queued lineages, so an exhausted recovery root cannot be starved by newer interleaved entries ([#4330](https://github.com/holon-run/holon/pull/4330)).
+          - Tool-result settlement interruption is attributed to shutdown instead of an unconfirmed settlement ([#4257](https://github.com/holon-run/holon/pull/4257)), and work-execution writes acknowledge timer cancellation ([#4164](https://github.com/holon-run/holon/pull/4164)).
+          - Timer wakes matching multiple active waits deterministically select one instead of being quarantined and permanently retired ([#4173](https://github.com/holon-run/holon/pull/4173), fixing [#3914](https://github.com/holon-run/holon/issues/3914)).
+          - Operator abort becomes a precise terminal cancellation for the exact input ([#4148](https://github.com/holon-run/holon/pull/4148)), and residual terminal pointers are admitted by the dispatch binding guard ([#4155](https://github.com/holon-run/holon/pull/4155), fixing [#4154](https://github.com/holon-run/holon/issues/4154)).
+          - Continuation resume stays canonical when clearing a retained wait ([#4253](https://github.com/holon-run/holon/pull/4253)), pending reply attribution and non-model disposal are unified ([#4182](https://github.com/holon-run/holon/pull/4182)), task status settlement mismatches are classified ([#3987](https://github.com/holon-run/holon/pull/3987)), and task reader re-preparation is classified as deferred instead of a write failure ([#4245](https://github.com/holon-run/holon/pull/4245), addressing [#4232](https://github.com/holon-run/holon/issues/4232)).
+
+          ### Provider catalog, models, and auth
+          - The model catalog adds Gemini 4 Neon and retires the retired MiniMax routes ([#4332](https://github.com/holon-run/holon/pull/4332)).
+          - Provider failure classification and error evidence harden: empty OpenAI responses classify as retryable provider failures ([#4302](https://github.com/holon-run/holon/pull/4302), fixing [#4295](https://github.com/holon-run/holon/issues/4295)), credential-scope denials explain the scope instead of tripping a local safety check ([#4303](https://github.com/holon-run/holon/pull/4303)), and provider operator errors keep typed code and budget evidence ([#4311](https://github.com/holon-run/holon/pull/4311), fixing [#4304](https://github.com/holon-run/holon/issues/4304)).
+          - Over-budget required markdown images degrade to path references instead of failing the whole round ([#4314](https://github.com/holon-run/holon/pull/4314), fixing [#4305](https://github.com/holon-run/holon/issues/4305)).
+          - GitHub Copilot OAuth login arrives as an optional provider ([#4208](https://github.com/holon-run/holon/pull/4208)) with a built-in default OAuth app for Copilot login ([#4238](https://github.com/holon-run/holon/pull/4238)), alongside per-provider request headers, trusted Go sessions, and the Messages standard entry ([#4116](https://github.com/holon-run/holon/pull/4116), addressing [#4072](https://github.com/holon-run/holon/issues/4072)).
+          - Provider dispatch is admitted atomically after request construction ([#4200](https://github.com/holon-run/holon/pull/4200)), settled exhausted recovery epochs are parked ([#4210](https://github.com/holon-run/holon/pull/4210)), and Gemini content refusals fail closed ([#4054](https://github.com/holon-run/holon/pull/4054), addressing [#3896](https://github.com/holon-run/holon/issues/3896)).
+          - The daily model catalog refreshes endpoint capacities, retires exactly-retired routes, and adds new model IDs across multiple updates ([#4242](https://github.com/holon-run/holon/pull/4242), [#4211](https://github.com/holon-run/holon/pull/4211), [#4085](https://github.com/holon-run/holon/pull/4085), [#4002](https://github.com/holon-run/holon/pull/4002), [#3971](https://github.com/holon-run/holon/pull/3971), [#3945](https://github.com/holon-run/holon/pull/3945), [#3935](https://github.com/holon-run/holon/pull/3935), [#3926](https://github.com/holon-run/holon/pull/3926)).
+          - OIDC accepts http loopback redirect URIs ([#3969](https://github.com/holon-run/holon/pull/3969), fixing [#3871](https://github.com/holon-run/holon/issues/3871)) and classifies client-caused callback failures as 4xx ([#3970](https://github.com/holon-run/holon/pull/3970), fixing [#3882](https://github.com/holon-run/holon/issues/3882)); agent state reads report pending reconciliation ([#4012](https://github.com/holon-run/holon/pull/4012)).
+          - Anthropic stream consumption ends on message_stop ([#3967](https://github.com/holon-run/holon/pull/3967)), and Token Plan DeepSeek 1017 routes get cache-friendly defaults ([#3966](https://github.com/holon-run/holon/pull/3966), fixing [#3925](https://github.com/holon-run/holon/issues/3925)).
+
+          ### Clients: web, iOS, and Android
+          - The web client subscribes to the global roster hint stream so roster status and unread counts refresh in real time ([#4312](https://github.com/holon-run/holon/pull/4312), fixing [#4310](https://github.com/holon-run/holon/issues/4310)).
+          - Agent status projection and avatar presentation unify across web, iOS, and Android ([#3974](https://github.com/holon-run/holon/pull/3974), [#3952](https://github.com/holon-run/holon/pull/3952), [#3968](https://github.com/holon-run/holon/pull/3968), [#3958](https://github.com/holon-run/holon/pull/3958), [#3957](https://github.com/holon-run/holon/pull/3957)), with authenticated avatar caching on Android ([#4237](https://github.com/holon-run/holon/pull/4237)) and a stable avatar cache plus conversation layout on iOS ([#4263](https://github.com/holon-run/holon/pull/4263)).
+          - The web composer accepts pasted files as attachments ([#4181](https://github.com/holon-run/holon/pull/4181)), the file browser opens in a floating window ([#4170](https://github.com/holon-run/holon/pull/4170)) and restores selections while reads are pending ([#4176](https://github.com/holon-run/holon/pull/4176)), bare host file paths autolink in markdown prose ([#4167](https://github.com/holon-run/holon/pull/4167)), and Android wraps long lines inside fenced code blocks ([#4292](https://github.com/holon-run/holon/pull/4292)).
+
+          ### Runtime APIs, tools, and workspace
+          - Cross-agent memory reads arrive as evidence-only: MemoryGet reads another agent's messages by id with audit marks ([#4321](https://github.com/holon-run/holon/pull/4321), fixing [#4318](https://github.com/holon-run/holon/issues/4318)), and MemorySearch accepts an optional agent_ids scope whose hits are marked as cross-agent evidence ([#4331](https://github.com/holon-run/holon/pull/4331), fixing [#4319](https://github.com/holon-run/holon/issues/4319)).
+          - WebSearch routing becomes provider-addressable: a single provider field selects auto, aggregate, or a specific provider id ([#4328](https://github.com/holon-run/holon/pull/4328), fixing [#4322](https://github.com/holon-run/holon/issues/4322)), and a read-only ListWebSearchProviders endpoint lists the addressable providers ([#4333](https://github.com/holon-run/holon/pull/4333), fixing [#4323](https://github.com/holon-run/holon/issues/4323)).
+          - The HTTP transport moves into a dedicated holon-server crate ([#4327](https://github.com/holon-run/holon/pull/4327)), and agent deliveries derive their own RuntimeInstruction authority instead of inheriting the calling turn's authority ([#4329](https://github.com/holon-run/holon/pull/4329), fixing [#4320](https://github.com/holon-run/holon/issues/4320)).
+          - Read-only external trigger diagnostic endpoints list registered triggers and let operators read existing webhook tokens ([#4297](https://github.com/holon-run/holon/pull/4297), fixing [#4233](https://github.com/holon-run/holon/issues/4233)); self-enqueue follow-ups keep their subsystem in the model projection ([#4313](https://github.com/holon-run/holon/pull/4313), fixing [#4308](https://github.com/holon-run/holon/issues/4308)).
+          - A dedicated GET /api/agents/{agent_id}/model read endpoint avoids the full status projection ([#4136](https://github.com/holon-run/holon/pull/4136), fixing [#4124](https://github.com/holon-run/holon/issues/4124)); versioned State read-only observation returns during commits ([#4171](https://github.com/holon-run/holon/pull/4171), addressing [#4166](https://github.com/holon-run/holon/issues/4166)); shared runtime database reader limits become configurable with bounded diagnostics ([#4001](https://github.com/holon-run/holon/pull/4001), [#4224](https://github.com/holon-run/holon/pull/4224)).
+          - ListSubagents becomes a lightweight direct-supervision query ([#4256](https://github.com/holon-run/holon/pull/4256)), ApplyPatch accepts bare @@ hunk headers ([#4276](https://github.com/holon-run/holon/pull/4276), fixing [#3041](https://github.com/holon-run/holon/issues/3041)), and CreateWorktree accepts an explicit absolute path ([#4196](https://github.com/holon-run/holon/pull/4196), fixing [#4178](https://github.com/holon-run/holon/issues/4178)).
 
           ### Agent templates
-          - A composable chief-of-staff agent template arrives for explicitly delegated coordination work, with updatable delegation records and no new permission transfer ([#3921](https://github.com/holon-run/holon/pull/3921)).
+          - New role templates arrive: research-steward ([#4026](https://github.com/holon-run/holon/pull/4026)), support-ops-steward ([#4099](https://github.com/holon-run/holon/pull/4099)), and design-steward with a pinned Mermaid docs skill ([#3937](https://github.com/holon-run/holon/pull/3937)).
 
-          ### Test stability
-          - The restart-path task result poll retries with a bounded budget instead of assuming the first poll returns the late task result ([#3909](https://github.com/holon-run/holon/pull/3909), fixing [#3881](https://github.com/holon-run/holon/issues/3881)).
-          - The observe_result helper unifies its observation windows at a 60-second constant and attaches near-miss evidence on timeout ([#3907](https://github.com/holon-run/holon/pull/3907), fixing [#3879](https://github.com/holon-run/holon/issues/3879)).
+          ### Test organization and CI stability
+          - CI selects Rust tests by changed crate and reverse dependencies ([#4317](https://github.com/holon-run/holon/pull/4317)) and keeps root tests and RFC edits within dependency selection ([#4324](https://github.com/holon-run/holon/pull/4324)).
+          - The Release E2E fairness owner gate stays active when a straggler barrier releases late ([#4315](https://github.com/holon-run/holon/pull/4315)).
+          - A dedicated series moves unit and contract tests into their owning crates and dedicated files (for example [#4306](https://github.com/holon-run/holon/pull/4306), [#4301](https://github.com/holon-run/holon/pull/4301), [#4299](https://github.com/holon-run/holon/pull/4299), [#4298](https://github.com/holon-run/holon/pull/4298), [#4296](https://github.com/holon-run/holon/pull/4296), [#4293](https://github.com/holon-run/holon/pull/4293), [#4291](https://github.com/holon-run/holon/pull/4291), [#4289](https://github.com/holon-run/holon/pull/4289), [#4287](https://github.com/holon-run/holon/pull/4287), [#4283](https://github.com/holon-run/holon/pull/4283), [#4278](https://github.com/holon-run/holon/pull/4278), [#4267](https://github.com/holon-run/holon/pull/4267), [#4261](https://github.com/holon-run/holon/pull/4261), [#4259](https://github.com/holon-run/holon/pull/4259)).
+          - Main push CI converges to a build-only fallback with tests on PRs and scheduled or manual checks ([#4255](https://github.com/holon-run/holon/pull/4255)); Apple platform checks move to daily and manual full runs ([#4204](https://github.com/holon-run/holon/pull/4204)); runtime libtest code generation splits ([#4129](https://github.com/holon-run/holon/pull/4129)); transient infra flakes get bounded retries ([#4108](https://github.com/holon-run/holon/pull/4108), fixing [#4098](https://github.com/holon-run/holon/issues/4098); [#4066](https://github.com/holon-run/holon/pull/4066)).
+          - Long-standing flakes get deterministic settling: bounded blocked-recheck waits ([#4193](https://github.com/holon-run/holon/pull/4193), fixing [#4185](https://github.com/holon-run/holon/issues/4185)), reply linkage settling before assertions ([#4130](https://github.com/holon-run/holon/pull/4130), fixing [#4121](https://github.com/holon-run/holon/issues/4121)), wt204 completion waiting ([#4132](https://github.com/holon-run/holon/pull/4132), fixing [#4122](https://github.com/holon-run/holon/issues/4122)), deterministic reaping assertions ([#3954](https://github.com/holon-run/holon/pull/3954), fixing [#3920](https://github.com/holon-run/holon/issues/3920)), CLI model status retries ([#4140](https://github.com/holon-run/holon/pull/4140), fixing [#4137](https://github.com/holon-run/holon/issues/4137)), tolerant state reads with weak recovery baselines ([#4063](https://github.com/holon-run/holon/pull/4063), fixing [#4061](https://github.com/holon-run/holon/issues/4061)), bounded observer publication availability checks ([#4003](https://github.com/holon-run/holon/pull/4003), fixing [#3986](https://github.com/holon-run/holon/issues/3986)), and run_once settle treating missing task records as settled ([#3956](https://github.com/holon-run/holon/pull/3956), fixing [#3936](https://github.com/holon-run/holon/issues/3936)).
 
           ### Documentation
-          - User documentation trims release-note-style implementation detail from concepts, guides, and reference ([#3912](https://github.com/holon-run/holon/pull/3912)), and the v0.58.0 release documentation is folded in ([#3908](https://github.com/holon-run/holon/pull/3908)).
-          - A conversation-driven code reviewer guide lands and the reviewer blog is simplified (commit [050f6918](https://github.com/holon-run/holon/commit/050f691811aa110fe2ddc3c05f0eda2ec2e99136)).
+          - A bilingual architecture comparison positions the dual-layer model, a verify-lifecycle guide reproduces runtime proofs end to end, and the zh-CN website gains guide updates (commits [d95a185b7](https://github.com/holon-run/holon/commit/d95a185b72da7c53e1174a462f4dea158e3915a9), [a14b4d527](https://github.com/holon-run/holon/commit/a14b4d527d0eeedda1b5fe0e6b85ae7aed85a58d), [3c59d9a5e](https://github.com/holon-run/holon/commit/3c59d9a5ebe4978e9548e34736490ff3dd9fa24b), [fd31c4c1e](https://github.com/holon-run/holon/commit/fd31c4c1ef02650d8f6a1bbf47c4e40dafbff066)).
+          - Bilingual guides land for Agent Inbox async events, self-hosted GlitchTip error alerts, self-hosted SearXNG web search, changedetection.io change-detection webhooks, and Casdoor OIDC single sign-on, plus rewrites of the agent memory, model configuration, delegation, workspace, scheduling, and conversation-first workflow guides, the local-model agent benchmark blog series, and a skill-bloat and role-based isolation blog and guide (direct commits).
 
           ## Pull requests
 
-          - [#3921](https://github.com/holon-run/holon/pull/3921) feat: 新增可组合的 chief-of-staff（幕僚长）模板
-          - [#3918](https://github.com/holon-run/holon/pull/3918) fix: 更新模型目录并修复腾讯与百炼 effort 适配
-          - [#3915](https://github.com/holon-run/holon/pull/3915) fix(runtime): reject terminal task result commits fenced off by task-row LWW
-          - [#3913](https://github.com/holon-run/holon/pull/3913) chore: 更新11月4日模型目录并修复腾讯精确退役路由
-          - [#3912](https://github.com/holon-run/holon/pull/3912) docs: trim implementation details from concepts, guides, and reference
-          - [#3911](https://github.com/holon-run/holon/pull/3911) feat(web): add Keenable search provider (works key-free)
-          - [#3909](https://github.com/holon-run/holon/pull/3909) test: restart 路径 task_result_wait 有界 poll 重试（修复 #3881 flake）
-          - [#3908](https://github.com/holon-run/holon/pull/3908) docs: update documentation for v0.58.0 release
-          - [#3907](https://github.com/holon-run/holon/pull/3907) test: observe_result 观察窗口统一 60s 常量并附 near-miss 证据 (Fixes #3879)
+          - [#4330](https://github.com/holon-run/holon/pull/4330) fix(runtime): keep the charged task-result recovery root replay ahead of older lineages
+          - [#4333](https://github.com/holon-run/holon/pull/4333) 新增只读 ListWebSearchProviders，发现可点名的搜索提供方
+          - [#4332](https://github.com/holon-run/holon/pull/4332) chore: 更新模型目录，加入 Gemini 4 Neon 并移除退役 MiniMax 路由
+          - [#4329](https://github.com/holon-run/holon/pull/4329) fix: 为 agent 投递派生 RuntimeInstruction
+          - [#4331](https://github.com/holon-run/holon/pull/4331) feat: add optional agent_ids scope to MemorySearch with cross-agent evidence marks
+          - [#4328](https://github.com/holon-run/holon/pull/4328) WebSearch：支持通过 provider 单次选择聚合路由
+          - [#4324](https://github.com/holon-run/holon/pull/4324) ci: keep root tests and RFC edits within dependency selection
+          - [#4327](https://github.com/holon-run/holon/pull/4327) refactor: extract HTTP transport into holon-server
+          - [#4321](https://github.com/holon-run/holon/pull/4321) feat: read cross-agent messages via MemoryGet as evidence-only
+          - [#4317](https://github.com/holon-run/holon/pull/4317) ci: select Rust tests by changed crate and reverse dependencies
+          - [#4312](https://github.com/holon-run/holon/pull/4312) feat(web): subscribe to the global roster hint stream so the roster stays live 
+          - [#4314](https://github.com/holon-run/holon/pull/4314) fix: degrade over-budget required markdown images to path references 
+          - [#4315](https://github.com/holon-run/holon/pull/4315) fix(e2e): keep the fairness owner gate when a straggler barrier releases late 
+          - [#4313](https://github.com/holon-run/holon/pull/4313) fix(context): 保留自队列 follow-up 的 subsystem 投影 
+          - [#4311](https://github.com/holon-run/holon/pull/4311) fix(provider): keep typed code and budget evidence in provider operator errors 
+          - [#4306](https://github.com/holon-run/holon/pull/4306) test: move remaining terminal composer tests into test module 
+          - [#4301](https://github.com/holon-run/holon/pull/4301) test: put legacy catalog fixtures under test support 
+          - [#4303](https://github.com/holon-run/holon/pull/4303) fix(provider): explain credential-scope denial instead of a local safety check 
+          - [#4302](https://github.com/holon-run/holon/pull/4302) fix(provider): classify empty OpenAI responses as retryable provider failures 
+          - [#4299](https://github.com/holon-run/holon/pull/4299) test: put remaining configuration tests in dedicated files 
+          - [#4297](https://github.com/holon-run/holon/pull/4297) feat: add read-only external trigger diagnostic endpoints 
+          - [#4298](https://github.com/holon-run/holon/pull/4298) test: put remaining provider tests in dedicated files 
+          - [#4296](https://github.com/holon-run/holon/pull/4296) test: put model client tests in dedicated files 
+          - [#4294](https://github.com/holon-run/holon/pull/4294) fix(runtime): 将空闲输入纯读移出共享 writer 队列 
+          - [#4293](https://github.com/holon-run/holon/pull/4293) test: put agent template and skill tests in dedicated files 
+          - [#4291](https://github.com/holon-run/holon/pull/4291) test: put GitHub crate unit tests in dedicated files 
+          - [#4292](https://github.com/holon-run/holon/pull/4292) fix(android): 消息中的 Markdown 围栏块长行自动换行 
+          - [#4289](https://github.com/holon-run/holon/pull/4289) test: put terminal unit tests in dedicated files 
+          - [#4279](https://github.com/holon-run/holon/pull/4279) fix: 兼容 v113 WorkExecution 的暂停记录读取 
+          - [#4288](https://github.com/holon-run/holon/pull/4288) perf: load execution protocol state once in live input recovery 
+          - [#4287](https://github.com/holon-run/holon/pull/4287) test: move client transport contracts into holon-client 
+          - [#4282](https://github.com/holon-run/holon/pull/4282) fix(runtime): 隔离可安全回滚的 Agent 启动故障 
+          - [#4285](https://github.com/holon-run/holon/pull/4285) fix: scope deferred-report probe to the tool_executions agent/turn index 
+          - [#4286](https://github.com/holon-run/holon/pull/4286) test: put web retrieval unit tests in dedicated files 
+          - [#4284](https://github.com/holon-run/holon/pull/4284) fix: 撤除 Seed Character 260628 未证实容量 
+          - [#4283](https://github.com/holon-run/holon/pull/4283) test: put observability unit tests in dedicated files 
+          - [#4281](https://github.com/holon-run/holon/pull/4281) test: move search filter contracts into holon-memory-index 
+          - [#4280](https://github.com/holon-run/holon/pull/4280) test(tools): pin bare remove-only hunk behavior; clarify RFC wording 
+          - [#4278](https://github.com/holon-run/holon/pull/4278) test: move storage contracts into holon-storage 
+          - [#4277](https://github.com/holon-run/holon/pull/4277) fix(storage): 修正 v115 的 Current alias 指纹 
+          - [#4276](https://github.com/holon-run/holon/pull/4276) feat(tools): accept bare @@ hunk headers in unified diff ApplyPatch 
+          - [#4274](https://github.com/holon-run/holon/pull/4274) fix: 正确处理 SearXNG 空结果和 403 提示 
+          - [#4275](https://github.com/holon-run/holon/pull/4275) test: 验证双读池在争用下的独立进展 
+          - [#4272](https://github.com/holon-run/holon/pull/4272) test: put holon-system unit tests in dedicated files 
+          - [#4267](https://github.com/holon-run/holon/pull/4267) test: move models.dev coverage into holon-model-catalog 
+          - [#4266](https://github.com/holon-run/holon/pull/4266) test: move tool contract coverage into holon-tools 
+          - [#4265](https://github.com/holon-run/holon/pull/4265) test: move domain contract coverage into holon-domain 
+          - [#4263](https://github.com/holon-run/holon/pull/4263) fix(ios): 稳定头像缓存与对话布局，修复历史窗口定位 
+          - [#4261](https://github.com/holon-run/holon/pull/4261) test: move captured history coverage into holon-context 
+          - [#4258](https://github.com/holon-run/holon/pull/4258) fix: retire persisted needs_repair outcomes and converge outcome reads 
+          - [#4260](https://github.com/holon-run/holon/pull/4260) test: move configuration-owned coverage into holon-config 
+          - [#4259](https://github.com/holon-run/holon/pull/4259) test: move provider protocol coverage into holon-provider 
+          - [#4256](https://github.com/holon-run/holon/pull/4256) feat: 新增轻量 ListSubagents 直接监督查询 
+          - [#4257](https://github.com/holon-run/holon/pull/4257) fix: attribute tool result settlement interruption to shutdown 
+          - [#4255](https://github.com/holon-run/holon/pull/4255) ci: 将 main push 收敛为纯构建兜底 
+          - [#4253](https://github.com/holon-run/holon/pull/4253) fix: keep continuation resume canonical when clearing a retained wait 
+          - [#4251](https://github.com/holon-run/holon/pull/4251) refactor: extract the Holon web retrieval crate 
+          - [#4248](https://github.com/holon-run/holon/pull/4248) test: observe child Task preparation without tracing 
+          - [#4246](https://github.com/holon-run/holon/pull/4246) perf: Events kind 前置与有界扫描续页 (#4190) 
+          - [#4249](https://github.com/holon-run/holon/pull/4249) refactor: move prompt projection evaluation into holon-context 
+          - [#4247](https://github.com/holon-run/holon/pull/4247) perf: 按实际依赖跳过普通 live 输入的 Task 准备 
+          - [#4245](https://github.com/holon-run/holon/pull/4245) fix(storage): classify task reader reprepare as deferred, not write failure 
+          - [#4234](https://github.com/holon-run/holon/pull/4234) refactor: move memory document projection into holon-memory-index 
+          - [#4242](https://github.com/holon-run/holon/pull/4242) fix: 更新模型目录与特殊端点容量及退役路由 
+          - [#4239](https://github.com/holon-run/holon/pull/4239) fix: keep Events display filtering client-side 
+          - [#4230](https://github.com/holon-run/holon/pull/4230) fix: retire the WorkItem NeedsRepair execution state 
+          - [#4238](https://github.com/holon-run/holon/pull/4238) feat: 为 Copilot 登录内置默认 OAuth App 
+          - [#4237](https://github.com/holon-run/holon/pull/4237) fix(android): persist scoped agent avatar cache 
+          - [#4235](https://github.com/holon-run/holon/pull/4235) test: make Task fixture bootstrap explicit 
+          - [#4228](https://github.com/holon-run/holon/pull/4228) perf: 将 Task 重准备迁出共享 writer 并增量收尾 
+          - [#4229](https://github.com/holon-run/holon/pull/4229) fix: wait for OAuth credential reload before model discovery 
+          - [#4227](https://github.com/holon-run/holon/pull/4227) refactor: extract the Holon agent templates crate 
+          - [#4226](https://github.com/holon-run/holon/pull/4226) test: isolate batched invocation test on a local large stack 
+          - [#4223](https://github.com/holon-run/holon/pull/4223) feat: 显式分离跨任务共享系统提示前缀 
+          - [#4224](https://github.com/holon-run/holon/pull/4224) feat: 补齐 RuntimeDb 读池有界诊断与契约（P1） 
+          - [#4225](https://github.com/holon-run/holon/pull/4225) refactor: extract the Holon GitHub crate 
+          - [#4221](https://github.com/holon-run/holon/pull/4221) feat: attribute input closure preparation by family and source 
+          - [#4220](https://github.com/holon-run/holon/pull/4220) fix: align recovered batch admission with execution 
+          - [#4218](https://github.com/holon-run/holon/pull/4218) test: make existing-agent reply ordering deterministic 
+          - [#4208](https://github.com/holon-run/holon/pull/4208) feat(provider): optional GitHub Copilot OAuth login and provider 
+          - [#4215](https://github.com/holon-run/holon/pull/4215) fix: stop workspace activation from invalidating the memory index 
+          - [#4211](https://github.com/holon-run/holon/pull/4211) feat: model catalog updates for 2026-11-17 
+          - [#4205](https://github.com/holon-run/holon/pull/4205) feat: enforce bounded per-round provider tool-call and payload admission 
+          - [#4210](https://github.com/holon-run/holon/pull/4210) fix: park settled exhausted provider recovery epochs 
+          - [#4203](https://github.com/holon-run/holon/pull/4203) refactor: move SQLite maintenance into holon-storage 
+          - [#4204](https://github.com/holon-run/holon/pull/4204) fix: 将 Apple CI 限于每日及手动全量检查 
+          - [#4200](https://github.com/holon-run/holon/pull/4200) fix: admit provider dispatch atomically after request construction 
+          - [#4196](https://github.com/holon-run/holon/pull/4196) feat(worktree): allow explicit absolute path for CreateWorktree 
+          - [#4195](https://github.com/holon-run/holon/pull/4195) refactor: extract the Holon observability crate 
+          - [#4193](https://github.com/holon-run/holon/pull/4193) test: bound blocked-recheck turn wait by completion predicate 
+          - [#4188](https://github.com/holon-run/holon/pull/4188) refactor: extract the Holon memory index crate 
+          - [#4187](https://github.com/holon-run/holon/pull/4187) refactor: extract the Holon built-in tools crate 
+          - [#4184](https://github.com/holon-run/holon/pull/4184) fix(runtime-db): work-item-source-revision 备份空间预检与 --batch 单份回滚备份 
+          - [#4186](https://github.com/holon-run/holon/pull/4186) fix(runtime): 废弃历史事件 ACK 并解耦 live 资格 
+          - [#4183](https://github.com/holon-run/holon/pull/4183) refactor: extract the Holon context crate 
+          - [#4182](https://github.com/holon-run/holon/pull/4182) fix(runtime): 统一 pending reply 归属与非模型处置 
+          - [#4181](https://github.com/holon-run/holon/pull/4181) feat(web): paste files into the composer as attachments 
+          - [#4180](https://github.com/holon-run/holon/pull/4180) refactor: extract the Holon client and terminal crates 
+          - [#4179](https://github.com/holon-run/holon/pull/4179) fix(runtime-db): RecentTools 窗口选择改为资格键驱动，消除随无关历史线性扫描 
+          - [#4171](https://github.com/holon-run/holon/pull/4171) feat: 提交期间返回版本化 State 只读观察 
+          - [#4175](https://github.com/holon-run/holon/pull/4175) refactor: extract the Holon configuration crate 
+          - [#4176](https://github.com/holon-run/holon/pull/4176) fix(web): restore floating file browser selection while its read is pending 
+          - [#4173](https://github.com/holon-run/holon/pull/4173) fix(scheduler): timer fire 多 wait 匹配时确定性择一，消除 canonical_wait_ambiguous 丢 wake (#3914) 
+          - [#4170](https://github.com/holon-run/holon/pull/4170) feat(web): open the file browser in a floating window from the side panel 
+          - [#4168](https://github.com/holon-run/holon/pull/4168) refactor: extract the Holon model catalog crate 
+          - [#4167](https://github.com/holon-run/holon/pull/4167) fix(web): autolink bare host file paths in markdown prose 
+          - [#4164](https://github.com/holon-run/holon/pull/4164) fix: acknowledge timer cancellation work execution writes 
+          - [#4162](https://github.com/holon-run/holon/pull/4162) test: 确定性覆盖 Gemini 拒绝后的命令完成时序 
+          - [#4157](https://github.com/holon-run/holon/pull/4157) refactor: complete the Holon provider crate extraction 
+          - [#4155](https://github.com/holon-run/holon/pull/4155) fix(runtime): admit residual terminal pointer after index advance in dispatch binding guard 
+          - [#4148](https://github.com/holon-run/holon/pull/4148) fix: 将 operator abort 作为精确输入的终态取消 
+          - [#4153](https://github.com/holon-run/holon/pull/4153) fix: keep agent list observable during ordinary commits 
+          - [#4152](https://github.com/holon-run/holon/pull/4152) refactor: extract the Holon Chat Completions provider 
+          - [#4149](https://github.com/holon-run/holon/pull/4149) fix: defer stale resident domains to fresh preparation after commit 
+          - [#4150](https://github.com/holon-run/holon/pull/4150) fix: classify event page reconciliation as retryable service unavailable 
+          - [#4147](https://github.com/holon-run/holon/pull/4147) refactor: extract holon-storage repositories and schema migrations 
+          - [#4144](https://github.com/holon-run/holon/pull/4144) fix: keep historical Work sources out of input recovery 
+          - [#4142](https://github.com/holon-run/holon/pull/4142) refactor: extract SQLite infrastructure into holon-storage 
+          - [#4143](https://github.com/holon-run/holon/pull/4143) fix: admit read-only cold history when state is unavailable 
+          - [#4139](https://github.com/holon-run/holon/pull/4139) fix: retain dispatch memory address after physical run cleanup 
+          - [#4141](https://github.com/holon-run/holon/pull/4141) fix(runtime): prepare Scheduling before command launch 
+          - [#4140](https://github.com/holon-run/holon/pull/4140) test: retry transient 503 when reading full agent status in CLI model test 
+          - [#4134](https://github.com/holon-run/holon/pull/4134) perf(runtime): reuse prepared task snapshots across clock ticks 
+          - [#4135](https://github.com/holon-run/holon/pull/4135) refactor: extract host system operations into holon-system 
+          - [#4136](https://github.com/holon-run/holon/pull/4136) feat: dedicated GET /api/agents/{agent_id}/model read endpoint 
+          - [#4128](https://github.com/holon-run/holon/pull/4128) refactor: migrate shared runtime types to holon-domain 
+          - [#4132](https://github.com/holon-run/holon/pull/4132) test: settle-recheck terminal records in wt204 completion wait 
+          - [#4129](https://github.com/holon-run/holon/pull/4129) fix(ci): split runtime libtest code generation 
+          - [#4131](https://github.com/holon-run/holon/pull/4131) fix: require complete agent lists and trace unavailable members 
+          - [#4130](https://github.com/holon-run/holon/pull/4130) test: settle reply linkage detail before agent_message_wait assert 
+          - [#4126](https://github.com/holon-run/holon/pull/4126) fix: keep agent status queries scoped to one agent 
+          - [#4127](https://github.com/holon-run/holon/pull/4127) perf: 扩展运行时基准的历史数据规模覆盖 
+          - [#4125](https://github.com/holon-run/holon/pull/4125) refactor: extract shared Holon domain types 
+          - [#4119](https://github.com/holon-run/holon/pull/4119) fix: defer prompt claims on skills inventory contention 
+          - [#4116](https://github.com/holon-run/holon/pull/4116) feat: provider headers、可信 Go session 与 Messages 标准入口 
+          - [#4118](https://github.com/holon-run/holon/pull/4118) fix(runtime): release stale Current reads and bound recovery scans 
+          - [#4117](https://github.com/holon-run/holon/pull/4117) test: fix task result batching and supervised invocation regressions 
+          - [#4113](https://github.com/holon-run/holon/pull/4113) perf(runtime): bound startup recovery history lookups 
+          - [#4108](https://github.com/holon-run/holon/pull/4108) fix: retry Android packaging flake signature in nightly CI (fixes #4098) 
+          - [#4106](https://github.com/holon-run/holon/pull/4106) test: settle terminal records before wt201 completed-count assertion (refs #4077) 
+          - [#4105](https://github.com/holon-run/holon/pull/4105) perf: reuse the recent Task output window across heads 
+          - [#4100](https://github.com/holon-run/holon/pull/4100) refactor: /state 仅共享在途响应，移除完成字节留存 
+          - [#4101](https://github.com/holon-run/holon/pull/4101) fix: converge task result rechecks and retain waiting replies 
+          - [#4099](https://github.com/holon-run/holon/pull/4099) feat: add the support-ops-steward template 
+          - [#4097](https://github.com/holon-run/holon/pull/4097) fix: isolate unavailable agent list publications 
+          - [#4095](https://github.com/holon-run/holon/pull/4095) perf: shrink TaskResult Defer transactions on the shared writer 
+          - [#4093](https://github.com/holon-run/holon/pull/4093) perf: 从共享 WorkspaceContext 组装 State 元数据 
+          - [#4092](https://github.com/holon-run/holon/pull/4092) perf: attribute task result defer writer and publication phases 
+          - [#4090](https://github.com/holon-run/holon/pull/4090) perf: reuse existing default ingress without a writer ticket 
+          - [#4089](https://github.com/holon-run/holon/pull/4089) perf: 使用已发布事实组装已加载 agent 的 State 
+          - [#4091](https://github.com/holon-run/holon/pull/4091) perf: index task result settlement reverse lookups 
+          - [#4088](https://github.com/holon-run/holon/pull/4088) perf: read prompt input observations off the shared writer 
+          - [#4084](https://github.com/holon-run/holon/pull/4084) perf: 限制 State 活跃摘要并按需加载历史 
+          - [#4085](https://github.com/holon-run/holon/pull/4085) fix: align Gemini REST limits and refresh Hydrogen catalog 
+          - [#4083](https://github.com/holon-run/holon/pull/4083) perf: avoid repeated Task coverage parsing in result writes 
+          - [#4081](https://github.com/holon-run/holon/pull/4081) test: canonicalize temporary paths in worktree fixtures 
+          - [#4079](https://github.com/holon-run/holon/pull/4079) fix: settle Host test reads and preserve legacy Turn coverage 
+          - [#4078](https://github.com/holon-run/holon/pull/4078) docs: close out resident agent state acceptance 
+          - [#4076](https://github.com/holon-run/holon/pull/4076) perf: attribute PreparedInput writes and narrow queue claim validation 
+          - [#4075](https://github.com/holon-run/holon/pull/4075) perf: bound Task preparation during dispatch 
+          - [#4073](https://github.com/holon-run/holon/pull/4073) perf: reuse resident Turn transcript coverage 
+          - [#4068](https://github.com/holon-run/holon/pull/4068) fix: index qualified turn transcript lookups 
+          - [#4067](https://github.com/holon-run/holon/pull/4067) chore: attribute runtime database write contention 
+          - [#4066](https://github.com/holon-run/holon/pull/4066) fix: retry Chromium install in Web E2E to absorb runner DNS flakes 
+          - [#4063](https://github.com/holon-run/holon/pull/4063) fix: restore tolerant state reads and weak recovery baselines after #4051 
+          - [#4062](https://github.com/holon-run/holon/pull/4062) Project pending input from committed Queue 
+          - [#4060](https://github.com/holon-run/holon/pull/4060) perf: remove exact message counts from runtime state 
+          - [#4058](https://github.com/holon-run/holon/pull/4058) fix: await settled default runtime in parent summary visibility test 
+          - [#4059](https://github.com/holon-run/holon/pull/4059) Keep warmed Admission on Ready across unrelated Work revisions 
+          - [#4049](https://github.com/holon-run/holon/pull/4049) perf: maintain per-agent message counts in SQLite 
+          - [#4057](https://github.com/holon-run/holon/pull/4057) perf: 移除 State 读取的子 agent 摘要扇出 
+          - [#4050](https://github.com/holon-run/holon/pull/4050) perf: isolate Input and Scheduling qualification writes 
+          - [#4056](https://github.com/holon-run/holon/pull/4056) fix: 修正火山原生 Responses 默认输出 
+          - [#4047](https://github.com/holon-run/holon/pull/4047) perf: drop Native Input identity tree estimates from writer 
+          - [#4051](https://github.com/holon-run/holon/pull/4051) Use Ready context captures and the published Agent state baseline 
+          - [#4048](https://github.com/holon-run/holon/pull/4048) refactor: use execution attempts for batch and scheduled commands 
+          - [#4053](https://github.com/holon-run/holon/pull/4053) test: settle default runtime activation in parent cleanup test 
+          - [#4054](https://github.com/holon-run/holon/pull/4054) fix(provider): fail closed on Gemini content refusal 
+          - [#4046](https://github.com/holon-run/holon/pull/4046) fix: tolerate failed tool arguments during context preparation 
+          - [#4042](https://github.com/holon-run/holon/pull/4042) perf: initialize Input birth cursors outside history loads 
+          - [#4041](https://github.com/holon-run/holon/pull/4041) refactor: capture ready prompt previews from one publication 
+          - [#4040](https://github.com/holon-run/holon/pull/4040) refactor: persist ExecCommand attempts before spawning 
+          - [#4037](https://github.com/holon-run/holon/pull/4037) refactor: read preview closure from the ready agent snapshot 
+          - [#4039](https://github.com/holon-run/holon/pull/4039) perf: remove redundant tool-result writer probes 
+          - [#4038](https://github.com/holon-run/holon/pull/4038) perf: serve agent lists from committed memory 
+          - [#4034](https://github.com/holon-run/holon/pull/4034) fix: coalesce session activity and skip empty Audit writes 
+          - [#4036](https://github.com/holon-run/holon/pull/4036) fix: recover original external command tool results 
+          - [#4033](https://github.com/holon-run/holon/pull/4033) refactor: publish queue posture with loaded agent state 
+          - [#4032](https://github.com/holon-run/holon/pull/4032) fix: 避免 iOS live-test 配对票据在构建期间过期 
+          - [#4022](https://github.com/holon-run/holon/pull/4022) fix: 解耦 TUI Conversation 与 State 同步 
+          - [#4028](https://github.com/holon-run/holon/pull/4028) refactor: validate the Context owner from the Ready publication 
+          - [#4025](https://github.com/holon-run/holon/pull/4025) refactor: assemble loaded context from the reserved publication 
+          - [#4026](https://github.com/holon-run/holon/pull/4026) feat: add the research-steward template 
+          - [#4023](https://github.com/holon-run/holon/pull/4023) test: settle agent_summary reads in spawn_public_named test 
+          - [#4021](https://github.com/holon-run/holon/pull/4021) fix: 修正 Carbon 原生输出投影并刷新模型目录 
+          - [#4020](https://github.com/holon-run/holon/pull/4020) fix: bound qualified transcript window reads 
+          - [#4018](https://github.com/holon-run/holon/pull/4018) perf: avoid preparing CurrentQuery for loaded agent lists 
+          - [#4017](https://github.com/holon-run/holon/pull/4017) refactor: publish legacy completion previews with Work 
+          - [#4006](https://github.com/holon-run/holon/pull/4006) refactor: skip identity reads for covered input preparation 
+          - [#4010](https://github.com/holon-run/holon/pull/4010) fix: read task result schema from pooled readers 
+          - [#4013](https://github.com/holon-run/holon/pull/4013) fix: defer dispatch on context resource contention 
+          - [#4014](https://github.com/holon-run/holon/pull/4014) fix: service recovery-acceptance control inside the result dispatch 
+          - [#4007](https://github.com/holon-run/holon/pull/4007) fix: track context resources across path aliases 
+          - [#4011](https://github.com/holon-run/holon/pull/4011) fix: preserve OAuth refresh classification and safe diagnostics 
+          - [#4012](https://github.com/holon-run/holon/pull/4012) fix(api): report pending reconciliation on agent state reads 
+          - [#4001](https://github.com/holon-run/holon/pull/4001) feat: configure shared runtime database reader limits 
+          - [#4004](https://github.com/holon-run/holon/pull/4004) fix: scope context resource invalidation to its consumers 
+          - [#4003](https://github.com/holon-run/holon/pull/4003) fix: bound observer publication availability checks for async observer reads 
+          - [#4002](https://github.com/holon-run/holon/pull/4002) chore: 更新11月10日模型目录与原生请求适配 
+          - [#4000](https://github.com/holon-run/holon/pull/4000) refactor: publish workspace context after registry commits 
+          - [#3999](https://github.com/holon-run/holon/pull/3999) refactor: scope workspace reads to loaded context attachments 
+          - [#3997](https://github.com/holon-run/holon/pull/3997) test: give authentication pressure fixtures explicit reader budgets 
+          - [#3994](https://github.com/holon-run/holon/pull/3994) refactor: publish identity with loaded agent context 
+          - [#3992](https://github.com/holon-run/holon/pull/3992) fix: wait for reader capacity and preserve invocation cancellation 
+          - [#3991](https://github.com/holon-run/holon/pull/3991) fix: recover operator dispatch after runtime DB reader pressure 
+          - [#3993](https://github.com/holon-run/holon/pull/3993) refactor: share loaded context Work and Task scope validation 
+          - [#3989](https://github.com/holon-run/holon/pull/3989) chore: attribute loaded context capture costs by stage 
+          - [#3987](https://github.com/holon-run/holon/pull/3987) fix: classify task status settlement mismatches 
+          - [#3983](https://github.com/holon-run/holon/pull/3983) fix: prepare complete live roots before episode recovery publication 
+          - [#3984](https://github.com/holon-run/holon/pull/3984) fix: coordinate runtime DB recovery writes and pool preparation reads 
+          - [#3985](https://github.com/holon-run/holon/pull/3985) fix: resolve startup queue reentry through canonical Turn attachment 
+          - [#3982](https://github.com/holon-run/holon/pull/3982) refactor: remove aggregate context snapshot estimates 
+          - [#3979](https://github.com/holon-run/holon/pull/3979) fix: finish canonically requeued dispatch memory at startup 
+          - [#3978](https://github.com/holon-run/holon/pull/3978) fix(ios): 隔离 UI 顺序状态并拆分按需测试层 
+          - [#3977](https://github.com/holon-run/holon/pull/3977) fix: atomically settle tool results and isolate state reads 
+          - [#3974](https://github.com/holon-run/holon/pull/3974) feat: align agent status projection across web, iOS, and Android 
+          - [#3972](https://github.com/holon-run/holon/pull/3972) fix: stream continuity upgrades and remove cumulative state quotas 
+          - [#3971](https://github.com/holon-run/holon/pull/3971) chore: refresh model catalog and retire Fireworks serverless models 
+          - [#3970](https://github.com/holon-run/holon/pull/3970) fix(auth): classify client-caused OIDC callback failures as 4xx 
+          - [#3969](https://github.com/holon-run/holon/pull/3969) feat(auth): OIDC redirect_uri 放行 http loopback IP（127.0.0.1 / ::1） 
+          - [#3968](https://github.com/holon-run/holon/pull/3968) feat(ios): 中性平面阅读界面与服务端统一头像 
+          - [#3967](https://github.com/holon-run/holon/pull/3967) fix(provider): 收到 message_stop 后结束 Anthropic 流消费 
+          - [#3966](https://github.com/holon-run/holon/pull/3966) fix: 补齐 Token Plan DeepSeek 1017 路由缓存默认 
+          - [#3965](https://github.com/holon-run/holon/pull/3965) fix: previous-release fixture 的 curl 增加 CDN 瞬时失败重试 
+          - [#3964](https://github.com/holon-run/holon/pull/3964) fix: 修复监督调用合批结果的精确消费结算 
+          - [#3962](https://github.com/holon-run/holon/pull/3962) fix: expose requested ViewImage route in flat diagnostics 
+          - [#3961](https://github.com/holon-run/holon/pull/3961) test: scale saturation heartbeat wall-clock budget via env for CI 
+          - [#3960](https://github.com/holon-run/holon/pull/3960) fix: 修复 ViewImage 请求合同与候选健康推进 
+          - [#3958](https://github.com/holon-run/holon/pull/3958) feat(android): 接入认证头像并简化会话视觉 
+          - [#3955](https://github.com/holon-run/holon/pull/3955) test: 补强回归断言并补齐现有 CI 门禁 
+          - [#3956](https://github.com/holon-run/holon/pull/3956) fix: treat missing task record in run_once settle as settled 
+          - [#3957](https://github.com/holon-run/holon/pull/3957) feat(android): 按发行渠道隔离并安全执行应用更新 
+          - [#3948](https://github.com/holon-run/holon/pull/3948) fix: remove redundant refresh buttons in agent right panel 
+          - [#3954](https://github.com/holon-run/holon/pull/3954) test: replace flaky overlap-window polling with deterministic reaping assertion 
+          - [#3953](https://github.com/holon-run/holon/pull/3953) fix: 让 bootstrap 首次 execution snapshot 读取异步等待 
+          - [#3952](https://github.com/holon-run/holon/pull/3952) feat: 统一 Agent 头像资源 API 与 Web 接入 
+          - [#3949](https://github.com/holon-run/holon/pull/3949) test(ios): 补齐跨用户任务与同意恢复的就绪契约 
+          - [#3950](https://github.com/holon-run/holon/pull/3950) test: widen daemon status probe budget to survive slow CI restarts 
+          - [#3793](https://github.com/holon-run/holon/pull/3793) refactor: 统一 Agent Runtime State 与 Context 快照 
+          - [#3945](https://github.com/holon-run/holon/pull/3945) chore: 刷新模型目录并复核特殊端点（2026-11-08）
+          - [#3942](https://github.com/holon-run/holon/pull/3942) feat(web): reflect agent status in avatar expressions 
+          - [#3938](https://github.com/holon-run/holon/pull/3938) feat(web): add deterministic V8.1 agent avatars 
+          - [#3937](https://github.com/holon-run/holon/pull/3937) feat: add design-steward and pin docs Mermaid skill 
+          - [#3935](https://github.com/holon-run/holon/pull/3935) chore: refresh model catalog and add Go Crouton routes 
+          - [#3929](https://github.com/holon-run/holon/pull/3929) fix: hide settings first-agent onboarding CTA when agents exist 
+          - [#3926](https://github.com/holon-run/holon/pull/3926) chore: 更新 2026-11-06 模型目录与端点证据 
+          - [#3924](https://github.com/holon-run/holon/pull/3924) docs: update documentation for v0.59.0 release 
 
           ### Direct commits
 
-          - [050f6918](https://github.com/holon-run/holon/commit/050f691811aa110fe2ddc3c05f0eda2ec2e99136) docs: add conversation-driven code reviewer guide and simplify reviewer blog
+          - [d95a185b7](https://github.com/holon-run/holon/commit/d95a185b72da7c53e1174a462f4dea158e3915a9) docs(website): add zh-CN architecture comparison, research-steward guide, and Web GUI guide updates
+          - [a14b4d527](https://github.com/holon-run/holon/commit/a14b4d527d0eeedda1b5fe0e6b85ae7aed85a58d) docs(website): fold lifecycle verification into architecture comparison
+          - [3c59d9a5e](https://github.com/holon-run/holon/commit/3c59d9a5ebe4978e9548e34736490ff3dd9fa24b) docs(guides): add bilingual verify-lifecycle guide with reproducible runtime proofs
+          - [fd31c4c1e](https://github.com/holon-run/holon/commit/fd31c4c1ef02650d8f6a1bbf47c4e40dafbff066) docs: add architecture comparison page and dual-layer positioning copy
+          - [812f8bd2b](https://github.com/holon-run/holon/commit/812f8bd2be8f1eba0d38e59f19ffc60796abd2d6) docs(guides): add changedetection delivery semantics and update #4016 status
+          - [bac16075](https://github.com/holon-run/holon/commit/bac1607533ff342cf9e4d3784c2e8f9e8508b673) docs(guides): add bilingual Agent Inbox async event guide
+          - [fbea37fa](https://github.com/holon-run/holon/commit/fbea37fac40b039c1cedacd47fb4190687140943) docs(guides): refactor troubleshooting and customize-agent for conversational Web GUI workflows
+          - [bf234034](https://github.com/holon-run/holon/commit/bf234034cfff6fc6e024d4cdeb5453c7717a2c16) docs: publish bilingual local-model-agent-benchmark blog and offline/self-hosted private agent guide
+          - [d3943d92](https://github.com/holon-run/holon/commit/d3943d92570f6d1ac507a0e7ee08cc9caa1e1832) docs(blog): tighten intro and verify technical facts in local-model-agent-benchmark
+          - [9311d77f](https://github.com/holon-run/holon/commit/9311d77f765517c38230607b1aeeb24a54a2ec06) docs(blog): restructure local-model-agent-benchmark around conclusions without internal versions
+          - [82a9bd94](https://github.com/holon-run/holon/commit/82a9bd94282e89d5338ee6d01988173ae9e06eca) docs(blog): polish local-model-agent-benchmark Chinese prose
+          - [88e35cf6](https://github.com/holon-run/holon/commit/88e35cf6a407bc7d024fced1a52aaed98fa7a7bd) docs(blog): update local model agent benchmark with v5 prefix & probe findings
+          - [5729c748](https://github.com/holon-run/holon/commit/5729c748d5b208697409d32189a67c37b6ea1bc7) docs(blog): update local model agent benchmark draft with v4 prompt cache findings
+          - [69efc9ee](https://github.com/holon-run/holon/commit/69efc9ee482835fd2b3afa60728a1ae8b3c03e06) docs(blog): refine local model agent benchmark draft based on operator review
+          - [7b40471c](https://github.com/holon-run/holon/commit/7b40471c3698c8bb18046f41a87ce0ffc0638642) docs(blog): 起草本地大模型多轮编码 Agent 基准实测中文博客初稿
+          - [c180aee0](https://github.com/holon-run/holon/commit/c180aee05929210f1c3576e66783bc92d9fdfd29) docs: 新增指南《用自托管 GlitchTip 把错误告警唤醒 Holon》（双语）
+          - [d7609cb3](https://github.com/holon-run/holon/commit/d7609cb36816b4c3a0013037274eff781283332c) docs: 补充指南《管理 Agent 记忆》文末学术论文引用与链接（双语）
+          - [d99e717e](https://github.com/holon-run/holon/commit/d99e717e845b3668aa1fcde4f297d1c598ff6f34) docs: 彻底重构指南《管理 Agent 记忆》（双语）与《为 Agent 配置外部事件 Webhook》（双语）
+          - [74205f77](https://github.com/holon-run/holon/commit/74205f772a4fa25aec15bed2a691622ee130f5be) docs: 补齐 configure-models 章节锚点 local-or-custom-endpoints
+          - [0c2e4051](https://github.com/holon-run/holon/commit/0c2e40516c543e11436b3bca4aa7e2a4c7af1272) docs: 彻底重构指南《委派子任务与验收交付》与《配置与切换大模型》（双语）
+          - [3f56f373](https://github.com/holon-run/holon/commit/3f56f37364cbf8c3ff343be8559e14eb5e59a620) docs: rewrite observe-agent-work and use-skills guides for conversation-first workflow
+          - [54e1d423](https://github.com/holon-run/holon/commit/54e1d423b80bee73dd8fbde98821ed0060997e80) docs: propose agent loop and TaskResult handling simplification
+          - [2163e7db](https://github.com/holon-run/holon/commit/2163e7db5f996e831340240ffdaa69d9ba9d2a61) docs: rewrite schedule-agent-work and run-long-lived-task guides for natural language and durable workitems
+          - [5685f66f](https://github.com/holon-run/holon/commit/5685f66fdd97ee08922921caa59a07b398435475) docs: rewrite work-with-workspaces guide for natural language and worktree isolation
+          - [1fb40cb9](https://github.com/holon-run/holon/commit/1fb40cb91d19683307d08a6487849f0d41dfd456) docs: 新增 docs-steward 文档管家双语指南与改写 Local Apps 交互看板实操
+          - [11d66ee2](https://github.com/holon-run/holon/commit/11d66ee2c68bb22e37bdca54960ef031592f3b9b) docs: 新增自托管 SearXNG WebSearch 搜索后端双语指南
+          - [a0f4dc6d](https://github.com/holon-run/holon/commit/a0f4dc6de3bac01048517ce40f23172ac3a4e6c0) docs: 新增 changedetection.io 网页变更唤醒双语指南
+          - [c6b26f33](https://github.com/holon-run/holon/commit/c6b26f33d04efb0d18d58cce38dd113ad80be90b) fix: retain dispatch gate through daemon startup
+          - [4f9bfc4d](https://github.com/holon-run/holon/commit/4f9bfc4df5a7cb2e6a265279fe62360def03b82d) fix: defer runtime dispatch until startup recovery completes
+          - [919fc8f5](https://github.com/holon-run/holon/commit/919fc8f5e88812435614416c83f2c40ee026371e) fix: pass preparation mode during episode recovery
+          - [332709be](https://github.com/holon-run/holon/commit/332709beb21f05718149f0798d162b89f930011e) docs: add bilingual Casdoor OIDC single sign-on guide and navigation links
+          - [75632b03](https://github.com/holon-run/holon/commit/75632b0332f0d898042b78a25b431774470d49e4) docs: add directory isolation recipe for Claude Code and Codex to skill isolation blog and guide
+          - [7fbb883a](https://github.com/holon-run/holon/commit/7fbb883a1cc45e0d188c82d7e91cee7d744b715e) docs: regenerate cover image and clean up excessive horizontal rules for skill isolation blog and guide
+          - [dbba01d7](https://github.com/holon-run/holon/commit/dbba01d7202900bee9bfcba89babc7a3998a1f4b) docs: add bilingual blog and guide on agent skill bloat and role-based isolation
+          - [08b4d452](https://github.com/holon-run/holon/commit/08b4d4527ba1844d3d79d0360d11dcbf96d5b526) feat(web): align holonbot avatar with brand artwork
+          - [2c041dfe](https://github.com/holon-run/holon/commit/2c041dfe4b1767c88516f760bbd42dde22ccb663) docs: 补回 TestFlight 备用下载入口
+          - [45f92394](https://github.com/holon-run/holon/commit/45f92394467ad8d1840c6abeb4d8aef9907e2015) docs: 前移客户端下载入口并接入 iOS App Store
 
           ## Issues
 
-          - [#3910](https://github.com/holon-run/holon/issues/3910) Flaky test: task_result_wait_with_independent_blocker_keeps_exact_model_reentry (late task result classified canonical_reducer_only under load) — fixed by [#3915](https://github.com/holon-run/holon/pull/3915)
-          - [#3881](https://github.com/holon-run/holon/issues/3881) Flaky test: task_result_wait_with_independent_blocker_survives_restart (late task result should remain durably queued) — fixed by [#3909](https://github.com/holon-run/holon/pull/3909)
-          - [#3879](https://github.com/holon-run/holon/issues/3879) Flaky: task_output_returns_worktree_subagent_result_text times out waiting for exact-handle WaitFor tool execution within 30s — fixed by [#3907](https://github.com/holon-run/holon/pull/3907)
+          Runtime-reliability milestone members closed with this release:
+
+          - [#4043](https://github.com/holon-run/holon/issues/4043) perf(runtime): #3793 后 dispatch 与状态变更链路显著变慢（单机证据：变更类工具 2~17x，dispatch p50 0.2s→1.3s） — addressed by [#4247](https://github.com/holon-run/holon/pull/4247) and [#4285](https://github.com/holon-run/holon/pull/4285)
+          - [#4070](https://github.com/holon-run/holon/issues/4070) perf(runtime): bound durable startup reconciliation to recovery candidates — addressed by [#4113](https://github.com/holon-run/holon/pull/4113)
+          - [#4087](https://github.com/holon-run/holon/issues/4087) perf(runtime): prompt 纯读取反复进入共享 writer，context 21.5s 中约 21.46s 在排队 — addressed by [#4294](https://github.com/holon-run/holon/pull/4294) and the [#4088](https://github.com/holon-run/holon/pull/4088)–[#4092](https://github.com/holon-run/holon/pull/4092) series
+          - [#4115](https://github.com/holon-run/holon/issues/4115) perf(runtime): InputPreparation 继续重载已退出 Current 消费者的历史事件区间 — addressed by [#4221](https://github.com/holon-run/holon/pull/4221)
+          - [#4123](https://github.com/holon-run/holon/issues/4123) perf(runtime): 子 agent 摘要展开完整输入证据，compact 状态查询耗时约 6 秒 — addressed by [#4126](https://github.com/holon-run/holon/pull/4126)
+          - [#4124](https://github.com/holon-run/holon/issues/4124) perf(api): 为 agent model get 增加专用模型只读端点，避免完整 status 投影 — fixed by [#4136](https://github.com/holon-run/holon/pull/4136)
+          - [#4190](https://github.com/holon-run/holon/issues/4190) perf(events): 历史分页先完整解码再过滤，扫描放大并长期占用 owner — addressed by [#4246](https://github.com/holon-run/holon/pull/4246)
+          - [#4191](https://github.com/holon-run/holon/issues/4191) perf(input): 引用闭包准备仍有秒级慢读，需分家族归因与减少重复物化 — fixed by [#4221](https://github.com/holon-run/holon/pull/4221)
+          - [#4212](https://github.com/holon-run/holon/issues/4212) Stack overflow in supervised_invocation_two_real_results_share_one_consumer under local default test stack — addressed by [#4226](https://github.com/holon-run/holon/pull/4226)
+          - [#4214](https://github.com/holon-run/holon/issues/4214) perf(prompt): 提示词组装缺少跨任务稳定公共前缀，prefix cache 跨任务零命中（开轮 prefill 占 83%） — addressed by [#4223](https://github.com/holon-run/holon/pull/4223)
+          - [#4217](https://github.com/holon-run/holon/issues/4217) bug(runtime): 废弃 WorkItem NeedsRepair 状态（IO 前 admission 冲突改有限重入、多 wait 歧义确定性裁决） — fixed by [#4230](https://github.com/holon-run/holon/pull/4230)
+          - [#4222](https://github.com/holon-run/holon/issues/4222) tech-debt(test): 显式 Task fixture bootstrap 与聚焦验证入口 — addressed by [#4235](https://github.com/holon-run/holon/pull/4235)
+          - [#4231](https://github.com/holon-run/holon/issues/4231) api(events): 废除服务端 max_level 过滤，display-level 过滤收敛为客户端行为 — addressed by [#4239](https://github.com/holon-run/holon/pull/4239)
+          - [#4250](https://github.com/holon-run/holon/issues/4250) Task result settlement finalization bypasses task-domain qualification maintenance, permanently bricking quiescent agents — addressed by [#4279](https://github.com/holon-run/holon/pull/4279) and [#4282](https://github.com/holon-run/holon/pull/4282)
+          - [#4254](https://github.com/holon-run/holon/issues/4254) bug(runtime): v113 只重建 work_items 未收敛 outcomes，遗留 needs_repair outcome 行使 prompt 准入严格解码 500 — addressed by [#4258](https://github.com/holon-run/holon/pull/4258)
+          - [#4264](https://github.com/holon-run/holon/issues/4264) bug(migration): v115 把冻结 digest 写入 Current alias 指纹，升级后 ProjectionChanged 导致 daemon crash-loop — fixed by [#4277](https://github.com/holon-run/holon/pull/4277)
+          - [#4268](https://github.com/holon-run/holon/issues/4268) perf(runtime): live binding deferred-tool 查询绕过 turn_id 索引，在共享 writer 内扫描工具历史 — fixed by [#4285](https://github.com/holon-run/holon/pull/4285)
+          - [#4269](https://github.com/holon-run/holon/issues/4269) perf(runtime): live input recovery 在共享 writer 内重复加载完整执行协议历史 — addressed by [#4288](https://github.com/holon-run/holon/pull/4288)
+          - [#4270](https://github.com/holon-run/holon/issues/4270) bug(migration): v113 未收敛 WorkExecution 资格指纹与 legacy payload，bootstrap 可持续失败 — addressed by [#4279](https://github.com/holon-run/holon/pull/4279)
+          - [#4016](https://github.com/holon-run/holon/issues/4016) bug(callbacks): wake 回调 POST 挂起不返回 HTTP 响应，delivery 实际生效但 agent 唤醒延迟可达分钟级
+
+          Other issues fixed in this release:
+
+          - [#3041](https://github.com/holon-run/holon/issues/3041) improve(tool): accept bare @@ hunk headers in unified diff ApplyPatch input — fixed by [#4276](https://github.com/holon-run/holon/pull/4276)
+          - [#3826](https://github.com/holon-run/holon/issues/3826) bug(runtime): work-item-source-revision 修复每次 apply 前全库备份，大库批量修复耗尽磁盘导致 daemon 无法启动 — fixed by [#4184](https://github.com/holon-run/holon/pull/4184)
+          - [#3882](https://github.com/holon-run/holon/issues/3882) bug(auth): OIDC 回调 state 不匹配返回 500（runtime_error）而非 4xx — fixed by [#3970](https://github.com/holon-run/holon/pull/3970)
+          - [#3914](https://github.com/holon-run/holon/issues/3914) bug(scheduler): a timer wake matching two active waits is quarantined and then permanently retired — fixed by [#4173](https://github.com/holon-run/holon/pull/4173)
+          - [#3920](https://github.com/holon-run/holon/issues/3920) Flaky: second_stop_requests_force_stop 断言 saw_cancelling_while_pid_alive 同树一次过一次败 — fixed by [#3954](https://github.com/holon-run/holon/pull/3954)
+          - [#3925](https://github.com/holon-run/holon/issues/3925) bug(provider): dashscope@token-plan/deepseek-v4.1-flash-1017 仍发送显式 cache_control 断点 — fixed by [#3966](https://github.com/holon-run/holon/pull/3966)
+          - [#3932](https://github.com/holon-run/holon/issues/3932) ViewImage 自动选择按目录 image_input 标记选中主模型：deepseek-flash 被服务端拒绝后 fail_fast，候选不推进 — fixed by [#3960](https://github.com/holon-run/holon/pull/3960)
+          - [#3936](https://github.com/holon-run/holon/issues/3936) Rust Test (cli) flake: run_once_no_wait_stops_unfinished_command_tasks_before_exit 偶发 task not found — fixed by [#3956](https://github.com/holon-run/holon/pull/3956)
+          - [#3981](https://github.com/holon-run/holon/issues/3981) Flaky: task-result controlled recovery 验收 controlled-exact-first 偶发失败（首个 canonical claim 归属断言） — fixed by [#4014](https://github.com/holon-run/holon/pull/4014)
+          - [#3986](https://github.com/holon-run/holon/issues/3986) bug(e2e): scheduler-spawn-agent-supervision 断言偶发被可重试 runtime_db_busy（observer publication）触发 — fixed by [#4003](https://github.com/holon-run/holon/pull/4003)
+          - [#4035](https://github.com/holon-run/holon/issues/4035) Flaky test: parent_cleanup_exits_runtime_and_preserves_parent_result unwraps a retryable observer publication reconciliation error — fixed by [#4053](https://github.com/holon-run/holon/pull/4053)
+          - [#4061](https://github.com/holon-run/holon/issues/4061) lib-a CI 3 例失败未重跑即合并（mutation_owner 弱引用断言 / State publication 竞态） — fixed by [#4063](https://github.com/holon-run/holon/pull/4063)
+          - [#4098](https://github.com/holon-run/holon/issues/4098) flake(ci): nightly "Android app" packaging fails with PackageAndroidArtifact IncrementalSplitterRunnable — fixed by [#4108](https://github.com/holon-run/holon/pull/4108)
+          - [#4121](https://github.com/holon-run/holon/issues/4121) Flaky test: agent_message_wait_for_existing_agent_captures_reply_before_invoke_returns — response_delivery_id Null in terminal detail — fixed by [#4130](https://github.com/holon-run/holon/pull/4130)
+          - [#4122](https://github.com/holon-run/holon/issues/4122) test: wt204 parallel worktree workflow 完成等待超时 (flaky) — fixed by [#4132](https://github.com/holon-run/holon/pull/4132)
+          - [#4137](https://github.com/holon-run/holon/issues/4137) bug(cli-test): agent_model_get_uses_the_dedicated_model_endpoint 偶发 full status .model 为 null — fixed by [#4140](https://github.com/holon-run/holon/pull/4140)
+          - [#4154](https://github.com/holon-run/holon/issues/4154) dispatch 时序角落：WorkItem 完成清理后残留 current_turn_id 撞上 turn_index 推进，误报并丢失结果投递 — fixed by [#4155](https://github.com/holon-run/holon/pull/4155)
+          - [#4165](https://github.com/holon-run/holon/issues/4165) perf(input): RecentTools 资格窗口逐行探测 canonical 历史，LIMIT 仍有线性扫描长尾 — fixed by [#4179](https://github.com/holon-run/holon/pull/4179)
+          - [#4178](https://github.com/holon-run/holon/issues/4178) feat(workspace): CreateWorktree 支持可选 path，未填写时保留当前默认目录 — fixed by [#4196](https://github.com/holon-run/holon/pull/4196)
+          - [#4185](https://github.com/holon-run/holon/issues/4185) Flaky test: blocked_recheck_turn_binds_target_work_item_without_switching_focus — fixed by [#4193](https://github.com/holon-run/holon/pull/4193)
+          - [#4192](https://github.com/holon-run/holon/issues/4192) feat(runtime): 单 provider 轮工具调用与载荷有界准入（64 次 / 128 KiB / 256 KiB） — fixed by [#4205](https://github.com/holon-run/holon/pull/4205)
+          - [#4233](https://github.com/holon-run/holon/issues/4233) feat(api): 列出外部 trigger 并支持 operator 读取现有 webhook token — fixed by [#4297](https://github.com/holon-run/holon/pull/4297)
+          - [#4295](https://github.com/holon-run/holon/issues/4295) bug(provider): openai transport 空内容 completed 响应未分类为 provider 失败，turn 经 settlement 围栏降级 abort（#3896 同型，openai 路径） — fixed by [#4302](https://github.com/holon-run/holon/pull/4302)
+          - [#4304](https://github.com/holon-run/holon/issues/4304) bug(runtime): 图片超出内联预算整轮拒绝时，operator 只见「provider request failed: contract_error」，image_budget_exceeded 根因被吞 — fixed by [#4311](https://github.com/holon-run/holon/pull/4311)
+          - [#4305](https://github.com/holon-run/holon/issues/4305) enhancement(runtime): 超过 MAX_INLINE_IMAGES=8 时降级为路径引用（仅上下文保留路径），而非整轮 fail-fast — fixed by [#4314](https://github.com/holon-run/holon/pull/4314)
+          - [#4308](https://github.com/holon-run/holon/issues/4308) bug(context): 自队列 follow-up 的 subsystem 在 current_input 被抹成裸 "system"，模型无法区分自生成文本与运行时/operator 指令（#912 验收标准在投影层丢失） — fixed by [#4313](https://github.com/holon-run/holon/pull/4313)
+          - [#4310](https://github.com/holon-run/holon/issues/4310) web-gui: subscribe to the global roster hint stream (/api/events/stream) so roster status and unread refresh in real time — fixed by [#4312](https://github.com/holon-run/holon/pull/4312)
+          - [#4318](https://github.com/holon-run/holon/issues/4318) feat(runtime): MemoryGet 跨 agent 按 message id 读取（证据降级 + 审计） — fixed by [#4321](https://github.com/holon-run/holon/pull/4321)
+          - [#4319](https://github.com/holon-run/holon/issues/4319) MemorySearch：支持显式跨 agent scope，命中仅作证据 — fixed by [#4331](https://github.com/holon-run/holon/pull/4331)
+          - [#4320](https://github.com/holon-run/holon/issues/4320) 为 agent 投递派生消息 authority，而不是继承调用轮 authority — fixed by [#4329](https://github.com/holon-run/holon/pull/4329)
+          - [#4322](https://github.com/holon-run/holon/issues/4322) WebSearch：用 provider 单字段选择路由（auto / aggregate / 具体 ID） — fixed by [#4328](https://github.com/holon-run/holon/pull/4328)
+          - [#4323](https://github.com/holon-run/holon/issues/4323) ListWebSearchProviders：列出 WebSearch 可点名调用的搜索提供方 — fixed by [#4333](https://github.com/holon-run/holon/pull/4333)
 
           ## Install
 
