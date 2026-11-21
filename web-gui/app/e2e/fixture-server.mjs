@@ -199,8 +199,15 @@ function briefReadState(session, agentId) {
   };
 }
 
+function withTourIncarnation(identity) {
+  return { ...identity, incarnation: identity.incarnation ?? 1 };
+}
+
 function listEntry(agentId, session) {
-  if (tour) return tourAgents.find((agent) => agent.id === agentId)?.entry;
+  if (tour) {
+    const entry = tourAgents.find((agent) => agent.id === agentId)?.entry;
+    return entry && { ...entry, identity: withTourIncarnation(entry.identity) };
+  }
   const currentRunId = session ? (session.currentRunIdByAgentId.get(agentId) ?? null) : null;
   const fixture = session?.rightPanelByAgentId.get(agentId);
   return {
@@ -219,7 +226,13 @@ function listEntry(agentId, session) {
 }
 
 function agentState(agentId, session) {
-  if (tour) return tourAgents.find((agent) => agent.id === agentId)?.state;
+  if (tour) {
+    const state = tourAgents.find((agent) => agent.id === agentId)?.state;
+    return state && {
+      ...state,
+      agent: { ...state.agent, identity: withTourIncarnation(state.agent.identity) },
+    };
+  }
   const rightPanel = session?.rightPanelByAgentId.get(agentId);
   const running = Boolean(session?.currentRunIdByAgentId.get(agentId));
   const tasks = (rightPanel?.tasks ?? []).filter((task) => ["queued", "running", "cancelling"].includes(task.status));
