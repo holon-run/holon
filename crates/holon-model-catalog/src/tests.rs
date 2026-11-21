@@ -3398,7 +3398,7 @@ fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         .filter(|model| model.model_ref.provider == provider)
         .collect::<Vec<_>>();
 
-    assert_eq!(models.len(), 46);
+    assert_eq!(models.len(), 45);
     for model in &models {
         assert_eq!(
             catalog
@@ -3421,7 +3421,7 @@ fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
             .iter()
             .filter(|model| !model.reasoning_effort_options.is_empty())
             .count(),
-        23
+        22
     );
 
     for model in [
@@ -3431,7 +3431,6 @@ fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         "deepseek-v4-flash",
         "glm-5.3",
         "glm-5.3-flash",
-        "glm-5.2",
         "glm-5.1",
         "kimi-k3",
         "kimi-k3.1-pro",
@@ -3549,6 +3548,41 @@ fn opencode_go_preserves_historical_ids_without_aliasing_current_ids() {
 }
 
 #[test]
+fn opencode_go_retired_glm_52_routes_stay_absent_without_touching_other_glm_endpoints() {
+    for catalog in [curated_catalog(), BuiltInModelCatalog::new()] {
+        for endpoint in ["default", "messages", "responses"] {
+            let route = ModelRouteRef::parse(&format!("opencode-go@{endpoint}/glm-5.2")).unwrap();
+            assert!(
+                catalog.get_route(&route).is_none(),
+                "retired OpenCode Go glm-5.2 route {} must stay absent",
+                route.as_string()
+            );
+        }
+        // Current OpenCode Go GLM service ids remain routed.
+        for endpoint in ["default", "messages", "responses"] {
+            let route = ModelRouteRef::parse(&format!("opencode-go@{endpoint}/glm-5.3")).unwrap();
+            assert!(catalog.get_route(&route).is_some(), "{endpoint}");
+        }
+        // The retirement is endpoint-specific: the native GLM providers and the
+        // other gateways keep their own live glm-5.2 evidence and routes.
+        for route_ref in [
+            "zai@default/glm-5.2",
+            "bigmodel@default/glm-5.2",
+            "dashscope@default/glm-5.2",
+            "volcengine@plan/glm-5.2",
+            "qianfan@default/glm-5.2",
+        ] {
+            let route = ModelRouteRef::parse(route_ref).unwrap();
+            assert!(
+                catalog.get_route(&route).is_some(),
+                "{} keeps its independently reviewed glm-5.2 route",
+                route.as_string()
+            );
+        }
+    }
+}
+
+#[test]
 fn opencode_go_k31_supports_translation_without_inheriting_native_specs() {
     for catalog in [
         legacy_builtin_catalog().unwrap(),
@@ -3585,7 +3619,6 @@ fn opencode_go_current_text_models_have_conservative_translated_routes() {
         "gemini-4-argon",
         "glm-5.3-flash",
         "glm-5.3",
-        "glm-5.2",
         "kimi-k3.1-pro",
         "kimi-k3",
         "kimi-k2.7-code",

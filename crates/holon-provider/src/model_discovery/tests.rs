@@ -690,7 +690,6 @@ fn maps_opencode_go_models_to_the_published_transport_endpoints() {
                 "deepseek-v4-flash",
                 "glm-5.3-flash",
                 "glm-5.3",
-                "glm-5.2",
                 "glm-5.1",
                 "kimi-k3",
                 "kimi-k2.7-code",
@@ -751,7 +750,7 @@ fn maps_opencode_go_models_to_the_published_transport_endpoints() {
     let payload: OpenCodeGoModelsResponse =
         serde_json::from_value(serde_json::json!({"data": data})).unwrap();
     let models = payload.into_model_metadata(&ProviderId::parse("opencode-go").unwrap());
-    assert_eq!(models.len(), 36);
+    assert_eq!(models.len(), 35);
     assert!(models
         .windows(2)
         .all(|pair| pair[0].model_ref.model < pair[1].model_ref.model));
@@ -967,7 +966,7 @@ fn opencode_go_longcat_native_contract_is_chat_and_host_scoped() {
 
 #[test]
 fn opencode_go_discovery_accepts_reviewed_text_ids_without_inventing_capabilities() {
-    assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 34);
+    assert_eq!(OPENCODE_GO_TEXT_MODELS.len(), 33);
     let mut data = OPENCODE_GO_TEXT_MODELS
         .iter()
         .map(|(id, _)| serde_json::json!({"id": id}))

@@ -164,15 +164,6 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             None,
         ),
         opencode_go_model(
-            "glm-5.2",
-            "GLM-5.2",
-            1_000_000,
-            Some(131_072),
-            true,
-            false,
-            None,
-        ),
-        opencode_go_model(
             "glm-5.1",
             "GLM-5.1",
             202_800,
@@ -410,7 +401,7 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             "deepseek-v4.1-flash" | "glm-5.3" | "glm-5.3-flash" | "kimi-k3.1-pro" => {
                 &["low", "high", "max"]
             }
-            "deepseek-v4-pro" | "glm-5.2" => &["high", "max"],
+            "deepseek-v4-pro" => &["high", "max"],
             "hy3" => &["none", "low", "high"],
             "hy4" | "hy4-preview" | "hy4-flash-free" => &["none", "high"],
             "kimi-k3" => &["max"],

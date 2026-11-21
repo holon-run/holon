@@ -5,6 +5,34 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-22
+
+Pinned models.dev SHA256
+`14061cdeb6e453b851411c23deb135cd5f4a7b4892687c360ac09cfe61a241b9`,
+sampled **November 21, 2026 20:32 UTC**, against main `c6e91ec84b`.
+Three reviewed records are removed this cycle — the OpenCode Go
+`glm-5.2` default, messages, and responses routes (642 records remain)
+— and every other reviewed record is byte-identical in the refresh
+coverage delta.
+
+- OpenCode Go `glm-5.2` three-day removal chain: public [model
+  listing](https://opencode.ai/inference/go/v1/models) at 31 models with
+  only `glm-5.3`/`glm-5.3-flash` on November 19, 20, and 21 (SHA256
+  `f5af4fda…`, `33aa8f2c…`, `82b21090…`); [detail
+  probe](https://opencode.ai/inference/go/v1/models/glm-5.2) 404 on
+  November 20 and 21; [console data-retention
+  table](https://opencode.ai/docs/console/go/) row deletion November 21
+  (`f2d03804…` → `babeff1a…`, sole edit in the 65 KB page);
+  [llms.txt](https://opencode.ai/docs/llms.txt) byte-identical with zero
+  glm entries and no changelog (`7fdbad26…`).
+- Corroborating samples with no metadata effect: NVIDIA public listing
+  byte-identical at 33 models; z-ai `glm-5.2` NIM reference still live;
+  MiniMax retired-model tables and M Plan pages unchanged; Moonshot
+  dual-site K2 window unchanged; Codex models catalog byte-identical
+  (`d50b6749…`). Upstream `family` field rollout, openrouter billing
+  edits, and Venice reasoning-options expansions all land on unreviewed
+  entries.
+
 ## Incremental review: 2026-11-21
 
 Pinned models.dev SHA256

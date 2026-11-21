@@ -187,7 +187,6 @@ fn opencode_go_native_metadata_preserves_defaults_and_exact_efforts() {
         ("glm-5.3-flash", "default", &["low", "high", "max"][..]),
         ("kimi-k3.1-pro", "default", &["low", "high", "max"][..]),
         ("deepseek-v4-pro", "default", &["high", "max"][..]),
-        ("glm-5.2", "default", &["high", "max"][..]),
         ("hy3", "default", &["none", "low", "high"][..]),
         ("hy4-preview", "default", &["none", "high"][..]),
         ("kimi-k3", "default", &["max"][..]),
