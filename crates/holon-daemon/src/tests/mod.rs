@@ -350,6 +350,52 @@ async fn serve_profile_foreground_retains_lock_until_runtime_registration() {
 }
 
 #[cfg(unix)]
+#[tokio::test]
+async fn serve_preflight_cleans_stale_run_files_after_unclean_shutdown() {
+    // Regression shape from #4373: a container restart leaves a persistent
+    // run directory holding a dead pid file, stale metadata, and a leftover
+    // socket file nobody is listening on. Foreground serve must recover
+    // instead of crashing on the residual files.
+    let config = test_config();
+    let profile = serve_profile_fixture();
+    super::persist_serve_profile(&config, &profile).unwrap();
+    let paths = daemon_paths(&config);
+    fs::create_dir_all(&paths.run_dir).unwrap();
+    fs::write(&paths.pid_path, format!("{}\n", dead_pid())).unwrap();
+    fs::write(
+        &paths.metadata_path,
+        serde_json::to_vec_pretty(&replacement_metadata(
+            &config,
+            dead_pid(),
+            PathBuf::from("/holon"),
+        ))
+        .unwrap(),
+    )
+    .unwrap();
+    let listener = tokio::net::UnixListener::bind(&config.socket_path).unwrap();
+    drop(listener);
+    assert!(paths.pid_path.exists());
+    assert!(paths.metadata_path.exists());
+    assert!(config.socket_path.exists());
+
+    let (_plan, _registration_lock) = super::prepare_serve_with_profile(&config, false, |_, _| {
+        Ok(super::ResolvedDaemonServePlan {
+            config: config.clone(),
+            profile: profile.clone(),
+            serve_args: vec![],
+            control_token_env: None,
+            startup_summary: String::new(),
+        })
+    })
+    .await
+    .unwrap();
+
+    assert!(!paths.pid_path.exists());
+    assert!(!paths.metadata_path.exists());
+    assert!(!config.socket_path.exists());
+}
+
+#[cfg(unix)]
 fn dead_pid() -> u32 {
     let mut child = Command::new("true").spawn().unwrap();
     let pid = child.id();
