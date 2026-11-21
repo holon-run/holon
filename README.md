@@ -6,7 +6,7 @@ English | [中文](README.zh-CN.md)
 
 **Run self-hosted, always-on AI agents on your own computer or server.**
 
-Holon is an open-source, local-first workbench for always-on AI agents, powered by its own **Rust agent runtime**. Individuals and teams can assign explicit work items, track progress in persistent workspaces, and let agents wait for events and follow through—without wrapping a third-party coding CLI.
+Holon is an open-source, local-first workbench for always-on AI agents, powered by its own **Rust agent runtime**. Individuals and teams can assign explicit work items, keep durable state across sessions, and let agents wait on events and follow through—without wrapping a third-party coding CLI.
 
 > Evaluating self-hosted AI assistants or agent runtimes? Read [Architecture comparison: self-hosted AI assistants vs. agent runtimes](docs/website/concepts/architecture-comparison.md).
 

@@ -1,6 +1,6 @@
 {
   "siteTitle": "Holon",
-  "siteDescription": "Open-source, local-first Rust workbench for always-on AI agents. Persistent workspaces, explicit work items, and event-driven follow-through.",
+  "siteDescription": "Open-source, local-first Rust workbench for always-on AI agents — explicit work items, event-driven wait/wake, and reliable follow-through.",
   "siteUrl": "https://holon.run",
   "locales": [
     {
@@ -11,7 +11,7 @@
     {
       "code": "zh-CN",
       "label": "中文",
-    "siteDescription": "开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台。提供持久化工作区、显式工作项（WorkItem）与事件驱动的持续跟进能力。",
+    "siteDescription": "开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台——提供显式工作项（WorkItem）、事件驱动等待/唤醒与可靠的持续跟进。",
       "topNav": [
         {
           "label": "开始",

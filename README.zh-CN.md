@@ -6,7 +6,7 @@
 
 **在自己的电脑或服务器上，创建和运行可自部署的常驻 AI Agent（Always-on AI Agent）。**
 
-Holon 是开源、本地优先的常驻 AI Agent 工作台，底层由自研 **Rust Agent 运行时**驱动。个人和团队可以在持久化工作区中分配显式工作项（WorkItem）、跟踪进度，并让 Agent 基于事件等待与唤醒持续跟进工作，而不是套在第三方编码 CLI 外层的对话壳。
+Holon 是开源、本地优先的常驻 AI Agent 工作台，底层由自研 **Rust Agent 运行时**驱动。个人和团队可以分配显式工作项（WorkItem）、跨会话保留持久状态，并让 Agent 基于事件等待与唤醒持续跟进工作，而不是套在第三方编码 CLI 外层的对话壳。
 
 > 正在选型自部署 AI 助手或对比 Agent 运行时？请参阅英文对照页：[Architecture comparison](docs/website/concepts/architecture-comparison.md)。
 

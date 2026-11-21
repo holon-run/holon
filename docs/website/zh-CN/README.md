@@ -1,6 +1,6 @@
 ---
 title: 运行在你自己电脑上的开源 AI 助手
-summary: "开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台。提供持久化工作区、显式工作项（WorkItem）与事件驱动的持续跟进能力。"
+summary: "开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台——提供显式工作项（WorkItem）、事件驱动等待/唤醒与可靠的持续跟进。"
 order: 1
 ---
 
@@ -12,7 +12,7 @@ order: 1
 
 # 在自己的电脑或服务器上，创建和运行 AI 助手。
 
-<p class="home-hero__lede">开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台，面向个人和团队。在持久化工作区中分配显式工作项（WorkItem）、跟踪进展，并让 Agent 基于事件等待与唤醒持续跟进工作。</p>
+<p class="home-hero__lede">开源、本地优先的 Rust 常驻 AI Agent（Always-on AI Agent）工作台，面向个人和团队。分配显式工作项（WorkItem）、跨会话保留持久状态，并让 Agent 基于事件等待与唤醒持续跟进工作。</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">安装并开始</a>

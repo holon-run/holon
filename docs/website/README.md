@@ -1,6 +1,6 @@
 ---
 title: Open-source AI assistants on your own computer
-summary: "Open-source, local-first Rust workbench for always-on AI agents. Persistent workspaces, explicit work items, and event-driven follow-through."
+summary: "Open-source, local-first Rust workbench for always-on AI agents — explicit work items, event-driven wait/wake, and reliable follow-through."
 order: 1
 ---
 
@@ -12,7 +12,7 @@ order: 1
 
 # Create and run AI assistants on your own computer or server.
 
-<p class="home-hero__lede">Open-source, local-first Rust workbench for always-on AI agents. Assign explicit work items, track progress in persistent workspaces, and let agents wait on events and follow through.</p>
+<p class="home-hero__lede">Open-source, local-first Rust workbench for always-on AI agents. Assign explicit work items, preserve durable state across sessions, and let agents wait on events and follow through.</p>
 
 <div class="home-actions">
 <a class="home-button home-button--primary" href="#install">Install and start</a>
