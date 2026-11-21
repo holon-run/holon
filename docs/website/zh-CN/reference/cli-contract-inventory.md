@@ -198,6 +198,7 @@ order: 11
 |---|---|---|---:|
 | `HOLON_HOME` | 配置/凭据与运行时配置加载 | 选择 Holon home/配置/凭据路径。 | `stable` 候选 |
 | `HOLON_HTTP_ADDR` | 运行时/控制平面命令 | 在加载 `AppConfig` 时选择本地控制平面 HTTP 地址。 | `stable` 候选 |
+| `PORT` | `serve`、daemon 启动解析 | 容器平台约定：无显式 CLI/`HOLON_HTTP_ADDR` 时按 `0.0.0.0:$PORT` 监听；高于 profile 继承。 | `experimental` |
 | `HOLON_CALLBACK_BASE_URL` | `serve`、运行时配置 | 设置回调 base URL 默认值。 | `experimental` |
 | `HOLON_SOCKET_PATH` | daemon/serve | 选择本地控制 socket 路径。 | `experimental` |
 | `HOLON_WORKSPACE_DIR` | 运行时命令 | 设置默认 workspace 目录。 | `experimental` |
