@@ -214,10 +214,16 @@ timer wait becomes `cancelled` with terminal reason `timer_cancelled`, including
 any fallback deadline. A triggered wait is cancelled only if its source wake has
 not been admitted; its trigger message and timestamp remain historical evidence.
 Cancellation is not a timer fire: it emits no replacement tick or continuation.
-An open WorkItem whose scheduling blocker belongs to that wait retains an
-explicit `timer_cancelled` blocker requiring a new wait or operator action, with
-the terminal wait dependency and recheck removed. Independent business blockers
-and already-admitted execution are not changed.
+An open WorkItem whose scheduling blocker belongs to that wait is explicitly
+paused with reason `timer_cancelled` until a new wait or operator action. The
+cancelled wait remains as evidence but has no recheck deadline. Independent
+pauses, already-admitted execution, and the WorkItem's descriptive `blocked_by`
+are not changed.
+
+A `WaitFor` fallback deadline belongs to its active `WaitCondition`, whether
+scoped to an agent lifecycle or a WorkItem. The deadline tick targets only that
+wait and its recorded owner; it is not a general system wake or a scan of
+WorkItem blocker fields.
 
 Timer resource validity is checked again in the wait commit transaction,
 including final-report settlement. If cancellation wins before registration

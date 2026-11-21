@@ -237,56 +237,16 @@ impl CapturedWork {
         selected.truncate(kept);
         Ok(selected)
     }
-    /// Work repository SQL compares its normalized millisecond columns. The
-    /// returned typed Work remains unchanged, including its original payload.
-    pub(crate) fn blocked_work_rechecks(&self) -> Result<Vec<&WorkItemRecord>> {
-        let mut works = self
-            .live_work_items()?
-            .into_iter()
-            .filter(|work| {
-                work.state == WorkItemState::Open
-                    && work.blocked_by.is_some()
-                    && work.recheck_at.is_some_and(|at| {
-                        work.recheck_consumed_at.is_none_or(|consumed| {
-                            consumed.timestamp_millis() < at.timestamp_millis()
-                        })
-                    })
-            })
-            .collect::<Vec<_>>();
-        // Live IDs are unique, including ties in normalized recheck time.
-        works.sort_unstable_by(|a, b| {
-            (a.recheck_at.unwrap().timestamp_millis(), &a.id)
-                .cmp(&(b.recheck_at.unwrap().timestamp_millis(), &b.id))
-        });
-        Ok(works)
-    }
-    pub(crate) fn next_work_recheck_at(&self) -> Result<Option<DateTime<Utc>>> {
-        self.blocked_work_rechecks()?
-            .first()
-            .map(|work| {
-                DateTime::from_timestamp_millis(work.recheck_at.unwrap().timestamp_millis())
-                    .ok_or_else(|| anyhow::anyhow!("Work recheck timestamp is invalid"))
-            })
-            .transpose()
-    }
-    pub(crate) fn due_work_rechecks(&self, now: DateTime<Utc>) -> Result<Vec<&WorkItemRecord>> {
-        Ok(self
-            .blocked_work_rechecks()?
-            .into_iter()
-            .filter(|work| work.recheck_at.unwrap().timestamp_millis() <= now.timestamp_millis())
-            .collect())
-    }
-    pub(crate) fn next_agent_wait_recheck_at(&self) -> Result<Option<DateTime<Utc>>> {
+    /// Only active WaitConditions own fallback deadlines.
+    pub(crate) fn next_wait_recheck_at(&self) -> Result<Option<DateTime<Utc>>> {
         Ok(self
             .unresolved_wait_conditions()?
             .into_iter()
-            .filter(|wait| {
-                wait.work_item_id.is_none() && wait.status == WaitConditionStatus::Active
-            })
+            .filter(|wait| wait.status == WaitConditionStatus::Active)
             .filter_map(WaitConditionRecord::recheck_at)
             .min())
     }
-    pub(crate) fn due_agent_wait_recheck(
+    pub(crate) fn due_wait_recheck(
         &self,
         now: DateTime<Utc>,
     ) -> Result<Option<&WaitConditionRecord>> {
@@ -294,8 +254,7 @@ impl CapturedWork {
             .unresolved_wait_conditions()?
             .into_iter()
             .filter(|wait| {
-                wait.work_item_id.is_none()
-                    && wait.status == WaitConditionStatus::Active
+                wait.status == WaitConditionStatus::Active
                     && wait.recheck_at().is_some_and(|at| at <= now)
             })
             .min_by_key(|wait| wait.recheck_at()))

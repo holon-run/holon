@@ -766,6 +766,11 @@ async fn cold_state_direct_storage_preserves_all_groups_trigger_order_and_limits
                     ),
                 )?;
             }
+            if group == "blocked" {
+                host.runtime_db()
+                    .wait_conditions()
+                    .upsert(&crate::storage::test_system_work_wait(&work))?;
+            }
             if group == "triggered" {
                 let trigger_id = format!("trigger_{index:02}");
                 host.runtime_db()

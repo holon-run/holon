@@ -408,6 +408,7 @@ pub(super) fn assert_source_parked(
     message_id: &str,
     attempt_id: &str,
     waiter_id: &str,
+    has_exact_wait: bool,
 ) {
     assert_eq!(
         runtime
@@ -434,25 +435,20 @@ pub(super) fn assert_source_parked(
         protocol.attempts[attempt_id].state,
         ExecutionAttemptState::Interrupted
     );
+    let work_state = &protocol.work_items[waiter_id].state;
     assert!(
         matches!(
-            protocol.work_items[waiter_id].state,
+            work_state,
             WorkItemExecutionState::Waiting { .. }
         ) || matches!(
-            &protocol.work_items[waiter_id].state,
+            work_state,
             WorkItemExecutionState::Runnable {
                 recovery_ref: Some(recovery_ref),
                 ..
             } if recovery_ref == "interrupted"
-        ) || matches!(
-            &protocol.work_items[waiter_id].state,
-            WorkItemExecutionState::Paused { reason, .. }
-                if reason == "independent business blocker"
-        ),
-        "availability staleness must keep the continuation waiting on its wait, \
-         re-enterable via the parked replay, or parked on its manual business \
-         blocker -- never paused for repair; actual={:?}",
-        protocol.work_items[waiter_id].state
+        ) || !has_exact_wait
+            && matches!(work_state, WorkItemExecutionState::Runnable { recovery_ref: None, .. }),
+        "availability staleness must not pause work for repair or lose its exact wait; actual={work_state:?}",
     );
     if let Some(settlement) = runtime
         .runtime_db()

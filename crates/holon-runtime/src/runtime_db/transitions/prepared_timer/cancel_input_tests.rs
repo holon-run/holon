@@ -43,9 +43,9 @@ fn fixture() -> Result<(Fixture, PreparedInputTransition, String)> {
     let inserted = record.clone();
     let execution = WorkItemExecutionRecord {
         source_revision: record.revision,
-        state: WorkItemExecutionState::Paused {
+        state: WorkItemExecutionState::Runnable {
             generation: 1,
-            reason: "original timer wait".into(),
+            recovery_ref: None,
         },
     };
     f.db.transitions_in_scope(&f.scope)

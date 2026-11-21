@@ -262,12 +262,10 @@ async fn work_item_details_preserve_scheduling_and_mixed_list_ranking() {
     }
 
     let current = WorkItemRecord::new("scheduling", "current", WorkItemState::Open);
-    let mut blocked = WorkItemRecord::new("scheduling", "blocked", WorkItemState::Open);
-    blocked.blocked_by = Some("manual dependency".into());
-    let mut waiting = WorkItemRecord::new("scheduling", "waiting", WorkItemState::Open);
-    waiting.blocked_by = Some("operator decision".into());
-    waiting.blocked_by_wait_id = Some("operator-wait".into());
-    for item in [&current, &blocked, &waiting] {
+    let mut noted = WorkItemRecord::new("scheduling", "descriptive blocker", WorkItemState::Open);
+    noted.blocked_by = Some("manual dependency".into());
+    let waiting = WorkItemRecord::new("scheduling", "waiting", WorkItemState::Open);
+    for item in [&current, &noted, &waiting] {
         host.runtime_db().work_items().insert_new(item).unwrap();
     }
     let mut agent = AgentState::new("scheduling");
@@ -309,8 +307,8 @@ async fn work_item_details_preserve_scheduling_and_mixed_list_ranking() {
     assert_eq!(status, StatusCode::OK, "{list}");
     for (item, scheduling_state, focus) in [
         (&current, "runnable", "current"),
-        (&blocked, "blocked", "blocked"),
-        (&waiting, "waiting_operator", "blocked"),
+        (&noted, "runnable", "blocked"),
+        (&waiting, "waiting_operator", "queued"),
         (&completing, "completing", "completing"),
         (&completed, "completed", "completed"),
     ] {
@@ -325,6 +323,11 @@ async fn work_item_details_preserve_scheduling_and_mixed_list_ranking() {
         assert_eq!(body["scheduling_state"], scheduling_state, "{body}");
         assert_eq!(body["focus"], focus, "{body}");
         assert!(!body["readiness"].is_null(), "{body}");
+        if item.id == noted.id {
+            assert_eq!(body["blocked_by"], "manual dependency");
+            assert_eq!(body["readiness"], "runnable");
+            assert_eq!(body["is_runnable"], true);
+        }
         if item.id == waiting.id {
             assert_eq!(body["readiness"], "waiting_for_operator");
             assert_eq!(body["reason_code"], "active_operator_wait");

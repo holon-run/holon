@@ -390,11 +390,7 @@ async fn cancelled_timer_settles_registered_wait_without_resuming_work() {
                 .unwrap()
                 .unwrap();
             assert_eq!(work.state, WorkItemState::Open);
-            assert!(work
-                .blocked_by
-                .as_deref()
-                .unwrap()
-                .contains("timer_cancelled"));
+            assert!(work.blocked_by.is_none());
             assert!(work.blocked_by_wait_id.is_none());
             assert!(work.recheck_at.is_none());
             let execution = runtime
@@ -408,11 +404,12 @@ async fn cancelled_timer_settles_registered_wait_without_resuming_work() {
                 execution.work_items[&work_id].source_revision, work.revision,
                 "timer cancellation must advance the registered source in its transaction"
             );
-            assert_eq!(
-                execution.work_items[&work_id].state,
-                before_execution.as_ref().unwrap().work_items[&work_id].state,
-                "cancellation is not a readiness or generation transition"
-            );
+            assert!(matches!(
+                &execution.work_items[&work_id].state,
+                crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, generation }
+                    if reason == "timer_cancelled"
+                        && *generation == before_execution.as_ref().unwrap().work_items[&work_id].generation() + 1
+            ));
             let written = runtime
                 .storage()
                 .read_recent_events(100)
@@ -442,6 +439,36 @@ async fn cancelled_timer_settles_registered_wait_without_resuming_work() {
             .unwrap()
             .iter()
             .any(|message| message.kind == MessageKind::TimerTick));
+        if let Some(work_id) = registration.condition.work_item_id {
+            let replacement = runtime
+                .register_wait_for(
+                    "default",
+                    Some(work_id.clone()),
+                    WaitForWakeKind::External,
+                    Some("replacement-dependency".into()),
+                    "replacement after timer cancellation".into(),
+                    None,
+                )
+                .await
+                .unwrap();
+            use crate::domain::execution_protocol::WorkItemExecutionState;
+            assert!(matches!(
+                &timer_execution_snapshot(&runtime).work_items[&work_id].state,
+                WorkItemExecutionState::Waiting { wait, .. } if wait.wait_id == replacement.condition.id
+            ));
+            runtime
+                .pick_work_item_with_reason_and_clear_blocker(
+                    work_id.clone(),
+                    Some("replacement dependency was resolved".into()),
+                    true,
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                &timer_execution_snapshot(&runtime).work_items[&work_id].state,
+                WorkItemExecutionState::Runnable { .. }
+            ));
+        }
     }
 }
 
@@ -611,20 +638,22 @@ async fn cancelled_timer_preserves_missing_terminal_and_drifted_registration_bou
         let before_waits = runtime.storage().latest_wait_conditions().unwrap();
         let before_events = runtime.storage().read_recent_events(100).unwrap();
         let result = runtime.cancel_timer(&timer.id).await;
-        if boundary == "missing" {
+        if matches!(boundary, "missing" | "terminal") {
             result.unwrap();
-            assert!(!timer_execution_snapshot(&runtime)
-                .work_items
-                .contains_key(&work.id));
+            assert_eq!(timer_execution_snapshot(&runtime), execution);
             assert_eq!(
-                runtime
-                    .storage()
-                    .latest_work_item(&work.id)
-                    .unwrap()
-                    .unwrap()
-                    .revision,
-                before_work.revision + 1
+                runtime.storage().latest_work_item(&work.id).unwrap(),
+                Some(before_work)
             );
+            assert!(runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .iter()
+                .all(
+                    |wait| wait.subject_ref.as_deref() != Some(timer.id.as_str())
+                        || wait.status == WaitConditionStatus::Cancelled
+                ));
         } else {
             let error = result.unwrap_err().to_string();
             assert!(
@@ -861,10 +890,15 @@ async fn cancelled_timer_settles_only_matching_waits_and_owned_blockers() {
                 .latest_work_item(&work.id)
                 .unwrap()
                 .unwrap();
+            use crate::domain::execution_protocol::{
+                ExecutionProtocolCommand, SetWorkItemReadiness, WorkItemExecutionRecord,
+                WorkItemExecutionState,
+            };
             work.blocked_by = Some("independent manual blocker".into());
             work.blocked_by_wait_id = None;
             let expected_revision = work.revision;
             work.revision += 1;
+            let expected = timer_execution_snapshot(&runtime).work_items[&work.id].clone();
             let commit = {
                 let mut mutation = runtime.begin_mutation().await.unwrap();
                 mutation
@@ -883,7 +917,23 @@ async fn cancelled_timer_settles_only_matching_waits_and_owned_blockers() {
                             notify_scheduler: false,
                             fault: None,
                         },
-                        Default::default(),
+                        crate::runtime_db::transitions::ExecutionProtocolTransition {
+                            bootstrap: None,
+                            commands: vec![ExecutionProtocolCommand::SetWorkItemReadiness(
+                                Box::new(SetWorkItemReadiness {
+                                    command_id: format!("test:manual_pause:{}", work.id),
+                                    work_item_id: work.id.clone(),
+                                    record: WorkItemExecutionRecord {
+                                        source_revision: work.revision,
+                                        state: WorkItemExecutionState::Paused {
+                                            generation: expected.generation() + 1,
+                                            reason: "independent manual pause".into(),
+                                        },
+                                    },
+                                    expected,
+                                }),
+                            )],
+                        },
                         true,
                     )
                     .await
@@ -949,11 +999,17 @@ async fn cancelled_timer_settles_only_matching_waits_and_owned_blockers() {
         .await
         .unwrap()
         .unwrap();
-    assert!(projected
-        .blocked_by
-        .as_deref()
-        .unwrap()
-        .contains("timer_cancelled"));
+    assert!(projected.blocked_by.is_none());
+    let execution = timer_execution_snapshot(&runtime);
+    use crate::domain::execution_protocol::WorkItemExecutionState;
+    assert!(matches!(
+        &execution.work_items[&projected.id].state,
+        WorkItemExecutionState::Paused { reason, .. } if reason == "timer_cancelled"
+    ));
+    assert!(matches!(
+        &execution.work_items[&manual_blocker.id].state,
+        WorkItemExecutionState::Paused { reason, .. } if reason == "independent manual pause"
+    ));
     assert!(projected.blocked_by_wait_id.is_none());
 }
 
@@ -1113,10 +1169,18 @@ async fn cancelled_timer_respects_wake_admission_boundary() {
         if let Some(work_id) = work_item_id {
             let execution = timer_execution_snapshot(&runtime);
             let before_execution = before_execution.unwrap();
-            assert_eq!(
-                execution.work_items[&work_id].state,
-                before_execution.work_items[&work_id].state
-            );
+            if admitted {
+                assert_eq!(
+                    execution.work_items[&work_id].state,
+                    before_execution.work_items[&work_id].state
+                );
+            } else {
+                assert!(matches!(
+                    &execution.work_items[&work_id].state,
+                    crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+                        if reason == "timer_cancelled"
+                ));
+            }
             assert_eq!(execution.attempts, before_execution.attempts);
             assert_eq!(
                 execution.work_items[&work_id].source_revision,
@@ -1289,7 +1353,10 @@ async fn cancelled_timer_legacy_orphan_recovery_and_repeat_cancel_are_idempotent
             .await
             .unwrap();
         // Import a real pre-cutover orphan, not an out-of-band current-schema write.
-        let blocked = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+        let mut blocked = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+        blocked.blocked_by = Some(registered.condition.waiting_for.clone());
+        blocked.blocked_by_wait_id = Some(registered.condition.id.clone());
+        blocked.recheck_at = Some(clock.now() + chrono::Duration::minutes(2));
         let state = runtime.agent_state().await.unwrap();
         timer.status = TimerStatus::Cancelled;
         timer.next_fire_at = None;
@@ -1316,14 +1383,16 @@ async fn cancelled_timer_legacy_orphan_recovery_and_repeat_cancel_are_idempotent
         assert_eq!(wait.status, WaitConditionStatus::Cancelled);
         assert_eq!(wait.cancelled_at, Some(clock.now()));
         assert_eq!(wait.updated_at, registered.condition.updated_at);
-        let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-        assert!(work
-            .blocked_by
-            .as_deref()
-            .unwrap()
-            .contains("timer_cancelled"));
-        assert!(work.blocked_by_wait_id.is_none());
-        assert!(work.recheck_at.is_none());
+        blocked.revision += 1;
+        assert_eq!(
+            runtime.latest_work_item(&work.id).await.unwrap(),
+            Some(blocked)
+        );
+        assert!(matches!(
+            &timer_execution_snapshot(&runtime).work_items[&work.id].state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+                if reason == "timer_cancelled"
+        ));
         let events = runtime.storage().read_recent_events(100).unwrap();
         runtime.cancel_timer(&timer.id).await.unwrap();
         let recovered_again = make_runtime(dir.path());

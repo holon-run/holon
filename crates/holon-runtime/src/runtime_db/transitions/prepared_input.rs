@@ -1737,10 +1737,7 @@ impl PreparedInputTransition {
                 if let Some(expectation) = &command.scheduler_claim_work_item {
                     let record = match expectation {
                         SchedulerClaimWorkItemExpectation::Snapshot(record)
-                        | SchedulerClaimWorkItemExpectation::Runnable(record)
-                        | SchedulerClaimWorkItemExpectation::BlockedRecheck { record, .. } => {
-                            record
-                        }
+                        | SchedulerClaimWorkItemExpectation::Runnable(record) => record,
                     };
                     agent(&record.agent_id, "scheduler WorkItem")?;
                 }

@@ -108,7 +108,6 @@ impl RuntimeHandle {
                 || work.state != crate::types::WorkItemState::Open
                 || work.revision != expected.source_revision
                 || work.plan_status != crate::types::WorkItemPlanStatus::Ready
-                || work.blocked_by.is_some()
                 || self
                     .inner
                     .storage

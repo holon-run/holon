@@ -754,7 +754,7 @@ mod tests {
             (WaitConditionKind::System, WorkItemReadiness::Blocked),
         ] {
             let waits = [wait(&record, kind)];
-            assert_eq!(record.readiness(), WorkItemReadiness::Blocked);
+            assert_eq!(record.readiness(), WorkItemReadiness::Runnable);
             assert_eq!(readiness_from_facts(&record, false, &waits), expected);
         }
     }

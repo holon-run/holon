@@ -26,7 +26,7 @@ The read model may use only:
 
 - `WorkItemRecord.state`;
 - scheduler-sensitive dispatch generation or its canonical source facts;
-- typed manual hold and compatibility blocker/recheck facts during migration;
+- typed execution protocol state, including explicit pauses;
 - WorkItem-scoped `WaitConditionRecord`s across `Active`, `Triggered`,
   `Consumed`, and terminal states, including owner, wait generation, trigger
   generation, and consuming activation identity;
@@ -41,6 +41,11 @@ The read model may use only:
 
 `AgentState.current_turn_work_item_id` is turn attribution and is never a
 fallback current-focus fact.
+
+`WorkItemRecord.blocked_by` is descriptive text for display and context only.
+Legacy `blocked_by_wait_id` and WorkItem recheck timestamps remain readable
+but do not affect scheduling. `WaitCondition.waiting_for` describes an actual
+wait; a `WaitFor` fallback belongs to that wait, not the WorkItem.
 
 `plan_status`, todo contents, plan text, assistant prose, and brief contents
 are coordination or display facts. They do not create or suppress scheduler

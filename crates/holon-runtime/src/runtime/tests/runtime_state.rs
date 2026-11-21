@@ -6198,8 +6198,7 @@ async fn bootstrap_task_result_claim_with_business_blocker_recovers_exact_wait_o
             .unwrap();
         assert!(matches!(
             &state.work_items[&fixture.work_item_id].state,
-            WorkItemExecutionState::Paused { reason, .. }
-                if reason == "Waiting for business approval."
+            WorkItemExecutionState::Runnable { .. }
         ));
         assert_eq!(
             fixture
@@ -9070,16 +9069,24 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
         ) if work_item_id == &work_item.id
     ));
     // #3463: the late fast path must leave the same durable wait semantics
-    // as a normal registration: derived blocker on the waiter WorkItem and
-    // the canonical execution state waiting on the exact task wait.
+    // as a normal registration: no WorkItem blocker mirror, and the canonical
+    // execution state waiting on the exact task wait.
     let blocked = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .unwrap();
+    assert!(blocked.blocked_by.is_none());
+    let triggered_wait = runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.id == wait_condition_id)
+        .expect("late task wait");
     assert_eq!(
-        blocked.blocked_by.as_deref(),
-        Some("waiting for terminal task handoff")
+        triggered_wait.waiting_for,
+        "waiting for terminal task handoff"
     );
     assert!(matches!(
         &execution.work_items[&work_item.id].state,
@@ -9390,10 +9397,13 @@ async fn task_result_wait_preserves_business_blocker_inner(
         .await
         .unwrap()
         .unwrap();
+    // An explicit blocker annotation is descriptive; a registered wait keeps
+    // its reason on the wait condition instead of mirroring it here.
     assert_eq!(
         externally_blocked.blocked_by.as_deref(),
-        Some("Waiting on an external change.")
+        explicit_blocker.then_some("Waiting on an external change.")
     );
+    assert!(externally_blocked.recheck_at.is_none());
     if explicit_blocker {
         assert_eq!(externally_blocked.blocked_by_wait_id, None);
     }
@@ -9542,7 +9552,7 @@ async fn task_result_wait_preserves_business_blocker_inner(
         runtime
     };
 
-    // The late fast path must preserve an unrelated blocker while the
+    // The late fast path must not mirror a blocker onto the WorkItem; the
     // canonical execution state waits on the exact task wait.
     let blocked = runtime
         .latest_work_item(&work_item.id)
@@ -9551,7 +9561,7 @@ async fn task_result_wait_preserves_business_blocker_inner(
         .unwrap();
     assert_eq!(
         blocked.blocked_by.as_deref(),
-        Some("Waiting on an external change.")
+        explicit_blocker.then_some("Waiting on an external change.")
     );
     let execution = runtime
         .inner
@@ -9710,12 +9720,11 @@ async fn task_result_wait_preserves_business_blocker_inner(
         .unwrap();
     assert!(matches!(
         &execution.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
-            if Some(reason) == resumed.blocked_by.as_ref()
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert!(
-        !runtime
+        runtime
             .storage()
             .work_queue_prompt_projection()
             .unwrap()
@@ -9758,8 +9767,8 @@ async fn task_result_wait_preserves_business_blocker_inner(
     assert!(!runtime.emit_due_task_result_recovery().await.unwrap());
     assert_eq!(*provider.calls.lock().await, 1);
 
-    // A different owner task without a matching wait must not inherit the
-    // continuation privilege of the result just consumed.
+    // A different owner task must not inherit the settled wait's authority.
+    // It can still take the ordinary TaskResult path for a runnable owner.
     let mut unmatched_result = task_result_message("task-business-blocked-no-wait").with_admission(
         MessageDeliverySurface::TaskRejoin,
         AdmissionContext::RuntimeOwned,
@@ -9792,17 +9801,29 @@ async fn task_result_wait_preserves_business_blocker_inner(
     let poll = Box::pin(scheduler_executor::SchedulerDecisionExecutor::new(&runtime).poll())
         .await
         .unwrap();
-    if let scheduler_executor::RunLoopPoll::Message(scheduled) = poll {
-        assert!(!scheduled.scheduler_decision.model_reentry);
-        Box::pin(runtime.process_message_with_plan(
-            scheduled.message,
-            scheduled.dispatch_plan,
-            &scheduled.scheduler_decision,
-        ))
-        .await
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("ordinary result should be delivered for its runnable owner");
+    };
+    assert_eq!(scheduled.message.id, unmatched_result.id);
+    assert!(scheduled.scheduler_decision.model_reentry);
+    let resolution = scheduled
+        .dispatch_plan
+        .continuation_resolution
+        .as_ref()
         .unwrap();
-    }
-    assert_eq!(*provider.calls.lock().await, 1);
+    assert!(!resolution.matched_waiting_reason);
+    assert!(!resolution
+        .evidence
+        .iter()
+        .any(|entry| entry == "exact_task_wait"));
+    Box::pin(runtime.process_message_with_plan(
+        scheduled.message,
+        scheduled.dispatch_plan,
+        &scheduled.scheduler_decision,
+    ))
+    .await
+    .unwrap();
+    assert_eq!(*provider.calls.lock().await, 2);
 
     // Reconciling the result may establish another business wait; no manual
     // blocker clearance is required between these continuations.
@@ -9820,9 +9841,8 @@ async fn task_result_wait_preserves_business_blocker_inner(
     assert_eq!(next.condition.status, WaitConditionStatus::Active);
 }
 
-// A same-text independent blocker must stay authoritative: blocker ownership
-// is decided by registration provenance (`blocked_by_wait_id`), never by
-// display-text equality.
+// Replacing an external wait with a task wait does not rewrite a descriptive
+// note, even when all three use identical text.
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker() {
@@ -9885,6 +9905,17 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_
         .create_work_item("same-text blocked follow-up".into(), None, None, Vec::new())
         .await
         .unwrap();
+    runtime
+        .update_work_item_fields(
+            work_item.id.clone(),
+            None,
+            None,
+            None,
+            None,
+            Some(Some("Waiting on a task result.".into())),
+        )
+        .await
+        .unwrap();
     let external_registration = runtime
         .register_wait_for(
             "default",
@@ -9906,15 +9937,17 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_
         externally_blocked.blocked_by.as_deref(),
         Some("Waiting on a task result.")
     );
-    assert_eq!(
-        externally_blocked.blocked_by_wait_id.as_deref(),
-        Some(external_wait_id.as_str())
-    );
-    assert!(externally_blocked.recheck_at.is_some());
+    assert!(externally_blocked.blocked_by_wait_id.is_none());
+    assert!(externally_blocked.recheck_at.is_none());
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap()
+        .iter()
+        .any(|wait| wait.id == external_wait_id));
 
-    // Second conversation turn while the WorkItem stays blocked on the
-    // same-text external dependency: the task already reached terminal
-    // before the late WaitFor (#3463).
+    // Second conversation turn while the same-text external wait stays active:
+    // the task already reached terminal before the late WaitFor (#3463).
     finish_started_blocker_fixture_dispatch(&runtime, &first_scheduled).await;
     drop(first_scheduled);
 
@@ -10004,8 +10037,7 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_
     assert_eq!(task_id, terminal_task.id);
     assert_eq!(result_message_id, result.id);
 
-    // The late fast path preserves the same-text independent blocker with its
-    // external-wait provenance instead of taking it over.
+    // The late fast path leaves the note untouched and replaces the external wait.
     let blocked = runtime
         .latest_work_item(&work_item.id)
         .await
@@ -10015,11 +10047,8 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_
         blocked.blocked_by.as_deref(),
         Some("Waiting on a task result.")
     );
-    assert_eq!(
-        blocked.blocked_by_wait_id.as_deref(),
-        Some(external_wait_id.as_str())
-    );
-    assert!(blocked.recheck_at.is_some());
+    assert!(blocked.blocked_by_wait_id.is_none());
+    assert!(blocked.recheck_at.is_none());
 
     let execution = runtime
         .inner
@@ -10067,22 +10096,21 @@ async fn late_task_result_wait_with_same_text_independent_blocker_keeps_blocker_
         Some(work_item.id.as_str())
     );
 
-    // Model continuation settlement must not release the same-text independent
-    // blocker or its recheck deadline.
+    // The replacement cancelled the prior wait, not the same-text note.
     let still_blocked = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        still_blocked.blocked_by.as_deref(),
-        Some("Waiting on a task result.")
-    );
-    assert_eq!(
-        still_blocked.blocked_by_wait_id.as_deref(),
-        Some(external_wait_id.as_str())
-    );
-    assert!(still_blocked.recheck_at.is_some());
+    assert_eq!(still_blocked.blocked_by, externally_blocked.blocked_by);
+    assert!(still_blocked.blocked_by_wait_id.is_none());
+    assert!(still_blocked.recheck_at.is_none());
+    assert!(runtime
+        .storage()
+        .latest_wait_conditions_for_agent("default")
+        .unwrap()
+        .iter()
+        .any(|wait| wait.id == external_wait_id && wait.status == WaitConditionStatus::Cancelled));
 
     let waits = runtime
         .storage()
@@ -10204,14 +10232,14 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_in
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        origin_blocked.blocked_by.as_deref(),
-        Some("Waiting on a task result.")
-    );
-    assert_eq!(
-        origin_blocked.blocked_by_wait_id.as_deref(),
-        Some(origin_wait_id.as_str())
-    );
+    assert!(origin_blocked.blocked_by.is_none());
+    assert!(origin_blocked.blocked_by_wait_id.is_none());
+    assert!(runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap()
+        .iter()
+        .any(|wait| wait.id == origin_wait_id));
 
     // Second conversation turn: a different task is already terminal when the
     // late WaitFor replaces the running-task wait.
@@ -10307,20 +10335,14 @@ async fn late_task_result_wait_replacing_task_wait_takes_over_derived_blocker_in
     assert_eq!(task_id, terminal_task.id);
     assert_eq!(result_message_id, result.id);
 
-    // The replaced task wait's derived blocker is taken over by the new wait.
+    // Replacement is recorded on the WaitConditions, not on the WorkItem.
     let taken_over = runtime
         .latest_work_item(&work_item.id)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(
-        taken_over.blocked_by.as_deref(),
-        Some("Waiting on a task result.")
-    );
-    assert_eq!(
-        taken_over.blocked_by_wait_id.as_deref(),
-        Some(wait_condition_id.as_str())
-    );
+    assert!(taken_over.blocked_by.is_none());
+    assert!(taken_over.blocked_by_wait_id.is_none());
 
     // The exact wake takes the canonical path: the blocker is not
     // independent of the task wait.
@@ -10491,6 +10513,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .unwrap()
         .unwrap();
     let work_generation = settled.work_items[&work_item.id].state.generation();
+    let work_source_revision = settled.work_items[&work_item.id].source_revision;
     let attempt = &settled.attempts[&activation_id];
     assert_eq!(
         attempt.state,
@@ -10593,7 +10616,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
         .await
         .unwrap()
         .expect("task result should retain the WorkItem");
-    assert!(resolved_work_item.revision > work_generation);
+    assert_eq!(resolved_work_item.revision, work_source_revision);
     let rejoined = reopened
         .inner
         .runtime_db
@@ -17182,7 +17205,7 @@ async fn wait_for_task_result_marks_work_item_waiting_and_allows_sleep() {
         .unwrap();
 
     let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-    assert_eq!(latest.blocked_by.as_deref(), Some("waiting for task-1"));
+    assert!(latest.blocked_by.is_none());
     assert_eq!(latest.recheck_at, None);
     let projection = runtime.storage().work_queue_prompt_projection().unwrap();
     let projected = projection
@@ -17374,7 +17397,7 @@ async fn prepared_task_wait_rejects_task_completion_race_without_registering_wai
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline() {
+async fn register_wait_for_external_recheck_keeps_deadline_on_wait_condition() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -17410,15 +17433,12 @@ async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline(
     let after = Utc::now();
 
     let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-    let recheck_at = latest
-        .recheck_at
-        .expect("work item wait should store fallback recheck");
-    assert_eq!(
-        latest.blocked_by.as_deref(),
-        Some("waiting for any external event")
-    );
+    assert!(latest.blocked_by.is_none());
+    assert_eq!(latest.recheck_at, None);
     assert_eq!(registration.recheck_after_ms, Some(60_000));
-    assert_eq!(registration.recheck_at, Some(recheck_at));
+    let recheck_at = registration
+        .recheck_at
+        .expect("wait condition stores its own fallback recheck");
     assert!(recheck_at >= before + chrono::Duration::milliseconds(60_000));
     assert!(recheck_at <= after + chrono::Duration::milliseconds(60_000));
     assert_eq!(registration.condition.subject_ref, None);
@@ -17430,7 +17450,7 @@ async fn register_wait_for_external_recheck_sets_recoverable_work_item_deadline(
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker() {
+async fn canonical_task_result_claim_resolves_wait_without_mutating_work_item_blocker() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -17494,7 +17514,7 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .unwrap();
 
     let latest = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-    assert_eq!(latest.blocked_by.as_deref(), Some("waiting for task-1"));
+    assert!(latest.blocked_by.is_none());
     let triggered = runtime
         .storage()
         .latest_wait_conditions()
@@ -17512,8 +17532,8 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
         .unwrap()
         .expect("triggered task wait should plan claim-time resolution");
     assert!(
-        planned_wait_resolution.work_item.is_some(),
-        "claim-time wait resolution should clear the matching WorkItem blocker"
+        planned_wait_resolution.work_item.is_none(),
+        "claim-time wait resolution must not rewrite the WorkItem blocker"
     );
     let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
         .poll()
@@ -17537,7 +17557,7 @@ async fn canonical_task_result_claim_resolves_wait_and_clears_matching_blocker()
             latest.revision,
             latest.blocked_by.as_deref()
         ),
-        (WaitConditionStatus::Resolved, work.revision + 1, None)
+        (WaitConditionStatus::Resolved, work.revision, None)
     );
     let events = runtime.storage().read_recent_events(100).unwrap();
     assert!(events
@@ -19421,7 +19441,7 @@ async fn triggered_wait_survives_provider_recovery_settlement_and_resumes() {
 
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
-async fn provider_recovery_cannot_claim_blocked_work_item() {
+async fn provider_recovery_can_claim_work_item_with_descriptive_blocker() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -19439,21 +19459,21 @@ async fn provider_recovery_cannot_claim_blocked_work_item() {
     .unwrap();
     let work_item = runtime
         .create_work_item(
-            "provider recovery blocked boundary".into(),
+            "provider recovery with a descriptive note".into(),
             Some(WorkItemPlanStatus::Ready),
             None,
             Vec::new(),
         )
         .await
         .unwrap();
-    let blocked = runtime
+    runtime
         .update_work_item_fields(
             work_item.id.clone(),
             None,
             None,
             None,
             None,
-            Some(Some("manual blocker".into())),
+            Some(Some("manual dependency".into())),
         )
         .await
         .unwrap();
@@ -19466,31 +19486,20 @@ async fn provider_recovery_cannot_claim_blocked_work_item() {
             .into_iter()
             .find(|item| item.id == work_item.id)
             .map(|item| item.scheduling_state),
-        Some(WorkItemSchedulingState::Blocked)
+        Some(WorkItemSchedulingState::Runnable)
     );
-    persist_waiting_work_execution(&runtime, &blocked, "wait-blocked-boundary").await;
-
     let recovery = runtime
         .enqueue(provider_recovery_message(&runtime, &work_item.id).await)
         .await
         .unwrap();
-    assert!(matches!(
-        scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
-            .poll()
-            .await
-            .unwrap(),
-        scheduler_executor::RunLoopPoll::Idle
-    ));
-    assert!(runtime
-        .storage()
-        .read_recent_events(usize::MAX)
-        .unwrap()
-        .iter()
-        .any(|event| {
-            event.kind == "scheduler_authority_input_rejected"
-                && event.data["message_id"] == recovery.id
-                && event.data["reason"] == "canonical_provider_recovery_work_item_not_recoverable"
-        }));
+    let poll = scheduler_executor::SchedulerDecisionExecutor::new(&runtime)
+        .poll()
+        .await
+        .unwrap();
+    let scheduler_executor::RunLoopPoll::Message(scheduled) = poll else {
+        panic!("descriptive blocker must not prevent provider recovery");
+    };
+    assert_eq!(scheduled.message.id, recovery.id);
 }
 
 #[cfg(holon_lib_test_shard = "a")]

@@ -29,13 +29,12 @@ pub(crate) async fn execute(
         .map(|items| convert_todo_list(NAME, items))
         .transpose()?;
     let work_item = runtime
-        .update_work_item_fields_with_recheck(
+        .update_work_item_fields(
             work_item_id,
             objective,
             args.plan_status.map(Into::into),
             None,
             todo_list,
-            None,
             None,
         )
         .await?;

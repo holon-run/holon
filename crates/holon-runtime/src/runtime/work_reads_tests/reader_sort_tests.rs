@@ -62,59 +62,7 @@ fn unresolved_reader_in_place_order_preserves_timestamps_ids_and_borrowed_record
 }
 
 #[test]
-fn blocked_reader_in_place_order_preserves_normalized_ties_predicates_and_due_window() -> Result<()>
-{
-    let observation = captured(
-        (0..48)
-            .rev()
-            .map(|i| {
-                let mut row = work(
-                    &format!("work-{i:02}-汉字\0🦀"),
-                    if i % 5 == 0 {
-                        WorkItemState::Completing
-                    } else {
-                        WorkItemState::Open
-                    },
-                );
-                row.blocked_by = (i % 11 != 0).then(|| "dependency".into());
-                row.recheck_at =
-                    Some(at(3000 + i % 3) + chrono::Duration::nanoseconds(i % 2 * 900_000));
-                // Equal milliseconds count as consumed even if nanoseconds differ.
-                row.recheck_consumed_at = (i % 7 == 0).then(|| at(3000 + i % 3));
-                CanonicalWorkRecord::Work(row)
-            })
-            .collect(),
-    );
-    let sorted = observation.blocked_work_rechecks()?;
-    let mut expected = Vec::new();
-    for millis in 0..3 {
-        for i in 0..48 {
-            if i % 3 == millis && i % 5 != 0 && i % 11 != 0 && i % 7 != 0 {
-                expected.push(format!("work-{i:02}-汉字\0🦀"));
-            }
-        }
-    }
-    assert_eq!(
-        sorted.iter().map(|row| &row.id).collect::<Vec<_>>(),
-        expected.iter().collect::<Vec<_>>()
-    );
-    for row in &sorted {
-        assert!(std::ptr::eq(*row, observation.work_item(&row.id)?.unwrap()));
-    }
-    assert_eq!(observation.next_work_recheck_at()?, Some(at(3000)));
-    assert!(observation.due_work_rechecks(at(2999))?.is_empty());
-    let expected_due = sorted
-        .iter()
-        .copied()
-        .filter(|row| row.recheck_at.unwrap().timestamp_millis() <= 3001)
-        .collect::<Vec<_>>();
-    assert_eq!(observation.due_work_rechecks(at(3001))?, expected_due);
-    assert_eq!(observation.due_work_rechecks(at(3002))?, sorted);
-    Ok(())
-}
-
-#[test]
-fn unresolved_reader_order_preserves_agent_deadline_first_match_and_context_filter() -> Result<()> {
+fn unresolved_reader_order_preserves_wait_deadline_first_match_and_context_filter() -> Result<()> {
     let mut triggered = wait("triggered", None, 2000);
     triggered.mark_triggered("message", at(6000));
     let mut owned = wait("owned", Some("owner"), 1000);
@@ -141,13 +89,13 @@ fn unresolved_reader_order_preserves_agent_deadline_first_match_and_context_filt
             .collect::<Vec<_>>(),
         ["triggered", "owned", "a-same", "z-newest", "a-older"]
     );
-    assert_eq!(observation.next_agent_wait_recheck_at()?, Some(at(3000)));
-    assert!(observation.due_agent_wait_recheck(at(2999))?.is_none());
-    let due = observation.due_agent_wait_recheck(at(3000))?.unwrap();
-    assert_eq!(due.id, "a-same");
+    assert_eq!(observation.next_wait_recheck_at()?, Some(at(3000)));
+    assert!(observation.due_wait_recheck(at(2999))?.is_none());
+    let due = observation.due_wait_recheck(at(3000))?.unwrap();
+    assert_eq!(due.id, "owned");
     assert!(std::ptr::eq(
         due,
-        observation.wait_condition("a-same")?.unwrap()
+        observation.wait_condition("owned")?.unwrap()
     ));
     assert_eq!(
         observation
@@ -164,11 +112,11 @@ fn unresolved_reader_order_preserves_agent_deadline_first_match_and_context_filt
 fn in_place_reader_sort_keeps_empty_incomplete_missing_and_invalid_body_errors() -> Result<()> {
     let mut empty = captured(Vec::new());
     assert!(empty.unresolved_wait_conditions()?.is_empty());
-    assert!(empty.blocked_work_rechecks()?.is_empty());
+    assert!(empty.live_work_items()?.is_empty());
     empty.live_complete = false;
     for error in [
         empty.unresolved_wait_conditions().unwrap_err(),
-        empty.blocked_work_rechecks().unwrap_err(),
+        empty.live_work_items().unwrap_err(),
     ] {
         assert!(matches!(
             error.downcast_ref::<WorkReadError>(),
@@ -185,7 +133,7 @@ fn in_place_reader_sort_keeps_empty_incomplete_missing_and_invalid_body_errors()
         let key = WorkKey::new(family, "selected");
         observation.observations.remove(&key);
         let error = match family {
-            WorkFamily::Work => observation.blocked_work_rechecks().unwrap_err(),
+            WorkFamily::Work => observation.live_work_items().unwrap_err(),
             WorkFamily::Wait => observation.unresolved_wait_conditions().unwrap_err(),
             _ => unreachable!(),
         };
@@ -204,7 +152,7 @@ fn in_place_reader_sort_keeps_empty_incomplete_missing_and_invalid_body_errors()
         // A deliberately invalid post-capture fixture, never new qualification.
         observation.records[0] = Arc::new(invalid);
         let error = match family {
-            WorkFamily::Work => observation.blocked_work_rechecks().unwrap_err(),
+            WorkFamily::Work => observation.live_work_items().unwrap_err(),
             WorkFamily::Wait => observation.unresolved_wait_conditions().unwrap_err(),
             _ => unreachable!(),
         };

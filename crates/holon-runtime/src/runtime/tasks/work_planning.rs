@@ -114,7 +114,7 @@ impl WorkCommandRead {
             .map(|(id, _)| id.clone());
         let source = WorkItemContinuationResumeSource {
             work_item_revision: parent.revision,
-            blocked_by: parent.blocked_by.clone(),
+            blocked_by: None,
             active_wait_ids: parent_waits.into_keys().collect(),
             latest_admitted_wait_id,
         };

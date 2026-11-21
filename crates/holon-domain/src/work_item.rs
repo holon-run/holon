@@ -186,14 +186,13 @@ pub struct WorkItemRecord {
     pub todo_list: Vec<TodoItem>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub work_refs: Vec<WorkItemRef>,
+    /// Descriptive note; never used as a scheduling gate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<String>,
-    /// The wait condition whose registration derived the current `blocked_by`.
-    /// `None` when the blocker was set independently (operator update, turn
-    /// closure, scheduler) or predates blocker provenance. Blocker ownership
-    /// is decided by this identity, never by display-text equality.
+    /// Historical wait-derived blocker metadata. New waits do not write it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by_wait_id: Option<String>,
+    /// Historical blocker recheck deadline; no longer scheduled.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recheck_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -382,7 +381,6 @@ impl WorkItemRecord {
         match self.state {
             WorkItemState::Completed => WorkItemSchedulingState::Completed,
             WorkItemState::Completing => WorkItemSchedulingState::Completing,
-            WorkItemState::Open if self.blocked_by.is_some() => WorkItemSchedulingState::Blocked,
             WorkItemState::Open if self.plan_status == WorkItemPlanStatus::NeedsInput => {
                 WorkItemSchedulingState::WaitingOperator
             }

@@ -237,8 +237,9 @@ pub(crate) fn matching_wake_source<'a>(
             .any(|source| matches!(source, WakeSource::OperatorInput))
             .then(|| matched("operator_input", actor_id.as_deref())),
         (MessageKind::SystemTick, MessageOrigin::System { subsystem }) => {
-            if exact_wait_recheck_source(message, condition, subsystem) {
-                return Some(matched("wait_recheck", Some(condition.id.as_str())));
+            if subsystem == "wait_condition_recheck" {
+                return exact_wait_recheck_source(message, condition)
+                    .then(|| matched("wait_recheck", Some(condition.id.as_str())));
             }
             if let Some(external) = matching_wake_hint_external_source(message, condition) {
                 return Some(external);
@@ -253,15 +254,11 @@ pub(crate) fn matching_wake_source<'a>(
     }
 }
 
-fn exact_wait_recheck_source(
-    message: &MessageEnvelope,
-    condition: &WaitConditionRecord,
-    subsystem: &str,
-) -> bool {
-    if subsystem != "wait_condition_recheck"
-        || message.authority_class != AuthorityClass::RuntimeInstruction
+fn exact_wait_recheck_source(message: &MessageEnvelope, condition: &WaitConditionRecord) -> bool {
+    if message.authority_class != AuthorityClass::RuntimeInstruction
         || message.admission_context != Some(AdmissionContext::RuntimeOwned)
         || message.delivery_surface != Some(MessageDeliverySurface::RuntimeSystem)
+        || message.work_item_id != condition.work_item_id
         || message.source_refs.get("wait_id") != Some(&condition.id)
     {
         return false;

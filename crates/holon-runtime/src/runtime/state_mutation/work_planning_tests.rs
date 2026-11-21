@@ -181,7 +181,7 @@ async fn idle_projection_cannot_prepare_after_cleanup_admission() -> Result<()> 
 #[tokio::test]
 async fn agent_wait_recheck_cannot_prepare_after_cleanup_admission() -> Result<()> {
     let (_home, runtime) = fixture();
-    retire_before_ordinary_scheduler_resumes(&runtime, runtime.emit_due_agent_wait_recheck()).await
+    retire_before_ordinary_scheduler_resumes(&runtime, runtime.emit_due_wait_recheck()).await
 }
 
 #[tokio::test]

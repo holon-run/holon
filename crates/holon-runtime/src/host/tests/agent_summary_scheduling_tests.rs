@@ -42,6 +42,14 @@ async fn cold_summary_owned_queue_preserves_rich_closure_posture_and_last_holder
                 .runtime_db()
                 .work_items()
                 .insert_new_qualified_for_fixture(&item, identity.incarnation)?);
+            if id == "blocked" {
+                host.runtime_db()
+                    .wait_conditions()
+                    .upsert_qualified_for_fixture(
+                        &crate::storage::test_system_work_wait(&item),
+                        identity.incarnation,
+                    )?;
+            }
             records.push(item);
         }
         // Set focus only after every target has been written and qualified.
@@ -95,7 +103,8 @@ async fn cold_summary_owned_queue_preserves_rich_closure_posture_and_last_holder
         assert_eq!(summary.closure, closure);
         assert_eq!(summary.active_task_count, 0);
         assert!(summary.active_external_triggers.is_empty());
-        assert!(summary.active_wait_conditions.is_empty());
+        assert_eq!(summary.active_wait_conditions.len(), 1);
+        assert_eq!(summary.active_wait_conditions[0].id, "wait-system-blocked");
         let expected_wire = serde_json::to_value(&*summary)?;
         let held = host.inner.input_evidence_budget.report()?.observed_bytes;
         assert!(held > baseline);

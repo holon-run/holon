@@ -6992,7 +6992,7 @@ async fn handle_work_item_command(config: &AppConfig, command: WorkItemCommands)
                     plan_status,
                     todo_list,
                     blocked_by,
-                    recheck_after,
+                    recheck_after: recheck_after.map(Some),
                     authority_class: Some(cli_authority_class()?),
                     invocation_context: cli_invocation_context()?,
                 },

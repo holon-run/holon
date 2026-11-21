@@ -209,6 +209,13 @@ fn wake_subjects_borrow_message_and_condition_fields() -> Result<()> {
         let wake = matching_wake_source(&message, &wait).unwrap();
         assert_eq!(wake.source, "wait_recheck");
         assert_eq!(wake.subject_ref.unwrap().as_ptr(), wait.id.as_ptr());
+        message.work_item_id = Some("work-b".into());
+        assert!(matching_wake_source(&message, &wait).is_none());
+        wait.work_item_id.clone_from(&message.work_item_id);
+        assert_eq!(
+            matching_wake_source(&message, &wait).unwrap().source,
+            "wait_recheck"
+        );
     }
     assert_eq!(phase.finish()?, header());
     drop(phase);

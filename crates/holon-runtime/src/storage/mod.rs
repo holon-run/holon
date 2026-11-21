@@ -1441,6 +1441,35 @@ pub fn to_json_value<T: Serialize>(value: &T) -> Value {
 
 #[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
+pub(crate) fn test_system_work_wait(
+    work: &crate::types::WorkItemRecord,
+) -> crate::types::WaitConditionRecord {
+    use crate::types::{WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource};
+
+    WaitConditionRecord {
+        id: format!("wait-system-{}", work.id),
+        agent_id: work.agent_id.clone(),
+        work_item_id: Some(work.id.clone()),
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::System,
+        source: Some("test".into()),
+        subject_ref: None,
+        waiting_for: "test dependency".into(),
+        wake_sources: vec![WakeSource::SystemTick],
+        continuation: None,
+        created_at: work.created_at,
+        updated_at: work.updated_at,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
+    }
+}
+
+#[cfg(holon_lib_test_shard = "d")]
+#[cfg(test)]
 mod tests {
     use std::fs;
 
@@ -4146,6 +4175,9 @@ mod tests {
         let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
+        storage
+            .append_wait_condition(&test_system_work_wait(&blocked))
+            .unwrap();
         agent.current_work_item_id = Some(blocked.id.clone());
         storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
@@ -4394,6 +4426,9 @@ mod tests {
         let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
         blocked.blocked_by = Some("unstructured blocker".into());
         storage.append_work_item(&blocked).unwrap();
+        storage
+            .append_wait_condition(&test_system_work_wait(&blocked))
+            .unwrap();
         agent.current_work_item_id = Some(blocked.id.clone());
         storage.write_agent_for_fixture(&agent).unwrap();
         assert_eq!(
@@ -4964,6 +4999,9 @@ mod tests {
             storage.append_work_item(item).unwrap();
         }
         storage
+            .append_wait_condition(&test_system_work_wait(&blocked))
+            .unwrap();
+        storage
             .append_wait_condition(&WaitConditionRecord {
                 id: "wait-triggered".into(),
                 agent_id: "default".into(),
@@ -5099,7 +5137,7 @@ mod tests {
     }
 
     #[test]
-    fn storage_waiting_contract_anchor_falls_back_to_latest_waiting_when_no_active_exists() {
+    fn storage_waiting_contract_anchor_falls_back_to_latest_wait_when_no_item_is_focused() {
         let dir = tempdir().unwrap();
         let storage = AppStorage::new_for_test(dir.path()).unwrap();
 
@@ -5116,10 +5154,17 @@ mod tests {
         let mut queued = WorkItemRecord::new("default", "queued follow-up", WorkItemState::Open);
         queued.created_at = Utc::now() + chrono::Duration::minutes(1);
         queued.updated_at = queued.created_at;
+        queued.blocked_by = Some("description only".into());
 
         storage.append_work_item(&waiting_old).unwrap();
         storage.append_work_item(&waiting_new).unwrap();
         storage.append_work_item(&queued).unwrap();
+        assert!(storage.waiting_contract_anchor().unwrap().is_none());
+        for waiting in [&waiting_old, &waiting_new] {
+            storage
+                .append_wait_condition(&test_system_work_wait(waiting))
+                .unwrap();
+        }
 
         let anchor = storage.waiting_contract_anchor().unwrap();
         assert_eq!(
@@ -5135,9 +5180,9 @@ mod tests {
         assert_eq!(
             rendered,
             vec![
-                "queued follow-up",
                 "older waiting anchor",
-                "newer waiting anchor"
+                "newer waiting anchor",
+                "queued follow-up"
             ]
         );
         assert!(projection.current.is_none());

@@ -27,7 +27,9 @@ async fn cold_borrowed_queue_dual_consumers_match_owned_oracle_and_last_holder()
         let mut state = AgentState::new(&identity.agent_id);
         state.status = AgentStatus::AwakeIdle;
         state.turn_index = 11;
-        state.current_work_item_id = current.map(str::to_owned);
+        host.runtime_db()
+            .agent_states()
+            .initialize_cold_for_fixture(&state, identity.incarnation)?;
         for id in ["ready", "queued", "blocked", "completed"] {
             let mut record = WorkItemRecord::new(
                 &identity.agent_id,
@@ -47,11 +49,23 @@ async fn cold_borrowed_queue_dual_consumers_match_owned_oracle_and_last_holder()
             if id == "blocked" {
                 record.blocked_by = Some("external dependency 汉🦀".repeat(31));
             }
-            assert!(host.runtime_db().work_items().insert_new(&record)?);
+            assert!(host
+                .runtime_db()
+                .work_items()
+                .insert_new_qualified_for_fixture(&record, identity.incarnation)?);
+            if id == "blocked" {
+                host.runtime_db()
+                    .wait_conditions()
+                    .upsert_qualified_for_fixture(
+                        &crate::storage::test_system_work_wait(&record),
+                        identity.incarnation,
+                    )?;
+            }
         }
+        state.current_work_item_id = current.map(str::to_owned);
         host.runtime_db()
             .agent_states()
-            .initialize_cold_for_fixture(&state, identity.incarnation)?;
+            .upsert_for_fixture(&state)?;
         let storage = host
             .agent_storage_read_only(&identity.agent_id)
             .map_err(|error| anyhow!("{error:?}"))?;
@@ -69,7 +83,7 @@ async fn cold_borrowed_queue_dual_consumers_match_owned_oracle_and_last_holder()
             state.current_work_item_id.as_deref(),
             active,
             vec![],
-            vec![],
+            storage.active_wait_conditions_for_scope()?,
             vec![],
         )?;
         assert_eq!(queue.items.len(), 3);

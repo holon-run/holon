@@ -1613,7 +1613,7 @@ async fn run_atomic_wait_settlement_test(scenario: AtomicWaitScenario) {
             .unwrap()
             .unwrap()
             .blocked_by
-            .is_some());
+            .is_none());
         assert!(committed.current_turn_work_item_id.is_none());
     }
     if task_wait {
@@ -2660,7 +2660,7 @@ async fn run_wait_for_final_report_test_with_compaction(
             Some(original.id.as_str())
         );
         assert_eq!(updated.revision, original.revision + 1);
-        assert!(updated.blocked_by.is_some());
+        assert!(updated.blocked_by.is_none());
         let events = runtime.storage().read_recent_events(100).unwrap();
         assert!(
             events
@@ -5010,11 +5010,18 @@ async fn single_candidate_quota_failures_park_without_recovery_enqueue() {
         .latest_work_item(&work.id)
         .unwrap()
         .expect("parked WorkItem");
-    assert!(blocked
-        .blocked_by
-        .as_deref()
-        .is_some_and(|reason| reason.contains("provider quota incident")));
-    assert!(blocked.recheck_at.is_some());
+    assert!(blocked.blocked_by.is_none());
+    assert!(blocked.recheck_at.is_none());
+    let parked_waits = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap();
+    let parked_wait = parked_waits
+        .iter()
+        .find(|wait| wait.work_item_id.as_deref() == Some(work.id.as_str()))
+        .expect("parked wait owns the retry reason");
+    assert!(parked_wait.waiting_for.contains("provider quota incident"));
+    assert!(parked_wait.recheck_at().is_some());
     let events = runtime.storage().read_recent_events(20).unwrap();
     assert!(events.iter().any(|event| {
         event.kind == "provider_quota_exhausted" && event.data["parked"].as_bool() == Some(true)
@@ -5120,7 +5127,15 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
         .latest_work_item(&work.id)
         .unwrap()
         .expect("parked WorkItem");
-    let recheck_at = blocked.recheck_at.expect("durable recheck deadline");
+    assert!(blocked.blocked_by.is_none());
+    let recheck_at = runtime
+        .storage()
+        .active_wait_conditions_for_agent("default")
+        .unwrap()
+        .into_iter()
+        .find(|wait| wait.work_item_id.as_deref() == Some(work.id.as_str()))
+        .and_then(|wait| wait.recheck_at())
+        .expect("parked wait owns the retry deadline");
     let incident_identity = runtime
         .storage()
         .read_recent_events(20)
@@ -5146,12 +5161,10 @@ async fn parked_quota_work_item_probes_after_deadline_and_resolves_on_success() 
         .is_none());
     assert!(runtime
         .storage()
-        .latest_work_item(&work.id)
+        .active_wait_conditions_for_work_item("default", &work.id)
         .unwrap()
-        .expect("parked WorkItem")
-        .blocked_by
-        .is_some());
-
+        .iter()
+        .any(|wait| wait.recheck_at() == Some(recheck_at)));
     advance_lifecycle_time(&clock, std::time::Duration::from_millis(2)).await;
     wait_for_audit_events(
         &runtime,

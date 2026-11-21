@@ -1410,7 +1410,7 @@ fn scheduling_advisories_detect_idle_posture_with_runnable_work() {
 }
 
 #[test]
-fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
+fn scheduling_advisories_detect_weak_external_wait() {
     let dir = tempdir().unwrap();
     let storage = AppStorage::new_for_test(dir.path()).unwrap();
     let agent = AgentState::new("default");
@@ -1446,10 +1446,6 @@ fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
         })
         .unwrap();
 
-    let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
-    blocked.blocked_by = Some("manual blocker".into());
-    storage.append_work_item(&blocked).unwrap();
-
     let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
     let kinds = diagnostics
         .iter()
@@ -1457,15 +1453,10 @@ fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
         .collect::<Vec<_>>();
 
     assert!(kinds.contains(&"external_wait_has_weak_recoverability"));
-    assert!(kinds.contains(&"blocked_work_item_without_recheck_or_wait"));
     assert!(diagnostics.iter().any(|diagnostic| {
         diagnostic.kind == "external_wait_has_weak_recoverability"
             && diagnostic.wait_condition_id.as_deref() == Some("wait-weak")
             && diagnostic.work_item_id.as_deref() == Some(external.id.as_str())
-    }));
-    assert!(diagnostics.iter().any(|diagnostic| {
-        diagnostic.kind == "blocked_work_item_without_recheck_or_wait"
-            && diagnostic.work_item_id.as_deref() == Some(blocked.id.as_str())
     }));
 }
 

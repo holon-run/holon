@@ -715,8 +715,8 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     let client = reqwest::Client::new();
     let runtime = host.default_runtime().await?;
 
-    // Exercise control mutations without the autonomous scheduler claiming the
-    // fixtures. The update makes the second item ready and blocked atomically.
+    // Keep both fixtures in NeedsInput so the scheduler cannot claim them
+    // between requests. The patched blocked_by text is only a description.
     let first = runtime
         .create_work_item(
             "first queued item".into(),
@@ -767,13 +767,11 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
         ))
         .json(&serde_json::json!({
             "objective": "refined via HTTP",
-            "plan_status": "ready",
             "todo_list": [
                 {"text": "wire HTTP endpoint", "state": "completed"},
                 {"text": "verify behavior", "state": "in_progress"}
             ],
             "blocked_by": "waiting on review",
-            "recheck_after": 60000,
             "authority_class": "integration_signal"
         }))
         .send()
@@ -786,9 +784,9 @@ pub async fn work_item_mutation_routes_pick_update_and_complete() -> Result<()> 
     );
     assert_eq!(update["id"], second.id);
     assert_eq!(update["objective"], "refined via HTTP");
-    assert_eq!(update["plan_status"], "ready");
+    assert_eq!(update["plan_status"], "needs_input");
     assert_eq!(update["blocked_by"], "waiting on review");
-    assert!(update["recheck_at"].is_string());
+    assert!(update["recheck_at"].is_null());
     assert_eq!(update["todo_list"].as_array().expect("todo array").len(), 2);
     assert_control_audit_event(&runtime, "work_item_update_requested");
 
@@ -875,21 +873,28 @@ pub async fn work_item_mutation_routes_validate_bad_requests() -> Result<()> {
         "request must include at least one mutation field"
     );
 
-    let recheck_without_blocker = client
-        .patch(format!(
-            "{base}/api/control/agents/default/work-items/{}",
-            work.id
-        ))
-        .json(&serde_json::json!({
-            "blocked_by": null,
-            "recheck_after": 1000
-        }))
-        .send()
-        .await?;
-    assert_eq!(
-        recheck_without_blocker.status(),
-        reqwest::StatusCode::BAD_REQUEST
-    );
+    for recheck_after in [serde_json::json!(1000), serde_json::Value::Null] {
+        let deprecated_recheck = client
+            .patch(format!(
+                "{base}/api/control/agents/default/work-items/{}",
+                work.id
+            ))
+            .json(&serde_json::json!({
+                "blocked_by": "waiting on review",
+                "recheck_after": recheck_after
+            }))
+            .send()
+            .await?;
+        assert_eq!(
+            deprecated_recheck.status(),
+            reqwest::StatusCode::BAD_REQUEST
+        );
+        let body: serde_json::Value = deprecated_recheck.json().await?;
+        assert_eq!(
+            body["error"],
+            "blocked_by recheck_after is deprecated; use WaitFor with recheck_after_ms"
+        );
+    }
 
     let missing = client
         .post(format!(

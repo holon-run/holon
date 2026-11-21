@@ -216,7 +216,6 @@ fn context_selection_matches_full_queue_for_all_candidate_classes() -> Result<()
                             &state,
                             &projection,
                             &posture,
-                            captured.scheduler_blocked_work(&ranked),
                             &waits,
                         ),
                         crate::runtime::scheduler::scheduling_advisories_for_facts(
