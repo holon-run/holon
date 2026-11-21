@@ -11,7 +11,7 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 # Supported Models
 
 Holon includes built-in configuration for **37 provider accounts**
-across **50 endpoints** and **423 models**.
+across **51 endpoints** and **429 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](../../../crates/holon-model-catalog/src/lib.rs) and
@@ -208,6 +208,8 @@ and capabilities.
 | `dashscope` | `qwen3.8-max-0902` | `dashscope/qwen3.8-max-0902` | 1000000 | 131072 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-max-preview` | `dashscope/qwen3.8-max-preview` | 1000000 | 65536 | ✅ | ✅ |
 | `dashscope` | `qwen3.8-omni-flash` | `dashscope/qwen3.8-omni-flash` | 1000000 | 131072 | ✅ | ✅ |
+| `dashscope` | `qwen4-max` | `dashscope/qwen4-max` | 1000000 | — | ✅ | ✅ |
+| `dashscope` | `qwen4-max-preview` | `dashscope/qwen4-max-preview` | — | — | ✅ | ✅ |
 | `deepseek` | `deepseek-flash` | `deepseek/deepseek-flash` | 1000000 | — | ✅ | ✅ |
 | `deepseek` | `deepseek-v4-flash` | `deepseek/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `deepseek` | `deepseek-v4-flash-vision-exp` | `deepseek/deepseek-v4-flash-vision-exp` | 1048576 | 393216 | ✅ | ✅ |
@@ -218,6 +220,7 @@ and capabilities.
 | `fireworks` | `accounts/fireworks/models/kimi-k3p1-pro` | `fireworks/accounts/fireworks/models/kimi-k3p1-pro` | 1048576 | — | — | ✅ |
 | `fireworks` | `accounts/fireworks/models/minimax-m2p7` | `fireworks/accounts/fireworks/models/minimax-m2p7` | 196608 | — | ✅ | — |
 | `fireworks` | `accounts/fireworks/models/minimax-m3` | `fireworks/accounts/fireworks/models/minimax-m3` | 512000 | — | ✅ | ✅ |
+| `fireworks` | `accounts/fireworks/models/minimax-m3p1-flash` | `fireworks/accounts/fireworks/models/minimax-m3p1-flash` | 1048576 | — | ✅ | ✅ |
 | `fireworks` | `accounts/fireworks/models/qwen3p6-plus` | `fireworks/accounts/fireworks/models/qwen3p6-plus` | — | — | ✅ | ✅ |
 | `fireworks` | `accounts/fireworks/models/qwen3p7-plus` | `fireworks/accounts/fireworks/models/qwen3p7-plus` | 262144 | — | ✅ | ✅ |
 | `gemini` | `gemini-2.5-flash` | `gemini/gemini-2.5-flash` | 1048576 | 65536 | ✅ | ✅ |
@@ -230,13 +233,13 @@ and capabilities.
 | `gemini` | `gemini-3.1-pro-preview` | `gemini/gemini-3.1-pro-preview` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.5-flash` | `gemini/gemini-3.5-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.5-flash-lite` | `gemini/gemini-3.5-flash-lite` | 1048576 | 65536 | ✅ | ✅ |
-| `gemini` | `gemini-3.5-live-translate-preview` | `gemini/gemini-3.5-live-translate-preview` | 16384 | 32768 | — | — |
 | `gemini` | `gemini-3.6-flash` | `gemini/gemini-3.6-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.7-flash` | `gemini/gemini-3.7-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-3.8-flash` | `gemini/gemini-3.8-flash` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-4-argon` | `gemini/gemini-4-argon` | 1048576 | 32768 | ✅ | ✅ |
 | `gemini` | `gemini-4-carbon` | `gemini/gemini-4-carbon` | 1048576 | 32768 | ✅ | ✅ |
 | `gemini` | `gemini-4-hydrogen` | `gemini/gemini-4-hydrogen` | 1048576 | 65536 | ✅ | ✅ |
+| `gemini` | `gemini-4-neon` | `gemini/gemini-4-neon` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-flash-latest` | `gemini/gemini-flash-latest` | 1048576 | 65536 | ✅ | ✅ |
 | `gemini` | `gemini-flash-lite-latest` | `gemini/gemini-flash-lite-latest` | 1048576 | 65536 | ✅ | ✅ |
 | `huggingface` | `openai/gpt-oss-120b` | `huggingface/openai/gpt-oss-120b` | 131072 | — | ✅ | — |
@@ -245,10 +248,6 @@ and capabilities.
 | `kilocode` | `kilo-auto/free` | `kilocode/kilo-auto/free` | 256000 | — | ✅ | — |
 | `kilocode` | `kilo-auto/frontier` | `kilocode/kilo-auto/frontier` | 1000000 | — | ✅ | ✅ |
 | `kilocode` | `kilo-auto/small` | `kilocode/kilo-auto/small` | 262144 | — | ✅ | ✅ |
-| `minimax` | `MiniMax-M2.5` | `minimax/MiniMax-M2.5` | 204800 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M2.5-highspeed` | `minimax/MiniMax-M2.5-highspeed` | 204800 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M2.7` | `minimax/MiniMax-M2.7` | 204800 | 128000 | ✅ | — |
-| `minimax` | `MiniMax-M2.7-highspeed` | `minimax/MiniMax-M2.7-highspeed` | 204800 | 128000 | ✅ | — |
 | `minimax` | `MiniMax-M3` | `minimax/MiniMax-M3` | 1000000 | 131072 | ✅ | ✅ |
 | `minimax` | `MiniMax-M3.1-Flash` | `minimax/MiniMax-M3.1-Flash` | 1000000 | 131072 | ✅ | ✅ |
 | `minimax` | `MiniMax-M3.1-Flash-Preview` | `minimax/MiniMax-M3.1-Flash-Preview` | 1000000 | — | ✅ | ✅ |
@@ -276,11 +275,12 @@ and capabilities.
 | `nearai` | `Qwen/Qwen3.6-35B-A3B-FP8` | `nearai/Qwen/Qwen3.6-35B-A3B-FP8` | 262144 | 8192 | ✅ | — |
 | `nearai` | `google/gemma-4-31B-it` | `nearai/google/gemma-4-31B-it` | 262144 | 8192 | ✅ | ✅ |
 | `nearai` | `zai-org/GLM-5.1-FP8` | `nearai/zai-org/GLM-5.1-FP8` | 202752 | 16384 | ✅ | — |
-| `nvidia` | `minimaxai/minimax-m2.7` | `nvidia/minimaxai/minimax-m2.7` | 204800 | — | ✅ | — |
-| `nvidia` | `minimaxai/minimax-m3` | `nvidia/minimaxai/minimax-m3` | 1000000 | — | ✅ | ✅ |
-| `nvidia` | `moonshotai/kimi-k2.6` | `nvidia/moonshotai/kimi-k2.6` | 262144 | — | ✅ | ✅ |
-| `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nvidia/nemotron-3-super-120b-a12b` | 1000000 | — | ✅ | — |
-| `nvidia` | `z-ai/glm-5.2` | `nvidia/z-ai/glm-5.2` | 1000000 | — | ✅ | — |
+| `nvidia` | `minimaxai/minimax-m2.7` | `nvidia/minimaxai/minimax-m2.7` | 204800 | 8192 | ✅ | — |
+| `nvidia` | `minimaxai/minimax-m3` | `nvidia/minimaxai/minimax-m3` | 1000000 | 8192 | ✅ | ✅ |
+| `nvidia` | `minimaxai/minimax-m3.1-flash` | `nvidia/minimaxai/minimax-m3.1-flash` | — | 16384 | ✅ | ✅ |
+| `nvidia` | `moonshotai/kimi-k2.6` | `nvidia/moonshotai/kimi-k2.6` | 262144 | 16384 | ✅ | ✅ |
+| `nvidia` | `nvidia/nemotron-3-super-120b-a12b` | `nvidia/nvidia/nemotron-3-super-120b-a12b` | 1000000 | 16384 | ✅ | — |
+| `nvidia` | `z-ai/glm-5.2` | `nvidia/z-ai/glm-5.2` | 1000000 | 16384 | ✅ | — |
 | `openai` | `gpt-5.3` | `openai/gpt-5.3` | 128000 | — | ✅ | ✅ |
 | `openai` | `gpt-5.4` | `openai/gpt-5.4` | 272000 | — | ✅ | ✅ |
 | `openai` | `gpt-5.4-mini` | `openai/gpt-5.4-mini` | 128000 | — | ✅ | ✅ |
@@ -293,6 +293,8 @@ and capabilities.
 | `openai` | `gpt-6-sol` | `openai/gpt-6-sol` | 1050000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-6.1-sol` | `openai/gpt-6.1-sol` | 1050000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-6.1-terra` | `openai/gpt-6.1-terra` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-6.2-astra` | `openai/gpt-6.2-astra` | 1050000 | 128000 | ✅ | ✅ |
+| `openai` | `gpt-6.2-sol` | `openai/gpt-6.2-sol` | 1050000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-daybreak-blue-latest` | `openai/gpt-daybreak-blue-latest` | 1050000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-daybreak-red-latest` | `openai/gpt-daybreak-red-latest` | 400000 | 128000 | ✅ | ✅ |
 | `openai` | `gpt-image-2` | `openai/gpt-image-2` | — | — | — | — |
@@ -304,10 +306,12 @@ and capabilities.
 | `openai-codex` | `gpt-6-astra` | `openai-codex/gpt-6-astra` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-6-luna` | `openai-codex/gpt-6-luna` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-6-sol` | `openai-codex/gpt-6-sol` | 272000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-6.1-sol` | `openai-codex/gpt-6.1-sol` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-6.1-sol` | `openai-codex/gpt-6.1-sol` | 500000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-6.1-terra` | `openai-codex/gpt-6.1-terra` | 500000 | — | ✅ | ✅ |
-| `openai-codex` | `gpt-daybreak-blue-latest` | `openai-codex/gpt-daybreak-blue-latest` | 1050000 | 128000 | ✅ | ✅ |
-| `openai-codex` | `gpt-daybreak-red-latest` | `openai-codex/gpt-daybreak-red-latest` | 400000 | 128000 | ✅ | ✅ |
+| `openai-codex` | `gpt-6.2-astra` | `openai-codex/gpt-6.2-astra` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-6.2-sol` | `openai-codex/gpt-6.2-sol` | 500000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-daybreak-blue-latest` | `openai-codex/gpt-daybreak-blue-latest` | 272000 | — | ✅ | ✅ |
+| `openai-codex` | `gpt-daybreak-red-latest` | `openai-codex/gpt-daybreak-red-latest` | 372000 | — | ✅ | ✅ |
 | `opencode-go` | `beam-free` | `opencode-go/beam-free` | 1048576 | 131072 | ✅ | — |
 | `opencode-go` | `cat-jam-free` | `opencode-go/cat-jam-free` | 262144 | 131072 | ✅ | — |
 | `opencode-go` | `claude-haiku-5-5` | `opencode-go/claude-haiku-5-5` | 1000000 | 128000 | ✅ | ✅ |
@@ -325,6 +329,7 @@ and capabilities.
 | `opencode-go` | `grok-4.7` | `opencode-go/grok-4.7` | 500000 | 500000 | ✅ | ✅ |
 | `opencode-go` | `hy3` | `opencode-go/hy3` | 256000 | 128000 | ✅ | — |
 | `opencode-go` | `hy4` | `opencode-go/hy4` | 1048576 | — | ✅ | ✅ |
+| `opencode-go` | `hy4-flash-free` | `opencode-go/hy4-flash-free` | 1048576 | — | ✅ | ✅ |
 | `opencode-go` | `hy4-preview` | `opencode-go/hy4-preview` | 1024000 | 64000 | ✅ | — |
 | `opencode-go` | `iceman-contributor-free` | `opencode-go/iceman-contributor-free` | 262144 | — | ✅ | — |
 | `opencode-go` | `kimi-k2.6` | `opencode-go/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
@@ -361,6 +366,7 @@ and capabilities.
 | `qianfan` | `deepseek-v4.1-flash-1017` | `qianfan/deepseek-v4.1-flash-1017` | — | — | ✅ | — |
 | `qianfan` | `ernie-5.0-thinking-exp` | `qianfan/ernie-5.0-thinking-exp` | — | — | — | — |
 | `qianfan` | `ernie-5.1` | `qianfan/ernie-5.1` | — | — | — | — |
+| `qianfan` | `ernie-light-dt-1.0` | `qianfan/ernie-light-dt-1.0` | — | 65536 | ✅ | — |
 | `qianfan` | `glm-5.1` | `qianfan/glm-5.1` | — | — | — | — |
 | `qianfan` | `glm-5.2` | `qianfan/glm-5.2` | — | — | — | — |
 | `qianfan` | `glm-5.3` | `qianfan/glm-5.3` | — | — | — | — |
@@ -410,6 +416,7 @@ and capabilities.
 | `tencent-tokenhub` | `hy-vision-2.0-instruct` | `tencent-tokenhub/hy-vision-2.0-instruct` | — | — | — | ✅ |
 | `tencent-tokenhub` | `hy3` | `tencent-tokenhub/hy3` | 256000 | 128000 | ✅ | — |
 | `tencent-tokenhub` | `hy4` | `tencent-tokenhub/hy4` | — | — | ✅ | ✅ |
+| `tencent-tokenhub` | `hy4-flash` | `tencent-tokenhub/hy4-flash` | — | — | ✅ | ✅ |
 | `tencent-tokenhub` | `hy4-preview` | `tencent-tokenhub/hy4-preview` | — | — | ✅ | — |
 | `tencent-tokenhub` | `kimi-k2.6` | `tencent-tokenhub/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `tencent-tokenhub` | `kimi-k2.7-code` | `tencent-tokenhub/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
@@ -420,7 +427,6 @@ and capabilities.
 | `tencent-tokenhub` | `kimi-k3.1-pro-highspeed` | `tencent-tokenhub/kimi-k3.1-pro-highspeed` | — | — | ✅ | ✅ |
 | `tencent-tokenhub` | `mimo-v2.6-flash` | `tencent-tokenhub/mimo-v2.6-flash` | — | — | — | — |
 | `tencent-tokenhub` | `mimo-v2.6-pro` | `tencent-tokenhub/mimo-v2.6-pro` | — | — | — | — |
-| `tencent-tokenhub` | `minimax-m2.7` | `tencent-tokenhub/minimax-m2.7` | 204800 | — | ✅ | — |
 | `tencent-tokenhub` | `minimax-m3` | `tencent-tokenhub/minimax-m3` | 1000000 | — | ✅ | ✅ |
 | `tencent-tokenhub` | `minimax-m3.1-flash` | `tencent-tokenhub/minimax-m3.1-flash` | — | — | — | — |
 | `tencent-tokenhub` | `step-5-preview` | `tencent-tokenhub/step-5-preview` | — | — | — | — |
@@ -464,13 +470,13 @@ and capabilities.
 | `volcengine` | `doubao-seed-2-0-mini-260215` | `volcengine/doubao-seed-2-0-mini-260215` | 256000 | 4096 | — | — |
 | `volcengine` | `doubao-seed-2-0-pro-260215` | `volcengine/doubao-seed-2-0-pro-260215` | 256000 | 4096 | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-lite-260915` | `volcengine/doubao-seed-2-1-lite-260915` | — | — | ✅ | ✅ |
-| `volcengine` | `doubao-seed-2-1-pro-260628` | `volcengine/doubao-seed-2-1-pro-260628` | 256000 | 256000 | ✅ | ✅ |
+| `volcengine` | `doubao-seed-2-1-pro-260628` | `volcengine/doubao-seed-2-1-pro-260628` | — | 256000 | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-pro-260915` | `volcengine/doubao-seed-2-1-pro-260915` | — | — | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2-1-turbo-260628` | `volcengine/doubao-seed-2-1-turbo-260628` | 256000 | 256000 | ✅ | ✅ |
 | `volcengine` | `doubao-seed-2.0-mini` | `volcengine/doubao-seed-2.0-mini` | — | — | — | — |
 | `volcengine` | `doubao-seed-2.1-lite` | `volcengine/doubao-seed-2.1-lite` | — | — | — | — |
 | `volcengine` | `doubao-seed-2.1-pro` | `volcengine/doubao-seed-2.1-pro` | — | — | — | — |
-| `volcengine` | `doubao-seed-character-260628` | `volcengine/doubao-seed-character-260628` | 256000 | 256000 | ✅ | ✅ |
+| `volcengine` | `doubao-seed-character-260628` | `volcengine/doubao-seed-character-260628` | — | — | ✅ | ✅ |
 | `volcengine` | `doubao-seed-evolving` | `volcengine/doubao-seed-evolving` | — | — | — | — |
 | `volcengine` | `doubao-seedream-5.0-lite` | `volcengine/doubao-seedream-5.0-lite` | — | — | — | — |
 | `volcengine` | `glm-5-2-260617` | `volcengine/glm-5-2-260617` | 1000000 | 131072 | ✅ | — |
@@ -493,7 +499,7 @@ and capabilities.
 | `xai` | `grok-imagine-image-2.0` | `xai/grok-imagine-image-2.0` | — | — | — | — |
 | `xai` | `grok-imagine-image-quality` | `xai/grok-imagine-image-quality` | — | — | — | — |
 | `xiaomi` | `mimo-v2.5-pro-ultraspeed` | `xiaomi/mimo-v2.5-pro-ultraspeed` | 1048576 | 131072 | ✅ | — |
-| `xiaomi` | `mimo-v2.6-flash` | `xiaomi/mimo-v2.6-flash` | 1048576 | 131072 | ✅ | ✅ |
+| `xiaomi` | `mimo-v2.6-flash` | `xiaomi/mimo-v2.6-flash` | — | 131072 | ✅ | ✅ |
 | `xiaomi` | `mimo-v2.6-pro` | `xiaomi/mimo-v2.6-pro` | 1048576 | 131072 | ✅ | ✅ |
 | `xiaomi` | `mimo-v2.6-pro-ultraspeed` | `xiaomi/mimo-v2.6-pro-ultraspeed` | 1048576 | 131072 | ✅ | ✅ |
 | `zai` | `glm-4-32b-0414-128k` | `zai/glm-4-32b-0414-128k` | 131072 | 16384 | — | — |

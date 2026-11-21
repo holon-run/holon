@@ -17,6 +17,8 @@ contracts behind those workflows.
 | `POST /api/callbacks/wake/:callback_token` | `wake_hint`: wake the agent to inspect external state |
 | `POST /api/callbacks/enqueue/:callback_token` | `enqueue_message`: enqueue external callback content |
 | `POST /api/control/agents/:agent_id/reset-callback` | Authenticated control operation: revoke the current default capability and issue a replacement |
+| `GET /api/control/agents/:agent_id/external-triggers` | Read-only diagnostic list of retained active and revoked triggers (metadata and `token_fingerprint` only; supports `limit`, `cursor`, and 16-hex `fingerprint`) |
+| `POST /api/control/agents/:agent_id/external-triggers/:external_trigger_id/reveal` | Reveal stored token and `trigger_url` for one active trigger; requires the independent static control token (`Cache-Control: no-store`) |
 
 A callback has one delivery mode and one `trigger_url`. The callback token is a
 capability secret resolving to an active trigger and agent. Invalid tokens,
@@ -38,6 +40,12 @@ Reset returns `ok`, `agent_id`, `external_trigger_id`, `trigger_url`,
 `delivery_mode`, and `status`. Treat the returned URL as secret and use it
 exactly as issued. Do not print it into a transcript, paste it into an issue, or
 store it in source control.
+
+When diagnosing an existing integration, `GET /api/control/agents/:agent_id/external-triggers`
+exposes only trigger metadata and 16-hex token fingerprints. Reading an active
+secret back requires `POST .../reveal` with the static control token; revoked
+triggers return `409 trigger_not_active`, and triggers without a verifiable
+stored token return `409 token_unavailable`.
 
 ## Default ingress and revocation
 

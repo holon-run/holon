@@ -23,7 +23,7 @@ documentation, or API responses.
 | `url` | yes | HTTP or HTTPS URL to fetch |
 | `max_chars` | no | Maximum characters to return (default: no hard limit) |
 | `extract_mode` | no | How to extract content from the response |
-| `provider` | no | Configured `kind=deepseek` provider for explicit paid remote Fetch; omitted means local HTTP |
+| `provider` | no | Configured remote fetch provider ID discovered via `ListWebFetchProviders`; omitted means local HTTP |
 
 ### Extract modes
 
@@ -39,9 +39,17 @@ Each response includes provenance metadata:
 
 - Final URL (after redirects)
 - HTTP status code
+- Status source (`target_http` for local HTTP, `provider_api` for remote fetch)
+- Provider ID (`null` for local HTTP, or the configured remote provider ID)
 - Content type
 - Truncation flag and character count
 - Content hash (SHA-256)
+
+Call `ListWebFetchProviders` (takes no arguments) to inspect which routes are
+available right now: the local HTTP route (`provider_id: null`) plus each
+callable remote provider ID with its `kind` and supported `extract_modes`.
+Remote fetching supports `kind=deepseek` (`auto` only), `kind=tavily` (`auto`
+or `text`), `kind=exa` (`auto` only), and `kind=firecrawl` (`auto` only).
 
 The fetched content is treated as **untrusted external content** by the
 runtime. The agent receives the provenance wrapper and is instructed not to
@@ -99,7 +107,22 @@ structured results with citations.
 |-----------|----------|-------------|
 | `query` | yes | Search query string |
 | `max_results` | no | Maximum number of results to return |
-| `provider` | no | Search provider to use (default: configured provider) |
+| `provider` | no | Omit for configured default/mode; `"auto"` for automatic candidate order; `"aggregate"` to query automatic candidates in order and deduplicate by canonical URL; or a specific provider ID (no fallback) |
+
+### Routing and provider discovery
+
+- Omit `provider` to use the configured provider and routing mode.
+- Pass `provider: "auto"` to use the automatic candidate order under the configured routing mode.
+- Pass `provider: "aggregate"` to query automatic candidates in order for that call, deduplicating by canonical URL until enough unique results are found or the attempt cap (`web.search.max_provider_attempts`) is reached.
+- Pass a specific provider ID to query only that provider with no fallback.
+
+`auto` and `aggregate` are reserved selector values. If a provider is registered
+with either name, calling it by that name fails; rename the provider or omit `provider`.
+
+Call `ListWebSearchProviders` (takes no arguments) to list the sorted, unique
+provider IDs you can pass to `WebSearch(provider="<ID>")` based on local
+configuration. Routing selectors (`auto`, `aggregate`) and conversation-only
+native search are not included in the list.
 
 ### Search providers
 

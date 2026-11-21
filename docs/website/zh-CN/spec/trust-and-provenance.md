@@ -180,6 +180,9 @@ Holon 的来源契约：
   **永远不会**被模型重新赋值。
 - 当运行时生成内部消息（system tick、task result、timer fire、continuation
   follow-up）时，它会赋予运行时拥有的 origin 和 `RuntimeInstruction` 权威。
+- Agent 间投递（`SendAgentMessage`、面向已有 Agent 的 `InvokeAgent`、回复与转发）
+  会为投递出的消息派生 `RuntimeInstruction`，同时单独保留调用方的原始权威；这类
+  投递不授予操作者队列准入权限。
 - 当 Agent 通过 `InvokeAgent` 委派工作时，被调用的 Agent 会按照监督运行时表面的
   规则，把委派任务作为有界的操作者/运行时上下文接收；它不得把后续外部渠道内容
   静默合并进操作者指令。

@@ -1,9 +1,9 @@
 ---
 title: CLI 参考
-summary: Holon 命令行界面——基于 holon --help 验证（v0.59.0）。
+summary: Holon 命令行界面——基于 holon --help 验证（v0.60.0）。
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.59.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.60.0. -->
 
 # CLI 参考
 
@@ -41,7 +41,7 @@ holon tail --agent child --include-progress --follow --cursor '<checkpoint>'
 ## 命令树
 
 ```text
-holon (v0.59.0)
+holon (v0.60.0)
 ├── context      显示本次 CLI 调用的声明式调用方上下文
 ├── commands     显示机器可读的 CLI 命令元数据
 ├── serve        启动 HTTP 控制平面服务
@@ -51,6 +51,7 @@ holon (v0.59.0)
 │   ├── prepare-update 停止 daemon 且不改变期望的自启状态
 │   ├── stop     停止 daemon
 │   ├── status   查看 daemon 状态
+│   ├── quarantine 离线读取最近记录的启动隔离报告
 │   ├── restart  重启 daemon
 │   └── logs     查看 daemon 日志
 ├── config       运行时配置
@@ -58,6 +59,9 @@ holon (v0.59.0)
 │   ├── set      写入配置键
 │   ├── unset    删除配置键
 │   ├── providers 提供商管理
+│   │   ├── headers 在不覆盖其他设置的情况下管理非敏感静态请求头
+│   │   │   ├── set   设置提供商或端点的静态请求头
+│   │   │   └── unset 移除提供商或端点的静态请求头
 │   │   ├── set    添加/更新提供商
 │   │   ├── get    显示提供商
 │   │   ├── list   列出所有提供商
@@ -210,9 +214,14 @@ holon agent delete reviewer --yes
 ```bash
 holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
 holon agent model get reviewer
 holon agent model clear reviewer
 ```
+
+执行 `holon agent model set` 时，省略 `--reasoning-effort` 或 `--service-tier`
+会保留该 Agent 当前的覆盖配置，传入新值会替换它，传入 `clear` 则会移除。
 
 可执行的模型选择使用规范的 `provider@endpoint/model` 路由引用。旧的
 `provider/model` 输入仍然接受。用以下命令查看或改写已持久化的旧值：
@@ -288,6 +297,12 @@ holon daemon stop
 在停止流程中，stop 路径会在短暂延迟后复核进程存活状态，并将僵尸进程（状态 Z 或 X）正确视作
 已退出而非仍在运行的守护进程，避免因操作系统进程回收延迟引发多余的 TERM+KILL 失败报警。
 `holon daemon status` 通过有界的诊断检查报告就绪状态，并避免等待繁忙的运行时数据库。
+`holon daemon quarantine` 直接从磁盘读取最近记录的启动隔离报告，无需连接运行中的
+daemon，即使 daemon 已离线也能查看被隔离的 Agent 启动故障。
+
+```bash
+holon daemon quarantine
+```
 
 ### 初始化配置
 
@@ -350,6 +365,13 @@ holon config providers set my-proxy \
   --credential-source env \
   --credential-env "MY_PROXY_API_KEY" \
   --credential-kind api_key
+```
+
+在不覆盖提供商其余配置的前提下，单独管理非敏感静态请求头：
+
+```bash
+holon config providers headers set my-proxy --header "X-Custom=value"
+holon config providers headers unset my-proxy --name X-Custom
 ```
 
 ### HTTP 服务端

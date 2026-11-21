@@ -159,6 +159,7 @@ order: 25
 | `GET` | `/api/agents/list` | bearer 模式下的认证头。 | `AgentListEntry[]` | 候选稳定 | 供选择/导航的轻量列表。 |
 | `GET` | `/api/agents/:agent_id/status` | 路径 `agent_id`；可选 `detail=compact\|full`；bearer 模式下的认证头。 | 默认 `SlimAgentDto`；`detail=full` 时为 `AgentSummary` | 候选稳定 | 单个 agent 的主要读模型。 |
 | `GET` | `/api/agents/:agent_id/state` | 路径 `agent_id`；bearer 模式下的认证头。 | `AgentStateSnapshot` | 实验性 | 轻量引导快照；省略 operator 通知、重复执行细节、任务细节和完整工作项内部信息。 |
+| `GET` | `/api/agents/:agent_id/model` | 路径 `agent_id`；bearer 模式下的认证头。 | 模型读取状态对象 | 实验性 | 仅返回 `.model`，不构建完整/紧凑摘要，也不唤醒未加载的运行时。 |
 | `GET` | `/api/agents/:agent_id/briefs` | 路径 `agent_id`；查询 `limit?`。 | `BriefRecord[]` | 候选稳定 | 默认 `20`。 |
 | `GET` | `/api/agents/:agent_id/tasks` | 路径 `agent_id`；查询 `limit?`。 | `TaskRecord[]` | 列表为候选稳定；DTO schema 仍然宽泛 | 默认 `50`；列出活跃/近期任务。 |
 | `GET` | `/api/agents/:agent_id/tasks/:task_id` | 路径 `agent_id`、`task_id`。 | `TaskStatusSnapshot` | 路由为候选稳定；DTO schema 仍然宽泛 | 返回单个任务的生命周期快照。 |
@@ -334,6 +335,8 @@ Skill 管理把库操作和 agent 启用分开：
 |--------|------|--------|------------------|-----------|-------|
 | `POST` | `/api/callbacks/enqueue/:callback_token` | 路径中的能力令牌；任意 body；`Content-Type` 指导 body 解码。 | `{ ok, ...CallbackDeliveryResult }` | 能力 | 令牌必须解析为投递模式为 enqueue 的活跃外部触发器。 |
 | `POST` | `/api/callbacks/wake/:callback_token` | 路径中的能力令牌；任意 body；`Content-Type` 指导 body 解码。 | `{ ok, ...CallbackDeliveryResult }` | 能力 | 令牌必须解析为投递模式为 wake 的活跃外部触发器。 |
+| `GET` | `/api/control/agents/:agent_id/external-triggers` | 路径 `agent_id`；查询 `limit?`、`cursor?`、`fingerprint?`；控制平面认证。 | `{ items, next_cursor? }` | 实验性 | 列出保留的活跃及已吊销触发器，附 16 位十六进制 `token_fingerprint`；不返回 token 与回调 URL。 |
+| `POST` | `/api/control/agents/:agent_id/external-triggers/:external_trigger_id/reveal` | 路径 `agent_id`、`external_trigger_id`；仅限独立静态 control token。 | `{ external_trigger_id, delivery_mode, token, trigger_url }` | 实验性 | 返回 `Cache-Control: no-store`；拒绝 session 与受信任本地凭据，不可用时返回 `409 trigger_not_active` 或 `409 token_unavailable`。 |
 
 Body 解码规则：
 

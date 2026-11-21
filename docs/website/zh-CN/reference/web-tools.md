@@ -21,7 +21,7 @@ Holon Agent 内置两个网络工具，用于检索和搜索公开网络。它�
 | `url` | 是 | 要抓取的 HTTP 或 HTTPS URL |
 | `max_chars` | 否 | 返回的最大字符数（默认：无硬性上限） |
 | `extract_mode` | 否 | 如何从响应中提取内容 |
-| `provider` | 否 | 显式选择 `kind=deepseek` 的付费远程抓取；省略则保持本地 HTTP |
+| `provider` | 否 | 通过 `ListWebFetchProviders` 发现的已配置远程抓取提供商 ID；省略则走本地 HTTP |
 
 ### 提取模式
 
@@ -37,9 +37,16 @@ Holon Agent 内置两个网络工具，用于检索和搜索公开网络。它�
 
 - 最终 URL（重定向之后）
 - HTTP 状态码
+- 状态来源（本地 HTTP 为 `target_http`，远程抓取为 `provider_api`）
+- 提供商 ID（本地 HTTP 为 `null`，或所选的远程提供商 ID）
 - 内容类型
 - 截断标志和字符数
 - 内容哈希（SHA-256）
+
+调用无参的 `ListWebFetchProviders` 可查看当前可用的抓取路由：默认本地 HTTP
+路由（`provider_id: null`）以及各个可调用的远程提供商 ID、类型 `kind` 和支持的
+`extract_modes`。远程抓取目前支持 `kind=deepseek`（仅 `auto`）、`kind=tavily`
+（`auto` 或 `text`）、`kind=exa`（仅 `auto`）与 `kind=firecrawl`（仅 `auto`）。
 
 抓取到的内容被运行时视为**不可信的外部内容**。Agent 收到的是带来源包装的内容，并被要求
 不能仅凭抓取内容就提升信任级别。
@@ -91,7 +98,21 @@ Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运�
 |-----------|----------|-------------|
 | `query` | 是 | 搜索查询字符串 |
 | `max_results` | 否 | 返回的最大结果数 |
-| `provider` | 否 | 使用的搜索提供商（默认：已配置的提供商） |
+| `provider` | 否 | 省略则沿用已配置默认与模式；`"auto"` 按自动候选顺序配合已配置模式执行；`"aggregate"` 仅本次按顺序聚合查询并按规范 URL 去重；或传具体提供商 ID（不回退） |
+
+### 路由与提供商发现
+
+- 省略 `provider`：使用实例已配置的提供商与路由模式。
+- 传入 `provider: "auto"`：按自动候选顺序配合已配置的路由模式查询。
+- 传入 `provider: "aggregate"`：仅本次调用按顺序查询自动候选并按规范 URL 去重，直到拿够去重结果或达到尝试上限（`web.search.max_provider_attempts`）。
+- 传入具体提供商 ID：仅查询该提供商，不做回退。
+
+`auto` 和 `aggregate` 属于保留的选择器取值。若配置里注册了同名提供商，按该名称显式
+调用会失败，需改名或省略 `provider`。
+
+调用无参的 `ListWebSearchProviders` 可根据本地配置列出排序后的唯一可用搜索提供商
+ID，直接传给 `WebSearch(provider="<ID>")`。路由选择器（`auto`、`aggregate`）以及仅限
+对话轮次的原生搜索不会出现在列表中。
 
 ### 搜索提供商
 

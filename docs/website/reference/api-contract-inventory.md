@@ -166,6 +166,7 @@ response directly.
 | `GET` | `/api/agents/list` | Auth header when bearer mode is active. | `AgentListEntry[]` | Candidate stable | Lightweight list for selection/navigation. |
 | `GET` | `/api/agents/:agent_id/status` | Path `agent_id`; optional `detail=compact\|full`; auth header when bearer mode is active. | `SlimAgentDto` by default; `AgentSummary` with `detail=full` | Candidate stable | Main read model for one agent. |
 | `GET` | `/api/agents/:agent_id/state` | Path `agent_id`; auth header when bearer mode is active. | `AgentStateSnapshot` | Experimental | Lightweight bootstrap snapshot; omits operator notifications, duplicate execution details, task details, and full work-item internals. |
+| `GET` | `/api/agents/:agent_id/model` | Path `agent_id`; auth header when bearer mode is active. | Model read-state object | Experimental | Returns `.model` without building a full/compact summary or starting an unloaded runtime. |
 | `GET` | `/api/agents/:agent_id/briefs` | Path `agent_id`; query `limit?`. | `BriefRecord[]` | Candidate stable | Defaults to `20`. |
 | `GET` | `/api/agents/:agent_id/tasks` | Path `agent_id`; query `limit?`. | `TaskRecord[]` | Candidate stable for list; DTO schema still broad | Defaults to `50`; active/recent task listing. |
 | `GET` | `/api/agents/:agent_id/tasks/:task_id` | Path `agent_id`, `task_id`. | `TaskStatusSnapshot` | Candidate stable route; DTO schema still broad | Returns a single task lifecycle snapshot. |
@@ -347,6 +348,8 @@ Skill management separates library operations from agent enablement:
 |--------|------|--------|------------------|-----------|-------|
 | `POST` | `/api/callbacks/enqueue/:callback_token` | Capability token in path; arbitrary body; `Content-Type` guides body decoding. | `{ ok, ...CallbackDeliveryResult }` | Capability | Token must resolve to an active external trigger with enqueue delivery mode. |
 | `POST` | `/api/callbacks/wake/:callback_token` | Capability token in path; arbitrary body; `Content-Type` guides body decoding. | `{ ok, ...CallbackDeliveryResult }` | Capability | Token must resolve to an active external trigger with wake delivery mode. |
+| `GET` | `/api/control/agents/:agent_id/external-triggers` | Path `agent_id`; query `limit?`, `cursor?`, `fingerprint?`; control-plane auth. | `{ items, next_cursor? }` | Experimental | Diagnostic list of retained active and revoked triggers with 16-hex `token_fingerprint`; omits tokens and callback URLs. |
+| `POST` | `/api/control/agents/:agent_id/external-triggers/:external_trigger_id/reveal` | Path `agent_id`, `external_trigger_id`; independent static control token only. | `{ external_trigger_id, delivery_mode, token, trigger_url }` | Experimental | Returns `Cache-Control: no-store`. Rejects session and trusted-local credentials; returns `409 trigger_not_active` or `409 token_unavailable` when unavailable. |
 
 Body decoding rules:
 
