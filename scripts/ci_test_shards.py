@@ -88,6 +88,7 @@ SUITES = (
 # Each of the two CI jobs builds its libtest binaries serially.
 RUNTIME_MANIFEST = "crates/holon-runtime/Cargo.toml"
 RUNTIME_LIB = ["cargo", "test", "--manifest-path", RUNTIME_MANIFEST, "--locked", "--lib"]
+APPLICATION_UNIT_TESTS = ["cargo", "test", "--locked", "--lib", "--bins", "--no-fail-fast"]
 LIB_SHARDS = ("lib-a", "lib-b")
 LIB_COMPILE_GROUPS = {"lib-a": ("a", "c", "e"), "lib-b": ("b", "d")}
 LIB_GROUPS = tuple(sorted(group for groups in LIB_COMPILE_GROUPS.values() for group in groups))
@@ -140,28 +141,14 @@ def lib_environment() -> dict[str, str]:
     return {"CARGO_TARGET_DIR": str(REPO_ROOT / "target"), **os.environ}
 
 
-def lib_test_commands(
-    group: str | None, *, runtime: bool = True, application: bool = True,
-) -> list[list[str]]:
-    commands = [RUNTIME_LIB] if runtime else []
-    if application and group in (None, "d"):
-        commands.append(["cargo", "test", "--locked", "--lib"])
-    return commands
-
-
-def lib_shard_scope() -> tuple[list[str], bool]:
+def lib_shard_scope(shard: str) -> tuple[list[str], bool]:
     selected = os.environ.get("CI_RUNTIME_TEST_GROUPS")
     groups = json.loads(selected) if selected else list(LIB_GROUPS)
     if not isinstance(groups, list) or any(group not in LIB_GROUPS for group in groups):
         raise ValueError("CI_RUNTIME_TEST_GROUPS must be a list of compile group names")
-    application = os.environ.get("CI_RUNTIME_TESTS_ONLY") != "true"
-    return groups, application
-
-
-def application_bin_shard() -> str:
-    # When only the application is affected, reuse the runtime dependency build
-    # for the application library and its binaries in the same job.
-    return "lib-b" if os.environ.get("CI_CLI_ONLY") == "true" else "lib-a"
+    runtime_groups = [group for group in LIB_COMPILE_GROUPS[shard] if group in groups]
+    application = shard == "lib-b" and os.environ.get("CI_RUNTIME_TESTS_ONLY") != "true"
+    return runtime_groups, application
 
 
 def validate_lib_group(names: list[str], group: str) -> None:
@@ -286,52 +273,38 @@ def suite_command(suite: str, all_targets: list[str], test_threads: str | None) 
     return command + ["--", f"--test-threads={threads}"]
 
 
-def lib_test_names(
-    group: str | None = None, commands: list[list[str]] | None = None,
-) -> list[str]:
-    """Return every unit-test name in the lib target, spelled as libtest does."""
+def timed_lib_command(command: list[str], label: str) -> list[str]:
+    if os.environ.get("CI_LIB_COMPILE_TIMING") == "true":
+        return ["/usr/bin/time", "-f", f"{label}: %e s elapsed, %M KiB peak RSS", *command]
+    return command
+
+
+def lib_test_names(group: str) -> list[str]:
+    """Enumerate tests in one runtime libtest group."""
+    completed = subprocess.run(
+        timed_lib_command([*RUNTIME_LIB, "--", "--list"], f"libtest listing {group} (runtime)"),
+        cwd=REPO_ROOT,
+        stdout=subprocess.PIPE,
+        text=True,
+        check=True,
+        env=lib_group_environment(group),
+    )
     names: list[str] = []
-    if commands is None:
-        commands = lib_test_commands(group)
-    for command in commands:
-        listing = command + ["--", "--list"]
-        if group and os.environ.get("CI_LIB_COMPILE_TIMING") == "true":
-            target = "runtime" if command == RUNTIME_LIB else "application"
-            listing = [
-                "/usr/bin/time", "-f",
-                f"libtest listing {group} ({target}): %e s elapsed, %M KiB peak RSS",
-                *listing,
-            ]
-        completed = subprocess.run(
-            listing,
-            cwd=REPO_ROOT,
-            stdout=subprocess.PIPE,
-            text=True,
-            check=True,
-            env=lib_group_environment(group) if group else lib_environment(),
-        )
-        for line in completed.stdout.splitlines():
-            name, separator, kind = line.partition(": ")
-            if separator and kind == "test" and name:
-                names.append(name)
+    for line in completed.stdout.splitlines():
+        name, separator, kind = line.partition(": ")
+        if separator and kind == "test" and name:
+            names.append(name)
     return names
 
 
 def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
     threads = test_threads or THREAD_DEFAULTS["lib"]
-    runtime_groups, application = lib_shard_scope()
-    groups = LIB_COMPILE_GROUPS[shard]
-    run_bins = application and shard == application_bin_shard()
-    if not (set(groups).intersection(runtime_groups) or (application and "d" in groups) or run_bins):
+    groups, application = lib_shard_scope(shard)
+    if not groups and not application:
         raise ValueError(f"no library or binary targets selected for {shard}")
     failures = []
     for group in groups:
-        commands = lib_test_commands(
-            group, runtime=group in runtime_groups, application=application,
-        )
-        if not commands:
-            continue
-        names = lib_test_names(group, commands)
+        names = lib_test_names(group)
         validate_lib_group(names, group)
         # Keep the real enumerations for cross-job union/overlap auditing.
         output = Path(os.environ.get("CARGO_TARGET_DIR", REPO_ROOT / "target"))
@@ -343,20 +316,23 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
             json.dumps(sorted(names), indent=2) + "\n"
         )
         print(f"lib compile group {group}: {len(names)} tests", file=sys.stderr)
-        for command in commands:
-            completed = subprocess.run(
-                command + ["--", f"--test-threads={threads}"],
-                cwd=REPO_ROOT,
-                env=lib_group_environment(group),
-            )
-            if completed.returncode:
-                failures.append(completed)
-    if run_bins:
-        # Binary unit tests are independent of the library's test-only cfg.
         completed = subprocess.run(
-            ["cargo", "test", "--bins", "--", f"--test-threads={threads}"],
+            [*RUNTIME_LIB, "--", f"--test-threads={threads}"],
             cwd=REPO_ROOT,
-            env=lib_group_environment(groups[-1]),
+            env=lib_group_environment(group),
+        )
+        if completed.returncode:
+            failures.append(completed)
+    if application:
+        env = lib_environment()
+        env.pop("HOLON_LIB_TEST_SHARD", None)
+        completed = subprocess.run(
+            timed_lib_command(
+                [*APPLICATION_UNIT_TESTS, "--", f"--test-threads={threads}"],
+                "application unit tests",
+            ),
+            cwd=REPO_ROOT,
+            env=env,
         )
         if completed.returncode:
             failures.append(completed)
@@ -434,18 +410,17 @@ def command_args(args: argparse.Namespace) -> None:
         sys.exit(1)
     if args.suite in LIB_SHARDS:
         threads = args.test_threads or THREAD_DEFAULTS.get("lib", SERIAL_TEST_THREADS)
-        runtime_groups, application = lib_shard_scope()
-        for group in LIB_COMPILE_GROUPS[args.suite]:
-            for command in lib_test_commands(
-                group, runtime=group in runtime_groups, application=application,
-            ):
-                print(
-                    f"HOLON_LIB_TEST_SHARD={group} "
-                    f"{' '.join(command)} -- --test-threads={threads}"
-                )
-        if application and args.suite == application_bin_shard():
-            group = LIB_COMPILE_GROUPS[args.suite][-1]
-            print(f"HOLON_LIB_TEST_SHARD={group} cargo test --bins -- --test-threads={threads}")
+        groups, application = lib_shard_scope(args.suite)
+        for group in groups:
+            print(
+                f"HOLON_LIB_TEST_SHARD={group} "
+                f"{' '.join(RUNTIME_LIB)} -- --test-threads={threads}"
+            )
+        if application:
+            print(
+                f"env -u HOLON_LIB_TEST_SHARD {' '.join(APPLICATION_UNIT_TESTS)} "
+                f"-- --test-threads={threads}"
+            )
         return
     for command in suite_commands(args.suite, all_targets, args.test_threads):
         print(" ".join(command))

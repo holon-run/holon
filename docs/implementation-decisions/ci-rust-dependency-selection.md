@@ -25,9 +25,9 @@ manual runs also use the full set.
   the root feature check.
 
 Changes confined to `src/cli.rs`, `src/tail.rs`, and their Rust submodules
-build and check the application. One Rust Test job builds and runs both
-application unit targets in the same cache. The CLI integration job adds
-the tail and daemon CLI cases normally assigned to `misc`. The application
+build and check the application. The `lib-b` job runs the application
+library and binary unit tests in one Cargo invocation. The CLI integration job
+adds the tail and daemon CLI cases normally assigned to `misc`. The application
 still builds its runtime dependency and exercises the production binary
 through the existing downstream gates.
 
