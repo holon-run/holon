@@ -29,6 +29,17 @@ use crate::types::{
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+const MESSAGE_WAIT_RECOVERY_SUBSYSTEM: &str = "agent_message_wait_recovery";
+
+pub(super) fn is_message_wait_recovery_summary(message: &MessageEnvelope) -> bool {
+    message.kind == MessageKind::TaskStatus
+        && message.delivery_surface == Some(MessageDeliverySurface::TaskRejoin)
+        && message.admission_context == Some(AdmissionContext::RuntimeOwned)
+        && message.authority_class == AuthorityClass::RuntimeInstruction
+        && matches!(&message.origin, MessageOrigin::System { subsystem }
+            if subsystem == MESSAGE_WAIT_RECOVERY_SUBSYSTEM)
+}
+
 pub(super) enum ReplyReconciliation {
     Ready,
     Changed,
@@ -1476,40 +1487,41 @@ impl RuntimeHandle {
             return Err(anyhow!("agent message wait requires a host bridge"));
         };
         let agent_id = self.agent_id().await?;
-        let running_message = MessageEnvelope {
-            work_item_id: task_record.work_item_id.clone(),
-            metadata: Some(serde_json::json!({
-                "task_id": task_record.id,
-                "task_created_at": task_record.created_at,
-                "task_kind": task_record.kind,
-                "task_status": "running",
-                "task_summary": task_record.summary,
-                "task_recovery": task_record.recovery,
-                "work_item_id": task_record.work_item_id.clone(),
-                "task_detail": task_detail.clone(),
-            })),
-            ..MessageEnvelope::new(
-                agent_id.clone(),
-                MessageKind::TaskStatus,
-                MessageOrigin::Task {
-                    task_id: task_record.id.clone(),
-                },
-                authority_class,
-                Priority::Background,
-                MessageBody::Text {
-                    text: format!(
-                        "agent message wait {}: {}",
-                        if recovered { "restarted" } else { "started" },
-                        task_record.summary.clone().unwrap_or_default()
-                    ),
-                },
-            )
-            .with_admission(
-                MessageDeliverySurface::TaskRejoin,
-                AdmissionContext::RuntimeOwned,
-            )
-        };
-        let _ = self.enqueue(running_message).await;
+        if !recovered {
+            let running_message = MessageEnvelope {
+                work_item_id: task_record.work_item_id.clone(),
+                metadata: Some(serde_json::json!({
+                    "task_id": task_record.id,
+                    "task_created_at": task_record.created_at,
+                    "task_kind": task_record.kind,
+                    "task_status": "running",
+                    "task_summary": task_record.summary,
+                    "task_recovery": task_record.recovery,
+                    "work_item_id": task_record.work_item_id.clone(),
+                    "task_detail": task_detail.clone(),
+                })),
+                ..MessageEnvelope::new(
+                    agent_id.clone(),
+                    MessageKind::TaskStatus,
+                    MessageOrigin::Task {
+                        task_id: task_record.id.clone(),
+                    },
+                    authority_class,
+                    Priority::Background,
+                    MessageBody::Text {
+                        text: format!(
+                            "agent message wait started: {}",
+                            task_record.summary.as_deref().unwrap_or_default()
+                        ),
+                    },
+                )
+                .with_admission(
+                    MessageDeliverySurface::TaskRejoin,
+                    AdmissionContext::RuntimeOwned,
+                )
+            };
+            let _ = self.enqueue(running_message).await;
+        }
 
         let result = loop {
             match bridge
@@ -2596,6 +2608,7 @@ impl RuntimeHandle {
 
         let mut reattached = Vec::new();
         let mut remaining = Vec::new();
+        let mut restarted_message_waits = BTreeSet::new();
 
         for task in tasks {
             if let Some(TaskRecoverySpec::AgentMessageWait {
@@ -2667,7 +2680,12 @@ impl RuntimeHandle {
                     )
                     .await;
                 match recovery {
-                    Ok(_) => reattached.push(task),
+                    Ok(record) => {
+                        if !is_terminal_task_status(&record.status) {
+                            restarted_message_waits.insert(record.id);
+                        }
+                        reattached.push(task);
+                    }
                     Err(error) => {
                         self.append_original_audit_event(AuditEvent::legacy(
                             "agent_message_wait_recovery_failed",
@@ -2778,7 +2796,70 @@ impl RuntimeHandle {
             }
         }
 
+        if !restarted_message_waits.is_empty() {
+            let count = restarted_message_waits.len();
+            let mut preview = restarted_message_waits
+                .iter()
+                .take(8)
+                .map(String::as_str)
+                .collect::<Vec<_>>()
+                .join(", ");
+            if count > 8 {
+                preview.push_str(", …");
+            }
+            let mut notification = MessageEnvelope::new(
+                self.agent_id().await?,
+                MessageKind::TaskStatus,
+                MessageOrigin::System {
+                    subsystem: MESSAGE_WAIT_RECOVERY_SUBSYSTEM.into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Background,
+                MessageBody::Text {
+                    text: format!("{count} agent message wait(s) restarted: {preview}"),
+                },
+            )
+            .with_admission(
+                MessageDeliverySurface::TaskRejoin,
+                AdmissionContext::RuntimeOwned,
+            );
+            notification.metadata = Some(serde_json::json!({"task_ids": restarted_message_waits}));
+            if let Err(error) = self.enqueue(notification).await {
+                tracing::warn!(%error, count, "could not enqueue agent message wait recovery summary");
+            }
+        }
+
         Ok((reattached, remaining))
+    }
+
+    pub(super) async fn reduce_message_wait_recovery_summary(
+        &self,
+        message: &MessageEnvelope,
+    ) -> Result<()> {
+        let task_ids = message
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.get("task_ids"))
+            .and_then(serde_json::Value::as_array)
+            .filter(|ids| !ids.is_empty() && ids.iter().all(serde_json::Value::is_string))
+            .ok_or_else(|| anyhow!("message wait recovery summary missing task IDs"))?;
+        // Keep each wait's usual running-state transition without building a
+        // turn per task. Use the durable record so replies that settled while
+        // the summary was queued are not overwritten by a recovery snapshot.
+        for task_id in task_ids.iter().filter_map(serde_json::Value::as_str) {
+            let Some(mut task) = self.task_record(task_id).await? else {
+                continue;
+            };
+            if task.agent_id == message.agent_id
+                && task.kind == TaskKind::AgentMessageWait
+                && matches!(task.status, TaskStatus::Queued | TaskStatus::Running)
+            {
+                task.status = TaskStatus::Running;
+                task.updated_at = message.created_at;
+                self.reduce_task_status_message(task).await?;
+            }
+        }
+        Ok(())
     }
 
     pub async fn latest_task_records(&self) -> Result<Vec<TaskRecord>> {

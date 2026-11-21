@@ -709,6 +709,91 @@ async fn agent_message_wait_durable_outbox_survives_a_real_host_restart_once() {
 }
 
 #[cfg(holon_lib_test_shard = "d")]
+#[tokio::test]
+async fn agent_message_wait_recovery_burst_creates_one_status_turn() {
+    let (_home, host, parent, peer, gate, first) = reply_gate_fixture(0, "", false).await;
+    gate.release.notify_one();
+    wait_for_agent_inputs_settled(&peer).await;
+    let mut task_ids = vec![first.task_handle.task_id];
+    for index in 1..10 {
+        let receipt = parent
+            .agent_invocation_service()
+            .invoke(InvokeAgentRequest {
+                target: InvokeAgentTarget::ExistingAgent {
+                    agent_id: "reply-gate-peer".into(),
+                    reply_timeout_ms: Some(0),
+                },
+                message: format!("request that must not be replayed {index}"),
+                authority_class: AuthorityClass::OperatorInstruction,
+            })
+            .await
+            .unwrap();
+        task_ids.push(receipt.task_handle.task_id);
+        wait_for_agent_inputs_settled(&peer).await;
+    }
+    wait_for_agent_inputs_settled(&parent).await;
+    for task_id in &task_ids {
+        assert_eq!(
+            parent.storage().latest_task_record(task_id).unwrap().unwrap().status,
+            TaskStatus::Running
+        );
+    }
+    let prior_messages = parent
+        .storage()
+        .latest_queue_entries()
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.message_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let config = host.config().as_ref().clone();
+    host.shutdown().await.unwrap();
+    drop(peer);
+    drop(parent);
+    drop(host);
+
+    let restarted =
+        RuntimeHost::new_with_provider(config, Arc::new(StubProvider::new(""))).unwrap();
+    restarted.recover_orphaned_queue_claims_at_startup().await.unwrap();
+    let parent = restarted.default_runtime().await.unwrap();
+    wait_for_agent_inputs_settled(&parent).await;
+
+    let statuses = parent
+        .storage()
+        .latest_queue_entries()
+        .unwrap()
+        .into_iter()
+        .filter(|entry| !prior_messages.contains(&entry.message_id))
+        .filter_map(|entry| parent.storage().read_message_by_id(&entry.message_id).unwrap())
+        .filter(|message| message.kind == MessageKind::TaskStatus)
+        .collect::<Vec<_>>();
+    assert_eq!(statuses.len(), 1, "only one status per recovery batch");
+    let summary = &statuses[0];
+    assert_eq!(summary.priority, Priority::Background);
+    assert_eq!(summary.delivery_surface, Some(MessageDeliverySurface::TaskRejoin));
+    assert_eq!(summary.admission_context, Some(AdmissionContext::RuntimeOwned));
+    assert_eq!(summary.authority_class, AuthorityClass::RuntimeInstruction);
+    task_ids.sort();
+    assert_eq!(summary.metadata.as_ref().unwrap()["task_ids"], json!(task_ids));
+    let MessageBody::Text { text } = &summary.body else {
+        panic!("expected a text summary");
+    };
+    assert!(text.starts_with("10 agent message wait(s) restarted: "));
+    assert!(text.contains(&task_ids[0]) && !text.contains(&task_ids[9]));
+    assert!(!text.contains("must not be replayed"));
+    let turns = parent.storage().read_recent_turns(20).unwrap();
+    let summary_turns = turns
+        .iter()
+        .filter(|turn| turn.input_message_ids.contains(&summary.id))
+        .collect::<Vec<_>>();
+    assert_eq!(summary_turns.len(), 1);
+    assert_eq!(
+        summary_turns[0].terminal.as_ref().and_then(|terminal| terminal.reason.as_deref()),
+        Some("reducer_only/task_status")
+    );
+    restarted.shutdown().await.unwrap();
+}
+
+#[cfg(holon_lib_test_shard = "d")]
 #[test]
 fn startup_recovery_admission_keeps_callers_future_bounded() {
     let home = tempdir().unwrap();
