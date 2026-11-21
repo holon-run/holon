@@ -140,6 +140,10 @@ jobs:
       root_rust: ${{ steps.rust-selection.outputs.root || steps.filter.outputs.rust }}
       rust_crates: ${{ steps.rust-selection.outputs.crates }}
       crate_tests_only: ${{ steps.rust-selection.outputs.crate_tests_only }}
+      cli_only: ${{ steps.rust-selection.outputs.cli_only }}
+      runtime_tests_only: ${{ steps.rust-selection.outputs.runtime_tests_only }}
+      runtime_test_groups: ${{ steps.rust-selection.outputs.runtime_test_groups }}
+      rust_test_shards: ${{ steps.rust-selection.outputs.rust_test_shards }}
       template_validation: ${{ steps.filter.outputs.template_validation }}
       conversation_sdk: ${{ steps.filter.outputs.conversation_sdk }}
       web: ${{ steps.filter.outputs.web }}
@@ -895,16 +899,22 @@ jobs:
 
       - name: Clippy
         if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
-        run: make lint
+        run: |
+          if [[ "$CI_CLI_ONLY" == true ]]; then
+            cargo clippy --locked --lib --bins
+          else
+            make lint
+          fi
         env:
           RUSTFLAGS: ""
+          CI_CLI_ONLY: ${{ needs.changes.outputs.cli_only }}
 
   rust-build:
 
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust build
     needs: changes
-    if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.rust == 'true'
+    if: needs.changes.outputs.full_sweep == 'true' || (needs.changes.outputs.rust == 'true' && needs.changes.outputs.runtime_tests_only != 'true')
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -934,13 +944,17 @@ jobs:
           save-if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Build all targets, including benchmarks
-        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
+        if: needs.changes.outputs.full_sweep == 'true' || (needs.changes.outputs.root_rust == 'true' && needs.changes.outputs.cli_only != 'true')
         run: make build
+
+      - name: Build application binaries
+        if: needs.changes.outputs.cli_only == 'true'
+        run: cargo build --locked --bins
 
       # No CI job runs the default complete test crate; keep that selector
       # warning-free. See docs/implementation-decisions/lib-test-compile-shards.md.
       - name: Check complete test crate with warnings denied
-        if: needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'
+        if: needs.changes.outputs.full_sweep == 'true' || (needs.changes.outputs.root_rust == 'true' && needs.changes.outputs.cli_only != 'true')
         run: |
           cargo check --locked --all-targets
           cargo check --locked --manifest-path crates/holon-runtime/Cargo.toml --target-dir target --all-targets
@@ -964,7 +978,7 @@ jobs:
         run: python3 scripts/ci_rust_selection.py run "$CRATE_COMMAND"
 
       - name: Check generated snapshots
-        if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
+        if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || (needs.changes.outputs.root_rust == 'true' && needs.changes.outputs.cli_only != 'true'))
         run: make snapshots-check
 
   rust-test:
@@ -972,14 +986,17 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Test (${{ matrix.shard }})
     needs: changes
-    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
+    if: needs.changes.outputs.runtime_tests_only == 'true' || (github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
-        shard: [lib-a, lib-b, control, cli, misc]
+        shard: ${{ fromJSON(needs.changes.outputs.rust_test_shards || '["lib-a","lib-b","control","cli","misc"]') }}
     env:
+      CI_CLI_ONLY: ${{ needs.changes.outputs.cli_only }}
+      CI_RUNTIME_TESTS_ONLY: ${{ needs.changes.outputs.runtime_tests_only }}
+      CI_RUNTIME_TEST_GROUPS: ${{ needs.changes.outputs.runtime_test_groups }}
       RUSTFLAGS: -D warnings
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"
@@ -1047,7 +1064,7 @@ jobs:
     # Compile under the 16 GB runner budget; see docs/implementation-decisions/ci-rust-memory-budget.md.
     name: Rust Concurrent
     needs: changes
-    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || needs.changes.outputs.root_rust == 'true')
+    if: github.event_name != 'push' && (needs.changes.outputs.full_sweep == 'true' || (needs.changes.outputs.root_rust == 'true' && needs.changes.outputs.cli_only != 'true'))
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:

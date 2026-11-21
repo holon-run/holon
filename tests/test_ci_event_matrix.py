@@ -167,6 +167,37 @@ class CiEventMatrixTests(unittest.TestCase):
         self.assertIn("holon-web-retrieval/Cargo.toml -- --check",
                       command(steps("rust-lint")["Check independent crate formatting"]))
 
+    def test_focused_rust_checks_keep_their_event_gates(self):
+        cli = {"rust", "root_rust", "cli_only"}
+        jobs = selected("pull_request", cli)
+        self.assertIn("rust-test", jobs)
+        self.assertNotIn("rust-concurrent", jobs)
+        self.assertIn("scheduler-e2e-required", jobs)
+        for name in ("Build all targets, including benchmarks", "Check complete test crate with warnings denied"):
+            self.assertFalse(condition(field(steps("rust-build")[name], "if", 8), "pull_request", cli))
+        self.assertFalse(condition(
+            field(steps("rust-build")["Check generated snapshots"], "if", 8),
+            "pull_request", cli,
+        ))
+        self.assertTrue(condition(
+            field(steps("rust-build")["Build application binaries"], "if", 8),
+            "push", cli,
+        ))
+        runtime_tests = {"rust", "web", "crate_tests_only", "runtime_tests_only"}
+        self.assertEqual(
+            selected("pull_request", runtime_tests),
+            {"changes", "rust-lint", "rust-test", "timing"},
+        )
+        self.assertEqual(
+            selected("push", runtime_tests),
+            {"changes", "rust-test", "timing"},
+        )
+        self.assertIn(
+            'shard: ${{ fromJSON(needs.changes.outputs.rust_test_shards || '
+            '\'["lib-a","lib-b","control","cli","misc"]\') }}',
+            JOBS["rust-test"],
+        )
+
     def run_shell(self, script, cwd, env):
         return subprocess.run(
             ["bash", "-e", "-o", "pipefail", "-c", script],
