@@ -385,14 +385,64 @@ async fn registered_aliases_are_rejected_only_as_explicit_selectors() {
 }
 
 #[test]
-fn parses_duckduckgo_lite_links() {
+fn duckduckgo_lite_parses_result_roles_and_deduplicates_canonical_urls() {
     let html = r#"
-            <a rel="nofollow" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs&amp;rut=x">Example &amp; Docs</a>
-        "#;
-    let results = parse_duckduckgo_lite_results(html, 5);
-    assert_eq!(results.len(), 1);
+        <table>
+            <tr><td><a rel="nofollow" href="https://example.com/docs">More at Example</a></td></tr>
+            <tr><td><a href='//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fdocs%23intro&amp;rut=x'
+                       class='result-link highlighted' rel='nofollow'>Example &amp; <b>Docs</b></a></td></tr>
+            <tr><td><A CLASS="result-link" HREF="https://EXAMPLE.com:443/docs#details">Duplicate</A></td></tr>
+            <tr><td><a class=result-link href="javascript:void(0)">Not a web URL</a></td></tr>
+            <tr><td><a class=result-link href="/l/?uddg=not-a-url">Broken wrapper</a></td></tr>
+            <tr><td><a class=result-link href="/l/?uddg=https%3A%2F%2Fexample.org%2Fguide">Guide &#8212; Rust</a></td></tr>
+            <tr><td><a class=result-link href="https://example.net/search?uddg=literal&amp;q=rust">Direct result</a></td></tr>
+            <tr><td><a rel="nofollow" href="https://example.com/navigation">Other navigation</a></td></tr>
+        </table>
+    "#;
+    let results = parse_duckduckgo_lite_results(html, 5).unwrap();
+    assert_eq!(results.len(), 3);
     assert_eq!(results[0].title, "Example & Docs");
-    assert_eq!(results[0].url, "https://example.com/docs");
+    assert_eq!(results[0].url, "https://example.com/docs#intro");
+    assert_eq!(
+        results[0].canonical_url.as_deref(),
+        Some("https://example.com/docs")
+    );
+    assert_eq!(results[1].title, "Guide — Rust");
+    assert_eq!(results[1].url, "https://example.org/guide");
+    assert_eq!(
+        results[2].url,
+        "https://example.net/search?uddg=literal&q=rust"
+    );
+    assert_eq!(
+        results.iter().map(|result| result.rank).collect::<Vec<_>>(),
+        [Some(1), Some(2), Some(3)]
+    );
+    let limited = parse_duckduckgo_lite_results(html, 2).unwrap();
+    assert_eq!(limited.len(), 2);
+    assert_eq!(limited[1].url, "https://example.org/guide");
+}
+
+#[test]
+fn duckduckgo_lite_distinguishes_bot_challenge_from_unrecognized_markup() {
+    // A successful HTTP response can carry a challenge form instead of results.
+    let challenge = r#"
+        <form action="//duckduckgo.com/anomaly.js" method=POST id=challenge-form></form>
+    "#;
+    let unexpected = r#"
+        <!-- <form id="challenge-form"></form> -->
+        <a rel="nofollow" href="https://example.com/">More at Example</a>
+    "#;
+    for (html, kind, message) in [
+        (challenge, "provider_blocked", "anti-bot challenge"),
+        (unexpected, "parse_failed", "markup may have changed"),
+    ] {
+        let error = test_tool_error(&parse_duckduckgo_lite_results(html, 5).unwrap_err());
+        assert_eq!(error.kind, kind);
+        assert!(!error.retryable);
+        assert!(error.message.contains(message));
+        assert_eq!(error.details.unwrap()["provider"], "duckduckgo");
+        assert!(error.recovery_hint.unwrap().contains("another"));
+    }
 }
 
 #[test]

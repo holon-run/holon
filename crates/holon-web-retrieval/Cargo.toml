@@ -15,6 +15,7 @@ holon-config = { version = "0.1.0", path = "../holon-config" }
 holon-domain = { version = "0.1.0", path = "../holon-domain" }
 holon-tools = { version = "0.1.0", path = "../holon-tools" }
 reqwest = { version = "0.12", features = ["gzip", "json", "rustls-tls", "stream"], default-features = false }
+scraper = { version = "0.24", default-features = false }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.10"
