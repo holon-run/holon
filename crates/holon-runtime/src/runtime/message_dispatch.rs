@@ -161,6 +161,7 @@ impl RuntimeHandle {
         durable_task: Option<&TaskRecord>,
     ) -> Result<MessageDispatchPlan> {
         let task = match message.kind {
+            MessageKind::TaskStatus if tasks::is_message_wait_recovery_summary(message) => Ok(None),
             MessageKind::TaskStatus => {
                 tasks::task_from_message(message, &message.agent_id).and_then(|mut task| {
                     // Only this private original producer's exact accepted
@@ -507,8 +508,13 @@ impl RuntimeHandle {
                 }
             }
             MessageKind::TaskStatus => {
-                let task = task.ok_or_else(|| anyhow!("task status message should parse task"))?;
-                self.reduce_task_status_message(task).await?;
+                if tasks::is_message_wait_recovery_summary(&message) {
+                    self.reduce_message_wait_recovery_summary(&message).await?;
+                } else {
+                    let task =
+                        task.ok_or_else(|| anyhow!("task status message should parse task"))?;
+                    self.reduce_task_status_message(task).await?;
+                }
                 reducer_only_reason = Some("reducer_only/task_status");
             }
             MessageKind::TaskResult => {
