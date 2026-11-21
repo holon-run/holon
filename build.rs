@@ -83,18 +83,19 @@ fn git_path(name: &str) -> Option<std::path::PathBuf> {
 
 fn configure_lib_test_shard() {
     println!("cargo:rerun-if-env-changed=HOLON_LIB_TEST_SHARD");
-    println!("cargo:rustc-check-cfg=cfg(holon_lib_test_shard, values(\"a\", \"b\", \"c\", \"d\"))");
+    println!("cargo:rustc-check-cfg=cfg(holon_lib_test_shard, values(\"a\", \"b\", \"c\", \"d\", \"e\"))");
 
     // Keep dependencies and production code identical between test shards.
     // No selector means the normal, complete local unit-test suite.
     let selected = std::env::var("HOLON_LIB_TEST_SHARD").unwrap_or_else(|_| "all".into());
     let shards: &[&str] = match selected.as_str() {
-        "all" => &["a", "b", "c", "d"],
+        "all" => &["a", "b", "c", "d", "e"],
         "a" => &["a"],
         "b" => &["b"],
         "c" => &["c"],
         "d" => &["d"],
-        _ => panic!("HOLON_LIB_TEST_SHARD must be all, a, b, c, or d"),
+        "e" => &["e"],
+        _ => panic!("HOLON_LIB_TEST_SHARD must be all, a, b, c, d, or e"),
     };
     for shard in shards {
         println!("cargo:rustc-cfg=holon_lib_test_shard=\"{shard}\"");

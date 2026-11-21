@@ -1,5 +1,5 @@
 use super::*;
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_timer/cancel_input_tests.rs"]
 mod timer_cancel_input_tests;
 use crate::{
@@ -150,7 +150,7 @@ impl Fixture {
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn prepared_queue_write_context_distinguishes_admit_claim_and_settle() -> Result<()> {
     use crate::runtime_db::persistence::{PersistenceFailure, PersistenceFailurePhase};
@@ -205,7 +205,7 @@ fn prepared_queue_write_context_distinguishes_admit_claim_and_settle() -> Result
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn interrupted_queue_writer_ack_does_not_require_a_wake_or_removal_notification() -> Result<()> {
     use crate::runtime_db::current_read_writes::CurrentFamily;
@@ -288,7 +288,7 @@ fn interrupted_queue_writer_ack_does_not_require_a_wake_or_removal_notification(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn inactive_queue_memory_requires_original_interruption_not_a_live_or_foreign_claim() -> Result<()>
 {
@@ -359,7 +359,7 @@ fn inactive_queue_memory_requires_original_interruption_not_a_live_or_foreign_cl
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn posture_noop_has_committed_receipt_and_replays_before_later_occ() -> Result<()> {
     let f = Fixture::new()?;
@@ -401,7 +401,7 @@ fn posture_noop_has_committed_receipt_and_replays_before_later_occ() -> Result<(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() -> Result<()> {
     let f = Fixture::new()?;
@@ -504,7 +504,7 @@ fn queue_receipt_follows_exact_count_and_replay_carries_no_old_installation() ->
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure() -> Result<()> {
     let f = Fixture::new()?;
@@ -582,7 +582,7 @@ fn started_posture_receipt_and_turn_assignment_roll_back_with_canonical_failure(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn started_posture_rejects_low_or_concurrently_advanced_history_index() -> Result<()> {
     for advance_history in [false, true] {
@@ -630,7 +630,7 @@ fn started_posture_rejects_low_or_concurrently_advanced_history_index() -> Resul
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn started_posture_revalidates_canonical_admission_before_writing() -> Result<()> {
     use crate::domain::scheduler::SchedulerScenarioClass;
@@ -702,7 +702,7 @@ fn started_posture_revalidates_canonical_admission_before_writing() -> Result<()
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn receipt_insert_rejection_rolls_back_entire_original_queue_transaction() -> Result<()> {
     let f = Fixture::new()?;
@@ -735,7 +735,7 @@ fn receipt_insert_rejection_rolls_back_entire_original_queue_transaction() -> Re
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn prepared_digest_covers_queue_options_and_started_turn_but_excludes_fault() -> Result<()> {
     let f = Fixture::new()?;
@@ -773,7 +773,7 @@ fn prepared_digest_covers_queue_options_and_started_turn_but_excludes_fault() ->
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn same_nonce_changed_typed_command_is_rejected_instead_of_running_again() -> Result<()> {
     let f = Fixture::new()?;
@@ -811,7 +811,7 @@ fn same_nonce_changed_typed_command_is_rejected_instead_of_running_again() -> Re
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn terminal_original_result_replays_after_later_canonical_posture() -> Result<()> {
     let f = Fixture::new()?;
@@ -877,7 +877,7 @@ fn terminal_original_result_replays_after_later_canonical_posture() -> Result<()
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn full_scope_group_receipt_is_sorted_and_keeps_primary_effects_only() -> Result<()> {
     let f = Fixture::new()?;
@@ -955,7 +955,7 @@ fn full_scope_group_receipt_is_sorted_and_keeps_primary_effects_only() -> Result
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn scope_group_cannot_omit_primary_or_repeat_a_scope() -> Result<()> {
     let f = Fixture::new()?;
@@ -1038,7 +1038,7 @@ fn pending_wait(agent: &str, message: MessageEnvelope) -> WaitTransitionCommand 
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn pending_messages_enumerates_queue_and_wait_frozen_bodies_once() -> Result<()> {
     let f = Fixture::new()?;
@@ -1069,7 +1069,7 @@ fn pending_messages_enumerates_queue_and_wait_frozen_bodies_once() -> Result<()>
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn pending_messages_rejects_missing_foreign_and_conflicting_bodies_before_sql() -> Result<()> {
     let f = Fixture::new()?;
@@ -1099,7 +1099,7 @@ fn pending_messages_rejects_missing_foreign_and_conflicting_bodies_before_sql() 
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn consuming_queue_and_posture_have_no_new_pending_body() -> Result<()> {
     let f = Fixture::new()?;
@@ -1193,7 +1193,7 @@ impl Fixture {
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn deleting_admitted_cleanup_commits_new_trace_and_brief_with_original_receipt() -> Result<()> {
     let f = Fixture::new()?;
@@ -1228,7 +1228,7 @@ fn deleting_admitted_cleanup_commits_new_trace_and_brief_with_original_receipt()
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn deleting_cleanup_rolls_back_all_derived_facts_and_receipt_on_precommit_fault() -> Result<()> {
     let f = Fixture::new()?;
@@ -1260,7 +1260,7 @@ fn deleting_cleanup_rolls_back_all_derived_facts_and_receipt_on_precommit_fault(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn deleting_cleanup_requires_original_qualified_source_and_cannot_admit_or_start() -> Result<()> {
     let f = Fixture::new()?;
@@ -1336,7 +1336,7 @@ fn deleting_cleanup_requires_original_qualified_source_and_cannot_admit_or_start
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn cleanup_cannot_recreate_deleted_derived_body_with_pruned_alias() -> Result<()> {
     use crate::{
@@ -1484,7 +1484,7 @@ fn progress_result(
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn prepared_queue_progress_freezes_clock_and_replays_original_bounded_disposition() -> Result<()> {
     use crate::runtime_db::input_mutation_receipts::{
@@ -1593,7 +1593,7 @@ fn prepared_queue_progress_freezes_clock_and_replays_original_bounded_dispositio
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn prepared_queue_progress_successful_none_has_receipt_and_cannot_later_apply() -> Result<()> {
     let f = Fixture::new()?;
@@ -1631,7 +1631,7 @@ fn prepared_queue_progress_successful_none_has_receipt_and_cannot_later_apply() 
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn prepared_queue_progress_rolls_back_counter_state_queue_audit_and_receipt() -> Result<()> {
     use crate::runtime_db::input_mutation_receipts::{
@@ -1701,7 +1701,7 @@ fn prepared_queue_progress_rolls_back_counter_state_queue_audit_and_receipt() ->
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn prepared_queue_progress_binds_group_payload_and_clock_before_replay() -> Result<()> {
     let f = Fixture::new()?;
@@ -1829,7 +1829,7 @@ fn absent_secondary() -> InputEvidenceScope {
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn readonly_secondary_cannot_receive_queue_or_state_writes() -> Result<()> {
     for target in [
@@ -1933,7 +1933,7 @@ fn namespace_wait(agent: &str, at: chrono::DateTime<Utc>) -> WaitConditionRecord
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn readonly_secondary_cannot_receive_nested_wait_work_or_index_writes() -> Result<()> {
     for target in [
@@ -2053,7 +2053,7 @@ fn readonly_secondary_cannot_receive_nested_wait_work_or_index_writes() -> Resul
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn primary_queue_commit_preserves_truly_readonly_absent_secondary() -> Result<()> {
     let f = Fixture::new()?;
@@ -2101,7 +2101,7 @@ fn primary_queue_commit_preserves_truly_readonly_absent_secondary() -> Result<()
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn primary_payload_cannot_reassign_existing_foreign_queue_work_or_wait() -> Result<()> {
     for target in ["queue", "work", "wait"] {
@@ -2215,7 +2215,7 @@ fn primary_payload_cannot_reassign_existing_foreign_queue_work_or_wait() -> Resu
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn exact_receipt_replay_precedes_later_existing_target_namespace_check() -> Result<()> {
     let f = Fixture::new()?;
@@ -2286,7 +2286,7 @@ fn original_work_command(
         fault,
     }
 }
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn context_budget_recovery_receipts_preserve_rejection_and_publish_original_input() -> Result<()> {
     use super::super::execution_protocol_repository::ExecutionProtocolRecoveryCommitOutcome;
@@ -2488,7 +2488,7 @@ fn prepared_work_family(
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn original_work_focus_wait_receipts_replay_before_later_occ_and_target_reads() -> Result<()> {
     for family in ["work", "focus", "wait"] {
@@ -2542,7 +2542,7 @@ fn original_work_focus_wait_receipts_replay_before_later_occ_and_target_reads() 
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn original_work_focus_wait_faults_roll_back_business_and_whole_receipt() -> Result<()> {
     for family in ["work", "focus", "wait"] {
@@ -2576,7 +2576,7 @@ fn original_work_focus_wait_faults_roll_back_business_and_whole_receipt() -> Res
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn original_work_flags_and_wait_admission_body_are_frozen_before_sql() -> Result<()> {
     let f = Fixture::new()?;
@@ -2682,7 +2682,7 @@ fn commit_original_wait(f: &Fixture, id: &str) -> Result<TransitionCommit> {
     Ok(value)
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn original_queue_finalizes_all_nested_waits_after_implicit_cancellations() -> Result<()> {
     use crate::runtime::resident_work::{CanonicalWorkRecord, WorkFamily, WorkKey};
@@ -2761,7 +2761,7 @@ fn original_queue_finalizes_all_nested_waits_after_implicit_cancellations() -> R
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn original_work_finalizer_failure_rolls_back_queue_wait_audit_and_receipt() -> Result<()> {
     let f = Fixture::new()?;
@@ -2806,7 +2806,7 @@ fn original_work_finalizer_failure_rolls_back_queue_wait_audit_and_receipt() -> 
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[test]
 fn original_deleting_no_turn_work_cleanup_qualifies_result_without_new_activation() -> Result<()> {
     use crate::runtime::{
@@ -2926,36 +2926,36 @@ fn original_deleting_no_turn_work_cleanup_qualifies_result_without_new_activatio
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_task_tests.rs"]
 mod task_tests;
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_task_domain_tests.rs"]
 mod task_domain_tests;
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_task_result_tests.rs"]
 mod task_result_writer_tests;
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "wait_task_result_witness_tests.rs"]
 mod wait_task_result_witness_tests;
 
 #[path = "prepared_task_stop_tests.rs"]
 mod prepared_task_stop_tests;
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_task_stop_phase_tests.rs"]
 mod prepared_task_stop_phase_tests;
 
 #[path = "prepared_task_stop_result_tests.rs"]
 mod prepared_task_stop_result_tests;
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_audit_tests.rs"]
 mod prepared_audit_tests;
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "prepared_live_input_tests.rs"]
 mod prepared_live_input_tests;

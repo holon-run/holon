@@ -208,7 +208,7 @@ fn bind_source(
     Ok(bound)
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod tests {
     use super::*;

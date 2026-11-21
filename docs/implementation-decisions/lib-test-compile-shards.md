@@ -5,15 +5,16 @@ filter runs after compilation, so splitting only the libtest command line does
 not reduce the memory needed to compile its complete test binary.
 
 `build.rs` reads `HOLON_LIB_TEST_SHARD` and declares the
-`holon_lib_test_shard = "a" | "b" | "c" | "d"` cfg values. With no selector, or
-`all`, all four values are enabled and ordinary local commands retain the full
+`holon_lib_test_shard = "a" | "b" | "c" | "d" | "e"` cfg values. With no selector, or
+`all`, all five values are enabled and ordinary local commands retain the full
 suite. Invalid selectors fail the build. This selector changes no production
 behavior and does not set dependency-wide `RUSTFLAGS`.
 
-The runtime crate's unit tests use the same compile groups. Most tests in
-`runtime` belong to `a` and tests in `runtime_db` to `b`. Tests in those
-modules that instantiate the application HTTP routes run with the HTTP
-tests in `c`. This lets `a` and `b` skip compiling the routes and OpenAPI.
+Most tests in `runtime` belong to `a`. Group `e` owns the `runtime_db`
+transaction, control transition, task result settlement, and Task fixture
+tests. The remaining database tests belong to `b`. Tests in either module
+that instantiate the application HTTP routes run with the HTTP tests in `c`.
+The test builds for `a`, `b`, and `e` omit the routes and OpenAPI.
 `LIB_C_OWNERS` lists the remaining owners in `c`. The other top-level
 modules belong to `d`, which also runs the application's CLI and tail unit
 tests. Shared fixtures retain their private paths. Tests are gated
@@ -28,19 +29,21 @@ these two lints are allowed in the partial test crate. Production builds and the
 default complete test crate retain the original lint policy, including
 `-D warnings`. No other lint is relaxed.
 
-The existing `lib-a` CI job compiles and runs `a`, then `c`; `lib-b` runs `b`,
-then `d`. Each group is compiled **before** enumerating it. The runner rejects
-empty lists, duplicate names, and tests appearing outside their owning group,
-including a new ungated test that would otherwise run in all four groups.
+The existing `lib-a` CI job runs `a`, `c`, and `e` in sequence. The `lib-b`
+job runs `b` and `d` in sequence. Scheduling the smaller transaction build in
+`lib-a` uses time available in the shorter job. Each group is compiled before
+enumeration, and CI logs the listing command's elapsed time and peak RSS.
+The runner rejects empty lists, duplicate names, and tests outside their group,
+including a new ungated test that would otherwise run in all five groups.
 It saves the real lists as timing artifacts for union/overlap verification.
 `verify-lib-lists --baseline <original-name-list> --directory <list-directory>`
-compares all four real enumerations with an original libtest name multiset,
-rejecting missing, extra, or duplicate names rather than just checking counts.
+compares all five real enumerations with an original libtest name multiset and
+rejects missing, extra, or duplicate names.
 Binary unit tests run once, in `lib-a`. Integration test partitioning is unchanged.
 The all-target build selects `c` for `holon-runtime`, and `rust-build`
 also checks the explicit `all` selector with `cargo check --locked
 --all-targets` in both crates under `-D warnings`. The two library test
-jobs compile and run all four groups.
+jobs compile and run all five groups.
 
 `make build` first compiles the production library, then the selected libtest
 from `holon-runtime` without running it, and then compiles the application

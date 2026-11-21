@@ -1253,6 +1253,6 @@ fn ordinary_live_source_matches_tx(
 }
 
 #[cfg(test)]
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[path = "live_input_attachment_deferred_report_tests.rs"]
 mod deferred_report_tests;

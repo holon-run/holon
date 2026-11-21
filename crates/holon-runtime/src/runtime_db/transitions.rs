@@ -5,12 +5,12 @@ pub(crate) use audit_event_ack::AuditEventAck;
 
 // Phase 2 keeps this additive persistence seam dormant until production shadow
 // wiring begins; repository tests exercise it without granting scheduler authority.
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod execution_protocol_fixture_repository;
 pub(crate) mod execution_protocol_repository;
 mod live_input_attachment;
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod provider_queue_tests;
 mod provider_result_handoff;
@@ -26,10 +26,10 @@ pub(crate) use live_input_attachment::with_live_input_oracle;
 pub(crate) use prepared_input::with_full_task_oracle;
 #[path = "transitions/prepared_task_result.rs"]
 mod prepared_task_result;
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod wait_body_budget_tests;
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod wait_pool_budget_tests;
 pub(crate) use crate::runtime_db::provider_admission::StoppedProviderPauseAck;
@@ -6904,7 +6904,7 @@ pub(super) fn inject_fault(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -12231,7 +12231,7 @@ mod tests {
     }
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 #[path = "transition_wait_footprint_tests.rs"]
 mod wait_footprint_tests;

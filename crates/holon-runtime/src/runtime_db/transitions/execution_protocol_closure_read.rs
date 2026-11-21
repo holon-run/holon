@@ -187,7 +187,7 @@ fn read_protocol_rows_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Validat
     })
 }
 
-#[cfg(all(test, holon_lib_test_shard = "b"))]
+#[cfg(all(test, holon_lib_test_shard = "e"))]
 mod tests {
     use super::*;
     use crate::domain::execution_protocol::*;

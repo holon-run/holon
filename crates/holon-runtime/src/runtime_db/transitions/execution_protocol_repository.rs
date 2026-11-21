@@ -2002,7 +2002,7 @@ fn load_payload_map<T: DeserializeOwned>(
     Ok(records)
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod tests {
     use super::*;

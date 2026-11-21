@@ -145,7 +145,7 @@ class CiTestShardsTests(unittest.TestCase):
     def test_compile_groups_cover_each_group_once(self):
         groups = [g for job in ci_test_shards.LIB_SHARDS
                   for g in ci_test_shards.LIB_COMPILE_GROUPS[job]]
-        self.assertEqual(sorted(groups), ["a", "b", "c", "d"])
+        self.assertEqual(sorted(groups), list("abcde"))
 
     def test_ownership_keeps_subsystems_and_new_tests_together(self):
         for owner, expected in (("runtime", "a"), ("runtime_db", "b"),
@@ -153,6 +153,13 @@ class CiTestShardsTests(unittest.TestCase):
                                 ("new_subsystem", "d")):
             for name in (f"{owner}::tests::one", f"{owner}::nested::new_test"):
                 self.assertEqual(ci_test_shards.lib_compile_group(name), expected)
+
+    def test_transaction_and_fixture_tests_belong_to_group_e(self):
+        for module in ("transitions", "control_transition", "task_result_settlement", "test_support"):
+            name = f"runtime_db::{module}::tests::one"
+            ci_test_shards.validate_lib_group([name], "e")
+            with self.assertRaisesRegex(ValueError, "another group"):
+                ci_test_shards.validate_lib_group([name], "b")
 
     def test_missing_cfg_duplicate_and_empty_groups_are_rejected(self):
         for names, group in (([], "a"), (["runtime::test"] * 2, "a"),
@@ -178,6 +185,24 @@ class CiTestShardsTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs["env"]["HOLON_LIB_TEST_SHARD"], "a")
         self.assertNotIn("capture_output", run.call_args.kwargs)
 
+    def test_ci_listing_reports_runtime_and_application_peaks_separately(self):
+        commands = ci_test_shards.lib_test_commands("d")
+        with mock.patch.dict(ci_test_shards.os.environ, {"CI_LIB_COMPILE_TIMING": "true"}), \
+             mock.patch.object(ci_test_shards.subprocess, "run") as run:
+            run.return_value.stdout = "host::tests::one: test\n"
+            ci_test_shards.lib_test_names("d", commands)
+        self.assertEqual(
+            [call.args[0] for call in run.call_args_list],
+            [
+                [
+                    "/usr/bin/time", "-f",
+                    f"libtest listing d ({target}): %e s elapsed, %M KiB peak RSS",
+                    *command, "--", "--list",
+                ]
+                for target, command in zip(("runtime", "application"), commands)
+            ],
+        )
+
     def test_ci_jobs_never_request_full_libtest(self):
         for job in ci_test_shards.LIB_SHARDS:
             with self.assertRaises(ValueError):
@@ -187,7 +212,8 @@ class CiTestShardsTests(unittest.TestCase):
         import json
         import tempfile
         for job, names, expected_bins in (
-            ("lib-a", [["runtime::one"], ["model_catalog::one"]], 1),
+            ("lib-a", [["runtime::one"], ["model_catalog::one"],
+                       ["runtime_db::transitions::one"]], 1),
             ("lib-b", [["runtime_db::one"], ["host::one"]], 0),
         ):
             with self.subTest(job=job), tempfile.TemporaryDirectory() as target:
@@ -201,7 +227,7 @@ class CiTestShardsTests(unittest.TestCase):
                     listing.call_args_list,
                     [mock.call(g, ci_test_shards.lib_test_commands(g)) for g in groups],
                 )
-                self.assertEqual(run.call_count, 2 + (job == "lib-b") + expected_bins)
+                self.assertEqual(run.call_count, len(groups) + (job == "lib-b") + expected_bins)
                 for call, group in zip(run.call_args_list, groups):
                     self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], group)
                     self.assertEqual(call.args[0],
@@ -226,9 +252,11 @@ class CiTestShardsTests(unittest.TestCase):
         app_bin = ["cargo", "test", "--bins"]
         cli = {"CI_RUNTIME_TEST_GROUPS": "[]", "CI_RUNTIME_TESTS_ONLY": "false", "CI_CLI_ONLY": "true"}
         db = {"CI_RUNTIME_TEST_GROUPS": '["b"]', "CI_RUNTIME_TESTS_ONLY": "true"}
-        for job, scope, names, commands in (
-            ("lib-b", cli, ["tail::tests::one"], [app_lib, app_bin]),
-            ("lib-b", db, ["runtime_db::tests::one"], [runtime]),
+        transactions = {"CI_RUNTIME_TEST_GROUPS": '["e"]', "CI_RUNTIME_TESTS_ONLY": "true"}
+        for job, scope, group, names, commands in (
+            ("lib-b", cli, "d", ["tail::tests::one"], [app_lib, app_bin]),
+            ("lib-b", db, "b", ["runtime_db::tests::one"], [runtime]),
+            ("lib-a", transactions, "e", ["runtime_db::transitions::one"], [runtime]),
         ):
             with self.subTest(job=job, scope=scope), tempfile.TemporaryDirectory() as target:
                 with mock.patch.dict(ci_test_shards.os.environ, {**scope, "CARGO_TARGET_DIR": target}), \
@@ -236,11 +264,7 @@ class CiTestShardsTests(unittest.TestCase):
                      mock.patch.object(ci_test_shards.subprocess, "run") as run:
                     run.return_value.returncode = 0
                     ci_test_shards.run_lib_shard(job)
-                if names:
-                    group = "b" if scope is db else "d"
-                    listing.assert_called_once_with(group, commands[:1])
-                else:
-                    listing.assert_not_called()
+                listing.assert_called_once_with(group, commands[:1])
                 self.assertEqual(
                     [call.args[0] for call in run.call_args_list],
                     [command + ["--", "--test-threads=2"] for command in commands],
@@ -269,7 +293,8 @@ class CiTestShardsTests(unittest.TestCase):
             run.assert_not_called()
 
     def test_coverage_compares_the_name_multiset_not_only_counts(self):
-        names = ["runtime::one", "runtime_db::one", "model_catalog::one", "host::one"]
+        names = ["runtime::one", "runtime_db::one", "model_catalog::one",
+                 "host::one", "runtime_db::transitions::one"]
         groups = [[name] for name in names]
         ci_test_shards.verify_lib_lists(names, groups)
         for broken in (groups[:-1], groups[:-1] + [["host::other"]],
@@ -282,12 +307,13 @@ class CiTestShardsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as target:
             with mock.patch.dict(ci_test_shards.os.environ, {"CARGO_TARGET_DIR": target}), \
                  mock.patch.object(ci_test_shards, "lib_test_names",
-                                   side_effect=[["runtime::one"], ["model_catalog::one"]]), \
+                                   side_effect=[["runtime::one"], ["model_catalog::one"],
+                                                ["runtime_db::transitions::one"]]), \
                  mock.patch.object(ci_test_shards.subprocess, "run") as run:
                 run.return_value.returncode = 1
                 with self.assertRaises(ci_test_shards.subprocess.CalledProcessError):
                     ci_test_shards.run_lib_shard("lib-a")
-                self.assertEqual(run.call_count, 3)
+                self.assertEqual(run.call_count, 4)
 
     def test_task_fixture_modules_are_explicit_and_not_full_ci_shards(self):
         self.assertEqual(ci_test_shards.TASK_FIXTURE_MODULES, (
@@ -297,7 +323,7 @@ class CiTestShardsTests(unittest.TestCase):
         ))
         self.assertNotIn("task-fixtures", ci_test_shards.SUITES)
         self.assertEqual(ci_test_shards.LIB_COMPILE_GROUPS,
-                         {"lib-a": ("a", "c"), "lib-b": ("b", "d")})
+                         {"lib-a": ("a", "c", "e"), "lib-b": ("b", "d")})
         text = MAKEFILE.read_text()
         self.assertRegex(text, r"(?m)^\.PHONY:.*\btest-task-fixtures\b")
         self.assertRegex(
@@ -305,7 +331,7 @@ class CiTestShardsTests(unittest.TestCase):
             r"(?m)^test-task-fixtures:.*\n\tpython3 scripts/ci_test_shards.py task-fixtures$",
         )
 
-    def test_task_fixture_command_selects_group_b_and_reports_real_commands(self):
+    def test_task_fixture_command_selects_group_e_and_reports_real_commands(self):
         modules = ci_test_shards.TASK_FIXTURE_MODULES
         names = [f"{module}::one" for module in modules]
         names += [f"{modules[0]}::two", f"{modules[0]}_unrelated::one"]
@@ -316,7 +342,7 @@ class CiTestShardsTests(unittest.TestCase):
             run.return_value.returncode = 0
             args = ci_test_shards.build_parser().parse_args(["task-fixtures"])
             args.func(args)
-        listing.assert_called_once_with("b")
+        listing.assert_called_once_with("e")
         self.assertEqual(run.call_count, 3)
         for module, count, call in zip(modules, (2, 1, 1), run.call_args_list):
             command = [
@@ -325,10 +351,10 @@ class CiTestShardsTests(unittest.TestCase):
             ]
             self.assertEqual(call.args[0], command)
             self.assertEqual(call.kwargs["cwd"], ci_test_shards.REPO_ROOT)
-            self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], "b")
+            self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], "e")
             self.assertIn(f"module {module}: {count} tests", output.getvalue())
             self.assertIn(
-                f"$ HOLON_LIB_TEST_SHARD=b {' '.join(command)}", output.getvalue()
+                f"$ HOLON_LIB_TEST_SHARD=e {' '.join(command)}", output.getvalue()
             )
 
     def test_task_fixture_zero_matches_fail_before_any_test_runs(self):

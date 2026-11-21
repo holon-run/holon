@@ -997,6 +997,7 @@ jobs:
       CI_CLI_ONLY: ${{ needs.changes.outputs.cli_only }}
       CI_RUNTIME_TESTS_ONLY: ${{ needs.changes.outputs.runtime_tests_only }}
       CI_RUNTIME_TEST_GROUPS: ${{ needs.changes.outputs.runtime_test_groups }}
+      CI_LIB_COMPILE_TIMING: "true"
       RUSTFLAGS: -D warnings
       CARGO_INCREMENTAL: "0"
       CARGO_PROFILE_DEV_DEBUG: "line-tables-only"

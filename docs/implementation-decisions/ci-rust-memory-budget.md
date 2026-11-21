@@ -99,9 +99,9 @@ Source-level candidates:
   must preserve all 8162 original test names and assertions, and pass all
   four original jobs without diagnostic switches or relaxed budgets.
 
-Subsequent CI configuration:
+## Initial compile-group configuration
 
-- Library tests now compile in four disjoint groups (`a` through `d`), with
+- The original split compiled four disjoint groups (`a` through `d`), with
   two groups per library job. The macOS logging gate compiles group `c`,
   which contains every selected logging test. The split preserves the
   assertions and checks test-name coverage rather than skipping tests.
@@ -120,3 +120,6 @@ Subsequent CI configuration:
   same runner and timeout budgets.
 - Test debug assertions, warning checks, and the existing job timeouts remain
   enabled. Successful compilation alone does not certify the full test gate.
+
+See the current group assignments and how CI measures them in
+[Compile-time library test groups](lib-test-compile-shards.md).
