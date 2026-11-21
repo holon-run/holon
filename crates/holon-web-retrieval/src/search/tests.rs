@@ -1224,6 +1224,75 @@ async fn searxng_search_only_hints_about_json_for_http_403() {
     }
 }
 
+#[tokio::test]
+async fn searxng_search_sends_language_and_region_as_locale_param() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/search",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(searxng_results_json(&[(
+                    "Example result",
+                    "https://example.com/result",
+                    "Result snippet",
+                )]))
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let config = test_search_config(
+        vec![(
+            "local_searxng",
+            test_provider(WebProviderKind::Searxng, &base_url),
+        )],
+        vec!["local_searxng"],
+        WebSearchMode::Single,
+    );
+
+    for (language, region) in [
+        (Some("zh"), Some("CN")),
+        (Some(" zh "), None),
+        (Some("zh-TW"), Some("CN")),
+        (None, Some("CN")),
+        (None, None),
+    ] {
+        search(
+            WebSearchRequest {
+                query: "test".to_string(),
+                max_results: Some(1),
+                provider: Some("local_searxng".to_string()),
+                language: language.map(str::to_string),
+                region: region.map(str::to_string),
+            },
+            &config,
+        )
+        .await
+        .unwrap();
+    }
+
+    let queries = queries.lock().unwrap();
+    assert_eq!(queries.len(), 5);
+    // Region merges into the locale when the language carries no subtag.
+    assert!(queries[0].contains("language=zh-CN"));
+    assert!(queries[1].contains("language=zh"));
+    // An explicit subtag wins over a separate region hint.
+    assert!(queries[2].contains("language=zh-TW"));
+    // SearXNG has no standalone region parameter, so region-only keeps auto.
+    assert!(queries[3].contains("language=auto"));
+    assert!(queries[4].contains("language=auto"));
+}
+
 fn brave_results_json() -> serde_json::Value {
     serde_json::json!({
         "web": {
@@ -1380,15 +1449,99 @@ async fn brave_search_integration_success() {
     let base_url = format!("http://{}", addr);
 
     let provider = test_provider(WebProviderKind::Brave, &base_url);
-    let results = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
-        .await
-        .unwrap();
+    let results = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].title, "Brave Search");
     assert_eq!(results[0].url, "https://search.brave.com");
     assert_eq!(results[0].snippet.as_deref(), Some("Brave Search engine"));
     assert_eq!(results[0].source, "brave_test");
     assert_eq!(results[1].title, "Brave Browser");
+}
+
+#[tokio::test]
+async fn brave_search_sends_language_and_region_as_search_lang_country() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/res/v1/web/search",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(brave_results_json())
+            }
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    let base_url = format!("http://{addr}");
+    let provider = test_provider(WebProviderKind::Brave, &base_url);
+
+    let results = brave_search(
+        "test",
+        5,
+        Some("zh"),
+        Some("cn"),
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+
+    // Absent hints must not append search_lang/country parameters.
+    let results = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+
+    // Single-sided, whitespace-padded hints are trimmed and forwarded.
+    let results = brave_search(
+        "test",
+        5,
+        Some(" en "),
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert_eq!(results.len(), 2);
+
+    let queries = queries.lock().unwrap();
+    assert_eq!(queries.len(), 3);
+    assert!(queries[0].contains("search_lang=zh"));
+    assert!(queries[0].contains("country=cn"));
+    assert!(!queries[1].contains("search_lang="));
+    assert!(!queries[1].contains("country="));
+    assert!(queries[2].contains("search_lang=en"));
+    assert!(!queries[2].contains("country="));
 }
 
 fn google_results_json() -> serde_json::Value {
@@ -1703,9 +1856,17 @@ async fn brave_search_decodes_gzip_json_response() {
     let base_url = format!("http://{}", addr);
 
     let provider = test_provider(WebProviderKind::Brave, &base_url);
-    let results = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
-        .await
-        .unwrap();
+    let results = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
     assert_eq!(results.len(), 2);
     assert_eq!(results[0].title, "Brave Search");
 }
@@ -2439,9 +2600,17 @@ async fn brave_search_empty_results_is_error() {
     let base_url = format!("http://{}", addr);
 
     let provider = test_provider(WebProviderKind::Brave, &base_url);
-    let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
-        .await
-        .unwrap_err();
+    let err = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err}").contains("no parseable search results"),
         "expected empty results error, got: {err}"
@@ -2462,9 +2631,17 @@ async fn brave_search_http_401_is_error() {
     let base_url = format!("http://{}", addr);
 
     let provider = test_provider(WebProviderKind::Brave, &base_url);
-    let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
-        .await
-        .unwrap_err();
+    let err = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
     assert!(
         format!("{err}").contains("HTTP 401"),
         "expected HTTP 401 error, got: {err}"
@@ -2485,9 +2662,17 @@ async fn brave_search_http_429_is_error() {
     let base_url = format!("http://{}", addr);
 
     let provider = test_provider(WebProviderKind::Brave, &base_url);
-    let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
-        .await
-        .unwrap_err();
+    let err = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
     let tool_error = crate::test_tool_error(&err);
     assert_eq!(tool_error.kind, "rate_limited");
 }
@@ -2504,9 +2689,17 @@ async fn brave_search_missing_api_key_is_error() {
         output: None,
         limits: Default::default(),
     };
-    let err = brave_search("test", 5, "brave_test", &provider, &test_fetch_config())
-        .await
-        .unwrap_err();
+    let err = brave_search(
+        "test",
+        5,
+        None,
+        None,
+        "brave_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap_err();
     let tool_error = crate::test_tool_error(&err);
     assert_eq!(tool_error.kind, "provider_unavailable");
     assert!(
@@ -2833,6 +3026,8 @@ async fn brave_search_live_integration() {
     let results = brave_search(
         "Rust programming language",
         3,
+        None,
+        None,
         "brave_live",
         &provider,
         &fetch_config,

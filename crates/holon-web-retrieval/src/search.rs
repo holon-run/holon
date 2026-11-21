@@ -915,11 +915,29 @@ async fn search_configured_provider(
 ) -> Result<ProviderSearchOutput> {
     let results = match provider_config.kind {
         WebProviderKind::Searxng => {
-            searxng_search(query, max_results, provider_id, provider_config, fetch_config).await
+            searxng_search(
+                query,
+                max_results,
+                language,
+                region,
+                provider_id,
+                provider_config,
+                fetch_config,
+            )
+            .await
         }
         WebProviderKind::DuckDuckGo => duckduckgo_search(query, max_results, fetch_config).await,
         WebProviderKind::Brave => {
-            brave_search(query, max_results, provider_id, provider_config, fetch_config).await
+            brave_search(
+                query,
+                max_results,
+                language,
+                region,
+                provider_id,
+                provider_config,
+                fetch_config,
+            )
+            .await
         }
         WebProviderKind::Google => {
             google_search(
@@ -1296,9 +1314,30 @@ fn searxng_endpoint(provider_id: &str, provider: &WebProviderConfig) -> Result<U
         .map_err(|error| anyhow!("invalid SearXNG base_url for {provider_id}: {error}"))
 }
 
+/// Build the SearXNG `language` query parameter from the request hints.
+///
+/// SearXNG's `language` parameter accepts a locale code such as `en` or
+/// `zh-CN`; an explicit language hint replaces auto-detection and a region
+/// hint is merged into the locale when the language carries no region subtag
+/// of its own. SearXNG exposes no standalone region parameter, so a
+/// region-only hint keeps `auto`.
+fn searxng_language_param(language: Option<&str>, region: Option<&str>) -> String {
+    let language = language.map(str::trim).filter(|value| !value.is_empty());
+    let region = region.map(str::trim).filter(|value| !value.is_empty());
+    match (language, region) {
+        (Some(language), Some(region)) if !language.contains(['-', '_']) => {
+            format!("{language}-{region}")
+        }
+        (Some(language), _) => language.to_string(),
+        (None, _) => "auto".to_string(),
+    }
+}
+
 async fn searxng_search(
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_id: &str,
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
@@ -1307,7 +1346,7 @@ async fn searxng_search(
     url.query_pairs_mut()
         .append_pair("q", query)
         .append_pair("format", "json")
-        .append_pair("language", "auto");
+        .append_pair("language", &searxng_language_param(language, region));
     let client = Client::builder().timeout(timeout(fetch_config)).build()?;
     let body = send_search_text(
         client.get(url),
@@ -1373,6 +1412,8 @@ async fn searxng_search(
 async fn brave_search(
     query: &str,
     max_results: usize,
+    language: Option<&str>,
+    region: Option<&str>,
     provider_id: &str,
     provider: &WebProviderConfig,
     fetch_config: &WebFetchConfig,
@@ -1383,12 +1424,20 @@ async fn brave_search(
         .base_url
         .as_deref()
         .unwrap_or("https://api.search.brave.com");
-    let url = format!(
+    let mut url = format!(
         "{}/res/v1/web/search?q={}&count={}",
         base_url.trim_end_matches('/'),
         form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>(),
         max_results.min(20),
     );
+    // Brave's `supports_region_or_language` capability: `search_lang` selects
+    // the result language and `country` the result country.
+    if let Some(language) = language.map(str::trim).filter(|value| !value.is_empty()) {
+        append_encoded_pair(&mut url, "search_lang", language);
+    }
+    if let Some(region) = region.map(str::trim).filter(|value| !value.is_empty()) {
+        append_encoded_pair(&mut url, "country", region);
+    }
     let response = client
         .get(&url)
         .header("Accept", "application/json")
