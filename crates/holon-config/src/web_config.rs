@@ -313,6 +313,9 @@ pub struct WebProviderCapabilityMetadata {
 pub struct WebProviderConfig {
     pub kind: WebProviderKind,
     pub base_url: Option<String>,
+    /// Programmable Search engine id (`cx`); `Some` only for `kind=google`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_id: Option<String>,
     /// Resolved API key from a credential profile (for API-backed providers).
     /// Empty when no credential profile is configured.
     #[serde(skip)]
@@ -371,6 +374,7 @@ impl WebProviderConfig {
         Ok(Self {
             kind: value.kind,
             base_url: value.base_url.clone(),
+            engine_id: value.engine_id.clone(),
             api_key: String::new(),
             model_route: value.model_route.clone(),
             command: value
@@ -438,6 +442,19 @@ pub fn materialize_web_config(
 }
 
 fn validate_provider_config(id: &str, provider: &crate::WebProviderConfigFile) -> Result<()> {
+    if provider.kind == WebProviderKind::Google {
+        let engine_id = provider.engine_id.as_deref().map(str::trim).unwrap_or("");
+        if engine_id.is_empty() {
+            return Err(anyhow!(
+                "web provider `{id}` kind=google requires engine_id (the Programmable Search engine id, `cx`)"
+            ));
+        }
+    } else if provider.engine_id.is_some() {
+        return Err(anyhow!(
+            "web provider `{id}` kind={} must not configure engine_id; engine_id is only supported for kind=google",
+            provider.kind.as_str()
+        ));
+    }
     if provider.kind != WebProviderKind::Command {
         if provider.command.is_some() {
             return Err(anyhow!(
@@ -513,6 +530,7 @@ pub enum WebProviderKind {
     DuckDuckGo,
     Searxng,
     Brave,
+    Google,
     #[serde(rename = "deepseek")]
     DeepSeek,
     TencentCloudWsa,
@@ -533,10 +551,11 @@ impl WebProviderKind {
     ///
     /// Missing entries are not caught at compile time, so keep this in sync
     /// when adding or removing enum variants.
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::DuckDuckGo,
         Self::Searxng,
         Self::Brave,
+        Self::Google,
         Self::DeepSeek,
         Self::TencentCloudWsa,
         Self::Bocha,
@@ -565,6 +584,7 @@ impl WebProviderKind {
             WebProviderKind::DuckDuckGo => "duck_duck_go",
             WebProviderKind::Searxng => "searxng",
             WebProviderKind::Brave => "brave",
+            WebProviderKind::Google => "google",
             WebProviderKind::DeepSeek => "deepseek",
             WebProviderKind::TencentCloudWsa => "tencent_cloud_wsa",
             WebProviderKind::Bocha => "bocha",
@@ -628,6 +648,20 @@ impl WebProviderKind {
                 supports_full_content: false,
                 supports_native_citations: false,
                 default_priority: 80,
+                status: WebProviderSupportStatus::Supported,
+            },
+            // Custom Search JSON API: official Google endpoint behind a
+            // Programmable Search engine; free tier then pay-per-query.
+            WebProviderKind::Google => WebProviderCapabilityMetadata {
+                auth: WebProviderAuthClass::ApiKey,
+                cost_class: WebProviderCostClass::Paid,
+                quality_hint: WebProviderQualityHint::Keyword,
+                supports_domain_filter: false,
+                supports_freshness: false,
+                supports_region_or_language: true,
+                supports_full_content: false,
+                supports_native_citations: false,
+                default_priority: 82,
                 status: WebProviderSupportStatus::Supported,
             },
             WebProviderKind::TencentCloudWsa => WebProviderCapabilityMetadata {

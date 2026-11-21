@@ -579,9 +579,10 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `x_search.enabled` | boolean | `true` | Enable `XSearch` automatically when xAI credentials are available; set `false` to hide it |
 | `x_search.model` | model_ref | — | Optional xAI model route for isolated `XSearch` requests |
 | `x_search.timeout_seconds` | integer | `60` | Timeout for isolated xAI `XSearch` requests |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
+| `web.providers.<name>.engine_id` | string | required for `google` | Programmable Search engine id (`cx`) for `kind=google`; create the engine at programmablesearchengine.google.com with "Search the entire web" enabled to query the whole web rather than a site-restricted index |
 | `web.providers.<name>.model_route` | model_route_ref | unset | Native kinds only: binds a concrete model route (for example `openai@default/gpt-5.4`) whose transport, endpoint, and credentials execute the standalone server-side search |
 | `web.providers.<name>.capabilities` | json_object | derived | Read-only capability metadata surfaced by `holon config get` and routing diagnostics |
 | `web.providers.<name>.command.argv` | string_list | unset | Command argv template for `kind=command` WebSearch providers (supports `{{query}}` and `{{max_results}}`) |

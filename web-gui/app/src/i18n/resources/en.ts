@@ -982,6 +982,10 @@ const en = {
         label: "Brave Search",
         description: "General-purpose web results through the Brave Search API.",
       },
+      google: {
+        label: "Google Programmable Search",
+        description: "Official Google results through the Custom Search JSON API; needs an engine id (cx).",
+      },
       tavily: {
         label: "Tavily",
         description: "Search API optimized for agent and RAG workflows.",
@@ -1038,6 +1042,7 @@ const en = {
     allowModelNativeSearch: "Allow model-native search when available",
     connectLiveSearchCreds: "Connect to a live runtime and refresh this page to edit web search provider credentials.",
     credentialProfile: "Credential profile",
+    engineId: "Engine id (cx)",
     advancedCustomProvider: "Advanced custom provider",
     addCustomSearchProvider: "Add custom search provider",
     customSearchProviderHint: "Only use this for custom ids, command providers, or experimental provider kinds.",

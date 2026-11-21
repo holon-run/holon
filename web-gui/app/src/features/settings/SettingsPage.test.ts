@@ -395,6 +395,22 @@ describe("buildSearchProviderConfigUpdates", () => {
     ]);
   });
 
+  it("sends engine_id for google providers alongside the credential profile", () => {
+    expect(
+      buildSearchProviderConfigUpdates("google", {
+        kind: "google",
+        baseUrl: "",
+        engineId: " engine-cx-123 ",
+        credentialProfile: "google:default",
+      }),
+    ).toEqual([
+      { key: "web.providers.google.kind", value: "google" },
+      { key: "web.providers.google.base_url", value: "" },
+      { key: "web.providers.google.credential_profile", value: "google:default" },
+      { key: "web.providers.google.engine_id", value: "engine-cx-123" },
+    ]);
+  });
+
   it("does not require a credential profile for no-key providers", () => {
     expect(
       buildSearchProviderConfigUpdates("searxng", {

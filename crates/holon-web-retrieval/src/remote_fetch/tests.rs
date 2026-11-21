@@ -48,6 +48,7 @@ async fn server(
         WebProviderConfig {
             kind: super::super::WebProviderKind::DeepSeek,
             base_url: Some(base_url),
+            engine_id: None,
             api_key: "fixture-key".into(),
             model_route: None,
             command: None,
@@ -225,6 +226,7 @@ fn tavily_provider(base_url: String) -> WebProviderConfig {
     WebProviderConfig {
         kind: super::super::WebProviderKind::Tavily,
         base_url: Some(base_url),
+        engine_id: None,
         api_key: "fixture-key".into(),
         model_route: None,
         command: None,
@@ -615,6 +617,7 @@ fn firecrawl_provider(base_url: String) -> WebProviderConfig {
     WebProviderConfig {
         kind: super::super::WebProviderKind::Firecrawl,
         base_url: Some(base_url),
+        engine_id: None,
         api_key: "fixture-key".into(),
         model_route: None,
         command: None,

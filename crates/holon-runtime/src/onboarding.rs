@@ -1596,6 +1596,7 @@ mod tests {
             WebProviderConfig {
                 kind: WebProviderKind::Brave,
                 base_url: None,
+                engine_id: None,
                 api_key: String::new(),
                 command: None,
                 model_route: None,

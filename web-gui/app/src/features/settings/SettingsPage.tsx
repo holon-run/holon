@@ -245,7 +245,7 @@ type ProviderDraft = Pick<
   "transport" | "baseUrl" | "oauthSupported" | "apiKeySupported" | "credentialSource" | "credentialKind" | "credentialEnv" | "credentialProfile" | "credentialExternal"
 >;
 
-type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "credentialProfile">;
+type SearchProviderDraft = Pick<RuntimeWebSearchProviderSummary, "kind" | "baseUrl" | "engineId" | "credentialProfile">;
 
 type StandardSearchProviderDefinition = {
   id: string;
@@ -312,6 +312,9 @@ export function buildSearchProviderConfigUpdates(
   ];
   if (shouldSendBaseUrl) {
     updates.splice(1, 0, { key: `web.providers.${providerId}.base_url`, value: draft.baseUrl?.trim() ?? "" });
+  }
+  if (draft.kind === "google") {
+    updates.push({ key: `web.providers.${providerId}.engine_id`, value: draft.engineId?.trim() ?? "" });
   }
   return updates;
 }
@@ -531,6 +534,7 @@ export function SettingsPage({
           {
             kind: provider.kind,
             baseUrl: provider.baseUrl ?? "",
+            engineId: provider.engineId ?? "",
             credentialProfile: provider.credentialProfile ?? "",
           },
         ]),
@@ -1646,6 +1650,16 @@ export function SettingsPage({
                         </label>
                       </div>
                     ) : null}
+                    {draft.kind === "google" ? (
+                      <label>
+                        <span>{t("settings.engineId")} *</span>
+                        <input
+                          value={draft.engineId ?? ""}
+                          onChange={(event) => updateSearchProviderDraft(definition.id, { engineId: event.target.value })}
+                          placeholder="017576662512468239146:omuauf_lfve"
+                        />
+                      </label>
+                    ) : null}
                     {definition.supportsApiKey ? (
                       <label>
                         <span>{t("settings.credentialProfile")}</span>
@@ -1779,6 +1793,12 @@ export function SettingsPage({
                           <span>{t("settings.credentialProfile")}</span>
                           <input value={draft.credentialProfile ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { credentialProfile: event.target.value })} />
                         </label>
+                        {draft.kind === "google" ? (
+                          <label>
+                            <span>{t("settings.engineId")} *</span>
+                            <input value={draft.engineId ?? ""} onChange={(event) => updateSearchProviderDraft(providerId, { engineId: event.target.value })} />
+                          </label>
+                        ) : null}
                       </div>
                       <div className="settings-actions">
                         <Button type="submit" disabled={runtimeConfigSaving || runtimeConfigLoading}>

@@ -84,6 +84,7 @@ fn list_fetch_providers_mirrors_route_gating() {
     let mut provider = WebProviderConfig {
         kind: WebProviderKind::DeepSeek,
         base_url: None,
+        engine_id: None,
         api_key: "fixture-key".into(),
         model_route: None,
         command: None,
@@ -176,6 +177,7 @@ fn list_fetch_providers_hides_malformed_tavily_base_url() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::Tavily,
         base_url: Some("not a url".into()),
+        engine_id: None,
         api_key: "fixture-key".into(),
         model_route: None,
         command: None,
@@ -192,6 +194,7 @@ fn list_fetch_providers_hides_malformed_tavily_base_url() {
         "tavily-bad".into(),
         WebProviderConfig {
             base_url: Some("https://api.tavily.com".into()),
+            engine_id: None,
             ..provider
         },
     );

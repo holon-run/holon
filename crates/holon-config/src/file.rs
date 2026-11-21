@@ -799,6 +799,10 @@ pub struct WebProviderConfigFile {
     /// and must be of kind `api_key`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credential_profile: Option<String>,
+    /// Programmable Search engine id (`cx`) for `kind=google`. Required for
+    /// that kind and not supported by any other kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_id: Option<String>,
     /// Model route bound to a native search provider. Only meaningful for
     /// native search kinds; required before the provider can be called by an
     /// explicit WebSearch provider ID.

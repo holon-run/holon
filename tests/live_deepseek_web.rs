@@ -94,6 +94,7 @@ async fn live_deepseek_web_search_and_fetch() -> Result<()> {
             kind: WebProviderKind::DeepSeek,
             model_route: None,
             base_url: None,
+            engine_id: None,
             api_key: key,
             command: None,
             output: None,

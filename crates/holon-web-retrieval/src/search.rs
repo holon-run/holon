@@ -327,6 +327,7 @@ fn search_api_key<'a>(id: &str, provider: &'a WebProviderConfig) -> Result<&'a s
     let key = provider.api_key.as_str();
     let service = match provider.kind {
         WebProviderKind::Brave => "Brave Search",
+        WebProviderKind::Google => "Google Programmable Search",
         WebProviderKind::TencentCloudWsa => "Tencent Cloud WSA SearchPro",
         WebProviderKind::Bocha => "Bocha AI Web Search",
         WebProviderKind::DeepSeek => "DeepSeek",
@@ -562,6 +563,7 @@ fn builtin_keyless_provider_config(provider_id: &str) -> Option<WebProviderConfi
     Some(WebProviderConfig {
         kind: builtin_keyless_provider_kind(provider_id)?,
         base_url: None,
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: None,
@@ -878,6 +880,9 @@ async fn search_configured_provider(
         WebProviderKind::Brave => {
             brave_search(query, max_results, provider_id, provider_config, fetch_config).await
         }
+        WebProviderKind::Google => {
+            google_search(query, max_results, provider_id, provider_config, fetch_config).await
+        }
         WebProviderKind::TencentCloudWsa => {
             tencent_cloud_wsa_search(query, max_results, provider_id, provider_config, fetch_config)
                 .await
@@ -915,7 +920,7 @@ async fn search_configured_provider(
             "provider_unavailable",
             format!("WebSearch provider kind `{kind:?}` is reserved for future provider support"),
             provider_id,
-            "configure a duckduckgo, searxng, brave, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, exa, perplexity, or firecrawl provider for this Holon version",
+            "configure a duckduckgo, searxng, brave, google, tencent_cloud_wsa, bocha, tavily, keenable, deepseek, exa, perplexity, or firecrawl provider for this Holon version",
         )),
     }?;
     Ok(ProviderSearchOutput::new(results))
@@ -1406,6 +1411,131 @@ async fn brave_search(
             "Brave Search returned no parseable search results",
             provider_id,
             "try a different query or check the API subscription",
+        ));
+    }
+    Ok(results)
+}
+
+async fn google_search(
+    query: &str,
+    max_results: usize,
+    provider_id: &str,
+    provider: &WebProviderConfig,
+    fetch_config: &WebFetchConfig,
+) -> Result<Vec<WebSearchResult>> {
+    let api_key = search_api_key(provider_id, provider)?;
+    let engine_id = provider
+        .engine_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|engine_id| !engine_id.is_empty())
+        .ok_or_else(|| {
+            search_error(
+                "provider_unavailable",
+                "Google Programmable Search requires engine_id (the Programmable Search engine id, `cx`)",
+                provider_id,
+                "set web.providers.<id>.engine_id to the Programmable Search engine id",
+            )
+        })?;
+    let client = Client::builder().timeout(timeout(fetch_config)).build()?;
+    let base_url = provider
+        .base_url
+        .as_deref()
+        .unwrap_or("https://www.googleapis.com/customsearch/v1");
+    // The Custom Search JSON API caps `num` at 10 results per request.
+    let url = format!(
+        "{}/?cx={}&num={}&q={}",
+        base_url.trim_end_matches('/'),
+        form_urlencoded::byte_serialize(engine_id.as_bytes()).collect::<String>(),
+        max_results.min(10),
+        form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>(),
+    );
+    let response = client
+        .get(&url)
+        .header("Accept", "application/json")
+        .header("X-Goog-Api-Key", api_key)
+        .send()
+        .await
+        .map_err(|error| {
+            search_error(
+                "network_failed",
+                format!("Google Programmable Search request failed: {error}"),
+                provider_id,
+                "retry later or check the API key",
+            )
+        })?;
+    let status = response.status();
+    if !status.is_success() {
+        let kind = if status == reqwest::StatusCode::UNAUTHORIZED
+            || status == reqwest::StatusCode::FORBIDDEN
+        {
+            "provider_unavailable"
+        } else if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            "rate_limited"
+        } else {
+            "network_failed"
+        };
+        return Err(search_error(
+            kind,
+            format!("Google Programmable Search returned HTTP {status}"),
+            provider_id,
+            "check the API key and engine_id (cx), or retry later",
+        ));
+    }
+    let body = read_search_response(response, provider_id).await?;
+    let payload: serde_json::Value = serde_json::from_str(&body).map_err(|error| {
+        search_error(
+            "parse_failed",
+            format!("Google Programmable Search returned invalid JSON: {error}"),
+            provider_id,
+            "check the API key and engine_id (cx)",
+        )
+    })?;
+    let entries = match payload.get("items") {
+        // Google omits `items` when the query has no matches; a missing key
+        // is a legitimate empty result rather than a parse failure.
+        None => return Ok(Vec::new()),
+        Some(items) => items.as_array().ok_or_else(|| {
+            search_error(
+                "parse_failed",
+                "Google Programmable Search returned an unexpected items payload",
+                provider_id,
+                "check the engine_id (cx) or try a different query",
+            )
+        })?,
+    };
+    if entries.is_empty() {
+        return Ok(Vec::new());
+    }
+    let results = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, entry)| {
+            let title = entry.get("title")?.as_str()?.trim().to_string();
+            let link = entry.get("link")?.as_str()?.trim().to_string();
+            normalize_search_result(
+                provider_id,
+                index + 1,
+                ProviderRawSearchResult {
+                    title,
+                    url: link,
+                    snippet: entry
+                        .get("snippet")
+                        .and_then(|value| value.as_str())
+                        .map(str::to_string),
+                    published_at: None,
+                    ..ProviderRawSearchResult::default()
+                },
+            )
+        })
+        .take(max_results)
+        .collect::<Vec<_>>();
+    if results.is_empty() {
+        return Err(search_error(
+            "parse_failed",
+            "Google Programmable Search returned no parseable search results",
+            provider_id,
+            "check the engine_id (cx) or try a different query",
         ));
     }
     Ok(results)

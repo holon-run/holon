@@ -521,6 +521,7 @@ interface RuntimeWebSearchProviderSummaryDto {
   id?: string;
   kind?: string;
   base_url?: string;
+  engine_id?: string;
   credential_profile?: string;
   credential_configured?: boolean;
 }
@@ -2429,6 +2430,7 @@ function projectRuntimeConfigSurface(surface: RuntimeConfigSurfaceDto): RuntimeC
       id: provider.id ?? "unknown",
       kind: provider.kind ?? "unknown",
       baseUrl: provider.base_url,
+      engineId: provider.engine_id,
       credentialProfile: provider.credential_profile,
       credentialConfigured: provider.credential_configured ?? false,
     })),

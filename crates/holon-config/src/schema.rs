@@ -939,9 +939,9 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
         ConfigSchemaEntry {
             key: "web.providers.<name>.kind",
             kind: "string",
-            description: "Web provider kind: duck_duck_go, searxng, brave, deepseek, tencent_cloud_wsa, bocha, tavily, keenable, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native, command. DeepSeek also supports explicit remote WebFetch.",
+            description: "Web provider kind: duck_duck_go, searxng, brave, google, deepseek, tencent_cloud_wsa, bocha, tavily, keenable, exa, perplexity, firecrawl, open_ai_native, anthropic_native, gemini_native, command. DeepSeek also supports explicit remote WebFetch.",
             default: Value::Null,
-            allowed_values: vec!["duck_duck_go", "searxng", "brave", "deepseek", "tencent_cloud_wsa", "bocha", "tavily", "keenable", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native", "command"],
+            allowed_values: vec!["duck_duck_go", "searxng", "brave", "google", "deepseek", "tencent_cloud_wsa", "bocha", "tavily", "keenable", "exa", "perplexity", "firecrawl", "open_ai_native", "anthropic_native", "gemini_native", "command"],
         },
         ConfigSchemaEntry {
             key: "web.providers.<name>.base_url",
@@ -961,6 +961,13 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             key: "web.providers.<name>.credential_profile",
             kind: "string",
             description: "Named credential profile to load the API key from. The profile must be of kind api_key.",
+            default: Value::Null,
+            allowed_values: vec![],
+        },
+        ConfigSchemaEntry {
+            key: "web.providers.<name>.engine_id",
+            kind: "string",
+            description: "Programmable Search engine id (`cx`) for kind=google; required for that kind and not supported by any other kind. The engine must be created at programmablesearchengine.google.com.",
             default: Value::Null,
             allowed_values: vec![],
         },
@@ -1595,6 +1602,15 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
                     .map(|v| Value::String(v.clone()))
                     .unwrap_or(Value::Null));
             }
+            if let Some(provider_name) = name.strip_suffix(".engine_id") {
+                return Ok(config
+                    .web
+                    .providers
+                    .get(provider_name)
+                    .and_then(|p| p.engine_id.as_ref())
+                    .map(|v| Value::String(v.clone()))
+                    .unwrap_or(Value::Null));
+            }
             if let Some(provider_name) = name.strip_suffix(".command.argv") {
                 return Ok(config
                     .web
@@ -2117,6 +2133,7 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
                 .or_insert_with(|| WebProviderConfigFile {
                     kind,
                     base_url: None,
+                    engine_id: None,
                     credential_profile: None,
                     model_route: None,
                     command: None,
@@ -2177,6 +2194,24 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             })?;
             let value = raw_value.trim();
             provider.credential_profile = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_string())
+            };
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".engine_id") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".engine_id").unwrap();
+            if name.is_empty() {
+                return Err(anyhow!(
+                    "web.providers.<name>.engine_id requires a non-empty provider name"
+                ));
+            }
+            let provider = config.web.providers.get_mut(name).ok_or_else(|| {
+                anyhow!("web provider {name} not found; set web.providers.{name}.kind first")
+            })?;
+            let value = raw_value.trim();
+            provider.engine_id = if value.is_empty() {
                 None
             } else {
                 Some(value.to_string())
@@ -2478,6 +2513,15 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
             let name = rest.strip_suffix(".credential_profile").unwrap();
             if let Some(provider) = config.web.providers.get_mut(name) {
                 provider.credential_profile = None;
+            } else {
+                return Err(anyhow!("web provider {name} not found"));
+            }
+        }
+        key if key.starts_with("web.providers.") && key.ends_with(".engine_id") => {
+            let rest = key.strip_prefix("web.providers.").unwrap();
+            let name = rest.strip_suffix(".engine_id").unwrap();
+            if let Some(provider) = config.web.providers.get_mut(name) {
+                provider.engine_id = None;
             } else {
                 return Err(anyhow!("web provider {name} not found"));
             }
@@ -2789,7 +2833,7 @@ pub(crate) fn unknown_config_key(key: &str) -> anyhow::Error {
         return startup_only_config_key_error(key);
     }
     if key.starts_with("web.providers.") {
-        return anyhow!("unknown web providers config key {key}; mutable fields: .kind, .base_url, .credential_profile, .model_route; .capabilities is derived read-only metadata; use web.providers.<name>.kind to create a provider first");
+        return anyhow!("unknown web providers config key {key}; mutable fields: .kind, .base_url, .credential_profile, .engine_id, .model_route; .capabilities is derived read-only metadata; use web.providers.<name>.kind to create a provider first");
     }
     let supported = config_schema()
         .into_iter()

@@ -20,6 +20,7 @@ fn provider_file(kind: WebProviderKind) -> WebProviderConfigFile {
     WebProviderConfigFile {
         kind,
         base_url: None,
+        engine_id: None,
         credential_profile: None,
         model_route: None,
         command: None,
@@ -36,6 +37,7 @@ fn materialize_resolves_api_key_from_credential_profile() {
         WebProviderConfigFile {
             kind: WebProviderKind::Brave,
             base_url: None,
+            engine_id: None,
             credential_profile: Some("brave_key".to_string()),
             model_route: None,
             command: None,
@@ -63,6 +65,7 @@ fn materialize_empty_api_key_without_credential_profile() {
         WebProviderConfigFile {
             kind: WebProviderKind::Tavily,
             base_url: None,
+            engine_id: None,
             credential_profile: None,
             model_route: None,
             command: None,
@@ -89,6 +92,7 @@ fn materialize_missing_credential_profile_yields_empty_key() {
         WebProviderConfigFile {
             kind: WebProviderKind::Brave,
             base_url: None,
+            engine_id: None,
             credential_profile: Some("missing_profile".to_string()),
             model_route: None,
             command: None,
@@ -116,6 +120,7 @@ fn materialize_non_api_key_credential_kind_yields_empty_key() {
         WebProviderConfigFile {
             kind: WebProviderKind::Brave,
             base_url: None,
+            engine_id: None,
             credential_profile: Some("session_token".to_string()),
             model_route: None,
             command: None,
@@ -163,6 +168,7 @@ fn native_search_provider_uses_normalized_provider_id() {
         WebProviderConfig {
             kind: WebProviderKind::OpenAiNative,
             base_url: None,
+            engine_id: None,
             api_key: String::new(),
             model_route: None,
             command: None,
@@ -219,6 +225,78 @@ fn materialize_rejects_command_limits_on_non_command_provider() {
         .to_string();
 
     assert!(error.contains("must not configure command limits"));
+}
+
+#[test]
+fn materialize_rejects_google_provider_without_engine_id() {
+    let mut file = crate::WebConfigFile::default();
+    file.providers
+        .insert("google".to_string(), provider_file(WebProviderKind::Google));
+
+    let error = materialize_web_config(&file, &CredentialStoreFile::default())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("kind=google requires engine_id"));
+}
+
+#[test]
+fn materialize_rejects_google_provider_with_blank_engine_id() {
+    let mut file = crate::WebConfigFile::default();
+    let mut provider = provider_file(WebProviderKind::Google);
+    provider.engine_id = Some("   ".to_string());
+    file.providers.insert("google".to_string(), provider);
+
+    let error = materialize_web_config(&file, &CredentialStoreFile::default())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("kind=google requires engine_id"));
+}
+
+#[test]
+fn materialize_rejects_engine_id_on_non_google_provider() {
+    let mut file = crate::WebConfigFile::default();
+    let mut provider = provider_file(WebProviderKind::Brave);
+    provider.engine_id = Some("engine-cx-123".to_string());
+    file.providers.insert("brave".to_string(), provider);
+
+    let error = materialize_web_config(&file, &CredentialStoreFile::default())
+        .unwrap_err()
+        .to_string();
+
+    assert!(error.contains("must not configure engine_id"));
+}
+
+#[test]
+fn materialize_carries_google_engine_id_and_api_key() {
+    let mut file = crate::WebConfigFile::default();
+    let mut provider = provider_file(WebProviderKind::Google);
+    provider.engine_id = Some("017576662512468239146:omuauf_lfve".to_string());
+    provider.credential_profile = Some("google_key".to_string());
+    file.providers.insert("google".to_string(), provider);
+    let store = credential_store_with("google_key", "test-api-key-123");
+
+    let config = materialize_web_config(&file, &store).unwrap();
+
+    let provider = config.providers.get("google").unwrap();
+    assert_eq!(provider.kind, WebProviderKind::Google);
+    assert_eq!(
+        provider.engine_id.as_deref(),
+        Some("017576662512468239146:omuauf_lfve")
+    );
+    assert_eq!(provider.api_key, "test-api-key-123");
+}
+
+#[test]
+fn google_capabilities_advertise_region_or_language_support() {
+    let capabilities = WebProviderKind::Google.capabilities();
+    assert_eq!(capabilities.auth, WebProviderAuthClass::ApiKey);
+    assert_eq!(capabilities.cost_class, WebProviderCostClass::Paid);
+    assert!(capabilities.supports_region_or_language);
+    assert!(!capabilities.supports_full_content);
+    assert!(!capabilities.supports_domain_filter);
+    assert_eq!(capabilities.status, WebProviderSupportStatus::Supported);
 }
 
 #[test]

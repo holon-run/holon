@@ -7389,6 +7389,7 @@ export interface components {
                     base_url?: string | null;
                     credential_configured: boolean;
                     credential_profile?: string | null;
+                    engine_id?: string | null;
                     id: string;
                     kind: string;
                 }[];
@@ -7587,6 +7588,7 @@ export interface components {
                     base_url?: string | null;
                     credential_configured: boolean;
                     credential_profile?: string | null;
+                    engine_id?: string | null;
                     id: string;
                     kind: string;
                 }[];

@@ -983,6 +983,10 @@ const zh: Record<string, any> = {
         label: "Brave Search",
         description: "通过 Brave Search API 提供通用网页搜索结果。",
       },
+      google: {
+        label: "Google 可编程搜索",
+        description: "通过 Custom Search JSON API 获取官方 Google 结果；需要引擎 ID（cx）。",
+      },
       tavily: {
         label: "Tavily",
         description: "面向智能体和 RAG 工作流优化的搜索 API。",
@@ -1039,6 +1043,7 @@ const zh: Record<string, any> = {
     allowModelNativeSearch: "可用时允许模型原生搜索",
     connectLiveSearchCreds: "连接到实时运行时并刷新此页面以编辑网络搜索提供商凭据。",
     credentialProfile: "凭据配置",
+    engineId: "引擎 ID（cx）",
     advancedCustomProvider: "高级自定义提供商",
     addCustomSearchProvider: "添加自定义搜索提供商",
     customSearchProviderHint: "仅用于自定义 ID、命令提供商或实验性提供商类型。",
