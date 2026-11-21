@@ -68,6 +68,8 @@ holon tui
 
 ## 安装
 
+Holon 通过预编译二进制和容器镜像分发。
+
 ```bash
 brew tap holon-run/tap
 brew install holon

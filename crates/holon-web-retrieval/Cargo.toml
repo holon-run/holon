@@ -5,6 +5,7 @@ edition = "2021"
 description = "Web search and bounded page retrieval for Holon"
 license = "Apache-2.0"
 repository = "https://github.com/holon-run/holon"
+publish = false
 
 [dependencies]
 anyhow = "1.0"
