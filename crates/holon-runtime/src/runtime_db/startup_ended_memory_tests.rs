@@ -451,6 +451,139 @@ fn exclusive_startup_attempt_preserves_canonical_ingress_without_accepting_forei
     Ok(())
 }
 
+impl Fixture {
+    /// Mirror offline `holon debug scheduler-recovery --apply`: interrupt the
+    /// admitted attempt at `interrupted_at`, optionally leaving the tool's
+    /// `scheduler_execution_recovered` audit evidence behind.
+    fn presettle_attempt_offline(&self, interrupted_at: DateTime<Utc>, audit: bool) -> Result<()> {
+        use crate::domain::execution_protocol::{ExecutionProtocolCommand, InterruptExecution};
+        use crate::runtime_db::transitions::execution_protocol_repository as protocol;
+        let attempt_id = format!("activation:message:{}", self.source.id);
+        self.db.transaction(|tx| {
+            let state = protocol::load_state_tx(tx, &self.source.agent_id)?;
+            let commands = [ExecutionProtocolCommand::Interrupt(InterruptExecution {
+                attempt_id: attempt_id.clone(),
+                outcome_id: format!("outcome:interrupted:{attempt_id}"),
+                reason: "runtime_interrupted".into(),
+                interrupted_at: interrupted_at.to_rfc3339(),
+            })];
+            let prepared = protocol::validate_execution_commands_tx(
+                tx,
+                &self.source.agent_id,
+                Some(&state),
+                &commands,
+                &[],
+                &[],
+                &[],
+            )?;
+            protocol::persist_execution_commands_with_touched_facts_tx(tx, prepared)?;
+            // The offline tool also aborts the still-dequeued queue claim of the
+            // interrupted dispatch (observed apply end state: status=aborted).
+            tx.execute(
+                "UPDATE queue_entries SET status='aborted', \
+                 payload_json=json_set(payload_json,'$.status','aborted') \
+                 WHERE message_id=?1",
+                [&self.source.id],
+            )?;
+            if audit {
+                let mut event = AuditEvent::legacy(
+                    "scheduler_execution_recovered",
+                    serde_json::json!({
+                        "agent_id": self.source.agent_id,
+                        "message_id": self.source.id,
+                        "activation_id": attempt_id,
+                        "work_item_id": serde_json::Value::Null,
+                        "reason": "execution_interruption",
+                    }),
+                );
+                event.created_at = interrupted_at + chrono::Duration::seconds(1);
+                crate::runtime_db::evidence::append_audit_event_tx(
+                    tx,
+                    Some(&self.source.agent_id),
+                    &event,
+                )?;
+            }
+            Ok(())
+        })?;
+        Ok(())
+    }
+}
+
+#[test]
+fn offline_presettled_attempt_with_scheduler_audit_authorizes_startup_interruption() -> Result<()> {
+    let f = Fixture::with_source_turn_at(false, None, Utc::now() - chrono::Duration::hours(1))?;
+    f.admit_original_command()?;
+    f.presettle_attempt_offline(Utc::now() - chrono::Duration::minutes(30), true)?;
+    let lease_path = f.home.path().join("maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lease_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let handoff_guard = handoff.try_lock().unwrap();
+    let capability = ExclusiveStartupInputRecovery::for_pre_activation_host(
+        &f.db,
+        &lease,
+        &lease_path,
+        &handoff_guard,
+    )?;
+    let scopes =
+        f.db.startup_input_recovery_scopes(&[f.source.agent_id.clone()])?;
+    f.db.recover_interrupted_runtime_state_at_startup_in_scopes(&scopes, &capability)?;
+    let session = StartupEndedMemorySession::new(&f.db, &capability)?;
+    let authorized =
+        f.db.transaction(|tx| session.authorize_interrupted_tx(tx, &f.binding).map(|_| ()));
+    assert!(authorized.is_ok(), "{authorized:?}");
+    Ok(())
+}
+
+#[test]
+fn offline_presettled_attempt_without_scheduler_audit_is_rejected() -> Result<()> {
+    let f = Fixture::with_source_turn_at(false, None, Utc::now() - chrono::Duration::hours(1))?;
+    f.admit_original_command()?;
+    f.presettle_attempt_offline(Utc::now() - chrono::Duration::minutes(30), false)?;
+    let lease_path = f.home.path().join("maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lease_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let handoff_guard = handoff.try_lock().unwrap();
+    let capability = ExclusiveStartupInputRecovery::for_pre_activation_host(
+        &f.db,
+        &lease,
+        &lease_path,
+        &handoff_guard,
+    )?;
+    let scopes =
+        f.db.startup_input_recovery_scopes(&[f.source.agent_id.clone()])?;
+    f.db.recover_interrupted_runtime_state_at_startup_in_scopes(&scopes, &capability)?;
+    let session = StartupEndedMemorySession::new(&f.db, &capability)?;
+    let authorized =
+        f.db.transaction(|tx| session.authorize_interrupted_tx(tx, &f.binding).map(|_| ()));
+    assert!(authorized.is_err());
+    Ok(())
+}
+
+#[test]
+fn attempt_presettled_after_turn_interruption_is_rejected() -> Result<()> {
+    let f = Fixture::new()?;
+    f.admit_original_command()?;
+    f.presettle_attempt_offline(Utc::now() + chrono::Duration::hours(1), true)?;
+    let lease_path = f.home.path().join("maintenance.lock");
+    let lease = RuntimeDbLock::try_lock(&lease_path)?;
+    let handoff = tokio::sync::Mutex::new(());
+    let handoff_guard = handoff.try_lock().unwrap();
+    let capability = ExclusiveStartupInputRecovery::for_pre_activation_host(
+        &f.db,
+        &lease,
+        &lease_path,
+        &handoff_guard,
+    )?;
+    let scopes =
+        f.db.startup_input_recovery_scopes(&[f.source.agent_id.clone()])?;
+    f.db.recover_interrupted_runtime_state_at_startup_in_scopes(&scopes, &capability)?;
+    let session = StartupEndedMemorySession::new(&f.db, &capability)?;
+    let authorized =
+        f.db.transaction(|tx| session.authorize_interrupted_tx(tx, &f.binding).map(|_| ()));
+    assert!(authorized.is_err());
+    Ok(())
+}
+
 #[test]
 fn exclusive_startup_event_time_preserves_future_turn_timestamp_and_authority() -> Result<()> {
     let at = Utc::now() + chrono::Duration::hours(1);

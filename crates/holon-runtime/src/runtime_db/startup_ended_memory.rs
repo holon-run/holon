@@ -359,7 +359,7 @@ struct InterruptedAddress {
 }
 #[derive(Debug, Serialize, PartialEq, Eq)]
 struct InterruptedAttemptAddress {
-    startup_audit_digest: String,
+    recovery_audit_digest: String,
     attempt_id: String,
     outcome_id: String,
     attempt_digest: String,
@@ -380,7 +380,7 @@ fn startup_interruption_proof_material_tx(
         "SELECT length(CAST(payload_json AS BLOB))+length(CAST(message_id AS BLOB)) size FROM queue_entries WHERE message_id=?2",
         "SELECT length(CAST(payload_json AS BLOB))+length(CAST(turn_id AS BLOB)) size FROM turn_records WHERE turn_id=?3",
         "SELECT length(CAST(payload_json AS BLOB))+length(CAST(agent_id AS BLOB))+length(CAST(status AS BLOB)) size FROM agent_identities WHERE agent_id=?1",
-        "SELECT length(CAST(data_json AS BLOB))+length(CAST(audit_event_id AS BLOB))+length(CAST(agent_id AS BLOB))+length(CAST(kind AS BLOB))+length(CAST(created_at AS BLOB))+16 size FROM audit_events WHERE audit_event_id='audit:startup-interrupted-turn:'||?3 OR audit_event_id IN (SELECT 'audit:startup-interrupted-attempt:'||?1||':'||attempt_id FROM attempts)",
+        "SELECT length(CAST(data_json AS BLOB))+length(CAST(audit_event_id AS BLOB))+length(CAST(agent_id AS BLOB))+length(CAST(kind AS BLOB))+length(CAST(created_at AS BLOB))+16 size FROM audit_events WHERE audit_event_id='audit:startup-interrupted-turn:'||?3 OR audit_event_id IN (SELECT 'audit:startup-interrupted-attempt:'||?1||':'||attempt_id FROM attempts) OR (kind='scheduler_execution_recovered' AND json_extract(data_json,'$.data.activation_id') IN (SELECT attempt_id FROM attempts))",
         "SELECT length(CAST(payload_json AS BLOB))+length(CAST(attempt_id AS BLOB))+length(CAST(source_identity_json AS BLOB))+COALESCE(length(CAST(terminal_outcome_id AS BLOB)),0)+length(CAST(lifecycle_state AS BLOB))+16 size FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id IN (SELECT attempt_id FROM attempts)",
         "SELECT length(CAST(payload_json AS BLOB))+length(CAST(outcome_id AS BLOB))+length(CAST(attempt_id AS BLOB)) size FROM execution_protocol_outcomes WHERE agent_id=?1 AND outcome_id IN (SELECT terminal_outcome_id FROM attempts)",
     ] {
@@ -573,6 +573,17 @@ fn read_startup_interruption_tx(
     for (id, _) in ids {
         let (normalized_state,identity,generation,outcome_id,payload): (String,String,u64,Option<String>,String) = tx.query_row("SELECT lifecycle_state,source_identity_json,source_generation,terminal_outcome_id,payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2", params![key.agent_id,id],|r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?,r.get(4)?)))?;
         let attempt: ExecutionAttempt = serde_json::from_str(&payload)?;
+        let terminal_at = attempt
+            .terminal_at
+            .as_deref()
+            .context("startup attempt has no terminal time")?
+            .parse::<DateTime<Utc>>()?;
+        // Offline `holon debug scheduler-recovery --apply` settles open attempts
+        // before startup interrupts their still-active turn; the retired-scheduler
+        // migration requires exactly that offline fixed point. Both writers are
+        // canonical for the same dispatch, so an attempt finalized strictly
+        // before the turn interruption is accepted with its own audit evidence.
+        let offline_presettled = terminal_at < at;
         ensure!(
             attempt.agent_id == key.agent_id
                 && attempt.attempt_id == id
@@ -593,12 +604,7 @@ fn read_startup_interruption_tx(
                     .as_deref()
                     .is_none_or(|id| id == key.actual_dispatch_turn_id
                         || original.source_ingress_turn_id.as_deref() == Some(id))
-                && attempt
-                    .terminal_at
-                    .as_deref()
-                    .context("startup attempt has no terminal time")?
-                    .parse::<DateTime<Utc>>()?
-                    == at
+                && terminal_at <= at
                 && attempt.terminal_outcome_id == outcome_id,
             "startup attempt is not the original recovered dispatch"
         );
@@ -611,42 +617,72 @@ fn read_startup_interruption_tx(
             outcome_attempt == id
                 && outcome.attempt_id == id
                 && outcome.outcome_id == outcome_id
-                && outcome.created_at.parse::<DateTime<Utc>>()? == at
+                && outcome.created_at.parse::<DateTime<Utc>>()?
+                    == if offline_presettled { terminal_at } else { at }
                 && interrupted_outcome_matches(&attempt, &outcome),
             "startup recovered outcome disagrees"
         );
-        let recovery_audit_id =
-            format!("audit:startup-interrupted-attempt:{}:{}", key.agent_id, id);
-        let (audit_agent, audit_kind, audit_at, _audit_size): (String,String,String,usize) = tx.query_row(
-            "SELECT agent_id,kind,created_at,length(CAST(data_json AS BLOB)) FROM audit_events WHERE audit_event_id=?1",
-            [&recovery_audit_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
+        let recovery_audit_digest = if offline_presettled {
+            let offline_audit: Option<(String, String)> = tx
+                .query_row(
+                    "SELECT agent_id,data_json FROM audit_events WHERE kind='scheduler_execution_recovered' AND json_extract(data_json,'$.data.activation_id')=?1 ORDER BY audit_event_id LIMIT 1",
+                    [&id],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .optional()?;
+            let (audit_agent, audit_payload) = offline_audit
+                .context("offline recovered attempt lacks scheduler recovery audit")?;
+            let recovery_audit: AuditEvent = serde_json::from_str(&audit_payload)?;
+            ensure!(
+                audit_agent == key.agent_id
+                    && recovery_audit.kind == "scheduler_execution_recovered"
+                    && recovery_audit.data.get("agent_id").and_then(|x| x.as_str())
+                        == Some(key.agent_id.as_str())
+                    && recovery_audit
+                        .data
+                        .get("activation_id")
+                        .and_then(|x| x.as_str())
+                        == Some(id.as_str())
+                    && recovery_audit.created_at >= terminal_at
+                    && recovery_audit.created_at <= at,
+                "offline recovered attempt has a foreign scheduler recovery audit"
+            );
+            canonical_command_digest(&recovery_audit)?
+        } else {
+            let recovery_audit_id =
+                format!("audit:startup-interrupted-attempt:{}:{}", key.agent_id, id);
+            let (audit_agent, audit_kind, audit_at, _audit_size): (String,String,String,usize) = tx.query_row(
+                "SELECT agent_id,kind,created_at,length(CAST(data_json AS BLOB)) FROM audit_events WHERE audit_event_id=?1",
+                [&recovery_audit_id], |r|Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?)))?;
 
-        let audit_payload: String = tx.query_row(
-            "SELECT data_json FROM audit_events WHERE audit_event_id=?1",
-            [&recovery_audit_id],
-            |r| r.get(0),
-        )?;
-        let recovery_audit: AuditEvent = serde_json::from_str(&audit_payload)?;
-        ensure!(
-            audit_agent == key.agent_id
-                && audit_kind == "startup_interrupted_execution_attempt_recovered"
-                && recovery_audit.id == recovery_audit_id
-                && recovery_audit.kind == audit_kind
-                && recovery_audit.created_at == at
-                && audit_at == crate::runtime_db::repositories::timestamp(at)
-                && recovery_audit.data.get("agent_id").and_then(|x| x.as_str())
-                    == Some(key.agent_id.as_str())
-                && recovery_audit
-                    .data
-                    .get("attempt_id")
-                    .and_then(|x| x.as_str())
-                    == Some(id.as_str())
-                && recovery_audit.data.get("reason").and_then(|x| x.as_str())
-                    == Some("startup_recovery/daemon_restart"),
-            "original attempt lacks canonical startup recovery audit"
-        );
+            let audit_payload: String = tx.query_row(
+                "SELECT data_json FROM audit_events WHERE audit_event_id=?1",
+                [&recovery_audit_id],
+                |r| r.get(0),
+            )?;
+            let recovery_audit: AuditEvent = serde_json::from_str(&audit_payload)?;
+            ensure!(
+                audit_agent == key.agent_id
+                    && audit_kind == "startup_interrupted_execution_attempt_recovered"
+                    && recovery_audit.id == recovery_audit_id
+                    && recovery_audit.kind == audit_kind
+                    && recovery_audit.created_at == at
+                    && audit_at == crate::runtime_db::repositories::timestamp(at)
+                    && recovery_audit.data.get("agent_id").and_then(|x| x.as_str())
+                        == Some(key.agent_id.as_str())
+                    && recovery_audit
+                        .data
+                        .get("attempt_id")
+                        .and_then(|x| x.as_str())
+                        == Some(id.as_str())
+                    && recovery_audit.data.get("reason").and_then(|x| x.as_str())
+                        == Some("startup_recovery/daemon_restart"),
+                "original attempt lacks canonical startup recovery audit"
+            );
+            canonical_command_digest(&recovery_audit)?
+        };
         attempts.push(InterruptedAttemptAddress {
-            startup_audit_digest: canonical_command_digest(&recovery_audit)?,
+            recovery_audit_digest,
             attempt_id: id,
             outcome_id,
             attempt_digest: canonical_command_digest(&attempt)?,
