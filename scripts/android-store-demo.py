@@ -120,6 +120,10 @@ def seed_demo_files(home):
 class DemoProvider(BaseHTTPRequestHandler):
     """A loopback-only Responses transport serving disclosed, scripted text."""
 
+    completed = 0
+    in_flight = 0
+    lock = threading.Lock()
+
     def log_message(self, *_args):
         pass
 
@@ -133,6 +137,16 @@ class DemoProvider(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_POST(self):
+        with DemoProvider.lock:
+            DemoProvider.in_flight += 1
+        try:
+            self._do_post()
+        finally:
+            with DemoProvider.lock:
+                DemoProvider.in_flight -= 1
+                DemoProvider.completed += 1
+
+    def _do_post(self):
         print(f"Scripted provider request: {self.path}", flush=True)
         if self.path != "/v1/responses":
             self.send_error(404)
@@ -236,7 +250,10 @@ def main():
                 headers={"Authorization": f"Bearer {token}",
                          "Content-Type": "application/json"},
             )
-            with urlopen(request, timeout=10) as response:
+            # Synchronous control prompts run whole agent turns, including
+            # tool execution and follow-up provider calls; recent daemons can
+            # legitimately exceed 10s before the HTTP response returns.
+            with urlopen(request, timeout=60) as response:
                 return json.load(response)
 
         try:
@@ -252,7 +269,24 @@ def main():
                         raise RuntimeError("demo daemon did not become ready")
                     stopped.wait(0.25)
             for agent_id, name, prompt, _result in SCENARIOS:
+                with DemoProvider.lock:
+                    before = DemoProvider.completed
                 api(f"/control/agents/{agent_id}/create", {"name": name})
+                # Creation schedules a background bootstrap turn. Prompting
+                # while it is still in flight wedges the synchronous control
+                # prompt on current daemons, so wait for the bootstrap turn's
+                # provider call to finish and the provider to stay quiet.
+                quiet_streak = 0
+                deadline = time.monotonic() + 30
+                while quiet_streak < 2:
+                    with DemoProvider.lock:
+                        quiet = (DemoProvider.completed > before
+                                 and DemoProvider.in_flight == 0)
+                    quiet_streak = quiet_streak + 1 if quiet else 0
+                    if time.monotonic() > deadline:
+                        raise RuntimeError(
+                            f"bootstrap for {agent_id} did not settle")
+                    stopped.wait(0.25)
                 api(f"/control/agents/{agent_id}/prompt", {"text": prompt})
             seed_demo_files(args.home)
             print(f"Demo ready: http://127.0.0.1:{args.port}/api", flush=True)

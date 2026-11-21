@@ -115,6 +115,8 @@ internal object UiCopy {
         更新|Update
         通过 Google Play 检查新版本。|Check Google Play for updates.
         可从 GitHub Release 检查新版本。|Check GitHub Releases for updates.
+        检查更新|Check for updates
+        检查中…|Checking…
         Google Play 有可用更新。|An update is available on Google Play.
         Google Play 暂无可用更新。|No update is currently available to you on Google Play.
         打开 Google Play|Open Google Play

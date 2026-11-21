@@ -141,6 +141,7 @@ internal fun workItemStatusLabel(item: HolonWorkItemSnapshot): String =
         item.state == "completed" -> ui("已完成")
         item.readiness == "ready" -> ui("可继续")
         item.schedulingState == "waiting" -> ui("等待中")
+        item.readiness == "waiting_for_operator" || item.schedulingState == "waiting_operator" -> ui("需要回应")
         else -> item.readiness ?: item.state
     }
 

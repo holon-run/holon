@@ -7,7 +7,7 @@ UI matches these captures before submitting them.
 ## Files and provenance
 
 - `en-US/screenshots/`: eight original, unretouched `adb exec-out screencap -p`
-  captures, 1080 × 1920 PNG, taken on October 7, 2026.
+  captures, 1080 × 1920 PNG, taken on November 21, 2026.
 - `en-US/graphics/icon.png`: 512 × 512 PNG, derived from the Android adaptive
   launcher paths and colors. Editable source: `icon.svg` in the same directory.
 - `en-US/graphics/feature-graphic.png`: 1024 × 500 PNG. Editable source:
@@ -17,20 +17,20 @@ UI matches these captures before submitting them.
 
 The capture device is a dedicated Android 14 (API 34) Google APIs arm64
 emulator, with a 1080 × 1920 display and density 360. The client is a debug
-development build of version 0.48.0, including the privacy entry in this change.
-It is **not** a capture of the already-published Play build. UI, agent names and
-messages are English. Light/dark themes are Android's actual system themes.
+development build of version 0.60.0, including the agent avatars and the
+required per-agent status icons. It is **not** a capture of the
+already-published Play build. UI, agent names and messages are English.
+Light/dark themes are Android's actual system themes.
 
-The backend is a real Holon 0.48.0 daemon in an independent home, bound only to
+The backend is a real Holon 0.59.0 daemon in an independent home, bound only to
 loopback. Four named demo agents and their operator messages/result briefs are
 persisted through the normal runtime APIs. A local, scripted Responses provider
 supplies disclosed demonstration drafts: **no real model inference, production
 work, cloud uploads or personal conversations are represented.** Each agent
-name/content identifies the demonstration. A fifth default `demo-studio` agent
-welcomes users to the capture environment.
+name/content identifies the demonstration.
 
-The WorkItem and file-browser captures were added in a second isolated run.
-The scripted provider calls the real `CreateWorkItem` tool to persist the
+The WorkItem and file-browser captures come from the same capture run. The
+scripted provider calls the real `CreateWorkItem` tool to persist the
 sample objective, checklist and plan; `needs_input` prevents an actual release
 from running. The four sample files in `AgentHome / work / store-demo` are
 written by the capture script and read through the normal authorized file API.
@@ -43,7 +43,7 @@ was used for presentation; in-app times remain the actual capture times.
 ## Gallery
 
 ### Agent roster — light
-![Five demo agents with real persisted result previews](en-US/screenshots/01-agents.png)
+![Four demo agents with avatars, status icons and real persisted result previews](en-US/screenshots/01-agents.png)
 
 ### Internal-test checklist
 ![Release Manager demonstration conversation](en-US/screenshots/02-release-conversation.png)
