@@ -47,6 +47,11 @@ pub struct XSearchDiagnostics {
     pub provider_request_id: Option<String>,
     pub latency_ms: u64,
     pub hosted_item_types: BTreeMap<String, usize>,
+    /// Set to `Some(true)` only when the model replied without calling the
+    /// search tool and without citations, so callers can distinguish a
+    /// no-result search from a chat-style non-answer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search_not_triggered: Option<bool>,
 }
 
 pub async fn search(
@@ -94,6 +99,7 @@ pub async fn search(
     }
 
     let (text, citations, hosted_item_types) = parse_response(&response_body)?;
+    let search_triggered = search_was_triggered(&citations, &hosted_item_types);
     Ok(XSearchResponse {
         summary_text: format!(
             "xAI X search returned {} citation{}",
@@ -109,6 +115,7 @@ pub async fn search(
             provider_request_id,
             latency_ms: duration_millis(started.elapsed()),
             hosted_item_types,
+            search_not_triggered: (!search_triggered).then_some(true),
         },
     })
 }
@@ -129,6 +136,11 @@ async fn send_request(
         .context("x_search request failed")
 }
 
+/// Search-intent wrapper applied to every XSearch query. Without it,
+/// keyword-style inputs degrade into chat replies that never call the hosted
+/// search tool.
+const SEARCH_INTENT_INSTRUCTIONS: &str = "You are an X public-post search service. The user message is a search request: keywords, an account name, or a natural-language question. For every request, first call the x_search tool with a faithful search expression derived from the request (do not ask clarifying questions), then answer using only what the search returned, citing the posts you use. If the search returns no usable results, say so plainly.";
+
 pub(crate) fn build_request_body(request: &XSearchRequest, model: &str) -> Value {
     let mut tool = json!({ "type": "x_search" });
     if !request.allowed_x_handles.is_empty() {
@@ -145,11 +157,25 @@ pub(crate) fn build_request_body(request: &XSearchRequest, model: &str) -> Value
     }
     json!({
         "model": model,
+        "instructions": SEARCH_INTENT_INSTRUCTIONS,
         "input": request.query,
         "tools": [tool],
         "tool_choice": "auto",
         "store": false,
     })
+}
+
+/// Any hosted item other than `reasoning` (for example `custom_tool_call`,
+/// `x_search_call`, or `x_keyword_search`) is evidence that the backend ran a
+/// tool before answering; citations are evidence on their own.
+fn search_was_triggered(
+    citations: &[XSearchCitation],
+    hosted_item_types: &BTreeMap<String, usize>,
+) -> bool {
+    !citations.is_empty()
+        || hosted_item_types
+            .keys()
+            .any(|item_type| item_type != "reasoning")
 }
 
 pub(crate) fn parse_response(
@@ -288,10 +314,72 @@ mod tests {
         assert_eq!(body["model"], "grok-4.3");
         assert_eq!(body["input"], "Holon updates");
         assert_eq!(body["store"], false);
+        let instructions = body["instructions"].as_str().unwrap();
+        assert!(instructions.contains("x_search"));
         assert_eq!(body["tools"][0]["type"], "x_search");
         assert_eq!(body["tools"][0]["allowed_x_handles"][0], "holon_run");
         assert_eq!(body["tools"][0]["from_date"], "2026-07-01");
         assert_eq!(body["tools"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn request_wraps_keyword_queries_with_search_intent_instructions() {
+        let body = build_request_body(
+            &XSearchRequest {
+                query: "Holon AI assistant".into(),
+                allowed_x_handles: Vec::new(),
+                excluded_x_handles: Vec::new(),
+                from_date: None,
+                to_date: None,
+            },
+            "grok-4.3",
+        );
+
+        assert_eq!(body["input"], "Holon AI assistant");
+        let instructions = body["instructions"].as_str().unwrap();
+        assert!(instructions.contains("x_search"));
+        assert!(instructions.to_lowercase().contains("for every request"));
+    }
+
+    #[test]
+    fn search_trigger_detection_ignores_reasoning_only_items() {
+        let citation = XSearchCitation {
+            url: "https://x.com/a/status/1".into(),
+            title: None,
+            start_index: None,
+            end_index: None,
+        };
+        assert!(search_was_triggered(&[citation], &BTreeMap::new()));
+
+        let reasoning_only = BTreeMap::from([("reasoning".to_string(), 1)]);
+        assert!(!search_was_triggered(&[], &reasoning_only));
+
+        let with_tool_call = BTreeMap::from([
+            ("reasoning".to_string(), 1),
+            ("custom_tool_call".to_string(), 1),
+        ]);
+        assert!(search_was_triggered(&[], &with_tool_call));
+    }
+
+    #[test]
+    fn diagnostics_flag_serializes_only_when_search_did_not_run() {
+        let triggered = serde_json::to_value(XSearchDiagnostics {
+            provider_request_id: None,
+            latency_ms: 10,
+            hosted_item_types: BTreeMap::from([("custom_tool_call".to_string(), 1)]),
+            search_not_triggered: None,
+        })
+        .unwrap();
+        assert!(triggered.get("search_not_triggered").is_none());
+
+        let not_triggered = serde_json::to_value(XSearchDiagnostics {
+            provider_request_id: None,
+            latency_ms: 10,
+            hosted_item_types: BTreeMap::from([("reasoning".to_string(), 1)]),
+            search_not_triggered: Some(true),
+        })
+        .unwrap();
+        assert_eq!(not_triggered["search_not_triggered"], json!(true));
     }
 
     #[test]

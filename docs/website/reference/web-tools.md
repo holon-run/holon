@@ -224,6 +224,10 @@ main conversation model — and returns durable text with citations.
 Use XSearch for X-specific content, accounts, or discussions. Use `WebSearch`
 for the general web.
 
+The `query` may be keywords or a natural-language question. Holon wraps every
+query with a search-intent instruction so keyword-style queries also run a real
+search instead of degrading into a chat reply.
+
 ### Parameters
 
 | Parameter | Required | Description |
@@ -243,7 +247,7 @@ for the general web.
 | `provider` | Always `xai` |
 | `backend` | Always `x_search` |
 | `model` | xAI model used for the search |
-| `diagnostics` | Provider request ID, latency, and hosted item type counts |
+| `diagnostics` | Provider request ID, latency, and hosted item type counts; includes `search_not_triggered: true` when the model replied without calling the search tool |
 
 ### Prerequisites
 
