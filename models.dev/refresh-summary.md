@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 645; unknown context: 241; unknown output ceiling: 265.
+Routes: 642; unknown context: 239; unknown output ceiling: 263.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |
@@ -196,7 +196,6 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@messages/deepseek-v4-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/deepseek-v4.1-flash` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/gemini-4-argon` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
-| `opencode-go@messages/glm-5.2` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/glm-5.3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/glm-5.3-flash` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@messages/gpt-5.6-luna` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
@@ -226,7 +225,6 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 | `opencode-go@responses/deepseek-v4-pro` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/deepseek-v4.1-flash` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/gemini-4-argon` | Unknown | Unknown | Official OpenCode Go text eligibility includes translated Chat, Messages and Responses. Translation does not certify capacities, vision, reasoning controls, explicit cache controls or parallel tools. |
-| `opencode-go@responses/glm-5.2` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/glm-5.3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/glm-5.3-flash` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
 | `opencode-go@responses/hy3` | Unknown | Unknown | Exact native API fields reviewed against the official Go listing. Translated routes retain unknown capacity and conservative controls; native metadata is not inherited across protocols. Existing output defaults and local execution policy are preserved. |
@@ -428,8 +426,8 @@ Runtime output policy is not output capacity. Existing builtin fields are not au
 - `deepseek@responses`: 3 checked-in routes; not proof of live subscription support.
 - `minimax-cn@m-plan`: 2 checked-in routes; not proof of live subscription support.
 - `minimax@m-plan`: 2 checked-in routes; not proof of live subscription support.
-- `opencode-go@messages`: 38 checked-in routes; not proof of live subscription support.
-- `opencode-go@responses`: 34 checked-in routes; not proof of live subscription support.
+- `opencode-go@messages`: 37 checked-in routes; not proof of live subscription support.
+- `opencode-go@responses`: 33 checked-in routes; not proof of live subscription support.
 - `stepfun@plan`: 5 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@messages`: 36 checked-in routes; not proof of live subscription support.
 - `tencent-tokenhub@responses`: 28 checked-in routes; not proof of live subscription support.

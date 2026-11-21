@@ -9,6 +9,60 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-22 incremental review
+
+The November 22 Beijing cycle uses main `c6e91ec84b` and the models.dev
+payload sampled November 21 at 20:32 UTC (6,791,490 bytes, SHA256
+`14061cdeb6e453b851411c23deb135cd5f4a7b4892687c360ac09cfe61a241b9`).
+Upstream rolled a `family` value across most model entries; after filtering
+that metadata wave, the residual changes within the twenty-three mapped
+providers are openrouter additions
+(`thinkingmachines/inkling-2-mini`, `radixark/daisyrose-27b`), removals
+(`dots-studio/dots-3-note-preview:free`, `meituan/longcat-2.0`,
+`tencent/hy3-preview`), roughly eighteen openrouter billing/limit edits,
+and Venice Gemini-family `reasoning_effort_options` expansions — every one
+on unreviewed entries. Outside the provider mapping, the raw upstream
+projection also picked up model-set churn with no Holon catalog impact:
+keln −`moonshotai/kimi-k3`; kilo +2/−3 mirroring the openrouter listings;
+llmgateway and llmgateway-providers +`pixtral-large-2502`; nano-gpt
++`google/gemini-4-neon` −2; prime −4 (kimi/qwen listings); vivgrid +3
+Gemini ids.
+
+OpenCode Go's `glm-5.2` is retired this cycle. The public [model
+listing](https://opencode.ai/inference/go/v1/models) has omitted it for
+three consecutive days while staying at 31 models whose only glm ids are
+`glm-5.3` and `glm-5.3-flash` (November 19/20/21 samples), the [model
+detail probe](https://opencode.ai/inference/go/v1/models/glm-5.2) returned
+404 on both probe days, and the [console data-retention
+table](https://opencode.ai/docs/console/go/) deleted its only remaining
+`GLM-5.2` row today after still listing it yesterday. With every official
+OpenCode Go surface now excluding the id and no changelog or interim
+notice explaining a temporary removal,
+`opencode-go@{default,messages,responses}/glm-5.2` are removed while
+`glm-5.3` and `glm-5.3-flash` stay. The removal is endpoint-specific:
+`zai`, `bigmodel`, `dashscope`, `volcengine`, and `qianfan` keep their own
+independently reviewed `glm-5.2` routes, and NVIDIA's still-live z-ai
+`glm-5.2` reference page keeps `nvidia@default/z-ai/glm-5.2`.
+
+Qianfan's 2026-11-23 retirement batch is OCR/image models only and does
+not intersect the catalog; the four registered FU boundaries (kimi-k3
+full stop November 25, `DeepSeek-V4-Flash-0731` December 4, TokenHub
+`hy4-preview` December 7, `deepseek-v4-flash` parameter values December
+10) are byte-identical. Moonshot's dual-site K2 end-of-December window,
+the Kimi Code documented default-effort conflict, MiniMax's retired-model
+tables, and the M Plan compatibility names are unchanged. Fireworks'
+serverless pricing page dropped the already-retired GPT OSS 120B row and
+added Kimi K3.1 Pro (US) pricing for the already-routed
+`accounts/fireworks/models/kimi-k3p1-pro`; the four router billing edits
+stay under `accounts/fireworks/routers/*` and touch none of the nine
+built-in `models/*` ids. Volcengine's `llms.txt` dropped its model-list
+navigation section while `models.json` stays reachable — a discovery-layer
+edit with no route effect. Parent-side fixed sources show DashScope
+`qwen4-max` gaining Virginia-region deployment/pricing/rate rows and two
+OpenAI model pages adding Google Cloud (private preview) distribution
+notes — documentation-level only — and the Codex models catalog is
+byte-identical (`d50b6749…`).
+
 ## 2026-11-21 incremental review
 
 The November 21 Beijing cycle uses main `3413f4d8d` and the models.dev

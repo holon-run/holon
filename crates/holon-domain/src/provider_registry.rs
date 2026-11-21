@@ -533,7 +533,6 @@ pub const OPENCODE_GO_TEXT_MODELS: &[(&str, &str)] = &[
     ("gemini-4-argon", "default"),
     ("glm-5.3-flash", "default"),
     ("glm-5.3", "default"),
-    ("glm-5.2", "default"),
     ("kimi-k3.1-pro", "default"),
     ("kimi-k3", "default"),
     ("kimi-k2.7-code", "default"),

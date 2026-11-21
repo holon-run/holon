@@ -3938,31 +3938,6 @@
       "source": "conservative_builtin"
     },
     {
-      "model_ref": "opencode-go/glm-5.2",
-      "display_name": "GLM-5.2",
-      "description": "Holon conservative built-in metadata for the OpenCode Go glm-5.2 route.",
-      "context_window_tokens": 1000000,
-      "effective_context_window_percent": 95,
-      "auto_compact_token_limit": null,
-      "default_max_output_tokens": 131072,
-      "max_output_tokens_upper_limit": 131072,
-      "default_verbosity": null,
-      "tool_output_truncation_estimated_tokens": 2500,
-      "capabilities": {
-        "agent_turn": true,
-        "parallel_tool_calls": false,
-        "image_input": false,
-        "image_generation": false,
-        "supports_reasoning": true,
-        "interactive_exec": false
-      },
-      "reasoning_effort_options": [
-        "high",
-        "max"
-      ],
-      "source": "conservative_builtin"
-    },
-    {
       "model_ref": "opencode-go/glm-5.3",
       "display_name": "GLM-5.3",
       "description": "OpenCode Go glm-5.3 route from the official endpoint table. Advisory capabilities and token limits from models.dev's opencode-go entry; not independently verified service hard limits.",
@@ -10416,16 +10391,6 @@
       }
     },
     {
-      "route_ref": "opencode-go@default/glm-5.2",
-      "policy": {
-        "display_name": null,
-        "description": null,
-        "effective_context_window_percent": null,
-        "capabilities": {},
-        "reasoning_effort_options": null
-      }
-    },
-    {
       "route_ref": "opencode-go@default/glm-5.3",
       "policy": {
         "display_name": null,
@@ -10980,30 +10945,6 @@
     },
     {
       "route_ref": "opencode-go@messages/gemini-4-argon",
-      "policy": {
-        "cache_capabilities": {
-          "cache_control": false
-        },
-        "display_name": null,
-        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
-        "context_window_tokens": null,
-        "effective_context_window_percent": null,
-        "auto_compact_token_limit": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "default_verbosity": null,
-        "capabilities": {
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "reasoning_effort_options": []
-      }
-    },
-    {
-      "route_ref": "opencode-go@messages/glm-5.2",
       "policy": {
         "cache_capabilities": {
           "cache_control": false
@@ -11769,30 +11710,6 @@
     },
     {
       "route_ref": "opencode-go@responses/gemini-4-argon",
-      "policy": {
-        "cache_capabilities": {
-          "cache_control": false
-        },
-        "display_name": null,
-        "description": "OpenCode Go translated text route; capacity, vision, reasoning controls, and explicit cache support are unconfirmed.",
-        "context_window_tokens": null,
-        "effective_context_window_percent": null,
-        "auto_compact_token_limit": null,
-        "default_max_output_tokens": null,
-        "max_output_tokens_upper_limit": null,
-        "default_verbosity": null,
-        "capabilities": {
-          "parallel_tool_calls": false,
-          "image_input": false,
-          "image_generation": false,
-          "supports_reasoning": false,
-          "interactive_exec": false
-        },
-        "reasoning_effort_options": []
-      }
-    },
-    {
-      "route_ref": "opencode-go@responses/glm-5.2",
       "policy": {
         "cache_capabilities": {
           "cache_control": false
@@ -16714,10 +16631,6 @@
     {
       "model_ref": "opencode-go/glm-5.1",
       "route_ref": "opencode-go@default/glm-5.1"
-    },
-    {
-      "model_ref": "opencode-go/glm-5.2",
-      "route_ref": "opencode-go@default/glm-5.2"
     },
     {
       "model_ref": "opencode-go/glm-5.3",

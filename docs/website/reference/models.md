@@ -7,7 +7,7 @@ generated: auto-generated from holon source — do not edit directly
 # Supported Models
 
 Holon includes built-in configuration for **37 provider accounts**
-across **51 endpoints** and **429 models**.
+across **51 endpoints** and **428 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
@@ -317,7 +317,6 @@ and capabilities.
 | `opencode-go` | `deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` | 1000000 | 384000 | ✅ | ✅ |
 | `opencode-go` | `gemini-4-argon` | `opencode-go/gemini-4-argon` | — | — | — | — |
 | `opencode-go` | `glm-5.1` | `opencode-go/glm-5.1` | 202800 | 131072 | ✅ | — |
-| `opencode-go` | `glm-5.2` | `opencode-go/glm-5.2` | 1000000 | 131072 | ✅ | — |
 | `opencode-go` | `glm-5.3` | `opencode-go/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `opencode-go` | `glm-5.3-flash` | `opencode-go/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `opencode-go` | `gpt-5.6-luna` | `opencode-go/gpt-5.6-luna` | 1050000 | 128000 | ✅ | ✅ |
