@@ -40,14 +40,17 @@ It saves the real lists as timing artifacts for union/overlap verification.
 compares all five real enumerations with an original libtest name multiset and
 rejects missing, extra, or duplicate names.
 Binary unit tests run once, in `lib-a`. Integration test partitioning is unchanged.
-The all-target build selects `c` for `holon-runtime`, and `rust-build`
-also checks the explicit `all` selector with `cargo check --locked
---all-targets` in both crates under `-D warnings`. The two library test
-jobs compile and run all five groups.
+The two library test jobs compile and run all five groups. In full PR,
+scheduled, and manual runs, `rust-build` relies on `lib-a` to compile group
+`c`. On main pushes with the all-target build, `rust-build` compiles
+`c` itself. The full build also checks the explicit `all` selector with
+`cargo check --locked --all-targets` in both crates under `-D warnings`.
 
 `make build` first compiles the production library, then the selected libtest
 from `holon-runtime` without running it, and then compiles the application
-with `cargo build --all-targets`. This separates the two large Rust targets
+with `cargo build --all-targets`. The workflow sets
+`SKIP_RUNTIME_LIBTEST_BUILD=1` when `lib-a` covers the libtest build.
+Staging the commands separates the two large Rust targets
 without reducing Cargo's job count or dropping targets. The build script watches
 existing Git paths resolved by `git rev-parse --git-path`, including worktree
 HEAD and common refs, rather than nonexistent `.git/HEAD` paths that invalidate

@@ -157,7 +157,9 @@ snapshots-refresh: ## Refresh CLI, OpenAPI, HTTP route, runtime status, and mode
 
 build: ## Build all Rust targets (cargo build --all-targets)
 	cargo build --lib
+ifneq ($(SKIP_RUNTIME_LIBTEST_BUILD),1)
 	CARGO_TARGET_DIR="$(abspath $(or $(CARGO_TARGET_DIR),target))" cargo test --locked --manifest-path crates/holon-runtime/Cargo.toml --lib --no-run
+endif
 	cargo build --all-targets
 
 all: web app-sdk build ## Build everything: web GUI, App SDK, then Rust
