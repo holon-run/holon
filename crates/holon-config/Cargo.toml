@@ -6,6 +6,7 @@ description = "Persisted configuration and model routing for Holon"
 license = "Apache-2.0"
 repository = "https://github.com/holon-run/holon"
 homepage = "https://holon.run"
+publish = false
 
 [dependencies]
 anyhow = "1.0"

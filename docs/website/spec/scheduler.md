@@ -12,10 +12,10 @@ It also documents the additive protocol transition layer that wraps scheduler
 decisions in atomic transactions with replay protection, explicit activation
 ownership, terminal settlement, and a public diagnostic event stream.
 
-> **Last verified:** 2026-09-13 against `src/runtime/scheduler.rs`,
-> `src/runtime/scheduler_executor.rs`, `src/runtime/waiting.rs`,
-> `src/runtime/closure.rs`, `src/runtime/turn/execution.rs`,
-> `src/runtime_db/transitions.rs`, `src/runtime_event.rs`, and `src/types.rs`.
+> **Last verified:** 2026-09-13 against `crates/holon-runtime/src/runtime/scheduler.rs`,
+> `crates/holon-runtime/src/runtime/scheduler_executor.rs`, `crates/holon-runtime/src/runtime/waiting.rs`,
+> `crates/holon-runtime/src/runtime/closure.rs`, `crates/holon-runtime/src/runtime/turn/execution.rs`,
+> `crates/holon-runtime/src/runtime_db/transitions.rs`, `crates/holon-runtime/src/runtime_event.rs`, and `crates/holon-runtime/src/types.rs`.
 
 ## Source RFCs
 

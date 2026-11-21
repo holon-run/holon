@@ -18,7 +18,12 @@ class BuildScriptTests(unittest.TestCase):
         recipe = makefile.split("\nbuild:", 1)[1].split("\n\n", 1)[0]
         self.assertEqual(
             [line.strip() for line in recipe.splitlines() if line.startswith("\t")],
-            ["cargo build --lib", "cargo test --lib --no-run", "cargo build --all-targets"],
+            [
+                "cargo build --lib",
+                'CARGO_TARGET_DIR="$(abspath $(or $(CARGO_TARGET_DIR),target))" '
+                "cargo test --locked --manifest-path crates/holon-runtime/Cargo.toml --lib --no-run",
+                "cargo build --all-targets",
+            ],
         )
 
     def command(self, directory, *args, env=None):

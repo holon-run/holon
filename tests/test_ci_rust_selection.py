@@ -41,9 +41,15 @@ class RustSelectionTests(unittest.TestCase):
                          (True, ["holon-tui"], False))
         self.assertEqual(self.select("crates/holon-github/src/lib.rs"),
                          (True, ["holon-agent-templates", "holon-github"], False))
-        self.assertEqual(self.select("src/runtime.rs"), (True, [], False))
+        self.assertEqual(self.select("crates/holon-runtime/src/runtime.rs"), (True, [], False))
         self.assertEqual(self.select("crates/decision-local-onnx/src/lib.rs"),
                          (True, [], False))
+
+    def test_runtime_unit_tests_use_the_root_shards(self):
+        self.assertEqual(
+            self.select("crates/holon-runtime/src/runtime/tests/scheduler.rs"),
+            (True, [], False),
+        )
 
     def test_dev_only_consumer_is_a_terminal_edge(self):
         graph = (

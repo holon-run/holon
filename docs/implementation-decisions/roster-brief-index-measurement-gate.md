@@ -91,7 +91,7 @@ measurement, these figures include the normal startup and migration work.
 They are not production estimates, tail percentiles or peak disk budgets.
 
 ```bash
-cargo test --lib runtime_db::brief_latest_tests::brief_latest_migration_benchmark \
+cargo test --manifest-path crates/holon-runtime/Cargo.toml --lib runtime_db::brief_latest_tests::brief_latest_migration_benchmark \
   -- --exact --ignored --nocapture
 ```
 

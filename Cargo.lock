@@ -289,21 +289,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bit-set"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08807e080ed7f9d5433fa9b275196cfc35414f66a0c79d864dc51a0d825231a3"
-dependencies = [
- "bit-vec",
-]
-
-[[package]]
-name = "bit-vec"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e764a1d40d510daf35e07be9eb06e75770908c27d411ee6c92109c9840eaaf7"
-
-[[package]]
 name = "bitflags"
 version = "1.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1517,64 +1502,34 @@ name = "holon"
 version = "0.60.0"
 dependencies = [
  "anyhow",
- "arc-swap",
  "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
- "chrono-tz",
  "clap",
- "cron",
- "decision-clef",
- "decision-core",
- "decision-jev",
- "decision-local-onnx",
- "decision-openai",
- "decision-openai-decisions",
  "flate2",
  "fs2",
  "futures-util",
- "holon-agent-templates",
- "holon-client",
- "holon-config",
  "holon-context",
- "holon-daemon",
- "holon-domain",
- "holon-github",
  "holon-memory-index",
- "holon-model-catalog",
- "holon-observability",
- "holon-provider",
+ "holon-runtime",
  "holon-server",
- "holon-storage",
- "holon-system",
  "holon-tools",
  "holon-tui",
- "holon-web-retrieval",
  "image",
- "jsonwebtoken",
  "libc",
- "percent-encoding",
- "proptest",
  "reqwest",
- "rpassword",
  "rusqlite",
- "schemars",
  "serde",
  "serde_json",
  "sha2",
  "tar",
  "tempfile",
- "thiserror 2.0.18",
  "tikv-jemallocator",
  "tokio",
- "tokio-stream",
- "tokio-util",
- "toml",
  "tower",
  "tracing",
  "tracing-subscriber",
- "unicode-casefold",
  "url",
  "uuid",
 ]
@@ -1791,6 +1746,69 @@ dependencies = [
 ]
 
 [[package]]
+name = "holon-runtime"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "chrono-tz",
+ "clap",
+ "cron",
+ "decision-clef",
+ "decision-core",
+ "decision-jev",
+ "decision-local-onnx",
+ "decision-openai",
+ "decision-openai-decisions",
+ "flate2",
+ "futures-util",
+ "holon-agent-templates",
+ "holon-client",
+ "holon-config",
+ "holon-context",
+ "holon-daemon",
+ "holon-domain",
+ "holon-github",
+ "holon-memory-index",
+ "holon-model-catalog",
+ "holon-observability",
+ "holon-provider",
+ "holon-server",
+ "holon-storage",
+ "holon-system",
+ "holon-tools",
+ "holon-tui",
+ "holon-web-retrieval",
+ "image",
+ "jsonwebtoken",
+ "libc",
+ "percent-encoding",
+ "reqwest",
+ "rusqlite",
+ "schemars",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tar",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-stream",
+ "tokio-util",
+ "toml",
+ "tower",
+ "tracing",
+ "tracing-subscriber",
+ "unicode-casefold",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "holon-server"
 version = "0.1.0"
 dependencies = [
@@ -1805,7 +1823,6 @@ dependencies = [
  "holon-system",
  "hyper",
  "hyper-util",
- "libc",
  "mime_guess",
  "percent-encoding",
  "resvg",
@@ -2213,7 +2230,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "525e9ff3e1a4be2fbea1fdf0e98686a6d98b4d8f937e1bf7402245af1909e8c3"
 dependencies = [
  "byteorder-lite",
- "quick-error 2.0.1",
+ "quick-error",
 ]
 
 [[package]]
@@ -3094,25 +3111,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "proptest"
-version = "1.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b45fcc2344c680f5025fe57779faef368840d0bd1f42f216291f0dc4ace4744"
-dependencies = [
- "bit-set",
- "bit-vec",
- "bitflags 2.13.1",
- "num-traits",
- "rand 0.9.3",
- "rand_chacha 0.9.0",
- "rand_xorshift",
- "regex-syntax",
- "rusty-fork",
- "tempfile",
- "unarray",
-]
-
-[[package]]
 name = "pulldown-cmark"
 version = "0.13.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3136,12 +3134,6 @@ name = "pxfm"
 version = "0.1.30"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d55d956fa96f5ec02be2e13af0e20391a5aa83d6a074e3ad368959d0fab299ea"
-
-[[package]]
-name = "quick-error"
-version = "1.2.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1d01941d82fa2ab50be1e79e6714289dd7cde78eba4c074bc5a4374f650dfe0"
 
 [[package]]
 name = "quick-error"
@@ -3293,15 +3285,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "76afc826de14238e6e8c374ddcc1fa19e374fd8dd986b0d2af0d02377261d83c"
 dependencies = [
  "getrandom 0.3.4",
-]
-
-[[package]]
-name = "rand_xorshift"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "513962919efc330f829edb2535844d1b912b0fbe2ca165d613e4e8788bb05a5a"
-dependencies = [
- "rand_core 0.9.5",
 ]
 
 [[package]]
@@ -3516,17 +3499,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c20b6793b5c2fa6553b250154b78d6d0db37e72700ae35fad9387a46f487c97"
 
 [[package]]
-name = "rpassword"
-version = "7.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2da316a15f47e3d053de9cb2c439650bd8fa4aaeb9365f2e5f27f492ff73c196"
-dependencies = [
- "libc",
- "rtoolbox",
- "windows-sys 0.61.2",
-]
-
-[[package]]
 name = "rsa"
 version = "0.9.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3544,16 +3516,6 @@ dependencies = [
  "spki",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "rtoolbox"
-version = "0.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "50a0e551c1e27e1731aba276dbeaeac73f53c7cd34d1bda485d02bd1e0f36844"
-dependencies = [
- "libc",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3685,18 +3647,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "rusty-fork"
-version = "0.3.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc6bf79ff24e648f6da1f8d1f011e9cac26491b619e6b9280f2b47f1774e6ee2"
-dependencies = [
- "fnv",
- "quick-error 1.2.3",
- "tempfile",
- "wait-timeout",
-]
 
 [[package]]
 name = "ryu"
@@ -4633,12 +4583,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "562d481066bde0658276a35467c4af00bdc6ee726305698a55b86e61d7ad82bb"
 
 [[package]]
-name = "unarray"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
-
-[[package]]
 name = "unicase"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4787,15 +4731,6 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
-
-[[package]]
-name = "wait-timeout"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "09ac3b126d3914f9849036f826e054cbabdc8519970b8998ddaf3b5bd3c65f11"
-dependencies = [
- "libc",
-]
 
 [[package]]
 name = "walkdir"

@@ -1,0 +1,3092 @@
+use super::super::*;
+use super::support::*;
+use crate::domain::scheduler::SchedulerOwner;
+use crate::types::{
+    AdmissionContext, AgentPostureProjection, AgentSchedulingPosture, MessageDeliverySurface,
+    ToolExecutionStatus, WaitConditionKind, WaitConditionRecord, WaitConditionStatus, WakeSource,
+    WorkItemPlanStatus, WorkItemSchedulingState, WorkItemState, WorkReactivationMode,
+};
+use chrono::{DateTime, Duration};
+use serde::de::DeserializeOwned;
+use serde::Deserialize;
+use std::path::{Path, PathBuf};
+
+#[derive(Deserialize)]
+struct AgentFixture {
+    #[serde(default)]
+    current_work_item_id: Option<String>,
+    #[serde(default)]
+    pending_wake_hint_reason: Option<String>,
+    #[serde(default)]
+    turn_index: u64,
+    #[serde(default)]
+    last_turn_terminal_kind: Option<TurnTerminalKind>,
+}
+
+#[derive(Deserialize)]
+struct WorkItemFixture {
+    id: String,
+    objective: String,
+    state: WorkItemState,
+    plan_status: Option<WorkItemPlanStatus>,
+    revision: u64,
+}
+
+#[derive(Deserialize)]
+struct TaskFixture {
+    id: String,
+    status: TaskStatus,
+    wait_policy: String,
+    work_item_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct TimerFixture {
+    id: String,
+}
+
+#[derive(Deserialize)]
+struct WaitConditionFixture {
+    id: String,
+    #[serde(default)]
+    work_item_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct MessageFixture {
+    id: String,
+    kind: MessageKind,
+    text: String,
+    #[serde(default)]
+    priority: Option<Priority>,
+    #[serde(default)]
+    work_item_id: Option<String>,
+    #[serde(default)]
+    task_id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct QueueEntryFixture {
+    message_id: String,
+    status: QueueEntryStatus,
+    #[serde(default)]
+    priority: Option<Priority>,
+}
+
+#[derive(Deserialize)]
+struct EventFixture {
+    kind: String,
+    #[serde(default)]
+    data: serde_json::Value,
+}
+
+#[derive(Deserialize)]
+struct BriefFixture {
+    id: String,
+    kind: BriefKind,
+    text: String,
+}
+
+#[derive(Deserialize)]
+struct ToolExecutionFixture {
+    id: String,
+    tool_name: String,
+    status: ToolExecutionStatus,
+    #[serde(default)]
+    work_item_id: Option<String>,
+}
+
+fn append_active_external_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+) {
+    if let Some(work_item_id) = work_item_id {
+        let mut work_item = WorkItemRecord::new(
+            agent_id,
+            format!("{work_item_id} work"),
+            WorkItemState::Open,
+        );
+        work_item.id = work_item_id.into();
+        storage.append_work_item(&work_item).unwrap();
+    }
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("{id} wait"),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some(format!("trigger-{id}")),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+}
+
+fn append_operator_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("{id} wait"),
+            wake_sources: vec![WakeSource::OperatorInput],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+}
+
+fn append_resolved_task_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    task_id: &str,
+    trigger_message_id: &str,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Resolved,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: Some(task_id.into()),
+            waiting_for: format!("task {task_id} result"),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: task_id.into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: Some(Utc::now()),
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: Some(trigger_message_id.into()),
+            triggered_at: Some(Utc::now()),
+        })
+        .unwrap();
+}
+
+#[derive(Deserialize)]
+struct ExpectedFixture {
+    current_work_item_id: Option<String>,
+    current_work_item_revision: Option<u64>,
+    queued_work_items: usize,
+    active_tasks: usize,
+    has_blocking_active_tasks: bool,
+    pending_wake_hint: bool,
+    #[serde(default)]
+    active_waiting_intents: usize,
+    #[serde(default)]
+    active_work_item_waiting_intents: usize,
+    #[serde(default)]
+    active_agent_waiting_intents: usize,
+    #[serde(default)]
+    active_timers: usize,
+    #[serde(default)]
+    decision: Option<String>,
+    #[serde(default)]
+    decision_reason: Option<String>,
+    #[serde(default)]
+    runtime_error: bool,
+    #[serde(default)]
+    replay_message_ids: Vec<String>,
+    #[serde(default)]
+    tool_executions: usize,
+    #[serde(default)]
+    turn_terminal_kind: Option<TurnTerminalKind>,
+}
+
+fn scheduler_fixture_path(name: &str, path: &str) -> PathBuf {
+    Path::new(env!("HOLON_REPO_ROOT"))
+        .join("tests/fixtures/scheduler")
+        .join(name)
+        .join(path)
+}
+
+fn read_scheduler_fixture<T: DeserializeOwned>(name: &str, path: &str) -> T {
+    let path = scheduler_fixture_path(name, path);
+    let content = std::fs::read_to_string(&path).unwrap_or_else(|error| {
+        panic!(
+            "failed to read scheduler fixture {}: {error}",
+            path.display()
+        )
+    });
+    serde_json::from_str(&content).unwrap_or_else(|error| {
+        panic!(
+            "failed to parse scheduler fixture {}: {error}",
+            path.display()
+        )
+    })
+}
+
+fn read_optional_scheduler_fixture<T: DeserializeOwned + Default>(name: &str, path: &str) -> T {
+    let path_buf = scheduler_fixture_path(name, path);
+    if path_buf.exists() {
+        read_scheduler_fixture(name, path)
+    } else {
+        T::default()
+    }
+}
+
+fn read_optional_scheduler_jsonl_fixture<T: DeserializeOwned>(name: &str, path: &str) -> Vec<T> {
+    let jsonl_path = scheduler_fixture_path(name, path);
+    if jsonl_path.exists() {
+        let content = std::fs::read_to_string(&jsonl_path).unwrap_or_else(|error| {
+            panic!(
+                "failed to read scheduler fixture {}: {error}",
+                jsonl_path.display()
+            )
+        });
+        return content
+            .lines()
+            .enumerate()
+            .filter_map(|(index, line)| {
+                let line = line.trim();
+                if line.is_empty() {
+                    return None;
+                }
+                Some(serde_json::from_str(line).unwrap_or_else(|error| {
+                    panic!(
+                        "failed to parse scheduler fixture {} line {}: {error}",
+                        jsonl_path.display(),
+                        index + 1
+                    )
+                }))
+            })
+            .collect();
+    }
+
+    if let Some(json_path) = path.strip_suffix(".jsonl") {
+        let json_path = format!("{json_path}.json");
+        return read_optional_scheduler_fixture(name, &json_path);
+    }
+
+    Vec::new()
+}
+
+fn append_work_item_at_revision(storage: &AppStorage, record: &WorkItemRecord) {
+    let target_revision = record.revision;
+    let mut version = record.clone();
+    version.revision = 1;
+    storage.append_work_item(&version).unwrap();
+    for revision in 2..=target_revision {
+        version.revision = revision;
+        storage.append_work_item(&version).unwrap();
+    }
+}
+
+fn build_scheduler_fixture(name: &str) -> (tempfile::TempDir, AppStorage, AgentState) {
+    let agent_fixture: AgentFixture = read_scheduler_fixture(name, "agent.json");
+    let work_items: Vec<WorkItemFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/work_items.jsonl");
+    let tasks: Vec<TaskFixture> = read_optional_scheduler_jsonl_fixture(name, "ledger/tasks.jsonl");
+    let timers: Vec<TimerFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/timers.jsonl");
+    let messages: Vec<MessageFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/messages.jsonl");
+    let queue_entries: Vec<QueueEntryFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/queue_entries.jsonl");
+    let events: Vec<EventFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/events.jsonl");
+    let briefs: Vec<BriefFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/briefs.jsonl");
+    let tool_executions: Vec<ToolExecutionFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/tools.jsonl");
+    let wait_conditions: Vec<WaitConditionFixture> =
+        read_optional_scheduler_jsonl_fixture(name, "ledger/wait_conditions.jsonl");
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = agent_fixture.current_work_item_id;
+    agent.turn_index = agent_fixture.turn_index;
+    if let Some(kind) = agent_fixture.last_turn_terminal_kind {
+        agent.last_turn_terminal = Some(TurnTerminalRecord {
+            turn_id: "test-turn".into(),
+            turn_index: agent.turn_index,
+            kind,
+            reason: Some("fixture terminal".into()),
+            last_assistant_message: None,
+            no_brief_reason: None,
+            checkpoint: None,
+            completed_at: Utc::now(),
+            duration_ms: 1,
+        });
+    }
+    if let Some(reason) = agent_fixture.pending_wake_hint_reason {
+        agent.pending_wake_hint = Some(PendingWakeHint {
+            reason,
+            description: None,
+            scope: None,
+            external_trigger_id: None,
+            source: Some("fixture".into()),
+            resource: None,
+            body: None,
+            content_type: None,
+            correlation_id: None,
+            causation_id: None,
+            created_at: Utc::now(),
+        });
+    }
+    for item in work_items {
+        let mut record = WorkItemRecord::new("default", item.objective, item.state);
+        record.id = item.id;
+        if let Some(plan_status) = item.plan_status {
+            record.plan_status = plan_status;
+        }
+        record.revision = item.revision;
+        append_work_item_at_revision(&storage, &record);
+    }
+    storage.write_agent_for_fixture(&agent).unwrap();
+    for task in tasks {
+        storage
+            .append_task(&TaskRecord {
+                id: task.id,
+                agent_id: "default".into(),
+                kind: TaskKind::CommandTask,
+                status: task.status,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                parent_message_id: None,
+                work_item_id: task.work_item_id,
+                summary: Some("fixture task".into()),
+                detail: Some(serde_json::json!({
+                    "wait_policy": task.wait_policy
+                })),
+                recovery: None,
+            })
+            .unwrap();
+    }
+    for timer in timers {
+        storage
+            .append_timer(&TimerRecord {
+                id: timer.id,
+                agent_id: "default".into(),
+                created_at: Utc::now(),
+                duration_ms: 1000,
+                interval_ms: None,
+                repeat: false,
+                status: TimerStatus::Active,
+                summary: Some("fixture timer".into()),
+                next_fire_at: Some(Utc::now()),
+                last_fired_at: None,
+                fire_count: 0,
+                paused_remaining_ms: None,
+                schedule_generation: 0,
+                calendar: None,
+            })
+            .unwrap();
+    }
+    for message_fixture in messages {
+        let origin = match message_fixture.kind {
+            MessageKind::SystemTick => MessageOrigin::System {
+                subsystem: "fixture".into(),
+            },
+            MessageKind::TaskResult | MessageKind::TaskStatus => MessageOrigin::Task {
+                task_id: message_fixture
+                    .task_id
+                    .clone()
+                    .unwrap_or_else(|| "fixture-task".into()),
+            },
+            _ => MessageOrigin::Webhook {
+                source: "fixture".into(),
+                event_type: None,
+            },
+        };
+        let mut message = MessageEnvelope::new(
+            "default",
+            message_fixture.kind,
+            origin,
+            AuthorityClass::IntegrationSignal,
+            message_fixture.priority.unwrap_or(Priority::Normal),
+            MessageBody::Text {
+                text: message_fixture.text,
+            },
+        );
+        message.id = message_fixture.id;
+        message.work_item_id = message_fixture.work_item_id;
+        message.task_id = message_fixture.task_id;
+        storage.append_message(&message).unwrap();
+    }
+    for queue_entry in queue_entries {
+        storage
+            .append_queue_entry(&QueueEntryRecord {
+                message_id: queue_entry.message_id,
+                agent_id: "default".into(),
+                priority: queue_entry.priority.unwrap_or(Priority::Normal),
+                status: queue_entry.status,
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+    }
+    for event in events {
+        storage
+            .append_event(&AuditEvent::legacy(event.kind, event.data))
+            .unwrap();
+    }
+    for brief in briefs {
+        let mut record = BriefRecord::new("default", brief.kind, brief.text, None, None);
+        record.id = brief.id;
+        storage.append_brief(&record).unwrap();
+    }
+    for tool in tool_executions {
+        storage
+            .append_tool_execution(&ToolExecutionRecord {
+                id: tool.id,
+                agent_id: "default".into(),
+                work_item_id: tool.work_item_id,
+                turn_index: 0,
+                turn_id: None,
+                tool_name: tool.tool_name,
+                created_at: Utc::now(),
+                completed_at: Some(Utc::now()),
+                duration_ms: 1,
+                authority_class: AuthorityClass::OperatorInstruction,
+                status: tool.status,
+                input: serde_json::json!({ "fixture": true }),
+                output: serde_json::json!({ "fixture": true }),
+                summary: "fixture tool execution".into(),
+                call_binding: None,
+                invocation_surface: Some("fixture".into()),
+            })
+            .unwrap();
+    }
+
+    for wait in wait_conditions {
+        append_active_external_wait_condition(
+            &storage,
+            &wait.id,
+            "default",
+            wait.work_item_id.as_deref(),
+        );
+    }
+
+    (dir, storage, agent)
+}
+
+fn assert_scheduler_fixture(name: &str) {
+    let expected: ExpectedFixture = read_scheduler_fixture(name, "expected.json");
+    let (_dir, storage, agent) = build_scheduler_fixture(name);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection
+            .current_work_item
+            .as_ref()
+            .map(|item| item.id.as_str()),
+        expected.current_work_item_id.as_deref(),
+        "{name}: current work item"
+    );
+    assert_eq!(
+        projection
+            .current_work_item
+            .as_ref()
+            .map(|item| item.revision),
+        expected.current_work_item_revision,
+        "{name}: current work item revision"
+    );
+    assert_eq!(
+        projection.queued_work_items, expected.queued_work_items,
+        "{name}: queued work items"
+    );
+    assert_eq!(
+        projection.active_tasks.len(),
+        expected.active_tasks,
+        "{name}: active tasks"
+    );
+    assert_eq!(
+        projection.has_blocking_active_tasks, expected.has_blocking_active_tasks,
+        "{name}: blocking active tasks"
+    );
+    assert_eq!(
+        projection.pending_wake_hint, expected.pending_wake_hint,
+        "{name}: pending wake hint"
+    );
+    assert_eq!(
+        projection.active_waiting_intents, expected.active_waiting_intents,
+        "{name}: active waiting intents"
+    );
+    assert_eq!(
+        projection.active_work_item_waiting_intents, expected.active_work_item_waiting_intents,
+        "{name}: work-item waiting intents"
+    );
+    assert_eq!(
+        projection.active_agent_waiting_intents, expected.active_agent_waiting_intents,
+        "{name}: agent waiting intents"
+    );
+    assert_eq!(
+        projection.active_timers, expected.active_timers,
+        "{name}: active timers"
+    );
+    assert_eq!(
+        projection.runtime_error, expected.runtime_error,
+        "{name}: runtime error"
+    );
+    assert_eq!(
+        agent.last_turn_terminal.map(|record| record.kind),
+        expected.turn_terminal_kind,
+        "{name}: turn terminal kind"
+    );
+    let snapshot = storage.recovery_snapshot(&agent.id).unwrap();
+    let replay_message_ids = snapshot
+        .replay_messages
+        .into_iter()
+        .map(|message| message.id)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        replay_message_ids, expected.replay_message_ids,
+        "{name}: replay messages"
+    );
+    assert_eq!(
+        storage
+            .read_recent_tool_executions(usize::MAX)
+            .unwrap()
+            .len(),
+        expected.tool_executions,
+        "{name}: tool executions"
+    );
+    if let Some(expected_decision) = expected.decision {
+        let decision = scheduler::decide_next_action(
+            &projection,
+            scheduler::SchedulerBoundary::RunLoopIdle,
+            scheduler::SchedulerInput::Idle,
+        );
+        assert_eq!(
+            decision.kind.as_str(),
+            expected_decision,
+            "{name}: scheduler decision"
+        );
+        assert_eq!(
+            Some(decision.reason.as_str()),
+            expected.decision_reason.as_deref(),
+            "{name}: scheduler decision reason"
+        );
+    }
+}
+
+#[test]
+fn scheduler_projection_replays_fixture_facts() {
+    for name in [
+        "basic",
+        "agent_wait",
+        "blocking_task",
+        "timer_wait",
+        "queued_available",
+        "pending_wake_hint",
+        "dequeued_replay",
+        "tool_call_replay_boundary",
+        "baseline_over_budget_terminal",
+    ] {
+        assert_scheduler_fixture(name);
+    }
+}
+
+#[test]
+fn compaction_events_and_briefs_do_not_change_scheduler_projection() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-active".into());
+
+    let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
+    work_item.id = "work-active".into();
+    work_item.revision = 3;
+    append_work_item_at_revision(&storage, &work_item);
+    storage.write_agent_for_fixture(&agent).unwrap();
+    storage
+        .append_task(&TaskRecord {
+            id: "task-active".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            parent_message_id: None,
+            work_item_id: Some("work-active".into()),
+            summary: Some("blocking task".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+            recovery: None,
+        })
+        .unwrap();
+
+    let now = Utc::now();
+    let before = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+        &storage,
+        &agent,
+        agent.pending,
+        now,
+    )
+    .unwrap();
+    storage
+        .append_event(&AuditEvent::legacy(
+            "turn_local_compaction_completed",
+            serde_json::json!({
+                "agent_id": "default",
+                "turn_index": 1,
+                "checkpoint": "fixture checkpoint"
+            }),
+        ))
+        .unwrap();
+    storage
+        .append_event(&AuditEvent::legacy(
+            "turn_local_baseline_over_budget",
+            serde_json::json!({
+                "agent_id": "default",
+                "reason": "baseline_unfit"
+            }),
+        ))
+        .unwrap();
+    storage
+        .append_brief(&BriefRecord::new(
+            "default",
+            BriefKind::Result,
+            "compaction recap only",
+            Some("work-active".into()),
+            None,
+        ))
+        .unwrap();
+
+    let after = scheduler::SchedulerProjection::from_state_with_queue_len_at(
+        &storage,
+        &agent,
+        agent.pending,
+        now,
+    )
+    .unwrap();
+    assert_eq!(
+        before, after,
+        "compaction artifacts must not become scheduler truth"
+    );
+}
+
+#[test]
+fn scheduler_projection_breaks_down_waiting_intent_scopes() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "work-wait", "default", Some("work-1"));
+    append_active_external_wait_condition(&storage, "agent-wait", "default", None);
+    agent.pending_wake_hint = None;
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_waiting_intents, 2);
+    assert_eq!(projection.active_work_item_waiting_intents, 1);
+    assert_eq!(projection.active_agent_waiting_intents, 1);
+}
+
+#[test]
+fn scheduler_projection_filters_tasks_waiting_intents_and_timers_by_agent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let now = Utc::now();
+
+    for (id, agent_id) in [("wait-current", "default"), ("wait-other", "other")] {
+        append_active_external_wait_condition(&storage, id, agent_id, None);
+    }
+    for (id, agent_id) in [("timer-current", "default"), ("timer-other", "other")] {
+        storage
+            .append_timer(&TimerRecord {
+                id: id.into(),
+                agent_id: agent_id.into(),
+                created_at: now,
+                duration_ms: 1000,
+                interval_ms: None,
+                repeat: false,
+                status: TimerStatus::Active,
+                summary: None,
+                next_fire_at: Some(now),
+                last_fired_at: None,
+                fire_count: 0,
+                paused_remaining_ms: None,
+                schedule_generation: 0,
+                calendar: None,
+            })
+            .unwrap();
+    }
+    for (id, agent_id) in [("task-current", "default"), ("task-other", "other")] {
+        storage
+            .append_task(&TaskRecord {
+                id: id.into(),
+                agent_id: agent_id.into(),
+                kind: TaskKind::CommandTask,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some(format!("{id} summary")),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: None,
+            })
+            .unwrap();
+    }
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_tasks.len(), 1);
+    assert_eq!(projection.active_tasks[0].id, "task-current");
+    assert_eq!(projection.active_waiting_intents, 1);
+    assert_eq!(projection.active_agent_waiting_intents, 1);
+    assert_eq!(projection.active_timers, 1);
+}
+
+#[test]
+fn idle_boundary_decision_prefers_controlled_status_over_wait_facts() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Stopped;
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "wait-current", "default", None);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Stop);
+    assert_eq!(decision.reason, "stopped");
+}
+
+#[test]
+fn idle_boundary_decision_inspects_wait_facts_while_asleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "wait-current", "default", None);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::WaitForExternalChange
+    );
+    assert_eq!(decision.reason, "active_agent_waiting_intents");
+}
+
+#[test]
+fn idle_boundary_decision_waits_for_non_current_work_item_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let mut waiting = WorkItemRecord::new("default", "waiting work", WorkItemState::Open);
+    waiting.id = "work-waiting".into();
+    waiting.blocked_by = Some("task result".into());
+    storage.append_work_item(&waiting).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-task".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(waiting.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: None,
+            subject_ref: None,
+            waiting_for: "task result".into(),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: "task-1".into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.current_work_item_scheduling_state, None);
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingTask)
+    );
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::WaitForTask);
+    assert_eq!(decision.reason, "work_item_task_wait");
+    assert_eq!(decision.work_item_id.as_deref(), Some("work-waiting"));
+}
+
+#[test]
+fn idle_boundary_decision_does_not_treat_asleep_with_queued_input_as_idle() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    agent.pending = 1;
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Noop);
+    assert_eq!(decision.reason, "queue_not_empty");
+}
+
+#[test]
+fn idle_boundary_decision_reactivates_runnable_work_while_asleep() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.status = AgentStatus::Asleep;
+    agent.current_work_item_id = Some("work-current".into());
+    let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
+    work_item.id = "work-current".into();
+    work_item.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&work_item).unwrap();
+    seed_runnable_work_execution(&storage, &work_item);
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision = scheduler::idle_boundary_decision(&projection, "fixture");
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(decision.reason, "runnable_work");
+    assert_eq!(decision.work_item_id.as_deref(), Some("work-current"));
+    assert!(decision.model_reentry);
+}
+
+#[test]
+fn decide_next_action_prioritizes_wake_hint_over_work_queue_but_not_wait_facts() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let mut work_item = WorkItemRecord::new("default", "continue work", WorkItemState::Open);
+    work_item.id = "work-1".into();
+    work_item.revision = 7;
+    append_work_item_at_revision(&storage, &work_item);
+    seed_runnable_work_execution(&storage, &work_item);
+
+    let pending = PendingWakeHint {
+        reason: "external update".into(),
+        description: None,
+        source: Some("fixture".into()),
+        scope: Some(ExternalTriggerScope::Agent),
+        external_trigger_id: Some("trigger-1".into()),
+        resource: None,
+        body: None,
+        content_type: None,
+        correlation_id: None,
+        causation_id: None,
+        created_at: Utc::now(),
+    };
+    agent.pending_wake_hint = Some(pending.clone());
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let wake_decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::WakeHint {
+            pending: &pending,
+            duplicate: None,
+        }),
+    );
+    assert_eq!(
+        wake_decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(wake_decision.reason, "wake_hint");
+
+    append_active_external_wait_condition(&storage, "wait-current", "default", None);
+    let blocked_projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let work_queue_decision = scheduler::decide_next_action(
+        &blocked_projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::ContinueActive {
+            work_item: &work_item,
+            work_item_generation: None,
+            suppressed_after_model_reentry_continuation: false,
+            duplicate: None,
+        }),
+    );
+    assert_eq!(blocked_projection.active_agent_waiting_intents, 1);
+    assert_eq!(
+        work_queue_decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(work_queue_decision.reason, "continue_active");
+}
+
+#[test]
+fn queued_runnable_work_is_not_suppressed_by_unrelated_agent_waiting_intent() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    work_item.id = "work-queued".into();
+    work_item.revision = 4;
+    append_work_item_at_revision(&storage, &work_item);
+    seed_runnable_work_execution(&storage, &work_item);
+    append_active_external_wait_condition(&storage, "agent-wait", "default", None);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_agent_waiting_intents, 1);
+    assert_eq!(
+        projection
+            .work_reactivation_signal()
+            .as_ref()
+            .map(|signal| { (signal.work_item_id.as_str(), signal.reactivation_mode,) }),
+        Some(("work-queued", WorkReactivationMode::ActivateQueued))
+    );
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
+            work_item: &work_item,
+            work_item_generation: None,
+            duplicate: None,
+        }),
+    );
+
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::EmitSystemTick
+    );
+    assert_eq!(decision.reason, "queued_available");
+}
+
+#[test]
+fn work_reactivation_prefers_runnable_current_over_queued_candidates() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-current".into());
+
+    let mut current = WorkItemRecord::new("default", "current work", WorkItemState::Open);
+    current.id = "work-current".into();
+    current.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&current).unwrap();
+    seed_runnable_work_execution(&storage, &current);
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let mut queued = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    queued.id = "work-queued".into();
+    queued.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &queued);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection
+            .work_reactivation_signal()
+            .as_ref()
+            .map(|signal| (signal.work_item_id.as_str(), signal.reactivation_mode)),
+        Some(("work-current", WorkReactivationMode::ContinueActive))
+    );
+}
+
+#[test]
+fn work_reactivation_uses_stable_fifo_order_for_queued_candidates() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let now = Utc::now();
+    let mut newer = WorkItemRecord::new("default", "newer work", WorkItemState::Open);
+    newer.id = "work-newer".into();
+    newer.plan_status = WorkItemPlanStatus::Ready;
+    newer.created_at = now;
+    newer.updated_at = now;
+    storage.append_work_item(&newer).unwrap();
+    seed_runnable_work_execution(&storage, &newer);
+
+    let mut older = WorkItemRecord::new("default", "older work", WorkItemState::Open);
+    older.id = "work-older".into();
+    older.plan_status = WorkItemPlanStatus::Ready;
+    older.created_at = now - Duration::seconds(1);
+    older.updated_at = older.created_at;
+    storage.append_work_item(&older).unwrap();
+    seed_runnable_work_execution(&storage, &older);
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection
+            .queued_runnable_work_items
+            .iter()
+            .map(|item| item.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["work-older", "work-newer"]
+    );
+    assert_eq!(
+        projection
+            .work_reactivation_signal()
+            .as_ref()
+            .map(|signal| (signal.work_item_id.as_str(), signal.reactivation_mode)),
+        Some(("work-older", WorkReactivationMode::ActivateQueued))
+    );
+}
+
+fn autonomous_selection_projection() -> scheduler::SchedulerProjection {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-current".into());
+
+    let mut current = WorkItemRecord::new("default", "current work", WorkItemState::Open);
+    current.id = "work-current".into();
+    current.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&current).unwrap();
+    seed_runnable_work_execution(&storage, &current);
+
+    let mut queued = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    queued.id = "work-queued".into();
+    queued.plan_status = WorkItemPlanStatus::Ready;
+    storage.append_work_item(&queued).unwrap();
+    seed_runnable_work_execution(&storage, &queued);
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap()
+}
+
+struct SelectQueuedHook;
+
+impl scheduler::SemanticCandidateSelectionHook for SelectQueuedHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity: context.snapshot_identity.clone(),
+                candidate: context.candidates[1].clone(),
+            },
+        ))
+    }
+}
+
+struct AbstainHook;
+
+impl scheduler::SemanticCandidateSelectionHook for AbstainHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Abstain)
+    }
+}
+
+struct ErrorHook;
+
+impl scheduler::SemanticCandidateSelectionHook for ErrorHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Err(scheduler::SemanticCandidateSelectionHookError::unknown())
+    }
+}
+
+struct TypedErrorHook {
+    kind: scheduler::SemanticCandidateSelectionHookErrorKind,
+}
+
+impl scheduler::SemanticCandidateSelectionHook for TypedErrorHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        Err(scheduler::SemanticCandidateSelectionHookError { kind: self.kind })
+    }
+}
+
+struct UnknownCandidateHook;
+
+impl scheduler::SemanticCandidateSelectionHook for UnknownCandidateHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        let mut candidate = context.candidates[1].clone();
+        candidate.work_item_id = "work-unknown".into();
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity: context.snapshot_identity.clone(),
+                candidate,
+            },
+        ))
+    }
+}
+
+struct StaleSnapshotHook;
+
+impl scheduler::SemanticCandidateSelectionHook for StaleSnapshotHook {
+    fn select_autonomous_continuation(
+        &self,
+        context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        let mut snapshot_identity = context.snapshot_identity.clone();
+        snapshot_identity.queue_len += 1;
+        Ok(scheduler::SemanticCandidateSelectionHookResult::Propose(
+            scheduler::AutonomousContinuationProposal {
+                snapshot_identity,
+                candidate: context.candidates[1].clone(),
+            },
+        ))
+    }
+}
+
+struct UnexpectedHook;
+
+impl scheduler::SemanticCandidateSelectionHook for UnexpectedHook {
+    fn select_autonomous_continuation(
+        &self,
+        _context: &scheduler::AutonomousContinuationSelectionContext,
+    ) -> Result<
+        scheduler::SemanticCandidateSelectionHookResult,
+        scheduler::SemanticCandidateSelectionHookError,
+    > {
+        panic!("semantic selection must be bypassed for zero or one candidate")
+    }
+}
+
+#[test]
+fn autonomous_selection_hook_can_choose_another_legal_candidate() {
+    let projection = autonomous_selection_projection();
+    let selection =
+        scheduler::select_autonomous_continuation_with_hook(&projection, Some(&SelectQueuedHook))
+            .unwrap();
+    let (work_item, mode, _) =
+        scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+
+    assert_eq!(work_item.id, "work-queued");
+    assert_eq!(mode, WorkReactivationMode::ActivateQueued);
+}
+
+#[test]
+fn autonomous_selection_bypasses_hook_for_zero_or_one_candidate() {
+    let mut projection = autonomous_selection_projection();
+    projection.queued_runnable_work_items = Vec::new().into();
+    let selection =
+        scheduler::select_autonomous_continuation_with_hook(&projection, Some(&UnexpectedHook))
+            .unwrap();
+    let (work_item, mode, _) =
+        scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+    assert_eq!(work_item.id, "work-current");
+    assert_eq!(mode, WorkReactivationMode::ContinueActive);
+
+    projection.current_work_item = None;
+    projection.current_work_item_scheduling_state = None;
+    assert!(scheduler::select_autonomous_continuation_with_hook(
+        &projection,
+        Some(&UnexpectedHook)
+    )
+    .is_none());
+}
+
+#[test]
+fn autonomous_selection_unavailable_abstain_and_error_use_static_baseline() {
+    let projection = autonomous_selection_projection();
+    let hooks: [Option<&dyn scheduler::SemanticCandidateSelectionHook>; 3] =
+        [None, Some(&AbstainHook), Some(&ErrorHook)];
+
+    for hook in hooks {
+        let selection =
+            scheduler::select_autonomous_continuation_with_hook(&projection, hook).unwrap();
+        let (work_item, mode, _) =
+            scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+        assert_eq!(work_item.id, "work-current");
+        assert_eq!(mode, WorkReactivationMode::ContinueActive);
+    }
+}
+
+#[test]
+fn autonomous_selection_preserves_typed_provider_failure_fallback_audit_reasons() {
+    let projection = autonomous_selection_projection();
+    let cases = [
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::Timeout,
+            "timeout",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::Cancelled,
+            "cancelled",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::ResourceExhausted,
+            "resource_exhausted",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::ProviderError,
+            "provider_error",
+        ),
+        (
+            scheduler::SemanticCandidateSelectionHookErrorKind::MalformedResponse,
+            "malformed_response",
+        ),
+    ];
+
+    for (kind, expected_reason) in cases {
+        let hook = TypedErrorHook { kind };
+        let selection =
+            scheduler::select_autonomous_continuation_with_hook(&projection, Some(&hook))
+                .expect("selection");
+        assert_eq!(
+            selection.fallback_reason().map(|reason| reason.as_str()),
+            Some(expected_reason)
+        );
+        let (work_item, mode, _) =
+            scheduler::resolve_autonomous_continuation_work_item(&projection, &selection)
+                .expect("baseline work item");
+        assert_eq!(work_item.id, "work-current");
+        assert_eq!(mode, WorkReactivationMode::ContinueActive);
+    }
+}
+
+#[test]
+fn autonomous_selection_rejects_unknown_candidate_and_stale_proposal_snapshot() {
+    let projection = autonomous_selection_projection();
+    let hooks: [&dyn scheduler::SemanticCandidateSelectionHook; 2] =
+        [&UnknownCandidateHook, &StaleSnapshotHook];
+
+    for hook in hooks {
+        let selection =
+            scheduler::select_autonomous_continuation_with_hook(&projection, Some(hook)).unwrap();
+        let (work_item, mode, _) =
+            scheduler::resolve_autonomous_continuation_work_item(&projection, &selection).unwrap();
+        assert_eq!(work_item.id, "work-current");
+        assert_eq!(mode, WorkReactivationMode::ContinueActive);
+    }
+}
+
+#[test]
+fn autonomous_selection_rejects_stale_runtime_snapshot_and_revision() {
+    let projection = autonomous_selection_projection();
+    let selection = scheduler::select_autonomous_continuation(&projection).unwrap();
+
+    let mut stale_snapshot = projection.clone();
+    stale_snapshot.active_run_id = Some("run-stale".into());
+    assert!(
+        scheduler::resolve_autonomous_continuation_work_item(&stale_snapshot, &selection).is_none()
+    );
+
+    let mut stale_revision = projection.clone();
+    stale_revision.current_work_item.as_mut().unwrap().revision += 1;
+    assert!(
+        scheduler::resolve_autonomous_continuation_work_item(&stale_revision, &selection).is_none()
+    );
+
+    let mut stale_generation = projection.clone();
+    assert!(stale_generation.set_autonomous_execution_generation_for_test("work-current", u64::MAX));
+    assert!(
+        scheduler::resolve_autonomous_continuation_work_item(&stale_generation, &selection)
+            .is_none()
+    );
+}
+
+#[test]
+fn background_work_item_task_does_not_block_runnable_work() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let now = Utc::now();
+    let mut work_item = WorkItemRecord::new("default", "runnable work", WorkItemState::Open);
+    work_item.id = "work-background".into();
+    storage.append_work_item(&work_item).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-background".into());
+    storage.write_agent_for_fixture(&agent).unwrap();
+    storage
+        .append_task(&TaskRecord {
+            id: "background-task".into(),
+            agent_id: "default".into(),
+            kind: TaskKind::CommandTask,
+            status: TaskStatus::Running,
+            created_at: now,
+            updated_at: now,
+            parent_message_id: None,
+            work_item_id: Some(work_item.id.clone()),
+            summary: Some("background task".into()),
+            detail: Some(serde_json::json!({ "wait_policy": "background" })),
+            recovery: None,
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert!(!projection.has_blocking_active_tasks);
+    assert_eq!(
+        projection.current_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::Runnable)
+    );
+    assert!(scheduler::wait_decision_for_projection(&projection).is_none());
+}
+
+#[test]
+fn scheduling_advisories_detect_idle_posture_with_runnable_work() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    let work_item = WorkItemRecord::new("default", "runnable work", WorkItemState::Open);
+    agent.current_work_item_id = Some(work_item.id.clone());
+    storage.append_work_item(&work_item).unwrap();
+    seed_runnable_work_execution(&storage, &work_item);
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let work_queue = storage.work_queue_prompt_projection().unwrap();
+    let posture = AgentPostureProjection {
+        posture: AgentSchedulingPosture::Idle,
+        reason: "fixture intentionally stale posture".into(),
+        work_item_id: None,
+        task_id: None,
+        run_id: None,
+    };
+
+    let diagnostics =
+        scheduler::scheduling_advisories_for_facts(&agent, &projection, &posture, &work_queue, &[]);
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].kind, "idle_posture_has_runnable_work");
+    assert_eq!(
+        diagnostics[0].work_item_id.as_deref(),
+        Some(work_item.id.as_str())
+    );
+}
+
+#[test]
+fn scheduling_advisories_detect_weak_external_wait_and_unrecoverable_blocker() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let now = Utc::now();
+
+    let mut external = WorkItemRecord::new("default", "external wait", WorkItemState::Open);
+    external.blocked_by = Some("github".into());
+    storage.append_work_item(&external).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-weak".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(external.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-1".into()),
+            waiting_for: "merged".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+
+    let mut blocked = WorkItemRecord::new("default", "blocked", WorkItemState::Open);
+    blocked.blocked_by = Some("manual blocker".into());
+    storage.append_work_item(&blocked).unwrap();
+
+    let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
+    let kinds = diagnostics
+        .iter()
+        .map(|diagnostic| diagnostic.kind.as_str())
+        .collect::<Vec<_>>();
+
+    assert!(kinds.contains(&"external_wait_has_weak_recoverability"));
+    assert!(kinds.contains(&"blocked_work_item_without_recheck_or_wait"));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == "external_wait_has_weak_recoverability"
+            && diagnostic.wait_condition_id.as_deref() == Some("wait-weak")
+            && diagnostic.work_item_id.as_deref() == Some(external.id.as_str())
+    }));
+    assert!(diagnostics.iter().any(|diagnostic| {
+        diagnostic.kind == "blocked_work_item_without_recheck_or_wait"
+            && diagnostic.work_item_id.as_deref() == Some(blocked.id.as_str())
+    }));
+}
+
+#[test]
+fn scheduling_advisories_use_authoritative_queue_len() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let diagnostics = scheduler::scheduling_advisories_with_queue_len(&storage, &agent, 1).unwrap();
+
+    assert_eq!(diagnostics.len(), 1);
+    assert_eq!(diagnostics[0].kind, "idle_posture_has_queued_input");
+    assert!(diagnostics[0]
+        .evidence
+        .iter()
+        .any(|entry| entry == "queue_len=1"));
+}
+
+#[test]
+fn scheduling_advisories_do_not_warn_for_common_legal_waits() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let now = Utc::now();
+
+    let mut external =
+        WorkItemRecord::new("default", "recoverable external wait", WorkItemState::Open);
+    external.blocked_by = Some("github".into());
+    storage.append_work_item(&external).unwrap();
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-recoverable".into(),
+            agent_id: "default".into(),
+            work_item_id: Some(external.id.clone()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-2".into()),
+            waiting_for: "checks".into(),
+            wake_sources: vec![WakeSource::Timer {
+                wake_at: now + chrono::Duration::hours(1),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+
+    let mut blocked_with_recheck =
+        WorkItemRecord::new("default", "blocked with recheck", WorkItemState::Open);
+    blocked_with_recheck.blocked_by = Some("manual blocker".into());
+    blocked_with_recheck.recheck_at = Some(now + chrono::Duration::hours(1));
+    storage.append_work_item(&blocked_with_recheck).unwrap();
+
+    let diagnostics = scheduler::scheduling_advisories(&storage, &agent).unwrap();
+
+    assert!(
+        diagnostics.is_empty(),
+        "expected no diagnostics for legal waits, got {diagnostics:?}"
+    );
+}
+
+#[test]
+fn scheduling_advisory_append_dedupes_interleaved_recent_events() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let now = Utc::now();
+
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: "wait-weak".into(),
+            agent_id: "default".into(),
+            work_item_id: None,
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::External,
+            source: Some("github".into()),
+            subject_ref: Some("pr-1".into()),
+            waiting_for: "review".into(),
+            wake_sources: vec![WakeSource::ExternalIngress {
+                external_trigger_id: Some("trigger-1".into()),
+            }],
+            continuation: None,
+            created_at: now,
+            updated_at: now,
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+    let appended = scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap();
+    assert_eq!(appended, 1);
+    assert_eq!(
+        scheduler::append_scheduling_advisories(&storage, &agent, 0).unwrap(),
+        0
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    let diagnostic_kinds = events
+        .iter()
+        .filter(|event| event.kind == "scheduling_advisory")
+        .map(|event| event.data["kind"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(diagnostic_kinds.len(), appended);
+    assert!(diagnostic_kinds.contains(&"external_wait_has_weak_recoverability"));
+}
+
+#[test]
+fn queue_head_starved_advisory_rate_limits_per_message() {
+    let append_fixture_advisory = |storage: &AppStorage,
+                                   agent: &str,
+                                   message: &str,
+                                   status: &'static str,
+                                   waiting: i64,
+                                   len: usize,
+                                   now: DateTime<Utc>|
+     -> Result<bool> {
+        let event = scheduler::pending_queue_head_starved_advisory(
+            storage, agent, message, status, waiting, len, now,
+        )?;
+        if let Some(event) = event {
+            storage.append_event(&event)?;
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    };
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let now = Utc::now();
+
+    assert!(append_fixture_advisory(
+        &storage,
+        "default",
+        "message-head",
+        "interrupted",
+        900_000,
+        3,
+        now,
+    )
+    .unwrap());
+    // Immediate re-check for the same head stays silent inside the window.
+    assert!(!append_fixture_advisory(
+        &storage,
+        "default",
+        "message-head",
+        "interrupted",
+        960_000,
+        3,
+        now,
+    )
+    .unwrap());
+    // A different head is a distinct starvation and is reported.
+    assert!(append_fixture_advisory(
+        &storage,
+        "default",
+        "message-other",
+        "queued",
+        700_000,
+        4,
+        now,
+    )
+    .unwrap());
+    // After the window the same head is reported again.
+    assert!(append_fixture_advisory(
+        &storage,
+        "default",
+        "message-head",
+        "interrupted",
+        1_500_000,
+        3,
+        now + chrono::Duration::milliseconds(10 * 60 * 1000 + 1),
+    )
+    .unwrap());
+
+    let events = storage.read_recent_events(10).unwrap();
+    let starved = events
+        .iter()
+        .filter(|event| {
+            event.kind == "scheduling_advisory" && event.data["kind"] == "queue_head_starved"
+        })
+        .count();
+    assert_eq!(starved, 3);
+}
+
+#[test]
+fn decide_next_action_records_duplicate_tick_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let mut work_item = WorkItemRecord::new("default", "queued work", WorkItemState::Open);
+    work_item.id = "work-queued".into();
+    work_item.revision = 3;
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::IdleTick,
+        scheduler::SchedulerInput::IdleSignal(scheduler::SchedulerIdleSignal::QueuedAvailable {
+            work_item: &work_item,
+            work_item_generation: None,
+            duplicate: Some(
+                scheduler::SchedulerDuplicateEvidence::QueuedAvailableMessage("msg-1".into()),
+            ),
+        }),
+    );
+
+    assert_eq!(decision.kind, scheduler::SchedulerDecisionKind::Noop);
+    assert_eq!(decision.reason, "duplicate_queued_available");
+    assert!(decision
+        .evidence
+        .iter()
+        .any(|entry| entry == "message_id=msg-1"));
+}
+
+#[test]
+fn scheduler_decision_event_records_evidence_and_bindings() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "work_queue".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    );
+    let event = scheduler::scheduler_decision_event(
+        &scheduler::SchedulerDecision::new(
+            scheduler::SchedulerDecisionKind::StartModelTurn,
+            "fixture",
+        )
+        .message(&message)
+        .model_reentry(true)
+        .work_item_id("work-1")
+        .evidence("fixture_evidence"),
+    );
+
+    assert_eq!(event.kind, "scheduler_decision");
+    assert_eq!(event.data["decision"].as_str(), Some("StartModelTurn"));
+    assert_eq!(event.data["model_reentry"].as_bool(), Some(true));
+    assert_eq!(event.data["work_item_id"].as_str(), Some("work-1"));
+    assert!(event.data["evidence"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|value| value.as_str() == Some("fixture_evidence")));
+}
+
+// --- wait resume shadow comparison ---
+
+fn append_task_wait_condition(
+    storage: &AppStorage,
+    id: &str,
+    agent_id: &str,
+    work_item_id: Option<&str>,
+    task_id: &str,
+) {
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: id.into(),
+            agent_id: agent_id.into(),
+            work_item_id: work_item_id.map(ToString::to_string),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Task,
+            source: Some("test".into()),
+            subject_ref: None,
+            waiting_for: format!("task_result:{task_id}"),
+            wake_sources: vec![WakeSource::TaskResult {
+                task_id: task_id.into(),
+            }],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+}
+fn append_open_work_item(storage: &AppStorage, id: &str, agent_id: &str) -> WorkItemRecord {
+    let mut record = WorkItemRecord::new(agent_id, "test objective", WorkItemState::Open);
+    record.id = id.into();
+    storage.append_work_item(&record).unwrap();
+    record
+}
+
+#[test]
+fn generic_external_wake_is_lifecycle_nudge_even_when_a_wait_matches() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "wait-agent", "default", None);
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::SystemTick,
+        MessageOrigin::System {
+            subsystem: "wake_hint".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "generic wake".into(),
+        },
+    );
+    message
+        .source_refs
+        .insert("external_trigger_id".into(), "trigger-wait-agent".into());
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::SystemTick,
+        class: ContinuationClass::LocalContinuation,
+        model_reentry: true,
+        prior_closure_outcome: ClosureOutcome::Waiting,
+        prior_waiting_reason: Some(WaitingReason::AwaitingExternalChange),
+        matched_waiting_reason: true,
+        evidence: Vec::new(),
+    };
+    let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn unbound_terminal_task_result_is_lifecycle_nudge_without_a_wait() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-terminal".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "terminal result".into(),
+        },
+    );
+    message.task_id = Some("task-terminal".into());
+    let task = TaskRecord {
+        id: "task-terminal".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: None,
+        work_item_id: None,
+        summary: Some("terminal task".into()),
+        detail: Some(serde_json::json!({
+            "terminal_reentry": true,
+        })),
+        recovery: None,
+    };
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, Some(&task)).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn runtime_owned_unbound_child_followup_is_lifecycle_nudge() {
+    let message = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "delegated objective".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "child".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn trusted_bound_provider_recovery_has_a_dedicated_candidate() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "continue provider recovery".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some("work-provider-recovery".into());
+    message.metadata = Some(serde_json::json!({
+        "provider_recovery": {
+            "fallback_model_ref": "anthropic/claude-sonnet-4-6",
+            "source_turn_id": "turn-provider-failure",
+            "source_message_id": "message-provider-failure",
+            "source_terminal_kind": "deferred_to_fallback",
+            "source_round": 1
+        }
+    }));
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ProviderRecovery {
+            work_item_id: "work-provider-recovery".into(),
+        })
+    );
+}
+
+#[test]
+fn malformed_bound_provider_recovery_keeps_its_dedicated_candidate() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "model_lineage_recovery".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "missing provider recovery directive".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+    message.work_item_id = Some("work-malformed-recovery".into());
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ProviderRecovery {
+            work_item_id: "work-malformed-recovery".into(),
+        })
+    );
+}
+
+#[test]
+fn runtime_owned_unbound_system_followup_is_lifecycle_nudge() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::InternalFollowup,
+        MessageOrigin::System {
+            subsystem: "first_run_intro".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Next,
+        MessageBody::Text {
+            text: "introduce the runtime".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn runtime_owned_unbound_child_evidence_is_lifecycle_nudge() {
+    let message = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "delegated evidence".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RuntimeSystem,
+        AdmissionContext::RuntimeOwned,
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(
+            scheduler::CanonicalActivationCandidate::LifecycleExternalNudge {
+                agent_id: "child".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn untrusted_unbound_internal_followup_is_not_a_canonical_candidate() {
+    let message = MessageEnvelope::new(
+        "child",
+        MessageKind::InternalFollowup,
+        MessageOrigin::Task {
+            task_id: "task-parent".into(),
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "untrusted followup".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn unbound_timer_tick_is_lifecycle_nudge_without_a_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TimerTick,
+        MessageOrigin::Timer {
+            timer_id: "timer-unbound".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "timer fired".into(),
+        },
+    );
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn canonical_wait_candidate_does_not_depend_on_legacy_model_reentry() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TimerTick,
+        MessageOrigin::Timer {
+            timer_id: "timer-canonical".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "resume exact wait".into(),
+        },
+    );
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::TimerFire,
+        class: ContinuationClass::LivenessOnly,
+        model_reentry: false,
+        prior_closure_outcome: ClosureOutcome::Completed,
+        prior_waiting_reason: None,
+        matched_waiting_reason: false,
+        evidence: Vec::new(),
+    };
+
+    assert!(matches!(
+        scheduler::canonical_activation_candidate(&message, Some(&continuation), None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ExactWaitResume { .. })
+    ));
+}
+
+#[test]
+fn correlated_wait_resume_requires_the_exact_expected_owner() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_active_external_wait_condition(&storage, "wait-work", "default", Some("work-a"));
+    append_active_external_wait_condition(&storage, "wait-lifecycle", "default", None);
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::CallbackEvent,
+        MessageOrigin::Callback {
+            descriptor_id: "callback".into(),
+            source: Some("test".into()),
+        },
+        AuthorityClass::IntegrationSignal,
+        Priority::Next,
+        MessageBody::Text {
+            text: "correlated wake".into(),
+        },
+    );
+
+    for candidate in [
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: Some("work-b".into()),
+            correlated_wait: Some("wait-work".into()),
+        },
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: Some("wait-work".into()),
+        },
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: Some("work-a".into()),
+            correlated_wait: Some("wait-lifecycle".into()),
+        },
+    ] {
+        assert_eq!(
+            scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate)
+                .unwrap(),
+            None
+        );
+    }
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(
+            &projection,
+            &message,
+            scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: Some("work-a".into()),
+                correlated_wait: Some("wait-work".into()),
+            },
+        )
+        .unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            wait_id: "wait-work".into(),
+        })
+    );
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(
+            &projection,
+            &message,
+            scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: None,
+                correlated_wait: Some("wait-lifecycle".into()),
+            },
+        )
+        .unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            wait_id: "wait-lifecycle".into(),
+        })
+    );
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(
+            &projection,
+            &message,
+            scheduler::CanonicalActivationCandidate::ExactWaitResume {
+                expected_work_item_id: Some("work-a".into()),
+                correlated_wait: Some("wait-work".into()),
+            },
+        )
+        .unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "work-a".into(),
+            },
+            wait_id: "wait-work".into(),
+        })
+    );
+}
+
+#[test]
+fn unbound_operator_input_exactly_resumes_agent_wait_or_becomes_nudge() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let continuation = ContinuationResolution {
+        trigger_kind: ContinuationTriggerKind::OperatorInput,
+        class: ContinuationClass::ResumeExpectedWait,
+        model_reentry: true,
+        prior_closure_outcome: ClosureOutcome::Waiting,
+        prior_waiting_reason: Some(WaitingReason::AwaitingOperatorInput),
+        matched_waiting_reason: true,
+        evidence: Vec::new(),
+    };
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+
+    append_operator_wait_condition(&storage, "wait-operator", "default", None);
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::AgentLifecycle {
+                agent_id: "default".into(),
+            },
+            wait_id: "wait-operator".into(),
+        })
+    );
+
+    let empty_dir = tempdir().unwrap();
+    let empty_storage = AppStorage::new_for_test(empty_dir.path()).unwrap();
+    empty_storage.write_agent_for_fixture(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&empty_storage, &agent).unwrap();
+    let candidate = scheduler::canonical_activation_candidate(&message, Some(&continuation), None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn explicitly_bound_operator_input_resumes_work_item_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_open_work_item(&storage, "wi-operator", "default");
+    append_operator_wait_condition(&storage, "wait-operator", "default", Some("wi-operator"));
+
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+    message.work_item_id = Some("wi-operator".into());
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::ExplicitlyBoundOperatorInput {
+                work_item_id: "wi-operator".into(),
+                wait_id: Some("wait-operator".into()),
+            },
+        )
+    );
+}
+
+#[test]
+fn authenticated_operator_ingress_can_activate_low_authority_prompt_without_upgrade() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("holon_run".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::IntegrationSignal,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run controlled prompt".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::RunOnce,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+
+    assert!(scheduler::authenticated_operator_ingress(&message));
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .expect("authenticated low-authority operator input should be activatable");
+    assert_eq!(
+        candidate,
+        scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: None,
+        }
+    );
+    assert_eq!(message.authority_class, AuthorityClass::IntegrationSignal);
+
+    message.message_seq = None;
+    assert!(!scheduler::authenticated_operator_ingress(&message));
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        None
+    );
+}
+
+#[test]
+fn trusted_high_authority_operator_prompt_keeps_legacy_activation_path() {
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "legacy trusted prompt".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::canonical_activation_candidate(&message, None, None).unwrap(),
+        Some(scheduler::CanonicalActivationCandidate::ExactWaitResume {
+            expected_work_item_id: None,
+            correlated_wait: None,
+        })
+    );
+}
+
+#[test]
+fn explicitly_bound_low_authority_operator_input_preserves_content_trust() {
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("holon_run".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "run external evidence".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+    message.work_item_id = Some("wi-operator".into());
+
+    assert!(scheduler::authenticated_operator_ingress(&message));
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .expect("bound low-authority operator input should be activatable");
+    assert!(matches!(
+        candidate,
+        scheduler::CanonicalActivationCandidate::ExplicitlyBoundOperatorInput {
+            work_item_id
+        } if work_item_id == "wi-operator"
+    ));
+    assert_eq!(message.authority_class, AuthorityClass::ExternalEvidence);
+}
+
+#[test]
+fn resolved_cross_owner_task_wait_still_routes_result_replay_to_waiter() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_open_work_item(&storage, "wi-owner", "default");
+    append_open_work_item(&storage, "wi-waiter", "default");
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-resolved".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "terminal result".into(),
+        },
+    );
+    message.task_id = Some("task-resolved".into());
+    message.work_item_id = Some("wi-owner".into());
+    append_resolved_task_wait_condition(
+        &storage,
+        "wait-cross-owner",
+        "default",
+        Some("wi-waiter"),
+        "task-resolved",
+        &message.id,
+    );
+    let task = TaskRecord {
+        id: "task-resolved".into(),
+        agent_id: "default".into(),
+        kind: TaskKind::CommandTask,
+        status: TaskStatus::Completed,
+        created_at: Utc::now(),
+        updated_at: Utc::now(),
+        parent_message_id: Some(message.id.clone()),
+        work_item_id: Some("wi-owner".into()),
+        summary: Some("terminal task".into()),
+        detail: None,
+        recovery: None,
+    };
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    projection.set_canonical_waiting_state_for_test("wi-waiter", "wait-cross-owner");
+    let candidate = scheduler::canonical_activation_candidate(&message, None, Some(&task))
+        .unwrap()
+        .expect("bound terminal task result should be activatable");
+
+    // After a restart the queued result needs replay; the fallback must
+    // route it to the recorded waiter even though its wait is already
+    // Resolved (#3124).
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "wi-waiter".into(),
+            },
+            wait_id: "wait-cross-owner".into(),
+        })
+    );
+}
+
+#[test]
+fn normal_operator_input_resumes_work_item_wait_but_interject_does_not() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    append_open_work_item(&storage, "wi-operator", "default");
+    append_operator_wait_condition(&storage, "wait-operator", "default", Some("wi-operator"));
+
+    let mut projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    projection.enable_canonical_authority_for_test();
+    let mut message = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: Some("operator".into()),
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "continue".into(),
+        },
+    )
+    .with_admission(
+        MessageDeliverySurface::CliPrompt,
+        AdmissionContext::LocalProcess,
+    );
+    message.message_seq = Some(1);
+    let candidate = scheduler::canonical_activation_candidate(&message, None, None)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &message, candidate).unwrap(),
+        Some(scheduler::CanonicalActivationScenario::ExactWaitResume {
+            owner: SchedulerOwner::WorkItem {
+                work_item_id: "wi-operator".into(),
+            },
+            wait_id: "wait-operator".into(),
+        })
+    );
+
+    let interject = MessageEnvelope {
+        priority: Priority::Interject,
+        ..message
+    };
+    let candidate = scheduler::canonical_activation_candidate(&interject, None, None)
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        scheduler::resolve_canonical_activation_scenario(&projection, &interject, candidate)
+            .unwrap(),
+        Some(
+            scheduler::CanonicalActivationScenario::LifecycleExternalNudge {
+                agent_id: "default".into(),
+            }
+        )
+    );
+}
+
+#[test]
+fn message_claim_authority_scope_is_derived_without_shadow_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        AuthorityClass::ExternalEvidence,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "claim".into(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::REDUCER_ONLY_CANDIDATES_SCENARIO]
+    );
+}
+
+#[test]
+fn wait_resume_claim_authority_scope_is_derived_without_shadow_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let work_item = append_open_work_item(&storage, "wi-1", "default");
+    append_task_wait_condition(&storage, "wait-1", "default", Some("wi-1"), "task-1");
+    seed_waiting_work_execution(&storage, &work_item, "wait-1");
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TaskResult,
+        MessageOrigin::Task {
+            task_id: "task-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: String::new(),
+        },
+    );
+
+    assert_eq!(
+        scheduler::authority_scenarios_for_message_claim(&projection, &message, None),
+        vec![scheduler::EXACT_TASK_REJOIN_SCENARIO]
+    );
+}
+
+#[test]
+fn timer_tick_only_matches_the_wait_for_the_same_timer() {
+    let now = Utc::now();
+    let matching = WaitConditionRecord {
+        id: "wait-matching".into(),
+        agent_id: "default".into(),
+        work_item_id: Some("work-matching".into()),
+        status: WaitConditionStatus::Active,
+        kind: WaitConditionKind::Timer,
+        source: Some("test".into()),
+        subject_ref: Some("timer-1".into()),
+        waiting_for: "timer-1".into(),
+        wake_sources: vec![WakeSource::Timer { wake_at: now }],
+        continuation: None,
+        created_at: now,
+        updated_at: now,
+        expires_at: None,
+        resolved_at: None,
+        cancelled_at: None,
+        turn_id: None,
+        trigger_message_id: None,
+        triggered_at: None,
+    };
+    let mut other = matching.clone();
+    other.id = "wait-other".into();
+    other.subject_ref = Some("timer-2".into());
+    let message = MessageEnvelope::new(
+        "default",
+        MessageKind::TimerTick,
+        MessageOrigin::Timer {
+            timer_id: "timer-1".into(),
+        },
+        AuthorityClass::RuntimeInstruction,
+        Priority::Next,
+        MessageBody::Text {
+            text: "timer fired".into(),
+        },
+    );
+
+    assert!(scheduler::message_matches_wait_condition(
+        &message, &matching
+    ));
+    assert!(!scheduler::message_matches_wait_condition(&message, &other));
+}
+
+#[test]
+fn legacy_child_agent_task_kinds_do_not_gate_scheduler_wait_for_task() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let agent = AgentState::new("default");
+    storage.write_agent_for_fixture(&agent).unwrap();
+    let now = Utc::now();
+
+    for (id, kind, recovery) in [
+        (
+            "legacy-inherited",
+            TaskKind::SubagentTask,
+            TaskRecoverySpec::SubagentTask {
+                summary: "legacy inherited".into(),
+                prompt: "resume".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            },
+        ),
+        (
+            "legacy-worktree",
+            TaskKind::WorktreeSubagentTask,
+            TaskRecoverySpec::WorktreeSubagentTask {
+                summary: "legacy worktree".into(),
+                prompt: "resume".into(),
+                authority_class: AuthorityClass::OperatorInstruction,
+            },
+        ),
+    ] {
+        storage
+            .append_task(&TaskRecord {
+                id: id.into(),
+                agent_id: "default".into(),
+                kind,
+                status: TaskStatus::Running,
+                created_at: now,
+                updated_at: now,
+                parent_message_id: None,
+                work_item_id: None,
+                summary: Some("legacy child task".into()),
+                detail: Some(serde_json::json!({ "wait_policy": "blocking" })),
+                recovery: Some(recovery),
+            })
+            .unwrap();
+    }
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(projection.active_tasks.len(), 2);
+    assert!(!projection.has_blocking_active_tasks);
+
+    let decision = scheduler::decide_next_action(
+        &projection,
+        scheduler::SchedulerBoundary::RunLoopIdle,
+        scheduler::SchedulerInput::Idle,
+    );
+    assert_ne!(decision.kind, scheduler::SchedulerDecisionKind::WaitForTask);
+}
+
+#[test]
+fn scheduler_decision_append_dedupes_identical_latest_event() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForExternalChange,
+        "active_waiting_intents",
+    )
+    .boundary("fixture")
+    .liveness_only(true)
+    .evidence("active_waiting_intents=1");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &decision).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &decision).unwrap(),
+        "duplicate decision should be suppressed"
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    assert_eq!(events.len(), 2, "should emit both typed and legacy events");
+    assert_eq!(events[0].kind, "scheduler_diagnostic");
+    assert_eq!(events[0].data["boundary"].as_str(), Some("fixture"));
+    assert_eq!(events[0].data["shadow_matched"], serde_json::Value::Null);
+    assert_eq!(events[1].kind, "scheduler_decision");
+    assert_eq!(events[1].data["boundary"].as_str(), Some("fixture"));
+}
+
+#[test]
+fn scheduler_decision_append_dedupes_across_interleaved_boundaries() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let idle_tick = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("active_timers=1");
+    let run_loop_idle = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForExternalChange,
+        "active_waiting_intents",
+    )
+    .boundary("run_loop_idle")
+    .liveness_only(true)
+    .evidence("active_waiting_intents=1");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &idle_tick).unwrap());
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &run_loop_idle).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &idle_tick).unwrap(),
+        "unchanged idle_tick decision after an interleaved boundary must be suppressed"
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    assert_eq!(
+        events.len(),
+        4,
+        "each decision emits typed+legacy events once"
+    );
+}
+
+#[test]
+fn scheduler_decision_append_records_revert_after_model_reentry() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let idle_wait = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("active_timers=1");
+    let work_trigger = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::EmitSystemTick,
+        "wake_hint",
+    )
+    .boundary("run_loop")
+    .model_reentry(true)
+    .evidence("pending_wake_hint");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &idle_wait).unwrap());
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &work_trigger).unwrap());
+    assert!(
+        scheduler::append_scheduler_decision(&storage, "default", &idle_wait).unwrap(),
+        "work -> idle revert after a model-reentry decision must be recorded"
+    );
+
+    let events = storage.read_recent_events(10).unwrap();
+    assert_eq!(
+        events.len(),
+        6,
+        "each recorded decision emits typed+legacy events"
+    );
+    assert_eq!(events[5].data["decision"].as_str(), Some("WaitForTimer"));
+}
+
+#[test]
+fn scheduler_decision_append_dedup_ignores_volatile_evidence() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let first = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("active_timers=1");
+    let repeat = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::WaitForTimer,
+        "active_timers",
+    )
+    .boundary("idle_tick")
+    .liveness_only(true)
+    .evidence("idempotency_key=continue_active:2026-09-18T15:30:00Z");
+
+    assert!(scheduler::append_scheduler_decision(&storage, "default", &first).unwrap());
+    assert!(
+        !scheduler::append_scheduler_decision(&storage, "default", &repeat).unwrap(),
+        "evidence-only drift must not re-append the same decision"
+    );
+    assert_eq!(storage.read_recent_events(10).unwrap().len(), 2);
+}
+
+// --- public scheduler diagnostic event stream tests ---
+
+#[test]
+fn scheduler_diagnostic_audit_event_carries_decision_without_shadow() {
+    let mut decision = scheduler::SchedulerDecision::new(
+        scheduler::SchedulerDecisionKind::StartModelTurn,
+        "message_admitted",
+    )
+    .boundary("run_loop")
+    .evidence("queue_len=1");
+    decision.message_id = Some("msg-test-1".into());
+
+    let event = scheduler::scheduler_diagnostic_audit_event("default", &decision);
+    assert_eq!(event.agent_id, "default");
+    assert_eq!(event.decision, "StartModelTurn");
+    assert_eq!(event.reason, "message_admitted");
+    assert_eq!(event.boundary.as_deref(), Some("run_loop"));
+    assert_eq!(event.message_id.as_deref(), Some("msg-test-1"));
+    assert!(event.evidence.contains(&"queue_len=1".to_string()));
+    assert_eq!(event.scenario_class, None);
+}
+
+#[test]
+fn operator_interjection_classifier_requires_trusted_operator_interjection_prompt() {
+    let trusted_interjection = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "interject".into(),
+        },
+    );
+    assert!(scheduler::is_operator_interjection_message(
+        &trusted_interjection
+    ));
+
+    let normal_operator = MessageEnvelope::new(
+        "default",
+        MessageKind::OperatorPrompt,
+        MessageOrigin::Operator {
+            actor_id: None,
+            actor_display_name: None,
+        },
+        AuthorityClass::OperatorInstruction,
+        Priority::Normal,
+        MessageBody::Text {
+            text: "normal".into(),
+        },
+    );
+    assert!(!scheduler::is_operator_interjection_message(
+        &normal_operator
+    ));
+
+    let webhook_interjection = MessageEnvelope::new(
+        "default",
+        MessageKind::WebhookEvent,
+        MessageOrigin::Webhook {
+            source: "test".into(),
+            event_type: None,
+        },
+        AuthorityClass::IntegrationSignal,
+        Priority::Interject,
+        MessageBody::Text {
+            text: "webhook".into(),
+        },
+    );
+    assert!(!scheduler::is_operator_interjection_message(
+        &webhook_interjection
+    ));
+}
+
+// --- WaitingOperator recheck tests (#1989) ---
+//
+// When an agent uses WaitFor(wake=operator_input, recheck_after_ms=...), the
+// work item enters WaitingOperator with a recheck_at deadline. If recheck_at
+// expires and has not been consumed, the scheduler must NOT block on
+// WaitForOperator — it should return None so the agent wakes up to
+// re-evaluate. If recheck_at was already consumed, or has not yet expired,
+// the scheduler returns WaitForOperator as usual.
+
+fn setup_waiting_operator_work_item(
+    storage: &AppStorage,
+    agent_id: &str,
+    work_item_id: &str,
+    recheck_at: Option<DateTime<Utc>>,
+    recheck_consumed_at: Option<DateTime<Utc>>,
+) {
+    let mut work_item = WorkItemRecord::new(
+        agent_id,
+        "operator-input wait with recheck",
+        WorkItemState::Open,
+    );
+    work_item.id = work_item_id.into();
+    work_item.recheck_at = recheck_at;
+    work_item.recheck_consumed_at = recheck_consumed_at;
+    storage.append_work_item(&work_item).unwrap();
+
+    // Attach an active Operator wait condition so the scheduler classifies
+    // the work item scheduling_state as WaitingOperator.
+    storage
+        .append_wait_condition(&WaitConditionRecord {
+            id: format!("wait-{work_item_id}"),
+            agent_id: agent_id.into(),
+            work_item_id: Some(work_item_id.into()),
+            status: WaitConditionStatus::Active,
+            kind: WaitConditionKind::Operator,
+            source: None,
+            subject_ref: None,
+            waiting_for: "operator input".into(),
+            wake_sources: vec![],
+            continuation: None,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+            expires_at: None,
+            resolved_at: None,
+            cancelled_at: None,
+            turn_id: None,
+            trigger_message_id: None,
+            triggered_at: None,
+        })
+        .unwrap();
+}
+
+#[test]
+fn waiting_operator_with_expired_unconsumed_recheck_lets_agent_wake() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-recheck-expired".into());
+
+    setup_waiting_operator_work_item(
+        &storage,
+        "default",
+        "work-recheck-expired",
+        // recheck_at in the past → expired
+        Some(Utc::now() - chrono::Duration::seconds(30)),
+        // not consumed
+        None,
+    );
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+
+    // Sanity: the work item is indeed WaitingOperator
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingOperator)
+    );
+
+    // The fix: expired + unconsumed recheck means the scheduler should NOT
+    // block — it returns None so the agent wakes up.
+    assert!(scheduler::wait_decision_for_projection(&projection).is_none());
+}
+
+#[test]
+fn waiting_operator_with_expired_but_consumed_recheck_still_waits() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-recheck-consumed".into());
+
+    let recheck_at = Utc::now() - chrono::Duration::seconds(30);
+    setup_waiting_operator_work_item(
+        &storage,
+        "default",
+        "work-recheck-consumed",
+        Some(recheck_at),
+        // consumed after recheck_at → no re-pending
+        Some(recheck_at + chrono::Duration::seconds(5)),
+    );
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingOperator)
+    );
+
+    let decision = scheduler::wait_decision_for_projection(&projection);
+    assert_eq!(
+        decision.unwrap().kind,
+        scheduler::SchedulerDecisionKind::WaitForOperator
+    );
+}
+
+#[test]
+fn waiting_operator_with_future_recheck_still_waits() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-recheck-future".into());
+
+    setup_waiting_operator_work_item(
+        &storage,
+        "default",
+        "work-recheck-future",
+        // recheck_at in the future → not yet expired
+        Some(Utc::now() + chrono::Duration::hours(1)),
+        None,
+    );
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingOperator)
+    );
+
+    let decision = scheduler::wait_decision_for_projection(&projection);
+    assert_eq!(
+        decision.unwrap().kind,
+        scheduler::SchedulerDecisionKind::WaitForOperator
+    );
+}
+
+#[test]
+fn waiting_external_with_interrupted_replay_does_not_return_liveness_only_wait() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-external-replay".into());
+    append_active_external_wait_condition(
+        &storage,
+        "wait-external-replay",
+        "default",
+        Some("work-external-replay"),
+    );
+    storage.write_agent_for_fixture(&agent).unwrap();
+    storage
+        .append_queue_entry(&QueueEntryRecord {
+            message_id: "msg-interrupted-replay".into(),
+            agent_id: "default".into(),
+            priority: Priority::Normal,
+            status: QueueEntryStatus::Interrupted,
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        })
+        .unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    assert_eq!(
+        projection.waiting_work_item_scheduling_state,
+        Some(WorkItemSchedulingState::WaitingExternal)
+    );
+    assert!(projection.has_interrupted_replay);
+    assert!(scheduler::wait_decision_for_projection(&projection).is_none());
+}
+
+#[test]
+fn waiting_external_without_interrupted_replay_remains_liveness_only() {
+    let dir = tempdir().unwrap();
+    let storage = AppStorage::new_for_test(dir.path()).unwrap();
+    let mut agent = AgentState::new("default");
+    agent.current_work_item_id = Some("work-external-idle".into());
+    append_active_external_wait_condition(
+        &storage,
+        "wait-external-idle",
+        "default",
+        Some("work-external-idle"),
+    );
+    storage.write_agent_for_fixture(&agent).unwrap();
+
+    let projection = scheduler::SchedulerProjection::from_state(&storage, &agent).unwrap();
+    let decision =
+        scheduler::wait_decision_for_projection(&projection).expect("external wait decision");
+    assert_eq!(
+        decision.kind,
+        scheduler::SchedulerDecisionKind::WaitForExternalChange
+    );
+    assert!(decision.liveness_only);
+}

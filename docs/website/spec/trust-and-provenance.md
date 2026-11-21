@@ -12,11 +12,11 @@ policy — and how those labels flow through the runtime.
 
 > **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
-> `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
-> `src/http/state.rs`, `src/context/mod.rs`, `crates/holon-context/src/render.rs`,
-> `src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
-> `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
-> `src/runtime/turn/execution.rs`.
+> `AdmissionContext`, `crates/holon-runtime/src/policy.rs`, `crates/holon-runtime/src/ingress.rs`, `crates/holon-runtime/src/http/mod.rs`,
+> `crates/holon-runtime/src/http/state.rs`, `crates/holon-runtime/src/context/mod.rs`, `crates/holon-context/src/render.rs`,
+> `crates/holon-runtime/src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
+> `crates/holon-runtime/src/runtime/message_dispatch.rs`, `crates/holon-runtime/src/runtime/operator_dispatch.rs`, and
+> `crates/holon-runtime/src/runtime/turn/execution.rs`.
 
 ## Source RFCs
 
@@ -229,18 +229,18 @@ Validated implementation points:
 
 - `crates/holon-domain/src/message.rs` defines the canonical envelope fields and legacy alias
   compatibility.
-- `src/policy.rs` defines default authority by origin and kind/origin admission
+- `crates/holon-runtime/src/policy.rs` defines default authority by origin and kind/origin admission
   checks.
-- [`src/http/state.rs`](../../../src/http/state.rs) prevents public enqueue from
+- [`crates/holon-runtime/src/http/state.rs`](../../../crates/holon-runtime/src/http/state.rs) prevents public enqueue from
   using runtime-owned kinds,
   `Interject` priority, privileged origins, or authority overrides.
-- [`src/context/mod.rs`](../../../src/context/mod.rs) and
-  [`src/prompt/mod.rs`](../../../src/prompt/mod.rs) expose
+- [`crates/holon-runtime/src/context/mod.rs`](../../../crates/holon-runtime/src/context/mod.rs) and
+  [`crates/holon-runtime/src/prompt/mod.rs`](../../../crates/holon-runtime/src/prompt/mod.rs) expose
   authority/provenance labels to the model and preserve the external-evidence
   trust boundary in prompt instructions.
-- [`src/runtime/message_dispatch.rs`](../../../src/runtime/message_dispatch.rs),
-  [`src/runtime/operator_dispatch.rs`](../../../src/runtime/operator_dispatch.rs),
-  and [`src/runtime/turn/execution.rs`](../../../src/runtime/turn/execution.rs)
+- [`crates/holon-runtime/src/runtime/message_dispatch.rs`](../../../crates/holon-runtime/src/runtime/message_dispatch.rs),
+  [`crates/holon-runtime/src/runtime/operator_dispatch.rs`](../../../crates/holon-runtime/src/runtime/operator_dispatch.rs),
+  and [`crates/holon-runtime/src/runtime/turn/execution.rs`](../../../crates/holon-runtime/src/runtime/turn/execution.rs)
   include provenance labels in queue, processing, transcript, and interjection
   events.
 - `crates/holon-tui/src/operator_event.rs` and `crates/holon-tui/src/presentation.rs` keep raw event provenance
@@ -255,7 +255,7 @@ Validated implementation points:
 - **Unresolved design decision:** `signed_integration` appears in the RFC as a
   possible admission context, but there is no `AdmissionContext::SignedIntegration`
   variant yet.
-- **Missing test coverage addressed here:** `src/policy.rs` now has a direct
+- **Missing test coverage addressed here:** `crates/holon-runtime/src/policy.rs` now has a direct
   classification matrix test for all current origin defaults and allowed
   origin/kind pairs.
 - **No implementation bug found:** the inspected ingress, prompt, event, and

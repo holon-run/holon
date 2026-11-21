@@ -33,7 +33,7 @@ IMPLEMENTATION_HEADING_RE = re.compile(
     r"^#{1,6}\s+Implementation references?\s*$", re.IGNORECASE
 )
 REPOSITORY_PATH_RE = re.compile(
-    r"^(?:src|tests|docs|scripts|builtin_templates|agent_templates|web-gui|\.github)/"
+    r"^(?:src|crates|tests|docs|scripts|builtin_templates|agent_templates|web-gui|\.github)/"
     r"[A-Za-z0-9_./-]+$"
 )
 REPOSITORY_ROOT_FILES = {"Cargo.lock", "Cargo.toml", "Makefile"}

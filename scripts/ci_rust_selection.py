@@ -9,8 +9,9 @@ from collections import defaultdict
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
-# The root job already checks this package via holon's local-onnx feature.
-SKIP_STANDALONE = {"decision-local-onnx"}
+# Root Rust jobs check local-onnx through its feature and run the runtime
+# tests through the memory-bounded library shards.
+SKIP_STANDALONE = {"decision-local-onnx", "holon-runtime"}
 
 
 def crate_manifests():

@@ -8,7 +8,7 @@ order: 50
 
 本页定义受管任务执行的当前契约：生命周期、终态重入和监督接口。
 
-> **Last verified:** 2026-05-25 against `src/types.rs` `TaskRecord`,
+> **Last verified:** 2026-05-25 against `crates/holon-runtime/src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
 > implementations in `src/tool/host/{exec_command,task_list,task_status,
 > task_input,task_stop,invoke_agent}.rs`.

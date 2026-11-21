@@ -132,14 +132,14 @@ class CiTestShardsTests(unittest.TestCase):
         with mock.patch.object(
             ci_test_shards.subprocess, "run", return_value=completed
         ) as run:
-            names = ci_test_shards.lib_test_names()
+            names = ci_test_shards.lib_test_names("a")
         self.assertEqual(
             names,
             ["alpha::tests::one", "alpha::tests::two", "beta::solo"],
         )
         self.assertEqual(
             run.call_args.args[0],
-            ["cargo", "test", "--lib", "--", "--list"],
+            [*ci_test_shards.RUNTIME_LIB, "--", "--list"],
         )
 
     def test_compile_groups_cover_each_group_once(self):
@@ -198,17 +198,23 @@ class CiTestShardsTests(unittest.TestCase):
                     ci_test_shards.run_lib_shard(job)
                 groups = ci_test_shards.LIB_COMPILE_GROUPS[job]
                 self.assertEqual(listing.call_args_list, [mock.call(g) for g in groups])
-                self.assertEqual(run.call_count, 2 + expected_bins)
+                self.assertEqual(run.call_count, 2 + (job == "lib-b") + expected_bins)
                 for call, group in zip(run.call_args_list, groups):
                     self.assertEqual(call.kwargs["env"]["HOLON_LIB_TEST_SHARD"], group)
                     self.assertEqual(call.args[0],
-                                     ["cargo", "test", "--lib", "--", "--test-threads=2"])
+                                     [*ci_test_shards.RUNTIME_LIB, "--", "--test-threads=2"])
                     self.assertNotIn("check", call.kwargs)
                 for group, expected in zip(groups, names):
                     path = Path(target) / "ci-timing" / f"lib-test-names-{group}.json"
                     self.assertEqual(json.loads(path.read_text()), expected)
                 if expected_bins:
                     self.assertIn("--bins", run.call_args_list[-1].args[0])
+                else:
+                    self.assertEqual(
+                        run.call_args_list[-1].args[0],
+                        ["cargo", "test", "--locked", "--lib", "--", "--test-threads=2"],
+                    )
+                    self.assertEqual(run.call_args_list[-1].kwargs["env"]["HOLON_LIB_TEST_SHARD"], "d")
 
     def test_missing_source_cfg_fails_before_running_tests(self):
         with mock.patch.object(ci_test_shards, "lib_test_names", return_value=["host::one"]), \
@@ -269,7 +275,7 @@ class CiTestShardsTests(unittest.TestCase):
         self.assertEqual(run.call_count, 3)
         for module, count, call in zip(modules, (2, 1, 1), run.call_args_list):
             command = [
-                "cargo", "test", "--lib", f"{module}::",
+                *ci_test_shards.RUNTIME_LIB, f"{module}::",
                 "--", "--test-threads=2",
             ]
             self.assertEqual(call.args[0], command)
@@ -325,7 +331,7 @@ class CiTestShardsTests(unittest.TestCase):
         for failed in range(3):
             completed = [
                 ci_test_shards.subprocess.CompletedProcess(
-                    ["cargo", "test", "--lib", f"{module}::",
+                    [*ci_test_shards.RUNTIME_LIB, f"{module}::",
                      "--", "--test-threads=2"],
                     7 if index == failed else 0,
                 )

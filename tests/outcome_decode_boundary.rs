@@ -28,11 +28,11 @@ const FORBIDDEN: &[&str] = &[
 
 #[test]
 fn persisted_outcomes_decode_only_through_the_migration_entry() {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("crates/holon-runtime");
     let mut violations = Vec::new();
     for file in rust_sources(&root.join("src/runtime_db")) {
         let relative = file
-            .strip_prefix(root)
+            .strip_prefix(&root)
             .expect("runtime database source is inside the crate")
             .to_string_lossy()
             .into_owned();

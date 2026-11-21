@@ -9,11 +9,11 @@ order: 20
 本页定义 WorkItem 运行时行为的当前契约：生命周期、焦点、就绪状态、规划、
 阻塞和完成语义。
 
-> **Last verified:** 2026-05-26 against `src/types.rs` `WorkItemRecord`,
+> **Last verified:** 2026-05-26 against `crates/holon-runtime/src/types.rs` `WorkItemRecord`,
 > `WorkItemState`, `WorkItemPlanStatus`, `WorkItemReadiness`,
 > `WorkItemSchedulingState`, and the tool implementations in
 > `src/tool/host/{create,update,pick,list,get,complete}_work_item.rs` and
-> `src/tool/host/wait_for.rs`.
+> `crates/holon-runtime/src/tool/host/wait_for.rs`.
 
 ## 源 RFC
 

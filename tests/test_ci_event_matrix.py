@@ -144,7 +144,7 @@ class CiEventMatrixTests(unittest.TestCase):
                 "Smoke test image", "Validate Docker E2E runner",
                 "Export image for downstream E2E jobs", "Upload image for downstream E2E jobs",
             ],
-            "rust-build": ["Package check", "Check generated snapshots"],
+            "rust-build": ["Check generated snapshots"],
             "android": ["Verify Android screenshots and lint"],
         }.items():
             for name in names:

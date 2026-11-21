@@ -5,6 +5,7 @@ edition = "2021"
 description = "Terminal operator console for Holon"
 license = "Apache-2.0"
 repository = "https://github.com/holon-run/holon"
+publish = false
 
 [features]
 test-support = []

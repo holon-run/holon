@@ -91,6 +91,8 @@ operator input and do not grant additional permissions.
 
 ## Install
 
+Holon is distributed as prebuilt binaries and container images.
+
 ```bash
 brew tap holon-run/tap
 brew install holon

@@ -9,7 +9,7 @@ order: 50
 This page defines the current contract for managed task execution: lifecycle,
 terminal re-entry, and supervision surfaces.
 
-> **Last verified:** 2026-09-19 against `src/types.rs` `TaskRecord`,
+> **Last verified:** 2026-09-19 against `crates/holon-runtime/src/types.rs` `TaskRecord`,
 > `TaskStatus`, `TaskKind`, `TaskHandle`, `TaskWaitPolicy`, and the tool
 > implementations in `src/tool/host/{exec_command,task_list,task_status,
 > task_input,task_stop,invoke_agent}.rs`.

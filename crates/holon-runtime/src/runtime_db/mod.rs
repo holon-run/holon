@@ -1,0 +1,1554 @@
+//! Runtime database facade: connection management, write queue, and domain repositories.
+//!
+//! This module is split into submodules by storage responsibility:
+//! - [`types`]: public types (repository handles, index outbox, storage domain).
+//! - [`write_queue`]: background writer task and write queue.
+//! - [`connection`]: SQLite connection setup, retry, and file locking.
+//! - [`migrations`]: schema migrations.
+//! - [`storage_domain`]: storage domain checkpoint helpers.
+//! - [`evidence`]: evidence insertion and query types.
+//! - [`repositories`]: domain repository implementations.
+//! - [`index_outbox`]: runtime index outbox repository.
+
+pub(crate) mod agent_deletion_cleanup;
+pub mod agent_list;
+pub mod agent_message_delivery;
+pub mod agent_relations;
+pub mod audit;
+pub mod authentication;
+pub(crate) mod bootstrap_inputs;
+pub mod brief_publication_repair;
+#[doc(hidden)]
+pub mod cold_fixture;
+pub(crate) mod cold_summary;
+pub mod connection;
+pub mod content_reports;
+pub(crate) mod context_inputs;
+pub(crate) mod control_transition;
+pub mod conversation;
+pub(crate) mod current_query;
+pub(crate) mod current_read_writes;
+pub(crate) mod current_run_abort;
+pub mod destructive_operations;
+pub(crate) mod dispatch_memory;
+pub(crate) mod episode_memory;
+pub(crate) mod episode_snapshot;
+pub mod evidence;
+mod external_command_attempts;
+pub(crate) mod input_evidence_snapshot;
+pub(crate) mod input_evidence_writes;
+pub(crate) mod input_mutation_receipts;
+pub(crate) mod input_preparation;
+pub(crate) mod input_recovery_install;
+mod legacy_scheduler_wire;
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+mod migration_data_tests;
+pub mod migrations;
+pub mod persistence;
+pub(crate) mod prepared_input_evidence;
+pub mod provider_admission;
+#[cfg(all(test, holon_lib_test_shard = "c"))]
+mod reader_pool_http_tests;
+#[cfg(holon_lib_test_shard = "b")]
+#[cfg(test)]
+mod reader_pool_tests;
+pub(crate) mod reclamation;
+pub(crate) mod reclamation_reminders;
+pub mod repositories;
+pub mod retention;
+pub mod retired_scheduler_cleanup;
+pub(crate) mod startup_ended_memory;
+mod storage_diagnostics;
+pub mod storage_domain;
+pub(crate) mod subagents;
+pub(crate) mod task_result_queue;
+pub(crate) mod task_result_settlement;
+pub(crate) mod transitions;
+pub mod turn_settlement_repair;
+mod turn_start;
+pub use input_evidence_snapshot::maintenance::{
+    NeedsOfflineInputMaintenance, OfflineInputMaintenance,
+};
+pub(crate) mod child_task_terminal;
+pub(crate) mod command_task_creation;
+pub(crate) mod command_task_terminal;
+pub(crate) mod scheduling_snapshot;
+pub(crate) mod task_recovery;
+pub(crate) mod task_snapshot;
+pub(crate) mod task_status_metadata;
+pub(crate) mod task_stop;
+pub mod types;
+pub mod unread;
+pub mod work_item_source_revision_repair;
+pub(crate) mod work_snapshot;
+pub(crate) mod workspace_context;
+pub mod write_queue;
+
+pub mod observer_sync;
+pub(crate) mod outcome_reads;
+
+mod index_outbox;
+
+// Re-export public types that are referenced as `crate::runtime_db::Type`.
+pub use crate::runtime_db::audit::{
+    AgentBriefIntegrityAudit, BriefIntegrityAudit, BriefIntegrityCategory, BriefIntegrityCounts,
+    ProjectionEffectInventoryGroup, ProjectionEffectsAudit, RuntimeDbAuditBaseline,
+    RuntimeDbAuditCheck, RuntimeDbAuditDatabase, RuntimeDbAuditOptions, RuntimeDbAuditReport,
+    ViolationSplit,
+};
+pub use crate::runtime_db::authentication::AuthenticationRepository;
+pub use crate::runtime_db::brief_publication_repair::{
+    WaitFinalBriefPublicationRepairDiagnostic, WaitFinalBriefPublicationRepairPhase,
+    WaitFinalBriefPublicationRepairPlanStatus, WaitFinalBriefPublicationRepairProgress,
+    WaitFinalBriefPublicationRepairReport,
+};
+pub use crate::runtime_db::destructive_operations::{
+    DestructiveOperationPhase, DestructiveOperationRecord, DestructiveOperationRepository,
+    PlannedDestructiveOperation,
+};
+pub use crate::runtime_db::evidence::{
+    EvidenceKind, EvidencePayloadRow, EvidenceQuery, EvidenceRow,
+};
+pub use crate::runtime_db::index_outbox::{
+    RuntimeIndexChange, RuntimeIndexOperation, RuntimeIndexOutboxRepository, RuntimeIndexOutboxRow,
+};
+pub use crate::runtime_db::observer_sync::{
+    AgentEventRecoveryWindow, AgentRosterLatestBriefRow, AgentRosterRow, AgentRosterSnapshotRows,
+};
+pub(crate) use crate::runtime_db::persistence::{
+    original_input_attempt_certainty, retryable_state_transition_conflict,
+};
+pub use crate::runtime_db::persistence::{
+    persistence_certainty, PersistenceCertainty, PersistenceFailure, PersistenceFailurePhase,
+};
+pub use crate::runtime_db::retention::{
+    RuntimeDbCompactReport, RuntimeDbRetentionPolicy, RuntimeDbRetentionReport,
+    RuntimeDbRetentionTableReport,
+};
+pub use crate::runtime_db::retired_scheduler_cleanup::{
+    RetiredSchedulerCleanupBlocker, RetiredSchedulerCleanupBlockerKind,
+    RetiredSchedulerCleanupInventory, RetiredSchedulerFallbackAction,
+    RetiredSchedulerFallbackActionKind, RetiredSchedulerFallbackResult,
+};
+pub use crate::runtime_db::storage_domain::{ExpectedStorageDomain, StorageDomainSnapshot};
+pub(crate) use crate::runtime_db::task_result_settlement::{
+    TaskResultSettlementDisposition, TaskResultSettlementRecord,
+};
+pub use crate::runtime_db::turn_settlement_repair::{
+    TurnSettlementRepairDiagnostic, TurnSettlementRepairPhase, TurnSettlementRepairProgress,
+    TurnSettlementRepairReport,
+};
+pub use crate::runtime_db::types::{
+    AgentBootstrapRepository, AgentCanonicalRelationRepository, AgentDeletionRepository,
+    AgentIdentityRepository, AgentMessageDeliveryRepository, AgentStateRepository, AuditEventSink,
+    ContentReportRepository, ContextEpisodeRepository, ConversationRepository, EvidenceRepository,
+    ExecutionRootEntryRepository, ExternalTriggerRepository, MessageRepository,
+    OperatorDeliveryRepository, OperatorNotificationRepository, OperatorTransportBindingRepository,
+    QueueEntryRepository, TaskRepository, TimerCancel, TimerCancelResult, TimerFire,
+    TimerFireResult, TimerRepository, TimerWakeRecord, TimerWakeRecoveryResult, TimerWakeStatus,
+    TranscriptRepository, TurnRecordRepository, WaitConditionRepository,
+    WorkItemContinuationRepository, WorkItemDelegationRepository, WorkItemRepository,
+    WorkspaceEntryRepository, WorkspaceOccupancyRepository,
+};
+pub use crate::runtime_db::work_item_source_revision_repair::{
+    WorkItemSourceRevisionRepairEntry, WorkItemSourceRevisionRepairReport,
+};
+pub use holon_storage::RuntimeDbReadScope;
+#[cfg(holon_lib_test_shard = "b")]
+#[cfg(test)]
+mod brief_latest_tests;
+#[cfg(holon_lib_test_shard = "b")]
+#[cfg(test)]
+mod current_run_abort_tests;
+#[cfg(all(test, holon_lib_test_shard = "b"))]
+pub(crate) mod test_support;
+#[cfg(test)]
+mod tests;
+#[cfg(test)]
+pub(crate) mod write_log_probe;
+
+use std::{
+    fmt, fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
+
+use anyhow::{anyhow, bail, Context, Result};
+pub use holon_storage::connection::RuntimeDbLock;
+pub(crate) use holon_storage::read_block;
+use holon_storage::{blocking, reader_pool};
+use rusqlite::{Connection, OptionalExtension, Transaction};
+use serde::{Deserialize, Serialize};
+
+use crate::runtime_db::connection::{
+    configure_new_database_auto_vacuum, configure_persistent_database, open_connection,
+};
+use crate::runtime_db::migrations::{
+    backfill_wait_condition_payload_columns, backfill_work_item_blocker_wait_provenance,
+    backfill_work_item_recheck_columns, current_schema_version, max_known_migration_version,
+    AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION, CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
+    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION, MIGRATIONS, RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+};
+use crate::runtime_db::storage_domain::{read_storage_domain_connection, upsert_storage_domain};
+use crate::runtime_db::write_queue::{RuntimeDbWriteContext, RuntimeDbWriter};
+
+pub(crate) const AGENT_REGISTRY_MATERIAL: holon_storage::agent_registry::AgentRegistryMaterial =
+    holon_storage::agent_registry::AgentRegistryMaterial {
+        admit_json_payload: crate::diagnostics::resource_io::admit_json_payload,
+        charge_owned_metadata: crate::diagnostics::resource_io::charge_owned_metadata,
+        admit_serialized: holon_system::resource_material::admit_serialized_material_with,
+    };
+
+pub(crate) const CONTEXT_EPISODE_ANCHORS_DOMAIN: &str = "context_episode_anchors";
+pub(crate) use holon_storage::RUNTIME_DB_BUSY_TIMEOUT;
+pub use holon_storage::{
+    RuntimeDbProtectionError, RuntimeDbProtectionState, RuntimeDbProtectionStatus,
+    RuntimeDbRetryableError, RuntimeStateTransitionConflict,
+};
+
+pub(crate) fn is_reader_checkout_pressure(error: &anyhow::Error) -> bool {
+    error.chain().any(|source| {
+        source
+            .downcast_ref::<RuntimeDbRetryableError>()
+            .is_some_and(|error| {
+                matches!(
+                    error.operation(),
+                    "reader pool admission"
+                        | "reader pool blocking admission"
+                        | "reader pool checkout"
+                )
+            })
+    })
+}
+
+pub(crate) fn is_observer_publication_busy(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<RuntimeDbRetryableError>()
+        .is_some_and(|error| error.operation() == "observer publication")
+}
+
+/// Retry read preparation only. Never wrap a business write or a provider call.
+pub(crate) async fn retry_reader_checkout<T, F, Fut>(mut read: F) -> Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    for delay_ms in [50, 100] {
+        match read().await {
+            Err(error) if is_reader_checkout_pressure(&error) => {
+                tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+            }
+            result => return result,
+        }
+    }
+    read().await
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConversationInputAssignmentRollbackReport {
+    pub apply: bool,
+    pub eligible: bool,
+    pub changed: bool,
+    pub backup_verified: bool,
+    pub database_path: PathBuf,
+    pub current_version: i64,
+    pub current_name: Option<String>,
+    pub target_version: i64,
+    pub target_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_path: Option<PathBuf>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
+#[derive(Clone)]
+pub struct RuntimeDb {
+    path: PathBuf,
+    lock_path: PathBuf,
+    // Readers close before the append sender; physical readers also retain state.
+    readers: reader_pool::RuntimeDbReaderPool,
+    preparation_readers: reader_pool::RuntimeDbReaderPool,
+    writer: RuntimeDbWriter,
+    /// Unix millis of the last observer-sync read-side self-heal attempt.
+    /// Throttles the heal so a failing capability gate does not re-run the
+    /// S1 verification on every request.
+    observer_sync_self_heal_last_attempt_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+pub use holon_storage::{
+    RuntimeDbReaderConfig, DEFAULT_ORDINARY_MAX_CONNECTIONS, DEFAULT_PREPARATION_MAX_CONNECTIONS,
+    MAX_READER_CONNECTIONS,
+};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProviderQuotaIncident {
+    pub identity_key: String,
+    pub incident_id: String,
+    pub revision: i64,
+    pub consecutive_failures: i64,
+    pub next_retry_at: Option<String>,
+    pub last_failure_kind: Option<String>,
+    pub last_model_ref: Option<String>,
+    pub opened_at: String,
+    pub last_failed_at: String,
+    pub resolved_at: Option<String>,
+}
+
+impl fmt::Debug for RuntimeDb {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RuntimeDb")
+            .field("path", &self.path)
+            .field("lock_path", &self.lock_path)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RuntimeDb {
+    pub fn open_and_migrate(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        Self::open_and_migrate_with_reader_config(path, lock_path, RuntimeDbReaderConfig::default())
+    }
+
+    pub fn open_and_migrate_with_reader_config(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+        readers: RuntimeDbReaderConfig,
+    ) -> Result<Self> {
+        let path = path.into();
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            open_connection(&path)?,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
+        let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::with_capacity(
+                std::sync::Arc::clone(writer.state()),
+                readers.ordinary_max_connections(),
+                "ordinary",
+            ),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::with_capacity(
+                std::sync::Arc::clone(writer.state()),
+                readers.preparation_max_connections(),
+                "preparation",
+            ),
+            writer,
+            path,
+            lock_path: lock_path.into(),
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+        };
+        db.migrate()?;
+        db.writer.activate_sidecar_protection()?;
+        tracing::info!(
+            path = %db.path.display(),
+            ordinary_max_connections = readers.ordinary_max_connections(),
+            preparation_max_connections = readers.preparation_max_connections(),
+            "runtime db reader pool limits initialized"
+        );
+        Ok(db)
+    }
+
+    /// Opens an existing database for the offline scheduler recovery command.
+    ///
+    /// Recovery must be able to inspect and settle schema 46 rows that block
+    /// the destructive scheduler-schema migration. All other callers must use
+    /// [`Self::open_and_migrate`].
+    pub fn open_for_scheduler_recovery(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "scheduler recovery requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let connection = open_connection(&path)?;
+        configure_persistent_database(&connection)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
+        let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(writer.state()),
+            ),
+            writer,
+            path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            lock_path: lock_path.into(),
+        };
+        let current_version: i64 = db.connection()?.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        let max_known_version = max_known_migration_version();
+        if !(RETIRED_SCHEDULER_SCHEMA_PREDECESSOR..=max_known_version).contains(&current_version) {
+            bail!(
+                "scheduler recovery supports runtime db schemas {} through {}, found {}",
+                RETIRED_SCHEDULER_SCHEMA_PREDECESSOR,
+                max_known_version,
+                current_version
+            );
+        }
+        db.writer.activate_sidecar_protection()?;
+        Ok(db)
+    }
+
+    /// Opens an existing database for an explicit Agent relation report or
+    /// pre-migration backup without applying schema migrations.
+    pub fn open_for_agent_relation_backfill(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "agent relation backfill requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let connection = open_connection(&path)?;
+        configure_persistent_database(&connection)?;
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
+        let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(writer.state()),
+            ),
+            writer,
+            path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            lock_path: lock_path.into(),
+        };
+        let current_version = db.current_schema_version()?;
+        let max_known_version = max_known_migration_version();
+        if !(AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION..=max_known_version)
+            .contains(&current_version)
+        {
+            bail!(
+                "agent relation backfill supports runtime db schemas {} through {}, found {}",
+                AGENT_CANONICAL_RELATIONS_SCHEMA_VERSION,
+                max_known_version,
+                current_version
+            );
+        }
+        db.writer.activate_sidecar_protection()?;
+        Ok(db)
+    }
+
+    /// Opens an existing database for the explicit v66 data-only marker rollback
+    /// without applying migrations.
+    pub fn open_for_conversation_input_assignment_rollback(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "conversation input assignment rollback requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let connection = open_connection(&path)?;
+        configure_persistent_database(&connection)?;
+        let has_migration_table: bool = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'schema_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_migration_table {
+            bail!(
+                "conversation input assignment rollback requires schema_migrations in {}",
+                path.display()
+            );
+        }
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
+        let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(writer.state()),
+            ),
+            writer,
+            path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            lock_path: lock_path.into(),
+        };
+        db.writer.activate_sidecar_protection()?;
+        Ok(db)
+    }
+
+    /// Opens an existing, current-schema database for offline turn settlement
+    /// repair without applying migrations.
+    pub fn open_for_turn_settlement_repair(
+        path: impl Into<PathBuf>,
+        lock_path: impl Into<PathBuf>,
+    ) -> Result<Self> {
+        let path = path.into();
+        if !path.is_file() {
+            bail!(
+                "turn settlement repair requires an existing runtime database: {}",
+                path.display()
+            );
+        }
+        let connection = open_connection(&path)?;
+        let has_migration_table: bool = connection.query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM sqlite_master
+               WHERE type = 'table' AND name = 'schema_migrations'
+             )",
+            [],
+            |row| row.get(0),
+        )?;
+        if !has_migration_table {
+            bail!(
+                "turn settlement repair requires schema_migrations in {}",
+                path.display()
+            );
+        }
+        let schema_version: i64 = connection.query_row(
+            "SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
+            [],
+            |row| row.get(0),
+        )?;
+        let expected_schema_version = max_known_migration_version();
+        if schema_version != expected_schema_version {
+            bail!(
+                "turn settlement repair requires runtime db schema {}, found {}",
+                expected_schema_version,
+                schema_version
+            );
+        }
+        let writer = RuntimeDbWriter::open_starting(
+            path.clone(),
+            connection,
+            &storage_diagnostics::DIAGNOSTICS,
+        )?;
+        let db = Self {
+            readers: reader_pool::RuntimeDbReaderPool::new(std::sync::Arc::clone(writer.state())),
+            preparation_readers: reader_pool::RuntimeDbReaderPool::for_preparation(
+                std::sync::Arc::clone(writer.state()),
+            ),
+            writer,
+            path,
+            observer_sync_self_heal_last_attempt_ms: std::sync::Arc::new(
+                std::sync::atomic::AtomicU64::new(0),
+            ),
+            lock_path: lock_path.into(),
+        };
+        db.writer.activate_sidecar_protection()?;
+        Ok(db)
+    }
+
+    pub(crate) fn register_audit_frontier(
+        &self,
+        agent_id: &str,
+    ) -> Result<std::sync::Arc<std::sync::atomic::AtomicU64>> {
+        self.writer.register_audit_frontier(agent_id)
+    }
+
+    pub(crate) fn capability_policy_generation(&self) -> Option<u64> {
+        self.writer.capability_policy_generation()
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    pub fn lock_path(&self) -> &Path {
+        &self.lock_path
+    }
+
+    pub fn connection(&self) -> Result<Connection> {
+        self.writer.open_connection()
+    }
+
+    /// Derive a facade with scoped pooled reads. Writers and unscoped clones are
+    /// unchanged; Rust closures must cooperate outside SQLite execution.
+    pub fn with_read_scope(&self, scope: RuntimeDbReadScope) -> Self {
+        let mut db = self.clone();
+        db.readers = db.readers.with_scope(scope.clone());
+        db.preparation_readers = db.preparation_readers.with_scope(scope);
+        db
+    }
+
+    pub(crate) fn check_read_scope(&self) -> Result<()> {
+        self.readers.check_read_scope()
+    }
+
+    /// Between assembly rows only; full protection checks guard entry/exit.
+    pub(crate) fn check_read_cancellation(&self) -> Result<()> {
+        self.readers.check_read_cancellation()
+    }
+
+    /// Only pass an in-memory lock acquisition, not a future that performs SQL.
+    pub(crate) async fn wait_for_memory_lock<T>(
+        &self,
+        lock: impl std::future::Future<Output = T>,
+    ) -> Result<T> {
+        self.readers.wait_for_memory_lock(lock).await
+    }
+
+    /// Preserve the calling thread; never nest reader checkouts.
+    #[track_caller]
+    pub(crate) fn with_read<T>(&self, f: impl FnOnce(&mut Connection) -> Result<T>) -> Result<T> {
+        let origin = read_block::ReadOrigin::from_location(std::panic::Location::caller());
+        blocking::at_blocking_boundary(|| self.readers.with_read_at(origin, f))
+    }
+
+    /// Polling HTTP handlers must read through this instead of calling a
+    /// synchronous storage read on an async worker. The block runs on the
+    /// blocking pool under one absolute read deadline; SQL execution is
+    /// cancelled at the deadline through the scoped-read progress hook.
+    pub(crate) async fn read_block<T, F>(
+        &self,
+        label: &'static str,
+        budget: Duration,
+        read: F,
+    ) -> Result<T>
+    where
+        T: Send + 'static,
+        F: FnOnce() -> Result<T> + Send + 'static,
+    {
+        read_block::run_blocking(label, budget, read).await
+    }
+
+    pub(crate) async fn with_read_async<T: Send + 'static>(
+        &self,
+        f: impl FnOnce(&mut Connection) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        // `#[track_caller]` is a no-op on async functions, so async reads carry
+        // no call site; slow blocks still report elapsed time and SQL text.
+        self.readers
+            .with_read_async_at(read_block::ReadOrigin::UNKNOWN, f)
+            .await
+    }
+
+    #[cfg(test)]
+    pub(crate) fn configure_reader_pool_for_tests(
+        &mut self,
+        capacity: u32,
+        budget: Duration,
+    ) -> Result<()> {
+        if capacity == 0 || budget.is_zero() {
+            bail!("reader pool test capacity and budget must be positive");
+        }
+        self.readers = reader_pool::RuntimeDbReaderPool::with_config(
+            std::sync::Arc::clone(self.writer.state()),
+            capacity,
+            budget,
+        );
+        self.preparation_readers = reader_pool::RuntimeDbReaderPool::with_config(
+            std::sync::Arc::clone(self.writer.state()),
+            1,
+            budget,
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reader_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+        self.readers.stats()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn preparation_pool_stats_for_tests(&self) -> reader_pool::ReaderPoolStats {
+        self.preparation_readers.stats()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reader_pool_writer_weak_for_tests(
+        &self,
+    ) -> std::sync::Weak<write_queue::RuntimeDbWriterState> {
+        self.readers.writer_weak()
+    }
+
+    /// Canonical preparation has reserved bounded query-only reader capacity.
+    /// Ordinary query saturation must not fail cold runtime construction.
+    /// Callbacks must not write, nest checkouts, or retain a lease across await.
+    #[track_caller]
+    pub(crate) fn read_for_preparation<T>(
+        &self,
+        f: impl FnOnce(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        let origin = read_block::ReadOrigin::from_location(std::panic::Location::caller());
+        blocking::at_blocking_boundary(|| {
+            self.preparation_readers.with_read_at(origin, |connection| {
+                let tx = connection
+                    .transaction_with_behavior(rusqlite::TransactionBehavior::Deferred)?;
+                let value = f(&tx)?;
+                tx.commit()?;
+                Ok(value)
+            })
+        })
+    }
+
+    pub fn record_provider_quota_failure(
+        &self,
+        identity_key: &str,
+        incident_id: &str,
+        failed_at: &str,
+        next_retry_at: Option<&str>,
+        failure_kind: &str,
+        model_ref: &str,
+    ) -> Result<ProviderQuotaIncident> {
+        self.transaction(|tx| {
+            tx.execute(
+                "INSERT INTO provider_quota_incidents (
+                    identity_key, incident_id, revision, consecutive_failures,
+                    next_retry_at, last_failure_kind, last_model_ref,
+                    opened_at, last_failed_at, resolved_at
+                 ) VALUES (?1, ?2, 1, 1, ?3, ?4, ?5, ?6, ?6, NULL)
+                 ON CONFLICT(identity_key) DO UPDATE SET
+                    revision = provider_quota_incidents.revision + 1,
+                    consecutive_failures = CASE
+                        WHEN provider_quota_incidents.resolved_at IS NULL
+                        THEN provider_quota_incidents.consecutive_failures + 1
+                        ELSE 1
+                    END,
+                    incident_id = CASE
+                        WHEN provider_quota_incidents.resolved_at IS NULL
+                        THEN provider_quota_incidents.incident_id
+                        ELSE excluded.incident_id
+                    END,
+                    next_retry_at = excluded.next_retry_at,
+                    last_failure_kind = excluded.last_failure_kind,
+                    last_model_ref = excluded.last_model_ref,
+                    last_failed_at = excluded.last_failed_at,
+                    opened_at = CASE
+                        WHEN provider_quota_incidents.resolved_at IS NULL
+                        THEN provider_quota_incidents.opened_at
+                        ELSE excluded.opened_at
+                    END,
+                    resolved_at = NULL",
+                rusqlite::params![
+                    identity_key,
+                    incident_id,
+                    next_retry_at,
+                    failure_kind,
+                    model_ref,
+                    failed_at
+                ],
+            )?;
+            Ok(tx.query_row(
+                "SELECT identity_key, incident_id, revision, consecutive_failures,
+                        next_retry_at, last_failure_kind, last_model_ref,
+                        opened_at, last_failed_at, resolved_at
+                 FROM provider_quota_incidents WHERE identity_key = ?1",
+                [identity_key],
+                |row| {
+                    Ok(ProviderQuotaIncident {
+                        identity_key: row.get(0)?,
+                        incident_id: row.get(1)?,
+                        revision: row.get(2)?,
+                        consecutive_failures: row.get(3)?,
+                        next_retry_at: row.get(4)?,
+                        last_failure_kind: row.get(5)?,
+                        last_model_ref: row.get(6)?,
+                        opened_at: row.get(7)?,
+                        last_failed_at: row.get(8)?,
+                        resolved_at: row.get(9)?,
+                    })
+                },
+            )?)
+        })
+    }
+
+    pub fn provider_quota_incident(
+        &self,
+        identity_key: &str,
+    ) -> Result<Option<ProviderQuotaIncident>> {
+        self.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT identity_key, incident_id, revision, consecutive_failures,
+                    next_retry_at, last_failure_kind, last_model_ref,
+                    opened_at, last_failed_at, resolved_at
+             FROM provider_quota_incidents WHERE identity_key = ?1",
+                    [identity_key],
+                    |row| {
+                        Ok(ProviderQuotaIncident {
+                            identity_key: row.get(0)?,
+                            incident_id: row.get(1)?,
+                            revision: row.get(2)?,
+                            consecutive_failures: row.get(3)?,
+                            next_retry_at: row.get(4)?,
+                            last_failure_kind: row.get(5)?,
+                            last_model_ref: row.get(6)?,
+                            opened_at: row.get(7)?,
+                            last_failed_at: row.get(8)?,
+                            resolved_at: row.get(9)?,
+                        })
+                    },
+                )
+                .optional()
+                .map_err(Into::into)
+        })
+    }
+
+    pub fn update_provider_quota_retry_at(
+        &self,
+        identity_key: &str,
+        next_retry_at: &str,
+    ) -> Result<()> {
+        self.transaction(|tx| {
+            tx.execute(
+                "UPDATE provider_quota_incidents
+                 SET revision = revision + 1, next_retry_at = ?2
+                 WHERE identity_key = ?1 AND resolved_at IS NULL",
+                rusqlite::params![identity_key, next_retry_at],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn resolve_provider_quota_incident(
+        &self,
+        identity_key: &str,
+        resolved_at: &str,
+    ) -> Result<bool> {
+        self.transaction(|tx| {
+            let updated = tx.execute(
+                "UPDATE provider_quota_incidents
+                 SET revision = revision + 1, consecutive_failures = 0,
+                     next_retry_at = NULL, resolved_at = ?2
+                 WHERE identity_key = ?1 AND resolved_at IS NULL",
+                rusqlite::params![identity_key, resolved_at],
+            )?;
+            Ok(updated == 1)
+        })
+    }
+
+    pub fn protection_status(&self) -> RuntimeDbProtectionStatus {
+        self.writer.protection_status()
+    }
+
+    pub(crate) fn create_verified_backup(&self, label: &str) -> Result<PathBuf> {
+        holon_storage::maintenance::create_verified_backup(
+            self.path(),
+            label,
+            || self.connection(),
+            &storage_diagnostics::DIAGNOSTICS,
+        )
+    }
+
+    pub fn create_scheduler_recovery_backup(&self) -> Result<PathBuf> {
+        self.create_verified_backup("scheduler-recovery")
+    }
+
+    pub fn create_agent_relation_backfill_backup(&self) -> Result<PathBuf> {
+        self.create_verified_backup("agent-relation-backfill")
+    }
+
+    pub fn plan_conversation_input_assignment_rollback(
+        &self,
+    ) -> Result<ConversationInputAssignmentRollbackReport> {
+        let connection = self.connection()?;
+        let head = migration_head(&connection)?;
+        let target = MIGRATIONS
+            .iter()
+            .find(|migration| migration.version == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION - 1)
+            .context("missing conversation input assignment rollback target migration")?;
+        let (current_version, current_name) = head
+            .clone()
+            .map(|(version, name)| (version, Some(name)))
+            .unwrap_or((0, None));
+        let eligible = matches!(
+            head.as_ref(),
+            Some((version, name))
+                if *version == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION
+                    && name == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME
+        );
+        let reason = (!eligible).then(|| match head {
+            Some((version, name)) if version > CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION => {
+                format!(
+                    "runtime database has newer migration {version} ({name}); refusing to remove v66"
+                )
+            }
+            Some((version, name)) if version == CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION => {
+                format!(
+                    "migration v66 name mismatch: expected {}, found {name}",
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME
+                )
+            }
+            Some((version, name)) => format!(
+                "runtime database head is v{version} ({name}); v66 data-only marker is not applied"
+            ),
+            None => "runtime database has no applied migrations".to_string(),
+        });
+        Ok(ConversationInputAssignmentRollbackReport {
+            apply: false,
+            eligible,
+            changed: false,
+            backup_verified: false,
+            database_path: self.path.clone(),
+            current_version,
+            current_name,
+            target_version: target.version,
+            target_name: target.name.to_string(),
+            backup_path: None,
+            reason,
+        })
+    }
+
+    pub fn apply_conversation_input_assignment_rollback(
+        &self,
+    ) -> Result<ConversationInputAssignmentRollbackReport> {
+        let mut report = self.plan_conversation_input_assignment_rollback()?;
+        if !report.eligible {
+            bail!(
+                "{}",
+                report
+                    .reason
+                    .as_deref()
+                    .unwrap_or("runtime database is not eligible for v66 rollback")
+            );
+        }
+        let backup_path =
+            self.create_verified_backup("conversation-input-assignment-v66-to-v65")?;
+        let backup_head = migration_head(&open_connection(&backup_path)?)?;
+        if backup_head
+            != Some((
+                CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+                CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME.to_string(),
+            ))
+        {
+            bail!(
+                "runtime database backup {} does not preserve the expected v66 marker",
+                backup_path.display()
+            );
+        }
+        self.transaction_once(|transaction| {
+            let changed = transaction.execute(
+                "DELETE FROM schema_migrations WHERE version = ?1 AND name = ?2",
+                (
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_VERSION,
+                    CONVERSATION_INPUT_ASSIGNMENT_REPAIR_NAME,
+                ),
+            )?;
+            if changed != 1 {
+                bail!(
+                    "expected to remove exactly one v66 conversation input assignment marker, removed {changed}"
+                );
+            }
+            let head = migration_head(transaction)?;
+            if head != Some((report.target_version, report.target_name.clone())) {
+                bail!(
+                    "runtime database head after v66 rollback is {:?}, expected v{} ({})",
+                    head,
+                    report.target_version,
+                    report.target_name
+                );
+            }
+            Ok(())
+        })?;
+        report.apply = true;
+        report.changed = true;
+        report.backup_verified = true;
+        report.backup_path = Some(backup_path);
+        report.current_version = report.target_version;
+        report.current_name = Some(report.target_name.clone());
+        report.reason = None;
+        Ok(report)
+    }
+
+    /// Run a transaction, retrying body lock errors only after a confirmed rollback.
+    ///
+    /// The callback must not control the transaction or perform external effects:
+    /// it may run more than once. Failure certainty is available through
+    /// [`persistence_certainty`]; an indeterminate result must be reconciled before replay.
+    #[track_caller]
+    pub fn transaction<T>(&self, f: impl FnMut(&Transaction<'_>) -> Result<T>) -> Result<T> {
+        self.writer.append_wait(f)
+    }
+
+    #[track_caller]
+    pub(crate) fn transaction_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnMut(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_with_context(context, f)
+    }
+
+    #[track_caller]
+    pub(crate) fn transaction_once<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_once(f)
+    }
+
+    #[track_caller]
+    pub(crate) fn transaction_once_with_context<T>(
+        &self,
+        context: RuntimeDbWriteContext,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_once_with_context(context, f)
+    }
+
+    #[track_caller]
+    pub(crate) fn recovery_transaction_once<T>(
+        &self,
+        f: impl FnOnce(&Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.writer.append_wait_once_with_context(
+            RuntimeDbWriteContext::sync("runtime_db.input_recovery", "input_mutation_receipts"),
+            f,
+        )
+    }
+
+    /// Enqueue a background transaction. Success means queue acceptance, not commit.
+    #[track_caller]
+    pub fn append(
+        &self,
+        f: impl for<'transaction> Fn(&Transaction<'transaction>) -> Result<()> + Send + 'static,
+    ) -> Result<()> {
+        self.writer.append(f)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn flush_background_writes_for_tests(&self) -> Result<()> {
+        self.writer.flush_background_writes_for_tests()
+    }
+
+    pub fn current_schema_version(&self) -> Result<i64> {
+        let connection = self.connection()?;
+        current_schema_version(&connection)
+    }
+
+    pub fn retired_scheduler_cleanup_inventory(&self) -> Result<RetiredSchedulerCleanupInventory> {
+        let connection = self.connection()?;
+        retired_scheduler_cleanup::retired_scheduler_cleanup_inventory(&connection)
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallback(
+        &self,
+        agent_id: &str,
+    ) -> Result<RetiredSchedulerFallbackResult> {
+        self.apply_retired_scheduler_cleanup_fallbacks(&[agent_id.to_string()])
+            .map(|mut results| {
+                results
+                    .pop()
+                    .expect("one fallback result is returned for one agent")
+            })
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallbacks(
+        &self,
+        agent_ids: &[String],
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.apply_retired_scheduler_cleanup_fallbacks_inner(agent_ids, None)
+    }
+
+    pub fn apply_retired_scheduler_cleanup_fallbacks_with_maintenance(
+        &self,
+        agent_ids: &[String],
+        maintenance: &OfflineInputMaintenance<'_>,
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.apply_retired_scheduler_cleanup_fallbacks_inner(agent_ids, Some(maintenance))
+    }
+
+    fn apply_retired_scheduler_cleanup_fallbacks_inner(
+        &self,
+        agent_ids: &[String],
+        maintenance: Option<&OfflineInputMaintenance<'_>>,
+    ) -> Result<Vec<RetiredSchedulerFallbackResult>> {
+        self.transaction(|tx| {
+            agent_ids
+                .iter()
+                .map(|agent_id| {
+                    retired_scheduler_cleanup::apply_retired_scheduler_cleanup_fallback(
+                        tx,
+                        self,
+                        agent_id,
+                        maintenance,
+                    )
+                })
+                .collect()
+        })
+    }
+
+    pub fn work_items(&self) -> WorkItemRepository<'_> {
+        WorkItemRepository { db: self }
+    }
+
+    pub fn tasks(&self) -> TaskRepository<'_> {
+        TaskRepository { db: self }
+    }
+
+    pub fn external_triggers(&self) -> ExternalTriggerRepository<'_> {
+        ExternalTriggerRepository { db: self }
+    }
+
+    pub fn wait_conditions(&self) -> WaitConditionRepository<'_> {
+        WaitConditionRepository { db: self }
+    }
+
+    pub fn queue_entries(&self) -> QueueEntryRepository<'_> {
+        QueueEntryRepository { db: self }
+    }
+
+    pub fn timers(&self) -> TimerRepository<'_> {
+        TimerRepository { db: self }
+    }
+
+    pub fn turn_records(&self) -> TurnRecordRepository<'_> {
+        TurnRecordRepository { db: self }
+    }
+
+    pub fn destructive_operations(&self) -> DestructiveOperationRepository<'_> {
+        DestructiveOperationRepository { db: self }
+    }
+
+    pub fn conversation(&self) -> ConversationRepository<'_> {
+        ConversationRepository {
+            db: self,
+            expected_incarnation: None,
+        }
+    }
+
+    pub fn content_reports(&self) -> ContentReportRepository<'_> {
+        ContentReportRepository { db: self }
+    }
+
+    pub fn messages(&self) -> MessageRepository<'_> {
+        MessageRepository { db: self }
+    }
+
+    pub fn transcript_entries(&self) -> TranscriptRepository<'_> {
+        TranscriptRepository { db: self }
+    }
+
+    pub fn evidence(&self) -> EvidenceRepository<'_> {
+        EvidenceRepository { db: self }
+    }
+
+    pub fn audit_events(&self) -> AuditEventSink<'_> {
+        AuditEventSink { db: self }
+    }
+
+    pub fn authentication(&self) -> AuthenticationRepository<'_> {
+        AuthenticationRepository { db: self }
+    }
+
+    pub fn agent_states(&self) -> AgentStateRepository<'_> {
+        AgentStateRepository { db: self }
+    }
+
+    pub fn workspace_entries(&self) -> WorkspaceEntryRepository<'_> {
+        WorkspaceEntryRepository { db: self }
+    }
+
+    pub fn workspace_occupancies(&self) -> WorkspaceOccupancyRepository<'_> {
+        WorkspaceOccupancyRepository { db: self }
+    }
+
+    pub fn execution_root_entries(&self) -> ExecutionRootEntryRepository<'_> {
+        ExecutionRootEntryRepository { db: self }
+    }
+
+    pub fn agent_identities(&self) -> AgentIdentityRepository<'_> {
+        AgentIdentityRepository { db: self }
+    }
+
+    pub fn agent_canonical_relations(&self) -> AgentCanonicalRelationRepository<'_> {
+        AgentCanonicalRelationRepository { db: self }
+    }
+
+    pub fn agent_bootstraps(&self) -> AgentBootstrapRepository<'_> {
+        AgentBootstrapRepository { db: self }
+    }
+
+    pub fn agent_deletions(&self) -> AgentDeletionRepository<'_> {
+        AgentDeletionRepository { db: self }
+    }
+
+    pub fn agent_message_deliveries(&self) -> AgentMessageDeliveryRepository<'_> {
+        AgentMessageDeliveryRepository { db: self }
+    }
+
+    pub fn work_item_delegations(&self) -> WorkItemDelegationRepository<'_> {
+        WorkItemDelegationRepository { db: self }
+    }
+
+    pub fn work_item_continuations(&self) -> WorkItemContinuationRepository<'_> {
+        WorkItemContinuationRepository { db: self }
+    }
+
+    pub fn context_episodes(&self) -> ContextEpisodeRepository<'_> {
+        ContextEpisodeRepository { db: self }
+    }
+
+    pub fn operator_notifications(&self) -> OperatorNotificationRepository<'_> {
+        OperatorNotificationRepository { db: self }
+    }
+
+    pub fn operator_transport_bindings(&self) -> OperatorTransportBindingRepository<'_> {
+        OperatorTransportBindingRepository { db: self }
+    }
+
+    pub fn operator_delivery_records(&self) -> OperatorDeliveryRepository<'_> {
+        OperatorDeliveryRepository { db: self }
+    }
+
+    pub fn runtime_index_outbox(&self) -> RuntimeIndexOutboxRepository<'_> {
+        RuntimeIndexOutboxRepository { db: self }
+    }
+
+    pub const fn expected_storage_domains() -> &'static [ExpectedStorageDomain] {
+        &[
+            ExpectedStorageDomain {
+                domain: "agent_states",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "workspace_entries",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "workspace_occupancies",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "agent_identities",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "work_items",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "work_item_delegations",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "work_item_continuations",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: CONTEXT_EPISODE_ANCHORS_DOMAIN,
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "tasks",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "external_triggers",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "wait_conditions",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "queue_entries",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "timers",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "turn_records",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "messages",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "transcript_entries",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "evidence",
+                canonical_source: "db",
+            },
+            ExpectedStorageDomain {
+                domain: "audit_events",
+                canonical_source: "db",
+            },
+        ]
+    }
+
+    pub fn storage_domain(&self, domain: &str) -> Result<Option<StorageDomainSnapshot>> {
+        self.with_read(|connection| read_storage_domain_connection(connection, domain))
+    }
+
+    pub fn storage_domains(&self) -> Result<Vec<StorageDomainSnapshot>> {
+        self.with_read(|connection| {
+            let mut statement = connection.prepare(
+                "SELECT domain, schema_version, import_status, canonical_source,
+                    source_checkpoint_json, imported_at, updated_at
+             FROM storage_domains
+             ORDER BY domain ASC",
+            )?;
+            let rows = statement.query_map([], |row| {
+                Ok(StorageDomainSnapshot {
+                    domain: row.get(0)?,
+                    schema_version: row.get(1)?,
+                    import_status: row.get(2)?,
+                    canonical_source: row.get(3)?,
+                    source_checkpoint_json: row.get(4)?,
+                    imported_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })?;
+            rows.map(|row| row.map_err(Into::into)).collect()
+        })
+    }
+
+    pub fn diagnose_cutover(&self, expected: &[ExpectedStorageDomain]) -> Result<Vec<String>> {
+        let connection = self.connection()?;
+        let mut diagnostics = Vec::new();
+        let current_version = current_schema_version(&connection)?;
+        let max_known_version = max_known_migration_version();
+        if current_version < max_known_version {
+            diagnostics.push(format!(
+                "missing runtime db migration: schema_migrations is at {current_version}, expected {max_known_version}"
+            ));
+        }
+        for expected_domain in expected {
+            match read_storage_domain_connection(&connection, expected_domain.domain)? {
+                None => diagnostics.push(format!(
+                    "storage domain {} is missing; expected canonical_source={}",
+                    expected_domain.domain, expected_domain.canonical_source
+                )),
+                Some(snapshot) => {
+                    if snapshot.import_status == "failed" {
+                        diagnostics.push(format!(
+                            "storage domain {} import failed: {}",
+                            snapshot.domain,
+                            snapshot
+                                .source_checkpoint_json
+                                .as_deref()
+                                .unwrap_or("no failure checkpoint recorded")
+                        ));
+                    } else if snapshot.import_status != "complete" {
+                        diagnostics.push(format!(
+                            "storage domain {} import is {}; expected complete",
+                            snapshot.domain, snapshot.import_status
+                        ));
+                    }
+                    if snapshot.canonical_source != expected_domain.canonical_source {
+                        diagnostics.push(format!(
+                            "storage domain {} has canonical_source={}; expected {}",
+                            snapshot.domain,
+                            snapshot.canonical_source,
+                            expected_domain.canonical_source
+                        ));
+                    }
+                }
+            }
+        }
+        Ok(diagnostics)
+    }
+
+    pub fn validate_expected_storage_domains(
+        &self,
+        expected: &[ExpectedStorageDomain],
+    ) -> Result<()> {
+        let diagnostics = self.diagnose_cutover(expected)?;
+        if diagnostics.is_empty() {
+            return Ok(());
+        }
+        bail!(
+            "runtime db cutover diagnostics failed:\n{}",
+            diagnostics.join("\n")
+        )
+    }
+
+    pub(crate) fn storage_domain_is_complete(
+        &self,
+        domain: &str,
+        canonical_source: &str,
+    ) -> Result<bool> {
+        self.with_read(|connection| {
+            let Some(snapshot) = read_storage_domain_connection(connection, domain)? else {
+                return Ok(false);
+            };
+            Ok(snapshot.import_status == "complete"
+                && snapshot.canonical_source == canonical_source)
+        })
+    }
+
+    pub(crate) fn has_sqlite_agent_scope(&self, agent_id: &str) -> Result<bool> {
+        let connection = self.connection()?;
+        Ok(connection.query_row(
+            "SELECT EXISTS (SELECT 1 FROM agent_identities WHERE agent_id = ?1)
+                 OR EXISTS (SELECT 1 FROM agent_states WHERE agent_id = ?1)",
+            [agent_id],
+            |row| row.get(0),
+        )?)
+    }
+
+    /// Called only after startup has checked the fixed host/agent file scopes.
+    pub(crate) fn initialize_sqlite_storage_domains(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.pending_legacy_episode_import_agent_ids()?.is_empty(),
+            "legacy JSON/JSONL import is unfinished; automatic legacy import is no longer supported"
+        );
+        self.transaction(|tx| {
+            for expected in Self::expected_storage_domains() {
+                if let Some(existing) = read_storage_domain_connection(tx, expected.domain)? {
+                    anyhow::ensure!(
+                        existing.import_status == "complete"
+                            && existing.canonical_source == expected.canonical_source,
+                        "legacy JSON/JSONL import for {} is unfinished or noncanonical; \
+                         automatic legacy import is no longer supported",
+                        expected.domain
+                    );
+                } else {
+                    upsert_storage_domain(
+                        tx,
+                        expected.domain,
+                        "complete",
+                        expected.canonical_source,
+                        None,
+                    )?;
+                }
+            }
+            Ok(())
+        })
+    }
+
+    pub fn migrate(&self) -> Result<()> {
+        let _lock = RuntimeDbLock::lock(&self.lock_path)?;
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)
+                .with_context(|| format!("creating runtime db directory {}", parent.display()))?;
+        }
+        let _turn = self.writer.wait_turn()?;
+        let mut connection = self
+            .writer
+            .connection_mutex()
+            .lock()
+            .map_err(|_| anyhow!("runtime db writer mutex poisoned"))?;
+        configure_new_database_auto_vacuum(&connection)?;
+        configure_persistent_database(&connection)?;
+        migrations::migrate(&mut connection)?;
+        ensure_runtime_identity_metadata(&connection)?;
+        backfill_wait_condition_payload_columns(&connection)?;
+        backfill_work_item_recheck_columns(&connection)?;
+        backfill_work_item_blocker_wait_provenance(&connection)?;
+        observer_sync::verify_observer_sync_foundations(&mut connection)?;
+        Ok(())
+    }
+
+    pub fn event_log_epoch(&self) -> Result<String> {
+        self.with_read(|connection| {
+            connection
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = 'event_log_epoch'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("runtime event-log epoch is missing")
+        })
+    }
+
+    /// Stable public identity of this runtime installation. Survives
+    /// restarts and ordinary reopens; a replaced or rebuilt database mints a
+    /// new one. Not a secret.
+    pub fn runtime_id(&self) -> Result<String> {
+        self.with_read(|connection| Self::runtime_id_on(connection))
+    }
+
+    pub(crate) fn runtime_id_for_preparation(&self) -> Result<String> {
+        self.read_for_preparation(|tx| Self::runtime_id_on(tx))
+    }
+
+    fn runtime_id_on(connection: &Connection) -> Result<String> {
+        connection
+            .query_row(
+                "SELECT value FROM runtime_metadata WHERE key = 'runtime_id'",
+                [],
+                |row| row.get(0),
+            )
+            .context("runtime installation id is missing")
+    }
+
+    /// Monotone visibility policy generation. Bumping it rotates every
+    /// derived `visibility_scope_id` without touching the event-log epoch.
+    pub fn visibility_policy_generation(&self) -> Result<u64> {
+        self.with_read(|connection| {
+            let value: String = connection
+                .query_row(
+                    "SELECT value FROM runtime_metadata WHERE key = 'visibility_policy_generation'",
+                    [],
+                    |row| row.get(0),
+                )
+                .context("visibility policy generation is missing")?;
+            value
+                .parse()
+                .with_context(|| format!("invalid visibility policy generation {value}"))
+        })
+    }
+}
+
+fn ensure_runtime_identity_metadata(connection: &Connection) -> Result<()> {
+    let now = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('event_log_epoch', ?1, ?2, ?2)",
+        rusqlite::params![crate::ids::event_log_epoch_id(), now],
+    )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('runtime_id', ?1, ?2, ?2)",
+        rusqlite::params![crate::ids::runtime_installation_id(), now],
+    )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('visibility_policy_generation', '0', ?1, ?1)",
+        rusqlite::params![now],
+    )?;
+    connection.execute(
+        "INSERT OR IGNORE INTO runtime_metadata (key, value, created_at, updated_at)
+         VALUES ('conversation_cursor_signing_key', ?1, ?2, ?2)",
+        rusqlite::params![crate::ids::capability_id("conversation_cursor"), now],
+    )?;
+    Ok(())
+}
+
+fn migration_head(connection: &Connection) -> Result<Option<(i64, String)>> {
+    connection
+        .query_row(
+            "SELECT version, name
+             FROM schema_migrations
+             ORDER BY version DESC
+             LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(Into::into)
+}

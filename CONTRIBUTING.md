@@ -67,6 +67,14 @@ make fmt
 make check
 ```
 
+## Crate publishing
+
+Holon releases distribute the CLI and daemon through GitHub Release assets and
+container images. Set `publish = false` in the application and internal crate
+manifests. The standalone `holon-model-client` library and the `decision-*`
+libraries can be published independently for third-party Rust consumers.
+Keep their Cargo dependencies on publishable packages.
+
 ## Reference Docs
 
 - `AGENTS.md` is the source of truth for repository-specific guidance; `CLAUDE.md` exists as a pointer for Claude Code and other agent tooling. For deeper contributor references, see `docs/development.md`.

@@ -297,7 +297,7 @@ records before and after migration, compares the fixed Task/Input/Scheduling
 domains and TaskStatus sources across lineages, and checks that reopening
 neither recaptures members nor rewrites migration names or timestamps. Run the
 full lineage and data regression with
-`cargo test --locked --lib runtime_db::migration_history::tests -- --test-threads=2`.
+`cargo test --locked --manifest-path crates/holon-runtime/Cargo.toml --lib runtime_db::migration_history::tests -- --test-threads=2`.
 
 ## Summary
 

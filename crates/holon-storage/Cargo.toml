@@ -6,6 +6,7 @@ description = "SQLite storage infrastructure for Holon"
 license = "Apache-2.0"
 repository = "https://github.com/holon-run/holon"
 readme = "README.md"
+publish = false
 
 [features]
 test-support = []
