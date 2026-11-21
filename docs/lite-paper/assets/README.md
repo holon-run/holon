@@ -53,6 +53,6 @@ data; this image does not attest to a real review or CI run.
 
 `web-gui-review-en.png` is a real English GUI capture with localized synthetic
 scenario data. Its adjacent `.capture.json` records the GUI commit and hashes.
-The English capture uses commit `7b96b94a89b8ef1e67a96c8d349c60eee2eb4b99`;
-the Chinese capture retains its previously reviewed commit. Neither screenshot
-is evidence of a live review or CI run.
+Both captures were refreshed on 2026-11-21 from the canonical repository GUI
+commit `1b48ee1c131e6a333aaedf94fa490285cd4e3298`. Neither screenshot is
+evidence of a live review or CI run.

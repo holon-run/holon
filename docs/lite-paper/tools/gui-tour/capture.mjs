@@ -61,9 +61,8 @@ try {
   await page.getByRole('heading', { name: labels.heading }).waitFor();
   await page.locator('.current-work-title').filter({ hasText: objective }).click();
   await page.getByText(labels.ci, { exact: true }).waitFor();
-  await page.locator('.conversation-source > summary').click();
+  await page.locator('.conversation-detail-toggle').first().click();
   await page.getByText(labels.source, { exact: true }).waitFor();
-  if (await page.locator('.conversation-jump').isVisible()) await page.locator('.conversation-jump').click();
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(500);
   await mkdir(output, { recursive: true });

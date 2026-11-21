@@ -1,5 +1,5 @@
 {
-  "gui_commit": "7b96b94a89b8ef1e67a96c8d349c60eee2eb4b99",
+  "gui_commit": "1b48ee1c131e6a333aaedf94fa490285cd4e3298",
   "gui_dirty": "",
   "locale": "en",
   "timezone": "Asia/Shanghai",
@@ -11,10 +11,10 @@
   "device_scale_factor": 2,
   "synthetic_data": true,
   "live_runtime": false,
-  "scenario_sha256": "0b08c420f597a871451fd4fad29f3736b6a2af5fc68f121cd74f19f18ac29ebd",
-  "capture_script_sha256": "f92ad72e7bae1437a26526f6143ed4d9bc6fcadff4e8434ef06c6bdeb2aad187",
-  "fixture_transport_sha256": "bb27918781320b1d67670d6f7a706def6de7c226d1f778d9415148d536cb47e5",
-  "screenshot_sha256": "755a7efd848285641cb08daa345c44a915e8495bbad0619a4c3002910e7757d1",
+  "scenario_sha256": "4e287fa1b355f1c9a0f455573e9c0f4cfdc7f32d5b978adeb5aec2b5dcdf1919",
+  "capture_script_sha256": "877789e71e110f9e401b8cf8dfb6f0d2541c98123e23e86fc13a598790710ace",
+  "fixture_transport_sha256": "3380412f0cf1583dacd0ffd441223e2ffef4c5f8f9cc0c04a0d55ca1595f42de",
+  "screenshot_sha256": "57040e942bcbf836e22f686dac215b1faa12b8732fce7e7b3b2654d427e04e33",
   "checks": [
     "en heading visible",
     "webhook source expanded and within viewport",

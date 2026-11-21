@@ -46,11 +46,18 @@ in the language Markdown.
 
 ## Current source
 
+The screenshots were refreshed on 2026-11-21 from the canonical repository GUI
+commit `1b48ee1c131e6a333aaedf94fa490285cd4e3298` (both languages). The scenario
+gained the fields the current GUI requires (agent identity `incarnation` and one
+assistant process activity), and `capture.mjs` expands the turn execution
+process through `.conversation-detail-toggle`. Review each new image before
+publishing; the capture metadata is authoritative.
+
 The first capture used GUI commit `a8eaf9815bf430f1555ff517067e902ec90364b7`
 from the canonical repository on 2026-09-17. This is newer than the paper
 branch's GUI. The explicit `--gui-root` avoids accidentally capturing an older
 frontend. Use this commit to reproduce this version, or select a newer checkout
-deliberately and review the resulting image. The capture metadata is authoritative.
+deliberately and review the resulting image.
 
 For English, pass `--lang en` and use an English output directory:
 
@@ -63,4 +70,4 @@ node docs/lite-paper/tools/gui-tour/capture.mjs --lang en \
 The default is `--lang zh-CN`. The output image is `web-gui-review-<lang>.png`.
 Locale selection changes both the actual GUI language and synthetic scenario;
 it does not edit the DOM or image. The English capture uses GUI commit
-`7b96b94a89b8ef1e67a96c8d349c60eee2eb4b99`; see its capture metadata for details.
+`1b48ee1c131e6a333aaedf94fa490285cd4e3298`; see its capture metadata for details.
