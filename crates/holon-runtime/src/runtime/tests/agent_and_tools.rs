@@ -651,6 +651,7 @@ async fn web_search_provider_discovery_shares_visibility_and_admission() {
             holon_web_retrieval::WebProviderConfig {
                 kind: holon_web_retrieval::WebProviderKind::Brave,
                 base_url: Some("http://127.0.0.1:1/non-public-endpoint".into()),
+                engine_id: None,
                 api_key: "fixture-only-key".into(),
                 command: None,
                 output: None,
@@ -746,6 +747,7 @@ async fn web_fetch_provider_discovery_shares_visibility_and_admission() {
             holon_web_retrieval::WebProviderConfig {
                 kind: holon_web_retrieval::WebProviderKind::DeepSeek,
                 base_url: None,
+                engine_id: None,
                 api_key: "fixture-only-key".into(),
                 command: None,
                 output: None,

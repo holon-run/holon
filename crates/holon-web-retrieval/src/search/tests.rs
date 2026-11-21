@@ -117,6 +117,7 @@ fn discovery_filters_unaddressable_or_incomplete_providers() {
     let searxng = test_provider(WebProviderKind::Searxng, FIXTURE_URL);
     let missing_endpoint = WebProviderConfig {
         base_url: None,
+        engine_id: None,
         ..searxng.clone()
     };
     let mut missing_key = test_provider(WebProviderKind::Brave, FIXTURE_URL);
@@ -525,6 +526,7 @@ async fn fallback_mode_tries_explicit_order_until_success() {
                 WebProviderConfig {
                     kind: WebProviderKind::Searxng,
                     base_url: None,
+                    engine_id: None,
                     api_key: String::new(),
                     model_route: None,
                     command: None,
@@ -737,6 +739,7 @@ async fn single_provider_request_does_not_fallback() {
                 WebProviderConfig {
                     kind: WebProviderKind::Searxng,
                     base_url: None,
+                    engine_id: None,
                     api_key: String::new(),
                     model_route: None,
                     command: None,
@@ -842,6 +845,7 @@ async fn command_provider_executes_fixed_argv_and_maps_json_results() {
     let provider = WebProviderConfig {
             kind: WebProviderKind::Command,
             base_url: None,
+            engine_id: None,
             api_key: String::new(),
             model_route: None,
             command: Some(crate::WebCommandProviderConfig {
@@ -997,6 +1001,7 @@ fn test_provider(kind: WebProviderKind, base_url: &str) -> WebProviderConfig {
     WebProviderConfig {
         kind,
         base_url: Some(base_url.to_string()),
+        engine_id: None,
         api_key: "test-key-123".to_string(),
         model_route: None,
         command: None,
@@ -1009,6 +1014,7 @@ fn command_test_provider(argv: Vec<String>) -> WebProviderConfig {
     WebProviderConfig {
         kind: WebProviderKind::Command,
         base_url: None,
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: Some(crate::WebCommandProviderConfig { argv }),
@@ -1373,6 +1379,154 @@ async fn brave_search_integration_success() {
     assert_eq!(results[0].snippet.as_deref(), Some("Brave Search engine"));
     assert_eq!(results[0].source, "brave_test");
     assert_eq!(results[1].title, "Brave Browser");
+}
+
+fn google_results_json() -> serde_json::Value {
+    serde_json::json!({
+        "items": [
+            {
+                "title": "Google",
+                "link": "https://www.google.com",
+                "snippet": "Search the world's information"
+            },
+            {
+                "title": "Programmable Search Engine",
+                "link": "https://programmablesearchengine.google.com",
+                "snippet": "Create a custom search engine"
+            }
+        ]
+    })
+}
+
+fn google_test_provider(base_url: &str) -> WebProviderConfig {
+    let mut provider = test_provider(WebProviderKind::Google, base_url);
+    provider.engine_id = Some("engine-cx-123".to_string());
+    provider
+}
+
+async fn google_mock_server(router: axum::Router) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, router).await.unwrap();
+    });
+    format!("http://{}", addr)
+}
+
+#[tokio::test]
+async fn google_search_integration_success() {
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(|| async { axum::Json(google_results_json()) }),
+    );
+    let base_url = google_mock_server(router).await;
+
+    let provider = google_test_provider(&base_url);
+    let results = google_search("test", 5, "google_test", &provider, &test_fetch_config())
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0].title, "Google");
+    assert_eq!(results[0].url, "https://www.google.com");
+    assert_eq!(
+        results[0].snippet.as_deref(),
+        Some("Search the world's information")
+    );
+    assert_eq!(results[0].source, "google_test");
+    assert_eq!(results[1].title, "Programmable Search Engine");
+}
+
+#[tokio::test]
+async fn google_search_returns_empty_when_items_missing() {
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(|| async {
+            axum::Json(serde_json::json!({ "searchInformation": { "totalResults": "0" } }))
+        }),
+    );
+    let base_url = google_mock_server(router).await;
+
+    let provider = google_test_provider(&base_url);
+    let results = google_search(
+        "no matches",
+        5,
+        "google_test",
+        &provider,
+        &test_fetch_config(),
+    )
+    .await
+    .unwrap();
+    assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn google_search_requires_engine_id() {
+    let mut provider = test_provider(WebProviderKind::Google, "https://google.example");
+    provider.engine_id = None;
+    let error = google_search("test", 5, "google_test", &provider, &test_fetch_config())
+        .await
+        .unwrap_err();
+    assert_eq!(crate::test_tool_error(&error).kind, "provider_unavailable");
+    let diagnostic = format!("{error:?}");
+    assert!(diagnostic.contains("engine_id"));
+}
+
+#[tokio::test]
+async fn google_search_http_errors_are_redacted() {
+    for (status, expected_kind) in [
+        (StatusCode::UNAUTHORIZED, "provider_unavailable"),
+        (StatusCode::FORBIDDEN, "provider_unavailable"),
+        (StatusCode::TOO_MANY_REQUESTS, "rate_limited"),
+        (StatusCode::INTERNAL_SERVER_ERROR, "network_failed"),
+    ] {
+        let router = axum::Router::new().route(
+            "/",
+            axum::routing::get(move || async move {
+                (status, "private response: test-key-123 response-secret")
+            }),
+        );
+        let base_url = google_mock_server(router).await;
+        let provider = google_test_provider(&base_url);
+        let error = google_search("test", 5, "google_test", &provider, &test_fetch_config())
+            .await
+            .unwrap_err();
+        assert_eq!(crate::test_tool_error(&error).kind, expected_kind);
+        let diagnostic = format!("{error:?}");
+        assert!(!diagnostic.contains("test-key-123"));
+        assert!(!diagnostic.contains("response-secret"));
+    }
+}
+
+#[tokio::test]
+async fn google_search_sends_engine_id_and_caps_num() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(google_results_json())
+            }
+        }),
+    );
+    let base_url = google_mock_server(router).await;
+
+    let provider = google_test_provider(&base_url);
+    let results = google_search("test", 25, "google_test", &provider, &test_fetch_config())
+        .await
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    let queries = queries.lock().unwrap();
+    assert_eq!(queries.len(), 1);
+    assert!(queries[0].contains("cx=engine-cx-123"));
+    assert!(queries[0].contains("num=10"));
+    assert!(queries[0].contains("q=test"));
+    assert!(!queries[0].contains("test-key-123"));
 }
 
 #[tokio::test]
@@ -1961,6 +2115,7 @@ async fn perplexity_search_missing_api_key_is_error() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::Perplexity,
         base_url: Some("http://localhost:1".to_string()),
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: None,
@@ -2099,6 +2254,7 @@ async fn firecrawl_search_keyless_without_api_key_uses_free_tier() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::Firecrawl,
         base_url: Some(base_url),
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: None,
@@ -2183,6 +2339,7 @@ async fn brave_search_missing_api_key_is_error() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::Brave,
         base_url: Some("http://localhost:1".to_string()),
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: None,
@@ -2309,6 +2466,7 @@ async fn tencent_cloud_wsa_search_missing_api_key_is_error() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::TencentCloudWsa,
         base_url: Some("http://localhost:1".to_string()),
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: None,
@@ -2424,6 +2582,7 @@ async fn bocha_search_missing_api_key_is_error() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::Bocha,
         base_url: Some("http://localhost:1".to_string()),
+        engine_id: None,
         api_key: String::new(),
         model_route: None,
         command: None,
@@ -2504,6 +2663,7 @@ async fn brave_search_live_integration() {
     let provider = WebProviderConfig {
         kind: WebProviderKind::Brave,
         base_url: None, // use default https://api.search.brave.com
+        engine_id: None,
         api_key,
         model_route: None,
         command: None,
@@ -2569,6 +2729,7 @@ fn native_provider_config(model_route: Option<&str>) -> WebProviderConfig {
     WebProviderConfig {
         kind: WebProviderKind::OpenAiNative,
         base_url: None,
+        engine_id: None,
         api_key: String::new(),
         model_route: model_route.map(str::to_string),
         command: None,

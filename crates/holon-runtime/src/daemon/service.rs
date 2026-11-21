@@ -208,6 +208,7 @@ impl holon_client::wire::RuntimeConfigSource for AppConfig {
                     id: id.clone(),
                     kind: provider.kind.as_str().to_string(),
                     base_url: provider.base_url.clone(),
+                    engine_id: provider.engine_id.clone(),
                     credential_profile: provider.credential_profile.clone(),
                     credential_configured: config
                         .web_config

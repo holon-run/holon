@@ -267,6 +267,17 @@ fn runtime_config_surface_reports_available_search_provider_capabilities() {
         crate::web::WebProviderAuthClass::ApiKey
     );
     assert_eq!(brave.capabilities.default_priority, 80);
+    let google = surface
+        .available_search_provider_kinds
+        .iter()
+        .find(|provider| provider.kind == "google")
+        .expect("google provider kind should be reported");
+    assert_eq!(
+        google.capabilities.auth,
+        crate::web::WebProviderAuthClass::ApiKey
+    );
+    assert!(google.capabilities.supports_region_or_language);
+    assert_eq!(google.capabilities.default_priority, 82);
 
     let native = surface
         .available_search_provider_kinds

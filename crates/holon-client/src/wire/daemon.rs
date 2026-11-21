@@ -202,6 +202,7 @@ pub struct RuntimeWebSearchProviderSummary {
     pub id: String,
     pub kind: String,
     pub base_url: Option<String>,
+    pub engine_id: Option<String>,
     pub credential_profile: Option<String>,
     pub credential_configured: bool,
 }

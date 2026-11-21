@@ -15734,6 +15734,12 @@
                         "null"
                       ]
                     },
+                    "engine_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
                     "id": {
                       "type": "string"
                     },
@@ -16437,6 +16443,12 @@
                       "type": "boolean"
                     },
                     "credential_profile": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "engine_id": {
                       "type": [
                         "string",
                         "null"

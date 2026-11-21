@@ -128,6 +128,13 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选。未配�
 - **博查 AI 搜索**：博查 AI Web Search API。需要把 API key 存为凭据 profile。配置方式：
   `holon config set web.providers.bocha.kind bocha` 和
   `holon config set web.providers.bocha.credential_profile <profile>`。
+- **Google 可编程搜索**：通过 Programmable Search 引擎背后的 Custom Search
+  JSON API 获取官方 Google 结果。需要 API key 凭据 profile 与引擎 ID（`cx`）；
+  在 programmablesearchengine.google.com 创建引擎并启用"搜索整个网络"，
+  使查询覆盖整个网络而非受限站点索引。配置方式：
+  `holon config set web.providers.google.kind google`、
+  `holon config set web.providers.google.engine_id <cx>` 和
+  `holon config set web.providers.google.credential_profile <profile>`。
 - **Keenable**：面向 Agent 的独立网页索引。公共端点无需 API key，配置密钥后改用
   认证端点，且属于默认免 key 回退链。配置方式：`holon config set web.providers.keenable.kind keenable`；
   需要密钥时再加

@@ -548,6 +548,7 @@ export interface RuntimeWebSearchProviderSummary {
   id: string;
   kind: string;
   baseUrl?: string;
+  engineId?: string;
   credentialProfile?: string;
   credentialConfigured: boolean;
 }

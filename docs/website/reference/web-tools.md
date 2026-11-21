@@ -141,6 +141,14 @@ take precedence over this chain.
   credential profile. Configure with
   `holon config set web.providers.bocha.kind bocha` and
   `holon config set web.providers.bocha.credential_profile <profile>`.
+- **Google Programmable Search** — official Google results through the Custom
+  Search JSON API behind a Programmable Search engine. Requires an API key set
+  via credential profile plus the engine id (`cx`); create the engine at
+  programmablesearchengine.google.com with "Search the entire web" enabled so
+  queries cover the whole web instead of a site-restricted index. Configure
+  with `holon config set web.providers.google.kind google`,
+  `holon config set web.providers.google.engine_id <cx>`, and
+  `holon config set web.providers.google.credential_profile <profile>`.
 - **Keenable** — an independent web index for agents. The public endpoint works
   without an API key; a key switches it to the authenticated endpoint. Configure
   with `holon config set web.providers.keenable.kind keenable` and, for keyed
