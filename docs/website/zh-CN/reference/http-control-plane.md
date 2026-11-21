@@ -891,7 +891,7 @@ enqueue 会拒绝它。运行时自有类型（`system_tick`、`task_result`、
 
 ### 尚未文档化的路由
 
-以下路由存在于 [`src/http/mod.rs`](../../../src/http/mod.rs)，但尚未在本参考页完整记录：
+以下路由存在于 [`crates/holon-runtime/src/http/mod.rs`](../../../../crates/holon-runtime/src/http/mod.rs)，但尚未在本参考页完整记录：
 
 - `GET /api/agents/:id/skills`
 - `POST /api/control/agents/:id/skills/install`

@@ -9,10 +9,10 @@ order: 70
 This page defines the current contract for workspace identity, execution
 roots, worktree isolation, and host-local execution policy.
 
-> **Last verified:** 2026-09-13 against `src/types.rs`
+> **Last verified:** 2026-09-13 against `crates/holon-runtime/src/types.rs`
 > `ActiveWorkspaceEntry`, `WorkspaceOccupancyRecord`, `WorktreeSession`,
 > `ExecutionSnapshot` in `crates/holon-domain/src/execution_types.rs`, and
-> `src/runtime/workspace.rs`.
+> `crates/holon-runtime/src/runtime/workspace.rs`.
 
 ## Source RFCs
 

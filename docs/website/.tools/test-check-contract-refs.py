@@ -102,12 +102,14 @@ class ContractReferenceCheckerTests(unittest.TestCase):
 
     def test_last_verified_checks_only_repository_paths(self):
         self.write("src/runtime/current.rs", "")
+        self.write("crates/holon-runtime/src/host.rs", "")
         self.write(
             "docs/website/spec/source.md",
             "\n".join(
                 (
                     "> **Last verified:** against `src/runtime/current.rs`,",
                     "> `AgentStatus`, and `src/runtime/missing.rs`.",
+                    "> `crates/holon-runtime/src/host.rs` and `crates/holon-runtime/src/missing.rs`.",
                     "",
                     "Ordinary example: `src/runtime/not-checked.rs`.",
                 )
@@ -116,7 +118,7 @@ class ContractReferenceCheckerTests(unittest.TestCase):
         diagnostics = self.diagnostics()
         self.assertEqual(
             [(item.line, item.target) for item in diagnostics],
-            [(2, "src/runtime/missing.rs")],
+            [(2, "src/runtime/missing.rs"), (3, "crates/holon-runtime/src/missing.rs")],
         )
 
     def test_fenced_examples_placeholders_and_rfc_code_spans_are_ignored(self):

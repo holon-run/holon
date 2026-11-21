@@ -155,7 +155,7 @@ The current runtime storage creates the following files under
 ## Current implementation usage
 
 The current implementation centralizes ledger paths and basic append/read
-helpers in [`src/storage/mod.rs`](../../src/storage/mod.rs). Higher-level
+helpers in [`crates/holon-runtime/src/storage/mod.rs`](../../crates/holon-runtime/src/storage/mod.rs). Higher-level
 runtime modules decide when each domain record is created and how recent or
 latest-state views are reconstructed.
 

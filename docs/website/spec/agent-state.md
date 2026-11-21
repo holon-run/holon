@@ -10,12 +10,12 @@ This page defines the current contract for agent state, lifecycle, and
 runtime projection in Holon. It is verified against implementation and tests
 as of the last review date noted below.
 
-> **Last verified:** 2026-07-24 against `src/types.rs` `AgentState`,
+> **Last verified:** 2026-07-24 against `crates/holon-runtime/src/types.rs` `AgentState`,
 > `AgentStatus`, `AgentIdentityView`, `AgentSchedulingPosture`,
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
-> `RuntimePosture`, and `AgentSummary`; `src/storage/mod.rs`
-> `agent_posture_projection`; `src/runtime/lifecycle.rs` `agent_summary`;
-> `src/runtime/closure.rs` closure derivation; and `src/tool/host/get_agent.rs`.
+> `RuntimePosture`, and `AgentSummary`; `crates/holon-runtime/src/storage/mod.rs`
+> `agent_posture_projection`; `crates/holon-runtime/src/runtime/lifecycle.rs` `agent_summary`;
+> `crates/holon-runtime/src/runtime/closure.rs` closure derivation; and `crates/holon-runtime/src/tool/host/get_agent.rs`.
 
 ## Source RFCs
 

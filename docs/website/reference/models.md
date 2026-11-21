@@ -10,8 +10,8 @@ Holon includes built-in configuration for **37 provider accounts**
 across **50 endpoints** and **423 models**.
 
 This page is auto-generated from the Holon source code
-([`crates/holon-model-catalog/src/lib.rs`](../../../crates/holon-model-catalog/src/lib.rs) and
-[`src/config/mod.rs`](../../../src/config/mod.rs)).
+([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
+[`crates/holon-config/src/builtin_providers.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-config/src/builtin_providers.rs)).
 Run `cargo run --bin holon-docgen -- models > docs/website/reference/models.md` to regenerate.
 
 Note: subscription-scoped providers such as `dashscope-token-plan` and

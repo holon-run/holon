@@ -9,12 +9,12 @@ order: 10
 本页定义 Holon 中 Agent 状态、生命周期和运行时投影的当前契约。契约基于下方
 最后复核日期所对应的实现和测试进行验证。
 
-> **Last verified:** 2026-07-24 against `src/types.rs` `AgentState`,
+> **Last verified:** 2026-07-24 against `crates/holon-runtime/src/types.rs` `AgentState`,
 > `AgentStatus`, `AgentIdentityView`, `AgentSchedulingPosture`,
 > `AgentPostureProjection`, `ClosureDecision`, `ContinuationResolution`,
-> `RuntimePosture`, and `AgentSummary`; `src/storage/mod.rs`
-> `agent_posture_projection`; `src/runtime/lifecycle.rs` `agent_summary`;
-> `src/runtime/closure.rs` closure derivation; and `src/tool/host/get_agent.rs`.
+> `RuntimePosture`, and `AgentSummary`; `crates/holon-runtime/src/storage/mod.rs`
+> `agent_posture_projection`; `crates/holon-runtime/src/runtime/lifecycle.rs` `agent_summary`;
+> `crates/holon-runtime/src/runtime/closure.rs` closure derivation; and `crates/holon-runtime/src/tool/host/get_agent.rs`.
 
 ## 源 RFC
 

@@ -8,11 +8,11 @@ order: 40
 
 本页定义 Holon Agent 如何从休眠中唤醒、接收外部事件并解析延续决策的当前契约。
 
-> **Last verified:** 2026-09-13 against `src/types.rs`
+> **Last verified:** 2026-09-13 against `crates/holon-runtime/src/types.rs`
 > `ContinuationTriggerKind`, `ContinuationClass`, `ContinuationResolution`,
 > `PendingWakeHint`, `ExternalTriggerScope`, `CallbackDeliveryMode`,
 > `ExternalTriggerSummary`, `ExternalTriggerCapability`,
-> `WaitConditionRecord`, and `src/runtime/waiting.rs`.
+> `WaitConditionRecord`, and `crates/holon-runtime/src/runtime/waiting.rs`.
 
 ## 源 RFC
 

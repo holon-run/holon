@@ -9,11 +9,11 @@ order: 40
 This page defines the current contract for how Holon agents wake from sleep,
 receive external events, and resolve continuation decisions.
 
-> **Last verified:** 2026-09-13 against `src/types.rs`
+> **Last verified:** 2026-09-13 against `crates/holon-runtime/src/types.rs`
 > `ContinuationTriggerKind`, `ContinuationClass`, `ContinuationResolution`,
 > `PendingWakeHint`, `ExternalTriggerScope`, `CallbackDeliveryMode`,
 > `ExternalTriggerSummary`, `ExternalTriggerCapability`,
-> `WaitConditionRecord`, and `src/runtime/waiting.rs`.
+> `WaitConditionRecord`, and `crates/holon-runtime/src/runtime/waiting.rs`.
 
 ## Source RFCs
 

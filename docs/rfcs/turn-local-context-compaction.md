@@ -24,10 +24,10 @@ This note describes a focused compaction design for one specific failure mode:
 This is different from Holon's existing cross-turn compaction.
 
 Existing cross-turn context projection is assembled before provider execution
-through [`src/context/mod.rs`](../../src/context/mod.rs) `build_context()`.
+through [`crates/holon-runtime/src/context/mod.rs`](../../crates/holon-runtime/src/context/mod.rs) `build_context()`.
 That logic bounds and projects durable history. It does **not** compact the
 in-memory provider conversation built inside
-[`src/runtime/turn/execution.rs`](../../src/runtime/turn/execution.rs)
+[`crates/holon-runtime/src/runtime/turn/execution.rs`](../../crates/holon-runtime/src/runtime/turn/execution.rs)
 `run_agent_loop()`.
 
 The result is that Holon can still exceed context inside a single turn even if
@@ -45,8 +45,8 @@ The current turn loop behaves roughly like this:
 6. build the next continuation request from the full accumulated conversation
 
 Relevant code paths today are
-[`src/context/mod.rs`](../../src/context/mod.rs) and
-[`src/runtime/turn/execution.rs`](../../src/runtime/turn/execution.rs).
+[`crates/holon-runtime/src/context/mod.rs`](../../crates/holon-runtime/src/context/mod.rs) and
+[`crates/holon-runtime/src/runtime/turn/execution.rs`](../../crates/holon-runtime/src/runtime/turn/execution.rs).
 
 So the dangerous growth is not mainly:
 

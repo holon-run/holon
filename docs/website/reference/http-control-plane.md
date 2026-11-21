@@ -957,7 +957,7 @@ endpoint. A good integration should be able to ask:
 
 ### Routes not yet documented
 
-The following routes exist in [`src/http/mod.rs`](../../../src/http/mod.rs) but are not yet fully documented
+The following routes exist in [`crates/holon-runtime/src/http/mod.rs`](../../../crates/holon-runtime/src/http/mod.rs) but are not yet fully documented
 on this reference page:
 
 - `GET /api/agents/:id/skills`

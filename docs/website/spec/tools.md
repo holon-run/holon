@@ -15,9 +15,9 @@ The machine-readable inventory for built-in model-facing tools is
 its versioning policy and refresh workflow are documented in the
 [model tool schema inventory reference](../reference/model-tool-schema-inventory.md).
 
-> **Last verified:** 2026-05-27 against `src/types.rs`
+> **Last verified:** 2026-05-27 against `crates/holon-runtime/src/types.rs`
 > `ToolCapabilityFamily`, `crates/holon-tools/src/tool/tools/mod.rs` `builtin_tool_definitions()`,
-> `crates/holon-tools/src/tool/spec.rs`, `src/tool/dispatch.rs`.
+> `crates/holon-tools/src/tool/spec.rs`, `crates/holon-runtime/src/tool/dispatch.rs`.
 
 ## Source RFCs
 

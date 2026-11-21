@@ -11,11 +11,11 @@ order: 80
 
 > **Last verified:** 2026-09-13 against `crates/holon-domain/src/message.rs` `MessageEnvelope`,
 > `MessageOrigin`, `AuthorityClass`, `MessageDeliverySurface`,
-> `AdmissionContext`, `src/policy.rs`, `src/ingress.rs`, `src/http/mod.rs`,
-> `src/http/state.rs`, `src/context/mod.rs`, `crates/holon-context/src/render.rs`,
-> `src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
-> `src/runtime/message_dispatch.rs`, `src/runtime/operator_dispatch.rs`, and
-> `src/runtime/turn/execution.rs`.
+> `AdmissionContext`, `crates/holon-runtime/src/policy.rs`, `crates/holon-runtime/src/ingress.rs`, `crates/holon-runtime/src/http/mod.rs`,
+> `crates/holon-runtime/src/http/state.rs`, `crates/holon-runtime/src/context/mod.rs`, `crates/holon-context/src/render.rs`,
+> `crates/holon-runtime/src/prompt/mod.rs`, `crates/holon-tui/src/operator_event.rs`, `crates/holon-tui/src/presentation.rs`,
+> `crates/holon-runtime/src/runtime/message_dispatch.rs`, `crates/holon-runtime/src/runtime/operator_dispatch.rs`, and
+> `crates/holon-runtime/src/runtime/turn/execution.rs`.
 
 ## 源 RFC
 
@@ -199,15 +199,15 @@ Holon 的来源契约：
 已验证的实现要点：
 
 - `crates/holon-domain/src/message.rs` 定义规范的信封字段和旧版别名兼容。
-- `src/policy.rs` 定义按 origin 的默认权威以及 kind/origin 准入检查。
-- [`src/http/state.rs`](../../../src/http/state.rs) 阻止公共 enqueue 使用运行时拥有的
+- `crates/holon-runtime/src/policy.rs` 定义按 origin 的默认权威以及 kind/origin 准入检查。
+- [`crates/holon-runtime/src/http/state.rs`](../../../../crates/holon-runtime/src/http/state.rs) 阻止公共 enqueue 使用运行时拥有的
   kind、`Interject` 优先级、特权 origin 或权威覆盖。
-- [`src/context/mod.rs`](../../../src/context/mod.rs) 和
-  [`src/prompt/mod.rs`](../../../src/prompt/mod.rs) 向模型暴露权威/来源标签，并在
+- [`crates/holon-runtime/src/context/mod.rs`](../../../../crates/holon-runtime/src/context/mod.rs) 和
+  [`crates/holon-runtime/src/prompt/mod.rs`](../../../../crates/holon-runtime/src/prompt/mod.rs) 向模型暴露权威/来源标签，并在
   prompt 指令中保留外部证据的可信边界。
-- [`src/runtime/message_dispatch.rs`](../../../src/runtime/message_dispatch.rs)、
-  [`src/runtime/operator_dispatch.rs`](../../../src/runtime/operator_dispatch.rs)
-  和 [`src/runtime/turn/execution.rs`](../../../src/runtime/turn/execution.rs) 在队列、
+- [`crates/holon-runtime/src/runtime/message_dispatch.rs`](../../../../crates/holon-runtime/src/runtime/message_dispatch.rs)、
+  [`crates/holon-runtime/src/runtime/operator_dispatch.rs`](../../../../crates/holon-runtime/src/runtime/operator_dispatch.rs)
+  和 [`crates/holon-runtime/src/runtime/turn/execution.rs`](../../../../crates/holon-runtime/src/runtime/turn/execution.rs) 在队列、
   处理、transcript 和 interjection 事件中包含来源标签。
 - `crates/holon-tui/src/operator_event.rs` 和 `crates/holon-tui/src/presentation.rs` 在把操作者来源消息渲染为用户消息的
   同时，保留原始事件来源信息。
@@ -219,7 +219,7 @@ Holon 的来源契约：
   `TrustLevel` 枚举/字段；现在只剩旧版 serde/CLI 别名。
 - **未定的设计决策：** `signed_integration` 在 RFC 中作为可能的 admission context
   出现，但目前还没有 `AdmissionContext::SignedIntegration` 变体。
-- **本页补齐的缺失测试覆盖：** `src/policy.rs` 现在有一个直接的分类矩阵测试，覆盖
+- **本页补齐的缺失测试覆盖：** `crates/holon-runtime/src/policy.rs` 现在有一个直接的分类矩阵测试，覆盖
   所有当前的 origin 默认值和允许的 origin/kind 组合。
 - **未发现实现缺陷：** 所检查的入口、prompt、事件和展现路径均保持了当前的
   来源/权威分离。

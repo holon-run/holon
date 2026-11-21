@@ -9,11 +9,11 @@ order: 20
 This page defines the current contract for WorkItem runtime behavior:
 lifecycle, focus, readiness, planning, blocking, and completion semantics.
 
-> **Last verified:** 2026-05-26 against `src/types.rs` `WorkItemRecord`,
+> **Last verified:** 2026-05-26 against `crates/holon-runtime/src/types.rs` `WorkItemRecord`,
 > `WorkItemState`, `WorkItemPlanStatus`, `WorkItemReadiness`,
 > `WorkItemSchedulingState`, and the tool implementations in
 > `src/tool/host/{create,update,pick,list,get,complete}_work_item.rs` and
-> `src/tool/host/wait_for.rs`.
+> `crates/holon-runtime/src/tool/host/wait_for.rs`.
 
 ## Source RFCs
 

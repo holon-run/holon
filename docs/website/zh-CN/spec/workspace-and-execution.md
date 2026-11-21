@@ -8,10 +8,10 @@ order: 70
 
 本页定义 workspace 身份、execution root、worktree 隔离和 host-local 执行策略的当前契约。
 
-> **Last verified:** 2026-09-13 against `src/types.rs`
+> **Last verified:** 2026-09-13 against `crates/holon-runtime/src/types.rs`
 > `ActiveWorkspaceEntry`, `WorkspaceOccupancyRecord`, `WorktreeSession`,
 > `ExecutionSnapshot`（`crates/holon-domain/src/execution_types.rs`），以及
-> `src/runtime/workspace.rs`。
+> `crates/holon-runtime/src/runtime/workspace.rs`。
 
 ## 源 RFC
 

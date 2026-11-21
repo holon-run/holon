@@ -31,7 +31,7 @@
 | Original section | Current home |
 |------------------|--------------|
 | Agent State | [Agent state spec](./website/spec/agent-state.md) |
-| Agent Initialization Contract | Implementation detail; see [`src/agent_template.rs`](../src/agent_template.rs) |
+| Agent Initialization Contract | Implementation detail; see [`crates/holon-runtime/src/agent_template.rs`](../crates/holon-runtime/src/agent_template.rs) |
 | Agent Identity And Visibility Contract | [Agent state spec](./website/spec/agent-state.md) — lifecycle, identity, visibility, ownership, profile presets |
 | Agent Model Selection | [Agent state spec](./website/spec/agent-state.md) |
 | Agent Inspection Surface Contract | Control-plane API; see `/agents/list`, `/agents/:id/status`, `/agents/:id/state` |
@@ -44,7 +44,7 @@
 | Original section | Current home |
 |------------------|--------------|
 | Message Envelope | [Trust and provenance spec](./website/spec/trust-and-provenance.md) and RFCs |
-| Message Kinds | [Trust and provenance spec](./website/spec/trust-and-provenance.md) and `src/types.rs` |
+| Message Kinds | [Trust and provenance spec](./website/spec/trust-and-provenance.md) and `crates/holon-runtime/src/types.rs` |
 | Origins | [Trust and provenance spec](./website/spec/trust-and-provenance.md) |
 | Authority Classes And Compatibility Trust | [Trust and provenance spec](./website/spec/trust-and-provenance.md) |
 | Priority | [Trust and provenance spec](./website/spec/trust-and-provenance.md) |
@@ -68,12 +68,12 @@
 
 | Original section | Current home |
 |------------------|--------------|
-| Provider Tool Schema Contract | [Tools spec](./website/spec/tools.md), `src/tool/spec.rs` |
+| Provider Tool Schema Contract | [Tools spec](./website/spec/tools.md), `crates/holon-runtime/src/tool/spec.rs` |
 | Tool Error Envelope Contract | [Tools spec](./website/spec/tools.md); also [RFC: tool-result-envelope](./rfcs/tool-result-envelope.md) |
 | Repo Inspection Contract | [Workspace and execution spec](./website/spec/workspace-and-execution.md); shell-first inspection is also part of runtime prompt policy |
-| Provider Transport Contract | Implementation detail; provider selection/retry/token-usage in `src/provider/` |
-| Failure Artifact Envelope | Implementation detail; `FailureArtifact` shape in `src/types.rs` |
-| Provider Prompt Frame | Implementation detail; prompt assembly in `src/prompt/` |
+| Provider Transport Contract | Implementation detail; provider selection/retry/token-usage in `crates/holon-runtime/src/provider/` |
+| Failure Artifact Envelope | Implementation detail; `FailureArtifact` shape in `crates/holon-runtime/src/types.rs` |
+| Provider Prompt Frame | Implementation detail; prompt assembly in `crates/holon-runtime/src/prompt/` |
 
 ### Work items and memory
 
@@ -91,7 +91,7 @@
 | Worktree Session | [Workspace and execution spec](./website/spec/workspace-and-execution.md) |
 | Background Task Model | [Tasks spec](./website/spec/tasks.md) |
 | Background Task Recovery | [Tasks spec](./website/spec/tasks.md) |
-| Brief Output Contract | [Work items spec](./website/spec/work-items.md) — completion reports; also `src/types.rs` `BriefRecord` |
+| Brief Output Contract | [Work items spec](./website/spec/work-items.md) — completion reports; also `crates/holon-runtime/src/types.rs` `BriefRecord` |
 
 ### Operator and operational surfaces
 
@@ -117,19 +117,19 @@ focused spec page. They remain in source code, RFCs, or CLI reference:
 - **Provider transport contract** (selection, retry, fallback, token usage):
   [`holon-provider`](../crates/holon-provider/src/provider/mod.rs), which defines `ProviderAttemptTimeline`
 - **Provider prompt frame** (prompt assembly and lowering):
-  [`src/prompt/`](../src/prompt/),
+  [`crates/holon-runtime/src/prompt/`](../crates/holon-runtime/src/prompt/),
   [OpenAI lowering](../crates/holon-provider/src/provider/transports/openai/mod.rs),
   [Anthropic lowering](../crates/holon-provider/src/provider/transports/anthropic.rs)
 - **Failure artifact envelope** (operator-facing failure normalization):
-  `src/types.rs` `FailureArtifact`
+  `crates/holon-runtime/src/types.rs` `FailureArtifact`
 - **Agent initialization** (template selection, agent_home materialization):
-  [`src/agent_template.rs`](../src/agent_template.rs)
+  [`crates/holon-runtime/src/agent_template.rs`](../crates/holon-runtime/src/agent_template.rs)
 - **Memory search index** (FTS indexing, CJK, rebuild markers):
-  `src/memory/`, tool schema inventory
+  `crates/holon-runtime/src/memory/`, tool schema inventory
 - **Local operator console** (TUI contract):
   `crates/holon-tui/src/tui/`
 - **Local daemon lifecycle** (`holon daemon` commands):
-  CLI reference, `src/daemon/`
+  CLI reference, `crates/holon-runtime/src/daemon/`
 
 ## Historical note
 
