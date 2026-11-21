@@ -1,7 +1,8 @@
 # Capture legacy continuity incrementally
 
-Migration 94 must preserve the complete original continuity cut even when a
-long-lived agent's cumulative history exceeds 64 MiB or 65,536 records. These
+Migration 94 must preserve the original continuity cut within its reference
+depth limit, even when a long-lived agent's cumulative history exceeds 64 MiB
+or 65,536 records. These
 cumulative thresholds are not memory bounds: the referenced bodies can be read,
 validated and hashed independently. Rejecting their sum prevents the entire
 runtime from starting without reducing its persistent history.
@@ -16,11 +17,16 @@ claim: the existing seed JSON still contains every candidate digest.
 
 Remove cumulative body/count rejection from the Episode/Work upgrade closure
 and its Wait relation inventory; do not replace it with a larger threshold.
-Retain reference deduplication and depth validation, fixed transaction cutover,
-and rollback. The same availability rule applies to ordinary current reads,
+Keep reference deduplication, fixed transaction cutover, and rollback on
+storage errors. Episode and Work traverse references up to 64 edges from
+their roots. A deeper edge is skipped, with one warning per affected traversal
+including the agent, first skipped reference and depth. This permits startup
+without rewriting historical rows; continuity may omit older evidence
+reachable only through the skipped edges. The same availability rule for
+cumulative history applies to ordinary current reads,
 Task/Input/Scheduling capture, resident views, and writer preparation: cumulative
 bytes, records and decoded nodes are observations, not admission quotas. Complete
-closure queries must not truncate at a former quota. Explicitly requested
+closure queries must not truncate at a former cumulative quota. Explicitly requested
 page/window sizes remain selection semantics. No historical payload rewrite is
 required.
 

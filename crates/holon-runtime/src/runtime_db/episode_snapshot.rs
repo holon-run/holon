@@ -167,7 +167,6 @@ pub(crate) enum EpisodeSnapshotError {
     BindingConflict,
     LegacyContentChanged { episode_id: String },
     ActiveBuilderCollision { episode_id: String },
-    ClosureResourceExhausted { limit: &'static str },
 }
 
 impl fmt::Display for EpisodeSnapshotError {
@@ -188,12 +187,6 @@ impl fmt::Display for EpisodeSnapshotError {
                 write!(
                     f,
                     "active episode builder is already archived: {episode_id}"
-                )
-            }
-            Self::ClosureResourceExhausted { limit } => {
-                write!(
-                    f,
-                    "episode continuity mandatory closure exceeds its {limit} bound"
                 )
             }
         }
@@ -1253,38 +1246,67 @@ fn recent_episode_ids<'a>(
 }
 
 #[derive(Default)]
-struct RootCollector {
-    roots: EpisodeContinuityRoots,
+struct ContinuityReferenceQueue {
     pending: VecDeque<(String, String, usize)>,
     queued: BTreeSet<(String, String)>,
-    visited: BTreeSet<(String, String)>,
+    first_truncated: Option<(String, String, usize)>,
+}
+
+impl ContinuityReferenceQueue {
+    fn push(&mut self, kind: &str, id: &str, depth: usize) -> bool {
+        let key = (kind.to_owned(), id.to_owned());
+        if self.queued.contains(&key) {
+            return true;
+        }
+        if depth > CONTINUITY_MAX_REF_DEPTH {
+            // A skipped edge is not visited: a later in-bound edge can still admit it.
+            self.first_truncated.get_or_insert((key.0, key.1, depth));
+            return false;
+        }
+        self.queued.insert(key.clone());
+        self.pending.push_back((key.0, key.1, depth));
+        true
+    }
+
+    fn warn_if_truncated(&self, agent_id: &str, closure: &str) {
+        if let Some((kind, id, depth)) = &self.first_truncated {
+            tracing::warn!(
+                agent_id,
+                closure,
+                reference_kind = kind.as_str(),
+                reference_id = id.as_str(),
+                depth,
+                max_depth = CONTINUITY_MAX_REF_DEPTH,
+                "continuity reference depth truncated"
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct RootCollector {
+    roots: EpisodeContinuityRoots,
+    references: ContinuityReferenceQueue,
     current_depth: usize,
     payload_bytes: usize,
-    depth_error: Option<&'static str>,
 }
 
 impl RootCollector {
     fn reference(&mut self, kind: &str, id: &str) {
-        if id.is_empty() || self.depth_error.is_some() {
-            return;
-        }
-        let key = (kind.to_owned(), id.to_owned());
-        if self.queued.contains(&key) {
-            return;
-        }
-        if self.current_depth > CONTINUITY_MAX_REF_DEPTH {
-            self.depth_error = Some("reference depth");
-        } else {
-            self.queued.insert(key.clone());
-            self.pending.push_back((key.0, key.1, self.current_depth));
+        if !id.is_empty() {
+            self.references.push(kind, id, self.current_depth);
         }
     }
 
-    fn work_item(&mut self, id: Option<&str>) {
-        if let Some(id) = id.filter(|id| !id.is_empty()) {
-            self.roots.work_item_ids.insert(id.to_owned());
-            self.reference("work_item", id);
+    fn work_item(&mut self, id: Option<&str>) -> bool {
+        let Some(id) = id.filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        if !self.references.push("work_item", id, self.current_depth) {
+            return false;
         }
+        self.roots.work_item_ids.insert(id.to_owned());
+        true
     }
 
     fn optional_ref(&mut self, kind: &str, id: Option<&str>) {
@@ -1297,28 +1319,29 @@ impl RootCollector {
         let Ok(reference) = RuntimeRef::parse(value) else {
             return;
         };
-        self.roots.source_refs.insert(reference.source_ref());
-        match reference {
-            RuntimeRef::Episode { id } => self.reference("episode", &id),
-            RuntimeRef::Message { id } => self.reference("message", &id),
-            RuntimeRef::Turn { id } => self.reference("turn", &id),
-            RuntimeRef::WorkItem { id } => self.work_item(Some(&id)),
-            RuntimeRef::Task { id } => self.reference("task", &id),
-            RuntimeRef::Brief { id } => self.reference("brief", &id),
-            RuntimeRef::ToolExecution { id, .. } => self.reference("tool_execution", &id),
-            RuntimeRef::AgentMemory { .. } | RuntimeRef::WorkspaceProfile { .. } => {}
+        let edge = match &reference {
+            RuntimeRef::Episode { id } => Some(("episode", id)),
+            RuntimeRef::Message { id } => Some(("message", id)),
+            RuntimeRef::Turn { id } => Some(("turn", id)),
+            RuntimeRef::WorkItem { id } => {
+                if !self.work_item(Some(id)) {
+                    return;
+                }
+                None
+            }
+            RuntimeRef::Task { id } => Some(("task", id)),
+            RuntimeRef::Brief { id } => Some(("brief", id)),
+            RuntimeRef::ToolExecution { id, .. } => Some(("tool_execution", id)),
+            RuntimeRef::AgentMemory { .. } | RuntimeRef::WorkspaceProfile { .. } => None,
+        };
+        // The explicit-ref inventory also qualifies Episodes; an omitted edge
+        // must not select a body through that inventory instead.
+        if edge.is_none_or(|(kind, id)| self.references.push(kind, id, self.current_depth)) {
+            self.roots.source_refs.insert(reference.source_ref());
         }
-    }
-
-    fn validate_depth(&self) -> Result<()> {
-        if let Some(limit) = self.depth_error {
-            return Err(EpisodeSnapshotError::ClosureResourceExhausted { limit }.into());
-        }
-        Ok(())
     }
 
     fn digest(&mut self, kind: &str, id: &str, payload: &str) -> Result<()> {
-        self.validate_depth()?;
         let key = format!("{kind}:{id}");
         if self.roots.record_digests.contains_key(&key) {
             return Ok(());
@@ -1326,7 +1349,7 @@ impl RootCollector {
         self.payload_bytes = self
             .payload_bytes
             .checked_add(payload.len())
-            .context("continuity payload bytes overflow")?;
+            .context("continuity payload byte counter overflow; retain the SQLite backup and report this storage error before retrying")?;
         self.roots
             .record_digests
             .insert(key, bytes_digest(payload.as_bytes()));
@@ -1418,7 +1441,7 @@ impl RootCollector {
                 self.reference("message", trigger_message_id);
             }
             ExecutionSourceIdentity::WorkItemContinuation { work_item_id } => {
-                self.work_item(Some(work_item_id))
+                self.work_item(Some(work_item_id));
             }
             ExecutionSourceIdentity::TargetedContinuation {
                 source_work_item_id,
@@ -1602,6 +1625,7 @@ fn collect_live_episode_roots_with_schema(
         Ok(())
     })?;
     expand_episode_root_refs(connection, agent_id, &mut collector, tables)?;
+    collector.references.warn_if_truncated(agent_id, "episode");
     let (work, input_digests) = work_checkpoint::capture(
         connection,
         agent_id,
@@ -1801,12 +1825,7 @@ fn expand_episode_root_refs(
     collector: &mut RootCollector,
     tables: Option<&BTreeSet<String>>,
 ) -> Result<()> {
-    collector.validate_depth()?;
-    while let Some((kind, id, depth)) = collector.pending.pop_front() {
-        collector.validate_depth()?;
-        if !collector.visited.insert((kind.clone(), id.clone())) {
-            continue;
-        }
+    while let Some((kind, id, depth)) = collector.references.pending.pop_front() {
         collector.current_depth = depth.saturating_add(1);
         let (table, sql) = match kind.as_str() {
             "work_item" => ("work_items", "SELECT payload_json FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2"),
@@ -2005,7 +2024,7 @@ fn expand_episode_root_refs(
             _ => unreachable!("canonical continuity reference matched above"),
         }
     }
-    collector.validate_depth()
+    Ok(())
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -2128,18 +2147,20 @@ mod tests {
         db: RuntimeDb,
     }
 
+    fn historical_schema(path: &std::path::Path, version: i64) -> Connection {
+        let mut connection = Connection::open(path).unwrap();
+        ensure_migration_table(&connection).unwrap();
+        for migration in MIGRATIONS.iter().filter(|m| m.version <= version) {
+            apply_migration(&mut connection, migration).unwrap();
+        }
+        connection
+    }
+
     impl Fixture {
         fn legacy(prepare: impl FnOnce(&Transaction<'_>)) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("runtime.sqlite");
-            let mut connection = Connection::open(&path).unwrap();
-            ensure_migration_table(&connection).unwrap();
-            for migration in MIGRATIONS
-                .iter()
-                .filter(|migration| migration.version <= 89)
-            {
-                apply_migration(&mut connection, migration).unwrap();
-            }
+            let mut connection = historical_schema(&path, 89);
             {
                 let tx = connection.transaction().unwrap();
                 prepare(&tx);
@@ -3103,6 +3124,219 @@ mod tests {
         }).unwrap();
     }
 
+    fn capture_continuity_warnings(run: impl FnOnce()) -> String {
+        use std::{
+            io::{self, Write},
+            sync::{Arc, Mutex},
+        };
+
+        #[derive(Clone, Default)]
+        struct Log(Arc<Mutex<Vec<u8>>>);
+        impl Write for Log {
+            fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+                self.0.lock().unwrap().write(bytes)
+            }
+
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let output = Log::default();
+        let writer = output.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer(move || writer.clone())
+            .finish();
+        tracing::subscriber::with_default(subscriber, run);
+        let bytes = output.0.lock().unwrap().clone();
+        String::from_utf8(bytes).unwrap()
+    }
+
+    #[test]
+    fn v94_truncates_deep_message_refs_and_completes_pre_server_storage_preparation() {
+        use crate::types::{
+            AuthorityClass, MessageBody, MessageKind, MessageOrigin, Priority, QueueEntryRecord,
+            QueueEntryStatus,
+        };
+
+        let home = tempfile::tempdir().unwrap();
+        let config = crate::config::AppConfig::load_with_home_for_config_inspection(Some(
+            home.path().into(),
+        ))
+        .unwrap();
+        let path = config.runtime_db_path();
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let mut connection = historical_schema(&path, 93);
+        let tx = connection.transaction().unwrap();
+        upsert_agent_identity_tx(&tx, &identity("agent-a")).unwrap();
+        upsert_agent_state_tx(&tx, &state("agent-a")).unwrap();
+        for index in 0..=CONTINUITY_MAX_REF_DEPTH + 2 {
+            let mut message = MessageEnvelope::new(
+                "agent-a",
+                MessageKind::InternalFollowup,
+                MessageOrigin::System {
+                    subsystem: "fixture".into(),
+                },
+                AuthorityClass::RuntimeInstruction,
+                Priority::Normal,
+                MessageBody::Text {
+                    text: "historical reference".into(),
+                },
+            );
+            message.id = format!("history-message-{index}");
+            if index < CONTINUITY_MAX_REF_DEPTH + 2 {
+                message.source_refs.insert(
+                    "previous".into(),
+                    format!("message:history-message-{}", index + 1),
+                );
+            }
+            upsert_message_tx(&tx, &message).unwrap();
+            if index == 0 {
+                crate::runtime_db::repositories::upsert_queue_entry_tx(
+                    &tx,
+                    &QueueEntryRecord {
+                        message_id: message.id,
+                        agent_id: "agent-a".into(),
+                        priority: Priority::Normal,
+                        status: QueueEntryStatus::Queued,
+                        created_at: message.created_at,
+                        updated_at: message.created_at,
+                    },
+                )
+                .unwrap();
+            }
+        }
+        import_complete(&tx);
+        tx.commit().unwrap();
+        drop(connection);
+
+        let warnings = capture_continuity_warnings(|| {
+            crate::host::RuntimeHost::prepare_runtime_storage(&config).unwrap();
+        });
+        let cutoff = CONTINUITY_MAX_REF_DEPTH + 1;
+        assert_truncation_warning(
+            &warnings,
+            "episode",
+            "message",
+            &format!("history-message-{cutoff}"),
+        );
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT name FROM schema_migrations WHERE version=94",
+                [],
+                |r| r.get::<_, String>(0)
+            )
+            .unwrap(),
+            "explicit_episode_continuity"
+        );
+        let json: String = db
+            .query_row(
+                "SELECT roots_json FROM episode_continuity_seeds WHERE agent_id='agent-a'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let roots: EpisodeContinuityRoots = serde_json::from_str(&json).unwrap();
+        assert!(roots.record_digests.contains_key(&format!(
+            "message:history-message-{CONTINUITY_MAX_REF_DEPTH}"
+        )));
+        assert!(!roots
+            .record_digests
+            .contains_key(&format!("message:history-message-{cutoff}")));
+        assert!(!roots
+            .source_refs
+            .contains(&format!("message:history-message-{cutoff}")));
+        assert_eq!(db.query_row(
+            "SELECT COUNT(*) FROM messages WHERE agent_id='agent-a' AND evidence_id LIKE 'history-message-%'",
+            [],
+            |r|r.get::<_, usize>(0),
+        ).unwrap(), CONTINUITY_MAX_REF_DEPTH + 3);
+    }
+
+    fn assert_truncation_warning(warnings: &str, closure: &str, kind: &str, id: &str) {
+        let matching: Vec<_> = warnings
+            .lines()
+            .filter(|line| {
+                line.contains("continuity reference depth truncated")
+                    && line.contains(&format!("closure=\"{closure}\""))
+            })
+            .collect();
+        assert_eq!(matching.len(), 1, "{warnings}");
+        let warning = matching[0];
+        for field in [
+            "agent_id=\"agent-a\"".to_owned(),
+            format!("reference_kind=\"{kind}\""),
+            format!("reference_id=\"{id}\""),
+            format!("depth={}", CONTINUITY_MAX_REF_DEPTH + 1),
+            format!("max_depth={CONTINUITY_MAX_REF_DEPTH}"),
+        ] {
+            assert!(warning.contains(&field), "{warning} missing {field}");
+        }
+    }
+
+    #[test]
+    fn work_checkpoint_truncates_only_past_the_shared_depth_boundary() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut connection = historical_schema(&directory.path().join("runtime.sqlite"), 93);
+        let tx = connection.transaction().unwrap();
+        upsert_agent_identity_tx(&tx, &identity("agent-a")).unwrap();
+        let cutoff = CONTINUITY_MAX_REF_DEPTH / 2;
+        for index in 0..=cutoff + 1 {
+            let mut work =
+                WorkItemRecord::new("agent-a", "historical work", WorkItemState::Completed);
+            work.id = format!("history-work-{index}");
+            work.blocked_by_wait_id = Some(format!("history-wait-{index}"));
+            insert_work(&tx, &work);
+            let wait: WaitConditionRecord = serde_json::from_value(serde_json::json!({
+                "id": format!("history-wait-{index}"), "agent_id": "agent-a",
+                "status": "resolved", "kind": "operator", "waiting_for": "fixture",
+                "wake_sources": [], "created_at": time(), "updated_at": time(),
+                "work_item_id": format!("history-work-{}", index + 1),
+            }))
+            .unwrap();
+            tx.execute(
+                "INSERT INTO wait_conditions(wait_condition_id,agent_id,status,kind,
+                    waiting_for,created_at,updated_at,payload_json)
+                 VALUES(?1,'agent-a','resolved','operator','fixture',?2,?2,?3)",
+                params![
+                    wait.id,
+                    time().to_rfc3339(),
+                    serde_json::to_string(&wait).unwrap()
+                ],
+            )
+            .unwrap();
+        }
+        let roots = EpisodeContinuityRoots {
+            work_item_ids: BTreeSet::from(["history-work-0".into()]),
+            ..Default::default()
+        };
+        let warnings = capture_continuity_warnings(|| {
+            let (checkpoint, _) =
+                work_checkpoint::capture(&tx, "agent-a", None, &roots, 0, false).unwrap();
+            assert!(checkpoint
+                .record_digests
+                .contains_key(&format!("work_item:history-work-{cutoff}")));
+            assert!(checkpoint
+                .record_digests
+                .contains_key(&format!("wait:history-wait-{}", cutoff - 1)));
+            assert!(!checkpoint
+                .record_digests
+                .contains_key(&format!("wait:history-wait-{cutoff}")));
+            assert!(!checkpoint
+                .unavailable_refs
+                .contains(&format!("wait:history-wait-{cutoff}")));
+        });
+        assert_truncation_warning(
+            &warnings,
+            "work_checkpoint_owners",
+            "wait",
+            &format!("history-wait-{cutoff}"),
+        );
+    }
+
     fn historical_wait_chain_fixture(first_active: bool) -> Fixture {
         Fixture::legacy(|tx| {
             upsert_agent_identity_tx(tx, &identity("agent-a")).unwrap();
@@ -3153,16 +3387,28 @@ mod tests {
                 let roots: EpisodeContinuityRoots = serde_json::from_str(&roots_json)?;
                 assert!(roots.record_digests.contains_key("wait:history-wait-0"));
                 assert!(!roots.record_digests.contains_key("turn:history-turn-1"));
-                let error = collect_live_episode_roots(tx, "agent-a").unwrap_err();
-                assert_eq!(
-                    error.downcast_ref::<EpisodeSnapshotError>(),
-                    Some(&EpisodeSnapshotError::ClosureResourceExhausted {
-                        limit: "reference depth"
-                    })
-                );
                 Ok(())
             })
             .unwrap();
+        let boundary = CONTINUITY_MAX_REF_DEPTH / 2;
+        let skipped = format!("history-wait-{boundary}");
+        let warnings = capture_continuity_warnings(|| {
+            fixture
+                .db
+                .transaction(|tx| {
+                    let live_roots = collect_live_episode_roots(tx, "agent-a")?;
+                    assert!(live_roots
+                        .record_digests
+                        .contains_key(&format!("turn:history-turn-{boundary}")));
+                    // An in-bound Wait independently seeds the Work input closure.
+                    assert!(live_roots
+                        .record_digests
+                        .contains_key(&format!("wait:{skipped}")));
+                    Ok(())
+                })
+                .unwrap();
+        });
+        assert_truncation_warning(&warnings, "episode", "wait", &skipped);
     }
 
     #[test]
@@ -3265,19 +3511,46 @@ mod tests {
     }
 
     #[test]
-    fn mandatory_closure_checks_depth_without_rejecting_cumulative_history() {
+    fn continuity_queue_truncates_only_new_out_of_bound_refs() {
         let mut collector = RootCollector {
-            current_depth: CONTINUITY_MAX_REF_DEPTH + 1,
+            current_depth: CONTINUITY_MAX_REF_DEPTH,
             ..Default::default()
         };
-        collector.reference("message", "must-keep");
-        let error = collector.validate_depth().unwrap_err();
+        collector.reference("message", "at-limit");
+        assert!(collector.references.first_truncated.is_none());
+        collector.current_depth += 1;
+        collector.reference("message", "at-limit");
+        assert!(collector.references.first_truncated.is_none());
+        collector.source_ref("episode:outside-limit");
         assert_eq!(
-            error.downcast_ref::<EpisodeSnapshotError>(),
-            Some(&EpisodeSnapshotError::ClosureResourceExhausted {
-                limit: "reference depth"
-            })
+            collector.references.first_truncated,
+            Some((
+                "episode".into(),
+                "outside-limit".into(),
+                CONTINUITY_MAX_REF_DEPTH + 1
+            ))
         );
+        collector.source_ref("work_item:outside-limit");
+        assert_eq!(collector.references.pending.len(), 1);
+        assert!(collector.roots.source_refs.is_empty());
+        assert!(collector.roots.work_item_ids.is_empty());
+        collector.current_depth = 0;
+        collector.source_ref("episode:outside-limit");
+        collector.source_ref("work_item:outside-limit");
+        assert_eq!(collector.references.pending.len(), 3);
+        assert!(collector
+            .roots
+            .source_refs
+            .contains("episode:outside-limit"));
+        assert!(collector
+            .roots
+            .source_refs
+            .contains("work_item:outside-limit"));
+        assert!(collector.roots.work_item_ids.contains("outside-limit"));
+    }
+
+    #[test]
+    fn mandatory_closure_does_not_reject_cumulative_history() {
         let mut collector = RootCollector::default();
         collector.payload_bytes = CONTINUITY_MAX_PAYLOAD_BYTES;
         collector.digest("message", "must-keep", "x").unwrap();
@@ -3291,9 +3564,8 @@ mod tests {
             collector.reference("message", &id);
             collector.digest("message", &id, "history").unwrap();
         }
-        collector.validate_depth().unwrap();
         assert!(collector.roots.record_digests.len() > CONTINUITY_MAX_RECORDS);
-        assert!(collector.pending.len() > CONTINUITY_MAX_RECORDS);
+        assert!(collector.references.pending.len() > CONTINUITY_MAX_RECORDS);
     }
     #[test]
     fn upgrade_missing_historical_table_freezes_absence_without_late_adoption() {

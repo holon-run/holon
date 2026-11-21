@@ -2,17 +2,13 @@
 use super::*;
 use crate::types::{MessageKind, MessageOrigin};
 
-type Pending = VecDeque<(String, String, usize)>;
-
 pub(super) fn capture_relations(
     connection: &Connection,
     agent_id: &str,
     tables: Option<&BTreeSet<String>>,
     inputs: &mut RootCollector,
     checkpoint: &mut WorkContinuityCheckpoint,
-    pending: &mut Pending,
-    selected: &mut BTreeSet<(String, String)>,
-    selected_bytes: &mut usize,
+    owners: &mut ContinuityReferenceQueue,
 ) -> Result<()> {
     let state = if root_table_available(tables, "agent_states") {
         load_state(connection, agent_id)?.0
@@ -89,7 +85,7 @@ pub(super) fn capture_relations(
                 })? {
                     let (id, agent) = row?;
                     ensure!(agent == agent_id, "fixed Wait relation scope mismatch");
-                    enqueue(pending, selected, selected_bytes, "wait", &id, 0)?;
+                    enqueue(owners, "wait", &id, 0)?;
                     ids.insert(id);
                 }
             }
