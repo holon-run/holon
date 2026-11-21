@@ -25,7 +25,7 @@ export const tourAgents = definitions.map(([id, name, goal, names]) => {
     ] : [],
   };
   const entry = {
-    identity: { agent_id: id, name, visibility: 'public', ownership: 'self_owned', profile_preset: 'public_named' },
+    identity: { agent_id: id, incarnation: 1, name, visibility: 'public', ownership: 'self_owned', profile_preset: 'public_named' },
     status: 'awake_idle', pending: 0, scheduling_posture: { posture: reviewing ? 'waiting' : 'idle', reason: reviewing ? 'awaiting_external_change' : 'idle' },
     active_workspace_entry: ws, model: { source: 'runtime_default', effective_model: 'demo/review-model' },
   };
@@ -61,7 +61,9 @@ export function seedTour(session) {
         presentation_class: 'external', inputs: [{ message_id: 'github-new-commit', presentation_class: 'external', preview: 'GitHub webhook · New commit on PR #42\nUpdated the pagination fix and added a final-page regression test.' }],
         started_at: '2026-09-17T02:12:00Z', ended_at: timestamp,
         execution: { kind: 'terminal', outcome: 'completed' }, result: { kind: 'available' }, settled: true, attention: null, detail_coverage: { kind: 'complete' }, brief_ids: [brief.id] };
-      session.conversationData.set(id, { turns: [turn], activitiesByTurnId: { [turn.turn_id]: [] }, pending_inputs: [], head: 2 });
+      const activities = [{ kind: 'assistant', id: 'assistant:3', key: { event_seq: 3, activity_id: 'assistant:3' }, revision: 1,
+        summary: 'Reviewed the pagination change and the new final-page and empty-list regression tests; waiting for CI on the current commit.' }];
+      session.conversationData.set(id, { turns: [turn], activitiesByTurnId: { [turn.turn_id]: activities }, pending_inputs: [], head: 2 });
     }
   }
 }

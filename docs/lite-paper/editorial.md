@@ -2,6 +2,13 @@
 
 本文件不进入 PDF。中文正文以 `zh-CN.md` 为准。
 
+### Web GUI 截图更新（2026-11-21）
+
+- Web GUI 完成 agent 头像与界面改版后，用 canonical repo GUI commit `1b48ee1c131e6a333aaedf94fa490285cd4e3298` 重拍中英文截图；演示场景、工作项与清单内容不变。
+- 场景数据补齐当前 GUI 契约：agent identity 增加 `incarnation`，执行过程补一条 assistant 活动，避免展示空活动提示；截图脚本改用 `.conversation-detail-toggle` 展开外部事件来源（`.conversation-source` / `.conversation-jump` 已不存在）。
+- 用 `build.py` 重建双语 PDF：字体与上一版一致（中文 WenQuanYi Zen Hei，英文 Liberation Sans），均 6 页，截图完整位于第 6 页；已同步 `docs/website/assets/lite-paper/`。
+- 验证：两张新截图经 ViewImage 逐项复核（标题、来源展开、清单、等待状态、无外部请求与页面错误），PDF 第 6 页渲染与字体集（pdffonts）与旧版一致。
+
 ### v0.13：先说明产品与工作，再解释持续跟进（2026-10-21）
 
 - 按已讨论方向同步中英文正文：Holon 是面向个人和团队、在自己的电脑或服务器上创建和运行 AI 助手的开源软件；持续跟进是价值，Agent / WorkItem / 事件是支撑机制。
