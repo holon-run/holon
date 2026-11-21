@@ -1634,6 +1634,58 @@ async fn google_search_sends_language_and_region_as_hl_gl() {
 }
 
 #[tokio::test]
+async fn google_search_hl_gl_single_sided_trimmed_and_encoded() {
+    let queries: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let captured = queries.clone();
+    let router = axum::Router::new().route(
+        "/",
+        axum::routing::get(move |uri: axum::http::Uri| {
+            let captured = captured.clone();
+            async move {
+                captured
+                    .lock()
+                    .unwrap()
+                    .push(uri.query().unwrap_or_default().to_string());
+                axum::Json(google_results_json())
+            }
+        }),
+    );
+    let base_url = google_mock_server(router).await;
+
+    let provider = google_test_provider(&base_url);
+    for (language, region) in [
+        // Language-only maps to hl; region stays absent.
+        (Some(" fr "), None),
+        // Region-only maps to gl; language stays absent.
+        (None, Some(" de ")),
+        // Values are URL-encoded when appended.
+        (Some("en US"), Some("x&y")),
+    ] {
+        let results = google_search(
+            "test",
+            5,
+            language,
+            region,
+            "google_test",
+            &provider,
+            &test_fetch_config(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(results.len(), 2);
+    }
+
+    let captured = queries.lock().unwrap();
+    assert_eq!(captured.len(), 3);
+    assert!(captured[0].contains("hl=fr"));
+    assert!(!captured[0].contains("gl="));
+    assert!(!captured[1].contains("hl="));
+    assert!(captured[1].contains("gl=de"));
+    assert!(captured[2].contains("hl=en+US"));
+    assert!(captured[2].contains("gl=x%26y"));
+}
+
+#[tokio::test]
 async fn brave_search_decodes_gzip_json_response() {
     let body = gzip_json(&brave_results_json());
     let router = axum::Router::new().route(
