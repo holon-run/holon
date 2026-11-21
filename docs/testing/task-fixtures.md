@@ -3,7 +3,7 @@
 State-only fixtures must remain State-only. Tests that need a current Task
 domain can explicitly call
 `runtime_db::test_support::prepare_current_task_fixture_tx` inside their existing
-`RuntimeDb::transaction`. The helper is compiled only for tests in lib group `b`.
+`RuntimeDb::transaction`. The helper is compiled only for tests in lib group `e`.
 
 ## Contract
 
@@ -38,7 +38,7 @@ and retired/no-State scopes without extra Task/qualification rows.
 
 ## Verification
 
-Start with `make test-task-fixtures`. It enumerates lib group `b`, rejects empty
+Start with `make test-task-fixtures`. It enumerates lib group `e`, rejects empty
 or duplicate selections, and executes these three modules with two test threads:
 
 - `runtime_db::test_support::task_fixture_tests`
@@ -53,11 +53,11 @@ python3 -m unittest tests.test_ci_timing tests.test_ci_test_shards tests.test_bu
 python3 scripts/ci_test_shards.py validate
 cargo fmt --all -- --check
 RUSTFLAGS="-D warnings" cargo check --all-targets
-make test-shard SHARD=lib-b
+make test-shard SHARD=lib-a
 ```
 
-Use a separate Cargo target for parallel worktrees. `lib-b` still runs compile
-groups `b` and `d`; this focused entrypoint changes no full-shard membership.
+Use a separate Cargo target for parallel worktrees. The full `lib-a` shard runs
+compile groups `a`, `c`, and `e`.
 
 ## Remaining scope
 

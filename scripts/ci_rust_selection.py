@@ -9,6 +9,11 @@ import subprocess
 from collections import defaultdict
 from pathlib import Path, PurePosixPath
 
+if __package__:
+    from .ci_test_shards import LIB_COMPILE_GROUPS, LIB_GROUPS
+else:
+    from ci_test_shards import LIB_COMPILE_GROUPS, LIB_GROUPS
+
 ROOT = Path(__file__).resolve().parent.parent
 # Root Rust jobs check local-onnx through its feature and run the runtime
 # tests through the memory-bounded library shards.
@@ -128,7 +133,7 @@ def runtime_test_group(path):
     if not source.is_file():
         return None
 
-    group = r'holon_lib_test_shard = "([abcd])"'
+    group = rf'holon_lib_test_shard = "([{"".join(LIB_GROUPS)}])"'
     gates = [
         rf'#\[cfg\(all\(test, {group}\)\)\]',
         rf'#\[cfg\({group}\)\]\s*#\[cfg\(test\)\]',
@@ -172,11 +177,11 @@ def plan_outputs(paths, manifests, dependency_graph):
     elif runtime_tests_only:
         root, crates, tests_only = False, [], True
         runtime_groups = sorted(set(groups))
-        owners = {"a": "lib-a", "b": "lib-b", "c": "lib-a", "d": "lib-b"}
+        owners = {group: job for job, groups in LIB_COMPILE_GROUPS.items() for group in groups}
         shards = sorted({owners[group] for group in runtime_groups})
     else:
         root, crates, tests_only = select(paths, manifests, dependency_graph)
-        runtime_groups = list("abcd")
+        runtime_groups = list(LIB_GROUPS)
         shards = list(RUST_TEST_SHARDS)
 
     return {

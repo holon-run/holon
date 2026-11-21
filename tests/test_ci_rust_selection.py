@@ -62,6 +62,7 @@ class RustSelectionTests(unittest.TestCase):
             (["runtime_db/reader_pool_tests.rs"], ["b"], ["lib-b"]),
             (["runtime_db/reader_pool_http_tests.rs"], ["c"], ["lib-a"]),
             (["worktree_tests.rs"], ["d"], ["lib-b"]),
+            (["runtime_db/transitions/provider_queue_tests.rs"], ["e"], ["lib-a"]),
             (
                 ["runtime/tests/scheduler.rs", "runtime_db/reader_pool_tests.rs"],
                 ["a", "b"], ["lib-a", "lib-b"],
@@ -92,7 +93,7 @@ class RustSelectionTests(unittest.TestCase):
                 self.assertTrue(plan["root"])
                 self.assertFalse(plan["cli_only"])
                 self.assertFalse(plan["runtime_tests_only"])
-                self.assertEqual(plan["runtime_test_groups"], list("abcd"))
+                self.assertEqual(plan["runtime_test_groups"], list("abcde"))
                 self.assertEqual(plan["rust_test_shards"], list(selection.RUST_TEST_SHARDS))
         self.assertFalse(self.plan("src/cli.rs", "crates/holon-runtime/src/runtime/tests/scheduler.rs")["cli_only"])
 
@@ -203,7 +204,7 @@ class RustSelectionTests(unittest.TestCase):
                 self.assertEqual(plan, self.plan())
                 self.assertTrue(plan["root"])
                 self.assertIsNone(plan["crates"])
-                self.assertEqual(plan["runtime_test_groups"], list("abcd"))
+                self.assertEqual(plan["runtime_test_groups"], list("abcde"))
 
 
 if __name__ == "__main__":

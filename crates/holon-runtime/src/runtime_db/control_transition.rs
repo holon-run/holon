@@ -2821,7 +2821,7 @@ fn inject_fault(command: &PreparedControl, point: ControlFaultPoint) -> Result<(
     Ok(())
 }
 
-#[cfg(holon_lib_test_shard = "b")]
+#[cfg(holon_lib_test_shard = "e")]
 #[cfg(test)]
 mod tests;
 

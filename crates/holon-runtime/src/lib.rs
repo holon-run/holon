@@ -7,7 +7,8 @@
             holon_lib_test_shard = "a",
             holon_lib_test_shard = "b",
             holon_lib_test_shard = "c",
-            holon_lib_test_shard = "d"
+            holon_lib_test_shard = "d",
+            holon_lib_test_shard = "e"
         ))
     ),
     allow(dead_code, unused_imports)

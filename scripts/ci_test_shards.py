@@ -7,9 +7,9 @@ exactly one runner. Shards with explicit member lists are validated against
 ``cargo metadata``; unassigned targets fall through to the ``misc`` shard, so
 a newly added test binary can never be silently skipped.
 
-Library tests are split at compile time, before libtest enumeration. Each CI
-runner builds and runs two disjoint groups, keeping private APIs and shared
-fixtures in the library. No selector still builds the complete local suite.
+Library tests are split at compile time, before libtest enumeration. The two
+library jobs each run disjoint groups, keeping private APIs and shared
+fixtures in the library. The default selector builds the complete local suite.
 """
 
 from __future__ import annotations
@@ -85,11 +85,15 @@ SUITES = (
     "misc",
 )
 
-# Two CI jobs each build two smaller libtest binaries, serially.
+# Each of the two CI jobs builds its libtest binaries serially.
 RUNTIME_MANIFEST = "crates/holon-runtime/Cargo.toml"
 RUNTIME_LIB = ["cargo", "test", "--manifest-path", RUNTIME_MANIFEST, "--locked", "--lib"]
 LIB_SHARDS = ("lib-a", "lib-b")
-LIB_COMPILE_GROUPS = {"lib-a": ("a", "c"), "lib-b": ("b", "d")}
+LIB_COMPILE_GROUPS = {"lib-a": ("a", "c", "e"), "lib-b": ("b", "d")}
+LIB_GROUPS = tuple(sorted(group for groups in LIB_COMPILE_GROUPS.values() for group in groups))
+DB_TRANSACTION_TEST_MODULES = {
+    "transitions", "control_transition", "task_result_settlement", "test_support",
+}
 TASK_FIXTURE_MODULES = (
     "runtime_db::test_support::task_fixture_tests",
     "runtime_db::control_transition::tests::task_write_tests",
@@ -119,12 +123,14 @@ def lib_compile_group(name: str) -> str:
     if owner == "runtime":
         return "a"
     if owner == "runtime_db":
+        if len(parts) > 2 and parts[1] in DB_TRANSACTION_TEST_MODULES:
+            return "e"
         return "b"
     return "c" if owner in LIB_C_OWNERS else "d"
 
 
 def lib_group_environment(group: str) -> dict[str, str]:
-    if group not in ("a", "b", "c", "d"):
+    if group not in LIB_GROUPS:
         raise ValueError(f"unknown lib compile group: {group}")
     return {**lib_environment(), "HOLON_LIB_TEST_SHARD": group}
 
@@ -144,8 +150,9 @@ def lib_test_commands(
 
 
 def lib_shard_scope() -> tuple[list[str], bool]:
-    groups = json.loads(os.environ.get("CI_RUNTIME_TEST_GROUPS") or '["a","b","c","d"]')
-    if not isinstance(groups, list) or any(group not in ("a", "b", "c", "d") for group in groups):
+    selected = os.environ.get("CI_RUNTIME_TEST_GROUPS")
+    groups = json.loads(selected) if selected else list(LIB_GROUPS)
+    if not isinstance(groups, list) or any(group not in LIB_GROUPS for group in groups):
         raise ValueError("CI_RUNTIME_TEST_GROUPS must be a list of compile group names")
     application = os.environ.get("CI_RUNTIME_TESTS_ONLY") != "true"
     return groups, application
@@ -176,8 +183,8 @@ def verify_lib_lists(baseline: list[str], groups: list[list[str]]) -> None:
     duplicates = [name for name, count in Counter(actual).items() if count > 1]
     missing = sorted((Counter(baseline) - Counter(actual)).elements())
     extra = sorted((Counter(actual) - Counter(baseline)).elements())
-    if not baseline or len(groups) != 4 or any(not group for group in groups):
-        raise ValueError("coverage requires a nonempty baseline and all four nonempty lists")
+    if not baseline or len(groups) != len(LIB_GROUPS) or any(not group for group in groups):
+        raise ValueError("coverage requires a nonempty baseline and a nonempty list for every group")
     if duplicates or missing or extra:
         raise ValueError(
             f"lib coverage mismatch: duplicates={duplicates[:10]}, "
@@ -188,7 +195,7 @@ def verify_lib_lists(baseline: list[str], groups: list[list[str]]) -> None:
 def command_verify_lib_lists(args: argparse.Namespace) -> None:
     baseline = args.baseline.read_text().splitlines()
     groups = []
-    for group in "abcd":
+    for group in LIB_GROUPS:
         names = json.loads((args.directory / f"lib-test-names-{group}.json").read_text())
         validate_lib_group(names, group)
         groups.append(names)
@@ -287,8 +294,16 @@ def lib_test_names(
     if commands is None:
         commands = lib_test_commands(group)
     for command in commands:
+        listing = command + ["--", "--list"]
+        if group and os.environ.get("CI_LIB_COMPILE_TIMING") == "true":
+            target = "runtime" if command == RUNTIME_LIB else "application"
+            listing = [
+                "/usr/bin/time", "-f",
+                f"libtest listing {group} ({target}): %e s elapsed, %M KiB peak RSS",
+                *listing,
+            ]
         completed = subprocess.run(
-            command + ["--", "--list"],
+            listing,
             cwd=REPO_ROOT,
             stdout=subprocess.PIPE,
             text=True,
@@ -351,8 +366,9 @@ def run_lib_shard(shard: str, test_threads: str | None = None) -> None:
 
 def command_task_fixtures(_: argparse.Namespace) -> None:
     """Run the focused fixture regressions without weakening full shard gates."""
-    names = lib_test_names("b")
-    validate_lib_group(names, "b")
+    group = "e"
+    names = lib_test_names(group)
+    validate_lib_group(names, group)
     selections = []
     for module in TASK_FIXTURE_MODULES:
         selected = [name for name in names if name.startswith(f"{module}::")]
@@ -374,9 +390,9 @@ def command_task_fixtures(_: argparse.Namespace) -> None:
             "--", "--test-threads=2",
         ]
         print(f"task fixture module {module}: {len(selected)} tests", file=sys.stderr)
-        print(f"$ HOLON_LIB_TEST_SHARD=b {' '.join(command)}", file=sys.stderr)
+        print(f"$ HOLON_LIB_TEST_SHARD={group} {' '.join(command)}", file=sys.stderr)
         completed = subprocess.run(
-            command, cwd=REPO_ROOT, env=lib_group_environment("b"),
+            command, cwd=REPO_ROOT, env=lib_group_environment(group),
         )
         if completed.returncode:
             failures.append(completed)

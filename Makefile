@@ -169,7 +169,7 @@ test-shard: ## Run one CI test shard (SHARD=lib-a|lib-b|control|cli|misc); lib s
 	python3 scripts/ci_test_shards.py run $(SHARD)
 
 .PHONY: test-task-fixtures
-test-task-fixtures: ## Run the three task fixture regression modules (compile group b; 2 test threads)
+test-task-fixtures: ## Run the three task fixture regression modules (compile group e, 2 test threads)
 	python3 scripts/ci_test_shards.py task-fixtures
 
 test-resource-lint: ## Audit permanent test temp directories against the reasoned allowlist
