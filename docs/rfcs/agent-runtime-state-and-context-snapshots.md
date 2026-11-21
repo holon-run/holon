@@ -348,8 +348,10 @@ payloads are not retired storage formats.
 The Episode/Work upgrade closure reads and hashes historical bodies
 incrementally. Cumulative historical bytes or record counts do not reject this
 fixed cutover. Its candidate digest inventory remains complete; recent Episode
-selection, identity/content validation, reference deduplication and depth checks
-are unchanged. Ordinary current reads keep their separate bounds. See
+selection, identity/content validation, and reference deduplication are
+unchanged. Episode and Work omit references beyond 64 edges from a root and
+warn rather than failing the upgrade; the historical rows are unchanged.
+Ordinary current reads keep their separate bounds. See
 [incremental Episode upgrade](../implementation-decisions/incremental-episode-upgrade.md).
 
 The original Input upgrade may retain an explicitly closed, pre-Turn

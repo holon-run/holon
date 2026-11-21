@@ -91,34 +91,18 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
     };
     // One aggregate body budget, deduplicated by canonical key on this read view.
     inputs.roots.record_digests = episode_roots.record_digests.clone();
-    let mut pending = VecDeque::new();
-    let mut selected = BTreeSet::new();
-    let mut selected_bytes = 0usize;
+    let mut owners = ContinuityReferenceQueue::default();
     for key in episode_roots
         .record_digests
         .keys()
         .chain(episode_roots.unavailable_refs.iter())
     {
         if let Some((kind @ ("work_item" | "wait" | "continuation"), id)) = key.split_once(':') {
-            enqueue(
-                &mut pending,
-                &mut selected,
-                &mut selected_bytes,
-                kind,
-                id,
-                0,
-            )?;
+            enqueue(&mut owners, kind, id, 0)?;
         }
     }
     for id in &episode_roots.work_item_ids {
-        enqueue(
-            &mut pending,
-            &mut selected,
-            &mut selected_bytes,
-            "work_item",
-            id,
-            0,
-        )?;
+        enqueue(&mut owners, "work_item", id, 0)?;
     }
     relations::capture_relations(
         connection,
@@ -126,9 +110,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
         tables,
         &mut inputs,
         &mut checkpoint,
-        &mut pending,
-        &mut selected,
-        &mut selected_bytes,
+        &mut owners,
     )?;
     if include_nonopen {
         let mut ids = Vec::new();
@@ -147,21 +129,14 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
         let is_exhaustive = ids.len() <= NONOPEN_LIMIT;
         ids.truncate(NONOPEN_LIMIT);
         for id in &ids {
-            enqueue(
-                &mut pending,
-                &mut selected,
-                &mut selected_bytes,
-                "work_item",
-                id,
-                0,
-            )?;
+            enqueue(&mut owners, "work_item", id, 0)?;
         }
         checkpoint.nonopen = Some(WorkLegacyWindow {
             work_item_ids: ids,
             is_exhaustive,
         });
     }
-    while let Some((kind, id, depth)) = pending.pop_front() {
+    while let Some((kind, id, depth)) = owners.pending.pop_front() {
         inputs.current_depth = depth.saturating_add(1);
         let (table, id_column) = match kind.as_str() {
             "work_item" => ("work_items", "work_item_id"),
@@ -201,14 +176,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
                     "Work checkpoint projection mismatch"
                 );
                 if let Some(wait) = work.blocked_by_wait_id.as_deref() {
-                    enqueue(
-                        &mut pending,
-                        &mut selected,
-                        &mut selected_bytes,
-                        "wait",
-                        wait,
-                        depth + 1,
-                    )?;
+                    enqueue(&mut owners, "wait", wait, depth + 1)?;
                 }
                 inputs.work_record(&work);
                 let result = latest_result(
@@ -229,14 +197,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
                     "Wait checkpoint projection mismatch"
                 );
                 if let Some(work) = wait.work_item_id.as_deref() {
-                    enqueue(
-                        &mut pending,
-                        &mut selected,
-                        &mut selected_bytes,
-                        "work_item",
-                        work,
-                        depth + 1,
-                    )?;
+                    enqueue(&mut owners, "work_item", work, depth + 1)?;
                 }
                 if tables.is_none()
                     || matches!(
@@ -255,14 +216,7 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
                     "Frame checkpoint projection mismatch"
                 );
                 for work in [&frame.suspended_work_item_id, &frame.active_work_item_id] {
-                    enqueue(
-                        &mut pending,
-                        &mut selected,
-                        &mut selected_bytes,
-                        "work_item",
-                        work,
-                        depth + 1,
-                    )?;
+                    enqueue(&mut owners, "work_item", work, depth + 1)?;
                 }
                 inputs.optional_ref("turn", frame.turn_id.as_deref());
             }
@@ -272,31 +226,21 @@ pub(in crate::runtime_db::episode_snapshot) fn capture(
     // Same bounded canonical edges as the original collector. Only its exact
     // digests are merged; its Episode owner/ref sets are deliberately discarded.
     expand_episode_root_refs(connection, agent_id, &mut inputs, tables)?;
+    owners.warn_if_truncated(agent_id, "work_checkpoint_owners");
+    inputs
+        .references
+        .warn_if_truncated(agent_id, "work_checkpoint_inputs");
     Ok((checkpoint, inputs.roots.record_digests))
 }
 
 fn enqueue(
-    pending: &mut VecDeque<(String, String, usize)>,
-    selected: &mut BTreeSet<(String, String)>,
-    bytes: &mut usize,
+    owners: &mut ContinuityReferenceQueue,
     kind: &str,
     id: &str,
     depth: usize,
 ) -> Result<()> {
     ensure!(!id.is_empty(), "Work checkpoint owning ID is empty");
-    let key = (kind.to_owned(), id.to_owned());
-    if selected.contains(&key) {
-        return Ok(());
-    }
-    *bytes = bytes.saturating_add(kind.len()).saturating_add(id.len());
-    if depth > CONTINUITY_MAX_REF_DEPTH {
-        return Err(EpisodeSnapshotError::ClosureResourceExhausted {
-            limit: "Work checkpoint metadata/depth",
-        }
-        .into());
-    }
-    selected.insert(key.clone());
-    pending.push_back((key.0, key.1, depth));
+    owners.push(kind, id, depth);
     Ok(())
 }
 
