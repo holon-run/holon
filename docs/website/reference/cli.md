@@ -1,9 +1,9 @@
 ---
 title: CLI reference
-summary: Holon's command-line interface — verified against holon --help (v0.59.0).
+summary: Holon's command-line interface — verified against holon --help (v0.60.0).
 order: 10
 ---
-<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.59.0. -->
+<!-- maintenance: regenerate from `holon --help` output when commands change. Last regenerated against v0.60.0. -->
 
 # CLI Reference
 
@@ -45,7 +45,7 @@ the existing default brief snapshot remains available without it.
 ## Command Tree
 
 ```text
-holon (v0.59.0)
+holon (v0.60.0)
 ├── context      Show the declared caller context
 ├── commands     Show machine-readable CLI command metadata
 ├── serve        Start HTTP control plane server
@@ -55,6 +55,7 @@ holon (v0.59.0)
 │   ├── prepare-update Stop the daemon without altering desired auto-start state
 │   ├── stop     Stop the daemon
 │   ├── status   Check daemon status
+│   ├── quarantine Read the last recorded startup quarantine report without contacting the daemon
 │   ├── restart  Restart the daemon
 │   └── logs     View daemon logs
 ├── config       Runtime configuration
@@ -62,6 +63,9 @@ holon (v0.59.0)
 │   ├── set      Write a config key
 │   ├── unset    Remove a config key
 │   ├── providers Provider management
+│   │   ├── headers Manage non-sensitive static headers without replacing provider settings
+│   │   │   ├── set   Set static request headers for a provider or endpoint
+│   │   │   └── unset Remove static request headers from a provider or endpoint
 │   │   ├── set    Add/update a provider
 │   │   ├── get    Show a provider
 │   │   ├── list   List all providers
@@ -218,9 +222,14 @@ permanent; duplicate names are rejected with a readable conflict error.
 ```bash
 holon config set model.default "deepseek-anthropic@default/deepseek-v4-pro"
 holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
 holon agent model get reviewer
 holon agent model clear reviewer
 ```
+
+On `holon agent model set`, omitting `--reasoning-effort` or `--service-tier`
+keeps the agent's current override, passing a value replaces it, and `clear` removes it.
 
 Executable model selections use canonical
 `provider@endpoint/model` route refs. Legacy `provider/model` input remains
@@ -302,6 +311,13 @@ treats zombie processes (state Z or X) as exited rather than running daemons,
 preventing spurious TERM+KILL failures when system reaping lags behind process
 termination. `holon daemon status` reports readiness with bounded diagnostic
 checks and avoids waiting on a busy runtime database.
+`holon daemon quarantine` reads the last recorded startup quarantine report
+directly from disk without contacting a running daemon, so operators can inspect
+isolated agent startup faults even when the daemon is offline.
+
+```bash
+holon daemon quarantine
+```
 
 #### Persistent serve options
 
@@ -403,6 +419,13 @@ holon config providers set my-proxy \
   --credential-source env \
   --credential-env "MY_PROXY_API_KEY" \
   --credential-kind api_key
+```
+
+Manage non-sensitive static request headers without replacing the rest of a provider entry:
+
+```bash
+holon config providers headers set my-proxy --header "X-Custom=value"
+holon config providers headers unset my-proxy --name X-Custom
 ```
 
 ### HTTP server

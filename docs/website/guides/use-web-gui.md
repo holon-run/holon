@@ -102,6 +102,7 @@ The Dashboard provides a runtime overview:
 
 - **Agent roster** — all agents with their status (Awake, Asleep, Booting),
   pending message counts, and current model.
+  Status and unread counts update live as agent activity changes.
 - **Runtime health** — scheduler posture, wake hints, and recent activity.
 - **Task list** — click a task to open its detail panel showing status,
   command, workdir, and output. Task events (creation, status updates,
@@ -124,7 +125,8 @@ Select an agent from the Dashboard to open its conversation page:
 - **Display levels** — switch between Info (compact user-facing output),
   Verbose (tool calls and intermediate results), and Debug (full runtime
   metadata including tool execution records).
-- **Input bar** — send operator messages to the selected agent.
+- **Input bar** — send operator messages to the selected agent, or paste files
+  directly from your clipboard as attachments.
 - **Tool execution details** — expand individual tool calls in the message
   stream to inspect request/response payloads, timing, and metadata.
   Tool result panels show structured output alongside raw data, making
@@ -203,9 +205,11 @@ For CLI-based skill management, see [Use skills](use-skills.md).
 ### Workspace File Browser
 
 Open **Files** in the context side panel, or follow a file reference in a
-conversation. Selecting a file opens its preview. Markdown supports **Preview**
+conversation (including bare host file paths in agent replies, which link
+automatically). Selecting a file opens its preview. Markdown supports **Preview**
 and **Source** modes; text files support syntax highlighting.
 
+- **Floating viewer** — pop out the file browser into a floating window so you can read or browse files while keeping the conversation visible.
 - **Browse folder** switches back to the directory while retaining the selected
   file and reading position. Expanded panels can show directory and preview
   together.

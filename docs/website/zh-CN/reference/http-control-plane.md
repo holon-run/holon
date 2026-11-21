@@ -3,7 +3,7 @@ title: HTTP 控制平面
 summary: 如何理解 Holon 的无头集成接口。
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.59.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.60.0. -->
 
 # HTTP 控制平面
 
@@ -129,6 +129,12 @@ Holon 把认证、消息来源、信任级别、优先级和权威当作彼此�
 返回一个有界引导页：agent 摘要、会话信息（当前 run、待处理数量）、活跃任务摘要、近期 timer、
 精简工作项、等待意图、外部触发器和 workspace 占用情况。Operator 通知、执行详情、
 任务详情和完整工作项记录可从事件或专用路由获取。
+
+**`GET /api/agents/:id/model`** — Agent 模型读取状态
+
+返回该 Agent 的模型状态（`source`、运行时默认值、生效/请求/活跃路由、回退链、
+覆盖配置、service tier 与解析后的策略），无需构建完整或紧凑的 Agent 摘要。
+未加载的 Agent 仅读取持久化的模型元数据，不会拉起 Agent 运行时。
 
 **`GET /api/agents/:id/briefs`** — 近期简报
 
@@ -618,6 +624,19 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 ```json
 { "authority_class": "operator_instruction" }
 ```
+
+**`GET /api/control/agents/:id/external-triggers`** — 列出外部触发器
+
+只读诊断接口，列出目标 Agent 保留的活跃及已吊销外部触发器元数据。支持游标分页
+（`limit` 1–100，默认 20；`cursor`）以及可选的 16 位小写十六进制 `fingerprint`
+精确筛选。响应仅包含元数据与 `token_fingerprint`，不返回明文 token、完整哈希或回调 URL。
+
+**`POST /api/control/agents/:id/external-triggers/:external_trigger_id/reveal`** — 查看活跃外部触发器的 Token
+
+读取单个活跃外部触发器存储的明文回调 token 与 `trigger_url`。必须使用独立的静态
+control token 凭据访问，拒绝受信任本地准入、浏览器 session 与 bearer session 凭据。
+响应带有 `Cache-Control: no-store`；目标 Agent 或触发器不存在时返回 `404`，
+已吊销返回 `409 trigger_not_active`，无可用或无法校验的存储 token 返回 `409 token_unavailable`。
 
 **`GET /api/control/network/tailscale/serve`** — Tailscale Serve 状态
 

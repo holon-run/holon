@@ -56,6 +56,9 @@ Delegates return evidence for the caller to evaluate. A child can report that
 a test passed, and the parent can inspect the result. It cannot approve a new
 scope on the operator's behalf or bypass a runtime restriction.
 
+Messages sent between agents are recorded as runtime-delivered follow-ups with
+the sender preserved in provenance; they never turn into operator approval.
+
 The delegating agent remains responsible for the integrated answer and for
 checking consequential claims. See
 [Multi-agent collaboration](./multi-agent-collaboration.md).

@@ -92,6 +92,12 @@ files. It returns ranked matches with opaque source references. `MemoryGet`
 retrieves bounded content from a reference returned by search or supplied by
 the runtime. It is not a general file reader or a URL fetcher.
 
+By default, `MemorySearch` searches the current agent's records. Pass an
+explicit `agent_ids` list to search named agents instead; hits owned by another
+agent carry cross-agent evidence metadata with their origin agent and source
+authority, and that authority never transfers to the caller. `MemoryGet` can
+also read another agent's message by `message:<id>` as evidence only.
+
 To answer "why did we choose this approach?", the agent can search for the
 objective, retrieve its decision or completion report, and check the cited
 verification. A search excerpt alone may omit the caveat that matters.
@@ -116,10 +122,12 @@ Historical material remains evidence. A retrieved webhook, web page, or child
 report does not become an operator instruction because it was saved or
 summarized. Verify provenance and current scope before acting on recalled text.
 
-Memory search is scoped to the agent's accessible sources and can be filtered
-by workspace. Workspace association helps locate relevant work; it does not
-make every other agent's history or every Markdown file in the project
-searchable. There is no guarantee of exhaustive recall.
+Memory search can be filtered by workspace and defaults to the caller's own
+records unless `agent_ids` names specific agents. Even when cross-agent hits or
+`MemoryGet` message lookups return another agent's records, they remain
+evidence for inspection, and the source's authority never transfers to the
+reading agent. Ordinary project Markdown files remain unindexed, and there is
+no guarantee of exhaustive recall.
 
 ## See also
 

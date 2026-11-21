@@ -3,7 +3,7 @@ title: HTTP control plane
 summary: How to think about Holon's headless integration surface.
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.59.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.60.0. -->
 
 # HTTP control plane
 
@@ -158,6 +158,13 @@ pending count), active task summaries, recent timers, slim work items, waiting
 intents, external triggers, and workspace occupancy. Operator notifications,
 execution details, task details, and full work item records are available from
 events or dedicated routes.
+
+**`GET /api/agents/:id/model`** — Agent model read state
+
+Returns the agent's model state (`source`, runtime default, effective/requested/active
+routes, fallback chain, overrides, service tier, and resolved policy) without
+building a full or compact agent summary. Unloaded agents read only persisted
+model metadata without starting an agent runtime.
 
 **`GET /api/agents/:id/briefs`** — Recent briefs
 
@@ -678,6 +685,23 @@ Reverts to the default model. Accepts an optional body:
 ```json
 { "authority_class": "operator_instruction" }
 ```
+
+**`GET /api/control/agents/:id/external-triggers`** — List external triggers
+
+Read-only diagnostic list of retained active and revoked external triggers for
+the agent. Supports cursor pagination (`limit` 1–100, default 20; `cursor`) and
+an optional exact 16-lowercase-hex `fingerprint` filter. Returns trigger
+metadata and `token_fingerprint` only; plain-text tokens, full hashes, and
+callback URLs are never returned by this route.
+
+**`POST /api/control/agents/:id/external-triggers/:external_trigger_id/reveal`** — Reveal active external trigger token
+
+Reads the stored plain-text callback token and `trigger_url` for one active
+external trigger. Requires the independent static control token credential;
+trusted-local admission, browser sessions, and bearer session credentials are
+rejected. Responses include `Cache-Control: no-store`. Returns `404` when the
+agent or trigger does not exist, `409 trigger_not_active` when revoked, and
+`409 token_unavailable` when no stored token verifies against its hash.
 
 **`GET /api/control/network/tailscale/serve`** — Tailscale Serve status
 

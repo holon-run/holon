@@ -79,6 +79,11 @@ When revisiting past architectural decisions, incident postmortems, or code refa
 > 2. It compromised the trust boundary isolation between child agents.  
 > Source references: `brief_84f910a` and `turn_129`."
 
+To verify a decision recorded by another agent, the agent can scope
+`MemorySearch` with `agent_ids` or inspect a cited `message:<id>` with
+`MemoryGet`. Holon marks cross-agent records as evidence only, so another
+agent's message never acquires instruction authority in the reading agent.
+
 Grounding the response in raw historical evidence eliminates hallucinations and ensures historical fidelity.
 
 ---

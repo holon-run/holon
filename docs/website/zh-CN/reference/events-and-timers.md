@@ -15,6 +15,8 @@ order: 39
 | `POST /api/callbacks/wake/:callback_token` | `wake_hint`：唤醒 Agent 检查外部状态 |
 | `POST /api/callbacks/enqueue/:callback_token` | `enqueue_message`：将外部回调内容作为消息入队 |
 | `POST /api/control/agents/:agent_id/reset-callback` | 认证控制操作：吊销当前默认凭据并颁发新凭据 |
+| `GET /api/control/agents/:agent_id/external-triggers` | 只读诊断接口：列出保留的活跃及已吊销触发器（仅返回元数据与 `token_fingerprint`；支持 `limit`、`cursor` 与 16 位十六进制 `fingerprint`） |
+| `POST /api/control/agents/:agent_id/external-triggers/:external_trigger_id/reveal` | 读取单个活跃触发器存储的 token 与 `trigger_url`；仅限独立静态 control token（带 `Cache-Control: no-store`） |
 
 每个回调对应一种交付模式和一个 `trigger_url`。回调 Token 是解析到有效触发器与目标 Agent 的能力凭据（Capability secret）。无效的 Token、未处于活跃状态的身份以及不匹配的交付模式均会被系统拒绝。回调被成功接收并不能证明底层业务已顺利完成。
 
@@ -27,6 +29,8 @@ order: 39
 回调载荷始终属于外部证据。持有回调 URL 的发送方并不会因此获得操作者指令权威。回调端点的请求体限制为 256 KB；请传递稳定的来源标识，避免发送庞大的日志全文。
 
 重置接口返回 `ok`、`agent_id`、`external_trigger_id`、`trigger_url`、`delivery_mode` 和 `status`。应将返回的 URL 视同机密并直接使用。切勿将其打印至对话记录、粘贴到 Issue 或提交到版本控制中。
+
+排查已有集成时，`GET /api/control/agents/:agent_id/external-triggers` 仅暴露触发器元数据与 16 位十六进制 token 指纹。若需回读活跃触发器的明文凭据，须使用静态 control token 调用 `POST .../reveal`；已吊销的触发器返回 `409 trigger_not_active`，无可用可校验 token 时返回 `409 token_unavailable`。
 
 ## 默认接入凭据与吊销
 
