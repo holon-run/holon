@@ -4793,12 +4793,12 @@ export interface components {
                 /** @constant */
                 kind: "partial";
                 /** @enum {string} */
-                reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
             } | {
                 /** @constant */
                 kind: "unavailable";
                 /** @enum {string} */
-                reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
             } | {
                 /** @constant */
                 kind: "unknown";
@@ -4836,6 +4836,13 @@ export interface components {
                 brief_ids: string[];
                 /** Format: date-time */
                 completed_at?: string | null;
+                /**
+                 * @description True when the turn's conversation content was deleted. The summary then
+                 *      carries identity, timing, and execution outcome only; inputs and brief
+                 *      ids are empty and must not be rehydrated from any source.
+                 * @default false
+                 */
+                content_deleted: boolean;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -4843,12 +4850,12 @@ export interface components {
                     /** @constant */
                     kind: "partial";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unavailable";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unknown";
@@ -4928,6 +4935,9 @@ export interface components {
                     /** @enum {string} */
                     reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
                     retryable: boolean;
+                } | {
+                    /** @constant */
+                    kind: "deleted";
                 };
                 /** Format: uint64 */
                 revision: number;
@@ -4986,6 +4996,13 @@ export interface components {
                     brief_ids: string[];
                     /** Format: date-time */
                     completed_at?: string | null;
+                    /**
+                     * @description True when the turn's conversation content was deleted. The summary then
+                     *      carries identity, timing, and execution outcome only; inputs and brief
+                     *      ids are empty and must not be rehydrated from any source.
+                     * @default false
+                     */
+                    content_deleted: boolean;
                     detail_coverage: {
                         /** @constant */
                         kind: "complete";
@@ -4993,12 +5010,12 @@ export interface components {
                         /** @constant */
                         kind: "partial";
                         /** @enum {string} */
-                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                     } | {
                         /** @constant */
                         kind: "unavailable";
                         /** @enum {string} */
-                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                     } | {
                         /** @constant */
                         kind: "unknown";
@@ -5078,6 +5095,9 @@ export interface components {
                         /** @enum {string} */
                         reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
                         retryable: boolean;
+                    } | {
+                        /** @constant */
+                        kind: "deleted";
                     };
                     /** Format: uint64 */
                     revision: number;
@@ -5163,6 +5183,13 @@ export interface components {
                     brief_ids: string[];
                     /** Format: date-time */
                     completed_at?: string | null;
+                    /**
+                     * @description True when the turn's conversation content was deleted. The summary then
+                     *      carries identity, timing, and execution outcome only; inputs and brief
+                     *      ids are empty and must not be rehydrated from any source.
+                     * @default false
+                     */
+                    content_deleted: boolean;
                     detail_coverage: {
                         /** @constant */
                         kind: "complete";
@@ -5170,12 +5197,12 @@ export interface components {
                         /** @constant */
                         kind: "partial";
                         /** @enum {string} */
-                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                     } | {
                         /** @constant */
                         kind: "unavailable";
                         /** @enum {string} */
-                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                        reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                     } | {
                         /** @constant */
                         kind: "unknown";
@@ -5255,6 +5282,9 @@ export interface components {
                         /** @enum {string} */
                         reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
                         retryable: boolean;
+                    } | {
+                        /** @constant */
+                        kind: "deleted";
                     };
                     /** Format: uint64 */
                     revision: number;
@@ -5407,6 +5437,13 @@ export interface components {
                 brief_ids: string[];
                 /** Format: date-time */
                 completed_at?: string | null;
+                /**
+                 * @description True when the turn's conversation content was deleted. The summary then
+                 *      carries identity, timing, and execution outcome only; inputs and brief
+                 *      ids are empty and must not be rehydrated from any source.
+                 * @default false
+                 */
+                content_deleted: boolean;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -5414,12 +5451,12 @@ export interface components {
                     /** @constant */
                     kind: "partial";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unavailable";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unknown";
@@ -5499,6 +5536,9 @@ export interface components {
                     /** @enum {string} */
                     reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
                     retryable: boolean;
+                } | {
+                    /** @constant */
+                    kind: "deleted";
                 };
                 /** Format: uint64 */
                 revision: number;
@@ -5618,6 +5658,13 @@ export interface components {
                 brief_ids: string[];
                 /** Format: date-time */
                 completed_at?: string | null;
+                /**
+                 * @description True when the turn's conversation content was deleted. The summary then
+                 *      carries identity, timing, and execution outcome only; inputs and brief
+                 *      ids are empty and must not be rehydrated from any source.
+                 * @default false
+                 */
+                content_deleted: boolean;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -5625,12 +5672,12 @@ export interface components {
                     /** @constant */
                     kind: "partial";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unavailable";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unknown";
@@ -5710,6 +5757,9 @@ export interface components {
                     /** @enum {string} */
                     reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
                     retryable: boolean;
+                } | {
+                    /** @constant */
+                    kind: "deleted";
                 };
                 /** Format: uint64 */
                 revision: number;
@@ -5795,6 +5845,13 @@ export interface components {
                 brief_ids: string[];
                 /** Format: date-time */
                 completed_at?: string | null;
+                /**
+                 * @description True when the turn's conversation content was deleted. The summary then
+                 *      carries identity, timing, and execution outcome only; inputs and brief
+                 *      ids are empty and must not be rehydrated from any source.
+                 * @default false
+                 */
+                content_deleted: boolean;
                 detail_coverage: {
                     /** @constant */
                     kind: "complete";
@@ -5802,12 +5859,12 @@ export interface components {
                     /** @constant */
                     kind: "partial";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unavailable";
                     /** @enum {string} */
-                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage";
+                    reason: "retention_gap" | "legacy_ownership" | "unknown_activity_type" | "missing_canonical_linkage" | "content_deleted";
                 } | {
                     /** @constant */
                     kind: "unknown";
@@ -5887,6 +5944,9 @@ export interface components {
                     /** @enum {string} */
                     reason: "missing_canonical_linkage" | "retention_gap" | "legacy_coverage";
                     retryable: boolean;
+                } | {
+                    /** @constant */
+                    kind: "deleted";
                 };
                 /** Format: uint64 */
                 revision: number;
@@ -7776,7 +7836,7 @@ export interface components {
                 message_id: string;
                 /** @enum {string} */
                 priority: "interject" | "next" | "normal" | "background";
-                status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted";
+                status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted" | "withdrawn";
                 /** Format: date-time */
                 updated_at: string;
             }[];
@@ -7794,7 +7854,7 @@ export interface components {
                 kind: "cancel_wait";
                 wait_id: string;
             } | {
-                expected_status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted";
+                expected_status: ("queued" | "dequeued" | "processed" | "interjected" | "aborted" | "dropped" | "quarantined") | "interrupted" | "withdrawn";
                 /** Format: date-time */
                 expected_updated_at: string;
                 /** @constant */

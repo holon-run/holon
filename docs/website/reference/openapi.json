@@ -6652,7 +6652,8 @@
                       "retention_gap",
                       "legacy_ownership",
                       "unknown_activity_type",
-                      "missing_canonical_linkage"
+                      "missing_canonical_linkage",
+                      "content_deleted"
                     ],
                     "type": "string"
                   }
@@ -6674,7 +6675,8 @@
                       "retention_gap",
                       "legacy_ownership",
                       "unknown_activity_type",
-                      "missing_canonical_linkage"
+                      "missing_canonical_linkage",
+                      "content_deleted"
                     ],
                     "type": "string"
                   }
@@ -6821,6 +6823,11 @@
                   "null"
                 ]
               },
+              "content_deleted": {
+                "default": false,
+                "description": "True when the turn's conversation content was deleted. The summary then\n carries identity, timing, and execution outcome only; inputs and brief\n ids are empty and must not be rehydrated from any source.",
+                "type": "boolean"
+              },
               "detail_coverage": {
                 "oneOf": [
                   {
@@ -6846,7 +6853,8 @@
                           "retention_gap",
                           "legacy_ownership",
                           "unknown_activity_type",
-                          "missing_canonical_linkage"
+                          "missing_canonical_linkage",
+                          "content_deleted"
                         ],
                         "type": "string"
                       }
@@ -6868,7 +6876,8 @@
                           "retention_gap",
                           "legacy_ownership",
                           "unknown_activity_type",
-                          "missing_canonical_linkage"
+                          "missing_canonical_linkage",
+                          "content_deleted"
                         ],
                         "type": "string"
                       }
@@ -7210,6 +7219,19 @@
                       "retryable"
                     ],
                     "type": "object"
+                  },
+                  {
+                    "description": "The turn's conversation content was deleted; no result body exists.",
+                    "properties": {
+                      "kind": {
+                        "const": "deleted",
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "kind"
+                    ],
+                    "type": "object"
                   }
                 ]
               },
@@ -7462,6 +7484,11 @@
                         "null"
                       ]
                     },
+                    "content_deleted": {
+                      "default": false,
+                      "description": "True when the turn's conversation content was deleted. The summary then\n carries identity, timing, and execution outcome only; inputs and brief\n ids are empty and must not be rehydrated from any source.",
+                      "type": "boolean"
+                    },
                     "detail_coverage": {
                       "oneOf": [
                         {
@@ -7487,7 +7514,8 @@
                                 "retention_gap",
                                 "legacy_ownership",
                                 "unknown_activity_type",
-                                "missing_canonical_linkage"
+                                "missing_canonical_linkage",
+                                "content_deleted"
                               ],
                               "type": "string"
                             }
@@ -7509,7 +7537,8 @@
                                 "retention_gap",
                                 "legacy_ownership",
                                 "unknown_activity_type",
-                                "missing_canonical_linkage"
+                                "missing_canonical_linkage",
+                                "content_deleted"
                               ],
                               "type": "string"
                             }
@@ -7849,6 +7878,19 @@
                             "kind",
                             "reason",
                             "retryable"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "description": "The turn's conversation content was deleted; no result body exists.",
+                          "properties": {
+                            "kind": {
+                              "const": "deleted",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
                           ],
                           "type": "object"
                         }
@@ -8201,6 +8243,11 @@
                         "null"
                       ]
                     },
+                    "content_deleted": {
+                      "default": false,
+                      "description": "True when the turn's conversation content was deleted. The summary then\n carries identity, timing, and execution outcome only; inputs and brief\n ids are empty and must not be rehydrated from any source.",
+                      "type": "boolean"
+                    },
                     "detail_coverage": {
                       "oneOf": [
                         {
@@ -8226,7 +8273,8 @@
                                 "retention_gap",
                                 "legacy_ownership",
                                 "unknown_activity_type",
-                                "missing_canonical_linkage"
+                                "missing_canonical_linkage",
+                                "content_deleted"
                               ],
                               "type": "string"
                             }
@@ -8248,7 +8296,8 @@
                                 "retention_gap",
                                 "legacy_ownership",
                                 "unknown_activity_type",
-                                "missing_canonical_linkage"
+                                "missing_canonical_linkage",
+                                "content_deleted"
                               ],
                               "type": "string"
                             }
@@ -8588,6 +8637,19 @@
                             "kind",
                             "reason",
                             "retryable"
+                          ],
+                          "type": "object"
+                        },
+                        {
+                          "description": "The turn's conversation content was deleted; no result body exists.",
+                          "properties": {
+                            "kind": {
+                              "const": "deleted",
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "kind"
                           ],
                           "type": "object"
                         }
@@ -9221,6 +9283,11 @@
                       "null"
                     ]
                   },
+                  "content_deleted": {
+                    "default": false,
+                    "description": "True when the turn's conversation content was deleted. The summary then\n carries identity, timing, and execution outcome only; inputs and brief\n ids are empty and must not be rehydrated from any source.",
+                    "type": "boolean"
+                  },
                   "detail_coverage": {
                     "oneOf": [
                       {
@@ -9246,7 +9313,8 @@
                               "retention_gap",
                               "legacy_ownership",
                               "unknown_activity_type",
-                              "missing_canonical_linkage"
+                              "missing_canonical_linkage",
+                              "content_deleted"
                             ],
                             "type": "string"
                           }
@@ -9268,7 +9336,8 @@
                               "retention_gap",
                               "legacy_ownership",
                               "unknown_activity_type",
-                              "missing_canonical_linkage"
+                              "missing_canonical_linkage",
+                              "content_deleted"
                             ],
                             "type": "string"
                           }
@@ -9608,6 +9677,19 @@
                           "kind",
                           "reason",
                           "retryable"
+                        ],
+                        "type": "object"
+                      },
+                      {
+                        "description": "The turn's conversation content was deleted; no result body exists.",
+                        "properties": {
+                          "kind": {
+                            "const": "deleted",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "kind"
                         ],
                         "type": "object"
                       }
@@ -10081,6 +10163,11 @@
                     "null"
                   ]
                 },
+                "content_deleted": {
+                  "default": false,
+                  "description": "True when the turn's conversation content was deleted. The summary then\n carries identity, timing, and execution outcome only; inputs and brief\n ids are empty and must not be rehydrated from any source.",
+                  "type": "boolean"
+                },
                 "detail_coverage": {
                   "oneOf": [
                     {
@@ -10106,7 +10193,8 @@
                             "retention_gap",
                             "legacy_ownership",
                             "unknown_activity_type",
-                            "missing_canonical_linkage"
+                            "missing_canonical_linkage",
+                            "content_deleted"
                           ],
                           "type": "string"
                         }
@@ -10128,7 +10216,8 @@
                             "retention_gap",
                             "legacy_ownership",
                             "unknown_activity_type",
-                            "missing_canonical_linkage"
+                            "missing_canonical_linkage",
+                            "content_deleted"
                           ],
                           "type": "string"
                         }
@@ -10468,6 +10557,19 @@
                         "kind",
                         "reason",
                         "retryable"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "description": "The turn's conversation content was deleted; no result body exists.",
+                      "properties": {
+                        "kind": {
+                          "const": "deleted",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind"
                       ],
                       "type": "object"
                     }
@@ -10820,6 +10922,11 @@
                     "null"
                   ]
                 },
+                "content_deleted": {
+                  "default": false,
+                  "description": "True when the turn's conversation content was deleted. The summary then\n carries identity, timing, and execution outcome only; inputs and brief\n ids are empty and must not be rehydrated from any source.",
+                  "type": "boolean"
+                },
                 "detail_coverage": {
                   "oneOf": [
                     {
@@ -10845,7 +10952,8 @@
                             "retention_gap",
                             "legacy_ownership",
                             "unknown_activity_type",
-                            "missing_canonical_linkage"
+                            "missing_canonical_linkage",
+                            "content_deleted"
                           ],
                           "type": "string"
                         }
@@ -10867,7 +10975,8 @@
                             "retention_gap",
                             "legacy_ownership",
                             "unknown_activity_type",
-                            "missing_canonical_linkage"
+                            "missing_canonical_linkage",
+                            "content_deleted"
                           ],
                           "type": "string"
                         }
@@ -11207,6 +11316,19 @@
                         "kind",
                         "reason",
                         "retryable"
+                      ],
+                      "type": "object"
+                    },
+                    {
+                      "description": "The turn's conversation content was deleted; no result body exists.",
+                      "properties": {
+                        "kind": {
+                          "const": "deleted",
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind"
                       ],
                       "type": "object"
                     }
@@ -17101,6 +17223,11 @@
                       "const": "interrupted",
                       "description": "Daemon shutdown interrupted processing; replay on recovery.",
                       "type": "string"
+                    },
+                    {
+                      "const": "withdrawn",
+                      "description": "Operator withdrew the unexecuted input before claim. Terminal marker:\n the message body is gone and no execution may run from this entry.",
+                      "type": "string"
                     }
                   ]
                 },
@@ -17192,6 +17319,11 @@
                       {
                         "const": "interrupted",
                         "description": "Daemon shutdown interrupted processing; replay on recovery.",
+                        "type": "string"
+                      },
+                      {
+                        "const": "withdrawn",
+                        "description": "Operator withdrew the unexecuted input before claim. Terminal marker:\n the message body is gone and no execution may run from this entry.",
                         "type": "string"
                       }
                     ]

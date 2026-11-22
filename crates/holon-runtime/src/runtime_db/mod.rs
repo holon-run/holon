@@ -33,6 +33,8 @@ pub mod destructive_operations;
 pub(crate) mod dispatch_memory;
 pub mod turn_content_deletion;
 pub mod input_withdrawal;
+#[cfg(test)]
+mod turn_content_deletion_tests;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;
