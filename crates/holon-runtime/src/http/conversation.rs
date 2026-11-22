@@ -13,7 +13,7 @@ use crate::runtime_db::conversation::{
 
 pub(crate) const CONVERSATION_SUMMARY_DEFAULT_LIMIT: usize = 30;
 pub(crate) const CONVERSATION_ACTIVITY_DEFAULT_LIMIT: usize = 50;
-pub(crate) const CONVERSATION_SHADOW_DEFAULT_LIMIT: usize = 30;
+pub const CONVERSATION_SHADOW_DEFAULT_LIMIT: usize = 30;
 pub(crate) const CONVERSATION_TURN_MAX_SERIALIZED_BYTES: usize = 64 * 1024;
 pub(crate) const CONVERSATION_ACTIVITY_ITEM_MAX_SERIALIZED_BYTES: usize = 256 * 1024;
 pub(crate) const CONVERSATION_SUMMARY_MAX_SERIALIZED_BYTES: usize = 2 * 1024 * 1024;
@@ -99,7 +99,7 @@ impl Default for ConversationReadLimits {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConversationReadQuery {
+pub struct ConversationReadQuery {
     pub limit: Option<usize>,
     pub before: Option<String>,
     pub after: Option<String>,
@@ -107,13 +107,13 @@ pub(crate) struct ConversationReadQuery {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConversationLocateRequest {
+pub struct ConversationLocateRequest {
     pub source_ref: String,
     pub limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub(crate) struct ConversationLocateResponse {
+pub struct ConversationLocateResponse {
     pub schema_version: u32,
     pub query_version: u32,
     pub agent_id: String,
@@ -148,12 +148,12 @@ pub(crate) struct ConversationStreamQuery {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ConversationShadowQuery {
+pub struct ConversationShadowQuery {
     pub turn_limit: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub(crate) struct ConversationSummaryResponse {
+pub struct ConversationSummaryResponse {
     pub schema_version: u32,
     pub query_version: u32,
     pub runtime_id: String,
@@ -168,12 +168,12 @@ pub(crate) struct ConversationSummaryResponse {
     pub pending_inputs: Vec<PendingInput>,
     pub next_before_cursor: Option<String>,
     pub next_after_cursor: Option<String>,
-    pub coverage: ConversationHistoryCoverage,
+    pub(crate) coverage: ConversationHistoryCoverage,
     pub has_more: bool,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
-pub(crate) struct ConversationActivityResponse {
+pub struct ConversationActivityResponse {
     pub schema_version: u32,
     pub query_version: u32,
     pub runtime_id: String,
@@ -193,7 +193,7 @@ pub(crate) struct ConversationActivityResponse {
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum ConversationStreamMessage {
+pub enum ConversationStreamMessage {
     BatchBegin {
         batch_id: String,
         schema_version: u32,
@@ -239,7 +239,7 @@ pub(crate) enum ConversationStreamMessage {
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum ConversationStreamResetReason {
+pub enum ConversationStreamResetReason {
     RetentionExpired,
     CursorAhead,
     ReplayLimitExceeded,
@@ -2321,83 +2321,6 @@ mod tests {
                 updated_at: timestamp(20),
             })
             .unwrap();
-    }
-
-    #[test]
-    fn openapi_registers_conversation_routes_and_schemas() {
-        let api = crate::openapi::generate_openapi_json();
-        let schemas = api["components"]["schemas"].as_object().unwrap();
-        for name in [
-            "ConversationReadQuery",
-            "ConversationSummaryResponse",
-            "ConversationActivityResponse",
-            "ConversationShadowDiagnostics",
-        ] {
-            assert!(schemas.contains_key(name), "missing schema {name}");
-        }
-        assert_eq!(
-            api["paths"]["/api/agents/{agent_id}/conversation"]["get"]["responses"]["200"]
-                ["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ConversationSummaryResponse"
-        );
-        assert_eq!(
-            api["paths"]["/api/agents/{agent_id}/turns/{turn_id}/activities"]["get"]["responses"]
-                ["200"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ConversationActivityResponse"
-        );
-        assert_eq!(
-            api["paths"]["/api/control/agents/{agent_id}/conversation/shadow-diagnostics"]["get"]
-                ["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ConversationShadowDiagnostics"
-        );
-        let summary_parameters = api["paths"]["/api/agents/{agent_id}/conversation"]["get"]
-            ["parameters"]
-            .as_array()
-            .unwrap();
-        assert_eq!(
-            api["paths"]["/api/agents/{agent_id}/conversation/locate"]["post"]["responses"]["200"]
-                ["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ConversationLocateResponse"
-        );
-        assert!(
-            api["components"]["schemas"]["ConversationLocateRequest"]["properties"]
-                .get("source_ref")
-                .is_some()
-        );
-        assert_eq!(
-            summary_parameters
-                .iter()
-                .map(|parameter| parameter["name"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["agent_id", "limit", "before", "after"]
-        );
-        let activity_parameters = api["paths"]["/api/agents/{agent_id}/turns/{turn_id}/activities"]
-            ["get"]["parameters"]
-            .as_array()
-            .unwrap();
-        assert_eq!(
-            activity_parameters
-                .iter()
-                .map(|parameter| parameter["name"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["agent_id", "turn_id", "limit", "before"]
-        );
-        let shadow_parameters = api["paths"]
-            ["/api/control/agents/{agent_id}/conversation/shadow-diagnostics"]["get"]["parameters"]
-            .as_array()
-            .unwrap();
-        assert_eq!(
-            shadow_parameters
-                .iter()
-                .map(|parameter| parameter["name"].as_str().unwrap())
-                .collect::<Vec<_>>(),
-            ["agent_id", "turn_limit"]
-        );
-        assert_eq!(shadow_parameters[1]["in"], "query");
-        assert_eq!(shadow_parameters[1]["required"], false);
-        assert_eq!(shadow_parameters[1]["schema"]["minimum"], 1);
-        assert_eq!(shadow_parameters[1]["schema"]["maximum"], 100);
-        assert_eq!(shadow_parameters[1]["schema"]["default"], 30);
     }
 
     #[test]

@@ -879,44 +879,6 @@ mod tests {
         );
     }
 
-    #[test]
-    fn openapi_registers_observer_sync_schemas_without_routes() {
-        let api = crate::openapi::generate_openapi_json();
-        let schemas = api["components"]["schemas"].as_object().unwrap();
-        for name in [
-            "AgentRosterSnapshot",
-            "AgentRosterEntry",
-            "AgentEventWindow",
-            "AgentLatestBrief",
-            "AgentProjectionSnapshot",
-            "AgentCanonicalProjection",
-            "AgentWorkItemAnchor",
-            "ConversationRevisionAnchors",
-            "AgentHydrationKey",
-            "ProjectionEffect",
-            "CursorNotFoundError",
-        ] {
-            assert!(schemas.contains_key(name), "missing schema {name}");
-        }
-        let paths = api["paths"].as_object().unwrap();
-        // S4 registers the roster snapshot route and S5 the per-Agent
-        // projection snapshot route. Route existence still must never be
-        // mistaken for capability support: the handlers gate on durable
-        // verification.
-        assert!(paths.contains_key("/api/agents/snapshot"));
-        assert_eq!(
-            paths["/api/agents/snapshot"]["get"]["responses"]["200"]["content"]["application/json"]
-                ["schema"]["$ref"],
-            "#/components/schemas/AgentRosterSnapshot"
-        );
-        assert!(paths.contains_key("/api/agents/{agent_id}/projection-snapshot"));
-        assert_eq!(
-            paths["/api/agents/{agent_id}/projection-snapshot"]["get"]["responses"]["200"]
-                ["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/AgentProjectionSnapshot"
-        );
-    }
-
     fn assert_brief_preview_bounded(latest_brief: Option<&AgentLatestBrief>) {
         let Some(brief) = latest_brief else {
             return;

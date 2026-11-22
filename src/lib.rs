@@ -1,5 +1,6 @@
 //! Application interfaces backed by the Holon runtime library.
 
+pub use holon_http_api::{contract_inventory, openapi};
 pub use holon_runtime::*;
 
 pub mod cli;

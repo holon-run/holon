@@ -18,6 +18,7 @@ anyhow = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4.5", features = ["derive", "env"] }
 holon-context = { version = "0.1.0", path = "crates/holon-context" }
+holon-http-api = { version = "0.1.0", path = "crates/holon-http-api" }
 holon-server = { version = "0.1.0", path = "crates/holon-server" }
 holon-tui = { version = "0.1.0", path = "crates/holon-tui" }
 libc = "0.2"

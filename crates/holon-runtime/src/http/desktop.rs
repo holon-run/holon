@@ -3,13 +3,13 @@ use super::*;
 use holon_server::origin::desktop_origin_allowed;
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct DesktopCapabilities {
+pub struct DesktopCapabilities {
     reveal_in_finder: bool,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct RevealFileRequest {
+pub struct RevealFileRequest {
     workspace_id: String,
     execution_root_id: String,
     path: String,

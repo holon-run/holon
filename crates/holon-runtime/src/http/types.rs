@@ -85,7 +85,7 @@ pub enum IncomingOrigin {
 }
 
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone, PartialEq, Eq)]
-pub(crate) struct EnqueueResponse {
+pub struct EnqueueResponse {
     pub(crate) ok: bool,
     pub(crate) agent_id: String,
     pub(crate) message_id: String,
@@ -185,7 +185,7 @@ pub struct EventStreamQuery {
     pub(crate) limit: Option<usize>,
 }
 
-pub(crate) use holon_server::events::{EventPageOrder, EventsPageResponse, StreamEventEnvelope};
+pub(crate) use holon_server::events::EventPageOrder;
 
 impl From<EventPageOrder> for EventLogPageOrder {
     fn from(order: EventPageOrder) -> Self {

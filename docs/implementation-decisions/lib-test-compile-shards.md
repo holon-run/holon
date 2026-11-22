@@ -14,7 +14,8 @@ Most tests in `runtime` belong to `a`. Group `e` owns the `runtime_db`
 transaction, control transition, task result settlement, and Task fixture
 tests. The remaining database tests belong to `b`. Tests in either module
 that instantiate the application HTTP routes run with the HTTP tests in `c`.
-The test builds for `a`, `b`, and `e` omit the routes and OpenAPI.
+The test builds for `a`, `b`, and `e` omit the routes. The OpenAPI and
+status inventory tests run in `holon-http-api`.
 `LIB_C_OWNERS` lists the remaining owners in `c`. The other top-level
 modules belong to `d`. Shared fixtures retain their private paths. Tests are
 gated individually when a whole module cannot be gated.

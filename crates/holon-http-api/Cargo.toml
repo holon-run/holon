@@ -1,0 +1,15 @@
+[package]
+name = "holon-http-api"
+version = "0.1.0"
+edition = "2021"
+description = "Holon runtime HTTP routes and OpenAPI contracts"
+license = "Apache-2.0"
+repository = "https://github.com/holon-run/holon"
+publish = false
+
+[dependencies]
+anyhow = "1.0"
+holon-runtime = { version = "0.1.0", path = "../holon-runtime" }
+holon-server = { version = "0.1.0", path = "../holon-server" }
+schemars = { version = "0.9", features = ["chrono04"] }
+serde_json = "1.0"

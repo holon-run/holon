@@ -100,18 +100,19 @@ mod types;
 mod unread;
 mod web;
 mod workspace_files;
-pub(crate) use desktop::{DesktopCapabilities, RevealFileRequest};
-pub(crate) use tailscale_serve::TailscaleServeStatus;
-pub(crate) use unread::MarkBriefReadRequest;
+pub use crate::runtime_db::notifications::InboxNotificationList;
+pub use desktop::{DesktopCapabilities, RevealFileRequest};
+pub use tailscale_serve::TailscaleServeStatus;
+pub use unread::MarkBriefReadRequest;
 
 // Re-export shared helpers used across submodules.
 pub(crate) use agents::load_observer_sync_verification;
-pub(crate) use auth::{
+pub use auth::{
     CurrentUserResponse, NativeSessionResponse, PairingIssueResponse, PairingRedeemRequest,
     SessionExchangeRequest, SessionResponse,
 };
-pub(crate) use content_reports::{CreateContentReportRequest, CreateContentReportResponse};
-pub(crate) use conversation::{
+pub use content_reports::{CreateContentReportRequest, CreateContentReportResponse};
+pub use conversation::{
     ConversationActivityResponse, ConversationLocateRequest, ConversationLocateResponse,
     ConversationReadQuery, ConversationShadowQuery, ConversationStreamMessage,
     ConversationSummaryResponse, CONVERSATION_SHADOW_DEFAULT_LIMIT,
@@ -129,7 +130,7 @@ pub(crate) use state::{
     public_admission_context, EnqueueIngress,
 };
 pub(crate) use web::web_asset_response;
-pub(crate) use workspace_files::{ResolveFileReferencesRequest, ResolveFileReferencesResponse};
+pub use workspace_files::{ResolveFileReferencesRequest, ResolveFileReferencesResponse};
 
 pub use agents::*;
 pub use control::*;

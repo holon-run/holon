@@ -15,7 +15,7 @@ mod tests;
 mod benchmark;
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub(crate) struct MarkBriefReadRequest {
+pub struct MarkBriefReadRequest {
     pub(crate) read_through_event_seq: u64,
 }
 

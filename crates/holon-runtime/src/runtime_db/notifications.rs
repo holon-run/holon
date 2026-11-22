@@ -211,8 +211,8 @@ pub(crate) struct InboxNotification {
 }
 
 #[derive(Serialize, JsonSchema)]
-pub(crate) struct InboxNotificationList {
-    pub items: Vec<InboxNotification>,
+pub struct InboxNotificationList {
+    pub(crate) items: Vec<InboxNotification>,
 }
 
 /// Return the persisted principal only for the runtime's own trusted

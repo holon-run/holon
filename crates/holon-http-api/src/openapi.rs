@@ -3,7 +3,7 @@ use holon_server::openapi::{
 };
 use serde_json::{json, Map, Value};
 
-use crate::{
+use holon_runtime::{
     diagnostics::PerformanceDiagnosticsSnapshot,
     domain::conversation::ConversationShadowDiagnostics,
     http::{
@@ -37,15 +37,13 @@ use crate::{
     },
 };
 
-const API_VERSION: &str = env!("HOLON_PRODUCT_VERSION");
-
 pub fn generate_openapi_json() -> Value {
     holon_server::openapi::generate(
-        API_VERSION,
+        holon_runtime::PRODUCT_VERSION,
         component_schemas(),
         ConversationShadowLimits {
             default: CONVERSATION_SHADOW_DEFAULT_LIMIT,
-            maximum: crate::runtime_db::conversation::MAX_CONVERSATION_SHADOW_TURNS,
+            maximum: holon_runtime::runtime_db::conversation::MAX_CONVERSATION_SHADOW_TURNS,
         },
     )
 }
@@ -63,7 +61,7 @@ fn component_schemas() -> Map<String, Value> {
     schemas.insert("ErrorResponse".into(), error_response_schema());
     schemas.insert(
         "InboxNotificationList".into(),
-        component_schema::<crate::runtime_db::notifications::InboxNotificationList>(),
+        component_schema::<holon_runtime::http::InboxNotificationList>(),
     );
     schemas.insert(
         "HandshakeResponse".into(),
@@ -175,11 +173,11 @@ fn component_schemas() -> Map<String, Value> {
     );
     schemas.insert(
         "StreamEventEnvelope".into(),
-        component_schema::<crate::http::StreamEventEnvelope>(),
+        component_schema::<holon_server::events::StreamEventEnvelope>(),
     );
     schemas.insert(
         "EventsPageResponse".into(),
-        component_schema::<crate::http::EventsPageResponse>(),
+        component_schema::<holon_server::events::EventsPageResponse>(),
     );
     schemas.insert(
         "ConversationReadQuery".into(),
@@ -240,7 +238,7 @@ fn component_schemas() -> Map<String, Value> {
     );
     schemas.insert(
         "ToolExecutionArtifactContent".into(),
-        component_schema::<crate::http::ToolExecutionArtifactContent>(),
+        component_schema::<holon_runtime::http::ToolExecutionArtifactContent>(),
     );
     schemas.insert(
         "TaskInputResult".into(),
@@ -377,11 +375,11 @@ fn component_schemas() -> Map<String, Value> {
     );
     schemas.insert(
         "AgentDetail".into(),
-        component_schema::<crate::types::AgentDetail>(),
+        component_schema::<holon_runtime::types::AgentDetail>(),
     );
     schemas.insert(
         "AgentTreeProjection".into(),
-        component_schema::<crate::types::AgentTreeProjection>(),
+        component_schema::<holon_runtime::types::AgentTreeProjection>(),
     );
     schemas.insert(
         "PickWorkItemRequest".into(),
@@ -775,182 +773,5 @@ fn component_schemas() -> Map<String, Value> {
     schemas
 }
 
-#[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn recursive_component_definitions_lift_to_openapi_components() {
-        let api = generate_openapi_json();
-        let schemas = api["components"]["schemas"]
-            .as_object()
-            .expect("components schemas object");
-        let tree = &schemas["AgentTreeProjection"];
-        assert!(
-            tree.get("definitions").is_none(),
-            "recursive subschemas must not stay nested under their parent component"
-        );
-        assert!(
-            schemas.contains_key("AgentTreeNode"),
-            "AgentTreeNode should be lifted to a top-level component"
-        );
-        let raw = serde_json::to_string(&schemas).expect("serialize schemas");
-        assert!(
-            !raw.contains("#/definitions/"),
-            "draft-style definitions refs must be rewritten to component refs"
-        );
-    }
-
-    #[test]
-    fn generated_openapi_includes_current_http_surface() {
-        let api = generate_openapi_json();
-        let paths = api["paths"].as_object().expect("paths object");
-        let operation_count = paths
-            .values()
-            .flat_map(|path| path.as_object().into_iter().flat_map(|ops| ops.keys()))
-            .count();
-        assert!(operation_count >= 40, "expected baseline coverage");
-        let error_response = &api["components"]["schemas"]["ErrorResponse"];
-        let required_error_fields = error_response["required"]
-            .as_array()
-            .expect("ErrorResponse required fields");
-        for field in ["ok", "error", "code"] {
-            assert!(
-                required_error_fields
-                    .iter()
-                    .any(|required| required == field),
-                "ErrorResponse must require {field}"
-            );
-        }
-        assert_eq!(error_response["properties"]["code"]["type"], "string");
-        assert!(
-            error_response.get("additionalProperties").is_none(),
-            "implicit additional properties preserve extension compatibility without generating an invalid Kotlin map subclass"
-        );
-        assert_eq!(
-            error_response["properties"]["correlation"]["$ref"],
-            "#/components/schemas/RuntimeErrorContext"
-        );
-        assert_eq!(
-            error_response["properties"]["domain"]["anyOf"][0]["$ref"],
-            "#/components/schemas/RuntimeErrorDomain"
-        );
-        assert!(paths["/api/events/stream"]["get"].is_object());
-        assert!(paths["/api/agents/{agent_id}/events/stream"]["get"].is_object());
-        let locate = &paths["/api/agents/{agent_id}/conversation/locate"]["post"];
-        assert_eq!(locate["operationId"], "agentConversationLocate");
-        assert_eq!(
-            locate["requestBody"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ConversationLocateRequest"
-        );
-        assert_eq!(
-            locate["responses"]["200"]["content"]["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ConversationLocateResponse"
-        );
-        for schema in ["ConversationLocateRequest", "ConversationLocateResponse"] {
-            assert!(api["components"]["schemas"][schema].is_object(), "{schema}");
-        }
-        let history_parameters = paths["/api/agents/{agent_id}/conversation"]["get"]["parameters"]
-            .as_array()
-            .expect("conversation history parameters");
-        for name in ["before", "after"] {
-            assert!(
-                history_parameters
-                    .iter()
-                    .any(|parameter| parameter["name"] == name && parameter["in"] == "query"),
-                "missing history parameter {name}"
-            );
-        }
-        let conversation_stream = &paths["/api/agents/{agent_id}/conversation/stream"]["get"];
-        assert!(conversation_stream["requestBody"].is_null());
-        let stream_parameters = conversation_stream["parameters"]
-            .as_array()
-            .expect("conversation stream parameters");
-        for (name, location) in [
-            ("agent_id", "path"),
-            ("after", "query"),
-            ("limit", "query"),
-            ("activity_limit", "query"),
-            ("Last-Event-ID", "header"),
-        ] {
-            assert!(
-                stream_parameters
-                    .iter()
-                    .any(|parameter| parameter["name"] == name && parameter["in"] == location),
-                "missing {location} parameter {name}"
-            );
-        }
-        assert_eq!(
-            paths["/api/agents/{agent_id}/events"]["get"]["responses"]["200"]["content"]
-                ["application/json"]["schema"]["$ref"],
-            "#/components/schemas/EventsPageResponse"
-        );
-        let envelope = &api["components"]["schemas"]["StreamEventEnvelope"];
-        for field in [
-            "event_log_epoch",
-            "payload_schema",
-            "payload_schema_version",
-        ] {
-            assert!(envelope["properties"][field].is_object(), "{field}");
-        }
-        for field in ["contract_version", "provenance"] {
-            assert!(
-                envelope["properties"].get(field).is_none(),
-                "StreamEventEnvelope must not redeclare per-event {field}"
-            );
-        }
-        assert!(
-            api["components"]["schemas"]["EventsPageResponse"]["properties"]["contract_version"]
-                .is_object()
-        );
-        assert!(paths["/api/callbacks/wake/{callback_token}"]["post"].is_object());
-        assert_eq!(
-            paths["/api/agents/{agent_id}/status"]["get"]["x-holon-openapi-source"],
-            "aide::axum::ApiRouter::api_route_docs"
-        );
-        assert!(
-            paths["/api/control/agents/{agent_id}/tasks"]["post"]["x-holon-openapi-source"]
-                .is_null()
-        );
-        assert_eq!(
-            paths["/api/agents/{agent_id}/state"]["get"]["responses"]["200"]["content"]
-                ["application/json"]["schema"]["$ref"],
-            "#/components/schemas/AgentStateSnapshotDto"
-        );
-        for (path, method, schema) in [
-            ("/api/handshake", "get", "HandshakeResponse"),
-            ("/api/agents/list", "get", "AgentListResponse"),
-            (
-                "/api/control/agents/{agent_id}/prompt",
-                "post",
-                "EnqueueResponse",
-            ),
-            ("/api/auth/session/me", "get", "CurrentUserResponse"),
-        ] {
-            assert_eq!(
-                paths[path][method]["responses"]["200"]["content"]["application/json"]["schema"]
-                    ["$ref"],
-                format!("#/components/schemas/{schema}")
-            );
-        }
-        assert_eq!(
-            paths["/api/control/agents/{agent_id}/prompt"]["post"]["requestBody"]["content"]
-                ["application/json"]["schema"]["$ref"],
-            "#/components/schemas/ControlPromptRequest"
-        );
-        let error = &api["components"]["schemas"]["ErrorResponse"];
-        for field in [
-            "ok",
-            "error",
-            "code",
-            "hint",
-            "domain",
-            "retryable",
-            "context",
-            "correlation",
-        ] {
-            assert!(error["properties"][field].is_object(), "{field}");
-        }
-    }
-}
+mod tests;

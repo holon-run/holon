@@ -19,7 +19,12 @@ existing repository build paths. A fresh checkout can build without either
 artifact. A configured Web distribution override remains authoritative for
 Web requests.
 
-OpenAPI route metadata and document generation live in the server crate.
-Holon-runtime supplies its API version, runtime limits, and schemas for the
-concrete endpoint types. It registers the routes and implements handlers that
-compose RuntimeHost, RuntimeDb, and daemon services.
+The private `holon-http-api` crate assembles the concrete OpenAPI document
+and the runtime status inventory. It uses typed wire contracts and product
+version information from `holon-runtime` and OpenAPI generation primitives
+from `holon-server`. The application exports both documents at their
+existing paths.
+
+Holon-runtime registers the routes and implements handlers that compose
+RuntimeHost, RuntimeDb, and daemon services. The HTTP API crate consumes
+runtime contracts through a one-way dependency.

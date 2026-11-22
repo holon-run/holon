@@ -270,13 +270,14 @@ class CiEventMatrixTests(unittest.TestCase):
                 result = self.run_shell(command(step), ROOT, env)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 calls = [json.loads(line)[1][1:] for line in log.read_text().splitlines()]
-                self.assertEqual(len(calls), 23)
+                self.assertEqual(len(calls), 24)
                 manifests = {call[2] for call in calls}
-                self.assertEqual(len(manifests), 23)
+                self.assertEqual(len(manifests), 24)
                 domain_manifest = "crates/holon-domain/Cargo.toml"
                 self.assertIn(domain_manifest, manifests)
                 self.assertIn("crates/holon-web-retrieval/Cargo.toml", manifests)
                 self.assertIn("crates/holon-server/Cargo.toml", manifests)
+                self.assertIn("crates/holon-http-api/Cargo.toml", manifests)
                 self.assertIn("crates/holon-daemon/Cargo.toml", manifests)
                 for mode, manifest_flag, manifest, *flags in calls:
                     self.assertEqual(mode, "check" if event == "push" else "test")

@@ -88,7 +88,7 @@ struct FileContent {
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub(crate) struct ResolveFileReferencesRequest {
+pub struct ResolveFileReferencesRequest {
     #[schemars(with = "Vec<FileReferenceRequest>")]
     references: Vec<FileReferenceInput>,
 }
@@ -126,7 +126,7 @@ struct FileLocationInput {
 }
 
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub(crate) struct ResolveFileReferencesResponse {
+pub struct ResolveFileReferencesResponse {
     results: Vec<ResolveFileReferenceResult>,
 }
 

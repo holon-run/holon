@@ -103,7 +103,7 @@ TASK_FIXTURE_MODULES = (
 LIB_C_OWNERS = frozenset(
     {
         "agent_template", "auth", "calendar", "client", "cloudflare_tunnel",
-        "contract_inventory", "daemon", "domain", "fd_limit", "github",
+        "daemon", "domain", "fd_limit", "github",
         "github_archive", "host_registry", "http", "http_dto", "memory",
         "model_catalog", "model_config_migration", "model_discovery",
         "object_query_cache", "object_resolver", "oidc", "otlp_exporter",

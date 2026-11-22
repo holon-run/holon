@@ -32,8 +32,6 @@ pub mod client;
 pub mod cloudflare_tunnel;
 pub mod config;
 pub mod context;
-#[cfg(any(not(test), holon_lib_test_shard = "c", holon_lib_test_shard = "d"))]
-pub mod contract_inventory;
 pub mod daemon;
 pub(crate) mod decision_telemetry;
 pub mod deletion;
@@ -56,8 +54,6 @@ pub mod object_query_cache;
 pub mod object_resolver;
 pub mod oidc;
 pub mod onboarding;
-#[cfg(any(not(test), holon_lib_test_shard = "c", holon_lib_test_shard = "d"))]
-pub mod openapi;
 pub use holon_tui::operator_event;
 pub mod policy;
 pub use holon_tui::presentation;
@@ -92,3 +88,6 @@ mod test_env;
 #[cfg(holon_lib_test_shard = "d")]
 #[cfg(test)]
 mod worktree_tests;
+
+/// Version of the Holon application built with this runtime.
+pub const PRODUCT_VERSION: &str = env!("HOLON_PRODUCT_VERSION");

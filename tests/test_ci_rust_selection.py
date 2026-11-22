@@ -30,6 +30,7 @@ class RustSelectionTests(unittest.TestCase):
         for path in (
             "crates/holon-tui/src/tui/composer/tests.rs",
             "crates/holon-daemon/src/tests/mod.rs",
+            "crates/holon-http-api/src/openapi/tests.rs",
             "crates/holon-storage/src/agent_registry/tests/list.rs",
             "crates/holon-provider/src/provider/transports/openai/oauth_timeout_tests.rs",
             "crates/holon-model-catalog/tests/fixtures/models_dev/sample.json",
@@ -39,14 +40,15 @@ class RustSelectionTests(unittest.TestCase):
 
     def test_leaf_and_reverse_dependencies(self):
         self.assertEqual(self.select("crates/holon-daemon/src/lifecycle.rs"),
-                         (True, ["holon-daemon"], False))
+                         (True, ["holon-daemon", "holon-http-api"], False))
         self.assertEqual(self.select("crates/holon-tui/src/lib.rs"),
-                         (True, ["holon-tui"], False))
+                         (True, ["holon-http-api", "holon-tui"], False))
         self.assertEqual(self.select("crates/holon-github/src/lib.rs"),
-                         (True, ["holon-agent-templates", "holon-github"], False))
-        self.assertEqual(self.select("crates/holon-runtime/src/runtime.rs"), (True, [], False))
+                         (True, ["holon-agent-templates", "holon-github", "holon-http-api"], False))
+        self.assertEqual(self.select("crates/holon-runtime/src/runtime.rs"),
+                         (True, ["holon-http-api"], False))
         self.assertEqual(self.select("crates/decision-local-onnx/src/lib.rs"),
-                         (True, [], False))
+                         (True, ["holon-http-api"], False))
 
     def test_cli_sources_select_application_targets(self):
         plan = self.plan("src/cli.rs", "src/tail/stdout.rs", "docs/rfcs/tui-command-surface.md")
@@ -113,7 +115,7 @@ class RustSelectionTests(unittest.TestCase):
                 "crates/holon-tui/src/tui/composer/tests.rs",
                 "crates/holon-github/src/lib.rs",
             ),
-            (True, ["holon-agent-templates", "holon-github", "holon-tui"], False),
+            (True, ["holon-agent-templates", "holon-github", "holon-http-api", "holon-tui"], False),
         )
         provider = "crates/holon-provider/src/provider/"
         self.assertEqual(self.select(provider + "test_support.rs"),
@@ -122,7 +124,7 @@ class RustSelectionTests(unittest.TestCase):
     def test_root_integration_test_does_not_select_standalone_crates(self):
         self.assertEqual(self.select("tests/scripted_agent_provider.rs"), (True, [], False))
 
-    def test_mixed_runtime_pr_selects_only_its_standalone_crate(self):
+    def test_mixed_runtime_pr_selects_the_changed_crate_and_consumers(self):
         # Changed path list from PR #4321.
         self.assertEqual(
             self.select(
@@ -136,7 +138,7 @@ class RustSelectionTests(unittest.TestCase):
                 "src/tool/host/memory_get.rs",
                 "tests/scripted_agent_provider.rs",
             ),
-            (True, ["holon-memory-index"], False),
+            (True, ["holon-http-api", "holon-memory-index"], False),
         )
 
     def test_rfc_does_not_change_isolated_test_selection(self):

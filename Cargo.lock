@@ -1601,6 +1601,7 @@ dependencies = [
  "fs2",
  "futures-util",
  "holon-context",
+ "holon-http-api",
  "holon-memory-index",
  "holon-runtime",
  "holon-server",
@@ -1753,6 +1754,17 @@ dependencies = [
  "tokio",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "holon-http-api"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "holon-runtime",
+ "holon-server",
+ "schemars",
+ "serde_json",
 ]
 
 [[package]]
