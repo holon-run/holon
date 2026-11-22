@@ -5794,9 +5794,8 @@ fn ensure_turn_content_deletion_schema(transaction: &Transaction<'_>) -> Result<
             .iter()
             .any(|existing| existing == "content_deleted_at")
         {
-            transaction.execute_batch(
-                "ALTER TABLE turn_records ADD COLUMN content_deleted_at TEXT;",
-            )?;
+            transaction
+                .execute_batch("ALTER TABLE turn_records ADD COLUMN content_deleted_at TEXT;")?;
         }
     }
     transaction.execute_batch(
