@@ -36,7 +36,8 @@ def fixtures() -> tuple[dict, dict]:
         "wait_conditions": [wait],
         "work_items": [{"work_item_id": WID, "revision": 6}],
         "execution_protocol_work_items": [{
-            "agent_id": "main", "work_item_id": WID, "generation": 2,
+            "agent_id": "main", "work_item_id": WID, "source_revision": 6,
+            "generation": 2,
         }],
     }
     attempt = {
@@ -48,7 +49,7 @@ def fixtures() -> tuple[dict, dict]:
         "binding": {"kind": "work_item", "work_item_id": WID},
         "turn_id": "turn-1",
         "admitted_fences": {
-            "work_item_source_revision": 7, "work_item_generation": 2,
+            "work_item_source_revision": 6, "work_item_generation": 2,
             "source_revision": 17, "agent_control_revision": 1,
             "host_registry_revision": 1,
         },
@@ -285,7 +286,8 @@ class TimerAdmissionTests(unittest.TestCase):
 
     def test_oracle_rejects_stale_fences_wrong_binding_and_duplicate_admission(self) -> None:
         for field, value in [
-            ("work_item_source_revision", 6), ("work_item_generation", 1),
+            ("work_item_source_revision", 5), ("work_item_source_revision", 7),
+            ("work_item_generation", 1),
             ("source_revision", 16),
         ]:
             with self.subTest(field=field):

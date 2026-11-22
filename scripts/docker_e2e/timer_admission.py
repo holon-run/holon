@@ -154,14 +154,20 @@ def require_dispatch(
     ]
     require(len(prior_work) == len(prior_protocol) == 1, "missing waiting owner fences")
     fences = attempt["admitted_fences"]
+    expected_revision = prior_protocol[0]["source_revision"]
+    expected_generation = prior_protocol[0]["generation"]
+    # Resolving the wait no longer writes a blocker mirror to the WorkItem.
     require(
-        fences.get("work_item_source_revision") == prior_work[0]["revision"] + 1
-        and fences.get("work_item_generation") == prior_protocol[0]["generation"]
+        fences.get("work_item_source_revision") == expected_revision == prior_work[0]["revision"]
+        and fences.get("work_item_generation") == expected_generation
         and fences.get("source_revision") == attempt["source"]["generation"]
         == message["message_seq"]
         and fences.get("agent_control_revision", 0) > 0
         and fences.get("host_registry_revision", 0) > 0,
-        f"timer admission retained stale/mismatched fences: {attempt}",
+        f"timer admission retained stale/mismatched fences: {fences}; "
+        f"expected WorkItem revision {expected_revision} "
+        f"(projection {prior_work[0]['revision']}), generation {expected_generation}, "
+        f"and source revision {message['message_seq']}",
     )
     outcomes = [
         payload(outcome) for outcome in after["execution_protocol_outcomes"]
