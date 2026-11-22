@@ -4310,6 +4310,27 @@
       "source": "conservative_builtin"
     },
     {
+      "model_ref": "opencode-go/longcat-2.5",
+      "display_name": "LongCat 2.5",
+      "description": "OpenCode Go native Chat LongCat 2.5; output ceiling, vision and reasoning follow the official Go listing. The service output default and effort controls are unconfirmed.",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": null,
+      "default_max_output_tokens": null,
+      "max_output_tokens_upper_limit": 262144,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "conservative_builtin"
+    },
+    {
       "model_ref": "opencode-go/longcat-2.5-free",
       "display_name": "LongCat 2.5 Free",
       "description": "OpenCode Go native Chat LongCat 2.5 Free, available for a limited time; context, output ceiling, vision and reasoning follow the official Go listing; output default and effort controls remain unconfirmed.",
@@ -10583,6 +10604,16 @@
       }
     },
     {
+      "route_ref": "opencode-go@default/longcat-2.5",
+      "policy": {
+        "display_name": null,
+        "description": null,
+        "effective_context_window_percent": null,
+        "capabilities": {},
+        "reasoning_effort_options": null
+      }
+    },
+    {
       "route_ref": "opencode-go@default/longcat-2.5-free",
       "policy": {
         "display_name": null,
@@ -16691,6 +16722,10 @@
     {
       "model_ref": "opencode-go/longcat-2.0",
       "route_ref": "opencode-go@default/longcat-2.0"
+    },
+    {
+      "model_ref": "opencode-go/longcat-2.5",
+      "route_ref": "opencode-go@default/longcat-2.5"
     },
     {
       "model_ref": "opencode-go/longcat-2.5-free",

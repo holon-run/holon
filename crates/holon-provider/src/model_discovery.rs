@@ -993,10 +993,13 @@ struct OpenCodeGoLimit {
 impl OpenCodeGoModel {
     fn into_model_metadata(self, provider: &ProviderId) -> Option<BuiltInModelMetadata> {
         let id = self.id.trim();
+        // The reviewed LongCat 2.5 contract is native Go Chat only.
+        let native_chat_only = id == "longcat-2.5";
         let preferred_endpoint = OPENCODE_GO_TEXT_MODELS
             .iter()
             .find_map(|(model, endpoint)| (*model == id).then_some(*endpoint))
             .or_else(|| match id {
+                _ if native_chat_only => Some("default"),
                 // Retain historical mappings without granting translation to
                 // IDs no longer present in the reviewed current text table.
                 "deepseek-v4-flash"
@@ -1030,6 +1033,9 @@ impl OpenCodeGoModel {
                     api.base_url.as_deref() == Some(definition.default_base_url)
                 })
             });
+        if native_chat_only && !native {
+            return None;
+        }
         let supports_reasoning = native && self.capabilities.reasoning.supported;
         Some(BuiltInModelMetadata {
             model_ref: ModelRef::new(provider.clone(), id.to_string()),

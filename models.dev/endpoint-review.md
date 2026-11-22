@@ -9,6 +9,28 @@ reviewed routes unless there is affirmative removal evidence. New routes require
 their own endpoint evidence; missing capability flags are conservative omissions,
 not proof that a model lacks the feature.
 
+## 2026-11-23 incremental review
+
+Add only `opencode-go@default/longcat-2.5`. The two public Go catalogs
+publish the exact ID on native Chat Completions: 1,000,000 context,
+262,144 output ceiling, image input, and reasoning with a toggle. Neither
+a service output default nor effort levels were established. Go's plan
+page requires the workspace's `Global` privacy setting for this model;
+static registration does not grant account access. Do not add Messages or
+Responses routes. The first absence of `longcat-2.0` and
+`longcat-2.5-free` from both catalogs is a recheck trigger, not confirmation
+that their existing routes have stopped serving.
+[Field evidence](metadata-evidence.md#incremental-review-2026-11-23)
+records the exact source boundaries.
+
+The November 23 Qianfan retirement table lists seven IDs; none matches
+the 16 built-in Qianfan routes. Keep the four previously tracked
+retirements at their published boundaries: Volcengine `kimi-k3`
+November 25 at 14:00 (UTC+8), Qianfan `deepseek-v4-flash-0731`
+December 4 (no time specified), and Tencent `hy4-preview` December 7
+at 00:00 and four DeepSeek parameter values December 10 at 00:00
+(UTC+8). No other special endpoint changed in this patch.
+
 ## 2026-11-22 incremental review
 
 The November 22 Beijing cycle uses main `c6e91ec84b` and the models.dev

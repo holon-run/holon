@@ -387,6 +387,19 @@ pub(super) fn opencode_entries() -> Vec<BuiltInModelMetadata> {
             None,
         )
     });
+    entries.push(BuiltInModelMetadata {
+        description: "OpenCode Go native Chat LongCat 2.5; output ceiling, vision and reasoning follow the official Go listing. The service output default and effort controls are unconfirmed.".into(),
+        default_max_output_tokens: None,
+        ..opencode_go_model(
+            "longcat-2.5",
+            "LongCat 2.5",
+            1_000_000,
+            Some(262_144),
+            true,
+            true,
+            None,
+        )
+    });
     entries.extend(opencode_go_models_dev_entries());
     for entry in &mut entries {
         if entry.model_ref.provider != provider_id("opencode-go") {

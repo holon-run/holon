@@ -54,7 +54,7 @@
 
 ## Route metadata review (offline)
 
-Routes: 642; unknown context: 239; unknown output ceiling: 263.
+Routes: 643; unknown context: 239; unknown output ceiling: 263.
 Runtime output policy is not output capacity. Existing builtin fields are not automatically overwritten.
 
 | Route | Upstream source | Fields requiring review |

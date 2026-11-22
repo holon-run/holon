@@ -11,7 +11,7 @@ summary: Holon 内置支持的所有模型和提供商的完整参考。
 # Supported Models
 
 Holon includes built-in configuration for **37 provider accounts**
-across **51 endpoints** and **428 models**.
+across **51 endpoints** and **429 models**.
 
 This page is auto-generated from the Holon source code
 ([`crates/holon-model-catalog/src/lib.rs`](https://github.com/holon-run/holon/blob/main/crates/holon-model-catalog/src/lib.rs) and
@@ -313,14 +313,14 @@ and capabilities.
 | `openai-codex` | `gpt-daybreak-blue-latest` | `openai-codex/gpt-daybreak-blue-latest` | 272000 | — | ✅ | ✅ |
 | `openai-codex` | `gpt-daybreak-red-latest` | `openai-codex/gpt-daybreak-red-latest` | 372000 | — | ✅ | ✅ |
 | `opencode-go` | `beam-free` | `opencode-go/beam-free` | 1048576 | 131072 | ✅ | — |
-| `opencode-go` | `cat-jam-free` | `opencode-go/cat-jam-free` | 262144 | 131072 | ✅ | — |
+| `opencode-go` | `cat-jam-free` | `opencode-go@default/cat-jam-free` | 262144 | 131072 | ✅ | — |
 | `opencode-go` | `claude-haiku-5-5` | `opencode-go/claude-haiku-5-5` | 1000000 | 128000 | ✅ | ✅ |
 | `opencode-go` | `crouton-alpha-free` | `opencode-go/crouton-alpha-free` | 1048576 | — | ✅ | ✅ |
-| `opencode-go` | `deepseek-v4-flash` | `opencode-go/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
+| `opencode-go` | `deepseek-v4-flash` | `opencode-go@default/deepseek-v4-flash` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4-pro` | `opencode-go/deepseek-v4-pro` | 1000000 | 384000 | ✅ | — |
 | `opencode-go` | `deepseek-v4.1-flash` | `opencode-go/deepseek-v4.1-flash` | 1000000 | 384000 | ✅ | ✅ |
 | `opencode-go` | `gemini-4-argon` | `opencode-go/gemini-4-argon` | — | — | — | — |
-| `opencode-go` | `glm-5.1` | `opencode-go/glm-5.1` | 202800 | 131072 | ✅ | — |
+| `opencode-go` | `glm-5.1` | `opencode-go@default/glm-5.1` | 202800 | 131072 | ✅ | — |
 | `opencode-go` | `glm-5.3` | `opencode-go/glm-5.3` | 1000000 | 131072 | ✅ | — |
 | `opencode-go` | `glm-5.3-flash` | `opencode-go/glm-5.3-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `opencode-go` | `gpt-5.6-luna` | `opencode-go/gpt-5.6-luna` | 1050000 | 128000 | ✅ | ✅ |
@@ -331,13 +331,14 @@ and capabilities.
 | `opencode-go` | `hy4-flash-free` | `opencode-go/hy4-flash-free` | 1048576 | — | ✅ | ✅ |
 | `opencode-go` | `hy4-preview` | `opencode-go/hy4-preview` | 1024000 | 64000 | ✅ | — |
 | `opencode-go` | `iceman-contributor-free` | `opencode-go/iceman-contributor-free` | 262144 | — | ✅ | — |
-| `opencode-go` | `kimi-k2.6` | `opencode-go/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
+| `opencode-go` | `kimi-k2.6` | `opencode-go@default/kimi-k2.6` | 262144 | 262144 | ✅ | ✅ |
 | `opencode-go` | `kimi-k2.7-code` | `opencode-go/kimi-k2.7-code` | 262144 | 262144 | ✅ | ✅ |
 | `opencode-go` | `kimi-k3` | `opencode-go/kimi-k3` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `kimi-k3.1-pro` | `opencode-go/kimi-k3.1-pro` | 1048576 | — | ✅ | ✅ |
 | `opencode-go` | `longcat-2.0` | `opencode-go/longcat-2.0` | 1000000 | 131072 | ✅ | — |
+| `opencode-go` | `longcat-2.5` | `opencode-go@default/longcat-2.5` | 1000000 | — | ✅ | ✅ |
 | `opencode-go` | `longcat-2.5-free` | `opencode-go/longcat-2.5-free` | 1000000 | — | ✅ | ✅ |
-| `opencode-go` | `longcat-2.5-preview-free` | `opencode-go/longcat-2.5-preview-free` | 1000000 | 131072 | ✅ | ✅ |
+| `opencode-go` | `longcat-2.5-preview-free` | `opencode-go@default/longcat-2.5-preview-free` | 1000000 | 131072 | ✅ | ✅ |
 | `opencode-go` | `mimo-v2.5` | `opencode-go/mimo-v2.5` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `mimo-v2.5-pro` | `opencode-go/mimo-v2.5-pro` | 1048576 | 131072 | ✅ | — |
 | `opencode-go` | `mimo-v2.6-flash` | `opencode-go/mimo-v2.6-flash` | 1048576 | 131072 | ✅ | ✅ |
@@ -346,7 +347,7 @@ and capabilities.
 | `opencode-go` | `minimax-m2.7` | `opencode-go/minimax-m2.7` | 204800 | — | ✅ | — |
 | `opencode-go` | `minimax-m3` | `opencode-go/minimax-m3` | 1000000 | — | ✅ | ✅ |
 | `opencode-go` | `minimax-m3.1-flash` | `opencode-go/minimax-m3.1-flash` | 1000000 | 512000 | ✅ | ✅ |
-| `opencode-go` | `minimax-m3.1-flash-free` | `opencode-go/minimax-m3.1-flash-free` | 1000000 | 512000 | ✅ | ✅ |
+| `opencode-go` | `minimax-m3.1-flash-free` | `opencode-go@default/minimax-m3.1-flash-free` | 1000000 | 512000 | ✅ | ✅ |
 | `opencode-go` | `muse-spark-1.2-contributor` | `opencode-go/muse-spark-1.2-contributor` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `muse-spark-1.3-contributor` | `opencode-go/muse-spark-1.3-contributor` | 1048576 | 131072 | ✅ | ✅ |
 | `opencode-go` | `qwen3.6-plus` | `opencode-go/qwen3.6-plus` | 1000000 | 65536 | ✅ | ✅ |
@@ -354,9 +355,9 @@ and capabilities.
 | `opencode-go` | `qwen3.7-plus` | `opencode-go/qwen3.7-plus` | 1000000 | 65536 | ✅ | ✅ |
 | `opencode-go` | `qwen3.8-flash` | `opencode-go/qwen3.8-flash` | 1000000 | 131072 | ✅ | ✅ |
 | `opencode-go` | `qwen3.8-max` | `opencode-go/qwen3.8-max` | 1000000 | 131072 | ✅ | ✅ |
-| `opencode-go` | `space-bunny` | `opencode-go/space-bunny` | 1048576 | 524288 | ✅ | ✅ |
+| `opencode-go` | `space-bunny` | `opencode-go@default/space-bunny` | 1048576 | 524288 | ✅ | ✅ |
 | `opencode-go` | `step-5-preview` | `opencode-go/step-5-preview` | 1000000 | 65536 | ✅ | ✅ |
-| `opencode-go` | `step-5-preview-free` | `opencode-go/step-5-preview-free` | 1000000 | 65536 | ✅ | ✅ |
+| `opencode-go` | `step-5-preview-free` | `opencode-go@default/step-5-preview-free` | 1000000 | 65536 | ✅ | ✅ |
 | `openrouter` | `auto` | `openrouter/auto` | 2000000 | — | ✅ | ✅ |
 | `qianfan` | `deepseek-v4-flash-0731` | `qianfan/deepseek-v4-flash-0731` | — | — | ✅ | — |
 | `qianfan` | `deepseek-v4-pro` | `qianfan/deepseek-v4-pro` | — | — | ✅ | — |

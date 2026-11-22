@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "revision": "models-dev-14061cdeb6e453b851411c23deb135cd5f4a7b4892687c360ac09cfe61a241b9",
+  "revision": "models-dev-4fe96995535dc6490a940773570609cdb71bf3b635f047fdecdfa25ec32301da",
   "upstream": {
     "source": "models.dev",
-    "revision": "14061cdeb6e453b851411c23deb135cd5f4a7b4892687c360ac09cfe61a241b9",
-    "fetched_at": "2026-11-21T20:58:30.658207575+00:00",
-    "content_sha256": "14061cdeb6e453b851411c23deb135cd5f4a7b4892687c360ac09cfe61a241b9",
-    "adapter_version": "0.60.0 (c6e91ec84)"
+    "revision": "4fe96995535dc6490a940773570609cdb71bf3b635f047fdecdfa25ec32301da",
+    "fetched_at": "2026-11-22T20:51:00.443325849+00:00",
+    "content_sha256": "4fe96995535dc6490a940773570609cdb71bf3b635f047fdecdfa25ec32301da",
+    "adapter_version": "0.60.0 (03cd2e504-dirty)"
   },
   "models": [
     {
@@ -1231,7 +1231,28 @@
     {
       "model_ref": "chutes/Qwen/Qwen3.8-Max-0902",
       "display_name": "Qwen3.8 Max 0902",
-      "description": "Flagship Qwen model for complex reasoning, coding, and agentic workflows",
+      "description": "2026-09-02 upgraded snapshot of Qwen3.8 Max with stronger coding, collaborative agents, and multimodal document understanding",
+      "context_window_tokens": 1000000,
+      "effective_context_window_percent": 95,
+      "auto_compact_token_limit": 950000,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
+      "default_verbosity": null,
+      "tool_output_truncation_estimated_tokens": 2500,
+      "capabilities": {
+        "agent_turn": true,
+        "parallel_tool_calls": false,
+        "image_input": true,
+        "image_generation": false,
+        "supports_reasoning": true,
+        "interactive_exec": false
+      },
+      "source": "remote_discovered"
+    },
+    {
+      "model_ref": "chutes/Qwen/Qwen4-Max",
+      "display_name": "Qwen4 Max",
+      "description": "Flagship multimodal model for coding, office productivity, frontend design, and complex agentic tasks",
       "context_window_tokens": 1000000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 950000,
@@ -13726,8 +13747,8 @@
       "context_window_tokens": 131072,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 124518,
-      "default_max_output_tokens": 16384,
-      "max_output_tokens_upper_limit": 16384,
+      "default_max_output_tokens": 117964,
+      "max_output_tokens_upper_limit": 117964,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -13873,8 +13894,8 @@
       "context_window_tokens": 8192,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 7782,
-      "default_max_output_tokens": 3686,
-      "max_output_tokens_upper_limit": 3686,
+      "default_max_output_tokens": 7372,
+      "max_output_tokens_upper_limit": 7372,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18071,8 +18092,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 65536,
-      "max_output_tokens_upper_limit": 65536,
+      "default_max_output_tokens": 81920,
+      "max_output_tokens_upper_limit": 81920,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -18391,8 +18412,8 @@
       "context_window_tokens": 1024000,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 972800,
-      "default_max_output_tokens": 235929,
-      "max_output_tokens_upper_limit": 235929,
+      "default_max_output_tokens": 131072,
+      "max_output_tokens_upper_limit": 131072,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {
@@ -19026,8 +19047,8 @@
       "context_window_tokens": 262144,
       "effective_context_window_percent": 95,
       "auto_compact_token_limit": 249036,
-      "default_max_output_tokens": 128000,
-      "max_output_tokens_upper_limit": 128000,
+      "default_max_output_tokens": 235929,
+      "max_output_tokens_upper_limit": 235929,
       "default_verbosity": null,
       "tool_output_truncation_estimated_tokens": 2500,
       "capabilities": {

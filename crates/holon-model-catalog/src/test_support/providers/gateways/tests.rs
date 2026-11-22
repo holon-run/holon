@@ -114,6 +114,60 @@ fn opencode_go_crouton_alpha_free_native_responses_metadata_does_not_certify_tra
 }
 
 #[test]
+fn opencode_go_longcat_25_is_native_chat_only() {
+    for catalog in [
+        BuiltInModelCatalog::from_legacy_definitions(),
+        BuiltInModelCatalog::new(),
+    ] {
+        let route = ModelRouteRef::parse("opencode-go@default/longcat-2.5").unwrap();
+        assert!(catalog.get_route(&route).is_some());
+        let metadata = catalog.get(&route.model_ref()).unwrap();
+        assert_eq!(metadata.context_window_tokens, Some(1_000_000));
+        assert_eq!(metadata.default_max_output_tokens, None);
+        assert_eq!(metadata.max_output_tokens_upper_limit, Some(262_144));
+        assert!(metadata.capabilities.image_input);
+        assert!(metadata.capabilities.supports_reasoning);
+        assert!(metadata.reasoning_effort_options.is_empty());
+        assert_eq!(
+            catalog.preferred_route_for_model(&route.model_ref()),
+            Some(ModelRouteRef::parse("opencode-go@messages/longcat-2.5").unwrap())
+        );
+        let resolve = |route: &ModelRouteRef, discovered: &HashMap<_, _>| {
+            catalog
+                .try_resolve_route_policy(
+                    route,
+                    &HashMap::new(),
+                    discovered,
+                    None,
+                    &ContextConfig::default(),
+                    8_192,
+                )
+                .unwrap()
+        };
+        let chat = resolve(&route, &HashMap::new());
+        assert_eq!(chat.context_window_tokens, Some(1_000_000));
+        assert_eq!(chat.max_output_tokens_upper_limit, Some(262_144));
+        assert!(chat.capabilities.image_input);
+        assert!(chat.capabilities.supports_reasoning);
+
+        let discovered = HashMap::from([(route.model_ref(), metadata.clone())]);
+        for endpoint in ["messages", "responses"] {
+            let route =
+                ModelRouteRef::parse(&format!("opencode-go@{endpoint}/longcat-2.5")).unwrap();
+            assert!(catalog.get_route(&route).is_none());
+            for discovered in [&HashMap::new(), &discovered] {
+                let policy = resolve(&route, discovered);
+                assert_eq!(policy.context_window_tokens, None);
+                assert_eq!(policy.max_output_tokens_upper_limit, None);
+                assert!(!policy.capabilities.image_input);
+                assert!(!policy.capabilities.supports_reasoning);
+                assert!(policy.reasoning_effort_options.is_empty());
+            }
+        }
+    }
+}
+
+#[test]
 fn opencode_go_longcat_25_free_native_chat_does_not_certify_translation() {
     for catalog in [
         BuiltInModelCatalog::from_legacy_definitions(),
