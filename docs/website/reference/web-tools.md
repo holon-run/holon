@@ -108,8 +108,8 @@ structured results with citations.
 | `query` | yes | Search query string |
 | `max_results` | no | Maximum number of results to return |
 | `provider` | no | Omit for configured default/mode; `"auto"` for automatic candidate order; `"aggregate"` to query automatic candidates in order and deduplicate by canonical URL; or a specific provider ID (no fallback) |
-| `language` | no | Optional language hint; only providers whose capability metadata declares region-or-language support consume it (Google maps it to the `hl` parameter); other providers ignore it |
-| `region` | no | Optional region hint consumed by the same providers (Google maps it to the `gl` parameter) |
+| `language` | no | Optional language hint; only providers whose capability metadata declares region-or-language support consume it (Google maps it to `hl`, Brave to `search_lang`, SearXNG to its `language` parameter instead of auto-detection); other providers ignore it |
+| `region` | no | Optional region hint consumed by the same providers (Google maps it to `gl`, Brave to `country`; SearXNG merges it into the `language` locale when a language hint without its own region subtag is present, while a region-only hint keeps auto-detection) |
 
 ### Routing and provider discovery
 

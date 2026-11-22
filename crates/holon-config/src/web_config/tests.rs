@@ -300,6 +300,30 @@ fn google_capabilities_advertise_region_or_language_support() {
 }
 
 #[test]
+fn deepseek_capabilities_do_not_advertise_region_or_language_support() {
+    // DeepSeek's search API has no language or region parameter surface.
+    assert!(
+        !WebProviderKind::DeepSeek
+            .capabilities()
+            .supports_region_or_language
+    );
+}
+
+#[test]
+fn searxng_and_brave_capabilities_advertise_region_or_language_support() {
+    assert!(
+        WebProviderKind::Searxng
+            .capabilities()
+            .supports_region_or_language
+    );
+    assert!(
+        WebProviderKind::Brave
+            .capabilities()
+            .supports_region_or_language
+    );
+}
+
+#[test]
 fn provider_capabilities_mark_reserved_kinds() {
     assert_eq!(
         WebProviderKind::OpenAiNative.capabilities().status,

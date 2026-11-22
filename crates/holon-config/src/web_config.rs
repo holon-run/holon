@@ -608,7 +608,10 @@ impl WebProviderKind {
                 quality_hint: WebProviderQualityHint::Research,
                 supports_domain_filter: true,
                 supports_freshness: true,
-                supports_region_or_language: true,
+                // DeepSeek's search API has no language or region parameter
+                // surface (only an IP-based `localization` field), so these
+                // hints cannot be consumed.
+                supports_region_or_language: false,
                 supports_full_content: false,
                 supports_native_citations: false,
                 default_priority: 75,
