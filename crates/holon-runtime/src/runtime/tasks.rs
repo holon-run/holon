@@ -3546,9 +3546,9 @@ impl RuntimeHandle {
         readiness_owned_by_continuation_resume: bool,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
-            AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
-            RegisterWorkItemExecution, SetWorkItemReadiness, WorkItemExecutionRecord,
-            WorkItemExecutionState,
+            AdvanceWorkItemSourceRevision, ExecutionBinding, ExecutionProtocolCommand,
+            ExecutionProtocolState, RegisterWorkItemExecution, SetWorkItemReadiness,
+            WorkItemExecutionRecord, WorkItemExecutionState,
         };
 
         let existing = read.protocol.as_ref();
@@ -3576,8 +3576,31 @@ impl RuntimeHandle {
                 },
             );
         };
-        let revision_changed = authoritative.source_revision != record.revision;
+        let open_attempt_owns_work = existing
+            .and_then(ExecutionProtocolState::open_attempt)
+            .is_some_and(|attempt| {
+                matches!(&attempt.binding, ExecutionBinding::WorkItem { work_item_id }
+                    if work_item_id == &record.id)
+            });
+        let advance_source_revision = || {
+            (authoritative.source_revision != record.revision).then(|| {
+                ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
+                    AdvanceWorkItemSourceRevision {
+                        command_id: format!(
+                            "work_item:clear_blocker:{}:{}",
+                            record.id, record.revision
+                        ),
+                        work_item_id: record.id.clone(),
+                        expected_source_revision: authoritative.source_revision,
+                        source_revision: record.revision,
+                    },
+                )
+            })
+        };
         let command = match &authoritative.state {
+            // An admitted wait continuation keeps its scheduling generation
+            // until settlement, even when clearing a blocker changes the source revision.
+            _ if open_attempt_owns_work => advance_source_revision(),
             WorkItemExecutionState::Waiting { generation, .. }
             | WorkItemExecutionState::Paused { generation, .. } => {
                 if readiness_owned_by_continuation_resume {
@@ -3610,23 +3633,10 @@ impl RuntimeHandle {
                     )))
                 }
             }
-            WorkItemExecutionState::Runnable { .. } if revision_changed => {
-                Some(ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
-                    AdvanceWorkItemSourceRevision {
-                        command_id: format!(
-                            "work_item:clear_blocker:{}:{}",
-                            record.id, record.revision
-                        ),
-                        work_item_id: record.id.clone(),
-                        expected_source_revision: authoritative.source_revision,
-                        source_revision: record.revision,
-                    },
-                ))
-            }
+            WorkItemExecutionState::Runnable { .. } => advance_source_revision(),
             WorkItemExecutionState::Terminal { .. } => {
                 return Err(anyhow!("cannot clear terminal WorkItem execution state"));
             }
-            _ => None,
         };
         // An unbound wait can block the queue projection without changing the
         // execution state. Its cancellation needs no synthetic readiness write.

@@ -136,3 +136,123 @@ fn opening_legacy_database_normalizes_work_item_in_flight_once() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn reopening_with_retired_work_execution_rebinds_only_matching_scoped_proofs() -> Result<()> {
+    use serde_json::{json, Value};
+
+    let dir = tempfile::tempdir()?;
+    let path = dir.path().join("runtime.sqlite3");
+    let old_payload =
+        r#"{"source_revision":9,"state":{"state":"in_flight","generation":7,"attempt_id":"lost"}}"#;
+    let fingerprint = |marker, payload: &str| {
+        json!({
+            "content_hash": null, "sequence": null, "turn_index": null,
+            "created_at": "", "owner_kind": null, "owner_id": null,
+            "revision_marker": marker, "payload_bytes": payload.len(), "related_turn_id": null,
+        })
+    };
+    let old = fingerprint("9:7:in_flight", old_payload);
+    let digest = bytes_sha256_hex(old_payload.as_bytes());
+    let mut old_fixed = old.clone();
+    old_fixed["frozen_payload_digest"] = json!(digest);
+    let mut stale_fixed = old_fixed.clone();
+    stale_fixed["frozen_payload_digest"] = json!("wrong-digest");
+    {
+        let db = Connection::open(&path)?;
+        ensure_migration_table(&db)?;
+        for version in [41, 113] {
+            db.execute_batch(
+                MIGRATIONS
+                    .iter()
+                    .find(|m| m.version == version)
+                    .unwrap()
+                    .sql,
+            )?;
+        }
+        db.execute_batch(schema::EPISODE_CONTINUITY_SCHEMA)?;
+        db.execute_batch(schema::INPUT_EVIDENCE_SCHEMA)?;
+        db.execute(
+            "INSERT INTO execution_protocol_work_items VALUES ('owner', 'work', 9, 7, 'in_flight', ?1)",
+            [old_payload],
+        )?;
+        for (seed, agent) in [("owned", "owner"), ("foreign", "other")] {
+            db.execute(
+                "INSERT INTO episode_continuity_seeds
+                 (seed_id, agent_id, policy_version, boundary_id, source_kind, roots_json,
+                  candidate_payloads_json, import_required, captured_at)
+                 VALUES (?1, ?2, 1, 'boundary', 'upgrade_unbound', '{}', '[]', 0, 'a')",
+                params![seed, agent],
+            )?;
+            db.execute(
+                "INSERT INTO input_evidence_eligibility VALUES
+                 (?1, 'upgrade', 'work_execution', 'work', ?2, 1)",
+                params![seed, old_fixed.to_string()],
+            )?;
+            db.execute(
+                "INSERT INTO input_evidence_seed_recovery_current
+                 (seed_id, family, record_id, fingerprint_json, revision, origin_kind)
+                 VALUES (?1, 'work_execution', 'work', ?2, 4, 'fixed_member')",
+                params![seed, old_fixed.to_string()],
+            )?;
+        }
+        db.execute(
+            "INSERT INTO input_evidence_eligibility VALUES
+             ('owned', 'first_import', 'work_execution', 'work', ?1, 1)",
+            [stale_fixed.to_string()],
+        )?;
+        for (agent, incarnation, digest) in [
+            ("owner", 1, digest.as_str()),
+            ("owner", 2, "wrong-digest"),
+            ("other", 1, digest.as_str()),
+        ] {
+            db.execute(
+                "INSERT INTO input_evidence_current
+                 (agent_id, identity_incarnation, family, record_id, revision, content_digest,
+                  fingerprint_json, availability, qualification)
+                 VALUES (?1, ?2, 'work_execution', 'work', 5, ?3, ?4, 'present', 'committed_writer')",
+                params![agent, incarnation, digest, old.to_string()],
+            )?;
+        }
+    }
+    let migration = MIGRATIONS.iter().find(|m| m.version == 119).unwrap();
+    for _ in 0..2 {
+        let mut db = Connection::open(&path)?;
+        apply_migration(&mut db, migration, unexpected_runtime_backfill)?;
+        let payload: String = db.query_row(
+            "SELECT payload_json FROM execution_protocol_work_items WHERE work_item_id = 'work'",
+            [],
+            |row| row.get(0),
+        )?;
+        let new = fingerprint("9:8:runnable", &payload);
+        let new_digest = bytes_sha256_hex(payload.as_bytes());
+        let mut new_fixed = new.clone();
+        new_fixed["frozen_payload_digest"] = json!(new_digest);
+        for (agent, incarnation, hash, expected) in [
+            ("owner", 1, new_digest.as_str(), &new),
+            ("owner", 2, "wrong-digest", &old),
+            ("other", 1, digest.as_str(), &old),
+        ] {
+            let (actual_hash, actual, revision): (String, String, i64) = db.query_row(
+                "SELECT content_digest, fingerprint_json, revision FROM input_evidence_current
+                 WHERE agent_id = ?1 AND identity_incarnation = ?2",
+                params![agent, incarnation],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )?;
+            assert_eq!(actual_hash, hash);
+            assert_eq!(serde_json::from_str::<Value>(&actual)?, *expected);
+            assert_eq!(revision, 5);
+        }
+        for (query, expected) in [
+            ("SELECT fingerprint_json FROM input_evidence_eligibility WHERE seed_id='owned' AND capture_phase='upgrade'", &new_fixed),
+            ("SELECT fingerprint_json FROM input_evidence_eligibility WHERE seed_id='owned' AND capture_phase='first_import'", &stale_fixed),
+            ("SELECT fingerprint_json FROM input_evidence_eligibility WHERE seed_id='foreign'", &old_fixed),
+            ("SELECT fingerprint_json FROM input_evidence_seed_recovery_current WHERE seed_id='owned' AND revision=4 AND origin_kind='fixed_member'", &new_fixed),
+            ("SELECT fingerprint_json FROM input_evidence_seed_recovery_current WHERE seed_id='foreign'", &old_fixed),
+        ] {
+            let actual: String = db.query_row(query, [], |row| row.get(0))?;
+            assert_eq!(serde_json::from_str::<Value>(&actual)?, *expected);
+        }
+    }
+    Ok(())
+}

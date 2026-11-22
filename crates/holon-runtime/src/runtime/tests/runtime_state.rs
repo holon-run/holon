@@ -138,7 +138,7 @@ struct OpenExternalWakeClaimFixture {
     attempt_id: String,
 }
 
-async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
+async fn open_external_wake_claim_fixture(start_wake_turn: bool) -> OpenExternalWakeClaimFixture {
     let harness = LifecycleHarness::new();
     let (work_item_id, wait_id, message_id, attempt_id) = {
         let runtime = harness.runtime();
@@ -268,7 +268,20 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
             panic!("external wake should claim the exact wait");
         };
         assert_eq!(scheduled.message.id, wake_message.id);
-        finish_claimed_test_run(runtime).await;
+        if start_wake_turn {
+            runtime
+                .begin_dispatch_turn(
+                    &scheduled.message,
+                    None,
+                    None,
+                    scheduled.dispatch_plan.execution_admission_provenance,
+                    &scheduled.dispatch_plan.prior_closure,
+                )
+                .await
+                .unwrap();
+        } else {
+            finish_claimed_test_run(runtime).await;
+        }
 
         let attempt_id = scheduler_executor::canonical_activation_id(&wake_message.id);
         let execution = runtime
@@ -301,6 +314,102 @@ async fn open_external_wake_claim_fixture() -> OpenExternalWakeClaimFixture {
         message_id,
         attempt_id,
     }
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn exact_wait_owner_clears_blocker_without_invalidating_open_attempt() {
+    use crate::domain::execution_protocol::WorkItemExecutionState;
+    use crate::runtime_db::transitions::WorkCommandLane;
+
+    let fixture = open_external_wake_claim_fixture(true).await;
+    let runtime = fixture.harness.runtime();
+    let load = || {
+        runtime
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap()
+    };
+    let initial = load();
+    let attempt = initial.open_attempt().unwrap();
+    assert_eq!(attempt.attempt_id, fixture.attempt_id);
+    let lane = || WorkCommandLane::Turn {
+        turn_id: attempt.turn_id.clone().expect("exact-wake Turn starts"),
+        message_id: fixture.message_id.clone(),
+    };
+    // Admission consumed the original wait blocker. Give this Turn an
+    // independent business blocker to clear while it owns the wait resume.
+    let blocked = runtime
+        .update_work_item_fields_in_lane(
+            fixture.work_item_id.clone(),
+            None,
+            None,
+            None,
+            Some(Some("Waiting for business approval.".into())),
+            Some(lane()),
+        )
+        .await
+        .unwrap();
+    let before = load();
+    let work = &before.work_items[&fixture.work_item_id];
+    assert!(matches!(
+        &work.state,
+        WorkItemExecutionState::Waiting { wait, .. } if wait.wait_id == fixture.wait_id
+    ));
+    assert_eq!(work.source_revision, blocked.revision);
+    assert_eq!(before.open_attempt(), Some(attempt));
+    let picked = runtime
+        .pick_work_item_in_lane(
+            fixture.work_item_id.clone(),
+            Some("the exact-wake owner no longer needs this blocker".into()),
+            true,
+            Some(lane()),
+        )
+        .await
+        .unwrap();
+    assert!(picked.transition.blocker_cleared);
+    assert!(picked.current_work_item.blocked_by.is_none());
+    let after = load();
+    assert_eq!(after.open_attempt(), Some(attempt));
+    let current = &after.work_items[&fixture.work_item_id];
+    assert_eq!(current.state, work.state);
+    assert_eq!(current.source_revision, picked.current_work_item.revision);
+    assert!(current.source_revision > work.source_revision);
+
+    let wake = runtime
+        .storage()
+        .read_recent_messages(16)
+        .unwrap()
+        .into_iter()
+        .find(|message| message.id == fixture.message_id)
+        .expect("admitted wake message");
+    finish_claimed_test_run(runtime).await;
+    let terminal = terminal_transition_from_started_turn(runtime, &wake);
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: wake.id,
+                agent_id: wake.agent_id,
+                priority: wake.priority,
+                status: QueueEntryStatus::Processed,
+                created_at: wake.created_at,
+                updated_at: Utc::now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
+        .await
+        .unwrap();
+    let settled = load();
+    assert!(settled.open_attempt().is_none());
+    assert!(matches!(
+        settled.work_items[&fixture.work_item_id].state,
+        WorkItemExecutionState::Runnable { generation, .. }
+            if generation == work.state.generation() + 1
+    ));
 }
 
 #[cfg(holon_lib_test_shard = "a")]
@@ -371,7 +480,7 @@ async fn bootstrap_claim_read_yields_while_runtime_readers_are_saturated() {
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane() {
-    let mut fixture = open_external_wake_claim_fixture().await;
+    let mut fixture = open_external_wake_claim_fixture(false).await;
     fixture.harness.restart();
     let runtime = fixture.harness.runtime();
 
@@ -508,7 +617,7 @@ async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane
 #[cfg(holon_lib_test_shard = "a")]
 #[tokio::test]
 async fn startup_recovery_preserves_retained_external_wait_before_bootstrap() {
-    let mut fixture = open_external_wake_claim_fixture().await;
+    let mut fixture = open_external_wake_claim_fixture(false).await;
     fixture.harness.restart();
     let runtime = fixture.harness.runtime();
     let report = runtime
@@ -1149,7 +1258,7 @@ fn apply_offline_scheduler_recovery_fixture(
 async fn scheduler_recovery_routes_external_wake_claim_through_generic_interruption() {
     use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionProtocolCommand};
 
-    let fixture = open_external_wake_claim_fixture().await;
+    let fixture = open_external_wake_claim_fixture(false).await;
     let runtime = fixture.harness.runtime();
     let report =
         scheduler_recovery_report(&runtime.inner.storage, &runtime.inner.runtime_db, "default")

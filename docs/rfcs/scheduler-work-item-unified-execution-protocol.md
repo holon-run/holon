@@ -133,8 +133,10 @@ Paused(g) -> Runnable(g + 1)
 Only the agent's open `ExecutionAttempt` represents execution. Admission
 checks and captures the exact WorkItem generation without changing its state
 or generation. Updating the WorkItem's scheduling state on settlement checks
-that captured generation and advances it. The read model derives `Executing`
-from the open attempt and WorkItem attribution or focus.
+that captured generation and advances it. If the owning turn clears a blocker
+with `PickWorkItem`, the command may advance the source revision and cancel
+waits, but it leaves the scheduling generation to settlement. The read model
+derives `Executing` from the open attempt and WorkItem attribution or focus.
 Terminal transition resolves owned waits and continuation obligations and
 removes scheduler eligibility. Focus may be cleared or restored in the same
 transaction, but it does not grant eligibility.

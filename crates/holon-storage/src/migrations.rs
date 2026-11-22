@@ -4629,11 +4629,6 @@ SELECT agent_id, work_item_id, source_revision, next_generation,
             ELSE json_set(payload_json, '$.state',
               json_object('state', 'runnable', 'generation', next_generation)) END
 FROM normalized;
-
-DROP TABLE execution_protocol_work_items;
-
-ALTER TABLE execution_protocol_work_items_agent_owned
-  RENAME TO execution_protocol_work_items;
 "#,
     },
 ];
@@ -5073,7 +5068,13 @@ fn apply_migration_transaction(
     }
     transaction.execute_batch(migration.sql)?;
     if migration.name == "retire_work_item_in_flight" {
-        transaction.execute_batch("DROP VIEW temp.work_item_in_flight_migration_waits;")?;
+        refresh_retired_work_item_input_evidence(transaction)?;
+        transaction.execute_batch(
+            "DROP TABLE execution_protocol_work_items;
+             ALTER TABLE execution_protocol_work_items_agent_owned
+               RENAME TO execution_protocol_work_items;
+             DROP VIEW temp.work_item_in_flight_migration_waits;",
+        )?;
     }
     let backfill = match migration.name {
         "explicit_episode_continuity" => Some(RuntimeBackfill::EpisodeContinuity),
@@ -5150,6 +5151,121 @@ fn apply_migration_transaction(
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
+    Ok(())
+}
+
+/// Rebind only proofs that matched the exact pre-migration WorkExecution row.
+fn refresh_retired_work_item_input_evidence(transaction: &Transaction<'_>) -> Result<()> {
+    use serde_json::{json, Value};
+
+    let current_exists = table_exists_tx(transaction, "input_evidence_current")?;
+    let seed_tables = [
+        "input_evidence_eligibility",
+        "input_evidence_seed_recovery_current",
+    ]
+    .into_iter()
+    .map(|table| Ok((table, table_exists_tx(transaction, table)?)))
+    .collect::<Result<Vec<_>>>()?;
+    let seeds_exist = table_exists_tx(transaction, "episode_continuity_seeds")?;
+    if !current_exists && (!seeds_exist || !seed_tables.iter().any(|(_, exists)| *exists)) {
+        return Ok(());
+    }
+
+    // Mirrors RuntimeDb's WorkExecution fingerprint. Only the fixed proofs
+    // include the body digest in this JSON; Current stores it separately.
+    let fingerprint = |revision, generation, lifecycle: &str, payload: &str| {
+        json!({
+            "content_hash": null,
+            "sequence": null,
+            "turn_index": null,
+            "created_at": "",
+            "owner_kind": null,
+            "owner_id": null,
+            "revision_marker": format!("{revision}:{generation}:{lifecycle}"),
+            "payload_bytes": payload.len(),
+            "related_turn_id": null,
+        })
+    };
+    let mut pairs = transaction.prepare(
+        "SELECT old.agent_id, old.work_item_id, old.source_revision,
+                old.generation, old.payload_json, new.generation, new.lifecycle_state,
+                new.payload_json
+         FROM execution_protocol_work_items old
+         JOIN execution_protocol_work_items_agent_owned new USING (agent_id, work_item_id)
+         WHERE old.lifecycle_state = 'in_flight'",
+    )?;
+    let mut pairs = pairs.query([])?;
+    while let Some(pair) = pairs.next()? {
+        let agent: String = pair.get(0)?;
+        let work: String = pair.get(1)?;
+        let revision: i64 = pair.get(2)?;
+        let old_payload: String = pair.get(4)?;
+        let new_lifecycle: String = pair.get(6)?;
+        let new_payload: String = pair.get(7)?;
+        let mut old = fingerprint(revision, pair.get::<_, i64>(3)?, "in_flight", &old_payload);
+        let mut new = fingerprint(
+            revision,
+            pair.get::<_, i64>(5)?,
+            new_lifecycle.as_str(),
+            &new_payload,
+        );
+        let old_digest = bytes_sha256_hex(old_payload.as_bytes());
+        let new_digest = bytes_sha256_hex(new_payload.as_bytes());
+        if current_exists {
+            let mut select = transaction.prepare_cached(
+                "SELECT DISTINCT fingerprint_json FROM input_evidence_current
+                 WHERE agent_id = ?1 AND family = 'work_execution' AND record_id = ?2
+                   AND availability = 'present' AND content_digest = ?3",
+            )?;
+            let mut update = transaction.prepare_cached(
+                "UPDATE input_evidence_current SET fingerprint_json = ?5, content_digest = ?6
+                 WHERE agent_id = ?1 AND family = 'work_execution' AND record_id = ?2
+                   AND availability = 'present' AND content_digest = ?3 AND fingerprint_json = ?4",
+            )?;
+            let proofs = select
+                .query_map(params![agent, work, old_digest], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for proof in proofs {
+                if serde_json::from_str::<Value>(&proof).is_ok_and(|value| value == old) {
+                    update.execute(params![
+                        agent,
+                        work,
+                        old_digest,
+                        proof,
+                        new.to_string(),
+                        new_digest
+                    ])?;
+                }
+            }
+        }
+        if seeds_exist {
+            old["frozen_payload_digest"] = json!(old_digest);
+            new["frozen_payload_digest"] = json!(new_digest);
+            for (table, _) in seed_tables.iter().filter(|(_, exists)| *exists) {
+                let scope = "family = 'work_execution' AND record_id = ?2
+                             AND seed_id IN (
+                                SELECT seed_id FROM episode_continuity_seeds WHERE agent_id = ?1
+                             )";
+                let mut select = transaction.prepare_cached(&format!(
+                    "SELECT DISTINCT fingerprint_json FROM {table} WHERE {scope}"
+                ))?;
+                let mut update = transaction.prepare_cached(&format!(
+                    "UPDATE {table} SET fingerprint_json = ?4
+                     WHERE {scope} AND fingerprint_json = ?3"
+                ))?;
+                let proofs = select
+                    .query_map(params![agent, work], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for proof in proofs {
+                    if serde_json::from_str::<Value>(&proof).is_ok_and(|value| value == old) {
+                        update.execute(params![agent, work, proof, new.to_string()])?;
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
