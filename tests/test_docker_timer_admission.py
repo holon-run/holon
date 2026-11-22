@@ -122,13 +122,31 @@ class TimerAdmissionTests(unittest.TestCase):
                 ]}
                 (evidence / "stub-status.json").write_text(json.dumps(status))
                 pending = [{"state": "pending"}, {"state": "pending"}]
+
+                def waiting_snapshot(wait_id: str) -> dict:
+                    return {
+                        "timers": [{"timer_id": TID, "fire_count": 0}],
+                        "work_items": [{"agent_id": "main", "work_item_id": WID}],
+                        "execution_protocol_work_items": [{
+                            "agent_id": "main", "work_item_id": WID,
+                            "payload_json": json.dumps({"state": {
+                                "state": "waiting", "wait": {"wait_id": wait_id},
+                            }}),
+                        }],
+                        "wait_conditions": [{
+                            "wait_condition_id": wait_id, "agent_id": "main",
+                            "work_item_id": WID, "kind": "timer",
+                            "subject_ref": TID, "status": "active",
+                        }],
+                    }
+
                 harness = Mock(
                     provider_mode="stub", agent_id="main", evidence=evidence,
                     container="daemon-under-test",
                 )
                 harness.assert_stub_complete = Mock()
                 harness.wait_work_item_scheduling_state.return_value = {
-                    "id": WID, "blocked_by_wait_id": "wait-1", "todo_list": pending,
+                    "id": WID, "todo_list": pending,
                 }
                 harness.request.side_effect = [[{
                     "id": TID, "agent_id": "main", "repeat": True,
@@ -146,14 +164,10 @@ class TimerAdmissionTests(unittest.TestCase):
                 with (
                     patch.object(timer.secrets, "token_hex", return_value="abcd"),
                     patch.object(timer, "snapshot", side_effect=[
-                        {"timers": [{"timer_id": TID, "fire_count": 0}],
-                         "work_items": [{"agent_id": "main"}]},
-                        {}, {"execution_protocol_attempts": []},
+                        waiting_snapshot("wait-1"), waiting_snapshot("wait-2"),
+                        {"execution_protocol_attempts": []},
                     ]) as snapshots,
-                    patch.object(timer, "owned_wait"),
-                    patch.object(timer, "wait_rearmed", return_value={
-                        "id": WID, "blocked_by_wait_id": "wait-2",
-                    }),
+                    patch.object(timer, "wait_rearmed", return_value={"id": WID}),
                     patch.object(timer, "require_dispatch", side_effect=[
                         {"message_id": "tick-1"}, {"message_id": "tick-2"},
                     ]) as dispatches,
@@ -172,6 +186,7 @@ class TimerAdmissionTests(unittest.TestCase):
                         )
                         self.assertFalse(oracle["restart_before_first_dispatch"])
                         self.assertIsNone(oracle["restart_after_wait_id"])
+                        self.assertEqual(oracle["rearmed_wait_id"], "wait-2")
                         self.assertEqual(oracle["online_daemon_started_at"], "boot-1")
                     harness.start.assert_called_once_with()
                     harness.stop.assert_not_called()
