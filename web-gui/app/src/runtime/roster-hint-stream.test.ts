@@ -45,6 +45,27 @@ function setup(overrides: Partial<RosterHintStreamDependencies> = {}) {
 }
 
 describe("createRosterHintStream", () => {
+  it("routes notification changes separately from roster refresh, even while hidden", async () => {
+    const onNotificationHint = vi.fn();
+    const onConnected = vi.fn();
+    const { controller, openStream, onHint, isHidden } = setup({ onNotificationHint, onConnected });
+    isHidden.mockReturnValue(true);
+    openStream.mockResolvedValue(liveStream([
+      'event: notifications.changed\ndata: {"v":1}\n\n',
+      hint("agent-a"),
+    ]));
+    controller.start();
+    await wait();
+    expect(onConnected).toHaveBeenCalledTimes(1);
+    expect(onNotificationHint).toHaveBeenCalledTimes(1);
+    expect(onHint).not.toHaveBeenCalled();
+    isHidden.mockReturnValue(false);
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(onHint).toHaveBeenCalledTimes(1);
+    expect(onNotificationHint).toHaveBeenCalledTimes(1);
+    controller.stop();
+  });
+
   it("emits one visible hint per frame and ignores heartbeats and other events", async () => {
     const { controller, openStream, onHint } = setup();
     openStream.mockImplementation(async () =>

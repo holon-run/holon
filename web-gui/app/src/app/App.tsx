@@ -4,6 +4,7 @@ import type { AgentCreationResult } from "../runtime/agent-creation";
 import { shouldDismissAgentCreation } from "../runtime/agent-creation-dismiss";
 import { AgentCreationError, AgentCreationStatus } from "../features/agent/AgentCreationFeedback";
 import { useCopyText } from "../components/ClipboardProvider";
+import { NotificationCenter } from "../features/notifications/NotificationCenter";
 import { clearConversationCaches } from "../runtime/conversation-cache-lifecycle";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties } from "react";
 import type { TFunction } from "i18next";
@@ -805,6 +806,14 @@ export function App() {
               </div>
             </div>
             <div className="top-actions">
+              <NotificationCenter onNavigate={(target) => {
+                navigateAgent(target.agent_id);
+                if (target.work_item_id) {
+                  const id = target.work_item_id;
+                  const work = useRuntimeStore.getState().sessionsByAgentId[target.agent_id]?.workItemDetailsById[id]?.workItem;
+                  showWorkItemDetail(target.agent_id, work ?? { id, objective: id, state: "unknown" });
+                }
+              }} />
               {developerDiagnosticsEnabled ? (
                 <button
                   className="runtime-trace-global-indicator"

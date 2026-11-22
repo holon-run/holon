@@ -146,6 +146,10 @@ pub(crate) enum WorkItemMutation {
     Insert {
         record: WorkItemRecord,
     },
+    InsertForOperator {
+        record: WorkItemRecord,
+        principal_id: String,
+    },
     Update {
         record: WorkItemRecord,
         expected_revision: u64,
@@ -155,7 +159,9 @@ pub(crate) enum WorkItemMutation {
 impl WorkItemMutation {
     fn record(&self) -> &WorkItemRecord {
         match self {
-            Self::Insert { record, .. } | Self::Update { record, .. } => record,
+            Self::Insert { record, .. }
+            | Self::InsertForOperator { record, .. }
+            | Self::Update { record, .. } => record,
         }
     }
 }
@@ -6232,7 +6238,8 @@ pub(super) fn validate_work_item_mutation_tx(
 ) -> Result<()> {
     validate_work_item_completion_contract(mutation.record())?;
     match mutation {
-        WorkItemMutation::Insert { record } => {
+        WorkItemMutation::Insert { record }
+        | WorkItemMutation::InsertForOperator { record, .. } => {
             if record.revision != 1 {
                 return Err(anyhow!(
                     "work item {} insert requires revision 1",
@@ -6365,7 +6372,8 @@ pub(super) fn apply_work_item_mutation_tx(
     mutation: &WorkItemMutation,
 ) -> Result<bool> {
     match mutation {
-        WorkItemMutation::Insert { record } => {
+        WorkItemMutation::Insert { record }
+        | WorkItemMutation::InsertForOperator { record, .. } => {
             let existing = tx
                 .query_row(
                     "SELECT payload_json FROM work_items WHERE work_item_id = ?1",
@@ -6376,7 +6384,13 @@ pub(super) fn apply_work_item_mutation_tx(
             if existing.as_deref() == Some(serde_json::to_string(record)?.as_str()) {
                 Ok(false)
             } else {
-                insert_new_work_item_tx(tx, record)
+                let inserted = insert_new_work_item_tx(tx, record)?;
+                if inserted {
+                    if let WorkItemMutation::InsertForOperator { principal_id, .. } = mutation {
+                        super::notifications::record_work_owner(tx, &record.id, principal_id)?;
+                    }
+                }
+                Ok(inserted)
             }
         }
         WorkItemMutation::Update {

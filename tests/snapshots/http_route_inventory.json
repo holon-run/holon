@@ -1399,6 +1399,38 @@
   },
   {
     "method": "get",
+    "path": "/api/notifications/pending",
+    "handler": "pending",
+    "operation_id": "pendingNotifications",
+    "tag": "events",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/notifications/recent",
+    "handler": "recent",
+    "operation_id": "recentNotifications",
+    "tag": "events",
+    "parameters": [],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
     "path": "/api/skills/catalog",
     "handler": "skills_catalog",
     "operation_id": "skillsCatalog",

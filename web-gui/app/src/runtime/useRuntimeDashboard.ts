@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 
 import { resolveRuntimeApiBase } from "./client";
 import { backfillRetryDelayMs } from "./global-sync-coordinator";
+import { runtimeNotificationSync } from "./runtime-notifications";
 import { type BootstrapRefreshOptions, useRuntimeStore } from "./runtime-store";
 import type { RuntimeBootstrap } from "./types";
 
@@ -117,6 +118,7 @@ export function useRuntimeDashboard(): RuntimeDashboardState {
     const refreshIfNeeded = () => {
       if (document.visibilityState === "visible") {
         void refresh({ background: true, trigger: "safety.refresh" });
+        runtimeNotificationSync.healthRefresh();
       }
     };
 

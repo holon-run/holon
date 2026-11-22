@@ -7,18 +7,30 @@ const mocks = vi.hoisted(() => ({
   controller: { start: vi.fn(), stop: vi.fn() },
   factory: vi.fn((_deps: { onHint: () => void }) => mocks.controller),
   refreshRosterFromStreamHint: vi.fn(),
+  generation: 0,
+  listeners: new Set<() => void>(),
   state: {
+    currentUserLoaded: true,
+    discovery: { freshness: "fresh" },
     bootstrap: {
       connection: { error: undefined as string | undefined, source: "http" as const },
     },
   },
 }));
 vi.mock("./runtime-store", () => ({
+  getRuntimeClientGeneration: () => mocks.generation,
   getRuntimeConnectionConfig: () => ({ mode: "local" as const }),
   refreshRosterFromStreamHint: mocks.refreshRosterFromStreamHint,
   useRuntimeStore: Object.assign(
     (select: (state: typeof mocks.state) => unknown) => select(mocks.state),
-    {},
+    {
+      getState: () => mocks.state,
+      subscribe: (update: (state: typeof mocks.state) => void) => {
+        const listener = () => update(mocks.state);
+        mocks.listeners.add(listener);
+        return () => mocks.listeners.delete(listener);
+      },
+    },
   ),
 }));
 vi.mock("./roster-hint-stream", () => ({ createRosterHintStream: mocks.factory }));
@@ -37,6 +49,7 @@ function Probe(): null {
 async function render(): Promise<void> {
   await act(async () => {
     root.render(createElement(Probe));
+    mocks.listeners.forEach((notify) => notify());
   });
 }
 
@@ -44,6 +57,8 @@ beforeEach(async () => {
   vi.resetModules();
   vi.clearAllMocks();
   mocks.state.bootstrap.connection = { error: undefined, source: "http" };
+  mocks.state.currentUserLoaded = true;
+  mocks.generation = 0;
   container = document.createElement("div");
   document.body.appendChild(container);
   root = createRoot(container);
@@ -85,6 +100,25 @@ describe("useRosterHintStream", () => {
     await render();
     expect(mocks.controller.start).not.toHaveBeenCalled();
     expect(mocks.controller.stop).toHaveBeenCalled();
+  });
+
+  it("restarts for a client generation change even when the status is still healthy", async () => {
+    await render();
+    mocks.generation++;
+    await render();
+    expect(mocks.controller.stop).toHaveBeenCalledTimes(1);
+    expect(mocks.controller.start).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not open a stream while a changed connection is confirming its subject", async () => {
+    await render();
+    mocks.generation++;
+    mocks.state.currentUserLoaded = false;
+    await render();
+    expect(mocks.controller.start).toHaveBeenCalledTimes(1);
+    mocks.state.currentUserLoaded = true;
+    await render();
+    expect(mocks.controller.start).toHaveBeenCalledTimes(2);
   });
 
   it("stops on unmount", async () => {

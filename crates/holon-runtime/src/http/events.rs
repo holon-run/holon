@@ -323,11 +323,59 @@ pub async fn global_events_stream(
     }
     let host = state.host.clone();
     let mut rx = host.subscribe_events();
+    // Keep the existing roster lane available to its existing readers, but
+    // never establish an inbox baseline without control authorization.
+    let recipient = super::notifications::recipient(&headers, &state).ok();
+    let mut last_inbox = if let Some(recipient) = recipient.clone() {
+        Some(
+            super::notifications::snapshot(&host, recipient)
+                .await
+                .map_err(error_response)?,
+        )
+    } else {
+        None
+    };
     let (tx, rx_out) = tokio::sync::mpsc::channel::<Result<Bytes, std::convert::Infallible>>(32);
     tokio::spawn(async move {
         loop {
-            match rx.recv().await {
+            let next = tokio::select! {
+                _ = tx.closed() => break,
+                event = rx.recv() => event,
+            };
+            match next {
                 Ok(published) => {
+                    if let (Some(recipient), Some(previous)) = (&recipient, &mut last_inbox) {
+                        if super::notifications::could_change(&published.event.kind) {
+                            let Ok(current) =
+                                super::notifications::snapshot(&host, recipient.clone()).await
+                            else {
+                                break;
+                            };
+                            if current != *previous {
+                                let (headers, state) = (headers.clone(), state.clone());
+                                let authorized = tokio::task::spawn_blocking(move || {
+                                    super::notifications::recipient(&headers, &state).ok()
+                                })
+                                .await;
+                                if !matches!(authorized, Ok(Some(actor))
+                                    if actor.principal_id == recipient.principal_id
+                                        && actor.local_control == recipient.local_control)
+                                {
+                                    break;
+                                }
+                                *previous = current;
+                                if tx
+                                    .send(Ok(Bytes::from_static(
+                                        super::notifications::CHANGED_FRAME,
+                                    )))
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     let Some(agent_id) = published.agent_id.as_deref() else {
                         continue;
                     };

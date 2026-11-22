@@ -59,6 +59,10 @@ fn component_schemas() -> Map<String, Value> {
     }));
     schemas.insert("ErrorResponse".into(), error_response_schema());
     schemas.insert(
+        "InboxNotificationList".into(),
+        component_schema::<crate::runtime_db::notifications::InboxNotificationList>(),
+    );
+    schemas.insert(
         "HandshakeResponse".into(),
         component_schema_with_refs::<HandshakeResponse>(),
     );

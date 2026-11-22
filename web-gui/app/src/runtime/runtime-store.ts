@@ -2043,7 +2043,11 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
 
   setRuntimeConnection: async (config) => {
     nextClientGeneration();
-    set((state) => ({ agentCreations: {}, agentCreationContext: state.agentCreationContext + 1 }));
+    set((state) => ({
+      currentUserLoaded: false,
+      agentCreations: {},
+      agentCreationContext: state.agentCreationContext + 1,
+    }));
     const generation = clientGeneration;
     cancelClientGenerationWork();
     await clearConversationCaches();

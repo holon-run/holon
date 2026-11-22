@@ -3359,7 +3359,16 @@ impl RuntimeHandle {
         plan: Option<String>,
         todo_list: Vec<TodoItem>,
     ) -> Result<WorkItemRecord> {
-        self.create_work_item_inner(objective, plan_status, plan, todo_list, None)
+        self.create_work_item_inner(objective, plan_status, plan, todo_list, None, None)
+            .await
+    }
+
+    pub(crate) async fn create_operator_work_item(
+        &self,
+        objective: String,
+        principal_id: String,
+    ) -> Result<WorkItemRecord> {
+        self.create_work_item_inner(objective, None, None, vec![], None, Some(principal_id))
             .await
     }
 
@@ -3370,7 +3379,7 @@ impl RuntimeHandle {
         plan: String,
         material: crate::diagnostics::resource_io::ResourceReadMaterial,
     ) -> Result<WorkItemRecord> {
-        self.create_work_item_inner(objective, None, Some(plan), vec![], Some(material))
+        self.create_work_item_inner(objective, None, Some(plan), vec![], Some(material), None)
             .await
     }
 
@@ -3381,6 +3390,7 @@ impl RuntimeHandle {
         plan: Option<String>,
         todo_list: Vec<TodoItem>,
         plan_material: Option<crate::diagnostics::resource_io::ResourceReadMaterial>,
+        operator_principal: Option<String>,
     ) -> Result<WorkItemRecord> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
@@ -3399,6 +3409,16 @@ impl RuntimeHandle {
             .map(|entry| entry.workspace_id)
             .unwrap_or_else(|| crate::types::AGENT_HOME_WORKSPACE_ID.to_string());
         let execution_protocol = self.plan_work_item_execution_create(&record)?;
+        use crate::runtime_db::transitions::WorkItemMutation;
+        let mutation_kind = match operator_principal {
+            Some(principal_id) => WorkItemMutation::InsertForOperator {
+                record: record.clone(),
+                principal_id,
+            },
+            None => WorkItemMutation::Insert {
+                record: record.clone(),
+            },
+        };
         let commit = {
             let mut mutation = self.begin_mutation().await?;
             mutation.attach_plan_preparation(plan_preparation)?;
@@ -3407,9 +3427,7 @@ impl RuntimeHandle {
                     crate::ids::audit_event_id(),
                     crate::runtime_db::transitions::WorkItemTransitionCommand {
                         agent_id,
-                        mutation: crate::runtime_db::transitions::WorkItemMutation::Insert {
-                            record: record.clone(),
-                        },
+                        mutation: mutation_kind,
                         agent_state: None,
                         brief_evidence: Vec::new(),
                         audit_events: vec![self.work_item_written_event(

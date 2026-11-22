@@ -2,6 +2,22 @@
  * English translation resources.
  */
 const en = {
+  notifications: {
+    title: "Notifications",
+    trigger_one: "Notifications ({{count}} needs your input)",
+    trigger_other: "Notifications ({{count}} need your input)",
+    pending: "Needs your input",
+    recent: "Recent",
+    empty: "No notifications.",
+    stale: "Notifications may be out of date.",
+    dismiss: "Dismiss notification",
+    announcement: "{{kind}}: {{agent}}",
+    kinds: {
+      operator_first_brief: "New reply",
+      work_item_completed: "Result ready",
+      operator_input_required: "Needs your input",
+    },
+  },
   providerCooldown: {
     title: "Waiting for shared provider cooldown",
     earliestRetry: "Earliest retry attempt:",

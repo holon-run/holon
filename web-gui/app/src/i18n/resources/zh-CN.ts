@@ -5,6 +5,22 @@ import type { EnResource } from "./en";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const zh: Record<string, any> = {
+  notifications: {
+    title: "站内提醒",
+    trigger_one: "站内提醒（{{count}} 项待处理）",
+    trigger_other: "站内提醒（{{count}} 项待处理）",
+    pending: "待处理",
+    recent: "近期提醒",
+    empty: "暂无提醒。",
+    stale: "提醒可能不是最新的。",
+    dismiss: "关闭此提醒",
+    announcement: "{{kind}}：{{agent}}",
+    kinds: {
+      operator_first_brief: "有回复",
+      work_item_completed: "有结果",
+      operator_input_required: "等你处理",
+    },
+  },
   providerCooldown: {
     title: "正在等待共享 Provider 冷却",
     earliestRetry: "最早可重试时间：",

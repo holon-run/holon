@@ -237,6 +237,9 @@ pub(crate) fn append_brief_with_created_event_tx(
 ) -> Result<BriefCreatedCommit> {
     let (event, event_inserted) = append_audit_event_tx(tx, agent_id, event)?;
     let brief = upsert_brief_with_created_event_seq_tx(tx, brief, event.event_seq)?;
+    if event_inserted {
+        super::notifications::project_brief(tx, &brief, &[])?;
+    }
     insert_runtime_index_changes_tx(tx, index_changes)?;
     let brief = committed_brief_tx(tx, &brief.agent_id, &brief.id)?;
     Ok(BriefCreatedCommit {
@@ -256,6 +259,11 @@ pub(crate) fn link_transition_brief_created_events_tx(
     committed_events: &[super::transitions::AuditEventAck],
 ) -> Result<()> {
     const BRIEF_CREATED_WIRE_NAME: &str = "brief_created";
+    let registered_wait_ids: Vec<_> = committed_events
+        .iter()
+        .filter(|event| event.kind == "wait_condition_registered")
+        .filter_map(|event| event.data.get("wait_condition_id")?.as_str())
+        .collect();
     for brief in brief_evidence {
         let matches = committed_events
             .iter()
@@ -275,7 +283,8 @@ pub(crate) fn link_transition_brief_created_events_tx(
             brief.id
         );
         if let Some(event) = matches.first() {
-            upsert_brief_with_created_event_seq_tx(tx, brief, event.event_seq)?;
+            let brief = upsert_brief_with_created_event_seq_tx(tx, brief, event.event_seq)?;
+            super::notifications::project_brief(tx, &brief, &registered_wait_ids)?;
         }
     }
     Ok(())
