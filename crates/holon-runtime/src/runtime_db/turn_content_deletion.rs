@@ -790,6 +790,66 @@ fn update_agent_working_memory(
     Ok(())
 }
 
+/// One queued asynchronous artifact unlink. Paths are agent-home-relative and
+/// confined to managed prefixes by construction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PendingArtifactDeletion {
+    pub agent_id: String,
+    pub relative_path: String,
+}
+
+/// Lists queued artifact deletions for the async unlink worker. Crashes and
+/// restarts resume from this queue.
+pub fn pending_artifact_deletions(db: &RuntimeDb) -> Result<Vec<PendingArtifactDeletion>> {
+    db.with_read(|connection| {
+        let mut statement =
+            connection.prepare("SELECT agent_id, relative_path FROM pending_artifact_deletions")?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(PendingArtifactDeletion {
+                    agent_id: row.get(0)?,
+                    relative_path: row.get(1)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    })
+}
+
+/// Removes one queue row after the unlink succeeded (or the file is already
+/// gone); failed unlinks keep their row and retry on the next pass.
+pub fn remove_pending_artifact_deletion(
+    db: &RuntimeDb,
+    agent_id: &str,
+    relative_path: &str,
+) -> Result<()> {
+    db.transaction(|tx| {
+        tx.execute(
+            "DELETE FROM pending_artifact_deletions
+              WHERE agent_id = ?1 AND relative_path = ?2",
+            params![agent_id, relative_path],
+        )?;
+        Ok(())
+    })
+}
+
+/// True when the pending queue currently fences this agent-home-relative
+/// path. Reads block from deletion-commit time, not from unlink time.
+pub fn pending_artifact_deletion_exists(
+    db: &RuntimeDb,
+    relative_path: &str,
+) -> Result<bool> {
+    db.with_read(|connection| {
+        let exists: bool = connection.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pending_artifact_deletions
+              WHERE relative_path = ?1)",
+            params![relative_path],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    })
+}
+
 fn mark_input_evidence_pruned(
     tx: &Transaction<'_>,
     agent_id: &str,

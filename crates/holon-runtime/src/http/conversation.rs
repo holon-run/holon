@@ -804,6 +804,178 @@ pub async fn locate(
     )
 }
 
+fn deletion_control_error(error: crate::runtime_db::turn_content_deletion::TurnContentDeletionError)
+-> (StatusCode, Json<Value>) {
+    use crate::runtime_db::turn_content_deletion::{TurnContentDeletionConflict, TurnContentDeletionError};
+    match error {
+        TurnContentDeletionError::NotFound => http_error(
+            StatusCode::NOT_FOUND,
+            HttpErrorEnvelope::new("turn_not_found", "The turn does not exist for this agent.")
+                .retryable(false),
+        ),
+        TurnContentDeletionError::Conflict(TurnContentDeletionConflict::ActiveExecution) => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "turn_active",
+                "The turn is still executing or holds unsettled results; stop execution and retry after settlement.",
+            )
+            .retryable(true),
+        ),
+        TurnContentDeletionError::Conflict(TurnContentDeletionConflict::RevisionConflict) => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "turn_revision_conflict",
+                "The turn changed since the deletion was confirmed; re-confirm the scope.",
+            )
+            .retryable(true),
+        ),
+        TurnContentDeletionError::Conflict(TurnContentDeletionConflict::SharedContent) => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "turn_content_shared",
+                "Turn content is shared with another turn; refusing partial deletion.",
+            )
+            .retryable(false),
+        ),
+        TurnContentDeletionError::Conflict(TurnContentDeletionConflict::SealedReference) => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "turn_sealed_reference",
+                "Sealed input-evidence eligibility still requires this content.",
+            )
+            .retryable(false),
+        ),
+    }
+}
+
+/// Confirmation impact scope for turn deletion. Body-free on every path.
+pub async fn turn_deletion_preview(
+    Path((agent_id, turn_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AxumResponse {
+    if let Err(error) = authorize_control(&headers, &state) {
+        return authentication_error_response(error).into_response();
+    }
+    let host = state.host.clone();
+    let preview = match tokio::task::spawn_blocking(move || {
+        crate::runtime_db::turn_content_deletion::preview_turn_content_deletion(
+            host.runtime_db(),
+            &agent_id,
+            &turn_id,
+        )
+    })
+    .await
+    {
+        Ok(Ok(preview)) => preview,
+        Ok(Err(error)) => return error_response(error).into_response(),
+        Err(error) => return error_response(error.into()).into_response(),
+    };
+    match preview {
+        Some(preview) => Json(preview).into_response(),
+        None => http_error(
+            StatusCode::NOT_FOUND,
+            HttpErrorEnvelope::new("turn_not_found", "The turn does not exist for this agent.")
+                .retryable(false),
+        )
+        .into_response(),
+    }
+}
+
+pub async fn delete_turn_content(
+    Path((agent_id, turn_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Query(query): Query<DeleteTurnContentQuery>,
+) -> AxumResponse {
+    if let Err(error) = authorize_control(&headers, &state) {
+        return authentication_error_response(error).into_response();
+    }
+    let expected_revision = query.expected_revision;
+    let host = state.host.clone();
+    let outcome = match tokio::task::spawn_blocking(move || {
+        crate::runtime_db::turn_content_deletion::delete_turn_content(
+            host.runtime_db(),
+            &agent_id,
+            &turn_id,
+            expected_revision,
+            chrono::Utc::now(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => return error_response(error).into_response(),
+        Err(error) => return error_response(error.into()).into_response(),
+    };
+    match outcome {
+        Ok(deletion) => Json(deletion).into_response(),
+        Err(error) => deletion_control_error(error).into_response(),
+    }
+}
+
+pub async fn withdraw_message(
+    Path((agent_id, message_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> AxumResponse {
+    use crate::runtime_db::input_withdrawal::InputWithdrawalError;
+    if let Err(error) = authorize_control(&headers, &state) {
+        return authentication_error_response(error).into_response();
+    }
+    let host = state.host.clone();
+    let outcome = match tokio::task::spawn_blocking(move || {
+        crate::runtime_db::input_withdrawal::withdraw_input(
+            host.runtime_db(),
+            &agent_id,
+            &message_id,
+            chrono::Utc::now(),
+        )
+    })
+    .await
+    {
+        Ok(Ok(outcome)) => outcome,
+        Ok(Err(error)) => return error_response(error).into_response(),
+        Err(error) => return error_response(error.into()).into_response(),
+    };
+    match outcome {
+        Ok(withdrawal) => Json(withdrawal).into_response(),
+        Err(InputWithdrawalError::NotFound) => http_error(
+            StatusCode::NOT_FOUND,
+            HttpErrorEnvelope::new("message_not_found", "The message does not exist for this agent.")
+                .retryable(false),
+        )
+        .into_response(),
+        Err(InputWithdrawalError::NotOperatorInput) => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "input_not_withdrawable",
+                "Only operator-submitted unexecuted input can be withdrawn.",
+            )
+            .retryable(false),
+        )
+        .into_response(),
+        Err(InputWithdrawalError::AlreadyClaimed { status }) => http_error(
+            StatusCode::CONFLICT,
+            HttpErrorEnvelope::new(
+                "input_already_claimed",
+                format!(
+                    "Execution already claimed this input (status: {status}); stop the execution \
+                     and delete the turn after settlement."
+                )
+                .as_str(),
+            )
+            .retryable(true),
+        )
+        .into_response(),
+    }
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct DeleteTurnContentQuery {
+    pub expected_revision: Option<u64>,
+}
+
 pub async fn summary(
     Path(agent_id): Path<String>,
     State(state): State<Arc<AppState>>,

@@ -76,7 +76,11 @@ impl<'a> RuntimeObjectResolver<'a> {
         // Check cache first
         if let Some(cache) = &self.cache {
             if let Some(cached) = cache.get(object_ref) {
-                return Ok(Some(cached));
+                // Deletion boundary: cached objects for removed evidence must
+                // not resurrect content; verify the main database first.
+                if self.cached_ref_still_authoritative(object_ref)? {
+                    return Ok(Some(cached));
+                }
             }
         }
 
@@ -122,7 +126,11 @@ impl<'a> RuntimeObjectResolver<'a> {
         for object_ref in object_refs {
             if let Some(cache) = &self.cache {
                 if let Some(cached) = cache.get(object_ref) {
-                    results.push((object_ref.clone(), Some(cached)));
+                    if self.cached_ref_still_authoritative(object_ref)? {
+                        results.push((object_ref.clone(), Some(cached)));
+                    } else {
+                        results.push((object_ref.clone(), None));
+                    }
                     continue;
                 }
             }
@@ -147,6 +155,39 @@ impl<'a> RuntimeObjectResolver<'a> {
         }
 
         Ok(results)
+    }
+
+    /// Verifies a cache hit still matches authoritative storage. Evidence
+    /// removed by turn-content deletion must never be served from the
+    /// in-memory cache. `turn:` refs keep resolving: TurnRecords survive
+    /// deletion with erased payloads.
+    fn cached_ref_still_authoritative(&self, object_ref: &str) -> Result<bool> {
+        let Some((kind, rest)) = object_ref.split_once(':') else {
+            return Ok(true);
+        };
+        if rest.trim().is_empty() {
+            return Ok(true);
+        }
+        let table = match kind {
+            "message" => "messages",
+            "transcript" => "transcript_entries",
+            "brief" => "briefs",
+            "tool_execution" => "tool_executions",
+            _ => return Ok(true),
+        };
+        let Some(db) = self.storage.runtime_db()? else {
+            return Ok(true);
+        };
+        db.with_read(|connection| {
+            let exists: bool = connection.query_row(
+                &format!(
+                    "SELECT EXISTS(SELECT 1 FROM {table} WHERE evidence_id = ?1)"
+                ),
+                rusqlite::params![rest],
+                |row| row.get(0),
+            )?;
+            Ok(exists)
+        })
     }
 
     fn resolve_ref_uncached(&self, object_ref: &str) -> Result<Option<ResolvedRuntimeObject>> {

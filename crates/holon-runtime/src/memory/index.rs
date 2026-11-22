@@ -259,6 +259,10 @@ pub fn search_memory_query_for_agent_storages(
         active_workspace_id,
         include_all_workspaces,
     )?;
+    // Fail-closed deletion boundary: stale FTS documents for physically
+    // removed sources must never surface, even while index cleanup lags or
+    // fails. Verify main-database existence for DB-backed source kinds.
+    let results = filter_main_database_absent(storage, results)?;
     let mut index_status_by_agent = std::collections::BTreeMap::new();
     for filter_agent_id in &agent_filter {
         let status = index.index_status(storage, filter_agent_id)?;
@@ -524,6 +528,23 @@ fn read_snapshot_stream_artifact(storage: &AppStorage, path: &str) -> Result<Str
         path.starts_with(&root) && path.is_file(),
         "stream artifact is outside the current agent artifact directory"
     );
+    // Deletion boundary: a pending unlink fences the artifact from commit
+    // time, before the file is actually removed.
+    let relative = path
+        .strip_prefix(storage.data_dir())
+        .ok()
+        .map(|relative| relative.to_string_lossy().into_owned());
+    if let Some(relative) = relative {
+        if let Some(runtime_db) = storage.runtime_db()? {
+            anyhow::ensure!(
+                !crate::runtime_db::turn_content_deletion::pending_artifact_deletion_exists(
+                    &runtime_db,
+                    &relative
+                )?,
+                "stream artifact is pending deletion"
+            );
+        }
+    }
     fs::read_to_string(path).context("full stream artifact is unavailable or not UTF-8")
 }
 
@@ -566,9 +587,115 @@ fn get_memory_with_limit(
             MemoryIndex::open_reader(storage)?
         }
     };
-    index
+    let found = index
         .store
-        .get(source_ref, max_chars, &agent_id, active_workspace_id)
+        .get(source_ref, max_chars, &agent_id, active_workspace_id)?;
+    // Same fail-closed boundary for index fallback lookups: a document whose
+    // main-database source is gone must not be returned.
+    match found {
+        Some(result) if !main_database_source_exists(storage, &result)? => Ok(None),
+        other => Ok(other),
+    }
+}
+
+fn filter_main_database_absent(
+    storage: &AppStorage,
+    results: Vec<MemorySearchResult>,
+) -> Result<Vec<MemorySearchResult>> {
+    let mut retained = Vec::with_capacity(results.len());
+    for result in results {
+        if main_database_source_exists(storage, &result)? {
+            retained.push(result);
+        }
+    }
+    Ok(retained)
+}
+
+/// Verifies that an index document's source still exists in the authoritative
+/// main database. File-backed kinds (markdown memory, workspace profiles) and
+/// unknown kinds are not turn-scoped evidence and stay readable.
+fn main_database_source_exists<T: MainDatabaseSourceRef>(
+    storage: &AppStorage,
+    source: &T,
+) -> Result<bool> {
+    let (kind, source_id, agent_id) = source.main_database_source_key();
+    let Some(sql) = main_database_existence_sql(&kind) else {
+        return Ok(true);
+    };
+    let Some(runtime_db) = storage.runtime_db()? else {
+        // No main database means nothing was ever deleted from one.
+        return Ok(true);
+    };
+    runtime_db.with_read(|connection| {
+        let exists: bool = connection.query_row(
+            &format!("SELECT EXISTS({sql})"),
+            rusqlite::params![agent_id, source_id],
+            |row| row.get(0),
+        )?;
+        Ok(exists)
+    })
+}
+
+trait MainDatabaseSourceRef {
+    /// `(source_kind, source_id, agent_id)` for the authoritative existence
+    /// check; `source_id` is the evidence id, not the display ref.
+    fn main_database_source_key(&self) -> (String, String, String);
+}
+
+impl MainDatabaseSourceRef for MemorySearchResult {
+    fn main_database_source_key(&self) -> (String, String, String) {
+        (
+            self.kind.clone(),
+            main_database_source_id(&self.kind, &self.source_ref),
+            self.agent_id.clone(),
+        )
+    }
+}
+
+impl MainDatabaseSourceRef for MemoryGetResult {
+    fn main_database_source_key(&self) -> (String, String, String) {
+        (
+            self.kind.clone(),
+            main_database_source_id(&self.kind, &self.source_ref),
+            self.agent_id.clone(),
+        )
+    }
+}
+
+/// Extracts the evidence id from a source ref for the existence check.
+/// Command receipt refs embed the tool execution id mid-ref.
+fn main_database_source_id(kind: &str, source_ref: &str) -> String {
+    if kind == "tool_command_receipt" {
+        return source_ref
+            .strip_prefix("tool_execution:")
+            .and_then(|rest| rest.split(':').next())
+            .unwrap_or(source_ref)
+            .to_owned();
+    }
+    source_ref
+        .split_once(':')
+        .map(|(_, id)| id)
+        .unwrap_or(source_ref)
+        .to_owned()
+}
+
+fn main_database_existence_sql(kind: &str) -> Option<String> {
+    match kind {
+        "message" => Some("SELECT 1 FROM messages WHERE agent_id = ?1 AND evidence_id = ?2".into()),
+        "brief" => Some("SELECT 1 FROM briefs WHERE agent_id = ?1 AND evidence_id = ?2".into()),
+        "task" => Some("SELECT 1 FROM tasks WHERE owner_agent_id = ?1 AND task_id = ?2".into()),
+        "work_item" => {
+            Some("SELECT 1 FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2".into())
+        }
+        "context_episode" => Some(
+            "SELECT 1 FROM context_episode_anchors WHERE agent_id = ?1 AND episode_id = ?2"
+                .into(),
+        ),
+        "tool_command_receipt" => Some(
+            "SELECT 1 FROM tool_executions WHERE agent_id = ?1 AND evidence_id = ?2".into(),
+        ),
+        _ => None,
+    }
 }
 
 /// Marks a `message:` memory result owned by another agent as cross-agent
