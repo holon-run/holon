@@ -298,12 +298,15 @@ pub fn list_search_providers(config: &WebConfig) -> Vec<String> {
 fn configured_search_ready(id: &str, provider: &WebProviderConfig) -> bool {
     if provider.kind.is_native_search() {
         // Standalone native search is explicit-only and callable once a model
-        // route is bound; reserved native kinds stay undiscoverable.
-        return provider.kind == WebProviderKind::OpenAiNative
-            && provider
-                .model_route
-                .as_deref()
-                .is_some_and(|route| !route.trim().is_empty());
+        // route is bound; kinds without standalone dispatch stay reserved and
+        // undiscoverable.
+        return matches!(
+            provider.kind,
+            WebProviderKind::OpenAiNative | WebProviderKind::GeminiNative
+        ) && provider
+            .model_route
+            .as_deref()
+            .is_some_and(|route| !route.trim().is_empty());
     }
     if provider.kind.capabilities().status != WebProviderSupportStatus::Supported {
         return false;
@@ -980,7 +983,18 @@ async fn search_configured_provider(
             return command_search(map_error, query, max_results, provider_id, provider_config).await;
         }
         WebProviderKind::OpenAiNative => {
-            return native_openai_search(query, max_results, provider_id, provider_config, native)
+            return native_model_route_search(
+                query,
+                max_results,
+                provider_id,
+                provider_config,
+                native,
+            )
+            .await
+            .map(ProviderSearchOutput::new);
+        }
+        WebProviderKind::GeminiNative => {
+            return native_model_route_search(query, max_results, provider_id, provider_config, native)
                 .await
                 .map(ProviderSearchOutput::new);
         }
@@ -994,7 +1008,7 @@ async fn search_configured_provider(
     Ok(ProviderSearchOutput::new(results))
 }
 
-async fn native_openai_search(
+async fn native_model_route_search(
     query: &str,
     max_results: usize,
     provider_id: &str,

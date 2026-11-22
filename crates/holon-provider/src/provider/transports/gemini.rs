@@ -6,15 +6,21 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
 
+use crate::types::Citation;
 use crate::{
-    config::ProviderRuntimeConfig,
+    config::{ProviderBuiltinWebSearchConfig, ProviderRuntimeConfig},
     provider::{
+        builtin_web_search_probe_turn_request,
         http_trace::{ProviderHttpTrace, ProviderHttpTraceRequest},
-        AgentProvider, ConversationMessage, ModelBlock, ModelToolCallKind, ProviderBlockData,
+        native_web_search_turn_request, AgentProvider, ConversationMessage, ModelBlock,
+        ModelToolCallKind, ProviderBlockData, ProviderBuiltinWebSearchCapability,
         ProviderCacheUsage, ProviderContextBudgetDiagnostics, ProviderImageData,
-        ProviderPromptCapability, ProviderRequestDiagnostics, ProviderResponseFormatDiagnostics,
-        ProviderResponseFormatRequest, ProviderTransportDiagnostics, ProviderTransportTimeline,
-        ProviderTurnRequest, ProviderTurnResponse,
+        ProviderNativeSearchFailure, ProviderNativeSearchOutcome,
+        ProviderNativeWebSearchDiagnostics, ProviderNativeWebSearchKind,
+        ProviderNativeWebSearchRequest, ProviderPromptCapability, ProviderRequestDiagnostics,
+        ProviderResponseFormatDiagnostics, ProviderResponseFormatRequest,
+        ProviderTransportDiagnostics, ProviderTransportTimeline, ProviderTurnRequest,
+        ProviderTurnResponse,
     },
 };
 
@@ -35,12 +41,14 @@ pub struct GeminiProvider {
     request_headers: crate::provider::request_headers::ProviderRequestHeaders,
     base_url: String,
     api_key: String,
+    provider_id: String,
     quota_identity: Option<crate::provider::ProviderQuotaIdentity>,
     model: String,
     model_ref: String,
     max_output_tokens: u32,
     context_window_tokens: Option<usize>,
     trace_home_dir: PathBuf,
+    builtin_web_search: Option<ProviderBuiltinWebSearchConfig>,
 }
 
 #[derive(Debug, Serialize)]
@@ -194,6 +202,7 @@ impl GeminiProvider {
                 holon_version,
             ),
             api_key,
+            provider_id: provider_config.id.as_str().to_string(),
             quota_identity: crate::provider::ProviderQuotaIdentity::for_api_credential(
                 provider_config,
             ),
@@ -207,6 +216,140 @@ impl GeminiProvider {
             max_output_tokens,
             context_window_tokens,
             trace_home_dir: trace_home_dir.to_path_buf(),
+            builtin_web_search: provider_config.builtin_web_search.clone(),
+        })
+    }
+
+    /// Send one minimal generateContent request that carries the native web
+    /// search tool, and return the raw response JSON so callers can parse
+    /// grounding metadata. Only the turn query crosses the boundary.
+    async fn send_generate_content_for_native_search(
+        &self,
+        request: &ProviderTurnRequest,
+    ) -> std::result::Result<Value, anyhow::Error> {
+        let url = format!(
+            "{}/models/{}:generateContent",
+            self.base_url,
+            utf8_percent_encode(&self.model, NON_ALPHANUMERIC)
+        );
+        let body = GenerateContentRequest {
+            system_instruction: build_system_instruction(request),
+            contents: build_gemini_contents(request),
+            tools: build_gemini_tools(request),
+            generation_config: GeminiGenerationConfig {
+                max_output_tokens: GEMINI_NATIVE_SEARCH_MAX_OUTPUT_TOKENS,
+                response_mime_type: None,
+                response_json_schema: None,
+            },
+        };
+        let request_payload = request.material.json_value(&body)?;
+        let headers = self.request_headers.compose(
+            vec![
+                ("content-type", "application/json".to_string()),
+                ("x-goog-api-key", self.api_key.clone()),
+            ],
+            request.provider_session_id.as_ref(),
+        )?;
+        let trace = ProviderHttpTrace::from_env(self.trace_home_dir.clone());
+        let request_trace = trace.and_then(|trace| {
+            trace.begin_request(
+                request
+                    .prompt_frame
+                    .cache
+                    .as_ref()
+                    .map(|cache| cache.agent_id.as_str()),
+                "gemini",
+                Some(&self.model_ref),
+                url.as_str(),
+                "generate_content",
+                &headers,
+                &request_payload,
+            )
+        });
+        let body_bytes = request.material.json_bytes(&request_payload)?;
+        let mut request_builder = self.client.post(&url).body(body_bytes);
+        for (name, value) in &headers {
+            request_builder = request_builder.header(*name, value);
+        }
+        let response = send_provider_request(
+            request_builder,
+            "Gemini request failed",
+            "request_send",
+            "gemini",
+            Some(&self.model_ref),
+            Some(url.as_str()),
+            RequestDeadline::FullRequest,
+            request_trace.as_ref(),
+            request.dispatch_guard.as_deref(),
+        )
+        .await?;
+        if let Some(trace) = request_trace.as_ref() {
+            trace.write_response_headers(response.status(), response.headers());
+        }
+        if !response.status().is_success() {
+            let status = response.status();
+            let retry_after = parse_retry_after(response.headers());
+            let body = super::read_error_response_body(
+                response,
+                request_trace.as_ref(),
+                &request.material,
+            )
+            .await?;
+            return Err(classify_status_error_with_trace(
+                "Gemini request failed",
+                "response_status",
+                Some("gemini"),
+                Some(&self.model_ref),
+                Some(url.as_str()),
+                status,
+                body,
+                request_trace.as_ref(),
+                retry_after,
+            ));
+        }
+        let text = match tokio::time::timeout(response_body_timeout(), response.text()).await {
+            Ok(Ok(text)) => text,
+            Ok(Err(error)) => {
+                return Err(classify_reqwest_transport_error_with_trace(
+                    "Gemini response body failed",
+                    "response_body",
+                    "gemini",
+                    Some(&self.model_ref),
+                    Some(url.as_str()),
+                    error,
+                    request_trace.as_ref(),
+                ));
+            }
+            Err(_elapsed) => {
+                return Err(timeout_transport_error_with_trace(
+                    "Gemini response body read timed out",
+                    "response_body",
+                    "gemini",
+                    Some(&self.model_ref),
+                    Some(url.as_str()),
+                    format!("timed out after {:?}", response_body_timeout()),
+                    request_trace.as_ref(),
+                ));
+            }
+        };
+        if let Some(trace) = request_trace.as_ref() {
+            trace.write_response_body(&text);
+        }
+        serde_json::from_str(&text).map_err(|error| {
+            invalid_response_error_with_trace(
+                "invalid Gemini JSON",
+                "response_protocol",
+                "gemini",
+                Some(&self.model_ref),
+                Some(url.as_str()),
+                format!(
+                    "JSON {:?} error at line {} column {}",
+                    error.classify(),
+                    error.line(),
+                    error.column()
+                ),
+                request_trace.as_ref(),
+            )
         })
     }
 }
@@ -401,6 +544,7 @@ impl AgentProvider for GeminiProvider {
                     .request_diagnostics
                     .as_mut()
                     .expect("Gemini responses include request diagnostics");
+                diagnostics.native_web_search = gemini_native_web_search_diagnostics(&request);
                 diagnostics.response_format = request.response_format.as_ref().map(|format| match format {
                     ProviderResponseFormatRequest::JsonSchema(format) => {
                         ProviderResponseFormatDiagnostics {
@@ -431,6 +575,49 @@ impl AgentProvider for GeminiProvider {
 
     fn prompt_capabilities(&self) -> Vec<ProviderPromptCapability> {
         vec![ProviderPromptCapability::FullRequestOnly]
+    }
+
+    fn builtin_web_search(&self) -> Option<ProviderBuiltinWebSearchCapability> {
+        let config = self.builtin_web_search.as_ref()?;
+        Some(ProviderBuiltinWebSearchCapability {
+            kind: config.kind,
+            provider_id: self.provider_id.clone(),
+            provider_model_ref: self.model_ref.clone(),
+            provider_transport: "gemini_generate_content".into(),
+            provider_base_url: self.base_url.clone(),
+            advertised_tool_type: config.advertised_tool_type.clone(),
+            backend_kind: config.backend_kind.clone(),
+        })
+    }
+
+    async fn probe_builtin_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+    ) -> Result<()> {
+        self.request_headers.require_session(None)?;
+        let probe_request = builtin_web_search_probe_turn_request(request);
+        self.send_generate_content_for_native_search(&probe_request)
+            .await
+            .map(|_| ())
+    }
+
+    /// Run one standalone Gemini native web search: the query rides a
+    /// minimal generateContent request with the `google_search` grounding
+    /// tool, and only structured grounding metadata becomes citations.
+    async fn native_web_search(
+        &self,
+        request: ProviderNativeWebSearchRequest,
+        query: &str,
+    ) -> std::result::Result<ProviderNativeSearchOutcome, ProviderNativeSearchFailure> {
+        self.request_headers
+            .require_session(None)
+            .map_err(super::openai::native_search_transport_failure)?;
+        let turn_request = native_web_search_turn_request(request, query);
+        let response = self
+            .send_generate_content_for_native_search(&turn_request)
+            .await
+            .map_err(super::openai::native_search_transport_failure)?;
+        Ok(parse_gemini_native_web_search_output(&response))
     }
 }
 
@@ -838,18 +1025,100 @@ fn gemini_response_to_provider_turn_response(
 }
 
 fn build_gemini_tools(request: &ProviderTurnRequest) -> Vec<Value> {
-    if request.tools.is_empty() {
-        return Vec::new();
+    let mut tools = Vec::new();
+    if !request.tools.is_empty() {
+        tools.push(json!({
+            "function_declarations": request.tools.iter().map(|tool| {
+                json!({
+                    "name": tool.name,
+                    "description": tool.description,
+                    "parameters": gemini_safe_schema(&tool.input_schema),
+                })
+            }).collect::<Vec<_>>()
+        }));
     }
-    vec![json!({
-        "function_declarations": request.tools.iter().map(|tool| {
-            json!({
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": gemini_safe_schema(&tool.input_schema),
-            })
-        }).collect::<Vec<_>>()
-    })]
+    if let Some(tool) = gemini_native_web_search_tool(request) {
+        tools.push(tool);
+    }
+    tools
+}
+
+const GEMINI_NATIVE_SEARCH_MAX_OUTPUT_TOKENS: u32 = 256;
+
+/// Gemini grounds native web search through the `google_search` tool
+/// declaration keyed by the advertised tool type; other native search kinds
+/// have no Gemini lowering.
+fn gemini_native_web_search_tool(request: &ProviderTurnRequest) -> Option<Value> {
+    let native = request.native_web_search.as_ref()?;
+    if native.kind != ProviderNativeWebSearchKind::Gemini {
+        return None;
+    }
+    let mut tool = serde_json::Map::new();
+    tool.insert(
+        native.advertised_tool_type.clone(),
+        Value::Object(Default::default()),
+    );
+    Some(Value::Object(tool))
+}
+
+fn gemini_native_web_search_diagnostics(
+    request: &ProviderTurnRequest,
+) -> Option<ProviderNativeWebSearchDiagnostics> {
+    let native = request.native_web_search.as_ref()?;
+    let lowered = native.kind == ProviderNativeWebSearchKind::Gemini;
+    Some(ProviderNativeWebSearchDiagnostics {
+        kind: native.kind,
+        provider_id: native.provider_id.clone(),
+        provider_model_ref: native.provider_model_ref.clone(),
+        advertised_tool_type: native.advertised_tool_type.clone(),
+        backend_kind: native.backend_kind.clone(),
+        lowered,
+        fallback_reason: (!lowered)
+            .then(|| "gemini transport only supports Gemini-native web search".into()),
+    })
+}
+
+/// Parse one standalone Gemini native web search response: `search_executed`
+/// is true only when the response carries explicit grounding evidence
+/// (`webSearchQueries` or grounding chunks), and citations come only from
+/// structured `groundingChunks[].web` entries.
+fn parse_gemini_native_web_search_output(response: &Value) -> ProviderNativeSearchOutcome {
+    let grounding = response
+        .get("candidates")
+        .and_then(Value::as_array)
+        .and_then(|candidates| candidates.first())
+        .and_then(|candidate| candidate.get("groundingMetadata"));
+    let grounding_queries = grounding
+        .and_then(|metadata| metadata.get("webSearchQueries"))
+        .and_then(Value::as_array)
+        .is_some_and(|queries| !queries.is_empty());
+    let grounding_chunks = grounding
+        .and_then(|metadata| metadata.get("groundingChunks"))
+        .and_then(Value::as_array);
+    let search_executed =
+        grounding_queries || grounding_chunks.is_some_and(|chunks| !chunks.is_empty());
+    let citations = grounding_chunks
+        .map(|chunks| {
+            chunks
+                .iter()
+                .filter_map(|chunk| {
+                    let web = chunk.get("web")?;
+                    let url = web.get("uri").and_then(Value::as_str)?;
+                    if url.is_empty() {
+                        return None;
+                    }
+                    Some(Citation {
+                        url: url.to_string(),
+                        title: web.get("title").and_then(Value::as_str).map(str::to_string),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    ProviderNativeSearchOutcome {
+        search_executed,
+        citations,
+    }
 }
 
 /// Gemini deserializes function-declaration `parameters` into its proto

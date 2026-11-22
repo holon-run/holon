@@ -506,8 +506,8 @@ pub fn materialize_web_config(
 ///
 /// Only providers whose declared builtin web search uses the native search
 /// kind with standalone dispatch support are derivable; other declared kinds
-/// stay conversation-only so every derived entry is actually callable, and
-/// the reserved native web kinds are never materialized here.
+/// stay conversation-only so every derived entry is actually callable; the
+/// derived entry's kind follows the declared native search kind.
 pub fn derived_native_search_providers(
     web_config: &WebConfig,
     providers: &ProviderRegistry,
@@ -532,11 +532,12 @@ pub fn derived_native_search_providers(
         let Some(provider) = providers.get(&provider_id) else {
             continue;
         };
-        if !crate::models::provider_has_usable_auth(provider)
-            || !native_search_derivation_eligible(provider)
-        {
+        if !crate::models::provider_has_usable_auth(provider) {
             continue;
         }
+        let Some(provider_entry_kind) = native_search_derivation_kind(provider) else {
+            continue;
+        };
         let id = provider_id.as_str().to_string();
         if matches!(id.as_str(), "auto" | "aggregate") || web_config.providers.contains_key(&id) {
             continue;
@@ -553,7 +554,7 @@ pub fn derived_native_search_providers(
         derived.push((
             id,
             WebProviderConfig {
-                kind: WebProviderKind::OpenAiNative,
+                kind: provider_entry_kind,
                 base_url: None,
                 engine_id: None,
                 api_key: String::new(),
@@ -569,13 +570,19 @@ pub fn derived_native_search_providers(
 
 /// A model provider is derivable when its declared builtin web search is
 /// enabled and uses a native search kind with standalone dispatch support in
-/// this Holon version.
-fn native_search_derivation_eligible(provider: &ProviderRuntimeConfig) -> bool {
+/// this Holon version; the returned kind selects the derived provider
+/// entry's WebProviderKind.
+fn native_search_derivation_kind(provider: &ProviderRuntimeConfig) -> Option<WebProviderKind> {
     provider
         .builtin_web_search
         .as_ref()
-        .is_some_and(|capability| {
-            capability.enabled && capability.kind == ProviderNativeWebSearchKind::OpenAi
+        .filter(|capability| capability.enabled)
+        .and_then(|capability| match capability.kind {
+            ProviderNativeWebSearchKind::OpenAi => Some(WebProviderKind::OpenAiNative),
+            ProviderNativeWebSearchKind::Gemini => Some(WebProviderKind::GeminiNative),
+            ProviderNativeWebSearchKind::Anthropic
+            | ProviderNativeWebSearchKind::DeepSeek
+            | ProviderNativeWebSearchKind::Xai => None,
         })
 }
 

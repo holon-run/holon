@@ -3916,7 +3916,11 @@ impl RuntimeHandle {
                 "model route `{model_route}` does not declare builtin web search"
             ))
         })?;
-        if capability.kind != crate::provider::ProviderNativeWebSearchKind::OpenAi {
+        if !matches!(
+            capability.kind,
+            crate::provider::ProviderNativeWebSearchKind::OpenAi
+                | crate::provider::ProviderNativeWebSearchKind::Gemini
+        ) {
             return Err(unavailable(format!(
                 "model route `{model_route}` declares {:?} native web search, which has no standalone dispatch in this Holon version",
                 capability.kind

@@ -1150,6 +1150,12 @@ fn built_in_provider_registry_declares_provider_specific_builtin_search() {
     assert_eq!(deepseek_search.advertised_tool_type, "web_search_20250305");
     assert_eq!(deepseek_search.backend_kind, "deepseek_web_search");
 
+    let gemini = registry.get(&ProviderId::gemini()).unwrap();
+    let gemini_search = gemini.builtin_web_search.as_ref().unwrap();
+    assert_eq!(gemini_search.kind, ProviderNativeWebSearchKind::Gemini);
+    assert_eq!(gemini_search.advertised_tool_type, "google_search");
+    assert_eq!(gemini_search.backend_kind, "gemini_web_search");
+
     let xai = registry.get(&ProviderId::parse("xai").unwrap()).unwrap();
     assert_eq!(xai.transport, ProviderTransportKind::OpenAiResponses);
     assert_eq!(xai.reasoning_effort.as_deref(), Some("medium"));

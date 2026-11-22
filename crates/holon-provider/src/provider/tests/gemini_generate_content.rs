@@ -8,7 +8,8 @@ use crate::provider::{
     budget::estimate_context_budget,
     provider_error_code, provider_transport_diagnostics,
     retry::{classify_provider_error, ProviderFailureKind, RetryDisposition},
-    ModelToolCallKind, ProviderBlockData, ProviderImageData,
+    AgentProvider, ModelToolCallKind, ProviderBlockData, ProviderImageData,
+    ProviderNativeSearchOutcome, ProviderNativeWebSearchKind, ProviderNativeWebSearchRequest,
 };
 use axum::{routing::post, Json, Router};
 use base64::Engine;
@@ -570,4 +571,131 @@ async fn gemini_optional_invalid_history_is_explicitly_omitted() {
     assert!(serialized.contains("image input omitted"));
     assert!(!serialized.contains("sensitive-image-data"));
     assert!(!serialized.contains("inlineData"));
+}
+
+fn gemini_google_search_request() -> ProviderTurnRequest {
+    let mut request = ProviderTurnRequest::plain(
+        "search",
+        vec![ConversationMessage::UserText("fixture query".into())],
+        Vec::new(),
+    );
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind: ProviderNativeWebSearchKind::Gemini,
+        provider_id: "gemini".into(),
+        provider_model_ref: "gemini/gemini-3-pro".into(),
+        advertised_tool_type: "google_search".into(),
+        backend_kind: "gemini_web_search".into(),
+        max_results: Some(5),
+    });
+    request
+}
+
+#[tokio::test]
+async fn gemini_request_mounts_google_search_grounding_tool() {
+    let (body, response) = capture_gemini_request(gemini_google_search_request()).await;
+    let tools = body["tools"].as_array().expect("tools must be an array");
+    assert!(
+        tools.iter().any(|tool| tool.get("google_search").is_some()),
+        "wire tools must carry the google_search grounding tool: {tools:?}"
+    );
+    let diagnostics = response
+        .request_diagnostics
+        .expect("gemini responses include diagnostics");
+    let native = diagnostics
+        .native_web_search
+        .expect("native search diagnostics must be attached");
+    assert!(native.lowered);
+    assert_eq!(native.advertised_tool_type, "google_search");
+}
+
+#[tokio::test]
+async fn gemini_native_web_search_sends_query_and_maps_grounding_citations() {
+    let captured_body = Arc::new(Mutex::new(None::<Value>));
+    let captured_body_for_server = captured_body.clone();
+    let base_url =
+        spawn_test_server(Router::new().fallback(post(move |Json(body): Json<Value>| {
+            let captured_body = captured_body_for_server.clone();
+            async move {
+                *captured_body.lock().unwrap() = Some(body);
+                Json(json!({
+                    "candidates": [{
+                        "content": {
+                            "role": "model",
+                            "parts": [{ "text": "grounded answer" }]
+                        },
+                        "finishReason": "STOP",
+                        "groundingMetadata": {
+                            "webSearchQueries": ["fixture query"],
+                            "groundingChunks": [
+                                { "web": { "uri": "https://example.test/first", "title": "First" } },
+                                { "web": { "uri": "https://example.test/second" } }
+                            ]
+                        }
+                    }],
+                    "usageMetadata": {
+                        "promptTokenCount": 4,
+                        "candidatesTokenCount": 6
+                    }
+                }))
+            }
+        })))
+        .await;
+    let mut fixture = ProviderFixture::gemini("gemini-key");
+    fixture.config.base_url = base_url;
+    fixture.config.builtin_web_search = Some(crate::config::ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Gemini,
+        advertised_tool_type: "google_search".into(),
+        backend_kind: "gemini_web_search".into(),
+    });
+    let provider = GeminiProvider::from_runtime_config(
+        &fixture.config,
+        "gemini-3-pro",
+        1024,
+        fixture.home.path(),
+        TEST_CLIENT_VERSION,
+    )
+    .unwrap();
+
+    let capability = provider
+        .builtin_web_search()
+        .expect("configured builtin web search must be exposed");
+    assert_eq!(capability.kind, ProviderNativeWebSearchKind::Gemini);
+    assert_eq!(capability.provider_transport, "gemini_generate_content");
+    assert_eq!(capability.advertised_tool_type, "google_search");
+    assert_eq!(capability.backend_kind, "gemini_web_search");
+
+    let outcome: ProviderNativeSearchOutcome = provider
+        .native_web_search(
+            ProviderNativeWebSearchRequest {
+                kind: ProviderNativeWebSearchKind::Gemini,
+                provider_id: "gemini".into(),
+                provider_model_ref: "gemini/gemini-3-pro".into(),
+                advertised_tool_type: "google_search".into(),
+                backend_kind: "gemini_web_search".into(),
+                max_results: Some(5),
+            },
+            "fixture query",
+        )
+        .await
+        .expect("standalone gemini native search must succeed");
+    assert!(outcome.search_executed);
+    assert_eq!(outcome.citations.len(), 2);
+    assert_eq!(outcome.citations[0].url, "https://example.test/first");
+    assert_eq!(outcome.citations[0].title.as_deref(), Some("First"));
+    assert_eq!(outcome.citations[1].url, "https://example.test/second");
+    assert_eq!(outcome.citations[1].title, None);
+
+    let body = captured_body
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("server should capture the request body");
+    let tools = body["tools"].as_array().expect("tools must be an array");
+    assert!(
+        tools.iter().any(|tool| tool.get("google_search").is_some()),
+        "standalone search wire tools must carry google_search: {tools:?}"
+    );
+    assert_eq!(body["contents"][0]["parts"][0]["text"], "fixture query");
+    assert_eq!(body["generationConfig"]["maxOutputTokens"], 256);
 }

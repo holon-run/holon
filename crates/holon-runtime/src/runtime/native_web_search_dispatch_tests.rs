@@ -218,6 +218,153 @@ async fn native_web_search_dispatch_executes_search_through_host_wrapper() {
         .all(|result| result.source == "openai-search"));
 }
 
+async fn spawn_native_search_gemini_server(response: Value) -> String {
+    // The Gemini transport posts to /models/<model>:generateContent, so the
+    // fixture answers every POST regardless of the model in the path.
+    let app = Router::new().fallback(post(move || async move { Json(response.clone()) }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    format!("http://{addr}")
+}
+
+fn gemini_grounding_response() -> Value {
+    json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "grounded answer" }]
+            },
+            "finishReason": "STOP",
+            "groundingMetadata": {
+                "webSearchQueries": ["query"],
+                "groundingChunks": [
+                    { "web": { "uri": "https://example.com/gemini", "title": "Gemini Source" } },
+                    { "web": { "uri": "https://example.com/gemini-second" } }
+                ]
+            }
+        }],
+        "usageMetadata": { "promptTokenCount": 4, "candidatesTokenCount": 6 }
+    })
+}
+
+fn gemini_dispatch_fixture(base_url: String) -> (tempfile::TempDir, RuntimeHandle, String) {
+    let home = tempfile::tempdir().unwrap();
+    let mut config = dispatch_fixture_config(&home);
+    // Keep the default model chain's provider authenticated (provider
+    // construction rejects a model chain without usable auth) while dropping
+    // its builtin web search capability so the derived set stays
+    // gemini-only; anthropic keeps its credential but its native search kind
+    // is not standalone-dispatchable. Every other provider is unauthenticated
+    // for determinism, and gemini alone points at the fixture server. The
+    // builtin registry already declares the dispatchable Gemini native
+    // search kind for the provider.
+    for (id, provider) in config.providers.iter_mut() {
+        if *id == ProviderId::openai() {
+            provider.builtin_web_search = None;
+        } else if *id != ProviderId::anthropic() && *id != ProviderId::gemini() {
+            provider.credential = None;
+            provider.codex_home = Some("/nonexistent/holon-test-codex-home".into());
+        }
+    }
+    let gemini = config.providers.get_mut(&ProviderId::gemini()).unwrap();
+    gemini.base_url = base_url;
+    gemini.credential = Some("gemini-native-search-test-key".into());
+    let route = crate::model_catalog::BuiltInModelCatalog::new()
+        .preferred_route_for_provider(&ProviderId::gemini())
+        .unwrap()
+        .as_string();
+    let runtime = dispatch_runtime(&home, config);
+    (home, runtime, route)
+}
+
+#[tokio::test]
+async fn native_web_search_dispatch_executes_gemini_search_through_host_wrapper() {
+    let base_url = spawn_native_search_gemini_server(gemini_grounding_response()).await;
+    let (_home, runtime, route) = gemini_dispatch_fixture(base_url);
+
+    let results = runtime
+        .dispatch_native_web_search("gemini-search", &route, "query", 5)
+        .await
+        .expect("gemini standalone native web search must dispatch");
+
+    let urls: Vec<&str> = results.iter().map(|result| result.url.as_str()).collect();
+    assert_eq!(
+        urls,
+        [
+            "https://example.com/gemini",
+            "https://example.com/gemini-second"
+        ]
+    );
+    assert_eq!(results[0].title, "Gemini Source");
+    assert!(results
+        .iter()
+        .all(|result| result.source == "gemini-search"));
+}
+
+#[tokio::test]
+async fn derived_gemini_native_search_entry_is_listed_and_callable_through_websearch() {
+    let base_url = spawn_native_search_gemini_server(gemini_grounding_response()).await;
+    let (_home, runtime, _route) = gemini_dispatch_fixture(base_url);
+
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    let derived_ids: Vec<&str> = derived_ids.iter().map(String::as_str).collect();
+    assert_eq!(derived_ids, ["gemini"]);
+    let derived = web_config.providers.get("gemini").unwrap();
+    assert_eq!(
+        derived.kind,
+        holon_web_retrieval::WebProviderKind::GeminiNative
+    );
+
+    let agent_id = runtime.agent_id().await.unwrap();
+    let execute = |name: &str, input| {
+        let call = crate::tool::ToolCall {
+            id: "derived-gemini-native-search-test".into(),
+            name: name.into(),
+            input,
+        };
+        let runtime = &runtime;
+        let agent_id = &agent_id;
+        async move {
+            runtime
+                .inner
+                .tools
+                .execute(
+                    runtime,
+                    agent_id,
+                    &crate::types::AuthorityClass::OperatorInstruction,
+                    &call,
+                )
+                .await
+        }
+    };
+
+    let (result, _) = execute("ListWebSearchProviders", json!({})).await.unwrap();
+    let mut payload = result.envelope.result.unwrap();
+    payload.as_object_mut().unwrap().remove("output_ref");
+    assert_eq!(
+        payload,
+        json!({"providers":[
+            {"provider_id":"duckduckgo","source":"builtin"},
+            {"provider_id":"gemini","source":"derived"},
+        ]})
+    );
+
+    let (result, _) = execute(
+        "WebSearch",
+        json!({"query":"derived gemini native search","provider":"gemini","max_results":3}),
+    )
+    .await
+    .unwrap();
+    let mut payload = result.envelope.result.unwrap();
+    payload.as_object_mut().unwrap().remove("output_ref");
+    assert_eq!(payload["provider"], "gemini");
+    assert_eq!(payload["results"][0]["url"], "https://example.com/gemini");
+    assert_eq!(payload["results"][0]["source"], "gemini");
+}
+
 #[tokio::test]
 async fn derived_native_search_entry_is_listed_and_callable_through_websearch() {
     let response = json!({

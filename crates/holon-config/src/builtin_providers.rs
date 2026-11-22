@@ -1157,7 +1157,7 @@ fn insert_gemini_provider(
             originator: None,
             reasoning_effort: None,
             context_management: Default::default(),
-            builtin_web_search: None,
+            builtin_web_search: Some(gemini_builtin_web_search_config()),
         },
     )
 }
@@ -1185,6 +1185,7 @@ fn insert_generic_provider(
         ProviderWebSearch::Zai => Some(zai_builtin_web_search_config()),
         ProviderWebSearch::BigModel => Some(bigmodel_builtin_web_search_config()),
         ProviderWebSearch::DeepSeek => Some(deepseek_builtin_web_search_config()),
+        ProviderWebSearch::Gemini => Some(gemini_builtin_web_search_config()),
     };
     insert_builtin_http_provider_with_context_management(
         catalog,
@@ -1384,6 +1385,15 @@ pub(crate) fn deepseek_builtin_web_search_config() -> ProviderBuiltinWebSearchCo
         kind: ProviderNativeWebSearchKind::DeepSeek,
         advertised_tool_type: "web_search_20250305".to_string(),
         backend_kind: "deepseek_web_search".to_string(),
+    }
+}
+
+pub(crate) fn gemini_builtin_web_search_config() -> ProviderBuiltinWebSearchConfig {
+    ProviderBuiltinWebSearchConfig {
+        enabled: true,
+        kind: ProviderNativeWebSearchKind::Gemini,
+        advertised_tool_type: "google_search".to_string(),
+        backend_kind: "gemini_web_search".to_string(),
     }
 }
 

@@ -484,3 +484,96 @@ fn gemini_tool_schemas_lower_boolean_and_tuple_schemas() {
     }));
     assert_eq!(tuple["items"], json!({"type": "string"}));
 }
+
+fn gemini_native_search_request(kind: ProviderNativeWebSearchKind) -> ProviderTurnRequest {
+    let mut request = ProviderTurnRequest::plain("search", vec![], vec![]);
+    request.native_web_search = Some(ProviderNativeWebSearchRequest {
+        kind,
+        provider_id: "gemini".into(),
+        provider_model_ref: "gemini/gemini-test".into(),
+        advertised_tool_type: "google_search".into(),
+        backend_kind: "gemini_web_search".into(),
+        max_results: Some(5),
+    });
+    request
+}
+
+#[test]
+fn gemini_tools_mount_google_search_for_gemini_native_search() {
+    let tools = build_gemini_tools(&gemini_native_search_request(
+        ProviderNativeWebSearchKind::Gemini,
+    ));
+    assert_eq!(tools, vec![json!({ "google_search": {} })]);
+}
+
+#[test]
+fn gemini_tools_skip_native_search_of_other_kinds() {
+    let tools = build_gemini_tools(&gemini_native_search_request(
+        ProviderNativeWebSearchKind::OpenAi,
+    ));
+    assert!(tools.is_empty());
+}
+
+#[test]
+fn gemini_native_search_diagnostics_mark_only_gemini_lowered() {
+    let lowered = gemini_native_web_search_diagnostics(&gemini_native_search_request(
+        ProviderNativeWebSearchKind::Gemini,
+    ))
+    .expect("gemini kind should produce diagnostics");
+    assert!(lowered.lowered);
+    assert_eq!(lowered.advertised_tool_type, "google_search");
+    assert!(lowered.fallback_reason.is_none());
+
+    let not_lowered = gemini_native_web_search_diagnostics(&gemini_native_search_request(
+        ProviderNativeWebSearchKind::OpenAi,
+    ))
+    .expect("non-gemini kind still reports diagnostics");
+    assert!(!not_lowered.lowered);
+    assert!(not_lowered.fallback_reason.is_some());
+}
+
+#[test]
+fn gemini_native_search_output_parses_grounding_citations() {
+    let response = json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "grounded answer" }]
+            },
+            "finishReason": "STOP",
+            "groundingMetadata": {
+                "webSearchQueries": ["fixture query"],
+                "groundingChunks": [
+                    { "web": { "uri": "https://example.test/first", "title": "First" } },
+                    { "web": { "uri": "https://example.test/second" } },
+                    { "web": { "uri": "", "title": "Dropped empty uri" } },
+                    { "web": { "title": "Missing uri" } }
+                ]
+            }
+        }],
+        "usageMetadata": { "promptTokenCount": 4, "candidatesTokenCount": 6 }
+    });
+    let outcome = parse_gemini_native_web_search_output(&response);
+    assert!(outcome.search_executed);
+    assert_eq!(outcome.citations.len(), 2);
+    assert_eq!(outcome.citations[0].url, "https://example.test/first");
+    assert_eq!(outcome.citations[0].title.as_deref(), Some("First"));
+    assert_eq!(outcome.citations[1].url, "https://example.test/second");
+    assert_eq!(outcome.citations[1].title, None);
+}
+
+#[test]
+fn gemini_native_search_output_requires_grounding_evidence() {
+    let response = json!({
+        "candidates": [{
+            "content": {
+                "role": "model",
+                "parts": [{ "text": "ungrounded answer" }]
+            },
+            "finishReason": "STOP"
+        }]
+    });
+    let outcome = parse_gemini_native_web_search_output(&response);
+    assert!(!outcome.search_executed);
+    assert!(outcome.citations.is_empty());
+}
