@@ -16,6 +16,7 @@ unread/read markers and does not turn ordinary agent events into notifications.
   The list contains metadata and links, not brief content. It returns up to
   100 entries from the last 30 days. Deduplication keys follow the lifetime
   of the canonical briefs, so aging off the list does not reset eligibility.
+  Deleting an Agent clears its recent notifications and deduplication keys.
   Older notifications and WorkItem owners are not backfilled.
 - **Refresh** uses `notifications.changed` with `{"v":1}` on the existing
   `/api/events/stream`. The frame has no ID, cursor, target, or count. A

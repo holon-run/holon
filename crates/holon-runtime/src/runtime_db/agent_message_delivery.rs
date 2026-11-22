@@ -5028,17 +5028,16 @@ mod tests {
         assert!(legacy.message_chain_id.is_none());
         assert_eq!(chain_row_count(&db)?, 0);
 
-        // The fixture contains only legacy deliveries. Rewind the append-only
-        // schema step, then exercise a normal runtime open against that database.
+        // The fixture contains only legacy deliveries. Rewind to a contiguous
+        // ledger before chain budgets, including every newer schema step.
         db.transaction(|tx| {
-            assert_eq!(
-                tx.execute(
-                    "DELETE FROM schema_migrations WHERE name = 'agent_message_chain_budgets'",
-                    [],
-                )?,
-                1
-            );
-            tx.execute("DROP TABLE agent_message_chain_budgets", [])?;
+            tx.execute_batch(
+                "DROP TABLE operator_inbox_causes;
+                 DROP TABLE operator_inbox_recent;
+                 DROP TABLE operator_inbox_work_owners;
+                 DROP TABLE agent_message_chain_budgets;
+                 DELETE FROM schema_migrations WHERE version >= 117;",
+            )?;
             Ok(())
         })?;
         drop(db);
