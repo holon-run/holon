@@ -498,3 +498,110 @@ async fn derived_native_search_entry_is_listed_and_callable_through_websearch() 
     assert!(derived_ids.is_empty());
     assert!(!web_config.providers.contains_key("openai"));
 }
+
+fn deepseek_discovery_config(home: &tempfile::TempDir) -> AppConfig {
+    let mut config = dispatch_fixture_config(home);
+    let deepseek = ProviderId::parse("deepseek").unwrap();
+    for (id, provider) in config.providers.iter_mut() {
+        if *id == deepseek {
+            provider.credential = Some("fake-official-deepseek-key".into());
+        } else if *id == ProviderId::openai() {
+            // The default model chain resolves through the OpenAI route, so it
+            // keeps its fixture credential for provider construction. Its
+            // builtin native search entry is disabled instead, keeping the
+            // derived set deterministic for the standalone discovery tests.
+            provider.builtin_web_search = None;
+        } else {
+            // Neutralize every other credential so the derived set stays
+            // deterministic (see the derived native search fixture above).
+            provider.credential = None;
+            provider.codex_home = Some("/nonexistent/holon-test-codex-home".into());
+        }
+    }
+    config
+}
+
+#[tokio::test]
+async fn derived_deepseek_search_entry_is_listed_from_official_model_credential() {
+    let home = tempfile::tempdir().unwrap();
+    let config = deepseek_discovery_config(&home);
+    let runtime = dispatch_runtime(&home, config);
+
+    // The raw snapshot carries no standalone deepseek search provider; only
+    // the WebSearch tool view derives one from the official model credential.
+    assert!(!runtime
+        .inner
+        .config_snapshot
+        .load_full()
+        .web_config
+        .providers
+        .contains_key("deepseek"));
+
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    let derived_ids: Vec<&str> = derived_ids.iter().map(String::as_str).collect();
+    assert_eq!(derived_ids, ["deepseek"]);
+    let derived = web_config.providers.get("deepseek").unwrap();
+    assert_eq!(derived.kind, holon_web_retrieval::WebProviderKind::DeepSeek);
+    // The discovered key stays pinned to the official endpoint: the derived
+    // entry never carries the discovered base URL.
+    assert_eq!(derived.base_url, None);
+    assert_eq!(derived.api_key, "fake-official-deepseek-key");
+    assert!(web_config.search.derived_providers.contains("deepseek"));
+
+    // Listing through the tool is a local check that reports the derived
+    // source; it never contacts the provider.
+    let agent_id = runtime.agent_id().await.unwrap();
+    let (result, _) = runtime
+        .inner
+        .tools
+        .execute(
+            &runtime,
+            &agent_id,
+            &crate::types::AuthorityClass::OperatorInstruction,
+            &crate::tool::ToolCall {
+                id: "derived-deepseek-search-list".into(),
+                name: "ListWebSearchProviders".into(),
+                input: json!({}),
+            },
+        )
+        .await
+        .unwrap();
+    let payload = result.envelope.result.unwrap();
+    let providers = payload["providers"].as_array().unwrap();
+    assert!(providers.contains(&json!({
+        "provider_id": "deepseek",
+        "source": "derived"
+    })));
+}
+
+#[tokio::test]
+async fn explicit_deepseek_web_provider_wins_over_credential_discovery() {
+    let home = tempfile::tempdir().unwrap();
+    let config = deepseek_discovery_config(&home);
+    let runtime = dispatch_runtime(&home, config);
+
+    // Declaring the standalone provider explicitly keeps the derived view from
+    // duplicating it or rewriting the configured entry.
+    let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+    snapshot.web_config.providers.insert(
+        "deepseek".to_string(),
+        holon_web_retrieval::WebProviderConfig {
+            kind: holon_web_retrieval::WebProviderKind::DeepSeek,
+            base_url: Some("http://127.0.0.1:1".into()),
+            engine_id: None,
+            api_key: "explicit-key".into(),
+            model_route: None,
+            command: None,
+            output: None,
+            limits: Default::default(),
+        },
+    );
+    runtime.inner.config_snapshot.store(Arc::new(snapshot));
+
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    assert!(derived_ids.is_empty());
+    assert!(!web_config.search.derived_providers.contains("deepseek"));
+    let entry = web_config.providers.get("deepseek").unwrap();
+    assert_eq!(entry.base_url.as_deref(), Some("http://127.0.0.1:1"));
+    assert_eq!(entry.api_key, "explicit-key");
+}

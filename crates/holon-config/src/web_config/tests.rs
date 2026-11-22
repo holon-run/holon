@@ -638,3 +638,71 @@ fn derived_native_search_providers_respect_explicit_entries_and_override() {
     )
     .is_empty());
 }
+
+#[test]
+fn derived_standalone_search_providers_discover_official_deepseek_credential() {
+    // An official DeepSeek model credential derives the stable standalone
+    // entry without any `web.providers` declaration.
+    let web_config = WebConfig::default();
+    let providers = model_provider_registry(&["deepseek"]);
+    let derived = derived_standalone_search_providers(&web_config, &providers);
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0].0, DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID);
+    let provider = &derived[0].1;
+    assert_eq!(provider.kind, WebProviderKind::DeepSeek);
+    assert_eq!(provider.api_key, "test-credential");
+    // The discovered key stays pinned to the official endpoint: the derived
+    // entry never carries the discovered base URL.
+    assert_eq!(provider.base_url, None);
+    assert!(provider.model_route.is_none());
+}
+
+#[test]
+fn derived_standalone_search_providers_skip_ineligible_sources() {
+    // Disabled standalone search derives nothing.
+    let mut web_config = WebConfig::default();
+    web_config.search.enabled = false;
+    let providers = model_provider_registry(&["deepseek"]);
+    assert!(derived_standalone_search_providers(&web_config, &providers).is_empty());
+
+    // A provider without a materialized credential derives nothing.
+    let id = crate::ProviderId::parse("deepseek").unwrap();
+    let mut providers = model_provider_registry(&["deepseek"]);
+    providers.get_mut(&id).unwrap().credential = None;
+    assert!(derived_standalone_search_providers(&WebConfig::default(), &providers).is_empty());
+
+    // Proxy and compatible-protocol endpoints must not borrow an official key.
+    for base_url in [
+        "https://proxy.example.com/v1",
+        "https://api.deepseek.com.evil.example/v1",
+        "http://api.deepseek.com/v1",
+    ] {
+        let mut providers = model_provider_registry(&["deepseek"]);
+        providers.get_mut(&id).unwrap().base_url = base_url.to_string();
+        assert!(
+            derived_standalone_search_providers(&WebConfig::default(), &providers).is_empty(),
+            "base_url {base_url} must not derive a standalone entry"
+        );
+    }
+
+    // Other authenticated model providers never derive a standalone deepseek
+    // entry.
+    let providers = model_provider_registry(&["openai"]);
+    assert!(derived_standalone_search_providers(&WebConfig::default(), &providers).is_empty());
+}
+
+#[test]
+fn derived_providers_stay_out_of_serialized_config() {
+    // The discovery marker is runtime-only: it must not change the serialized
+    // config contract, and a round-trip drops it (a derived entry is
+    // re-discovered, never persisted).
+    let mut web_config = WebConfig::default();
+    web_config
+        .search
+        .derived_providers
+        .insert(DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID.to_string());
+    let json = serde_json::to_value(&web_config.search).unwrap();
+    assert!(json.get("derived_providers").is_none());
+    let restored: WebSearchConfig = serde_json::from_value(json).unwrap();
+    assert!(restored.derived_providers.is_empty());
+}

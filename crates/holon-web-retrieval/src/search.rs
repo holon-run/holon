@@ -525,6 +525,9 @@ fn default_provider_order(config: &WebConfig) -> Vec<String> {
     let mut providers = config
         .providers
         .iter()
+        // Discovery-only entries stay callable by name but never join the
+        // default, `auto`, or `aggregate` candidate chain.
+        .filter(|(id, _)| !config.search.derived_providers.contains(id.as_str()))
         .filter_map(|(id, provider)| {
             let capabilities = provider.kind.capabilities();
             (capabilities.status == WebProviderSupportStatus::Supported).then(|| {

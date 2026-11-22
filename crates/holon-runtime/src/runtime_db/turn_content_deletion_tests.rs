@@ -983,7 +983,10 @@ fn delete_turn_leaves_timers_untouched() -> Result<()> {
         interval_ms: None,
         repeat: false,
         status: holon_domain::TimerStatus::Active,
-        summary: Some("recheck the merge".to_owned()),
+        content: holon_domain::TimerContent {
+            title: None,
+            instruction: Some("recheck the merge".to_owned()),
+        },
         next_fire_at: Some(fixture_time() + chrono::Duration::milliseconds(60_000)),
         last_fired_at: None,
         fire_count: 0,
