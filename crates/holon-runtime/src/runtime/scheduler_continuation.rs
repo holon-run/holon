@@ -1977,32 +1977,6 @@ mod tests {
         updated
     }
 
-    fn block_work_item_with_due_recheck(
-        test_runtime: &TestRuntime,
-        record: &WorkItemRecord,
-        blocked_by: &str,
-    ) -> WorkItemRecord {
-        let mut updated = record.clone();
-        updated.revision += 1;
-        updated.blocked_by = Some(blocked_by.to_string());
-        updated.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
-        updated.recheck_consumed_at = None;
-        updated.updated_at = chrono::Utc::now();
-        persist_test_work_item(test_runtime, &updated);
-        updated
-    }
-
-    fn latest_work_item(test_runtime: &TestRuntime, id: &str) -> WorkItemRecord {
-        test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .work_items()
-            .latest(id)
-            .unwrap()
-            .expect("work item should exist")
-    }
-
     fn append_result_brief_for_work_item(
         test_runtime: &TestRuntime,
         work_item_id: &str,
