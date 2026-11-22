@@ -1189,6 +1189,7 @@ fn operator_message_status_label(status: OperatorMessageStatus) -> Option<&'stat
         OperatorMessageStatus::Failed => Some("failed"),
         OperatorMessageStatus::Dropped => Some("dropped"),
         OperatorMessageStatus::Quarantined => Some("quarantined"),
+        OperatorMessageStatus::Withdrawn => Some("withdrawn"),
     }
 }
 

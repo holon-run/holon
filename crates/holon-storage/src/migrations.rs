@@ -4631,6 +4631,25 @@ SELECT agent_id, work_item_id, source_revision, next_generation,
 FROM normalized;
 "#,
     },
+    Migration {
+        version: 120,
+        name: "turn_content_deletion",
+        // `content_deleted_at` is the authoritative read boundary for deleted
+        // turn content: NULL keeps ordinary history queries untouched, and a
+        // non-null timestamp marks the first successful deletion. The pending
+        // queue fences turn-exclusive artifact paths from commit time until
+        // the async unlink succeeds; see docs/rfcs/conversation-turn-deletion.md.
+        sql: r#"
+ALTER TABLE turn_records ADD COLUMN content_deleted_at TEXT;
+
+CREATE TABLE IF NOT EXISTS pending_artifact_deletions (
+  agent_id TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, relative_path)
+);
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {

@@ -31,6 +31,8 @@ pub(crate) mod current_read_writes;
 pub(crate) mod current_run_abort;
 pub mod destructive_operations;
 pub(crate) mod dispatch_memory;
+pub mod turn_content_deletion;
+pub mod input_withdrawal;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;

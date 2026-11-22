@@ -146,6 +146,53 @@ impl TurnRecord {
             )
         })
     }
+
+    /// Erase conversation content while preserving identity, lifecycle, and
+    /// association structure. The erased payload must stay parseable and keep
+    /// activation ids, item message ids, and result identities so derived
+    /// lookups (`turn_activation_attachments`) and settlement references
+    /// survive the rewrite. See docs/rfcs/conversation-turn-deletion.md §4.2.
+    pub fn erase_conversation_content(&mut self) -> bool {
+        let mut erased = false;
+        if let Some(batch) = self.idle_input_batch.as_mut() {
+            for item in &mut batch.items {
+                if !item.rendered.is_empty() {
+                    item.rendered = String::new();
+                    erased = true;
+                }
+            }
+            if batch.rendered_bytes != 0 {
+                batch.rendered_bytes = 0;
+                erased = true;
+            }
+        }
+        for batch in &mut self.live_input_batches {
+            for item in &mut batch.items {
+                if !item.rendered.is_empty() {
+                    item.rendered = String::new();
+                    erased = true;
+                }
+            }
+            if batch.rendered_bytes != 0 {
+                batch.rendered_bytes = 0;
+                erased = true;
+            }
+        }
+        if let Some(terminal) = self.terminal.as_mut() {
+            if terminal.reason.take().is_some() {
+                erased = true;
+            }
+            if let Some(crate::TurnNoBriefReason::ReducerOnly { reason }) =
+                terminal.no_brief_reason.as_mut()
+            {
+                if !reason.is_empty() {
+                    *reason = String::new();
+                    erased = true;
+                }
+            }
+        }
+        erased
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq)]

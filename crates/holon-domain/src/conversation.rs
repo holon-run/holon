@@ -85,6 +85,11 @@ pub struct ConversationTurnSummary {
     pub key: TurnKey,
     pub revision: u64,
     pub presentation_class: PresentationClass,
+    /// True when the turn's conversation content was deleted. The summary then
+    /// carries identity, timing, and execution outcome only; inputs and brief
+    /// ids are empty and must not be rehydrated from any source.
+    #[serde(default)]
+    pub content_deleted: bool,
     pub inputs: Vec<TurnInputSummary>,
     #[serde(default)]
     pub inputs_truncated: bool,
@@ -226,6 +231,8 @@ pub enum ResultState {
         reason: ResultUnavailableReason,
         retryable: bool,
     },
+    /// The turn's conversation content was deleted; no result body exists.
+    Deleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -282,6 +289,7 @@ pub enum DetailCoverageReason {
     LegacyOwnership,
     UnknownActivityType,
     MissingCanonicalLinkage,
+    ContentDeleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
