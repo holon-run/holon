@@ -401,7 +401,6 @@ fn enum_token<T: Serialize>(value: &T) -> Result<String> {
 fn work_item_state_token(state: &WorkItemExecutionState) -> &'static str {
     match state {
         WorkItemExecutionState::Runnable { .. } => "runnable",
-        WorkItemExecutionState::InFlight { .. } => "in_flight",
         WorkItemExecutionState::Waiting { .. } => "waiting",
         WorkItemExecutionState::Paused { .. } => "paused",
         WorkItemExecutionState::Terminal { .. } => "terminal",

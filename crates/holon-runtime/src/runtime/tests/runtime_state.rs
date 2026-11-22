@@ -4861,12 +4861,15 @@ async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
             ..
         } if wait.wait_id == expected_wait_id
     ));
+    assert_eq!(
+        claimed
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(activation_id.as_str())
+    );
     assert!(matches!(
         claimed.work_items[&runnable_work.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            ref attempt_id,
-            ..
-        } if attempt_id == &activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
     assert_eq!(
         tick.work_item_id.as_deref(),
@@ -7715,12 +7718,15 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         claimed.attempts[&activation_id].state,
         crate::domain::execution_protocol::ExecutionAttemptState::Open
     );
+    assert_eq!(
+        claimed
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(activation_id.as_str())
+    );
     assert!(matches!(
         claimed.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            ref attempt_id,
-            ..
-        } if attempt_id == &activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
 
     finish_claimed_test_run(&runtime).await;
@@ -8232,12 +8238,15 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
         in_flight.work_items[&owner.id].source_revision,
         updated.revision
     );
+    assert_eq!(
+        in_flight
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(activation_id.as_str())
+    );
     assert!(matches!(
         &in_flight.work_items[&owner.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            attempt_id,
-            ..
-        } if attempt_id == &activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
 
     finish_claimed_test_run(&runtime).await;
@@ -8717,12 +8726,15 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
             result_message_id,
         } if task_id == "task-rejoin" && result_message_id == &rejoin.id
     ));
+    assert_eq!(
+        rejoined
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(rejoin_attempt_id.as_str())
+    );
     assert!(matches!(
         &rejoined.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            attempt_id,
-            ..
-        } if attempt_id == &rejoin_attempt_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
     ));
     assert_eq!(
         runtime
@@ -10646,12 +10658,15 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
             && task_id == "task-lifecycle-handoff"
             && result_message_id == &rejoin.id
     ));
+    assert_eq!(
+        rejoined
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(rejoin_activation_id.as_str())
+    );
     assert!(matches!(
         &rejoined.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            generation,
-            attempt_id,
-        } if *generation == work_generation && attempt_id == &rejoin_activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { generation, .. } if *generation == work_generation
     ));
     assert_eq!(
         reopened
@@ -11322,12 +11337,15 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             .as_deref(),
         Some(pending_message_id.as_str())
     );
+    assert_eq!(
+        reclaimed
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(second_activation_id.as_str())
+    );
     assert!(matches!(
         &reclaimed.work_items[&work_item_id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            attempt_id,
-            ..
-        } if attempt_id == second_activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
     ));
     assert_eq!(
         rebound.activation_id.as_deref(),
@@ -12052,12 +12070,15 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
             },
         })
     );
+    assert_eq!(
+        execution
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(activation_id.as_str())
+    );
     assert!(matches!(
         execution.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            ref attempt_id,
-            ..
-        } if attempt_id == &activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
     ));
     assert_eq!(
         runtime
@@ -13508,19 +13529,16 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
         execution.work_items[&child.id].state,
         crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
     ));
-    match &execution.work_items[&parent.id].state {
-        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. } => {}
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            attempt_id, ..
-        } => {
-            assert!(matches!(
-                execution.attempts[attempt_id].binding,
-                crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                    ref work_item_id
-                } if work_item_id == &parent.id
-            ));
-        }
-        state => panic!("resumed parent execution state: {state:?}"),
+    assert!(matches!(
+        execution.work_items[&parent.id].state,
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
+    ));
+    if let Some(attempt) = execution.open_attempt() {
+        assert!(matches!(
+            &attempt.binding,
+            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
+                if work_item_id == &parent.id
+        ));
     }
     assert_eq!(
         runtime
@@ -13889,8 +13907,7 @@ async fn authoritative_completion_cancels_active_child_wait_and_resumes_parent()
     ));
     let parent_state = &execution.work_items[&parent.id].state;
     match parent_state {
-        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
-        | crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. } => {}
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. } => {}
         other => panic!("parent should resume after child completion, got {other:?}"),
     }
     assert_eq!(
@@ -19009,12 +19026,15 @@ async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
         attempt.recovery_of_attempt_id.as_deref(),
         Some(expected_source_attempt_id.as_str())
     );
+    assert_eq!(
+        execution
+            .open_attempt()
+            .map(|attempt| attempt.attempt_id.as_str()),
+        Some(activation_id.as_str())
+    );
     assert!(matches!(
         &execution.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-            attempt_id,
-            ..
-        } if attempt_id == &activation_id
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
     ));
     assert_eq!(
         runtime
@@ -19140,8 +19160,14 @@ async fn provider_recovery_claims_execution_waiting_projection_drift() {
         .unwrap();
     assert!(matches!(
         &execution.work_items[&work_item.id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
     ));
+    assert_eq!(
+        execution
+            .open_attempt()
+            .and_then(|attempt| attempt.source_message_id.as_deref()),
+        Some(recovery.id.as_str())
+    );
 }
 
 #[cfg(holon_lib_test_shard = "a")]

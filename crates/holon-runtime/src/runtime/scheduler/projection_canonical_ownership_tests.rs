@@ -17,10 +17,6 @@ pub(super) fn execution() -> ExecutionProtocolState {
                 wait_id: "retained wait 汉🦀".repeat(47),
             },
         },
-        WorkItemExecutionState::InFlight {
-            generation: 2,
-            attempt_id: "discarded attempt".into(),
-        },
         WorkItemExecutionState::Paused {
             generation: 3,
             reason: "discarded pause".into(),

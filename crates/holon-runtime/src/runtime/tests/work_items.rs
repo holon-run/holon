@@ -429,7 +429,7 @@ fn assert_valid_provider_tool_result_sequence(conversation: &[ConversationMessag
     }
 }
 
-fn assert_complete_work_item_deferred_result(conversation: &[ConversationMessage]) {
+fn assert_detached_completion_rejection(conversation: &[ConversationMessage]) {
     let complete_tool_results = conversation
         .iter()
         .filter_map(|message| match message {
@@ -442,48 +442,11 @@ fn assert_complete_work_item_deferred_result(conversation: &[ConversationMessage
     assert_eq!(
         complete_tool_results.len(),
         1,
-        "CompleteWorkItem should have exactly one provider-visible result"
+        "CompleteWorkItem must return exactly one provider-visible conflict"
     );
-    let deferred_result: serde_json::Value =
-        serde_json::from_str(&complete_tool_results[0].content).unwrap();
-    assert_eq!(
-        deferred_result["result"]["disposition"].as_str(),
-        Some("awaiting_completion_report")
-    );
-}
-
-fn assert_detached_followup_completion_sequence(conversation: &[ConversationMessage]) {
-    let report_index = conversation
-        .iter()
-        .position(|message| {
-            matches!(
-                message,
-                ConversationMessage::AssistantBlocks(blocks)
-                    if blocks.iter().any(|block| matches!(
-                        block,
-                        ModelBlock::Text { text } if text == "done"
-                    ))
-            )
-        })
-        .expect("follow-up completion report should be provider-visible");
-    let continuation_index = conversation
-        .iter()
-        .position(|message| {
-            matches!(
-                message,
-                ConversationMessage::UserText(text)
-                    if text.contains("was completed as a detached target")
-            )
-        })
-        .expect("detached completion continuation should be provider-visible");
-    assert!(report_index < continuation_index);
-    assert_complete_work_item_deferred_result(conversation);
-    assert!(
-        conversation[report_index + 1..]
-            .iter()
-            .all(|message| !matches!(message, ConversationMessage::UserToolResults(_))),
-        "follow-up report continuation request must not contain a second tool result"
-    );
+    let result = complete_tool_results[0];
+    assert!(result.is_error, "{}", result.content);
+    assert!(result.content.contains("work_item_execution_active"));
 }
 
 #[async_trait]
@@ -495,12 +458,8 @@ impl AgentProvider for CompleteWorkItemReportProvider {
         let mut calls = self.calls.lock().await;
         *calls += 1;
         let call = *calls;
-        if self.validate_detached_sequence && self.report_text.is_none() {
-            match call {
-                2 => assert_complete_work_item_deferred_result(&request.conversation),
-                3 => assert_detached_followup_completion_sequence(&request.conversation),
-                _ => {}
-            }
+        if self.validate_detached_sequence && call == 2 {
+            assert_detached_completion_rejection(&request.conversation);
         }
         let blocks = if call == 1 {
             let mut blocks = Vec::new();
@@ -540,16 +499,19 @@ impl AgentProvider for CompleteWorkItemReportProvider {
 
 #[async_trait]
 impl AgentProvider for DetachedCompletionThenWaitProvider {
-    async fn complete_turn(&self, _request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
+    async fn complete_turn(&self, request: ProviderTurnRequest) -> Result<ProviderTurnResponse> {
         let mut calls = self.calls.lock().await;
         *calls += 1;
+        if *calls == 2 {
+            assert_detached_completion_rejection(&request.conversation);
+        }
         let blocks = match *calls {
             1 => vec![
                 ModelBlock::Text {
-                    text: "Detached target is complete.".into(),
+                    text: "Proposed completion report.".into(),
                 },
                 ModelBlock::ToolUse {
-                    id: "complete-detached-before-wait".into(),
+                    id: "complete-work".into(),
                     name: "CompleteWorkItem".into(),
                     input: serde_json::json!({
                         "work_item_id": self.work_item_id
@@ -565,13 +527,13 @@ impl AgentProvider for DetachedCompletionThenWaitProvider {
                     "wake": "external",
                     "delivery": self.delivery,
                     "resource": "github:holon-run/holon#3055",
-                    "reason": "verify detached completion publication scope"
+                    "reason": "verify wait after rejected detached completion"
                 }),
                 kind: crate::provider::ModelToolCallKind::Function,
                 provider_data: None,
             }],
             3 if self.delivery == "final" => vec![ModelBlock::Text {
-                text: "Waiting after detached completion.".into(),
+                text: "Waiting after rejected detached completion.".into(),
             }],
             call => panic!("unexpected provider call {call}"),
         };
@@ -589,9 +551,8 @@ impl AgentProvider for DetachedCompletionThenWaitProvider {
     }
 }
 
-async fn assert_detached_completion_continues_current_execution(
+async fn assert_detached_completion_rejects_without_ending_current_execution(
     report_text: Option<&str>,
-    expected_provider_calls: usize,
 ) {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -656,11 +617,6 @@ async fn assert_detached_completion_continues_current_execution(
     runtime.enqueue(message).await.unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         loop {
-            let detached_completed = runtime
-                .latest_work_item(&detached.id)
-                .await
-                .unwrap()
-                .is_some_and(|record| record.state == WorkItemState::Completed);
             let calls = *provider.calls.lock().await;
             let turn_finished = runtime
                 .agent_state()
@@ -668,12 +624,12 @@ async fn assert_detached_completion_continues_current_execution(
                 .unwrap()
                 .current_run_id
                 .is_none();
-            if detached_completed && calls >= expected_provider_calls && turn_finished {
+            if calls >= 2 && turn_finished {
                 break;
             }
             if runtime_task.is_finished() {
                 panic!(
-                    "runtime exited before detached completion continued the current execution: {:#}",
+                    "runtime exited before the current execution continued after the conflict: {:#}",
                     (&mut runtime_task)
                         .await
                         .expect("runtime task join")
@@ -684,10 +640,10 @@ async fn assert_detached_completion_continues_current_execution(
         }
     })
     .await
-    .expect("detached completion should continue and finish the current execution");
+    .expect("the current execution should finish after rejecting detached completion");
     runtime_task.abort();
 
-    assert_eq!(*provider.calls.lock().await, expected_provider_calls);
+    assert_eq!(*provider.calls.lock().await, 2);
     assert_eq!(
         runtime
             .latest_work_item(&active.id)
@@ -702,9 +658,8 @@ async fn assert_detached_completion_continues_current_execution(
             .latest_work_item(&detached.id)
             .await
             .unwrap()
-            .unwrap()
-            .state,
-        WorkItemState::Completed
+            .unwrap(),
+        detached
     );
     let state = runtime.agent_state().await.unwrap();
     assert_eq!(
@@ -717,7 +672,7 @@ async fn assert_detached_completion_continues_current_execution(
         .filter(|tool| tool.tool_name == "CompleteWorkItem")
         .collect::<Vec<_>>();
     assert_eq!(completion_tools.len(), 1);
-    assert_eq!(completion_tools[0].status, ToolExecutionStatus::Success);
+    assert_eq!(completion_tools[0].status, ToolExecutionStatus::Error);
 
     let transcript = runtime.storage().read_recent_transcript(20).unwrap();
     let complete_tool_result_refs = transcript
@@ -737,39 +692,21 @@ async fn assert_detached_completion_continues_current_execution(
         "transcript should retain only the original provider-visible result"
     );
 
-    let completed = runtime
-        .latest_work_item(&detached.id)
-        .await
-        .unwrap()
-        .unwrap();
-    let result_brief_id = completed
-        .result_brief_id
-        .expect("detached completion should create one result brief");
     let briefs = runtime.recent_briefs(20).await.unwrap();
-    assert_eq!(
-        briefs
-            .iter()
-            .filter(|brief| brief.id == result_brief_id)
-            .count(),
-        1
-    );
-    if report_text.is_none() {
-        let events = runtime.storage().read_recent_events(200).unwrap();
-        assert!(events
-            .iter()
-            .any(|event| event.kind == "completion_report_request_completed"));
-    }
+    assert!(briefs
+        .iter()
+        .all(|brief| brief.work_item_id.as_deref() != Some(detached.id.as_str())));
 }
 
 #[tokio::test]
-async fn detached_complete_work_item_with_same_round_report_continues_current_execution() {
-    assert_detached_completion_continues_current_execution(Some("Detached target is complete."), 2)
+async fn detached_complete_work_item_rejects_even_with_same_round_report() {
+    assert_detached_completion_rejects_without_ending_current_execution(Some("Proposed report."))
         .await;
 }
 
 #[tokio::test]
-async fn detached_complete_work_item_with_followup_report_continues_current_execution() {
-    assert_detached_completion_continues_current_execution(None, 3).await;
+async fn detached_complete_work_item_rejects_before_requesting_followup_report() {
+    assert_detached_completion_rejects_without_ending_current_execution(None).await;
 }
 
 async fn assert_detached_completion_then_wait_preserves_brief_scope(
@@ -805,7 +742,8 @@ async fn assert_detached_completion_then_wait_preserves_brief_scope(
     let detached = seed_runtime
         .create_work_item(
             "detached completion before wait".into(),
-            None,
+            // Keep this target open without scheduling another Turn after the wait commits.
+            Some(WorkItemPlanStatus::NeedsInput),
             None,
             Vec::new(),
         )
@@ -887,9 +825,8 @@ async fn assert_detached_completion_then_wait_preserves_brief_scope(
             .latest_work_item(&detached.id)
             .await
             .unwrap()
-            .unwrap()
-            .state,
-        WorkItemState::Completed
+            .unwrap(),
+        detached
     );
     let turn = runtime
         .storage()
@@ -904,7 +841,7 @@ async fn assert_detached_completion_then_wait_preserves_brief_scope(
         turn.terminal
             .as_ref()
             .and_then(|terminal| terminal.no_brief_reason.as_ref()),
-        None
+        (delivery == "silent").then_some(&crate::types::TurnNoBriefReason::ToolOnlyWait)
     );
     assert_eq!(turn.produced_brief_ids.len(), expected_brief_count);
     assert_eq!(
@@ -921,17 +858,17 @@ async fn assert_detached_completion_then_wait_preserves_brief_scope(
 }
 
 #[tokio::test]
-async fn detached_completion_then_silent_wait_preserves_existing_brief() {
-    assert_detached_completion_then_wait_preserves_brief_scope("silent", 2, 1).await;
+async fn rejected_detached_completion_then_silent_wait_produces_no_brief() {
+    assert_detached_completion_then_wait_preserves_brief_scope("silent", 2, 0).await;
 }
 
 #[tokio::test]
-async fn detached_completion_then_final_wait_adds_exactly_one_brief() {
-    assert_detached_completion_then_wait_preserves_brief_scope("final", 3, 2).await;
+async fn rejected_detached_completion_then_final_wait_produces_one_brief() {
+    assert_detached_completion_then_wait_preserves_brief_scope("final", 3, 1).await;
 }
 
 #[tokio::test]
-async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_together() {
+async fn idle_detached_completion_rolls_back_work_item_brief_and_tool_evidence_together() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -953,55 +890,32 @@ async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_togeth
         .create_work_item("detached target".into(), None, None, Vec::new())
         .await
         .unwrap();
-    let _scheduled = start_work_tool_execution_fixture(
-        &runtime,
-        "message-active",
-        "turn-active",
-        Some(&active.id),
-        false,
-    )
-    .await;
-    let binding = runtime
-        .agent_state()
+    let WorkItemCompletionDispatch::Prepared(mut prepared) = runtime
+        .prepare_work_item_completion_with_report(
+            detached.id.clone(),
+            WorkItemCompletionAuthority::Control,
+            "Detached target is complete.".into(),
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            "control",
+            Vec::new(),
+        )
         .await
         .unwrap()
-        .current_execution_binding
-        .unwrap();
-    assert_eq!(binding.work_item_id.as_deref(), Some(active.id.as_str()));
-    let candidate = crate::tool::spec::CompletionReportCandidate {
-        text: "Detached target is complete.".into(),
-        citations: Vec::new(),
-        source_turn_index: 1,
-        source_round: 1,
-        source_turn_id: Some(binding.turn_id.clone()),
-        source_message_id: Some(binding.source_message_id.clone()),
-        source_assistant_round_id: "assistant-round-detached".into(),
-        source_tool_call_id: "complete-detached".into(),
+    else {
+        panic!("idle detached completion should prepare an atomic commit");
     };
-    let mut result = crate::tool::tools::complete_work_item::complete_with_report_candidate(
-        &runtime,
-        detached.id.clone(),
-        WorkItemCompletionAuthority::AgentExecution {
-            binding,
-            effective_work_item_id: Some(active.id.clone()),
-        },
-        Some(&candidate),
-        Vec::new(),
-        "same_assistant_round_preceding_text",
-    )
-    .await
-    .unwrap();
-    let mut prepared = *result
-        .runtime_state
-        .prepared_work_item_completion
-        .take()
-        .expect("detached completion should prepare an atomic commit");
     prepared.tool_execution = Some(ToolExecutionRecord {
         id: "tool-execution-detached".into(),
         agent_id: "default".into(),
         work_item_id: Some(active.id.clone()),
         turn_index: 1,
-        turn_id: Some("turn-active".into()),
+        turn_id: None,
         tool_name: crate::tool::names::COMPLETE_WORK_ITEM.into(),
         created_at: Utc::now(),
         completed_at: Some(Utc::now()),
@@ -1009,7 +923,7 @@ async fn detached_completion_rolls_back_work_item_brief_and_tool_evidence_togeth
         authority_class: AuthorityClass::OperatorInstruction,
         status: ToolExecutionStatus::Success,
         input: serde_json::json!({"work_item_id": detached.id}),
-        output: serde_json::json!({"envelope": result.envelope}),
+        output: serde_json::json!({"completed": true}),
         summary: "completed detached WorkItem".into(),
         call_binding: None,
         invocation_surface: None,
@@ -1806,6 +1720,8 @@ async fn runtime_wakes_itself_for_queued_redispatch_retry_deadline() {
 
 #[tokio::test]
 async fn work_queue_projection_derives_scheduling_state_per_work_item() {
+    use crate::domain::execution_protocol::WorkItemExecutionState;
+
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -1831,6 +1747,16 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
         .create_work_item("task wait".into(), None, None, Vec::new())
         .await
         .unwrap();
+    let paused = runtime
+        .create_work_item("yielded work".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    let running = runtime
+        .create_work_item("turn owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(paused.id.clone()).await.unwrap();
+    runtime.pick_work_item(running.id.clone()).await.unwrap();
     let now = Utc::now();
     runtime
         .storage()
@@ -1865,6 +1791,44 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
         ))
         .unwrap();
 
+    let read_execution = || {
+        runtime
+            .inner
+            .runtime_db
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap()
+    };
+    let before = read_execution();
+    assert!(before.open_attempt().is_none());
+    assert!(matches!(
+        before.work_items[&paused.id].state,
+        WorkItemExecutionState::Paused { .. }
+    ));
+    start_work_tool_execution_fixture(
+        &runtime,
+        "projection-active-message",
+        "projection-active-turn",
+        Some(&running.id),
+        false,
+    )
+    .await;
+    let during = read_execution();
+    assert_eq!(during.work_items, before.work_items);
+    assert!(matches!(
+        during.open_attempt().map(|attempt| &attempt.binding),
+        Some(crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id })
+            if work_item_id == &running.id
+    ));
+    let state = runtime.agent_state().await.unwrap();
+    let posture = runtime.storage().agent_posture_projection(&state).unwrap();
+    assert_eq!(
+        posture.posture,
+        crate::types::AgentSchedulingPosture::ActiveTurn
+    );
+    assert_eq!(posture.work_item_id.as_deref(), Some(running.id.as_str()));
+
     let projection = runtime.storage().work_queue_prompt_projection().unwrap();
     let state_for = |id: &str| {
         projection
@@ -1880,6 +1844,10 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
         WorkItemSchedulingState::WaitingExternal
     );
     assert_eq!(state_for(&task_wait.id), WorkItemSchedulingState::Runnable);
+    assert_eq!(
+        state_for(&paused.id),
+        WorkItemSchedulingState::YieldedToWorkItem
+    );
     assert!(projection
         .queued_runnable
         .iter()
@@ -1887,7 +1855,7 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
     assert!(!projection
         .queued_runnable
         .iter()
-        .any(|item| item.work_item.id == external.id));
+        .any(|item| item.work_item.id == external.id || item.work_item.id == paused.id));
 }
 
 #[tokio::test]
@@ -3848,6 +3816,9 @@ async fn assert_update_then_complete_work_item(
         .unwrap();
     assert_eq!(completed.state, WorkItemState::Completed);
     assert_eq!(completed.objective, "updated before completion");
+    let intent = completed.completion_intent.as_ref().unwrap();
+    assert_eq!(intent.expected_work_revision, completed.revision - 1);
+    assert!(intent.expected_work_revision > work_item.revision);
     assert_eq!(
         runtime
             .inner
@@ -3904,16 +3875,12 @@ async fn assert_update_then_complete_work_item(
         .collect::<Vec<_>>();
     assert_eq!(outcomes.len(), 1);
     assert!(if work_item_bound {
+        assert_eq!(
+            attempt.admitted_fences.work_item_source_revision,
+            Some(work_item.revision)
+        );
         matches!(&outcomes[0].outcome, ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { completion }) if completion == &report.id)
     } else {
-        assert_eq!(
-            completed
-                .completion_intent
-                .as_ref()
-                .unwrap()
-                .expected_work_revision,
-            completed.revision - 1
-        );
         matches!(
             &outcomes[0].outcome,
             ExecutionOutcome::Conversation(ConversationOutcome::Replied)
@@ -4563,7 +4530,9 @@ async fn work_item_execution_completes_an_unrelated_work_item_detached() {
 }
 
 #[tokio::test]
-async fn control_completion_rejects_an_active_execution_bound_target_without_side_effects() {
+async fn control_work_commands_reject_cross_work_item_writes_during_an_open_attempt() {
+    use crate::runtime_db::transitions::WorkCommandLane;
+
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -4576,41 +4545,35 @@ async fn control_completion_rejects_an_active_execution_bound_target_without_sid
         context_config(),
     )
     .unwrap();
+    let active = runtime
+        .create_work_item("active execution owner".into(), None, None, Vec::new())
+        .await
+        .unwrap();
+    runtime.pick_work_item(active.id.clone()).await.unwrap();
     let target = runtime
         .create_work_item(
-            "active control completion target".into(),
+            "unrelated control command target".into(),
             None,
             None,
             Vec::new(),
         )
         .await
         .unwrap();
-    let binding = WorkItemExecutionBinding {
-        activation_id: Some("activation-active".into()),
-        admission_provenance: None,
-        source_message_id: "message-active".into(),
-        turn_id: "turn-active".into(),
-        owner: None,
-        work_item_id: Some(target.id.clone()),
-        claimed_work_revision: Some(target.revision),
-    };
-    {
-        let mut guard = runtime.begin_mutation().await.unwrap();
-        guard.state.status = AgentStatus::AwakeRunning;
-        guard.state.current_run_id = Some("run-active".into());
-        guard.state.current_work_item_id = Some(target.id.clone());
-        guard.state.current_turn_work_item_id = Some(target.id.clone());
-        guard.state.current_execution_binding = Some(binding);
-        guard.persist_state(&runtime.inner.storage).await.unwrap();
-    }
+    let _scheduled = start_work_tool_execution_fixture(
+        &runtime,
+        "message-active",
+        "turn-active",
+        Some(&active.id),
+        false,
+    )
+    .await;
     let before_state = runtime.agent_state().await.unwrap();
-    let before_target = runtime.latest_work_item(&target.id).await.unwrap().unwrap();
 
-    let error = runtime
+    let completion = runtime
         .complete_work_item_with_report(
             target.id.clone(),
             WorkItemCompletionAuthority::Control,
-            "Must not complete while the target execution is active.".into(),
+            "Must not complete while another WorkItem is executing.".into(),
             Vec::new(),
             None,
             None,
@@ -4621,17 +4584,37 @@ async fn control_completion_rejects_an_active_execution_bound_target_without_sid
             Vec::new(),
         )
         .await
-        .expect_err("control completion must reject an active execution-bound target");
-    assert_eq!(
-        error
-            .downcast_ref::<crate::runtime_error::RuntimeError>()
-            .map(|error| error.descriptor().code.as_str()),
-        Some("work_item_execution_active")
-    );
+        .map(|_| ());
+    let pick = runtime
+        .pick_work_item_in_lane(target.id.clone(), None, false, Some(WorkCommandLane::Idle))
+        .await
+        .map(|_| ());
+    let update = runtime
+        .update_work_item_fields_in_lane(
+            target.id.clone(),
+            Some("proposed control update".into()),
+            None,
+            None,
+            None,
+            Some(WorkCommandLane::Idle),
+        )
+        .await
+        .map(|_| ());
+    for result in [completion, pick, update] {
+        let error = result.expect_err("control command must reject the open agent lane");
+        assert_eq!(
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<crate::runtime_error::RuntimeError>())
+                .map(|error| error.descriptor().code.as_str()),
+            Some("work_item_execution_active"),
+            "{error:#}"
+        );
+    }
     assert_eq!(runtime.agent_state().await.unwrap(), before_state);
     assert_eq!(
         runtime.latest_work_item(&target.id).await.unwrap().unwrap(),
-        before_target
+        target
     );
 }
 

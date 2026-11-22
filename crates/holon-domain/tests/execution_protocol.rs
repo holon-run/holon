@@ -540,11 +540,12 @@ fn source_revision_can_advance_without_stealing_in_flight_ownership() {
     assert_eq!(record.source_revision, 2);
     assert!(matches!(
         record.state,
-        WorkItemExecutionState::InFlight {
-            ref attempt_id,
-            generation: 1
-        } if attempt_id == "attempt-a"
+        WorkItemExecutionState::Runnable { generation: 1, .. }
     ));
+    assert_eq!(
+        advanced.state.open_attempt().unwrap().attempt_id,
+        "attempt-a"
+    );
 }
 
 #[test]
@@ -624,10 +625,26 @@ fn wait_resume_admits_from_waiting_and_settles_to_runnable() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        admitted.state.work_items["work-a"].state,
-        WorkItemExecutionState::InFlight { generation: 1, .. }
-    ));
+    assert_eq!(admitted.state.work_items, state.work_items);
+    let interrupted = interrupt_execution(
+        &admitted.state,
+        &InterruptExecution {
+            attempt_id: "attempt-1".into(),
+            outcome_id: "interrupted-1".into(),
+            reason: "restart".into(),
+            interrupted_at: "2026-08-01T00:01:00Z".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        interrupted.state.work_items["work-a"].state,
+        WorkItemExecutionState::Waiting {
+            generation: 2,
+            wait: WaitReference {
+                wait_id: "wait-1".into()
+            },
+        }
+    );
     let settled = settle_execution(
         &admitted.state,
         &SettleExecution {
@@ -882,10 +899,7 @@ fn admission_fences_source_and_work_item_revisions_independently() {
         },
     )
     .unwrap();
-    assert!(matches!(
-        transition.state.work_items["work-a"].state,
-        WorkItemExecutionState::InFlight { generation: 1, .. }
-    ));
+    assert_eq!(transition.state.work_items, state.work_items);
 }
 
 #[test]
@@ -1162,6 +1176,50 @@ fn settlement_rejects_owner_incompatible_outcome() {
     )
     .unwrap_err();
     assert!(error.contains("incompatible"));
+}
+
+#[test]
+fn exact_wait_resume_interrupt_keeps_the_same_wait_at_the_next_generation() {
+    let mut state = ExecutionProtocolState::empty("agent-a");
+    let wait = WaitReference {
+        wait_id: "wait-a".into(),
+    };
+    let waiting = work_item_record(WorkItemExecutionState::Waiting {
+        generation: 1,
+        wait: wait.clone(),
+    });
+    state.work_items.insert("work-a".into(), waiting.clone());
+    let mut wake = attempt("wake-attempt", None);
+    wake.source.identity = ExecutionSourceIdentity::TriggeredWait {
+        wait_id: wait.wait_id.clone(),
+        trigger_message_id: wake.source_message_id.clone().unwrap(),
+        ingress: None,
+    };
+    let admitted = admit_execution(&state, &AdmitExecution { attempt: wake }).unwrap();
+    assert_eq!(admitted.state.work_items["work-a"], waiting);
+    assert_eq!(
+        admitted.state.open_attempt().unwrap().attempt_id,
+        "wake-attempt"
+    );
+
+    let interrupted = interrupt_execution(
+        &admitted.state,
+        &InterruptExecution {
+            attempt_id: "wake-attempt".into(),
+            outcome_id: "interrupted-wake".into(),
+            reason: "runtime_interrupted".into(),
+            interrupted_at: "2026-08-01T00:01:00Z".into(),
+        },
+    )
+    .unwrap();
+    assert!(interrupted.state.open_attempt().is_none());
+    assert_eq!(
+        interrupted.state.work_items["work-a"].state,
+        WorkItemExecutionState::Waiting {
+            generation: 2,
+            wait,
+        }
+    );
 }
 
 #[test]

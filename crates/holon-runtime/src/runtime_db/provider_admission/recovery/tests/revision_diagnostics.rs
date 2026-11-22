@@ -176,9 +176,9 @@ fn revision_rejection_audits_the_exact_transaction_snapshot_without_charging() -
         db.transaction(|tx| {
             let execution = WorkItemExecutionRecord {
                 source_revision: source,
-                state: WorkItemExecutionState::InFlight {
+                state: WorkItemExecutionState::Runnable {
                     generation: 1,
-                    attempt_id: attempt.attempt_id.clone(),
+                    recovery_ref: None,
                 },
             };
             tx.execute(

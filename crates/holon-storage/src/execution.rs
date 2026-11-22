@@ -301,7 +301,6 @@ pub fn decode_outcome_record_with_migration(payload: &str) -> Result<ExecutionOu
 fn work_item_state_token(state: &WorkItemExecutionState) -> &'static str {
     match state {
         WorkItemExecutionState::Runnable { .. } => "runnable",
-        WorkItemExecutionState::InFlight { .. } => "in_flight",
         WorkItemExecutionState::Waiting { .. } => "waiting",
         WorkItemExecutionState::Paused { .. } => "paused",
         WorkItemExecutionState::Terminal { .. } => "terminal",

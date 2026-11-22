@@ -3297,13 +3297,10 @@ INSERT INTO scheduler_rollout_command_results (
                     )
                 }
                 "in_flight_execution_work_items=1" => {
-                    let record = WorkItemExecutionRecord {
-                        source_revision: 1,
-                        state: WorkItemExecutionState::InFlight {
-                            generation: 1,
-                            attempt_id: "attempt-a".into(),
-                        },
-                    };
+                    let record = serde_json::json!({
+                        "source_revision": 1,
+                        "state": {"kind": "in_flight", "generation": 1, "attempt_id": "attempt-a"}
+                    });
                     let recovered = WorkItemExecutionRecord {
                         source_revision: 1,
                         state: WorkItemExecutionState::Paused {
@@ -3785,11 +3782,8 @@ INSERT INTO scheduler_rollout_command_results (
                 [],
                 |row| row.get::<_, String>(0),
             )?;
-            let mut record: WorkItemExecutionRecord = serde_json::from_str(&payload)?;
-            record.state = WorkItemExecutionState::InFlight {
-                generation: record.generation(),
-                attempt_id: "missing-attempt".into(),
-            };
+            let mut record: serde_json::Value = serde_json::from_str(&payload)?;
+            record["state"]["attempt_id"] = serde_json::json!("missing-attempt");
             connection.execute(
                 "UPDATE execution_protocol_work_items
                  SET payload_json = ?1

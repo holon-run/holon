@@ -513,6 +513,7 @@ async fn work_tool_result_prepares_scheduling_after_active_metadata_ack_without_
         "scheduling-reader",
         &crate::types::AuthorityClass::OperatorInstruction,
         &serde_json::json!({"work_item_id":work.id,"objective":"one original update"}),
+        &crate::tool::spec::ToolExecutionContext::default(),
     )
     .await;
     let stored = runtime.validate_owned_work_item("scheduling-reader", &work.id)?;

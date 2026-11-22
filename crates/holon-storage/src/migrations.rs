@@ -4557,6 +4557,85 @@ CREATE TABLE operator_inbox_causes (
 CREATE INDEX idx_operator_inbox_causes_brief ON operator_inbox_causes(principal_id, brief_id);
 "#,
     },
+    Migration {
+        version: 119,
+        name: "retire_work_item_in_flight",
+        // Preserve the admission generation for a matching open attempt; the
+        // normal interruption path will advance it. Exact resumes may already
+        // have resolved their wait, unlike other admissions on Waiting work.
+        sql: r#"
+CREATE TABLE execution_protocol_work_items_agent_owned (
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN ('runnable', 'waiting', 'paused', 'terminal')
+  ),
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, work_item_id)
+);
+
+WITH legacy_owner AS (
+  SELECT w.*,
+         a.attempt_id AS open_attempt_id,
+         CASE json_extract(a.source_identity_json, '$.kind')
+           WHEN 'triggered_wait' THEN json_extract(a.source_identity_json, '$.wait_id')
+         END AS exact_wait_id
+  FROM execution_protocol_work_items w
+  LEFT JOIN execution_protocol_attempts a
+    ON w.lifecycle_state = 'in_flight'
+    AND a.agent_id = w.agent_id
+    AND a.attempt_id = json_extract(w.payload_json, '$.state.attempt_id')
+    AND a.lifecycle_state = 'open'
+    AND json_extract(a.payload_json, '$.binding.kind') = 'work_item'
+    AND json_extract(a.payload_json, '$.binding.work_item_id') = w.work_item_id
+    AND json_extract(a.payload_json, '$.admitted_fences.work_item_generation') = w.generation
+), normalized AS (
+  SELECT legacy_owner.*,
+         CASE WHEN lifecycle_state = 'in_flight' AND open_attempt_id IS NULL
+           THEN CASE WHEN generation < 9223372036854775807 THEN generation + 1 END
+           ELSE generation
+         END AS next_generation,
+         CASE WHEN open_attempt_id IS NOT NULL THEN COALESCE((
+           SELECT c.wait_condition_id
+             FROM wait_conditions c
+            WHERE c.wait_condition_id = legacy_owner.exact_wait_id
+              AND c.agent_id = legacy_owner.agent_id
+              AND c.work_item_id = legacy_owner.work_item_id
+              AND c.status IN ('active', 'triggered', 'resolved')
+         ), (
+           SELECT c.wait_condition_id
+             FROM wait_conditions c
+            WHERE c.agent_id = legacy_owner.agent_id
+              AND c.work_item_id = legacy_owner.work_item_id
+              AND c.status IN ('active', 'triggered')
+            ORDER BY c.created_at DESC, c.wait_condition_id DESC
+            LIMIT 1
+         )) END AS wait_id
+  FROM legacy_owner
+)
+INSERT INTO execution_protocol_work_items_agent_owned (
+  agent_id, work_item_id, source_revision, generation, lifecycle_state, payload_json
+)
+SELECT agent_id, work_item_id, source_revision, next_generation,
+       CASE WHEN lifecycle_state <> 'in_flight' THEN lifecycle_state
+            WHEN wait_id IS NOT NULL THEN 'waiting'
+            ELSE 'runnable' END,
+       CASE WHEN lifecycle_state <> 'in_flight' THEN payload_json
+            WHEN wait_id IS NOT NULL THEN json_set(payload_json, '$.state',
+              json_object('state', 'waiting', 'generation', next_generation,
+                          'wait', json_object('wait_id', wait_id)))
+            ELSE json_set(payload_json, '$.state',
+              json_object('state', 'runnable', 'generation', next_generation)) END
+FROM normalized;
+
+DROP TABLE execution_protocol_work_items;
+
+ALTER TABLE execution_protocol_work_items_agent_owned
+  RENAME TO execution_protocol_work_items;
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -6977,9 +7056,9 @@ fn execution_protocol_state_from_canonical_claim(
                 work_item_id.to_string(),
                 WorkItemExecutionRecord {
                     source_revision: demand.metadata_revision,
-                    state: WorkItemExecutionState::InFlight {
+                    state: WorkItemExecutionState::Runnable {
                         generation: admitted_generation,
-                        attempt_id: activation_id.to_string(),
+                        recovery_ref: None,
                     },
                 },
             );
@@ -7909,3 +7988,5 @@ mod runtime_backfill_tests;
 
 #[cfg(test)]
 mod retired_outcome_migration_tests;
+#[cfg(test)]
+mod retired_work_item_in_flight_tests;

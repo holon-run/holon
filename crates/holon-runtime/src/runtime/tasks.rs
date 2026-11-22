@@ -11,6 +11,7 @@ use super::message_dispatch::message_text;
 use super::waiting::WorkItemBlockerClearance;
 use super::{task_state_reducer, *};
 use crate::config::{ModelRef, ProviderId};
+use crate::runtime_db::transitions::WorkCommandLane;
 use crate::runtime_error::{
     sanitize_runtime_error_text, RuntimeError, RuntimeErrorContext, RuntimeErrorDomain,
 };
@@ -3609,9 +3610,7 @@ impl RuntimeHandle {
                     )))
                 }
             }
-            WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::InFlight { .. }
-                if revision_changed =>
-            {
+            WorkItemExecutionState::Runnable { .. } if revision_changed => {
                 Some(ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
                     AdvanceWorkItemSourceRevision {
                         command_id: format!(
@@ -3792,6 +3791,17 @@ impl RuntimeHandle {
         work_item_id: String,
         reason: Option<String>,
         clear_blocker: bool,
+    ) -> Result<PickedWorkItem> {
+        self.pick_work_item_in_lane(work_item_id, reason, clear_blocker, None)
+            .await
+    }
+
+    pub(crate) async fn pick_work_item_in_lane(
+        &self,
+        work_item_id: String,
+        reason: Option<String>,
+        clear_blocker: bool,
+        lane: Option<WorkCommandLane>,
     ) -> Result<PickedWorkItem> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
@@ -4198,6 +4208,7 @@ impl RuntimeHandle {
                     execution_protocol,
                     true,
                     None,
+                    lane,
                 )
                 .await
         }?;
@@ -4271,6 +4282,26 @@ impl RuntimeHandle {
         todo_list: Option<Vec<TodoItem>>,
         blocked_by: Option<Option<String>>,
     ) -> Result<WorkItemRecord> {
+        self.update_work_item_fields_in_lane(
+            work_item_id,
+            objective,
+            plan_status,
+            todo_list,
+            blocked_by,
+            None,
+        )
+        .await
+    }
+
+    pub(crate) async fn update_work_item_fields_in_lane(
+        &self,
+        work_item_id: String,
+        objective: Option<String>,
+        plan_status: Option<WorkItemPlanStatus>,
+        todo_list: Option<Vec<TodoItem>>,
+        blocked_by: Option<Option<String>>,
+        lane: Option<WorkCommandLane>,
+    ) -> Result<WorkItemRecord> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
@@ -4331,7 +4362,7 @@ impl RuntimeHandle {
                 let mut mutation = self.begin_mutation().await?;
                 mutation.attach_plan_preparation(plan_preparation)?;
                 mutation
-                    .commit_work_transition(
+                    .commit_work_transition_in_lane(
                         crate::ids::audit_event_id(),
                         crate::runtime_db::transitions::WorkItemTransitionCommand {
                             agent_id,
@@ -4351,6 +4382,7 @@ impl RuntimeHandle {
                         },
                         execution_protocol,
                         true,
+                        lane,
                     )
                     .await
             }?;
@@ -4400,9 +4432,7 @@ impl RuntimeHandle {
             source_message_id: matching_execution_binding
                 .map(|binding| binding.source_message_id.clone()),
             source_turn_id: matching_execution_binding.map(|binding| binding.turn_id.clone()),
-            expected_work_revision: matching_execution_binding
-                .and_then(|binding| binding.claimed_work_revision)
-                .unwrap_or(existing.revision),
+            expected_work_revision: existing.revision,
             report_requirement: CompletionReportRequirement::Required,
             report_state: if existing.result_brief_id.is_some() {
                 CompletionReportState::Bound
@@ -4519,6 +4549,7 @@ impl RuntimeHandle {
                     },
                     Default::default(),
                     true,
+                    None,
                     None,
                 )
                 .await
@@ -4836,27 +4867,9 @@ impl RuntimeHandle {
         let active_execution = state.status == AgentStatus::AwakeRunning
             && state.current_run_id.is_some()
             && state.current_execution_binding.is_some();
-        let target_in_flight = (active_execution
-            && state
-                .current_execution_binding
-                .as_ref()
-                .and_then(|binding| binding.work_item_id.as_deref())
-                == Some(existing.id.as_str()))
-            || protocol_state.as_ref().is_some_and(|protocol| {
-                protocol.work_items.get(&existing.id).is_some_and(|record| {
-                    let crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-                        attempt_id,
-                        ..
-                    } = &record.state
-                    else {
-                        return false;
-                    };
-                    protocol.attempts.get(attempt_id).is_some_and(|attempt| {
-                        attempt.state
-                            == crate::domain::execution_protocol::ExecutionAttemptState::Open
-                    })
-                })
-            });
+        let has_open_attempt = protocol_state
+            .and_then(|protocol| protocol.open_attempt())
+            .is_some();
 
         let settlement = match authority {
             WorkItemCompletionAuthority::AgentExecution {
@@ -4887,14 +4900,14 @@ impl RuntimeHandle {
                 if authorized_work_item_id == Some(existing.id.as_str()) {
                     WorkItemCompletionSettlement::BoundExecution
                 } else {
-                    if target_in_flight {
+                    if has_open_attempt {
                         return Err(work_item_execution_active_error(existing));
                     }
                     WorkItemCompletionSettlement::Detached
                 }
             }
             WorkItemCompletionAuthority::Control => {
-                if target_in_flight {
+                if has_open_attempt {
                     return Err(work_item_execution_active_error(existing));
                 }
                 WorkItemCompletionSettlement::Detached
@@ -5117,6 +5130,8 @@ impl RuntimeHandle {
                         execution_protocol,
                         true,
                         None,
+                        (prepared.settlement == WorkItemCompletionSettlement::Detached)
+                            .then_some(WorkCommandLane::Idle),
                     )
                     .await
             };
@@ -5187,6 +5202,7 @@ impl RuntimeHandle {
                         execution_protocol,
                         true,
                         Some(tool_execution.clone()),
+                        Some(WorkCommandLane::Idle),
                     )
                     .await
             }?
@@ -5203,6 +5219,7 @@ impl RuntimeHandle {
                         execution_protocol,
                         true,
                         None,
+                        Some(WorkCommandLane::Idle),
                     )
                     .await
             }?
@@ -5377,6 +5394,18 @@ impl RuntimeHandle {
             && require_completion_commit_attempt
         {
             if let Some(protocol_state) = expected_execution_protocol_state.as_ref() {
+                let canonical_unbound_target = || {
+                    protocol_state.work_items.get(&existing.id).map_or_else(
+                        || legacy_work_item_execution.is_some(),
+                        |work_item| {
+                            work_item.source_revision == existing.revision
+                                && !matches!(
+                                    work_item.state,
+                                    crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+                                )
+                        },
+                    )
+                };
                 let mut matching_attempts = protocol_state.attempts.values().filter(|attempt| {
                     attempt.state
                         == crate::domain::execution_protocol::ExecutionAttemptState::Open
@@ -5387,58 +5416,29 @@ impl RuntimeHandle {
                                 work_item_id,
                             } => {
                                 work_item_id == &existing.id
-                                    && attempt.admitted_fences.work_item_source_revision
-                                        == matching_execution_binding
-                                            .and_then(|binding| binding.claimed_work_revision)
-                                            .or(Some(existing.revision))
                                     && protocol_state
                                         .work_items
                                         .get(&existing.id)
                                         .is_some_and(|work_item| {
-                                            matches!(
-                                                &work_item.state,
-                                                crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-                                                    attempt_id,
-                                                    generation,
-                                                } if attempt_id == &attempt.attempt_id
-                                                    && Some(*generation)
-                                                        == attempt
-                                                            .admitted_fences
-                                                            .work_item_generation
-                                            )
+                                            work_item.source_revision == existing.revision
+                                                && Some(work_item.generation())
+                                                    == attempt.admitted_fences.work_item_generation
+                                                && !matches!(
+                                                    work_item.state,
+                                                    crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
+                                                )
                                         })
                             }
                             crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
                                 agent_id: binding_agent_id,
                             } => {
                                 binding_agent_id == &agent_id
-                                    && protocol_state.work_items.get(&existing.id).map_or_else(
-                                        || legacy_work_item_execution.is_some(),
-                                        |work_item| {
-                                            work_item.source_revision == existing.revision
-                                                && !matches!(
-                                                    work_item.state,
-                                                    crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
-                                                        | crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
-                                                )
-                                        },
-                                    )
+                                    && canonical_unbound_target()
                             }
                             crate::domain::execution_protocol::ExecutionBinding::Conversation {
                                 ..
                             } => {
-                                attempt.agent_id == agent_id
-                                    && protocol_state.work_items.get(&existing.id).map_or_else(
-                                        || legacy_work_item_execution.is_some(),
-                                        |work_item| {
-                                            work_item.source_revision == existing.revision
-                                                && !matches!(
-                                                    work_item.state,
-                                                    crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. }
-                                                        | crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. }
-                                                )
-                                        },
-                                    )
+                                attempt.agent_id == agent_id && canonical_unbound_target()
                             }
                             crate::domain::execution_protocol::ExecutionBinding::Command => false,
                         }
@@ -5458,9 +5458,7 @@ impl RuntimeHandle {
                 source_activation_id,
                 source_message_id: brief.related_message_id.clone(),
                 source_turn_id: brief.turn_id.clone(),
-                expected_work_revision: matching_execution_binding
-                    .and_then(|binding| binding.claimed_work_revision)
-                    .unwrap_or(existing.revision),
+                expected_work_revision: existing.revision,
                 report_requirement: CompletionReportRequirement::Required,
                 report_state: CompletionReportState::Pending,
                 result_brief_id: None,
@@ -5751,7 +5749,7 @@ fn work_item_execution_active_error(record: &WorkItemRecord) -> anyhow::Error {
         RuntimeErrorDomain::Conflict,
         "work_item_execution_active",
         format!(
-            "work item {} is owned by an active execution and cannot be completed externally",
+            "work item {} cannot be completed outside the active execution while the agent lane is busy",
             record.id
         ),
     )

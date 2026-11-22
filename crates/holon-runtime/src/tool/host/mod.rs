@@ -207,6 +207,7 @@ pub(super) fn execute_builtin_tool_route<'a>(
                 agent_id,
                 authority_class,
                 &call.input,
+                context,
             )),
             holon_tools::builtins::BuiltinTool::GetWorkItem => Box::pin(get_work_item::execute(
                 runtime,
@@ -224,7 +225,7 @@ pub(super) fn execute_builtin_tool_route<'a>(
                 list_work_items::execute(runtime, agent_id, authority_class, &call.input),
             ),
             holon_tools::builtins::BuiltinTool::UpdateWorkItem => Box::pin(
-                update_work_item::execute(runtime, agent_id, authority_class, &call.input),
+                update_work_item::execute(runtime, agent_id, authority_class, &call.input, context),
             ),
             holon_tools::builtins::BuiltinTool::CompleteWorkItem => {
                 defer_tool_future!(complete_work_item::execute(

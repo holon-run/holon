@@ -8,8 +8,8 @@ use std::{collections::BTreeSet, sync::Arc};
 use super::task_snapshot as tasks;
 use crate::{
     domain::execution_protocol::{
-        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, WorkItemExecutionRecord,
-        WorkItemExecutionState,
+        eligible_work_item_at_generation, ExecutionAttempt, ExecutionAttemptState,
+        ExecutionBinding, WorkItemExecutionRecord,
     },
     runtime::{
         input_evidence_budget::{
@@ -267,8 +267,7 @@ fn load_reply_routes_internal_tx(
             return Ok(None);
         };
         let work: WorkItemExecutionRecord = serde_json::from_str(&payload)?;
-        if !matches!(&work.state, WorkItemExecutionState::InFlight { attempt_id, .. } if attempt_id == &attempt.attempt_id)
-        {
+        if !eligible_work_item_at_generation(&work, attempt.admitted_fences.work_item_generation) {
             return Ok(None);
         }
     }

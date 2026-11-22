@@ -148,9 +148,9 @@ fn canonical_root(db: &RuntimeDb) -> Result<ExecutionAttempt> {
         work.id,
         WorkItemExecutionRecord {
             source_revision: 1,
-            state: WorkItemExecutionState::InFlight {
+            state: WorkItemExecutionState::Runnable {
                 generation: 1,
-                attempt_id: attempt.attempt_id.clone(),
+                recovery_ref: None,
             },
         },
     );
@@ -533,13 +533,16 @@ fn stopped_agent_or_invalid_owner_is_denied_without_charging() -> Result<()> {
             "lane" | "generation" | "revision" => {
                 let record = WorkItemExecutionRecord {
                     source_revision: if case == "revision" { 2 } else { 1 },
-                    state: WorkItemExecutionState::InFlight {
-                        generation: if case == "generation" { 2 } else { 1 },
-                        attempt_id: if case == "lane" {
-                            "replacement".into()
-                        } else {
-                            attempt.attempt_id.clone()
-                        },
+                    state: if case == "lane" {
+                        WorkItemExecutionState::Paused {
+                            generation: 1,
+                            reason: "replacement".into(),
+                        }
+                    } else {
+                        WorkItemExecutionState::Runnable {
+                            generation: if case == "generation" { 2 } else { 1 },
+                            recovery_ref: None,
+                        }
                     },
                 };
                 db.transaction(|tx| {

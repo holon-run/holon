@@ -3,8 +3,8 @@
 use std::collections::BTreeSet;
 
 use crate::domain::execution_protocol::{
-    AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionSource,
-    WorkItemExecutionRecord, WorkItemExecutionState,
+    eligible_work_item_at_generation, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
+    ExecutionBinding, ExecutionSource, WorkItemExecutionRecord,
 };
 use crate::runtime_db::transitions::execution_protocol_repository::authority_fences_tx;
 use crate::types::{
@@ -454,11 +454,9 @@ fn dispatch_attempt_rejection(
                 }
                 return Ok(Some(ProviderDispatchRejection::WorkItemRevisionMismatch));
             }
-            if !matches!(
-                &execution.state,
-                WorkItemExecutionState::InFlight { generation, attempt_id }
-                    if attempt_id == &attempt.attempt_id
-                        && Some(*generation) == attempt.admitted_fences.work_item_generation
+            if !eligible_work_item_at_generation(
+                &execution,
+                attempt.admitted_fences.work_item_generation,
             ) {
                 return Ok(Some(ProviderDispatchRejection::LaneGenerationMismatch));
             }
