@@ -639,7 +639,10 @@ async fn web_search_provider_discovery_shares_visibility_and_admission() {
     for (enabled, expected) in [
         (
             true,
-            serde_json::json!({"providers":["duckduckgo","fixture"]}),
+            serde_json::json!({"providers":[
+                {"provider_id":"duckduckgo","source":"builtin"},
+                {"provider_id":"fixture","source":"configured"},
+            ]}),
         ),
         (false, serde_json::json!({"providers":[]})),
     ] {

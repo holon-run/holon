@@ -217,3 +217,137 @@ async fn native_web_search_dispatch_executes_search_through_host_wrapper() {
         .iter()
         .all(|result| result.source == "openai-search"));
 }
+
+#[tokio::test]
+async fn derived_native_search_entry_is_listed_and_callable_through_websearch() {
+    let response = json!({
+        "id": "resp_derived_success",
+        "status": "completed",
+        "usage": { "input_tokens": 6, "output_tokens": 2 },
+        "output": [
+            { "type": "web_search_call", "id": "ws_1", "status": "completed" },
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{
+                    "type": "output_text",
+                    "text": "  ",
+                    "annotations": [
+                        {
+                            "type": "url_citation",
+                            "url": "https://example.com/derived",
+                            "title": "Derived Source"
+                        }
+                    ]
+                }]
+            }
+        ]
+    });
+    let base_url = spawn_native_search_responses_server(response).await;
+    let home = tempfile::tempdir().unwrap();
+    let mut config = dispatch_fixture_config(&home);
+    // Point the authenticated openai provider at the local responses server;
+    // its builtin registry entry already declares the dispatchable OpenAI
+    // native search kind. Every other provider's credentials are neutralized
+    // so the derived set stays deterministic (anthropic would additionally be
+    // excluded by its non-dispatchable native search kind).
+    for (id, provider) in config.providers.iter_mut() {
+        if *id != ProviderId::openai() {
+            provider.credential = None;
+            // Keep each provider's auth shape but simulate hosts without
+            // their credentials: dropping the materialized credential covers
+            // env-sourced providers, and redirecting `codex_home` away from
+            // the real CLI auth file covers the codex profile and external
+            // CLI paths (a `None` source would instead count as usable).
+            provider.codex_home = Some("/nonexistent/holon-test-codex-home".into());
+        }
+    }
+    config
+        .providers
+        .get_mut(&ProviderId::openai())
+        .unwrap()
+        .base_url = base_url;
+    let runtime = dispatch_runtime(&home, config);
+
+    // The raw snapshot web config carries no native entry; only the WebSearch
+    // tool view derives one for the authenticated openai provider.
+    assert!(!runtime
+        .inner
+        .config_snapshot
+        .load_full()
+        .web_config
+        .providers
+        .contains_key("openai"));
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    let derived_ids: Vec<&str> = derived_ids.iter().map(String::as_str).collect();
+    assert_eq!(derived_ids, ["openai"]);
+    let expected_route = crate::model_catalog::BuiltInModelCatalog::new()
+        .preferred_route_for_provider(&ProviderId::openai())
+        .unwrap()
+        .as_string();
+    let derived = web_config.providers.get("openai").unwrap();
+    assert_eq!(
+        derived.kind,
+        holon_web_retrieval::WebProviderKind::OpenAiNative
+    );
+    assert_eq!(
+        derived.model_route.as_deref(),
+        Some(expected_route.as_str())
+    );
+
+    let agent_id = runtime.agent_id().await.unwrap();
+    let execute = |name: &str, input| {
+        let call = crate::tool::ToolCall {
+            id: "derived-native-search-test".into(),
+            name: name.into(),
+            input,
+        };
+        let runtime = &runtime;
+        let agent_id = &agent_id;
+        async move {
+            runtime
+                .inner
+                .tools
+                .execute(
+                    runtime,
+                    agent_id,
+                    &crate::types::AuthorityClass::OperatorInstruction,
+                    &call,
+                )
+                .await
+        }
+    };
+
+    let (result, _) = execute("ListWebSearchProviders", json!({})).await.unwrap();
+    let mut payload = result.envelope.result.unwrap();
+    payload.as_object_mut().unwrap().remove("output_ref");
+    assert_eq!(
+        payload,
+        json!({"providers":[
+            {"provider_id":"duckduckgo","source":"builtin"},
+            {"provider_id":"openai","source":"derived"},
+        ]})
+    );
+
+    let (result, _) = execute(
+        "WebSearch",
+        json!({"query":"derived native search","provider":"openai","max_results":3}),
+    )
+    .await
+    .unwrap();
+    let mut payload = result.envelope.result.unwrap();
+    payload.as_object_mut().unwrap().remove("output_ref");
+    assert_eq!(payload["provider"], "openai");
+    assert_eq!(payload["results"][0]["url"], "https://example.com/derived");
+    assert_eq!(payload["results"][0]["source"], "openai");
+
+    // The explicit override disables derivation for the WebSearch tool view.
+    let mut snapshot = (*runtime.inner.config_snapshot.load_full()).clone();
+    snapshot.web_config.search.native_search_default = crate::web::NativeSearchDefault::Off;
+    runtime.inner.config_snapshot.store(Arc::new(snapshot));
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
+    assert!(derived_ids.is_empty());
+    assert!(!web_config.providers.contains_key("openai"));
+}

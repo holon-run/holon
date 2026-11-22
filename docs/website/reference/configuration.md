@@ -572,6 +572,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `web.search.enabled` | boolean | `true` | Enable WebSearch tool |
 | `web.search.builtin_provider.enabled` | boolean | `true` | Enable provider-declared builtin web search by default when active provider supports it |
 | `web.search.provider` | string | `"auto"` | Default search provider or `auto` |
+| `web.search.native_default` | string | `"auto"` | Override for derived standalone native search entries: `auto` (default) derives one native entry per authenticated model provider with standalone-dispatchable native search, `off` disables derivation, a concrete model provider id derives only that provider; explicit `web.providers` entries always win |
 | `web.search.mode` | enum | `"fallback"` | Default routing mode: `single`, `fallback`, or `aggregate` |
 | `web.search.providers` | string_list | `[]` | Explicit auto-mode provider attempt order |
 | `web.search.max_results` | integer | `5` | Max results returned |
@@ -614,7 +615,14 @@ is not a provider allowlist and does not limit separate calls.
 
 Native server-side search providers (native `web.providers` kinds such as
 `open_ai_native`, including routes bound through the Codex transport) are
-explicit-only. Omitting `WebSearch.provider`, `auto`, `aggregate`, and
+explicit-only. A model provider with usable credentials and a
+standalone-dispatchable native search capability (today `openai` and
+`openai-codex`) also derives a native entry automatically with zero
+configuration, binding the model catalog preferred route; `web.search.native_default`
+pins one provider, disables derivation with `off`, or restores the default with
+`auto`, and an explicit `web.providers` entry with the same id wins over the
+derived entry. Derived entries keep the explicit-only boundary. Omitting
+`WebSearch.provider`, `auto`, `aggregate`, and
 `web.search.providers` never dispatches them; they run only when their exact
 ID is passed as `provider`, and the bound `model_route` must be parseable,
 resolvable, and declare builtin web search. The standalone request carries

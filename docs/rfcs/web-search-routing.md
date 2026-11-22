@@ -67,3 +67,25 @@ blank text) is a successful search outcome, while malformed transport shape
 still fails. Failure messages are sanitized through the provider error
 redactor before they reach WebSearch diagnostics, and result dedupe keys use
 the canonical URL so one page cited with different fragments occupies one slot.
+
+### Derived native search providers
+
+Writing a `web.providers.<id>.model_route` by hand is no longer required for
+the standalone native path. Holon derives one native entry per model provider
+that has usable credentials and declares a builtin native search capability
+with standalone dispatch support (today the OpenAI native kind, covering
+`openai` and `openai-codex`). Derivation is on by default and mirrors the
+`vision.default` three-layer structure: an explicit `web.providers` entry with
+the same id wins over the derived entry, `web.search.native_default` pins a
+single provider (`<provider-id>`), disables derivation (`off`), or restores
+the default (`auto`, also what setting the key to `auto` writes back).
+
+The derived entry binds the model catalog preferred route for its provider,
+keeping the model chain `auto` expansion and the standalone search path on one
+source of truth. Derived entries stay explicit-only: they never join the
+omitted-provider inheritance, `auto` candidates, `aggregate` fan-out, or the
+default provider selection, and reserved native kinds stay undiscoverable.
+`ListWebSearchProviders` lists derived entries with a `derived` source marker
+alongside `configured` and `builtin` entries. Only the WebSearch tool surface
+sees derived entries; conversation builtin search and WebFetch keep the raw
+web configuration.

@@ -536,6 +536,7 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `web.search.enabled` | boolean | `true` | 启用 WebSearch 工具 |
 | `web.search.builtin_provider.enabled` | boolean | `true` | 当活跃模型提供商支持时，默认启用提供商声明的内置网页搜索 |
 | `web.search.provider` | string | `"auto"` | 默认搜索提供商，或 `auto` |
+| `web.search.native_default` | string | `"auto"` | 派生独立原生搜索条目的覆盖键：`auto`（默认）为每个具备可独立派发原生搜索能力的已认证模型提供商派生一个原生条目，`off` 关闭派生，填具体模型提供商 id 则只派生该提供商；显式 `web.providers` 条目始终优先 |
 | `web.search.mode` | enum | `"fallback"` | 默认路由模式：`single`、`fallback` 或 `aggregate` |
 | `web.search.providers` | string_list | `[]` | auto 模式下显式的提供商尝试顺序 |
 | `web.search.max_results` | integer | `5` | 返回的最大结果数 |
@@ -564,7 +565,7 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 
 即使默认模式为 `single`，显式聚合也可能把同一查询发送给多家提供商，增加外发、费用或延迟。如需每次最多尝试一家，请将 `web.search.max_provider_attempts` 设为 `1`。这不是提供商白名单，也不限制多次独立调用。
 
-原生服务端搜索提供商（如 `open_ai_native` 这类 native `web.providers` 类型，含经 Codex 传输绑定的路由）仅在显式点名时运行。省略 `WebSearch.provider`、传入 `auto`/`aggregate` 或配置 `web.search.providers` 都不会触发它们；只有以 `provider` 显式传入其 ID 才会执行，且绑定的 `model_route` 必须可解析并声明 builtin web search。独立请求只携带查询与必要的搜索参数——不含对话历史、工作区数据或其他工具。结果仅取厂商结构化引用来源，按 URL 去重后最多返回 `max_results` 条；已执行搜索但无可映射来源时返回空结果列表，未执行搜索的纯回答则显式失败。任何失败对本次调用都是终态：native 派发绝不回退到其他提供商或路由。
+原生服务端搜索提供商（如 `open_ai_native` 这类 native `web.providers` 类型，含经 Codex 传输绑定的路由）仅在显式点名时运行。具备可用凭证且声明可独立派发原生搜索能力的模型提供商（目前为 `openai` 与 `openai-codex`）还会零配置自动派生一个原生条目，绑定模型目录 preferred route；`web.search.native_default` 可固定单个提供商、用 `off` 关闭派生或用 `auto` 恢复默认，同 id 的显式 `web.providers` 条目优先于派生条目。派生条目保持显式点名边界：省略 `WebSearch.provider`、传入 `auto`/`aggregate` 或配置 `web.search.providers` 都不会触发它们；只有以 `provider` 显式传入其 ID 才会执行，且绑定的 `model_route` 必须可解析并声明 builtin web search。独立请求只携带查询与必要的搜索参数——不含对话历史、工作区数据或其他工具。结果仅取厂商结构化引用来源，按 URL 去重后最多返回 `max_results` 条；已执行搜索但无可映射来源时返回空结果列表，未执行搜索的纯回答则显式失败。任何失败对本次调用都是终态：native 派发绝不回退到其他提供商或路由。
 
 ## 运行时数据库保留策略（Retention）
 
