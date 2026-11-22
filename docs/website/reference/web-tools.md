@@ -66,6 +66,25 @@ WebFetch { url: "https://example.com/docs/api", max_chars: 5000 }
 The runtime fetches the URL, applies Holon's web policy, extracts readable
 text, and returns the result.
 
+### Remote fetch providers
+
+Remote extraction reuses configured `web.providers.<id>` entries (API keys via
+`credential_profile` and optional `base_url`) without creating separate fetch
+entries. Passing a provider ID to `WebFetch(provider="<ID>")` uses that
+service directly without falling back to another provider or local HTTP.
+
+| Kind | Allowed `extract_mode` | `source` | `final_url` and requirements |
+|---|---|---|---|
+| `deepseek` | `auto` only | `deepseek_remote` | `final_url=null`; requires API key profile |
+| `tavily` | `auto`, `text` | `tavily_remote` | `final_url=null`; requires API key profile |
+| `exa` | `auto` only | `exa_remote` | `final_url=null`; requires API key profile; no freshness guarantee |
+| `firecrawl` | `auto` only | `firecrawl_remote` | Reports provider-observed `final_url` when available, otherwise `null`; requires API key profile (Search free tier does not apply to Scrape) |
+
+Remote fetch discloses the URL path and query to the chosen service, returns the
+**provider API** HTTP status (`status_source=provider_api`), and is rejected
+when custom `allowed_hosts`/`denied_hosts` rules or non-default redirect limits
+are configured; omit `provider` when local policy enforcement or `raw` mode is needed.
+
 ### DeepSeek remote Search and Fetch
 
 Reuse an existing DeepSeek API key profile; do not put the key in config:

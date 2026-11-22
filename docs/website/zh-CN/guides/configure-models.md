@@ -112,12 +112,18 @@ GitHub 上的授权；停止访问时，还应在 GitHub 设置中撤销 App 授
 # 为专门的代码审查 Agent 指定更强的大模型
 holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 
+# 可选：随路由一起设置或清除推理强度（reasoning effort）与服务等级（service tier）
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
+
 # 查看该 Agent 当前的独立模型配置
 holon agent model get reviewer
 
 # 若需清除独立覆盖，恢复继承全局默认配置
 holon agent model clear reviewer
 ```
+
+省略 `--reasoning-effort` 或 `--service-tier` 时会保留该 Agent 当前的对应覆盖配置，传入 `clear` 则清除。
 
 #### 2. 在对话中随时核验实际运行模型
 

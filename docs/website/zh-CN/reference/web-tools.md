@@ -61,6 +61,19 @@ WebFetch { url: "https://example.com/docs/api", max_chars: 5000 }
 
 运行时抓取该 URL，应用 Holon 的网络策略，提取可读文本，并返回结果。
 
+### 远程抓取提供商
+
+远程提取直接复用已配置的 `web.providers.<id>` 条目（通过 `credential_profile` 引用 API 密钥，以及可选的 `base_url`），无需另外建立抓取配置。传给 `WebFetch(provider="<ID>")` 后会直接请求该服务，失败时不回退到其他提供商或本地 HTTP。
+
+| 类型 | 支持的 `extract_mode` | `source` | `final_url` 与前提要求 |
+|---|---|---|---|
+| `deepseek` | 仅 `auto` | `deepseek_remote` | `final_url=null`；需要 API key profile |
+| `tavily` | `auto`、`text` | `tavily_remote` | `final_url=null`；需要 API key profile |
+| `exa` | 仅 `auto` | `exa_remote` | `final_url=null`；需要 API key profile；不保证结果实时性 |
+| `firecrawl` | 仅 `auto` | `firecrawl_remote` | 有重定向记录时返回提供商上报的 `final_url`，否则为 `null`；需要 API key profile（Search 的免费额度不适用于 Scrape） |
+
+远程抓取会把 URL 路径和查询参数发往所选服务，并返回**提供商 API** 的 HTTP 状态码（`status_source=provider_api`）。若实例配置了自定义 `allowed_hosts`/`denied_hosts` 规则或非默认的重定向上限，远程抓取会被拒绝；需要本地策略检查或 `raw` 模式时请省略 `provider`。
+
 ### DeepSeek 独立 Search / Fetch
 
 引用已有 DeepSeek API key profile，不要把密钥写入配置：
@@ -99,8 +112,8 @@ Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运�
 | `query` | 是 | 搜索查询字符串 |
 | `max_results` | 否 | 返回的最大结果数 |
 | `provider` | 否 | 省略则沿用已配置默认与模式；`"auto"` 按自动候选顺序配合已配置模式执行；`"aggregate"` 仅本次按顺序聚合查询并按规范 URL 去重；或传具体提供商 ID（不回退） |
-| `language` | 否 | 可选语言提示；仅能力元数据声明支持区域/语言的提供商会消费（Google 映射为 `hl` 参数），其余提供商忽略 |
-| `region` | 否 | 可选区域提示；由同一批提供商消费（Google 映射为 `gl` 参数） |
+| `language` | 否 | 可选语言提示；仅能力元数据声明支持区域/语言的提供商会消费（Google 映射为 `hl`，Brave 映射为 `search_lang`，SearXNG 传入其 `language` 参数以替代自动检测），其余提供商忽略 |
+| `region` | 否 | 可选区域提示；由同一批提供商消费（Google 映射为 `gl`，Brave 映射为 `country`；SearXNG 在存在不含区域子标签的语言提示时将其合并进 `language` 区域字段，仅传区域提示时保持自动检测） |
 
 ### 路由与提供商发现
 

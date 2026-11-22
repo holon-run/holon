@@ -64,7 +64,13 @@ A timer firing only indicates that the trigger arrived on schedule; verify the a
 | **Action compliance** | Confirmed read-only execution; no unexpected branch commits or file mutations. |
 | **Next fire time** | For recurring timers, the next scheduled fire time is updated automatically in the timer ledger. |
 
-### 4. Safely adjust or cancel a recurring schedule
+### 4. Pause, resume, or cancel a recurring schedule
+
+To temporarily hold a timer without losing its schedule or history, click
+**Pause** on that timer in the Web GUI **Overview** panel (or call the HTTP
+pause endpoint). Paused timers stop counting down and never replay missed runs
+when you click **Resume**: calendar timers wait for the next match after resume
+time, while interval timers finish their remaining delay.
 
 When a project milestone is reached or monitoring is no longer required, tell the agent to cancel the schedule:
 

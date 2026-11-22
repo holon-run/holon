@@ -3,7 +3,7 @@ title: HTTP 控制平面
 summary: 如何理解 Holon 的无头集成接口。
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.60.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.61.0. -->
 
 # HTTP 控制平面
 
@@ -436,6 +436,14 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 { "after_ms": 60000, "every_ms": null, "summary": "心跳检查" }
 ```
 
+**`POST /api/control/agents/:id/timers/:timer_id/pause`** — 暂停定时器
+
+按 id 暂停活跃定时器，保留调度配置与等待条件。
+
+**`POST /api/control/agents/:id/timers/:timer_id/resume`** — 恢复定时器
+
+按 id 恢复已暂停的定时器。
+
 **`POST /api/control/agents/:id/timers/:timer_id/cancel`** — 取消定时器
 
 按 id 取消活跃的定时器。
@@ -535,9 +543,17 @@ bearer 模式下，所有 `/api/control/*` 路由都要求 control token。
 }
 ```
 
+**`POST /api/control/agents/:id/timers/:timer_id/pause`** — 暂停 timer
+
+暂停活跃 timer 并返回更新后的 `TimerRecord`（`status: "paused"`、`next_fire_at: null`，非日历 timer 会把剩余延迟冻结在 `paused_remaining_ms`）。对已暂停的 timer 调用幂等；找不到 timer 返回 `404`；已完成或已取消的 timer 返回 `409 Conflict`。暂停不会撤回已入队或已领取的唤醒。
+
+**`POST /api/control/agents/:id/timers/:timer_id/resume`** — 恢复 timer
+
+恢复已暂停 timer 并返回更新后的 `TimerRecord`（`status: "active"`）。日历 timer 会选取恢复时刻之后的下一个有效匹配时间，相对/间隔 timer 则按 `paused_remaining_ms` 继续倒计时；暂停期间错过的触发不会补跑。对已活跃的 timer 调用幂等；已完成或已取消的 timer 返回 `409 Conflict`。
+
 **`POST /api/control/agents/:id/timers/:timer_id/cancel`** — 取消 timer
 
-取消一个活跃 timer 并返回更新后的 `TimerRecord`。对已取消的 timer，取消是幂等的。
+取消一个活跃或已暂停的 timer 并返回更新后的 `TimerRecord`。对已取消的 timer，取消是幂等的。
 找不到 timer 时返回共享的 404 错误信封；已完成的 timer 返回共享的 400 生命周期错误，
 因为它已经触发过。取消会立即更新 timer 列表/详情投影，并发出 `timer_cancelled`。
 

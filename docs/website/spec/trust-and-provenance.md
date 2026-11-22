@@ -201,6 +201,10 @@ Holon's provenance contract:
 - When the runtime generates internal messages (system ticks, task results,
   timer fires, continuation follow-ups), it assigns runtime-owned origin and
   `RuntimeInstruction` authority.
+- Self-enqueued follow-ups created through `Enqueue` are agent-authored
+  continuations, not fresh operator input. They preserve provenance, priority,
+  and WorkItem binding, but cap `OperatorInstruction` at `RuntimeInstruction`;
+  other authority classes stay unchanged.
 - Agent-to-agent deliveries (`SendAgentMessage`, `InvokeAgent` to an existing
   agent, replies, and forwards) derive `RuntimeInstruction` for the delivered
   message while preserving the caller's original authority separately; they do

@@ -117,12 +117,19 @@ Use `holon agent model set` to assign an agent-specific route:
 # Assign a high-end reasoning model to reviewer
 holon agent model set "anthropic@default/claude-sonnet-4-6" reviewer
 
+# Optional: set or clear reasoning effort and service tier alongside the route
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort high --service-tier fast
+holon agent model set "openai@default/gpt-5.4" reviewer --reasoning-effort clear --service-tier clear
+
 # Inspect the agent's effective model setting
 holon agent model get reviewer
 
 # Clear the override to inherit the global default
 holon agent model clear reviewer
 ```
+
+Omitting `--reasoning-effort` or `--service-tier` keeps the agent's current
+override for that setting; passing `clear` removes it.
 
 #### 2. Verify the Active Model in Chat
 

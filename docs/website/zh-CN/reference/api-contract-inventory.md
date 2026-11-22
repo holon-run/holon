@@ -267,7 +267,9 @@ SSE 连接，而不是跨越隐藏的间隙继续；客户端从每个 agent 最
 | `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/complete` | `{ report_text, authority_class? }` | `WorkItemRecord` | 实验性 | 以 `report_text` 作为规范结果 brief，原子地完成一个 open WorkItem；也会终结已有的旧版 `completing` 记录。取消/删除仍不在范围内。 |
 | `GET` | `/api/agents/:agent_id/timers/:timer_id` | 路径 `agent_id`、`timer_id`。 | `TimerRecord` | 路由为候选稳定；DTO schema 仍然宽泛 | 目标 agent 下找不到该 timer id 时返回 404。 |
 | `POST` | `/api/control/agents/:agent_id/timers` | `{ duration_ms, interval_ms?, summary?, authority_class? }` | `TimerRecord` | 候选稳定 | `duration_ms` 必填；`interval_ms` 使其成为重复定时器。 |
-| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/cancel` | `{ authority_class? }` | `TimerRecord` | 候选稳定 | 对已取消的定时器幂等。定时器缺失返回 404；已完成的定时器返回 400，因为它已经触发过。 |
+| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/pause` | `{ authority_class? }` | `TimerRecord` | 候选稳定 | 对已暂停的定时器幂等。定时器缺失返回 404；已完成或已取消返回 409。 |
+| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/resume` | `{ authority_class? }` | `TimerRecord` | 候选稳定 | 对已活跃的定时器幂等。定时器缺失返回 404；已完成或已取消返回 409。 |
+| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/cancel` | `{ authority_class? }` | `TimerRecord` | 候选稳定 | 取消活跃或已暂停的定时器；对已取消的定时器幂等。定时器缺失返回 404；已完成的定时器返回 400，因为它已经触发过。 |
 
 `CreateCommandTaskRequest` 字段：
 
@@ -381,8 +383,8 @@ v0.38.0 迁移词汇保留。它们不是当前的公共 API 身份区分符。�
 4. **WorkItem 变更 API 现在覆盖 focus/update/complete。** HTTP 可以列出/读取/
    创建/入队工作项，拾取焦点，更新 objective/planning/blocker 字段，并完成工作项。
    在需要独立生命周期契约之前，取消/删除有意保持在范围外。
-5. **定时器生命周期 API 现在覆盖取消。** HTTP 可以创建/列出/读取定时器，并取消
-   活跃定时器。删除/清除仍不在范围内。
+5. **定时器生命周期 API 现在覆盖暂停、恢复与取消。** HTTP 可以创建、列出、读取、
+   暂停、恢复并取消定时器。删除/清除仍不在范围内。
 6. **部署指引仍需加固。** HTTP 入口信任/认证表已有文档，但面向生产的指引仍应
    说明何时使用 bearer 模式、本地模式、回调能力和专用 operator 适配器。
 7. **工具 schema 是独立的 API 接口。** 内置工具的输入/结果 schema 现在有了自己

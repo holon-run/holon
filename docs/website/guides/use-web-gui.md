@@ -112,9 +112,9 @@ The Dashboard provides a runtime overview:
   Creation shows progress and any failure. Before deleting, preserve needed
   results and review the confirmation and any blockers. Include private
   children only when you intend to remove them.
-- **Timer overview** — View active relative and calendar timers (with cron rules
-  and timezones), check upcoming fire times, and cancel timers in the agent
-  detail panel.
+- **Timer overview** — View active and paused relative and calendar timers (with
+  cron rules and timezones), check upcoming fire times, and pause, resume, or
+  cancel timers in the agent detail panel.
 
 ### Agent Conversation
 

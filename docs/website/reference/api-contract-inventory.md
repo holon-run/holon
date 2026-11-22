@@ -280,7 +280,9 @@ Breaking migration from the removed projection contract:
 | `POST` | `/api/control/agents/:agent_id/work-items/:work_item_id/complete` | `{ report_text, authority_class? }` | `WorkItemRecord` | Experimental | Atomically completes an open WorkItem with `report_text` as its canonical result brief; also finalizes an existing legacy `completing` record. Cancel/delete remains out of scope. |
 | `GET` | `/api/agents/:agent_id/timers/:timer_id` | Path `agent_id`, `timer_id`. | `TimerRecord` | Candidate stable route; DTO schema still broad | Returns 404 when the timer id is not found for the target agent. |
 | `POST` | `/api/control/agents/:agent_id/timers` | `{ duration_ms?, interval_ms?, calendar_expression?, timezone?, summary?, authority_class? }` | `TimerRecord` | Candidate stable | Creates either a relative/fixed-interval timer or a five-field cron timer. Calendar expression and timezone are required together and are mutually exclusive with duration/interval fields. |
-| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/cancel` | `{ authority_class? }` | `TimerRecord` | Candidate stable | Idempotent for already-cancelled timers. Missing timers return 404; completed timers return 400 because they already fired. |
+| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/pause` | `{ authority_class? }` | `TimerRecord` | Candidate stable | Idempotent for already-paused timers. Missing timers return 404; completed or cancelled timers return 409. |
+| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/resume` | `{ authority_class? }` | `TimerRecord` | Candidate stable | Idempotent for already-active timers. Missing timers return 404; completed or cancelled timers return 409. |
+| `POST` | `/api/control/agents/:agent_id/timers/:timer_id/cancel` | `{ authority_class? }` | `TimerRecord` | Candidate stable | Cancels an active or paused timer; idempotent for already-cancelled timers. Missing timers return 404; completed timers return 400 because they already fired. |
 
 `CreateCommandTaskRequest` fields:
 
@@ -402,8 +404,9 @@ execution.
    list/get/create/enqueue, pick focus, update objective/planning/blocker
    fields, and complete work items. Cancel/delete remains intentionally out of
    scope until a distinct lifecycle contract is needed.
-5. **Timer lifecycle APIs now cover cancellation.** HTTP can create/list/get
-   timers and cancel active timers. Delete/purge remains out of scope.
+5. **Timer lifecycle APIs now cover pause, resume, and cancellation.** HTTP can
+   create, list, get, pause, resume, and cancel timers. Delete/purge remains out
+   of scope.
 6. **Deployment guidance still needs hardening.** The HTTP ingress trust/auth
    table is documented, but production-facing guidance should still describe
    when to use bearer mode, local mode, callback capabilities, and dedicated
