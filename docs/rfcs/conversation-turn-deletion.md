@@ -1,7 +1,7 @@
 ---
 title: RFC: Conversation Turn Content Deletion and Unexecuted Input Withdrawal
 date: 2026-11-22
-status: draft
+status: implemented
 ---
 
 # RFC: Conversation Turn Content Deletion and Unexecuted Input Withdrawal
