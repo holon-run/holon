@@ -30,6 +30,7 @@ sha2 = "0.10"
 tokio = { version = "1.43", features = ["fs", "io-util", "net", "rt", "sync", "time"] }
 tokio-stream = "0.1"
 tokio-util = { version = "0.7", features = ["io"] }
+tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6.8", features = ["compression-gzip", "cors", "trace"] }
 tracing = "0.1"
 url = "2.5"
@@ -40,7 +41,6 @@ hyper = { version = "1.5", features = ["server", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["server-auto", "tokio", "service", "http1", "http2"] }
 tokio = { version = "1.43", features = ["macros"] }
 libc = { version = "0.2", optional = true }
-tower = { version = "0.5", features = ["util"] }
 
 [dev-dependencies]
 image = { version = "0.25.9", default-features = false, features = ["png"] }
