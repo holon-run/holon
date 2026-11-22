@@ -59,6 +59,7 @@ impl<'de> Deserialize<'de> for TimerContent {
 /// Omitted fields are unchanged; an explicit null clears the value.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[schemars(transform = patch_alias_schema)]
 pub struct TimerContentPatch {
     #[serde(
         default,
@@ -73,6 +74,20 @@ pub struct TimerContentPatch {
         deserialize_with = "present"
     )]
     pub instruction: Option<Option<String>>,
+}
+
+fn patch_alias_schema(schema: &mut Schema) {
+    let Some(mut properties) = schema.get("properties").cloned() else {
+        return;
+    };
+    let mut alias = properties["instruction"].clone();
+    alias["description"] = serde_json::json!("Legacy alias for instruction; do not send both.");
+    properties["summary"] = alias;
+    schema.insert("properties".into(), properties);
+    schema.insert(
+        "not".into(),
+        serde_json::json!({"required": ["instruction", "summary"]}),
+    );
 }
 
 fn present<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<Option<String>>, D::Error> {

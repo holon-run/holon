@@ -11,7 +11,7 @@ export type TimerContentPatch = {
   instruction?: string | null;
 };
 
-function timerContentValues(timer: TimerContentFields) {
+export function timerContentValues(timer: TimerContentFields) {
   return {
     title: timer.title ?? "",
     instruction: (timer.instruction === undefined ? timer.summary : timer.instruction) ?? "",

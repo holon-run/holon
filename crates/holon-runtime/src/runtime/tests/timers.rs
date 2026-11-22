@@ -3500,21 +3500,24 @@ async fn timer_content_edit_leaves_existing_wake_and_schedule_unchanged() {
             .unwrap(),
         expected
     );
-    let legacy_patch =
-        serde_json::from_value(serde_json::json!({"summary": "New instruction"})).unwrap();
     expected.content.instruction = Some("New instruction".into());
-    let edited = runtime
-        .edit_timer_content(&producer.id, legacy_patch)
-        .await
-        .unwrap();
-    assert_eq!(edited, expected);
+    let outcome = crate::tool::tools::timer::edit(
+        &runtime,
+        &serde_json::json!({"timer_id": producer.id, "patch": {"summary": "New instruction"}}),
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        outcome.envelope.result.unwrap(),
+        serde_json::to_value(&expected).unwrap()
+    );
     assert_eq!(
         assert_single_durable_timer_wake(&runtime, &producer.id),
         old_id
     );
     assert_eq!(read_message(&old_id), old_message);
 
-    let mut command = terminal_timer_queue_command(&runtime, &edited);
+    let mut command = terminal_timer_queue_command(&runtime, &expected);
     let QueueMutation::CompareAndSet { record, .. } = &mut command.mutation else {
         unreachable!();
     };
@@ -3532,7 +3535,7 @@ async fn timer_content_edit_leaves_existing_wake_and_schedule_unchanged() {
     runtime.apply_transition_commit(commit).await;
 
     runtime.fire_timer_record(&mut producer).await.unwrap();
-    assert_eq!(producer.fire_count, edited.fire_count + 1);
+    assert_eq!(producer.fire_count, expected.fire_count + 1);
     let wake = runtime
         .inner
         .runtime_db

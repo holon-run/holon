@@ -1665,6 +1665,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/control/agents/{agent_id}/timers/{timer_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Edit timer content
+         * @description Update only the display title or trigger instruction. Omitted fields stay unchanged; null clears the value. The schedule and already queued wakes are not changed.
+         */
+        patch: operations["editTimerContent"];
+        trace?: never;
+    };
     "/api/control/agents/{agent_id}/timers/{timer_id}/cancel": {
         parameters: {
             query?: never;
@@ -3990,6 +4010,7 @@ export interface components {
                  */
                 fire_count: number;
                 id: string;
+                instruction?: string | null;
                 /** Format: uint64 */
                 interval_ms?: number | null;
                 /**
@@ -4018,7 +4039,9 @@ export interface components {
                  * @enum {string}
                  */
                 status: "active" | "paused" | "completed" | "cancelled";
+                /** @description Legacy alias for `instruction`. */
                 summary?: string | null;
+                title?: string | null;
             }[];
             /** @default [] */
             waits: {
@@ -6054,10 +6077,15 @@ export interface components {
             calendar_expression?: string | null;
             /** Format: uint64 */
             duration_ms?: number | null;
+            /** @description Trigger message. Do not combine with the legacy `summary` field. */
+            instruction?: string | null;
             /** Format: uint64 */
             interval_ms?: number | null;
+            /** @description Legacy alias for `instruction`. */
             summary?: string | null;
             timezone?: string | null;
+            /** @description Display-only title. */
+            title?: string | null;
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         CreateWorkItemRequest: {
@@ -8926,6 +8954,16 @@ export interface components {
             incarnation?: number | null;
             kind: components["schemas"]["TaskTargetKind"];
         };
+        /**
+         * TimerContentPatch
+         * @description Omitted fields are unchanged; an explicit null clears the value.
+         */
+        TimerContentPatch: {
+            instruction?: string | null;
+            /** @description Legacy alias for instruction; do not send both. */
+            summary?: string | null;
+            title?: string | null;
+        };
         /** TimerRecord */
         TimerRecord: {
             agent_id: string;
@@ -8945,6 +8983,7 @@ export interface components {
              */
             fire_count: number;
             id: string;
+            instruction?: string | null;
             /** Format: uint64 */
             interval_ms?: number | null;
             /**
@@ -8973,7 +9012,9 @@ export interface components {
              * @enum {string}
              */
             status: "active" | "paused" | "completed" | "cancelled";
+            /** @description Legacy alias for `instruction`. */
             summary?: string | null;
+            title?: string | null;
         };
         /** ToolExecutionArtifactContent */
         ToolExecutionArtifactContent: {
@@ -12824,6 +12865,53 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["CreateTimerRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimerRecord"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    editTimerContent: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Timer id. */
+                timer_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["TimerContentPatch"];
             };
         };
         responses: {

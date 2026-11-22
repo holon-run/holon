@@ -32,7 +32,8 @@ use crate::{
     types::{
         AddSkillRequest, AgentListEntry, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
         RefreshCatalogRequest, SyncTemplateRemoteSourcesRequest, TaskInputResult, TaskOutputResult,
-        TaskStatusSnapshot, TaskStopResult, TimerRecord, ToolExecutionRecord, WorkItemRecord,
+        TaskStatusSnapshot, TaskStopResult, TimerContentPatch, TimerRecord, ToolExecutionRecord,
+        WorkItemRecord,
     },
 };
 
@@ -397,6 +398,10 @@ fn component_schemas() -> Map<String, Value> {
     schemas.insert(
         "CreateTimerRequest".into(),
         component_schema::<CreateTimerRequest>(),
+    );
+    schemas.insert(
+        "TimerContentPatch".into(),
+        component_schema::<TimerContentPatch>(),
     );
     schemas.insert(
         "CancelTimerRequest".into(),

@@ -30,4 +30,5 @@ http_async_tests!(
     timer_detail_route_returns_latest_timer_record,
     timer_cancel_route_is_idempotent_and_updates_projection,
     timer_pause_resume_routes_require_control_and_preserve_identity,
+    timer_content_patch_is_controlled_and_does_not_change_schedule,
 );

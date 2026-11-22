@@ -529,6 +529,10 @@ pub fn router(state: AppState) -> Router {
             post(tasks::create_timer),
         )
         .route(
+            "/control/agents/{agent_id}/timers/{timer_id}",
+            patch(tasks::edit_timer_content),
+        )
+        .route(
             "/control/agents/{agent_id}/timers/{timer_id}/cancel",
             post(tasks::cancel_timer),
         )

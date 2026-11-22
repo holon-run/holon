@@ -67,3 +67,9 @@ same request. In a content edit, omission preserves the field, explicit
 `null` clears it, and whitespace-only text is rejected. The update cannot
 modify scheduling or history. Once the edit commits, a subsequent timer fire
 uses the current instruction; already enqueued messages are not rewritten.
+
+Operators can edit content from the Web timer list, with `holon timer edit`,
+or via `PATCH /api/control/agents/{agent_id}/timers/{timer_id}`. The PATCH
+body contains only the changed fields; for example, `{"title":null}`
+clears the title while leaving the instruction unchanged. Agents can call
+`EditTimerContent` with `timer_id` and a `patch` object for their own timers.

@@ -3,7 +3,7 @@ use crate::config::StateMemoryLimits;
 use crate::diagnostics::resource_io::ResourceReadMaterial;
 use std::cell::Cell;
 
-const TIMER: &str = r#"{"id":"body-timer","agent_id":"body-agent","created_at":"2026-10-01T00:00:00Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"active","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:00Z","last_fired_at":null,"fire_count":0}"#;
+const TIMER: &str = r#"{"id":"body-timer","agent_id":"body-agent","created_at":"2026-10-01T00:00:00Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"active","title":null,"instruction":"{,:} \"x\" \\ 路","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:00Z","last_fired_at":null,"fire_count":0}"#;
 const MESSAGE: &str = r#"{"id":"body-wake","agent_id":"body-agent","created_at":"2026-10-01T00:00:00Z","kind":"timer_tick","origin":{"kind":"timer","timer_id":"body-timer"},"authority_class":"runtime_instruction","priority":"next","body":{"type":"text","text":"{,:} \"x\" \\ 路"},"metadata":null,"correlation_id":null,"causation_id":null}"#;
 const ID: &str = "drop-wake";
 
@@ -32,10 +32,10 @@ fn timer_and_message_effects_charge_exact_transaction_and_last_holder() -> Resul
     let message = message()?;
     assert_eq!(serde_json::to_string(&timer)?, TIMER);
     assert_eq!(serde_json::to_string(&message)?, MESSAGE);
-    // Timer: eleven fields, six string values. Message: fifteen fields over
+    // Timer: thirteen fields, seven string values. Message: fifteen fields over
     // three objects, ten string values. Quoted punctuation is not structure.
     let body = add(
-        add(cost(TIMER.len(), 40, 12), cost(MESSAGE.len(), 58, 16)),
+        add(cost(TIMER.len(), 47, 14), cost(MESSAGE.len(), 58, 16)),
         add(cost(MESSAGE.len(), 58, 16), cost(11, 1, 1)),
     );
     let exact = add(add(header(), header()), body);

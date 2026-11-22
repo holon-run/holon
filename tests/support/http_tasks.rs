@@ -1119,6 +1119,104 @@ pub async fn timer_cancel_route_is_idempotent_and_updates_projection() -> Result
     Ok(())
 }
 
+pub async fn timer_content_patch_is_controlled_and_does_not_change_schedule() -> Result<()> {
+    use reqwest::StatusCode;
+    use serde_json::{json, Value};
+
+    let data = tempdir()?;
+    let workspace = tempdir()?;
+    let config = test_config_with_paths(
+        data.path().to_path_buf(),
+        workspace.path().to_path_buf(),
+        "127.0.0.1:0".into(),
+        ControlAuthMode::Required,
+    );
+    let (host, base, server) = spawn_server_with_config(config).await?;
+    host.create_named_agent("other", None).await?;
+    let client = Client::new();
+    let create = format!("{base}/api/control/agents/default/timers");
+    let original: Value = client
+        .post(create)
+        .bearer_auth("secret")
+        .json(&json!({"duration_ms":300000,"interval_ms":30000,"summary":"legacy"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(original["instruction"], "legacy");
+    assert_eq!(original["summary"], "legacy");
+    let id = original["id"].as_str().unwrap();
+    let url = |agent: &str| format!("{base}/api/control/agents/{agent}/timers/{id}");
+    let patch =
+        |agent: &str, fields: Value| client.patch(url(agent)).bearer_auth("secret").json(&fields);
+    assert_eq!(
+        client
+            .patch(url("default"))
+            .json(&json!({"title":"new"}))
+            .send()
+            .await?
+            .status(),
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        patch("other", json!({"title":"new"}))
+            .send()
+            .await?
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    for invalid in [
+        json!({"title":"valid","instruction":" \t "}),
+        json!({"title":"valid","interval_ms":2}),
+        json!({"summary":null,"instruction":"duplicate"}),
+    ] {
+        assert!(patch("default", invalid)
+            .send()
+            .await?
+            .status()
+            .is_client_error());
+    }
+    let first: Value = patch("default", json!({"title":"Display"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let mut expected = original.clone();
+    expected["title"] = json!("Display");
+    assert_eq!(first, expected);
+    let second: Value = patch("default", json!({"summary":"new\ninstruction"}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    expected["instruction"] = json!("new\ninstruction");
+    expected["summary"] = json!("new\ninstruction");
+    assert_eq!(second, expected);
+    let cleared: Value = patch("default", json!({"instruction":null}))
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    expected["instruction"] = Value::Null;
+    expected["summary"] = Value::Null;
+    assert_eq!(cleared, expected);
+    let detail: Value = client
+        .get(format!("{base}/api/agents/default/timers/{id}"))
+        .bearer_auth("secret")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    assert_eq!(detail, expected);
+    server.abort();
+    Ok(())
+}
+
 pub async fn timer_pause_resume_routes_require_control_and_preserve_identity() -> Result<()> {
     use reqwest::StatusCode;
     use serde_json::{json, Value};

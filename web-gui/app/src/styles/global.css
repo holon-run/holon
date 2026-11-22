@@ -7432,6 +7432,7 @@ code {
 .agent-timer-editor input,
 .agent-timer-editor textarea { width: 100%; box-sizing: border-box; font: inherit; }
 .agent-timer-editor textarea { resize: vertical; }
+.agent-timer-instruction { white-space: pre-wrap; overflow-wrap: anywhere; }
 .agent-timer-history {
   margin-top: 12px;
   border-top: 1px solid var(--line);

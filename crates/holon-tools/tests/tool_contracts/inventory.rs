@@ -72,6 +72,7 @@ fn description_path(tool_name: &str) -> Option<&'static str> {
         "AttachWorkspace" => "src/tool/tool_descriptions/attach_workspace.md",
         "CancelExternalTrigger" => "src/tool/tool_descriptions/cancel_external_trigger.md",
         "CancelTimer" => "src/tool/tool_descriptions/cancel_timer.md",
+        "EditTimerContent" => "src/tool/tool_descriptions/edit_timer_content.md",
         "CompleteWorkItem" => "src/tool/tool_descriptions/complete_work_item.md",
         "CreateExternalTrigger" => "src/tool/tool_descriptions/create_external_trigger.md",
         "CreateTimer" => "src/tool/tool_descriptions/create_timer.md",

@@ -77,7 +77,9 @@ fn tool_success_result_contract(name: &str) -> &'static str {
         tn::COMPLETE_WORK_ITEM | tn::CREATE_WORK_ITEM | tn::UPDATE_WORK_ITEM => {
             "WorkItemMutationResult"
         }
-        tn::CREATE_TIMER | tn::GET_TIMER | tn::CANCEL_TIMER => "TimerRecord",
+        tn::CREATE_TIMER | tn::GET_TIMER | tn::EDIT_TIMER_CONTENT | tn::CANCEL_TIMER => {
+            "TimerRecord"
+        }
         tn::CREATE_WORKTREE => "CreateWorktreeResult",
         tn::DETACH_WORKSPACE => "DetachWorkspaceResult",
         tn::ENQUEUE => "EnqueueResult",
@@ -120,7 +122,7 @@ fn tool_success_result_schema(name: &str) -> Result<Option<Value>> {
     let schema = match name {
         tn::ENQUEUE => schema::tool_result_schema::<EnqueueResult>()?,
         tn::GENERATE_IMAGE => schema::tool_result_schema::<GenerateImageResult>()?,
-        tn::CREATE_TIMER | tn::GET_TIMER | tn::CANCEL_TIMER => {
+        tn::CREATE_TIMER | tn::GET_TIMER | tn::EDIT_TIMER_CONTENT | tn::CANCEL_TIMER => {
             schema::tool_result_schema::<crate::types::TimerRecord>()?
         }
         tn::LIST_TIMERS => schema::tool_result_schema::<tools::timer::ListTimersResult>()?,
@@ -179,6 +181,7 @@ fn related_surfaces_for_tool(name: &str) -> Vec<&'static str> {
         | tn::CREATE_TIMER
         | tn::LIST_TIMERS
         | tn::GET_TIMER
+        | tn::EDIT_TIMER_CONTENT
         | tn::CANCEL_TIMER
         | tn::ENQUEUE
         | tn::GET_AGENT

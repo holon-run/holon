@@ -19,14 +19,17 @@ const initial = useRuntimeStore.getState();
 let root: Root;
 let host: HTMLDivElement;
 const control = vi.fn();
+const edit = vi.fn();
 
 beforeEach(() => {
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   control.mockReset().mockResolvedValue(undefined);
+  edit.mockReset().mockResolvedValue(undefined);
   useRuntimeStore.setState({
     bootstrap: { ...initial.bootstrap, connection: { ...initial.bootstrap.connection, error: undefined } },
     discovery: { ...initial.discovery, freshness: "fresh" },
     controlAgentTimer: control,
+    editAgentTimerContent: edit,
   });
   host = document.createElement("div");
   document.body.append(host);
@@ -39,9 +42,9 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-async function renderTimers(timers: Timer[]) {
+async function renderTimers(timers: Timer[], identity: Pick<AgentSummary, "incarnation"> = { incarnation: 1 }) {
   const agent: AgentSummary = {
-    id: "agent", incarnation: 1, badge: "A", profile: "", lifecycle: "idle", focusSummary: "", workspace: "",
+    id: "agent", ...identity, badge: "A", profile: "", lifecycle: "idle", focusSummary: "", workspace: "",
     attention: "", model: "", footer: "", subtitle: "", lastBrief: "", lastTurnTime: "",
     pending: 0, activeTaskCount: 0, waitingCount: 0, posture: "", postureReason: "", tasks: [], timers,
   };
@@ -77,10 +80,10 @@ describe("Agent overview timer controls", () => {
       timer("cancelled", "cancelled"),
     ]);
     const [active, oneShot, interval, calendar, completed, cancelled] = rows();
-    expect(buttons(active).map((button) => button.textContent)).toEqual(["Pause", "Cancel"]);
-    expect(buttons(oneShot).map((button) => button.textContent)).toEqual(["Resume", "Cancel"]);
-    expect(buttons(completed)).toEqual([]);
-    expect(buttons(cancelled)).toEqual([]);
+    expect(buttons(active).map((button) => button.textContent)).toEqual(["Edit timer content", "Pause", "Cancel"]);
+    expect(buttons(oneShot).map((button) => button.textContent)).toEqual(["Edit timer content", "Resume", "Cancel"]);
+    expect(buttons(completed).map((button) => button.textContent)).toEqual(["Edit timer content"]);
+    expect(buttons(cancelled).map((button) => button.textContent)).toEqual(["Edit timer content"]);
     expect(active.textContent).toContain("Next run");
     expect(oneShot.textContent).toContain("Frozen delay: 0 ms");
     expect(interval.textContent).toContain("Frozen delay: 500 ms");
@@ -89,30 +92,59 @@ describe("Agent overview timer controls", () => {
     expect(host.querySelector(".agent-timers-card")?.textContent).toContain("already queued or claimed");
   });
 
+  it("keeps existing controls but does not offer edits without an agent incarnation", async () => {
+    await renderTimers([timer("one", "active")], {});
+    expect(buttons(rows()[0]).map((button) => button.textContent)).toEqual(["Pause", "Cancel"]);
+  });
+
   it("disables timer actions while pending and takes the next action from refreshed state", async () => {
     let finish!: () => void;
     control.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
     await renderTimers([timer("one", "active")]);
-    await act(async () => buttons(rows()[0])[0].click());
+    await act(async () => buttons(rows()[0])[1].click());
     expect(control).toHaveBeenNthCalledWith(1, "agent", "one", "pause", 1);
-    expect(buttons(rows()[0]).map((button) => button.textContent)).toEqual(["Pausing…", "Cancel"]);
+    expect(buttons(rows()[0]).map((button) => button.textContent)).toEqual(["Edit timer content", "Pausing…", "Cancel"]);
     expect(buttons(rows()[0]).every((button) => button.disabled)).toBe(true);
     await renderTimers([timer("one", "paused", { paused_remaining_ms: 900 })]);
     await act(async () => finish());
-    await act(async () => buttons(rows()[0])[0].click());
+    await act(async () => buttons(rows()[0])[1].click());
     expect(control).toHaveBeenNthCalledWith(2, "agent", "one", "resume", 1);
   });
 
   it("reports conflicts and disables stale controls until the runtime reconnects", async () => {
     control.mockRejectedValueOnce(new RuntimeHttpError("POST", "/timers/one/pause", 409));
     await renderTimers([timer("one", "active")]);
-    await act(async () => buttons(rows()[0])[0].click());
+    await act(async () => buttons(rows()[0])[1].click());
     expect(host.querySelector(".agent-timers-card [role=alert]")?.textContent).toContain("state conflicted");
     await act(async () => useRuntimeStore.setState({ discovery: { ...initial.discovery, freshness: "stale" } }));
     expect(buttons(rows()[0]).every((button) => button.disabled)).toBe(true);
     await renderTimers([timer("one", "paused", { paused_remaining_ms: 900 })]);
     await act(async () => useRuntimeStore.setState({ discovery: { ...initial.discovery, freshness: "fresh" } }));
-    expect(buttons(rows()[0])[0].textContent).toBe("Resume");
-    expect(buttons(rows()[0])[0].disabled).toBe(false);
+    expect(buttons(rows()[0])[1].textContent).toBe("Resume");
+    expect(buttons(rows()[0])[1].disabled).toBe(false);
+  });
+
+  it("sends only the edited field and keeps the draft open on failure", async () => {
+    const original = timer("one", "active", { title: "Old title", summary: "Original\ninstruction" });
+    await renderTimers([original]);
+    expect(rows()[0].querySelector("strong")?.textContent).toBe("Old title");
+    expect(rows()[0].querySelector(".agent-timer-instruction")?.textContent).toBe("Original\ninstruction");
+    await act(async () => buttons(rows()[0])[0].click());
+    const input = rows()[0].querySelector("input")!;
+    expect(rows()[0].querySelector("textarea")?.value).toBe("Original\ninstruction");
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(input), "value")!.set!.call(input, "");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const save = () => act(async () => rows()[0].querySelector<HTMLButtonElement>('button[type="submit"]')!.click());
+    edit.mockRejectedValueOnce(new Error("retry later"));
+    await save();
+    expect(edit).toHaveBeenLastCalledWith("agent", "one", { title: null }, 1);
+    expect(rows()[0].querySelector("input")?.value).toBe("");
+    expect(host.querySelector(".agent-timers-card [role=alert]")?.textContent).toContain("retry later");
+    await save();
+    await renderTimers([{ ...original, title: null }]);
+    expect(rows()[0].querySelector("form")).toBeNull();
+    expect(rows()[0].querySelector("strong")?.textContent).toBe("Original instruction");
   });
 });

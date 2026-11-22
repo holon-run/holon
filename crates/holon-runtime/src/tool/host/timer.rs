@@ -103,6 +103,16 @@ pub(crate) async fn get(runtime: &RuntimeHandle, input: &Value) -> Result<crate:
     serialize_success(GET_NAME, timer)
 }
 
+pub(crate) async fn edit(
+    runtime: &RuntimeHandle,
+    input: &Value,
+) -> Result<crate::tool::ToolResult> {
+    let args: EditTimerArgs = parse_tool_args(EDIT_NAME, input)?;
+    let timer_id = validate_non_empty(args.timer_id, EDIT_NAME, "timer_id")?;
+    let timer = runtime.edit_timer_content(&timer_id, args.patch).await?;
+    serialize_success(EDIT_NAME, &timer)
+}
+
 pub(crate) async fn cancel(
     runtime: &RuntimeHandle,
     input: &Value,

@@ -3521,6 +3521,12 @@
                 "id": {
                   "type": "string"
                 },
+                "instruction": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
                 "interval_ms": {
                   "format": "uint64",
                   "minimum": 0,
@@ -3574,6 +3580,13 @@
                   "type": "string"
                 },
                 "summary": {
+                  "description": "Legacy alias for `instruction`.",
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "title": {
                   "type": [
                     "string",
                     "null"
@@ -11508,6 +11521,13 @@
               "null"
             ]
           },
+          "instruction": {
+            "description": "Trigger message. Do not combine with the legacy `summary` field.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "interval_ms": {
             "format": "uint64",
             "minimum": 0,
@@ -11517,12 +11537,20 @@
             ]
           },
           "summary": {
+            "description": "Legacy alias for `instruction`.",
             "type": [
               "string",
               "null"
             ]
           },
           "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "Display-only title.",
             "type": [
               "string",
               "null"
@@ -21194,6 +21222,39 @@
         ],
         "type": "object"
       },
+      "TimerContentPatch": {
+        "additionalProperties": false,
+        "description": "Omitted fields are unchanged; an explicit null clears the value.",
+        "not": {
+          "required": [
+            "instruction",
+            "summary"
+          ]
+        },
+        "properties": {
+          "instruction": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "description": "Legacy alias for instruction; do not send both.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "title": "TimerContentPatch",
+        "type": "object"
+      },
       "TimerRecord": {
         "properties": {
           "agent_id": {
@@ -21237,6 +21298,12 @@
           },
           "id": {
             "type": "string"
+          },
+          "instruction": {
+            "type": [
+              "string",
+              "null"
+            ]
           },
           "interval_ms": {
             "format": "uint64",
@@ -21291,6 +21358,13 @@
             "type": "string"
           },
           "summary": {
+            "description": "Legacy alias for `instruction`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
             "type": [
               "string",
               "null"
@@ -27600,6 +27674,83 @@
           }
         ],
         "summary": "Create timer",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/control/agents/{agent_id}/timers/{timer_id}": {
+      "patch": {
+        "description": "Update only the display title or trigger instruction. Omitted fields stay unchanged; null clears the value. The schedule and already queued wakes are not changed.",
+        "operationId": "editTimerContent",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Timer id.",
+            "in": "path",
+            "name": "timer_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TimerContentPatch"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TimerRecord"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Edit timer content",
         "tags": [
           "control"
         ]

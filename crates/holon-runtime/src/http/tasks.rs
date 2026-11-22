@@ -935,6 +935,40 @@ pub async fn create_timer(
     Ok(Json(timer))
 }
 
+pub async fn edit_timer_content(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(patch): ApiJson<crate::types::TimerContentPatch>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = runtime
+        .edit_timer_content(&timer_id, patch)
+        .await
+        .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "timer_content_edit_requested",
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": control_admission_context(&state),
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
 pub async fn cancel_timer(
     Path((agent_id, timer_id)): Path<(String, String)>,
     State(state): State<Arc<AppState>>,

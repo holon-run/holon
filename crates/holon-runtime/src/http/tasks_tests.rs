@@ -439,15 +439,17 @@ async fn task_and_timer_list_http_incarnation_binding_preserves_legacy_and_recre
                  WHERE agent_id = 'list-agent'",
                 [],
             )?;
-            for table in ["tasks", "timers"] {
-                tx.execute(
-                    &format!(
-                        "UPDATE {table} SET payload_json =
-                         json_set(payload_json, '$.summary', 'replacement-only')"
-                    ),
-                    [],
-                )?;
-            }
+            tx.execute(
+                "UPDATE tasks SET payload_json =
+                 json_set(payload_json, '$.summary', 'replacement-only')",
+                [],
+            )?;
+            tx.execute(
+                "UPDATE timers SET payload_json =
+                 json_set(payload_json, '$.instruction', 'replacement-only',
+                                        '$.summary', 'replacement-only')",
+                [],
+            )?;
             Ok(())
         })
         .unwrap();

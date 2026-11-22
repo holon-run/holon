@@ -1,8 +1,8 @@
 use super::BuiltinToolDefinition;
 use crate::tool::helpers::invalid_tool_input;
 use crate::tool::spec::typed_spec;
-use crate::types::TimerRecord;
 use crate::types::ToolCapabilityFamily;
+use crate::types::{TimerContentPatch, TimerRecord};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -14,6 +14,8 @@ pub const CREATE_NAME: &str = crate::tool::names::CREATE_TIMER;
 pub const LIST_NAME: &str = crate::tool::names::LIST_TIMERS;
 
 pub const GET_NAME: &str = crate::tool::names::GET_TIMER;
+
+pub const EDIT_NAME: &str = crate::tool::names::EDIT_TIMER_CONTENT;
 
 pub const CANCEL_NAME: &str = crate::tool::names::CANCEL_TIMER;
 
@@ -51,6 +53,13 @@ pub struct TimerIdArgs {
     pub timer_id: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditTimerArgs {
+    pub timer_id: String,
+    pub patch: TimerContentPatch,
+}
+
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct ListTimersResult<Timer = TimerRecord> {
     pub returned: usize,
@@ -74,6 +83,13 @@ pub fn list_definition() -> Result<BuiltinToolDefinition> {
 
 pub fn get_definition() -> Result<BuiltinToolDefinition> {
     definition::<TimerIdArgs>(GET_NAME, include_str!("../tool_descriptions/get_timer.md"))
+}
+
+pub fn edit_definition() -> Result<BuiltinToolDefinition> {
+    definition::<EditTimerArgs>(
+        EDIT_NAME,
+        include_str!("../tool_descriptions/edit_timer_content.md"),
+    )
 }
 
 pub fn cancel_definition() -> Result<BuiltinToolDefinition> {
