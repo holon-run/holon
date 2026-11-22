@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain::execution_protocol::{
     ExecutionAttemptState, ExecutionOrigin, ExecutionPriority, ExecutionProvenance,
-    ExecutionSourceIdentity, ExecutionTrust,
+    ExecutionSourceIdentity, ExecutionTrust, WorkItemExecutionState,
 };
 
 mod auth_contract;

@@ -2964,7 +2964,8 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     scheduler::CanonicalActivationScenario::ExactTaskRejoin {
                         wait_id: Some(wait_id),
                         ..
-                    },
+                    }
+                    | scheduler::CanonicalActivationScenario::ExactWaitResume { wait_id, .. },
                 ) => &wait.wait_id == wait_id,
                 (
                     crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
@@ -3260,17 +3261,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             return Ok(None);
         }
         let owner = if let Some(work_item_id) = &wait.work_item_id {
-            if !execution.work_items.get(work_item_id).is_some_and(|work| {
-                matches!(
-                    &work.state,
-                    WorkItemExecutionState::Runnable {
-                        recovery_ref: Some(recovery_ref),
-                        ..
-                    } if recovery_ref == "interrupted"
-                )
-            }) {
-                return Ok(None);
-            }
             crate::domain::scheduler::SchedulerOwner::WorkItem {
                 work_item_id: work_item_id.clone(),
             }
@@ -3298,6 +3288,33 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     && attempt.source.identity == expected_source
                     && message.message_seq == Some(attempt.source.generation)
                     && attempt.admitted_fences.source_revision == attempt.source.generation
+                    && wait.work_item_id.as_ref().is_none_or(|work_item_id| {
+                        execution
+                            .work_items
+                            .get(work_item_id)
+                            .is_some_and(|record| {
+                                match &record.state {
+                                    WorkItemExecutionState::Waiting {
+                                        generation,
+                                        wait: retained,
+                                    } => {
+                                        retained.wait_id == wait.id
+                                            && attempt
+                                                .admitted_fences
+                                                .work_item_generation
+                                                .and_then(|previous| previous.checked_add(1))
+                                                == Some(*generation)
+                                    }
+                                    // Attempts interrupted before the state migration may
+                                    // still have the legacy Runnable replay marker.
+                                    WorkItemExecutionState::Runnable {
+                                        recovery_ref: Some(recovery_ref),
+                                        ..
+                                    } => recovery_ref == "interrupted",
+                                    _ => false,
+                                }
+                            })
+                    })
                     && canonical_lifecycle_attempt_lineage_is_valid(
                         execution,
                         message,
