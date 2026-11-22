@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 use crate::domain::execution_protocol::{
     eligible_work_item_at_generation, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
-    ExecutionBinding, ExecutionSource, WorkItemExecutionRecord,
+    ExecutionSource, StoredExecutionBinding, WorkItemExecutionRecord,
 };
 use crate::runtime_db::transitions::execution_protocol_repository::authority_fences_tx;
 use crate::types::{
@@ -23,7 +23,7 @@ pub struct ProviderRecoveryBinding {
     root_attempt_id: String,
     root_message_id: String,
     source: ExecutionSource,
-    owner: ExecutionBinding,
+    owner: StoredExecutionBinding,
     fences: AdmittedFences,
     chain_fingerprint: String,
 }
@@ -48,7 +48,7 @@ impl ProviderRecoveryBinding {
             root_attempt_id: attempt.attempt_id.clone(),
             root_message_id: root_message_id.clone(),
             source: attempt.source.clone(),
-            owner: attempt.binding.clone(),
+            owner: stable_episode_owner((&attempt.binding).into(), &attempt.agent_id),
             fences: attempt.admitted_fences.clone(),
             chain_fingerprint: chain_fingerprint.to_owned(),
         })
@@ -59,6 +59,43 @@ impl ProviderRecoveryBinding {
             "sha256:{:x}",
             Sha256::digest(serde_json::to_vec(self)?)
         ))
+    }
+
+    fn matches_root(&self, attempt: &ExecutionAttempt) -> bool {
+        let Ok(mut root) = Self::from_root_attempt(attempt, &self.chain_fingerprint) else {
+            return false;
+        };
+        if !self.owner.matches_in_agent(&root.owner, &self.agent_id) {
+            return false;
+        }
+        // The key is derived from the stored form; the root comparison accepts
+        // equivalent owner encodings without dropping any other root fences.
+        root.owner = self.owner.clone();
+        root == *self
+    }
+}
+
+// Recovery keys hash the serialized root binding. Reuse the historical
+// encoding where it represents the full attribution so an upgrade cannot
+// open a second episode for a root that has already spent its budget.
+fn stable_episode_owner(binding: StoredExecutionBinding, owner: &str) -> StoredExecutionBinding {
+    match binding {
+        StoredExecutionBinding::Agent {
+            agent_id,
+            attribution,
+        } if agent_id == owner => match (attribution.work_item_id, attribution.interaction_id) {
+            (Some(work_item_id), None) => StoredExecutionBinding::WorkItem { work_item_id },
+            (None, Some(interaction_id)) => StoredExecutionBinding::Conversation { interaction_id },
+            (None, None) => StoredExecutionBinding::AgentLifecycle { agent_id },
+            (work_item_id, interaction_id) => StoredExecutionBinding::Agent {
+                agent_id,
+                attribution: crate::domain::execution_protocol::TurnAttribution {
+                    work_item_id,
+                    interaction_id,
+                },
+            },
+        },
+        other => other,
     }
 }
 
@@ -383,8 +420,11 @@ fn dispatch_attempt_rejection(
     if authority.host_registry_revision != attempt.admitted_fences.host_registry_revision {
         return Ok(Some(ProviderDispatchRejection::AuthorityFenceMismatch));
     }
-    match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => {
+    match attempt.binding.work_item_id() {
+        _ if !attempt.binding.matches_agent_partition(&attempt.agent_id) => {
+            return Ok(Some(ProviderDispatchRejection::OwnerMismatch));
+        }
+        Some(work_item_id) => {
             let owner = tx
                 .query_row(
                     "SELECT w.payload_json, e.payload_json
@@ -400,7 +440,7 @@ fn dispatch_attempt_rejection(
             };
             let work: WorkItemRecord = serde_json::from_str(&work)?;
             let execution: WorkItemExecutionRecord = serde_json::from_str(&execution)?;
-            if work.agent_id != attempt.agent_id || work.id != *work_item_id {
+            if work.agent_id != attempt.agent_id || work.id != work_item_id {
                 return Ok(Some(ProviderDispatchRejection::OwnerMismatch));
             }
             if work.state != WorkItemState::Open {
@@ -461,10 +501,7 @@ fn dispatch_attempt_rejection(
                 return Ok(Some(ProviderDispatchRejection::LaneGenerationMismatch));
             }
         }
-        ExecutionBinding::AgentLifecycle { agent_id } if agent_id != &attempt.agent_id => {
-            return Ok(Some(ProviderDispatchRejection::OwnerMismatch));
-        }
-        _ => {}
+        None => {}
     }
 
     // #3816: check every registered open WorkItem, not just the attempt's
@@ -519,7 +556,7 @@ fn dispatch_attempt_rejection(
     };
     let binding: ProviderRecoveryBinding = serde_json::from_str(&binding)?;
     if binding.agent_id != attempt.agent_id
-        || binding.owner != attempt.binding
+        || !binding.owner.matches_attempt(&attempt)
         || binding.key()? != episode.key
     {
         return Ok(Some(ProviderDispatchRejection::EpisodeBindingMismatch));
@@ -534,17 +571,10 @@ fn dispatch_attempt_rejection(
             if ancestor.attempt_id != binding.root_attempt_id {
                 return Ok(Some(ProviderDispatchRejection::RootMismatch));
             }
-            // Construction only checks in-memory root semantics; SQL/decoding
+            // The comparison only checks in-memory root semantics; SQL/decoding
             // failures from canonical_attempt must still propagate.
-            return Ok(
-                match ProviderRecoveryBinding::from_root_attempt(
-                    &ancestor,
-                    &binding.chain_fingerprint,
-                ) {
-                    Ok(root) if root == binding => None,
-                    _ => Some(ProviderDispatchRejection::RootBindingMismatch),
-                },
-            );
+            return Ok((!binding.matches_root(&ancestor))
+                .then_some(ProviderDispatchRejection::RootBindingMismatch));
         };
         let Some(prior) = canonical_attempt(tx, &ancestor.agent_id, prior_id)? else {
             return Ok(Some(ProviderDispatchRejection::AncestorMissing));
@@ -552,7 +582,7 @@ fn dispatch_attempt_rejection(
         if prior.state == ExecutionAttemptState::Open {
             return Ok(Some(ProviderDispatchRejection::AncestorNotClosed));
         }
-        if prior.binding != binding.owner {
+        if !binding.owner.matches_attempt(&prior) {
             return Ok(Some(ProviderDispatchRejection::AncestorOwnerMismatch));
         }
         ancestor = prior;

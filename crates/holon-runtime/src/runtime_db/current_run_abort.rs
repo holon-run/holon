@@ -41,16 +41,18 @@ pub(crate) fn settle_attempt(
 ) -> crate::domain::execution_protocol::ExecutionProtocolCommand {
     use crate::domain::execution_protocol::*;
     let reason = "operator_aborted".to_owned();
-    let outcome = match &attempt.binding {
-        ExecutionBinding::WorkItem { .. } => {
-            ExecutionOutcome::WorkItem(WorkItemOutcome::Aborted { reason })
-        }
-        ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-            ExecutionOutcome::Conversation(ConversationOutcome::Aborted { reason })
-        }
-        ExecutionBinding::Command => {
-            ExecutionOutcome::Command(CommandResult::Unsupported { reason })
-        }
+    let outcome = if attempt.binding.is_command() {
+        ExecutionOutcome::Command(CommandResult::Unsupported { reason })
+    } else {
+        ExecutionOutcome::Turn(TurnSettlement {
+            outcome: TurnOutcome::Interrupted {
+                interruption: TurnInterruption::Aborted { reason },
+            },
+            work_item_effect: attempt
+                .binding
+                .work_item_id()
+                .map(|_| TurnWorkItemEffect::Continue),
+        })
     };
     ExecutionProtocolCommand::Settle(SettleExecution {
         outcome: ExecutionOutcomeRecord {

@@ -1,9 +1,10 @@
 use super::super::*;
 use super::support::*;
 use crate::domain::execution_protocol::{
-    ConversationOutcome, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
-    ExecutionOutcome, ExecutionProtocolState, ExecutionSourceIdentity, WorkItemExecutionRecord,
-    WorkItemExecutionState, WorkItemOutcome,
+    ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
+    ExecutionProtocolState, ExecutionSourceIdentity, TurnAttribution, TurnInterruption,
+    TurnOutcome, TurnSettlement, TurnWorkItemEffect, WorkItemExecutionRecord,
+    WorkItemExecutionState,
 };
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementDisposition, TaskResultSettlementRecord, TaskResultSettlementState,
@@ -13,6 +14,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 const DEADLINE: Duration = Duration::from_secs(5);
+
+fn operator_abort_outcome(effect: Option<TurnWorkItemEffect>) -> ExecutionOutcome {
+    ExecutionOutcome::Turn(TurnSettlement {
+        outcome: TurnOutcome::Interrupted {
+            interruption: TurnInterruption::Aborted {
+                reason: "operator_aborted".into(),
+            },
+        },
+        work_item_effect: effect,
+    })
+}
 
 #[derive(Default)]
 struct AbortReplayProvider {
@@ -285,12 +297,7 @@ async fn operator_abort_ack_wins_over_success_prepared_before_terminal_commit() 
         .as_ref()
         .expect("cancelled attempt has a terminal outcome")];
     assert_eq!(outcome.attempt_id, original_attempt.attempt_id);
-    assert_eq!(
-        outcome.outcome,
-        ExecutionOutcome::Conversation(ConversationOutcome::Aborted {
-            reason: "operator_aborted".into(),
-        })
-    );
+    assert_eq!(outcome.outcome, operator_abort_outcome(None));
     assert_eq!(
         execution
             .attempts
@@ -1001,9 +1008,7 @@ fn assert_task_result_cancelled(
     assert_eq!(outcome.attempt_id, original_attempt.attempt_id);
     assert_eq!(
         outcome.outcome,
-        ExecutionOutcome::WorkItem(WorkItemOutcome::Aborted {
-            reason: "operator_aborted".into(),
-        })
+        operator_abort_outcome(Some(TurnWorkItemEffect::Continue))
     );
     assert_eq!(
         execution
@@ -1037,9 +1042,10 @@ fn assert_task_result_cancelled(
     assert_eq!(settlement.work_item_id, source.work_item_id);
     assert!(settlement.admitted_at.is_some());
     assert!(settlement.settled_at.is_some());
-    let ExecutionBinding::WorkItem { work_item_id } = &original_attempt.binding else {
-        panic!("task-result fixture must consume into a WorkItem execution");
-    };
+    let work_item_id = original_attempt
+        .binding
+        .work_item_id()
+        .expect("task-result fixture must consume into a WorkItem execution");
     assert!(matches!(
         &execution.work_items[work_item_id].state,
         WorkItemExecutionState::Runnable {
@@ -1065,8 +1071,19 @@ async fn task_result_abort_fixture(exact_wait: bool, crash_after_ack: bool) {
     })
     .await
     .expect("task-result source should reach the provider");
-    assert_eq!(queue_status(&runtime, &source), QueueEntryStatus::Dequeued);
     let execution = execution_protocol(&runtime);
+    assert_eq!(
+        queue_status(&runtime, &source),
+        QueueEntryStatus::Dequeued,
+        "expected to dispatch source {}; turn failure: {:?}; terminal outcomes: {:?}",
+        source.id,
+        runtime
+            .storage()
+            .read_turn_by_id(source.turn_id.as_deref().unwrap())
+            .unwrap()
+            .and_then(|turn| turn.runtime_failure),
+        execution.outcomes.values().collect::<Vec<_>>()
+    );
     let original_attempt = execution
         .open_attempt()
         .expect("live original attempt")
@@ -1092,8 +1109,12 @@ async fn task_result_abort_fixture(exact_wait: bool, crash_after_ack: bool) {
     }
     assert_eq!(
         original_attempt.binding,
-        ExecutionBinding::WorkItem {
-            work_item_id: consuming_owner_id.clone(),
+        ExecutionBinding::Agent {
+            agent_id: source.agent_id.clone(),
+            attribution: TurnAttribution {
+                work_item_id: Some(consuming_owner_id.clone()),
+                interaction_id: None,
+            },
         }
     );
     let expected_source = match &wait_id {
@@ -1404,17 +1425,19 @@ async fn exact_wake_abort_fixture(wake: WaitForWakeKind, crash_after_ack: bool) 
     );
     assert_eq!(
         original_attempt.binding,
-        ExecutionBinding::WorkItem {
-            work_item_id: owner.id.clone(),
+        ExecutionBinding::Agent {
+            agent_id: source.agent_id.clone(),
+            attribution: TurnAttribution {
+                work_item_id: Some(owner.id.clone()),
+                interaction_id: None,
+            },
         }
     );
     let resolved_wait = wait_condition(&runtime, &registration.condition.id);
     assert_eq!(resolved_wait.status, WaitConditionStatus::Resolved);
     assert_eq!(resolved_wait.trigger_message_id(), Some(source.id.as_str()));
     let owner_before = runtime.latest_work_item(&owner.id).await.unwrap().unwrap();
-    let expected_outcome = ExecutionOutcome::WorkItem(WorkItemOutcome::Aborted {
-        reason: "operator_aborted".into(),
-    });
+    let expected_outcome = operator_abort_outcome(Some(TurnWorkItemEffect::Continue));
     abort_run(&runtime, CurrentRunAbortMode::StopAfterAbort).await;
     if crash_after_ack {
         crash_after_abort_ack(running).await;
@@ -1570,8 +1593,14 @@ async fn provider_recovery_abort_fixture(crash_after_ack: bool) {
         }
     );
     assert!(matches!(
-        original_attempt.binding,
-        ExecutionBinding::Conversation { .. }
+        &original_attempt.binding,
+        ExecutionBinding::Agent {
+            agent_id,
+            attribution: TurnAttribution {
+                work_item_id: None,
+                interaction_id: Some(_),
+            },
+        } if *agent_id == source.agent_id
     ));
     let predecessor = execution.attempts[original_attempt
         .recovery_of_attempt_id
@@ -1591,9 +1620,7 @@ async fn provider_recovery_abort_fixture(crash_after_ack: bool) {
         .as_ref()
         .expect("the original provider failure is already terminal")]
     .clone();
-    let expected_outcome = ExecutionOutcome::Conversation(ConversationOutcome::Aborted {
-        reason: "operator_aborted".into(),
-    });
+    let expected_outcome = operator_abort_outcome(None);
     abort_run(&runtime, CurrentRunAbortMode::StopAfterAbort).await;
     if crash_after_ack {
         crash_after_abort_ack(running).await;

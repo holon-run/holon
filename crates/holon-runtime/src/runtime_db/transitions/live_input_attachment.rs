@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::domain::execution_protocol::{
-    eligible_work_item_at_generation, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
+    eligible_work_item_at_generation, ExecutionAttempt, ExecutionAttemptState,
     ExecutionProtocolState,
 };
 use crate::types::{
@@ -1043,23 +1043,11 @@ fn canonical_input_binding_matches_loaded_state_tx(
     expected: &ExecutionAttempt,
     turn: &TurnRecord,
 ) -> Result<bool> {
-    let canonical_owner = match &expected.binding {
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-            interaction_id: interaction_id.clone(),
-        },
-        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => TurnOwner::Command,
-    };
     if state.attempts.get(&expected.attempt_id) != Some(expected)
         || expected.state != ExecutionAttemptState::Open
         || expected.terminal_outcome_id.is_some()
         || expected.terminal_at.is_some()
-        || canonical_owner != turn.effective_owner()
+        || expected.turn_owner() != turn.effective_owner()
         || expected
             .source_message_id
             .as_ref()
@@ -1073,7 +1061,7 @@ fn canonical_input_binding_matches_loaded_state_tx(
     if fences.host_registry_revision != expected.admitted_fences.host_registry_revision {
         return Ok(false);
     }
-    if let ExecutionBinding::WorkItem { work_item_id } = &expected.binding {
+    if let Some(work_item_id) = expected.binding.work_item_id() {
         if !state.work_items.get(work_item_id).is_some_and(|owner| {
             eligible_work_item_at_generation(owner, expected.admitted_fences.work_item_generation)
         }) {

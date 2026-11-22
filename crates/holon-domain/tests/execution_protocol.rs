@@ -2,6 +2,157 @@ use holon_domain::execution_protocol::*;
 use std::collections::BTreeMap;
 
 #[test]
+fn turn_record_keeps_full_attribution_and_reads_legacy_owner_projection() {
+    use holon_domain::{TurnOwner, TurnRecord};
+
+    let mut record = TurnRecord::new("agent", "turn", 1);
+    record.current_work_item_id = Some("work".into());
+    record.owner = Some(TurnOwner::WorkItem {
+        work_item_id: "work".into(),
+    });
+    let legacy: TurnRecord =
+        serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
+    let work_only = TurnAttribution {
+        work_item_id: Some("work".into()),
+        interaction_id: None,
+    };
+    assert!(legacy.attribution.is_none());
+    assert_eq!(legacy.effective_attribution(), Some(work_only.clone()));
+
+    record.attribution = Some(TurnAttribution {
+        interaction_id: Some("interaction".into()),
+        ..work_only
+    });
+    let persisted: TurnRecord =
+        serde_json::from_value(serde_json::to_value(&record).unwrap()).unwrap();
+    assert_eq!(persisted.effective_owner(), legacy.effective_owner());
+    assert_eq!(persisted.effective_attribution(), record.attribution);
+
+    let mut command = TurnRecord::new("agent", "command", 2);
+    command.owner = Some(TurnOwner::Command);
+    assert!(command.effective_attribution().is_none());
+}
+
+#[test]
+fn historical_model_outcomes_preserve_their_terminal_and_work_item_effect() {
+    use serde_json::json;
+    use TurnOutcome::{Completed, Failed, Interrupted, Wait};
+    use TurnWorkItemEffect as Effect;
+
+    for (owner, legacy, outcome, work_item_effect) in [
+        ("conversation", json!({"kind":"replied"}), Completed, None),
+        (
+            "work_item",
+            json!({"kind":"continue"}),
+            Completed,
+            Some(Effect::Continue),
+        ),
+        (
+            "conversation",
+            json!({"kind":"handoff_to_work_item_wait","work_item_id":"work-next","wait":{"wait_id":"wait-next"}}),
+            Wait {
+                wait: WaitReference {
+                    wait_id: "wait-next".into(),
+                },
+            },
+            Some(Effect::Handoff {
+                work_item_id: "work-next".into(),
+            }),
+        ),
+        (
+            "conversation",
+            json!({"kind":"paused","reason":"admission paused"}),
+            Failed {
+                failure: TurnFailure::Paused {
+                    reason: "admission paused".into(),
+                },
+            },
+            None,
+        ),
+        (
+            "work_item",
+            json!({"kind":"failed","policy":"retry exhausted"}),
+            Failed {
+                failure: TurnFailure::Policy {
+                    policy: "retry exhausted".into(),
+                },
+            },
+            Some(Effect::Pause {
+                reason: "retry exhausted".into(),
+            }),
+        ),
+        (
+            "work_item",
+            json!({"kind":"complete","completion":"completion-evidence"}),
+            Completed,
+            Some(Effect::Complete {
+                completion: "completion-evidence".into(),
+            }),
+        ),
+        (
+            "work_item",
+            json!({"kind":"yield","target_work_item_id":"work-next"}),
+            Completed,
+            Some(Effect::Yield {
+                target_work_item_id: "work-next".into(),
+            }),
+        ),
+        (
+            "work_item",
+            json!({"kind":"interrupted","reason":"restart"}),
+            Interrupted {
+                interruption: TurnInterruption::Interrupted {
+                    reason: "restart".into(),
+                },
+            },
+            Some(Effect::ResumeInterrupted),
+        ),
+        (
+            "work_item",
+            json!({"kind":"aborted","reason":"stopped"}),
+            Interrupted {
+                interruption: TurnInterruption::Aborted {
+                    reason: "stopped".into(),
+                },
+            },
+            Some(Effect::Continue),
+        ),
+        (
+            "work_item",
+            json!({"kind":"reentry","recovery_ref":"recovery-evidence"}),
+            Interrupted {
+                interruption: TurnInterruption::Reentry {
+                    recovery_ref: "recovery-evidence".into(),
+                },
+            },
+            Some(Effect::ResumeInterrupted),
+        ),
+    ] {
+        let wire = json!({"owner": owner, "outcome": legacy});
+        let stored: ExecutionOutcome = serde_json::from_value(wire.clone()).unwrap();
+        let turn = TurnSettlement {
+            outcome,
+            work_item_effect,
+        };
+        assert_eq!(stored.model_turn().as_ref(), Some(&turn), "{wire}");
+        let canonical = ExecutionOutcome::Turn(turn);
+        let canonical_wire = serde_json::to_value(&canonical).unwrap();
+        assert_eq!(canonical_wire["owner"], "turn");
+        let reread: ExecutionOutcome = serde_json::from_value(canonical_wire).unwrap();
+        assert_eq!(canonical, reread);
+        assert!(reread.same_terminal_as(&stored));
+        assert_eq!(serde_json::to_value(stored).unwrap(), wire);
+    }
+
+    let command: ExecutionOutcome = serde_json::from_value(json!({
+        "owner": "command",
+        "outcome": {"kind":"applied","references":["attempt:command"]},
+    }))
+    .unwrap();
+    assert_eq!(command.model_turn(), None);
+}
+
+#[test]
 fn task_rejoin_source_preserves_parent_wire_and_command_creation_wire() {
     for (wire, parent, creation) in [
         (
@@ -667,6 +818,94 @@ fn wait_resume_admits_from_waiting_and_settles_to_runnable() {
 }
 
 #[test]
+fn stored_binding_evidence_preserves_legacy_shape_and_matches_scoped_attribution() {
+    use serde_json::json;
+
+    let mut current = attempt("attempt-a", None);
+    let legacy = json!({"kind": "work_item", "work_item_id": "work-a"});
+    assert_eq!(
+        serde_json::to_value(StoredExecutionBinding::from(&current.binding)).unwrap(),
+        legacy
+    );
+    for (wire, matches) in [
+        (legacy, true),
+        (
+            json!({"kind": "work_item", "work_item_id": "work-b"}),
+            false,
+        ),
+        (
+            json!({"kind": "agent", "agent_id": "agent-a",
+                   "attribution": {"work_item_id": "work-a"}}),
+            true,
+        ),
+        (
+            json!({"kind": "agent", "agent_id": "agent-b",
+                   "attribution": {"work_item_id": "work-a"}}),
+            false,
+        ),
+        (
+            json!({"kind": "agent", "agent_id": "agent-a",
+                   "attribution": {"work_item_id": "work-a", "interaction_id": "extra"}}),
+            false,
+        ),
+        (json!({"kind": "command"}), false),
+    ] {
+        let stored: StoredExecutionBinding = serde_json::from_value(wire).unwrap();
+        assert_eq!(stored.matches_attempt(&current), matches, "{stored:?}");
+    }
+
+    current.binding = ExecutionBinding::AgentLifecycle {
+        agent_id: "agent-a".into(),
+    };
+    let foreign: StoredExecutionBinding =
+        serde_json::from_value(json!({"kind": "agent_lifecycle", "agent_id": "agent-b"})).unwrap();
+    assert!(!foreign.matches_attempt(&current));
+    let scoped: StoredExecutionBinding =
+        serde_json::from_value(json!({"kind": "agent", "agent_id": "agent-a", "attribution": {}}))
+            .unwrap();
+    assert!(scoped.matches_attempt(&current));
+    current.binding = ExecutionBinding::Command;
+    assert!(!scoped.matches_attempt(&current));
+    assert!(StoredExecutionBinding::Command.matches_attempt(&current));
+}
+
+#[test]
+fn stored_bindings_decode_to_agent_owned_attribution_without_adopting_foreign_agents() {
+    use serde_json::json;
+
+    for (wire, expected) in [
+        (
+            json!({"kind": "work_item", "work_item_id": "w"}),
+            Some(ExecutionBinding::for_work_item("agent-a", "w")),
+        ),
+        (
+            json!({"kind": "conversation", "interaction_id": "i"}),
+            Some(ExecutionBinding::for_conversation("agent-a", "i")),
+        ),
+        (
+            json!({"kind": "agent_lifecycle", "agent_id": "agent-a"}),
+            Some(ExecutionBinding::agent_lifecycle("agent-a")),
+        ),
+        (json!({"kind": "command"}), Some(ExecutionBinding::Command)),
+        (
+            json!({"kind": "agent_lifecycle", "agent_id": "agent-b"}),
+            None,
+        ),
+        (
+            json!({"kind": "agent", "agent_id": "agent-b", "attribution": {}}),
+            None,
+        ),
+    ] {
+        let binding: StoredExecutionBinding = serde_json::from_value(wire).unwrap();
+        assert_eq!(binding.into_execution_binding("agent-a"), expected);
+        if let Some(expected) = expected {
+            let canonical = StoredExecutionBinding::from(&expected);
+            assert_eq!(canonical.into_execution_binding("agent-a"), Some(expected));
+        }
+    }
+}
+
+#[test]
 fn source_binding_matrix_rejects_unsupported_combinations() {
     use ExecutionBinding::*;
 
@@ -699,6 +938,14 @@ fn source_binding_matrix_rejects_unsupported_combinations() {
     let continuation = source(ExecutionSourceIdentity::WorkItemContinuation {
         work_item_id: "w1".into(),
     });
+    let targeted = source(ExecutionSourceIdentity::TargetedContinuation {
+        continuation_id: "c1".into(),
+        source_work_item_id: "w0".into(),
+        target_work_item_id: "w1".into(),
+    });
+    let other_work_item = WorkItem {
+        work_item_id: "w2".into(),
+    };
     let recovery = source(ExecutionSourceIdentity::RuntimeRecovery {
         recovery_id: "r1".into(),
     });
@@ -706,6 +953,9 @@ fn source_binding_matrix_rejects_unsupported_combinations() {
     assert!(validate_source_binding(&queue, &work_item, &fences).is_ok());
     assert!(validate_source_binding(&queue, &agent_lifecycle, &fences).is_ok());
     assert!(validate_source_binding(&continuation, &work_item, &fences).is_ok());
+    assert!(validate_source_binding(&targeted, &work_item, &fences).is_ok());
+    assert!(validate_source_binding(&targeted, &conversation, &fences).is_ok());
+    assert!(validate_source_binding(&targeted, &Command, &fences).is_ok());
     assert!(validate_source_binding(&recovery, &ExecutionBinding::Command, &fences).is_ok());
     assert!(validate_source_binding(&recovery, &work_item, &fences).is_ok());
     assert!(validate_source_binding(&recovery, &conversation, &fences).is_ok());
@@ -714,6 +964,9 @@ fn source_binding_matrix_rejects_unsupported_combinations() {
     // Rejected combinations
     assert!(validate_source_binding(&queue, &ExecutionBinding::Command, &fences).is_err());
     assert!(validate_source_binding(&continuation, &conversation, &fences).is_err());
+    assert!(validate_source_binding(&continuation, &other_work_item, &fences).is_err());
+    assert!(validate_source_binding(&targeted, &other_work_item, &fences).is_err());
+    assert!(validate_source_binding(&targeted, &agent_lifecycle, &fences).is_err());
 }
 
 #[test]
@@ -756,6 +1009,12 @@ fn task_and_child_results_require_exact_live_rejoin_fences() {
         },
     });
     assert!(validate_source_binding(&task, &binding, &fences).is_ok());
+    let agent_lifecycle = ExecutionBinding::AgentLifecycle {
+        agent_id: "agent-a".into(),
+    };
+    assert!(validate_source_binding(&task, &agent_lifecycle, &fences)
+        .unwrap_err()
+        .contains("unsupported source-binding"));
 
     fences.source_revision = 4;
     fences.rejoin = Some(RejoinFence {
@@ -966,7 +1225,7 @@ fn provider_recovery_inherits_complete_unbound_predecessor_binding() {
         recovery.source.identity = ExecutionSourceIdentity::RuntimeRecovery {
             recovery_id: "message:recovery".into(),
         };
-        recovery.binding = binding;
+        recovery.binding = binding.canonical_in_agent("agent-a").unwrap();
         recovery.provenance.origin = ExecutionOrigin::RuntimeRecovery;
         recovery.admitted_fences.work_item_source_revision = None;
         recovery.admitted_fences.work_item_generation = None;
@@ -977,9 +1236,7 @@ fn provider_recovery_inherits_complete_unbound_predecessor_binding() {
             }
         )
         .is_ok());
-        recovery.binding = ExecutionBinding::Conversation {
-            interaction_id: "unrelated-interaction".into(),
-        };
+        recovery.binding = ExecutionBinding::for_conversation("agent-a", "unrelated-interaction");
         assert!(admit_execution(
             &settled.state,
             &AdmitExecution {
@@ -1163,19 +1420,51 @@ fn settlement_rejects_owner_incompatible_outcome() {
         },
     )
     .unwrap();
-    let error = settle_execution(
+    for outcome in [
+        ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+        ExecutionOutcome::Turn(TurnSettlement {
+            outcome: TurnOutcome::Completed,
+            work_item_effect: None,
+        }),
+        ExecutionOutcome::Turn(TurnSettlement {
+            outcome: TurnOutcome::Completed,
+            work_item_effect: Some(TurnWorkItemEffect::Wait),
+        }),
+    ] {
+        let error = settle_execution(
+            &admitted.state,
+            &SettleExecution {
+                outcome: ExecutionOutcomeRecord {
+                    outcome_id: "outcome-1".into(),
+                    attempt_id: "attempt-1".into(),
+                    outcome,
+                    created_at: "2026-08-01T00:01:00Z".into(),
+                },
+            },
+        )
+        .unwrap_err();
+        assert!(error.contains("incompatible"));
+    }
+    let transition = settle_execution(
         &admitted.state,
         &SettleExecution {
             outcome: ExecutionOutcomeRecord {
                 outcome_id: "outcome-1".into(),
                 attempt_id: "attempt-1".into(),
-                outcome: ExecutionOutcome::Conversation(ConversationOutcome::Replied),
+                outcome: ExecutionOutcome::WorkItem(WorkItemOutcome::Continue),
                 created_at: "2026-08-01T00:01:00Z".into(),
             },
         },
     )
-    .unwrap_err();
-    assert!(error.contains("incompatible"));
+    .unwrap();
+    assert_eq!(
+        transition.state.outcomes["outcome-1"].outcome,
+        ExecutionOutcome::Turn(TurnSettlement {
+            outcome: TurnOutcome::Completed,
+            work_item_effect: Some(TurnWorkItemEffect::Continue),
+        })
+    );
+    assert_eq!(transition.state.work_items["work-a"].generation(), 2);
 }
 
 #[test]

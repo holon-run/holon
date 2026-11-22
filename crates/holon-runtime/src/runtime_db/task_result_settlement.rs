@@ -8,6 +8,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     diagnostics::resource_io::{self, ResourceReadMaterial},
+    domain::execution_protocol::StoredExecutionBinding,
     runtime::{
         input_evidence_budget::InputEvidenceBudgetLedger,
         resident_input_evidence::{
@@ -535,18 +536,9 @@ impl TaskResultSettlementRepository<'_> {
             let already = admitted_for_activation_tx(tx, agent_id, activation_id)?;
             let current = reply_admission_attempt_tx(tx, agent_id, activation_id)?;
             let anchor_reserved = if let Some(attempt) = current.as_ref() {
-                use crate::domain::execution_protocol::{
-                    ExecutionAttemptState, ExecutionBinding,
-                };
-                let owner_matches = match &attempt.binding {
-                    ExecutionBinding::WorkItem { work_item_id: owner } => {
-                        work_item_id == Some(owner.as_str())
-                    }
-                    ExecutionBinding::AgentLifecycle { agent_id: owner } => {
-                        owner == agent_id && work_item_id.is_none()
-                    }
-                    _ => false,
-                };
+                use crate::domain::execution_protocol::ExecutionAttemptState;
+                let owner_matches = attempt.has_scheduler_attribution()
+                    && attempt.binding.work_item_id() == work_item_id;
                 let Some(source_id) = attempt.source_message_id.as_deref() else {
                     return Ok(Vec::new());
                 };
@@ -1592,10 +1584,12 @@ fn interrupted_predecessor_matches_tx(
     activation_id: &str,
     source_message_id: Option<&str>,
 ) -> Result<bool> {
-    // Only the canonical interrupted predecessor grants reclaim, never a closed attempt.
-    Ok(tx.query_row(
-        "SELECT EXISTS(
-           SELECT 1 FROM execution_protocol_attempts current
+    // Read only the bindings from a scoped, interrupted predecessor and an
+    // open successor. Different durable wire forms can express the same binding.
+    let mut query = tx.prepare_cached(
+        "SELECT json_extract(prior.payload_json,'$.binding'),
+                json_extract(current.payload_json,'$.binding')
+           FROM execution_protocol_attempts current
            JOIN execution_protocol_attempts prior
              ON prior.agent_id=current.agent_id AND prior.attempt_id=?3
            WHERE current.agent_id=?1 AND current.attempt_id=?2
@@ -1608,18 +1602,28 @@ fn interrupted_predecessor_matches_tx(
              AND json_extract(current.payload_json,'$.recovery_of_attempt_id')=prior.attempt_id
              AND (?4 IS NULL OR json_extract(current.payload_json,'$.source_message_id')=?4)
              AND json_extract(prior.payload_json,'$.source_message_id')
-                   IS json_extract(current.payload_json,'$.source_message_id')
-             AND json_extract(prior.payload_json,'$.binding')
-                   =json_extract(current.payload_json,'$.binding')
-         )",
-        params![
-            record.agent_id,
-            activation_id,
-            record.activation_id,
-            source_message_id
-        ],
-        |row| row.get(0),
-    )?)
+                   IS json_extract(current.payload_json,'$.source_message_id')",
+    )?;
+    let mut rows = query.query(params![
+        record.agent_id,
+        activation_id,
+        record.activation_id,
+        source_message_id
+    ])?;
+    let Some(row) = rows.next()? else {
+        return Ok(false);
+    };
+    let decode = |index| -> Result<Option<StoredExecutionBinding>> {
+        let Ok(payload) = row.get_ref(index)?.as_str() else {
+            return Ok(None);
+        };
+        resource_io::admit_json_payload(payload)?;
+        Ok(serde_json::from_str(payload).ok())
+    };
+    let (Some(prior), Some(current)) = (decode(0)?, decode(1)?) else {
+        return Ok(false);
+    };
+    Ok(prior.matches_in_agent(&current, &record.agent_id))
 }
 
 fn reply_admission_attempt_tx(
@@ -1658,6 +1662,16 @@ fn reply_admission_policy_tx(
                AND json_extract(a.payload_json,'$.binding.work_item_id') IS ?3)
              OR (json_extract(a.payload_json,'$.binding.kind')='agent_lifecycle'
                AND json_extract(a.payload_json,'$.binding.agent_id')=?1 AND ?3 IS NULL)
+             OR (json_extract(a.payload_json,'$.binding.kind')='agent'
+               AND json_extract(a.payload_json,'$.binding.agent_id')=?1
+               AND json_type(a.payload_json,'$.binding.attribution')='object'
+               AND json_extract(a.payload_json,'$.binding.attribution.work_item_id') IS ?3
+               AND COALESCE(json_type(a.payload_json,'$.binding.attribution.work_item_id'),'null')
+                     IN ('null','text')
+               AND (?3 IS NOT NULL
+                 OR json_extract(a.payload_json,'$.binding.attribution.interaction_id') IS NULL)
+               AND COALESCE(json_type(a.payload_json,'$.binding.attribution.interaction_id'),'null')
+                     IN ('null','text'))
            )
            AND EXISTS(SELECT 1 FROM turn_records t
              WHERE t.agent_id=?1 AND t.current_work_item_id IS ?3 AND t.terminal_kind IS NULL

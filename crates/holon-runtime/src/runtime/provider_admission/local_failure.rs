@@ -2,12 +2,11 @@
 
 use super::*;
 use crate::domain::execution_protocol::{
-    eligible_work_item_at_generation, CommandResult, ConversationOutcome, ExecutionBinding,
-    ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand, SettleExecution,
-    WorkItemOutcome,
+    eligible_work_item_at_generation, CommandResult, ConversationOutcome, ExecutionOutcome,
+    ExecutionOutcomeRecord, ExecutionProtocolCommand, SettleExecution, WorkItemOutcome,
 };
 use crate::runtime_db::transitions::ExecutionProtocolTransition;
-use crate::types::{QueueEntryRecord, TurnOwner, TurnRecord};
+use crate::types::{QueueEntryRecord, TurnRecord};
 
 pub(in crate::runtime) fn local_dispatch_failure_settlement(
     storage: &crate::storage::AppStorage,
@@ -16,18 +15,7 @@ pub(in crate::runtime) fn local_dispatch_failure_settlement(
     terminal_turn: Option<&TurnRecord>,
     attempt: &ExecutionAttempt,
 ) -> Result<Option<ExecutionProtocolTransition>> {
-    let owner = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-            interaction_id: interaction_id.clone(),
-        },
-        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => TurnOwner::Command,
-    };
+    let owner = attempt.turn_owner();
     let Some(message) = storage.read_message_by_id(&record.message_id)? else {
         return Ok(None);
     };
@@ -59,8 +47,8 @@ pub(in crate::runtime) fn local_dispatch_failure_settlement(
         .and_then(|failure| failure.safe_context.get("predicate"))
         .cloned()
         .unwrap_or_else(|| "unknown".into());
-    let outcome = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => {
+    let outcome = match attempt.binding.work_item_id() {
+        Some(work_item_id) => {
             let protocol = runtime_db
                 .transitions()
                 .load_execution_protocol_state_if_initialized(&attempt.agent_id)?
@@ -84,12 +72,10 @@ pub(in crate::runtime) fn local_dispatch_failure_settlement(
                 &protocol,
             ))
         }
-        ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-            ExecutionOutcome::Conversation(ConversationOutcome::Paused { reason })
-        }
-        ExecutionBinding::Command => {
+        None if attempt.binding.is_command() => {
             ExecutionOutcome::Command(CommandResult::Quarantined { reason })
         }
+        None => ExecutionOutcome::Conversation(ConversationOutcome::Paused { reason }),
     };
     Ok(Some(ExecutionProtocolTransition {
         bootstrap: None,
@@ -142,12 +128,7 @@ pub(in crate::runtime) fn dispatch_rejection_work_item_outcome(
             protocol
                 .attempts
                 .get(&outcome.attempt_id)
-                .is_some_and(|record| {
-                    matches!(
-                        &record.binding,
-                        ExecutionBinding::WorkItem { work_item_id: id } if id == work_item_id
-                    )
-                })
+                .is_some_and(|record| record.binding.work_item_id() == Some(work_item_id))
         })
         .count();
     if prior_reentries >= PROVIDER_DISPATCH_REENTRY_LIMIT {
@@ -172,7 +153,7 @@ pub(in crate::runtime) const PROVIDER_DISPATCH_REENTRY_LIMIT: usize = 3;
 mod reentry_tests {
     use super::*;
     use crate::domain::execution_protocol::{
-        AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionOrigin,
+        AdmittedFences, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionOrigin,
         ExecutionOutcomeRecord, ExecutionPriority, ExecutionProtocolState, ExecutionProvenance,
         ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
     };

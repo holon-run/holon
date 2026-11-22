@@ -1618,26 +1618,6 @@ impl RuntimeHandle {
                 "operator interjection source message does not match the current execution"
             ));
         }
-        let attempt_owner = match &attempt.binding {
-            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-                crate::types::TurnOwner::WorkItem {
-                    work_item_id: work_item_id.clone(),
-                }
-            }
-            crate::domain::execution_protocol::ExecutionBinding::Conversation {
-                interaction_id,
-            } => crate::types::TurnOwner::Conversation {
-                interaction_id: interaction_id.clone(),
-            },
-            crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                agent_id: owner_agent_id,
-            } => crate::types::TurnOwner::AgentLifecycle {
-                agent_id: owner_agent_id.clone(),
-            },
-            crate::domain::execution_protocol::ExecutionBinding::Command => {
-                crate::types::TurnOwner::Command
-            }
-        };
         let current_owner = execution_binding.owner.clone().unwrap_or_else(|| {
             execution_binding.work_item_id.as_ref().map_or_else(
                 || crate::types::TurnOwner::AgentLifecycle {
@@ -1648,7 +1628,10 @@ impl RuntimeHandle {
                 },
             )
         });
-        if current_owner != attempt_owner {
+        if attempt.agent_id != agent_id
+            || !attempt.binding.matches_agent_partition(agent_id)
+            || current_owner != attempt.turn_owner()
+        {
             return Err(anyhow::anyhow!(
                 "operator interjection execution binding disagrees with attempt owner"
             ));

@@ -22,6 +22,7 @@ use crate::{
     },
     types::{MessageBody, MessageDeliverySurface, MessageKind, Priority},
 };
+use holon_domain::execution_protocol::TurnAttribution;
 
 fn runtime() -> (tempfile::TempDir, RuntimeHandle) {
     runtime_with_urls(["http://127.0.0.1:1/v1", "http://127.0.0.1:2"])
@@ -1026,14 +1027,13 @@ async fn continuation_dispatch_scenario(
     assert_eq!(admission.attempt.binding, committed.binding);
     assert_eq!(
         committed.binding,
-        if matches!(kind, ContinuationDispatch::Timer) {
-            ExecutionBinding::AgentLifecycle {
-                agent_id: "default".into(),
-            }
-        } else {
-            ExecutionBinding::WorkItem {
-                work_item_id: waiter.id.clone(),
-            }
+        ExecutionBinding::Agent {
+            agent_id: "default".into(),
+            attribution: TurnAttribution {
+                work_item_id: (!matches!(kind, ContinuationDispatch::Timer))
+                    .then(|| waiter.id.clone()),
+                interaction_id: None,
+            },
         }
     );
     assert_eq!(admission.episode().unwrap().total_requests, 0);

@@ -1195,14 +1195,16 @@ impl RuntimeDb {
                             crate::domain::execution_protocol::ExecutionProtocolCommand::Settle(
                                 crate::domain::execution_protocol::SettleExecution {
                                     outcome: crate::domain::execution_protocol::ExecutionOutcomeRecord {
-                                        outcome: crate::domain::execution_protocol::ExecutionOutcome::Conversation(
-                                            crate::domain::execution_protocol::ConversationOutcome::Aborted { .. }
-                                        ) | crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-                                            crate::domain::execution_protocol::WorkItemOutcome::Aborted { .. }
-                                        ),
+                                        outcome,
                                         ..
                                     }
                                 }
+                            )
+                            if matches!(
+                                outcome.model_turn().map(|turn| turn.outcome),
+                                Some(crate::domain::execution_protocol::TurnOutcome::Interrupted {
+                                    interruption: crate::domain::execution_protocol::TurnInterruption::Aborted { .. },
+                                })
                             )
                         ) {
                             let disposition = super::TaskResultSettlementDisposition::InvalidOrStale;
@@ -1695,7 +1697,6 @@ fn startup_claim_recovery_tx(
     Option<crate::domain::execution_protocol::ExecutionProtocolCommand>,
     Option<(QueueEntryRecord, QueueEntryRecord)>,
 )> {
-    use crate::domain::execution_protocol::ExecutionBinding;
     use crate::runtime::{TaskResultClaimRecovery, TaskResultClaimRecoveryAuthority};
     let state = execution_protocol_repository::load_state_tx(tx, agent_id)?;
     let attempt = &state.attempts[attempt_id];
@@ -1764,15 +1765,11 @@ fn startup_claim_recovery_tx(
         terminal_status.unwrap_or(QueueEntryStatus::Processed)
     } else if attempt.source_message_id.as_deref() != Some(message_id) {
         QueueEntryStatus::Quarantined
-    } else if attempt.recovery_of_attempt_id.is_some()
-        && !matches!(attempt.binding, ExecutionBinding::AgentLifecycle { .. })
-    {
+    } else if attempt.recovery_of_attempt_id.is_some() && !attempt.binding.is_agent_lifecycle() {
         QueueEntryStatus::Quarantined
     } else if let Some(message) = message.as_ref() {
-        match &attempt.binding {
-            ExecutionBinding::WorkItem { work_item_id }
-                if message.kind == crate::types::MessageKind::TaskResult =>
-            {
+        match attempt.binding.work_item_id() {
+            Some(work_item_id) if message.kind == crate::types::MessageKind::TaskResult => {
                 let task = message
                     .task_id
                     .as_deref()
@@ -1837,7 +1834,7 @@ fn startup_claim_recovery_tx(
                     QueueEntryStatus::Quarantined
                 }
             }
-            ExecutionBinding::AgentLifecycle { .. } => {
+            None if attempt.binding.is_agent_lifecycle() => {
                 let valid = crate::runtime::scheduler_executor::canonical_lifecycle_scenario_for_attempt(message, attempt)
                     .is_some_and(|scenario| crate::runtime::scheduler_executor::canonical_lifecycle_attempt_lineage_is_valid(
                         &state, message, &scenario, attempt_id,
@@ -1868,13 +1865,13 @@ fn startup_claim_recovery_tx(
                     QueueEntryStatus::Quarantined
                 }
             }
-            ExecutionBinding::WorkItem { work_item_id }
+            Some(work_item_id)
                 if matches!((&message.kind, &message.origin), (crate::types::MessageKind::SystemTick, crate::types::MessageOrigin::System { subsystem }) if subsystem == "work_queue")
                     && message.work_item_id.as_deref() == Some(work_item_id) =>
             {
                 QueueEntryStatus::Interrupted
             }
-            ExecutionBinding::WorkItem { .. } if matches!(&attempt.source.identity, crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. } if trigger_message_id == &message.id) => {
+            Some(_) if matches!(&attempt.source.identity, crate::domain::execution_protocol::ExecutionSourceIdentity::TriggeredWait { trigger_message_id, .. } if trigger_message_id == &message.id) => {
                 if startup_triggered_wait_is_exact_tx(tx, message, attempt)? {
                     QueueEntryStatus::Interrupted
                 } else {
@@ -1981,7 +1978,7 @@ fn startup_triggered_wait_is_exact_tx(
     message: &MessageEnvelope,
     attempt: &crate::domain::execution_protocol::ExecutionAttempt,
 ) -> Result<bool> {
-    use crate::domain::execution_protocol::{ExecutionBinding, ExecutionSourceIdentity};
+    use crate::domain::execution_protocol::ExecutionSourceIdentity;
     let ExecutionSourceIdentity::TriggeredWait {
         wait_id,
         trigger_message_id,
@@ -1994,9 +1991,9 @@ fn startup_triggered_wait_is_exact_tx(
         "SELECT payload_json FROM wait_conditions WHERE wait_condition_id = ?1 AND agent_id = ?2",
         [wait_id, &attempt.agent_id], |row| row.get::<_, String>(0),
     ).optional()?.map(|payload| serde_json::from_str::<WaitConditionRecord>(&payload)).transpose()?;
-    let owner = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => Some(work_item_id.as_str()),
-        ExecutionBinding::AgentLifecycle { .. } => None,
+    let owner = match attempt.binding.work_item_id() {
+        Some(work_item_id) => Some(work_item_id),
+        None if attempt.binding.is_agent_lifecycle() => None,
         _ => return Ok(false),
     };
     let exact_ref = match message.source_refs.get("wait_id") {
@@ -2352,9 +2349,7 @@ fn startup_input_recovery_targets_tx(
         if let Some(message_id) = attempt.source_message_id.as_deref() {
             add(Key::new(Family::Message, message_id))?;
         }
-        if let crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } =
-            attempt.binding
-        {
+        if let Some(work_item_id) = attempt.binding.work_item_id() {
             add(Key::new(Family::WorkExecution, work_item_id))?;
         }
     }

@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::{
-    domain::execution_protocol::{ExecutionAttempt, ExecutionBinding, ExecutionSourceIdentity},
+    domain::execution_protocol::{ExecutionAttempt, ExecutionSourceIdentity},
     memory::refs::RuntimeRef,
     types::{
         AgentIdentityRecord, AgentRegistryStatus, AgentState, BriefRecord, ContextEpisodeRecord,
@@ -1406,7 +1406,7 @@ impl RootCollector {
 
     fn attempt_record(&mut self, record: &ExecutionAttempt) {
         self.optional_ref("attempt", record.recovery_of_attempt_id.as_deref());
-        if let ExecutionBinding::WorkItem { work_item_id } = &record.binding {
+        if let Some(work_item_id) = record.binding.work_item_id() {
             self.work_item(Some(work_item_id));
         }
         self.optional_ref("message", record.source_message_id.as_deref());
@@ -1679,9 +1679,7 @@ fn quarantined_unstarted_claim_is_closed(
     {
         return Ok(false);
     }
-    use crate::domain::execution_protocol::{
-        ConversationOutcome, ExecutionAttemptState, ExecutionOutcome, WorkItemOutcome,
-    };
+    use crate::domain::execution_protocol::{ExecutionAttemptState, TurnInterruption, TurnOutcome};
     if attempt.state != ExecutionAttemptState::Interrupted || attempt.run_id.is_some() {
         return Ok(false);
     }
@@ -1774,21 +1772,16 @@ fn quarantined_unstarted_claim_is_closed(
         outcome.attempt_id == attempt.attempt_id && outcome.outcome_id == outcome_id,
         "quarantined claim Outcome projection mismatch"
     );
-    Ok(match (&attempt.binding, &outcome.outcome) {
-        (
-            ExecutionBinding::AgentLifecycle { agent_id },
-            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { .. }),
-        ) => agent_id == &attempt.agent_id,
-        (
-            ExecutionBinding::Conversation { .. },
-            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { .. }),
-        )
-        | (
-            ExecutionBinding::WorkItem { .. },
-            ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { .. }),
-        ) => true,
-        _ => false,
-    })
+    Ok(attempt.binding.matches_agent_partition(&attempt.agent_id)
+        && outcome.outcome.matches_binding(&attempt.binding)
+        && outcome.outcome.model_turn().is_some_and(|turn| {
+            matches!(
+                turn.outcome,
+                TurnOutcome::Interrupted {
+                    interruption: TurnInterruption::Interrupted { .. }
+                }
+            )
+        }))
 }
 
 fn root_table_available(tables: Option<&BTreeSet<String>>, table: &str) -> bool {
@@ -2103,23 +2096,13 @@ fn collect_provider_recovery_refs(
     );
     let predecessor: ExecutionAttempt = serde_json::from_str(&predecessors.remove(0))?;
     ensure!(
-        predecessor.agent_id == recovery.agent_id,
+        predecessor.agent_id == recovery.agent_id
+            && predecessor
+                .binding
+                .matches_agent_partition(&recovery.agent_id),
         "provider recovery continuity predecessor scope mismatch"
     );
-    let owner = match &predecessor.binding {
-        ExecutionBinding::WorkItem { work_item_id } => crate::types::TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::Conversation { interaction_id } => {
-            crate::types::TurnOwner::Conversation {
-                interaction_id: interaction_id.clone(),
-            }
-        }
-        ExecutionBinding::AgentLifecycle { agent_id } => crate::types::TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => crate::types::TurnOwner::Command,
-    };
+    let owner = predecessor.turn_owner();
     ensure!(
         predecessor.source_message_id.as_deref() == Some(source_message_id)
             && predecessor.turn_id.as_deref() == Some(source_turn_id)

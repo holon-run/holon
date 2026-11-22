@@ -1450,7 +1450,7 @@ impl RuntimeHandle {
         settled_at: DateTime<Utc>,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
-            ConversationOutcome, ExecutionBinding, ExecutionOutcome, ExecutionOutcomeRecord,
+            ConversationOutcome, ExecutionOutcome, ExecutionOutcomeRecord,
             ExecutionProtocolCommand, SetWorkItemWaiting, SettleExecution, WaitReference,
             WorkItemExecutionRecord, WorkItemExecutionState, WorkItemOutcome,
         };
@@ -1506,13 +1506,14 @@ impl RuntimeHandle {
             );
         };
         let mut commands = Vec::with_capacity(2);
-        let outcome = match &attempt.binding {
-            ExecutionBinding::WorkItem { work_item_id }
-                if condition.work_item_id.as_deref() == Some(work_item_id.as_str()) =>
+        let outcome = match (attempt.binding.work_item_id(), attempt.binding.is_command()) {
+            (Some(work_item_id), false)
+                if condition.work_item_id.as_deref() == Some(work_item_id)
+                    && attempt.binding.matches_agent_partition(&condition.agent_id) =>
             {
                 ExecutionOutcome::WorkItem(WorkItemOutcome::Wait { wait })
             }
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
+            (None, false) if attempt.binding.matches_agent_partition(&condition.agent_id) => {
                 if let Some(work_item_id) = condition.work_item_id.as_deref() {
                     let work_item = work_item
                         .filter(|record| record.id == work_item_id)
@@ -1548,7 +1549,7 @@ impl RuntimeHandle {
                     ExecutionOutcome::Conversation(ConversationOutcome::Wait { wait })
                 }
             }
-            ExecutionBinding::Command => {
+            (_, true) => {
                 return Err(anyhow!("command execution cannot settle through WaitFor"));
             }
             _ => {
@@ -2785,9 +2786,7 @@ impl RuntimeHandle {
         message: &MessageEnvelope,
         active_conditions: &[WaitConditionRecord],
     ) -> Result<Option<WaitConditionRecord>> {
-        use crate::domain::execution_protocol::{
-            ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
-        };
+        use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionSourceIdentity};
 
         let Some(execution) = self
             .inner
@@ -2821,20 +2820,10 @@ impl RuntimeHandle {
         else {
             return Ok(None);
         };
-        let owner_matches = match (&attempt.binding, condition.work_item_id.as_deref()) {
-            (ExecutionBinding::WorkItem { work_item_id }, Some(condition_work_item_id)) => {
-                work_item_id == condition_work_item_id
-                    && message.work_item_id.as_deref() == Some(condition_work_item_id)
-            }
-            (
-                ExecutionBinding::AgentLifecycle {
-                    agent_id: owner_agent_id,
-                },
-                None,
-            ) => owner_agent_id == agent_id && message.work_item_id.is_none(),
-            (ExecutionBinding::Conversation { .. }, None) => message.work_item_id.is_none(),
-            _ => false,
-        };
+        let owner_matches = !attempt.binding.is_command()
+            && attempt.binding.matches_agent_partition(agent_id)
+            && attempt.binding.work_item_id() == condition.work_item_id.as_deref()
+            && message.work_item_id.as_deref() == condition.work_item_id.as_deref();
         Ok(owner_matches.then(|| condition.clone()))
     }
 }

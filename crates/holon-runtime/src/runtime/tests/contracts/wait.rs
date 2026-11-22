@@ -736,11 +736,16 @@ async fn late_task_result_queue_and_execution_settlement_are_atomic() {
         );
         assert!(matches!(
             &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-            crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-                // #3463: the late fast path settles with the same Wait
-                // semantics as a normal registration so the exact wake keeps
-                // its canonical model re-entry.
-                crate::domain::execution_protocol::WorkItemOutcome::Wait { .. }
+            crate::domain::execution_protocol::ExecutionOutcome::Turn(
+                crate::domain::execution_protocol::TurnSettlement {
+                    // #3463: the late fast path settles with the same Wait
+                    // semantics as a normal registration so the exact wake keeps
+                    // its canonical model re-entry.
+                    outcome: crate::domain::execution_protocol::TurnOutcome::Wait { .. },
+                    work_item_effect: Some(
+                        crate::domain::execution_protocol::TurnWorkItemEffect::Wait
+                    ),
+                }
             )
         ));
         assert!(matches!(
@@ -2008,8 +2013,12 @@ async fn late_agent_reply_wait_resumes_original_message_with_exact_owner() {
         let attempt = execution
             .open_attempt()
             .expect("reply has canonical attempt");
-        assert!(
-            matches!(&attempt.binding, crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } if work_item_id == &work.id)
+        assert_eq!(
+            attempt.binding,
+            crate::domain::execution_protocol::ExecutionBinding::for_work_item(
+                &attempt.agent_id,
+                work.id.as_str(),
+            )
         );
         assert!(matches!(
             &attempt.source.identity,

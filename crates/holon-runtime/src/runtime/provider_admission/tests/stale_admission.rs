@@ -518,8 +518,12 @@ pub(super) fn assert_result_delivered(
         attempt.source_message_id.as_deref() == Some(message_id)
             && attempt.state == ExecutionAttemptState::Settled
             && attempt.binding
-                == (ExecutionBinding::WorkItem {
-                    work_item_id: waiter_id.to_owned(),
+                == (ExecutionBinding::Agent {
+                    agent_id: "default".into(),
+                    attribution: TurnAttribution {
+                        work_item_id: Some(waiter_id.to_owned()),
+                        interaction_id: None,
+                    },
                 })
     }));
 }

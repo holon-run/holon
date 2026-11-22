@@ -3546,9 +3546,9 @@ impl RuntimeHandle {
         readiness_owned_by_continuation_resume: bool,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
-            AdvanceWorkItemSourceRevision, ExecutionBinding, ExecutionProtocolCommand,
-            ExecutionProtocolState, RegisterWorkItemExecution, SetWorkItemReadiness,
-            WorkItemExecutionRecord, WorkItemExecutionState,
+            AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
+            RegisterWorkItemExecution, SetWorkItemReadiness, WorkItemExecutionRecord,
+            WorkItemExecutionState,
         };
 
         let existing = read.protocol.as_ref();
@@ -3578,10 +3578,7 @@ impl RuntimeHandle {
         };
         let open_attempt_owns_work = existing
             .and_then(ExecutionProtocolState::open_attempt)
-            .is_some_and(|attempt| {
-                matches!(&attempt.binding, ExecutionBinding::WorkItem { work_item_id }
-                    if work_item_id == &record.id)
-            });
+            .is_some_and(|attempt| attempt.binding.work_item_id() == Some(record.id.as_str()));
         let advance_source_revision = || {
             (authoritative.source_revision != record.revision).then(|| {
                 ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
@@ -5421,11 +5418,10 @@ impl RuntimeHandle {
                         == crate::domain::execution_protocol::ExecutionAttemptState::Open
                         && attempt.source_message_id.as_deref()
                             == brief.related_message_id.as_deref()
-                        && match &attempt.binding {
-                            crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                                work_item_id,
-                            } => {
-                                work_item_id == &existing.id
+                        && attempt.binding.matches_agent_partition(&agent_id)
+                        && match attempt.binding.work_item_id() {
+                            Some(work_item_id) => {
+                                work_item_id == existing.id
                                     && protocol_state
                                         .work_items
                                         .get(&existing.id)
@@ -5439,18 +5435,14 @@ impl RuntimeHandle {
                                                 )
                                         })
                             }
-                            crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-                                agent_id: binding_agent_id,
-                            } => {
-                                binding_agent_id == &agent_id
-                                    && canonical_unbound_target()
-                            }
-                            crate::domain::execution_protocol::ExecutionBinding::Conversation {
-                                ..
-                            } => {
+                            None if attempt.binding.interaction_id().is_some() => {
                                 attempt.agent_id == agent_id && canonical_unbound_target()
                             }
-                            crate::domain::execution_protocol::ExecutionBinding::Command => false,
+                            None => {
+                                attempt.has_agent_lifecycle_binding()
+                                    && attempt.agent_id == agent_id
+                                    && canonical_unbound_target()
+                            }
                         }
                 });
                 let matching_attempt = matching_attempts

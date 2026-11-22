@@ -98,7 +98,10 @@ pub(super) fn validate_idle_recovery_predecessor(
                 RecoveryPredicate::PredecessorSourceMismatch,
                 "predecessor.source_message",
             ))
-        } else if prior.binding != attempt.binding {
+        } else if !prior
+            .binding
+            .matches_in_agent(&attempt.binding, &attempt.agent_id)
+        {
             Some((
                 RecoveryPredicate::PredecessorBindingMismatch,
                 "predecessor.binding",
@@ -990,19 +993,10 @@ impl RuntimeHandle {
         }) else {
             return Ok(None);
         };
-        let canonical_owner = match &attempt.binding {
-            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-                crate::types::TurnOwner::WorkItem {
-                    work_item_id: work_item_id.clone(),
-                }
-            }
-            crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle { agent_id } => {
-                crate::types::TurnOwner::AgentLifecycle {
-                    agent_id: agent_id.clone(),
-                }
-            }
-            _ => return Ok(None),
-        };
+        if !attempt.has_scheduler_attribution() {
+            return Ok(None);
+        }
+        let canonical_owner = attempt.turn_owner();
         if turn.agent_id != anchor.agent_id
             || canonical_owner != turn.effective_owner()
             || binding.owner.as_ref() != Some(&turn.effective_owner())
@@ -1070,7 +1064,7 @@ impl RuntimeHandle {
             if !prior.is_some_and(|prior| {
                 prior.agent_id == anchor.agent_id
                     && prior.source_message_id == attempt.source_message_id
-                    && prior.binding == attempt.binding
+                    && prior.binding.matches_in_agent(&attempt.binding, &anchor.agent_id)
                     && prior.state
                         == crate::domain::execution_protocol::ExecutionAttemptState::Interrupted
             }) {
@@ -1939,8 +1933,7 @@ impl RuntimeHandle {
         use super::resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence,
         };
-        use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding};
-        use crate::types::TurnOwner;
+        use crate::domain::execution_protocol::ExecutionAttemptState;
         let Some(ExecutionAdmissionProvenance::Canonical { activation_id, .. }) = provenance else {
             return Ok(None);
         };
@@ -1963,7 +1956,9 @@ impl RuntimeHandle {
             || prior.agent_id != attempt.agent_id
             || attempt.source_message_id.as_deref() != Some(message.id.as_str())
             || prior.source_message_id != attempt.source_message_id
-            || prior.binding != attempt.binding
+            || !prior
+                .binding
+                .matches_in_agent(&attempt.binding, &message.agent_id)
         {
             return Ok(None);
         }
@@ -1976,19 +1971,8 @@ impl RuntimeHandle {
         let PreparedInputEvidence::Turn(turn) = &evidence.record else {
             bail!("canonical replay Turn family mismatch");
         };
-        let owner_matches = match (&attempt.binding, turn.effective_owner()) {
-            (
-                ExecutionBinding::WorkItem { work_item_id },
-                TurnOwner::WorkItem {
-                    work_item_id: owner,
-                },
-            ) => work_item_id == &owner,
-            (
-                ExecutionBinding::AgentLifecycle { agent_id },
-                TurnOwner::AgentLifecycle { agent_id: owner },
-            ) => agent_id == &owner,
-            _ => false,
-        };
+        let owner_matches =
+            attempt.has_scheduler_attribution() && attempt.turn_owner() == turn.effective_owner();
         if evidence.locator.scope != inputs.scope
             || turn.agent_id != message.agent_id
             || turn.turn_id != *id

@@ -275,16 +275,14 @@ impl RuntimeHandle {
         else {
             return Ok(false);
         };
-        let owner_work = match &attempt.binding {
-            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-                match inputs.execution_work_item(work_item_id)? {
-                    ObservedWorkExecution::Present(record) => Some(record),
-                    ObservedWorkExecution::Absent => None,
-                    ObservedWorkExecution::Pruned => {
-                        anyhow::bail!("exact task wait Work execution was not prepared")
-                    }
+        let owner_work = match attempt.binding.work_item_id() {
+            Some(work_item_id) => match inputs.execution_work_item(work_item_id)? {
+                ObservedWorkExecution::Present(record) => Some(record),
+                ObservedWorkExecution::Absent => None,
+                ObservedWorkExecution::Pruned => {
+                    anyhow::bail!("exact task wait Work execution was not prepared")
                 }
-            }
+            },
             _ => None,
         };
         anyhow::ensure!(
@@ -1398,12 +1396,10 @@ fn task_result_has_canonical_exact_wait(
     let Some(attempt) = state.attempts.get(activation_id) else {
         return Ok(false);
     };
-    let owner_work = match &attempt.binding {
-        crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } => {
-            state.work_items.get(work_item_id)
-        }
-        _ => None,
-    };
+    let owner_work = attempt
+        .binding
+        .work_item_id()
+        .and_then(|work_item_id| state.work_items.get(work_item_id));
     let waits = runtime
         .inner
         .storage
@@ -1427,12 +1423,12 @@ fn canonical_exact_task_wait_matches<'a>(
     waits: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
 ) -> bool {
     use crate::domain::execution_protocol::{
-        eligible_work_item_at_generation, ExecutionAttemptState, ExecutionBinding,
-        ExecutionSourceIdentity,
+        eligible_work_item_at_generation, ExecutionAttemptState, ExecutionSourceIdentity,
     };
     if attempt.state != ExecutionAttemptState::Open
         || attempt.attempt_id != activation_id
         || attempt.agent_id != message.agent_id
+        || !attempt.binding.matches_agent_partition(&message.agent_id)
         || attempt.source_message_id.as_deref() != Some(message.id.as_str())
         || task.agent_id != message.agent_id
         || message.kind != MessageKind::TaskResult
@@ -1441,17 +1437,14 @@ fn canonical_exact_task_wait_matches<'a>(
     {
         return false;
     }
-    let owner = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => {
+    let owner = match attempt.binding.work_item_id() {
+        Some(work_item_id) => {
             if !owner_work.is_some_and(|work| {
                 eligible_work_item_at_generation(work, attempt.admitted_fences.work_item_generation)
             }) {
                 return false;
             }
-            Some(work_item_id.as_str())
-        }
-        ExecutionBinding::AgentLifecycle { agent_id } if agent_id != &message.agent_id => {
-            return false;
+            Some(work_item_id)
         }
         _ => None,
     };

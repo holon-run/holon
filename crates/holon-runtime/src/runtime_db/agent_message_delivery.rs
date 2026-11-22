@@ -9,7 +9,7 @@ use super::task_snapshot as tasks;
 use crate::{
     domain::execution_protocol::{
         eligible_work_item_at_generation, ExecutionAttempt, ExecutionAttemptState,
-        ExecutionBinding, WorkItemExecutionRecord,
+        WorkItemExecutionRecord,
     },
     runtime::{
         input_evidence_budget::{
@@ -29,7 +29,7 @@ use crate::{
         AgentMessageDeliveryRejectionCode, AgentMessageDeliveryState, AgentMessageDerivedGrant,
         AgentMessagePrincipalKind, AgentMessageRoutingContext, AgentPolicyEffect,
         AgentRegistryStatus, AgentState, AgentStatus, MessageDeliverySurface, MessageEnvelope,
-        MessageKind, MessageOrigin, TurnOwner, TurnRecord,
+        MessageKind, MessageOrigin, TurnRecord,
     },
 };
 
@@ -216,26 +216,8 @@ fn load_reply_routes_internal_tx(
         return Ok(None);
     };
     let turn: TurnRecord = serde_json::from_str(&payload)?;
-    let owner_matches = match (&attempt.binding, turn.effective_owner()) {
-        (
-            ExecutionBinding::WorkItem { work_item_id },
-            TurnOwner::WorkItem {
-                work_item_id: owner,
-            },
-        ) => work_item_id == &owner,
-        (
-            ExecutionBinding::Conversation { interaction_id },
-            TurnOwner::Conversation {
-                interaction_id: owner,
-            },
-        ) => interaction_id == &owner,
-        (
-            ExecutionBinding::AgentLifecycle { agent_id },
-            TurnOwner::AgentLifecycle { agent_id: owner },
-        ) => agent_id == &owner,
-        (ExecutionBinding::Command, TurnOwner::Command) => true,
-        _ => false,
-    };
+    let owner_matches = attempt.binding.matches_agent_partition(agent_id)
+        && attempt.turn_owner() == turn.effective_owner();
     if turn.agent_id != agent_id
         || turn.turn_id != turn_id
         || (turn.terminal.is_some() && terminal_turn != Some(&turn))
@@ -254,7 +236,7 @@ fn load_reply_routes_internal_tx(
     if attempt.admitted_fences.host_registry_revision != fences.host_registry_revision {
         return Ok(None);
     }
-    if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
+    if let Some(work_item_id) = attempt.binding.work_item_id() {
         let payload = tx
             .query_row(
                 "SELECT payload_json FROM execution_protocol_work_items
@@ -1585,6 +1567,7 @@ fn bounded_diagnostic(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::{
+        domain::execution_protocol::ExecutionBinding,
         runtime::AgentMessageDeliveryService,
         runtime_db::{
             transitions::{QueueMutation, QueueOperation, QueueTransitionCommand},
@@ -1599,7 +1582,7 @@ mod tests {
             AgentMessageSendRequest, AgentOwnership, AgentPolicyEffect, AgentProfilePreset,
             AgentState, AgentStatus, AgentVisibility, AuthorityClass, MessageBody,
             MessageDeliverySurface, MessageEnvelope, MessageOrigin, Priority, QueueEntryRecord,
-            QueueEntryStatus,
+            QueueEntryStatus, TurnOwner,
         },
     };
     use tempfile::TempDir;

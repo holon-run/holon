@@ -134,7 +134,10 @@ pub(crate) fn validate_execution_commands_tx(
                             unreachable!("abort settles an execution")
                         };
                         anyhow::ensure!(
-                            command.outcome.outcome == aborted.outcome.outcome,
+                            command
+                                .outcome
+                                .outcome
+                                .same_terminal_as(&aborted.outcome.outcome),
                             "operator-aborted attempt cannot commit producer outcome"
                         );
                     }
@@ -280,7 +283,7 @@ pub(super) fn validate_model_queue_claim_tx(
     }) else {
         return Ok(());
     };
-    let execution_protocol::ExecutionBinding::WorkItem { work_item_id } = &attempt.binding else {
+    let Some(work_item_id) = attempt.binding.work_item_id() else {
         return Ok(());
     };
     // Command validation already checked the partition in this transaction.

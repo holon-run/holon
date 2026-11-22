@@ -3480,11 +3480,10 @@ mod tests {
                         result_message_id: claimed_message_id,
                     } if claimed_task_id == &task_id && claimed_message_id == result_message_id
                 ));
-                assert!(matches!(
-                    &attempt.binding,
-                    ExecutionBinding::WorkItem { work_item_id: claimed_owner }
-                        if claimed_owner == work_item_id
-                ));
+                assert_eq!(
+                    attempt.binding,
+                    ExecutionBinding::for_work_item("default", work_item_id)
+                );
             } else {
                 assert_eq!(attempt.admitted_fences.rejoin, None);
                 assert!(matches!(

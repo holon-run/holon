@@ -1,7 +1,7 @@
 //! Original cutover observation of a closed claim that never installed a Turn.
 
 use super::*;
-use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome, WorkItemOutcome};
+use crate::domain::execution_protocol::{TurnInterruption, TurnOutcome, TurnSettlement};
 
 pub(super) fn original_observation(
     tx: &Transaction<'_>,
@@ -125,20 +125,20 @@ pub(super) fn original_observation(
         outcome.attempt_id == attempt.attempt_id && outcome.outcome_id == *outcome_id,
         "closed claim Outcome projection mismatch"
     );
-    let binding_matches = match (&attempt.binding, &outcome.outcome) {
-        (ExecutionBinding::AgentLifecycle { agent_id }, ExecutionOutcome::Conversation(_)) => {
-            agent_id == &attempt.agent_id
-        }
-        (ExecutionBinding::Conversation { .. }, ExecutionOutcome::Conversation(_))
-        | (ExecutionBinding::WorkItem { .. }, ExecutionOutcome::WorkItem(_))
-        | (ExecutionBinding::Command, ExecutionOutcome::Command(_)) => true,
-        _ => false,
-    };
+    let binding_matches = outcome.outcome.matches_binding(&attempt.binding)
+        && (attempt.binding.is_command()
+            || attempt.binding.work_item_id().is_some()
+            || attempt.binding.interaction_id().is_some()
+            || attempt.has_agent_lifecycle_binding());
     let terminal_matches = attempt.state == ExecutionAttemptState::Settled
         || matches!(
-            outcome.outcome,
-            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { .. })
-                | ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { .. })
+            outcome.outcome.model_turn(),
+            Some(TurnSettlement {
+                outcome: TurnOutcome::Interrupted {
+                    interruption: TurnInterruption::Interrupted { .. },
+                },
+                ..
+            })
         );
     Ok(
         (binding_matches && terminal_matches).then(|| ClosedClaimObservation {

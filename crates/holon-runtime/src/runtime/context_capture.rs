@@ -11,7 +11,7 @@ use crate::{
         },
         ContextAdmissionPlan, ContextConfig, ContextHistoryPreparation, ContextSnapshot,
     },
-    domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding},
+    domain::execution_protocol::ExecutionAttemptState,
     prompt::{build_effective_prompt_from_context_snapshot, ToolPromptContext},
     runtime::resident_input_evidence::{
         InputEvidenceFamily as Family, InputEvidenceKey, InputWindowSelector, LEGACY_INPUT_WINDOW,
@@ -1162,18 +1162,7 @@ fn validate_context_execution(
     let attempt = inputs
         .execution_attempt_by_id(&state.id, activation_id)?
         .ok_or_else(|| anyhow!("context canonical activation missing"))?;
-    let owner = match &attempt.binding {
-        ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-            interaction_id: interaction_id.clone(),
-        },
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => TurnOwner::Command,
-    };
+    let owner = attempt.turn_owner();
     anyhow::ensure!(
         attempt.agent_id == state.id
             && attempt.state == ExecutionAttemptState::Open

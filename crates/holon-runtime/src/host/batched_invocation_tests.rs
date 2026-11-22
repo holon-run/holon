@@ -1,7 +1,7 @@
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
+use crate::domain::execution_protocol::{ExecutionOutcome, TurnOutcome, TurnSettlement};
 use crate::provider::{ConversationMessage, ModelBlock, ModelToolCallKind};
 use crate::runtime_db::task_result_settlement::{
     TaskResultSettlementDisposition, TaskResultSettlementRecord, TaskResultSettlementState,
@@ -341,7 +341,10 @@ async fn assert_real_batched_invocation(result_count: usize) {
     let root = root_state.attempts.values().next().unwrap();
     assert!(matches!(
         root_state.outcomes[root.terminal_outcome_id.as_ref().unwrap()].outcome,
-        ExecutionOutcome::Conversation(ConversationOutcome::Wait { .. })
+        ExecutionOutcome::Turn(TurnSettlement {
+            outcome: TurnOutcome::Wait { .. },
+            work_item_effect: None,
+        })
     ));
     for command in &commands {
         assert_eq!(
@@ -505,7 +508,10 @@ async fn assert_real_batched_invocation(result_count: usize) {
         ));
         assert!(matches!(
             execution.outcomes[consumer.terminal_outcome_id.as_ref().unwrap()].outcome,
-            ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+            ExecutionOutcome::Turn(TurnSettlement {
+                outcome: TurnOutcome::Completed,
+                work_item_effect: None,
+            })
         ));
         let briefs = child.storage().read_briefs_for_turn(&turn.turn_id).unwrap();
         assert_eq!(briefs.len(), 1);

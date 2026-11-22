@@ -385,23 +385,21 @@ fn validate_interrupted_pair(
     use execution_protocol::{
         CommandResult, ConversationOutcome, ExecutionOutcome, WorkItemOutcome,
     };
-    let expected = match &attempt.binding {
-        ExecutionBinding::WorkItem { .. } => {
-            ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
-                reason: "agent_stopped".into(),
-            })
-        }
-        ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. } => {
-            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
-                reason: "agent_stopped".into(),
-            })
-        }
-        ExecutionBinding::Command => ExecutionOutcome::Command(CommandResult::Applied {
+    let expected = if attempt.binding.is_command() {
+        ExecutionOutcome::Command(CommandResult::Applied {
             references: vec![format!("interrupted:{}", attempt.attempt_id)],
-        }),
+        })
+    } else if attempt.binding.work_item_id().is_some() {
+        ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted {
+            reason: "agent_stopped".into(),
+        })
+    } else {
+        ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
+            reason: "agent_stopped".into(),
+        })
     };
     ensure!(
-        outcome.outcome == expected,
+        outcome.outcome.same_terminal_as(&expected),
         "original Stop outcome differs from canonical interruption"
     );
     let mut partition = ExecutionProtocolState::empty(&attempt.agent_id);

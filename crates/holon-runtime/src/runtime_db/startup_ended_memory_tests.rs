@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    domain::execution_protocol::ExecutionBinding,
     runtime_db::{
         context_inputs::ContextDurableRead,
         control_transition::{

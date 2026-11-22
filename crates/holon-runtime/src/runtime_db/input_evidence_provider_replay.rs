@@ -1,7 +1,7 @@
 //! A replay terminal may differ from its Message's immutable assignment only
 //! through the already-qualified canonical Turn and complete Attempt closure.
 use super::*;
-use crate::domain::execution_protocol::{ExecutionAttemptState, ExecutionBinding};
+use crate::domain::execution_protocol::ExecutionAttemptState;
 use crate::runtime::resident_input_evidence::ExecutionInputCoverage;
 use crate::types::TurnTerminalKind;
 
@@ -95,19 +95,7 @@ pub(super) fn validate(
             continue;
         };
         let prior = attempt(prior_id)?;
-        let owner = match &current_attempt.binding {
-            ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-                work_item_id: work_item_id.clone(),
-            },
-            ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-                interaction_id: interaction_id.clone(),
-            },
-            ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-                agent_id: agent_id.clone(),
-            },
-            ExecutionBinding::Command => TurnOwner::Command,
-        };
-        if current.effective_owner() != owner
+        if current.effective_owner() != current_attempt.turn_owner()
             || prior.attempt_id == current_attempt.attempt_id
             || prior.state != ExecutionAttemptState::Interrupted
             || prior.agent_id != current_attempt.agent_id

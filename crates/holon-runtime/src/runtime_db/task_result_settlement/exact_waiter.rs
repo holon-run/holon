@@ -9,8 +9,7 @@ use super::{
 };
 use crate::{
     domain::execution_protocol::{
-        ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity,
-        ExecutionWaitIngress,
+        ExecutionAttempt, ExecutionAttemptState, ExecutionSourceIdentity, ExecutionWaitIngress,
     },
     types::{
         AdmissionContext, AuthorityClass, MessageDeliverySurface, MessageEnvelope, MessageKind,
@@ -314,15 +313,8 @@ pub(super) fn candidate_for_attempt_tx(
     attempt: &ExecutionAttempt,
     waiter_work_item_id: Option<&str>,
 ) -> Result<Option<TaskResultSettlementRecord>> {
-    let owner_matches = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => {
-            Some(work_item_id.as_str()) == waiter_work_item_id
-        }
-        ExecutionBinding::AgentLifecycle { agent_id } => {
-            agent_id == &attempt.agent_id && waiter_work_item_id.is_none()
-        }
-        _ => false,
-    };
+    let owner_matches = attempt.has_scheduler_attribution()
+        && attempt.binding.work_item_id() == waiter_work_item_id;
     if attempt.state != ExecutionAttemptState::Open || !owner_matches {
         return Ok(None);
     }

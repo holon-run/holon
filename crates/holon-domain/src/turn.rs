@@ -3,6 +3,7 @@ use super::message::{
     MessageEnvelope, MessageOrigin, Priority,
 };
 use super::serde_helpers::is_false;
+use crate::execution_protocol::TurnAttribution;
 use crate::input::{IdleInputBatchItem, IdleInputBatchRecord};
 use crate::{ContinuationTriggerKind, MessageKind, TurnTerminalKind};
 use chrono::{DateTime, Utc};
@@ -60,6 +61,9 @@ pub struct TurnRecord {
     pub run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub current_work_item_id: Option<String>,
+    /// Full model admission attribution; historical Turns keep only the owner projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<TurnAttribution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub owner: Option<TurnOwner>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -113,6 +117,7 @@ impl TurnRecord {
             agent_id: agent_id.into(),
             run_id: None,
             current_work_item_id: None,
+            attribution: None,
             owner: None,
             trigger: None,
             input_message_ids: Vec::new(),
@@ -145,6 +150,23 @@ impl TurnRecord {
                 },
             )
         })
+    }
+
+    pub fn effective_attribution(&self) -> Option<TurnAttribution> {
+        self.attribution
+            .clone()
+            .or_else(|| match self.effective_owner() {
+                TurnOwner::WorkItem { work_item_id } => Some(TurnAttribution {
+                    work_item_id: Some(work_item_id),
+                    interaction_id: None,
+                }),
+                TurnOwner::Conversation { interaction_id } => Some(TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: Some(interaction_id),
+                }),
+                TurnOwner::AgentLifecycle { .. } => Some(TurnAttribution::default()),
+                TurnOwner::Command => None,
+            })
     }
 
     /// Erase conversation content while preserving identity, lifecycle, and

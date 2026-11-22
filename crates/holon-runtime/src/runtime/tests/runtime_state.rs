@@ -1,5 +1,7 @@
 use super::super::*;
 use super::support::*;
+#[cfg(holon_lib_test_shard = "a")]
+use crate::domain::execution_protocol as ep;
 use crate::types::{
     ActiveSkillRecord, AuthorityClass, BriefKind, BriefRecord, CompletionReportState,
     QueueEntryStatus, SkillActivationSource, SkillActivationState, SkillLoadReason, SkillScope,
@@ -410,6 +412,113 @@ async fn exact_wait_owner_clears_blocker_without_invalidating_open_attempt() {
         WorkItemExecutionState::Runnable { generation, .. }
             if generation == work.state.generation() + 1
     ));
+}
+
+#[cfg(holon_lib_test_shard = "a")]
+#[tokio::test]
+async fn text_only_lifecycle_turn_preserves_waiting_or_paused_focus() {
+    use crate::domain::execution_protocol::{
+        ExecutionOutcome, TurnOutcome, TurnSettlement, WaitReference, WorkItemExecutionState,
+    };
+
+    for waiting in [true, false] {
+        let harness = LifecycleHarness::with_provider(Arc::new(StubProvider::new("text only")));
+        let runtime = harness.runtime();
+        let work = runtime
+            .create_work_item("unrelated focus".into(), None, None, Vec::new())
+            .await
+            .unwrap();
+        runtime.pick_work_item(work.id.clone()).await.unwrap();
+        let wait = if waiting {
+            Some(
+                runtime
+                    .register_wait_for(
+                        "default",
+                        Some(work.id.clone()),
+                        WaitForWakeKind::External,
+                        Some("external-dependency".into()),
+                        "waiting for external state".into(),
+                        None,
+                    )
+                    .await
+                    .unwrap()
+                    .condition,
+            )
+        } else {
+            None
+        };
+        let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
+        let generation = work.revision.max(1);
+        let state = match &wait {
+            Some(wait) => WorkItemExecutionState::Waiting {
+                generation,
+                wait: WaitReference {
+                    wait_id: wait.id.clone(),
+                },
+            },
+            None => WorkItemExecutionState::Paused {
+                generation,
+                reason: "manual pause".into(),
+            },
+        };
+        persist_work_execution(runtime, &work, work.revision, state).await;
+        let load_execution = || {
+            runtime
+                .runtime_db()
+                .transitions()
+                .load_execution_protocol_state_if_initialized("default")
+                .unwrap()
+                .unwrap()
+        };
+        let before = load_execution();
+        assert_eq!(
+            runtime.agent_state().await.unwrap().current_work_item_id,
+            Some(work.id.clone())
+        );
+        let message = MessageEnvelope::new(
+            "default",
+            MessageKind::SystemTick,
+            MessageOrigin::System {
+                subsystem: "text-only-lifecycle".into(),
+            },
+            AuthorityClass::RuntimeInstruction,
+            Priority::Next,
+            MessageBody::Text {
+                text: "A lifecycle prompt without WorkItem attribution.".into(),
+            },
+        )
+        .with_admission(
+            MessageDeliverySurface::RuntimeSystem,
+            AdmissionContext::RuntimeOwned,
+        );
+        execute_source_bound_input(runtime, &message).await;
+
+        let after = load_execution();
+        let attempt = &after.attempts[&scheduler_executor::canonical_activation_id(&message.id)];
+        assert_eq!(
+            after.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
+            ExecutionOutcome::Turn(TurnSettlement {
+                outcome: TurnOutcome::Completed,
+                work_item_effect: None,
+            })
+        );
+        assert_eq!(after.work_items, before.work_items);
+        assert_eq!(
+            runtime.agent_state().await.unwrap().current_work_item_id,
+            Some(work.id.clone())
+        );
+        assert_eq!(
+            runtime.latest_work_item(&work.id).await.unwrap(),
+            Some(work)
+        );
+        if let Some(wait) = wait {
+            assert!(runtime
+                .storage()
+                .latest_wait_conditions()
+                .unwrap()
+                .contains(&wait));
+        }
+    }
 }
 
 #[cfg(holon_lib_test_shard = "a")]
@@ -1155,7 +1264,7 @@ async fn startup_recovery_preserves_operator_claim_while_interrupting_its_active
         let attempt = state.open_attempt().unwrap();
         assert!(matches!(
             attempt.binding,
-            crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+            ep::ExecutionBinding::Agent { ref agent_id, attribution: ep::TurnAttribution { work_item_id: None, interaction_id: Some(_) } } if agent_id == "default"
         ));
         (
             message.id.clone(),
@@ -1840,7 +1949,7 @@ async fn provider_recovery_conversation_pins_root_across_hops_without_claiming_f
         .unwrap();
     assert!(matches!(
         source_attempt.binding,
-        crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+        ep::ExecutionBinding::Agent { ref agent_id, attribution: ep::TurnAttribution { work_item_id: None, interaction_id: Some(_) } } if agent_id == "default"
     ));
     let binding = source_attempt.binding.clone();
 
@@ -2147,9 +2256,7 @@ async fn provider_recovery_lifecycle_keeps_root_trust_and_no_work_item_fences() 
         .unwrap();
     assert_eq!(
         attempt.binding,
-        crate::domain::execution_protocol::ExecutionBinding::AgentLifecycle {
-            agent_id: "default".into()
-        }
+        ep::ExecutionBinding::agent_lifecycle("default")
     );
     assert!(attempt.admitted_fences.work_item_generation.is_none());
     assert!(attempt.admitted_fences.work_item_source_revision.is_none());
@@ -4959,9 +5066,7 @@ async fn canonical_work_item_wait_keeps_other_runnable_work_schedulable() {
     let activation_id = scheduler_executor::canonical_activation_id(&tick.id);
     assert!(matches!(
         claimed.attempts[&activation_id].binding,
-        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-            ref work_item_id
-        } if work_item_id == &runnable_work.id
+        ep::ExecutionBinding::Agent { ref agent_id, attribution: ep::TurnAttribution { work_item_id: Some(ref work_item_id), interaction_id: None } } if agent_id == "default" && work_item_id == &runnable_work.id
     ));
     let expected_wait_id = wait.id.clone();
     assert!(matches!(
@@ -5309,11 +5414,14 @@ async fn bootstrap_recovery_interrupts_open_attempt_and_releases_message_for_ree
             .as_deref()
             .expect("bootstrap interruption should have terminal evidence")]
         .outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted {
-                reason: "runtime_interrupted".into(),
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Interrupted {
+                interruption: ep::TurnInterruption::Interrupted {
+                    reason: "runtime_interrupted".into(),
+                }
             },
-        )
+            work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        })
     );
     let recovered_queue_status = runtime
         .inner
@@ -6491,9 +6599,8 @@ async fn bootstrap_quarantines_repeated_task_result_claim_recovery() {
             .as_deref()
             .expect("quarantine should persist interruption evidence")]
         .outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
-        ) if reason == "bounded_replay_exhausted"
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Interrupted { interruption: ep::TurnInterruption::Interrupted { reason } }, work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        }) if reason == "bounded_replay_exhausted"
     ));
 }
 
@@ -6838,11 +6945,14 @@ async fn bootstrap_recovery_uses_execution_attempt() {
             .as_deref()
             .expect("bootstrap recovery should persist interruption evidence")]
         .outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted {
-                reason: "runtime_interrupted".into(),
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Interrupted {
+                interruption: ep::TurnInterruption::Interrupted {
+                    reason: "runtime_interrupted".into(),
+                }
             },
-        )
+            work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        })
     );
 }
 
@@ -7099,9 +7209,10 @@ async fn bootstrap_recovery_settles_dequeued_activation_from_terminal_turn() {
     );
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Continue
-        )
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Completed,
+            work_item_effect: Some(ep::TurnWorkItemEffect::Continue)
+        })
     ));
     assert_eq!(
         runtime
@@ -7414,9 +7525,8 @@ async fn bootstrap_recovery_settles_completed_work_item_from_bound_terminal_evid
     );
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Complete { completion }
-        ) if completion == &result_brief_id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Completed, work_item_effect: Some(ep::TurnWorkItemEffect::Complete { completion })
+        }) if completion == &result_brief_id
     ));
     assert_eq!(
         runtime
@@ -7838,6 +7948,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
         claimed.work_items[&work_item.id].state,
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
+    let admitted_generation = claimed.work_items[&work_item.id].generation();
 
     finish_claimed_test_run(&runtime).await;
     let terminal = terminal_transition_from_started_turn(&runtime, &terminal_source);
@@ -7886,9 +7997,14 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     );
     assert_eq!(
         settled.outcomes[&outcome_id].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Continue,
-        )
+        crate::domain::execution_protocol::ExecutionOutcome::Turn(
+            crate::domain::execution_protocol::TurnSettlement {
+                outcome: crate::domain::execution_protocol::TurnOutcome::Completed,
+                work_item_effect: Some(
+                    crate::domain::execution_protocol::TurnWorkItemEffect::Continue
+                ),
+            },
+        ),
     );
     assert_eq!(
         settled.work_items[&work_item.id].source_revision,
@@ -7897,7 +8013,7 @@ async fn production_protocol_claim_and_settlement_release_the_canonical_slot() {
     assert_eq!(
         settled.work_items[&work_item.id].state,
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
-            generation: work_item.revision + 1,
+            generation: admitted_generation + 1,
             recovery_ref: None,
         }
     );
@@ -8046,9 +8162,10 @@ async fn production_settlement_ignores_foreign_turn_read_model_yield_divergence(
     let attempt = &settled.attempts[&activation_id];
     assert_eq!(
         settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Continue,
-        )
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Completed,
+            work_item_effect: Some(ep::TurnWorkItemEffect::Continue)
+        })
     );
 }
 
@@ -8144,11 +8261,8 @@ async fn production_settlement_yields_to_exact_matching_revision_continuation() 
     let attempt = &settled.attempts[&activation_id];
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Yield {
-                target_work_item_id
-            }
-        ) if target_work_item_id == &target.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Completed, work_item_effect: Some(ep::TurnWorkItemEffect::Yield { target_work_item_id })
+        }) if target_work_item_id == &target.id
     ));
     assert_eq!(
         settled.work_items[&owner.id].state,
@@ -8263,9 +8377,8 @@ async fn production_settlement_interrupts_yield_to_stale_execution_revision() {
     );
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
-        ) if reason == "yield_target_not_runnable"
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Interrupted { interruption: ep::TurnInterruption::Interrupted { reason } }, work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        }) if reason == "yield_target_not_runnable"
     ));
 }
 
@@ -8392,9 +8505,10 @@ async fn production_settlement_accepts_authoritative_revision_advance_while_in_f
     );
     assert_eq!(
         settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Continue,
-        )
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Completed,
+            work_item_effect: Some(ep::TurnWorkItemEffect::Continue)
+        })
     );
 }
 
@@ -8669,9 +8783,8 @@ async fn production_settlement_interrupts_stale_owner_execution_revision() {
     );
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
-        ) if reason == "work_item_execution_revision_mismatch"
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Interrupted { interruption: ep::TurnInterruption::Interrupted { reason } }, work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        }) if reason == "work_item_execution_revision_mismatch"
     ));
 }
 
@@ -8779,9 +8892,8 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
     );
     assert!(matches!(
         &settled.outcomes[first_attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Wait { wait }
-        ) if wait.wait_id == registration.condition.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Wait { wait }, work_item_effect: Some(ep::TurnWorkItemEffect::Wait)
+        }) if wait.wait_id == registration.condition.id
     ));
     assert!(matches!(
         &settled.work_items[&work_item.id].state,
@@ -8904,9 +9016,8 @@ async fn production_protocol_wait_settlement_creates_rejoinable_wait_generation(
         &settled_rejoin.outcomes
             [rejoin_attempt.terminal_outcome_id.as_deref().unwrap()]
             .outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Wait { wait }
-        ) if wait.wait_id == external_wait.condition.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Wait { wait }, work_item_effect: Some(ep::TurnWorkItemEffect::Wait)
+        }) if wait.wait_id == external_wait.condition.id
     ));
     assert!(matches!(
         &settled_rejoin.work_items[&work_item.id].state,
@@ -9038,12 +9149,8 @@ async fn lifecycle_settlement_adopts_wait_without_work_item_turn_binding() {
     );
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::Conversation(
-            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemWait {
-                work_item_id,
-                wait,
-            }
-        ) if work_item_id == &work_item.id && wait.wait_id == registration.condition.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Wait { wait }, work_item_effect: Some(ep::TurnWorkItemEffect::Handoff { work_item_id })
+        }) if work_item_id == &work_item.id && wait.wait_id == registration.condition.id
     ));
     assert!(matches!(
         &settled.work_items[&work_item.id].state,
@@ -9183,12 +9290,8 @@ async fn terminal_task_wait_handoffs_conversation_to_work_item_wait() {
     );
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::Conversation(
-            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemWait {
-                work_item_id,
-                ..
-            }
-        ) if work_item_id == &work_item.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Wait { .. }, work_item_effect: Some(ep::TurnWorkItemEffect::Handoff { work_item_id })
+        }) if work_item_id == &work_item.id
     ));
     // #3463: the late fast path must leave the same durable wait semantics
     // as a normal registration: no WorkItem blocker mirror, and the canonical
@@ -10555,9 +10658,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     assert!(matches!(
         &admitted.attempts[&activation_id],
         crate::domain::execution_protocol::ExecutionAttempt {
-            binding: crate::domain::execution_protocol::ExecutionBinding::Conversation {
-                interaction_id
-            },
+            binding: ep::ExecutionBinding::Agent { agent_id, attribution: ep::TurnAttribution { work_item_id: None, interaction_id: Some(interaction_id) } },
             source:
                 crate::domain::execution_protocol::ExecutionSource {
                     identity:
@@ -10568,7 +10669,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
                 },
             state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
-        } if interaction_id.starts_with("interaction1_") && message_id == &message.id
+        } if agent_id == "default" && interaction_id.starts_with("interaction1_") && message_id == &message.id
     ));
 
     runtime
@@ -10643,12 +10744,8 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     );
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::Conversation(
-            crate::domain::execution_protocol::ConversationOutcome::HandoffToWorkItemWait {
-                work_item_id,
-                wait,
-            }
-        ) if work_item_id == &work_item.id && wait.wait_id == work_wait.condition.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Wait { wait }, work_item_effect: Some(ep::TurnWorkItemEffect::Handoff { work_item_id })
+        }) if work_item_id == &work_item.id && wait.wait_id == work_wait.condition.id
     ));
     assert!(matches!(
         &settled.work_items[&work_item.id].state,
@@ -10750,9 +10847,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
     assert!(matches!(
         &rejoined.attempts[&rejoin_activation_id],
         crate::domain::execution_protocol::ExecutionAttempt {
-            binding: crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                work_item_id
-            },
+            binding: ep::ExecutionBinding::Agent { agent_id, attribution: ep::TurnAttribution { work_item_id: Some(work_item_id), interaction_id: None } },
             source:
                 crate::domain::execution_protocol::ExecutionSource {
                     identity:
@@ -10764,7 +10859,7 @@ async fn lifecycle_wait_handoff_to_work_item_wait_is_atomic_idempotent_and_resta
                 },
             state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
-        } if work_item_id == &work_item.id
+        } if agent_id == "default" && work_item_id == &work_item.id
             && task_id == "task-lifecycle-handoff"
             && result_message_id == &rejoin.id
     ));
@@ -10930,9 +11025,7 @@ async fn exact_task_rejoin_uses_canonical_wait_when_work_item_revision_advanced(
     let attempt_id = scheduler_executor::canonical_activation_id(&rejoin.id);
     assert!(matches!(
         claimed.attempts[&attempt_id].binding,
-        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-            ref work_item_id
-        } if work_item_id == &work_item.id
+        ep::ExecutionBinding::Agent { ref agent_id, attribution: ep::TurnAttribution { work_item_id: Some(ref work_item_id), interaction_id: None } } if agent_id == "default" && work_item_id == &work_item.id
     ));
     assert!(matches!(
         claimed.attempts[&attempt_id].source.identity,
@@ -12173,9 +12266,7 @@ async fn exact_task_rejoin_claim_is_atomic_and_restart_safe() {
     );
     assert_eq!(
         attempt.binding,
-        crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-            work_item_id: work_item.id.clone(),
-        }
+        ep::ExecutionBinding::for_work_item("default", work_item.id.as_str())
     );
     assert_eq!(
         attempt.admitted_fences.rejoin,
@@ -13131,10 +13222,17 @@ async fn trusted_operator_conversation_owner_flows_from_admission_to_terminal_tu
         .unwrap()
         .unwrap();
     let interaction_id = match &execution.attempts[&activation_id].binding {
-        crate::domain::execution_protocol::ExecutionBinding::Conversation { interaction_id } => {
-            interaction_id.clone()
+        ep::ExecutionBinding::Agent {
+            agent_id,
+            attribution:
+                ep::TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: Some(interaction_id),
+                },
+        } if agent_id == "default" => interaction_id.clone(),
+        binding => {
+            panic!("expected Agent binding with conversation attribution, found {binding:?}")
         }
-        binding => panic!("expected Conversation owner, found {binding:?}"),
     };
 
     runtime
@@ -13442,11 +13540,12 @@ async fn authoritative_completion_terminalizes_canonical_work_and_binds_report()
         .expect("completion attempt should reference outcome");
     assert_eq!(
         execution.outcomes[outcome_id].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Complete {
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Completed,
+            work_item_effect: Some(ep::TurnWorkItemEffect::Complete {
                 completion: result_brief_id.to_string(),
-            },
-        )
+            })
+        })
     );
 }
 
@@ -13653,8 +13752,7 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
     if let Some(attempt) = execution.open_attempt() {
         assert!(matches!(
             &attempt.binding,
-            crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
-                if work_item_id == &parent.id
+            ep::ExecutionBinding::Agent { agent_id, attribution: ep::TurnAttribution { work_item_id: Some(work_item_id), interaction_id: None } } if agent_id == "default" && work_item_id == &parent.id
         ));
     }
     assert_eq!(
@@ -13804,8 +13902,7 @@ async fn authoritative_completion_resumes_parent_canonically_and_writes_terminal
         attempt.state == crate::domain::execution_protocol::ExecutionAttemptState::Open
             && matches!(
                 &attempt.binding,
-                crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
-                    if work_item_id == &parent.id
+                ep::ExecutionBinding::Agent { agent_id, attribution: ep::TurnAttribution { work_item_id: Some(work_item_id), interaction_id: None } } if agent_id == "default" && work_item_id == &parent.id
             )
     }));
     assert_eq!(
@@ -15548,9 +15645,8 @@ async fn completed_production_settlement_uses_exact_bound_result_brief() {
     let attempt = &settled.attempts[&activation_id];
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Complete { completion }
-        ) if completion == &result_brief_id && completion != &decoy.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Completed, work_item_effect: Some(ep::TurnWorkItemEffect::Complete { completion })
+        }) if completion == &result_brief_id && completion != &decoy.id
     ));
 }
 
@@ -15793,9 +15889,8 @@ async fn completed_wait_resume_settlement_accepts_exact_reconciliation_revision(
     );
     assert!(matches!(
         &settled.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Complete { completion }
-        ) if completion == &result_brief_id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Completed, work_item_effect: Some(ep::TurnWorkItemEffect::Complete { completion })
+        }) if completion == &result_brief_id
     ));
 }
 
@@ -15982,9 +16077,12 @@ async fn completed_production_settlement_interrupts_mismatched_completion_execut
     );
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { .. }
-        )
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement {
+            outcome: ep::TurnOutcome::Interrupted {
+                interruption: ep::TurnInterruption::Interrupted { .. }
+            },
+            work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        })
     ));
     assert_eq!(
         runtime
@@ -16107,9 +16205,8 @@ async fn completed_production_settlement_interrupts_without_result_report() {
     );
     assert!(matches!(
         &execution.outcomes[attempt.terminal_outcome_id.as_deref().unwrap()].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Interrupted { reason }
-        ) if reason == "completion_brief_binding_missing"
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Interrupted { interruption: ep::TurnInterruption::Interrupted { reason } }, work_item_effect: Some(ep::TurnWorkItemEffect::ResumeInterrupted)
+        }) if reason == "completion_brief_binding_missing"
     ));
 }
 
@@ -19200,9 +19297,8 @@ async fn provider_recovery_claims_waiting_work_item_without_clearing_wait() {
         .unwrap();
     assert!(matches!(
         &settled.outcomes[outcome_id].outcome,
-        crate::domain::execution_protocol::ExecutionOutcome::WorkItem(
-            crate::domain::execution_protocol::WorkItemOutcome::Wait { wait }
-        ) if wait.wait_id == registration.condition.id
+        ep::ExecutionOutcome::Turn(ep::TurnSettlement { outcome: ep::TurnOutcome::Wait { wait }, work_item_effect: Some(ep::TurnWorkItemEffect::Wait)
+        }) if wait.wait_id == registration.condition.id
     ));
     assert_eq!(
         runtime
@@ -20097,8 +20193,7 @@ async fn runtime_owned_bound_task_followup_survives_scheduler_reload() {
     );
     assert!(matches!(
         &execution.attempts[&activation_id].binding,
-        crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id }
-            if work_item_id == &work_item.id
+        ep::ExecutionBinding::Agent { agent_id, attribution: ep::TurnAttribution { work_item_id: Some(work_item_id), interaction_id: None } } if agent_id == "child" && work_item_id == &work_item.id
     ));
 }
 
@@ -20528,12 +20623,10 @@ async fn lifecycle_ingress_ignores_completed_work_item_lane_before_claim() {
     assert!(matches!(
         &execution.attempts[&activation_id],
         crate::domain::execution_protocol::ExecutionAttempt {
-            binding: crate::domain::execution_protocol::ExecutionBinding::Conversation {
-                interaction_id
-            },
+            binding: ep::ExecutionBinding::Agent { agent_id, attribution: ep::TurnAttribution { work_item_id: None, interaction_id: Some(interaction_id) } },
             state: crate::domain::execution_protocol::ExecutionAttemptState::Open,
             ..
-        } if interaction_id.starts_with("interaction1_")
+        } if agent_id == "default" && interaction_id.starts_with("interaction1_")
     ));
     assert_eq!(
         runtime

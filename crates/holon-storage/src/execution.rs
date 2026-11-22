@@ -184,7 +184,7 @@ pub fn persist_state_rows_tx(
 fn stored_outcome_matches(existing: &str, outcome: &ExecutionOutcomeRecord) -> Result<bool> {
     let existing: ExecutionOutcomeRecord = decode_outcome_record_with_migration(existing)
         .with_context(|| format!("decoding stored execution outcome {}", outcome.outcome_id))?;
-    Ok(existing == *outcome)
+    Ok(existing.same_terminal_as(outcome))
 }
 
 #[derive(serde::Deserialize)]

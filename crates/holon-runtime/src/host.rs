@@ -1111,6 +1111,47 @@ struct InvocationSettlementTraversal {
     remaining_steps: usize,
 }
 
+// This diagnostic predates the unified model Turn outcome.
+fn invocation_model_outcome_diagnostic(
+    turn: &crate::domain::execution_protocol::TurnSettlement,
+) -> (
+    &'static str,
+    Option<&crate::domain::execution_protocol::WaitReference>,
+) {
+    use crate::domain::execution_protocol::{
+        TurnFailure, TurnInterruption, TurnOutcome, TurnWorkItemEffect as Effect,
+    };
+    match (&turn.outcome, &turn.work_item_effect) {
+        (TurnOutcome::Completed, Some(Effect::Handoff { .. })) => {
+            ("handoff_to_work_item_continue", None)
+        }
+        (TurnOutcome::Completed, Some(Effect::Continue)) => ("continue", None),
+        (TurnOutcome::Completed, Some(Effect::Complete { .. })) => ("complete", None),
+        (TurnOutcome::Completed, Some(Effect::Pause { .. })) => ("pause", None),
+        (TurnOutcome::Completed, Some(Effect::Yield { .. })) => ("yield", None),
+        (TurnOutcome::Completed, _) => ("replied", None),
+        (TurnOutcome::Wait { wait }, Some(Effect::Handoff { .. })) => {
+            ("handoff_to_work_item_wait", Some(wait))
+        }
+        (TurnOutcome::Wait { wait }, _) => ("wait", Some(wait)),
+        (
+            TurnOutcome::Failed {
+                failure: TurnFailure::Paused { .. },
+            },
+            _,
+        ) => ("paused", None),
+        (TurnOutcome::Failed { .. }, _) => ("failed", None),
+        (TurnOutcome::Interrupted { interruption }, _) => (
+            match interruption {
+                TurnInterruption::Interrupted { .. } => "interrupted",
+                TurnInterruption::Aborted { .. } => "aborted",
+                TurnInterruption::Reentry { .. } => "reentry",
+            },
+            None,
+        ),
+    }
+}
+
 fn unique_invocation_continuation<'a>(
     candidates: impl Iterator<Item = &'a crate::domain::execution_protocol::ExecutionAttempt>,
 ) -> Result<Option<&'a crate::domain::execution_protocol::ExecutionAttempt>> {
@@ -10359,8 +10400,8 @@ impl RuntimeHost {
         traversal: &mut InvocationSettlementTraversal,
     ) -> Result<Option<InvocationTerminalEvidence>> {
         use crate::domain::execution_protocol::{
-            ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
-            ExecutionSourceIdentity, WorkItemExecutionState, WorkItemOutcome,
+            ExecutionAttemptState, ExecutionSourceIdentity, TurnFailure, TurnInterruption,
+            TurnOutcome, TurnWorkItemEffect as Effect, WorkItemExecutionState,
         };
 
         let (mut cursor, mut visited) = traversal.pending.pop().expect("pending invocation branch");
@@ -10547,18 +10588,27 @@ impl RuntimeHost {
                         .outcomes
                         .get(outcome_id)
                         .ok_or(ChildInvocationReason::MissingCanonicalTerminal)?;
+                    let turn = outcome.outcome.model_turn();
                     if let Some(step) = observation
                         .get_mut("steps")
                         .and_then(Value::as_array_mut)
                         .and_then(|steps| steps.last_mut())
                     {
-                        let value = serde_json::to_value(&outcome.outcome)?;
-                        step["outcome_kind"] = value["outcome"]["kind"].clone();
-                        step["wait_ref"] = value["outcome"]["wait"].clone();
+                        if let Some(turn) = &turn {
+                            let (kind, wait) = invocation_model_outcome_diagnostic(turn);
+                            step["outcome_kind"] = json!(kind);
+                            step["wait_ref"] = serde_json::to_value(wait)?;
+                        } else {
+                            let value = serde_json::to_value(&outcome.outcome)?;
+                            step["outcome_kind"] = value["outcome"]["kind"].clone();
+                            step["wait_ref"] = Value::Null;
+                        }
                     }
-                    match &outcome.outcome {
-                        ExecutionOutcome::Conversation(ConversationOutcome::Replied)
-                        | ExecutionOutcome::Command(_) => {
+                    match turn
+                        .as_ref()
+                        .map(|turn| (&turn.outcome, &turn.work_item_effect))
+                    {
+                        Some((TurnOutcome::Completed, None)) | None => {
                             let canonical_turn = self
                                 .invocation_turn_for_attempt(
                                     child_agent_id,
@@ -10823,7 +10873,7 @@ impl RuntimeHost {
                                 &attempt,
                             );
                         }
-                        ExecutionOutcome::Conversation(ConversationOutcome::Wait { wait }) => {
+                        Some((TurnOutcome::Wait { wait }, None)) => {
                             let Some(next) = unique_invocation_continuation(
                                 execution.attempts.values().filter(|candidate| {
                                     matches!(
@@ -10840,17 +10890,18 @@ impl RuntimeHost {
                             };
                             cursor = InvocationSettlementCursor::Attempt(next.attempt_id.clone());
                         }
-                        ExecutionOutcome::Conversation(
-                            ConversationOutcome::HandoffToWorkItemWait { work_item_id, .. },
-                        ) => {
+                        Some((
+                            TurnOutcome::Completed | TurnOutcome::Wait { .. },
+                            Some(Effect::Handoff { work_item_id }),
+                        )) => {
                             cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
                         }
-                        ExecutionOutcome::Conversation(
-                            ConversationOutcome::HandoffToWorkItemContinue { work_item_id },
-                        ) => {
-                            cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
-                        }
-                        ExecutionOutcome::Conversation(ConversationOutcome::Paused { reason }) => {
+                        Some((
+                            TurnOutcome::Failed {
+                                failure: TurnFailure::Paused { reason },
+                            },
+                            None,
+                        )) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Failed,
                                 text: format!(
@@ -10861,9 +10912,12 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
-                        ExecutionOutcome::Conversation(ConversationOutcome::Interrupted {
-                            reason,
-                        }) => {
+                        Some((
+                            TurnOutcome::Interrupted {
+                                interruption: TurnInterruption::Interrupted { reason },
+                            },
+                            None,
+                        )) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Interrupted,
                                 text: format!("agent invocation was interrupted: {reason}"),
@@ -10872,8 +10926,12 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
-                        ExecutionOutcome::Conversation(ConversationOutcome::Aborted { reason })
-                        | ExecutionOutcome::WorkItem(WorkItemOutcome::Aborted { reason }) => {
+                        Some((
+                            TurnOutcome::Interrupted {
+                                interruption: TurnInterruption::Aborted { reason },
+                            },
+                            None | Some(Effect::Continue),
+                        )) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Cancelled,
                                 text: format!("agent invocation was aborted: {reason}"),
@@ -10882,7 +10940,12 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
-                        ExecutionOutcome::Conversation(ConversationOutcome::Failed { policy }) => {
+                        Some((
+                            TurnOutcome::Failed {
+                                failure: TurnFailure::Policy { policy },
+                            },
+                            None,
+                        )) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Failed,
                                 text: format!("agent invocation failed under policy {policy}"),
@@ -10891,24 +10954,28 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
-                        ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { completion }) => {
+                        Some((TurnOutcome::Completed, Some(Effect::Complete { completion }))) => {
                             return Ok(Some(self.invocation_terminal_evidence_for_completion(
                                 storage, &attempt, completion,
                             )?));
                         }
-                        ExecutionOutcome::WorkItem(
-                            WorkItemOutcome::Continue
-                            | WorkItemOutcome::Reentry { .. }
-                            | WorkItemOutcome::Wait { .. }
-                            | WorkItemOutcome::Yield { .. },
-                        ) => {
-                            let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding
-                            else {
+                        Some((
+                            TurnOutcome::Completed,
+                            Some(Effect::Continue | Effect::Yield { .. }),
+                        ))
+                        | Some((TurnOutcome::Wait { .. }, Some(Effect::Wait)))
+                        | Some((
+                            TurnOutcome::Interrupted {
+                                interruption: TurnInterruption::Reentry { .. },
+                            },
+                            Some(Effect::ResumeInterrupted),
+                        )) => {
+                            let Some(work_item_id) = attempt.binding.work_item_id() else {
                                 return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                             };
-                            cursor = InvocationSettlementCursor::WorkItem(work_item_id.clone());
+                            cursor = InvocationSettlementCursor::WorkItem(work_item_id.to_owned());
                         }
-                        ExecutionOutcome::WorkItem(WorkItemOutcome::Pause { reason }) => {
+                        Some((TurnOutcome::Completed, Some(Effect::Pause { reason }))) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Failed,
                                 text: format!("agent invocation WorkItem paused: {reason}"),
@@ -10917,7 +10984,12 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
-                        ExecutionOutcome::WorkItem(WorkItemOutcome::Failed { policy }) => {
+                        Some((
+                            TurnOutcome::Failed {
+                                failure: TurnFailure::Policy { policy },
+                            },
+                            Some(Effect::Pause { .. }),
+                        )) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Failed,
                                 text: format!(
@@ -10928,7 +11000,12 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
-                        ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { reason }) => {
+                        Some((
+                            TurnOutcome::Interrupted {
+                                interruption: TurnInterruption::Interrupted { reason },
+                            },
+                            Some(Effect::ResumeInterrupted),
+                        )) => {
                             return Ok(Some(InvocationTerminalEvidence {
                                 status: TaskStatus::Interrupted,
                                 text: format!(
@@ -10939,6 +11016,7 @@ impl RuntimeHost {
                                 completion_ref: None,
                             }));
                         }
+                        _ => return Err(ChildInvocationReason::MissingCanonicalTerminal.into()),
                     }
                 }
                 InvocationSettlementCursor::WorkItem(work_item_id) => {
@@ -10946,12 +11024,9 @@ impl RuntimeHost {
                         return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                     };
                     if let Some(attempt) = execution.open_attempt().filter(|candidate| {
-                        matches!(
-                            &candidate.binding,
-                            ExecutionBinding::WorkItem { work_item_id: owner }
-                                if owner == &work_item_id
-                        ) && candidate.admitted_fences.work_item_generation
-                            == Some(work_item.generation())
+                        candidate.binding.work_item_id() == Some(work_item_id.as_str())
+                            && candidate.admitted_fences.work_item_generation
+                                == Some(work_item.generation())
                     }) {
                         cursor = InvocationSettlementCursor::Attempt(attempt.attempt_id.clone());
                         continue;
@@ -10966,12 +11041,8 @@ impl RuntimeHost {
                                             wait_id,
                                             ..
                                         } if wait_id == &wait.wait_id
-                                    ) && matches!(
-                                        &candidate.binding,
-                                        ExecutionBinding::WorkItem {
-                                            work_item_id: candidate_work_item_id
-                                        } if candidate_work_item_id == &work_item_id
-                                    )
+                                    ) && candidate.binding.work_item_id()
+                                        == Some(work_item_id.as_str())
                                 }),
                             )?
                             else {
@@ -10984,12 +11055,7 @@ impl RuntimeHost {
                                 .attempts
                                 .values()
                                 .filter(|candidate| {
-                                    matches!(
-                                        &candidate.binding,
-                                        ExecutionBinding::WorkItem {
-                                            work_item_id: candidate_work_item_id
-                                        } if candidate_work_item_id == &work_item_id
-                                    )
+                                    candidate.binding.work_item_id() == Some(work_item_id.as_str())
                                 })
                                 .max_by_key(|candidate| candidate.source.generation);
                             return Ok(Some(if let Some(attempt) = attempt {
@@ -11072,17 +11138,12 @@ impl RuntimeHost {
             return Ok(None);
         }
         let waits = storage.read_wait_conditions_for_turn(turn_id)?;
+        let expected_binding = match task.work_item_id.as_deref() {
+            Some(owner) => ExecutionBinding::for_work_item(&task.agent_id, owner),
+            None => ExecutionBinding::agent_lifecycle(&task.agent_id),
+        };
         let next =
             unique_invocation_continuation(execution.attempts.values().filter(|candidate| {
-                let owner_matches = match (&candidate.binding, task.work_item_id.as_deref()) {
-                    (ExecutionBinding::WorkItem { work_item_id }, Some(owner)) => {
-                        work_item_id == owner
-                    }
-                    (ExecutionBinding::AgentLifecycle { agent_id }, None) => {
-                        agent_id == &task.agent_id
-                    }
-                    _ => false,
-                };
                 candidate.agent_id == task.agent_id
                     && candidate.source.generation > parent.source.generation
                     && message.message_seq == Some(candidate.source.generation)
@@ -11090,7 +11151,9 @@ impl RuntimeHost {
                     && candidate.source_message_id.as_deref() == Some(message_id)
                     && candidate.provenance.origin == ExecutionOrigin::Task
                     && candidate.provenance.trust == ExecutionTrust::RuntimeInstruction
-                    && owner_matches
+                    && candidate
+                        .binding
+                        .matches_in_agent(&expected_binding, &task.agent_id)
                     && match &candidate.source.identity {
                         ExecutionSourceIdentity::TaskResult {
                             task_id,
@@ -11179,7 +11242,11 @@ impl RuntimeHost {
             else {
                 return Ok(None);
             };
-            if cursor.agent_id != task.agent_id || cursor.binding != next.binding {
+            if cursor.agent_id != task.agent_id
+                || !cursor
+                    .binding
+                    .matches_in_agent(&next.binding, &task.agent_id)
+            {
                 return Ok(None);
             }
             if cursor.source == previous.source {
@@ -13713,7 +13780,13 @@ mod tests {
         assert_ne!(new_attempt.attempt_id, attempt_id);
         assert_eq!(
             new_attempt.binding,
-            ExecutionBinding::WorkItem { work_item_id }
+            ExecutionBinding::Agent {
+                agent_id: agent_id.into(),
+                attribution: crate::domain::execution_protocol::TurnAttribution {
+                    work_item_id: Some(work_item_id),
+                    interaction_id: None,
+                },
+            }
         );
         assert!(!matches!(
             new_attempt.source.identity,
@@ -16322,7 +16395,7 @@ mod tests {
         final_report: bool,
         provider_fallback: bool,
     ) {
-        use crate::domain::execution_protocol::{ConversationOutcome, ExecutionOutcome};
+        use crate::domain::execution_protocol::{ExecutionOutcome, TurnOutcome, TurnSettlement};
         use crate::provider::{ConversationMessage, ModelBlock, ModelToolCallKind};
         use crate::runtime_db::task_result_settlement::{
             TaskResultSettlementDisposition, TaskResultSettlementState,
@@ -16661,9 +16734,10 @@ mod tests {
             let outcome = &execution.outcomes[root.terminal_outcome_id.as_ref().unwrap()];
             assert!(matches!(
                 &outcome.outcome,
-                crate::domain::execution_protocol::ExecutionOutcome::Conversation(
-                    crate::domain::execution_protocol::ConversationOutcome::Wait { .. }
-                )
+                ExecutionOutcome::Turn(TurnSettlement {
+                    outcome: TurnOutcome::Wait { .. },
+                    work_item_effect: None,
+                })
             ));
             assert!(execution.attempts.values().any(|attempt| matches!(
                 &attempt.source.identity,
@@ -16770,7 +16844,10 @@ mod tests {
             let outcome = &execution.outcomes[root.terminal_outcome_id.as_ref().unwrap()];
             assert!(matches!(
                 &outcome.outcome,
-                ExecutionOutcome::Conversation(ConversationOutcome::Wait { .. })
+                ExecutionOutcome::Turn(TurnSettlement {
+                    outcome: TurnOutcome::Wait { .. },
+                    work_item_effect: None,
+                })
             ));
             if !final_report {
                 assert_legacy_supervised_wait_snapshot(&host, &task, &child_id, &execution).await;

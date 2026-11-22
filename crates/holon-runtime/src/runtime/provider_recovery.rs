@@ -10,8 +10,7 @@ use crate::{
     },
     storage::AppStorage,
     types::{
-        MessageEnvelope, TurnOwner, TurnRecord, TurnTerminalKind, WaitConditionRecord,
-        WaitConditionStatus,
+        MessageEnvelope, TurnRecord, TurnTerminalKind, WaitConditionRecord, WaitConditionStatus,
     },
 };
 
@@ -96,7 +95,9 @@ impl ProviderRecoverySource {
     ) -> bool {
         attempt.agent_id == message.agent_id
             && attempt.source_message_id.as_deref() == Some(message.id.as_str())
-            && attempt.binding == self.predecessor.binding
+            && attempt
+                .binding
+                .matches_in_agent(&self.predecessor.binding, &message.agent_id)
             && attempt.recovery_of_attempt_id.as_deref()
                 == Some(self.predecessor.attempt_id.as_str())
     }
@@ -337,7 +338,7 @@ fn resolve_with_source_relation<'a>(
     let mut first = None;
     let mut source_turns = Vec::new();
     let mut predecessors = Vec::new();
-    let mut expected_binding = None;
+    let mut expected_binding: Option<ExecutionBinding> = None;
     let mut expected_predecessor = None;
     loop {
         if seen.len() >= 64 || !seen.insert(cursor.id.clone()) {
@@ -417,23 +418,12 @@ fn resolve_with_source_relation<'a>(
         {
             bail!("provider recovery predecessor lineage mismatch");
         }
-        let owner = match &predecessor.binding {
-            ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-                work_item_id: work_item_id.clone(),
-            },
-            ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-                interaction_id: interaction_id.clone(),
-            },
-            ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-                agent_id: agent_id.clone(),
-            },
-            ExecutionBinding::Command => TurnOwner::Command,
-        };
+        let owner = predecessor.turn_owner();
         if source_turn.owner.as_ref() != Some(&owner)
             || cursor.work_item_id.as_deref() != owner.work_item_id()
-            || expected_binding
-                .as_ref()
-                .is_some_and(|binding| binding != &predecessor.binding)
+            || expected_binding.as_ref().is_some_and(|binding| {
+                !binding.matches_in_agent(&predecessor.binding, &predecessor.agent_id)
+            })
         {
             bail!("provider recovery binding mismatch");
         }
@@ -525,18 +515,7 @@ pub(crate) fn attempt_turn_relation_matches(
     state: &ExecutionProtocolState,
     mut read_turn: impl FnMut(&str) -> Result<Option<TurnRecord>>,
 ) -> Result<bool> {
-    let owner = match &attempt.binding {
-        ExecutionBinding::WorkItem { work_item_id } => TurnOwner::WorkItem {
-            work_item_id: work_item_id.clone(),
-        },
-        ExecutionBinding::Conversation { interaction_id } => TurnOwner::Conversation {
-            interaction_id: interaction_id.clone(),
-        },
-        ExecutionBinding::AgentLifecycle { agent_id } => TurnOwner::AgentLifecycle {
-            agent_id: agent_id.clone(),
-        },
-        ExecutionBinding::Command => TurnOwner::Command,
-    };
+    let owner = attempt.turn_owner();
     if state.agent_id != attempt.agent_id
         || message.agent_id != attempt.agent_id
         || turn.agent_id != attempt.agent_id
@@ -618,7 +597,9 @@ fn initial_source_attempt<'a>(
                 || prior.turn_id.is_some()
                 || attempt.turn_id.is_some()
                 || prior.source != attempt.source
-                || prior.binding != attempt.binding
+                || !prior
+                    .binding
+                    .matches_in_agent(&attempt.binding, &attempt.agent_id)
                 || prior.provenance != attempt.provenance
             {
                 return Ok(None);
@@ -669,7 +650,9 @@ fn initial_source_attempt<'a>(
         || prior.source_message_id != attempt.source_message_id
         || prior.turn_id != attempt.turn_id
         || prior.source != attempt.source
-        || prior.binding != attempt.binding
+        || !prior
+            .binding
+            .matches_in_agent(&attempt.binding, &attempt.agent_id)
         || prior.provenance != attempt.provenance
     {
         return Ok(None);
@@ -852,14 +835,15 @@ mod context_assignment_tests {
     use super::*;
     use crate::{
         domain::execution_protocol::{
-            self, AdmitExecution, AdmittedFences, ExecutionOrigin, ExecutionPriority,
-            ExecutionProvenance, ExecutionSource, ExecutionTrust, InterruptExecution,
+            self, AdmitExecution, AdmittedFences, ExecutionBinding, ExecutionOrigin,
+            ExecutionPriority, ExecutionProvenance, ExecutionSource, ExecutionTrust,
+            InterruptExecution,
         },
         runtime_db::context_inputs::ContextDurableRead,
         types::{
             AdmissionContext, AgentIdentityRecord, AgentKind, AgentOwnership, AgentProfilePreset,
             AgentVisibility, AuthorityClass, MessageBody, MessageDeliverySurface, MessageKind,
-            MessageOrigin, Priority, TurnTerminalSummary, TurnTriggerSummary,
+            MessageOrigin, Priority, TurnOwner, TurnTerminalSummary, TurnTriggerSummary,
         },
     };
 

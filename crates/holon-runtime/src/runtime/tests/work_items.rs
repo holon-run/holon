@@ -1818,8 +1818,7 @@ async fn work_queue_projection_derives_scheduling_state_per_work_item() {
     assert_eq!(during.work_items, before.work_items);
     assert!(matches!(
         during.open_attempt().map(|attempt| &attempt.binding),
-        Some(crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id })
-            if work_item_id == &running.id
+        Some(binding) if binding == &crate::domain::execution_protocol::ExecutionBinding::for_work_item("default", running.id.as_str())
     ));
     let state = runtime.agent_state().await.unwrap();
     let posture = runtime.storage().agent_posture_projection(&state).unwrap();
@@ -3722,8 +3721,8 @@ async fn assert_update_then_complete_work_item(
     same_response: bool,
 ) {
     use crate::domain::execution_protocol::{
-        ConversationOutcome, ExecutionAttemptState, ExecutionBinding, ExecutionOutcome,
-        WorkItemExecutionState, WorkItemOutcome,
+        ExecutionAttemptState, ExecutionBinding, ExecutionOutcome, TurnAttribution, TurnOutcome,
+        TurnSettlement, TurnWorkItemEffect, WorkItemExecutionState,
     };
 
     let dir = tempdir().unwrap();
@@ -3863,9 +3862,12 @@ async fn assert_update_then_complete_work_item(
         .find(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
         .unwrap();
     assert!(if work_item_bound {
-        matches!(&attempt.binding, ExecutionBinding::WorkItem { work_item_id } if work_item_id == &work_item.id)
+        attempt.binding == ExecutionBinding::for_work_item("default", work_item.id.as_str())
     } else {
-        matches!(&attempt.binding, ExecutionBinding::Conversation { .. })
+        matches!(&attempt.binding, ExecutionBinding::Agent {
+            agent_id,
+            attribution: TurnAttribution { work_item_id: None, interaction_id: Some(_) },
+        } if agent_id == "default")
     });
     assert_eq!(attempt.state, ExecutionAttemptState::Settled);
     let outcomes = protocol
@@ -3879,11 +3881,17 @@ async fn assert_update_then_complete_work_item(
             attempt.admitted_fences.work_item_source_revision,
             Some(work_item.revision)
         );
-        matches!(&outcomes[0].outcome, ExecutionOutcome::WorkItem(WorkItemOutcome::Complete { completion }) if completion == &report.id)
+        matches!(&outcomes[0].outcome, ExecutionOutcome::Turn(TurnSettlement {
+            outcome: TurnOutcome::Completed,
+            work_item_effect: Some(TurnWorkItemEffect::Complete { completion }),
+        }) if completion == &report.id)
     } else {
         matches!(
             &outcomes[0].outcome,
-            ExecutionOutcome::Conversation(ConversationOutcome::Replied)
+            ExecutionOutcome::Turn(TurnSettlement {
+                outcome: TurnOutcome::Completed,
+                work_item_effect: None,
+            })
         )
     });
     assert!(matches!(
@@ -6269,11 +6277,21 @@ async fn assert_invalidated_completion_report_binding_interrupts_deferred_tool(
         .find(|attempt| attempt.source_message_id.as_deref() == Some(message.id.as_str()))
         .unwrap();
     assert!(if work_item_bound {
-        matches!(&attempt.binding, crate::domain::execution_protocol::ExecutionBinding::WorkItem { work_item_id } if work_item_id == &work_item.id)
+        attempt.binding
+            == crate::domain::execution_protocol::ExecutionBinding::for_work_item(
+                "default",
+                work_item.id.as_str(),
+            )
     } else {
         matches!(
             &attempt.binding,
-            crate::domain::execution_protocol::ExecutionBinding::Conversation { .. }
+            crate::domain::execution_protocol::ExecutionBinding::Agent {
+                agent_id,
+                attribution: crate::domain::execution_protocol::TurnAttribution {
+                    work_item_id: None,
+                    interaction_id: Some(_),
+                },
+            } if agent_id == "default"
         )
     });
     runtime

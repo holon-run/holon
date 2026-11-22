@@ -2,8 +2,8 @@
 //! The borrowed session proves old Rust producers are gone, never OS cleanup.
 use crate::{
     domain::execution_protocol::{
-        CommandResult, ConversationOutcome, ExecutionAttempt, ExecutionAttemptState,
-        ExecutionBinding, ExecutionOutcome, ExecutionOutcomeRecord, WorkItemOutcome,
+        CommandResult, ExecutionAttempt, ExecutionAttemptState, ExecutionOutcome,
+        ExecutionOutcomeRecord, TurnInterruption, TurnOutcome, TurnSettlement,
     },
     runtime::resident_input_evidence::InputEvidenceScope,
     runtime_db::{
@@ -701,27 +701,21 @@ fn interrupted_outcome_matches(
     attempt: &ExecutionAttempt,
     outcome: &ExecutionOutcomeRecord,
 ) -> bool {
-    let reason_ok = |reason: &str| {
-        matches!(
-            reason,
-            "startup_recovery/daemon_restart" | "runtime_interrupted"
-        )
-    };
-    match (&attempt.binding, &outcome.outcome) {
-        (
-            ExecutionBinding::WorkItem { .. },
-            ExecutionOutcome::WorkItem(WorkItemOutcome::Interrupted { reason }),
-        ) => reason_ok(reason),
-        (
-            ExecutionBinding::Conversation { .. } | ExecutionBinding::AgentLifecycle { .. },
-            ExecutionOutcome::Conversation(ConversationOutcome::Interrupted { reason }),
-        ) => reason_ok(reason),
-        (
-            ExecutionBinding::Command,
-            ExecutionOutcome::Command(CommandResult::Applied { references }),
-        ) => references == &vec![format!("interrupted:{}", attempt.attempt_id)],
-        _ => false,
+    if !outcome.outcome.matches_binding(&attempt.binding) {
+        return false;
     }
+    if let ExecutionOutcome::Command(CommandResult::Applied { references }) = &outcome.outcome {
+        return references.as_slice() == [format!("interrupted:{}", attempt.attempt_id)];
+    }
+    matches!(
+        outcome.outcome.model_turn(),
+        Some(TurnSettlement {
+            outcome: TurnOutcome::Interrupted {
+                interruption: TurnInterruption::Interrupted { reason },
+            },
+            ..
+        }) if matches!(reason.as_str(), "startup_recovery/daemon_restart" | "runtime_interrupted")
+    )
 }
 
 #[cfg(holon_lib_test_shard = "b")]

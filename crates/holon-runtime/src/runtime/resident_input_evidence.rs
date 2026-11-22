@@ -340,10 +340,7 @@ impl PreparedInputEvidence {
                 if let Some(id) = x.terminal_outcome_id.as_deref() {
                     add(InputEvidenceFamily::Outcome, id)
                 }
-                if let crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                    work_item_id,
-                } = &x.binding
-                {
+                if let Some(work_item_id) = x.binding.work_item_id() {
                     add(InputEvidenceFamily::WorkExecution, work_item_id)
                 }
             }
@@ -2441,12 +2438,9 @@ fn selected_execution_work_ids(
             .iter()
             .filter_map(|evidence| match &evidence.record {
                 PreparedInputEvidence::Message(message) => message.work_item_id.clone(),
-                PreparedInputEvidence::Attempt(attempt) => match &attempt.binding {
-                    crate::domain::execution_protocol::ExecutionBinding::WorkItem {
-                        work_item_id,
-                    } => Some(work_item_id.clone()),
-                    _ => None,
-                },
+                PreparedInputEvidence::Attempt(attempt) => {
+                    attempt.binding.work_item_id().map(ToOwned::to_owned)
+                }
                 PreparedInputEvidence::WorkExecution { work_item_id, .. } => {
                     Some(work_item_id.clone())
                 }
