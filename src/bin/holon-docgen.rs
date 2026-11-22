@@ -26,7 +26,7 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-use holon::config::ProviderTransportKind;
+use holon::config::{ModelRouteRef, ProviderEndpointId, ProviderTransportKind};
 
 fn transport_display(transport: &ProviderTransportKind) -> String {
     match transport {
@@ -133,10 +133,29 @@ and capabilities.
     });
 
     for m in &sorted_models {
+        let model_ref = &m.model_ref;
+        let provider = model_ref.provider.as_str();
+        let usage_provider = if provider == "opencode-go" {
+            // Bare Go refs pick Messages even for models reviewed only on Chat.
+            let chat = ModelRouteRef::new(
+                model_ref.provider.clone(),
+                ProviderEndpointId::default_endpoint(),
+                model_ref.model.clone(),
+            );
+            let messages = catalog.preferred_route_for_model(model_ref);
+            if messages.is_some_and(|route| catalog.get_route(&route).is_none())
+                && catalog.get_route(&chat).is_some()
+            {
+                "opencode-go@default"
+            } else {
+                provider
+            }
+        } else {
+            provider
+        };
         println!(
-            "| `{provider}` | `{model}` | `{provider}/{model}` | {ctx} | {max_out} | {reasoning} | {image} |",
-            provider = m.model_ref.provider.as_str(),
-            model = m.model_ref.model,
+            "| `{provider}` | `{model}` | `{usage_provider}/{model}` | {ctx} | {max_out} | {reasoning} | {image} |",
+            model = model_ref.model,
             ctx = m.context_window_tokens.map_or("—".to_string(), format_tokens),
             max_out = m.default_max_output_tokens.map_or("—".to_string(), format_tokens),
             reasoning = if m.capabilities.supports_reasoning { "✅" } else { "—" },

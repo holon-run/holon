@@ -3398,7 +3398,7 @@ fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         .filter(|model| model.model_ref.provider == provider)
         .collect::<Vec<_>>();
 
-    assert_eq!(models.len(), 45);
+    assert_eq!(models.len(), 46);
     for model in &models {
         assert_eq!(
             catalog
@@ -3437,6 +3437,7 @@ fn opencode_go_catalog_tracks_the_current_three_transport_model_table() {
         "kimi-k2.7-code",
         "kimi-k2.6",
         "longcat-2.0",
+        "longcat-2.5",
         "longcat-2.5-preview-free",
         "mimo-v2.6-pro",
         "mimo-v2.6-flash",

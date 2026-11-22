@@ -908,6 +908,41 @@ fn opencode_go_native_metadata_discovery_requires_exact_protocol_and_host() {
 }
 
 #[test]
+fn opencode_go_longcat_25_requires_the_native_chat_contract() {
+    let provider = ProviderId::parse("opencode-go").unwrap();
+    let decode = |api| {
+        serde_json::from_value::<OpenCodeGoModel>(serde_json::json!({
+            "id": "longcat-2.5",
+            "api": api,
+            "modalities": {"input": ["text", "image"], "output": ["text"]},
+            "capabilities": {"reasoning": {"supported": true, "toggle": true}},
+            "limit": {"context": 1_000_000, "output": 262_144}
+        }))
+        .unwrap()
+        .into_model_metadata(&provider)
+    };
+    let go_chat = "https://opencode.ai/inference/go/openai/v1";
+    let model = decode(serde_json::json!({"chat-completions": {"base_url": go_chat}})).unwrap();
+    assert_eq!(model.endpoint, None);
+    assert_eq!(model.context_window_tokens, Some(1_000_000));
+    assert_eq!(model.default_max_output_tokens, None);
+    assert_eq!(model.max_output_tokens_upper_limit, Some(262_144));
+    assert!(model.capabilities.image_input);
+    assert!(model.capabilities.supports_reasoning);
+    assert!(model.reasoning_effort_options.is_empty());
+    for (api, base_url) in [
+        ("messages", go_chat),
+        ("responses", go_chat),
+        (
+            "chat-completions",
+            "https://opencode.ai/inference/openai/v1",
+        ),
+    ] {
+        assert!(decode(serde_json::json!({api: {"base_url": base_url}})).is_none());
+    }
+}
+
+#[test]
 fn opencode_go_longcat_native_contract_is_chat_and_host_scoped() {
     let provider = ProviderId::parse("opencode-go").unwrap();
     let native = serde_json::json!({

@@ -5,6 +5,31 @@ unchanged catalog facts are preserved, not newly certified as vendor hard
 limits. An upstream candidate is evidence to review, not permission to change
 an endpoint, region, subscription entitlement, or runtime output policy.
 
+## Incremental review: 2026-11-23
+
+The November 23 Beijing cycle pins the November 22, 2026 20:31 UTC
+models.dev sample at
+`4fe96995535dc6490a940773570609cdb71bf3b635f047fdecdfa25ec32301da`,
+against main `03cd2e504`. Its Holon projection adds one Chutes model
+and modifies six unreviewed records; those changes do not grant new
+routes. OpenCode Go is reviewed from its own service, not from that sample.
+
+- The public [Go catalog](https://opencode.ai/inference/go/v1/models)
+  and [Chat-base catalog](https://opencode.ai/inference/go/openai/v1/models)
+  returned identical bytes (SHA256
+  `4130db462960d3244ff95f94b4106c79459452d318048a95c2cf3eb73da478c4`).
+  For exact `id=longcat-2.5`, `api.chat-completions.base_url` identifies
+  the registered Go Chat base, `limit.context=1000000`,
+  `limit.output=262144`, and `modalities` is text/image input, text
+  output. Reasoning and tools are listed, but the reasoning toggle
+  is not a list of effort levels. No output default, translated route,
+  explicit cache policy, or subscriber eligibility is inferred.
+- The public [Go plan page](https://opencode.ai/docs/console/go/)
+  (SHA256 `79849218f6933afed74d7783c19e61772c34710f5ce238b47bf31f83fa9ae6fc`)
+  gives workspace privacy and tier-specific usage constraints. These
+  are not runtime model limits or persistent API prices. No
+  authenticated inference or account entitlement test was performed.
+
 ## Incremental review: 2026-11-22
 
 Pinned models.dev SHA256
