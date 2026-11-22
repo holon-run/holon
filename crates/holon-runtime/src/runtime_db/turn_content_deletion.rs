@@ -10,6 +10,7 @@
 use anyhow::{ensure, Result};
 use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -106,7 +107,7 @@ impl std::fmt::Display for TurnContentDeletionConflict {
 }
 
 /// Confirmation impact scope for a turn deletion. Never carries bodies.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct TurnContentDeletionPreview {
     pub agent_id: String,
     pub turn_id: String,
@@ -125,7 +126,7 @@ pub struct TurnContentDeletionPreview {
 
 /// Successful deletion outcome. `already_deleted` retries keep the first
 /// timestamp and bump no revision.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct TurnContentDeletion {
     pub agent_id: String,
     pub turn_id: String,

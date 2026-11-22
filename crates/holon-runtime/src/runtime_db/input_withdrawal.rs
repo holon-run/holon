@@ -10,6 +10,7 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use rusqlite::{params, OptionalExtension, Transaction};
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -52,7 +53,7 @@ impl std::error::Error for InputWithdrawalError {}
 
 /// Successful withdrawal outcome. `first_withdrawal` is false for idempotent
 /// retries that found the terminal marker.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, JsonSchema)]
 pub struct InputWithdrawal {
     pub agent_id: String,
     pub message_id: String,

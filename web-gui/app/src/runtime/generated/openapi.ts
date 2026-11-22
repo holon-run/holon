@@ -361,6 +361,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agents/{agent_id}/messages/{message_id}/withdraw": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Withdraw unexecuted operator input
+         * @description Atomically withdraw one operator-submitted input that execution has not claimed yet; the input never enters model context or triggers execution. Competes with claim and interject admission via compare-and-set; idempotent retries keep the first withdrawal timestamp.
+         */
+        post: operations["agentMessageWithdraw"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents/{agent_id}/messages:batchGet": {
         parameters: {
             query?: never;
@@ -713,6 +733,46 @@ export interface paths {
          * @description Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.
          */
         get: operations["agentConversationActivities"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/turns/{turn_id}/content": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete turn conversation content
+         * @description Delete one turn's conversation content in one transaction: set the first content_deleted_at, remove turn-exclusive evidence, erase embedded body copies in retained tables, and invalidate derived context. Turn identity, timing, ownership, and settlement references survive. Idempotent retries keep the first timestamp. Active, unsettled, shared, or sealed turns are rejected with typed body-free conflicts. See RFC conversation-turn-deletion.
+         */
+        delete: operations["agentTurnContentDelete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agents/{agent_id}/turns/{turn_id}/deletion-preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Turn deletion impact preview
+         * @description Body-free confirmation impact scope for deleting one turn's conversation content: input, Brief, tool-call, and transcript counts, whether the turn is already deleted, and derived-content handling notes. Served only while agents.conversation-turn-deletion.v1 is advertised.
+         */
+        get: operations["agentTurnDeletionPreview"];
         put?: never;
         post?: never;
         delete?: never;
@@ -6191,6 +6251,17 @@ export interface components {
         IncomingOrigin: {
             [key: string]: unknown;
         };
+        /**
+         * InputWithdrawal
+         * @description Successful withdrawal outcome. `first_withdrawal` is false for idempotent
+         *      retries that found the terminal marker.
+         */
+        InputWithdrawal: {
+            agent_id: string;
+            first_withdrawal: boolean;
+            message_id: string;
+            withdrawn_at: string;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         InstallSkillRequest: {
             [key: string]: unknown;
@@ -8953,6 +9024,52 @@ export interface components {
             turn_index: number;
             work_item_id?: string | null;
         };
+        /**
+         * TurnContentDeletion
+         * @description Successful deletion outcome. `already_deleted` retries keep the first
+         *      timestamp and bump no revision.
+         */
+        TurnContentDeletion: {
+            agent_id: string;
+            already_deleted: boolean;
+            content_deleted_at: string;
+            /** Format: uint */
+            invalidated_episodes: number;
+            /** Format: uint */
+            removed_evidence: number;
+            /** Format: uint64 */
+            revision: number;
+            turn_id: string;
+            /** Format: uint64 */
+            turn_index: number;
+        };
+        /**
+         * TurnContentDeletionPreview
+         * @description Confirmation impact scope for a turn deletion. Never carries bodies.
+         */
+        TurnContentDeletionPreview: {
+            agent_id: string;
+            already_deleted: boolean;
+            /** Format: uint */
+            brief_count: number;
+            content_deleted_at?: string | null;
+            /**
+             * @description Human-readable handling notes for derived content (episodes,
+             *      compression, search index, artifacts). No bodies.
+             */
+            derived_handling: string[];
+            /** Format: uint */
+            input_count: number;
+            /** Format: uint64 */
+            revision: number;
+            /** Format: uint */
+            tool_execution_count: number;
+            /** Format: uint */
+            transcript_count: number;
+            turn_id: string;
+            /** Format: uint64 */
+            turn_index: number;
+        };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         UninstallSkillRequest: {
             [key: string]: unknown;
@@ -9896,6 +10013,49 @@ export interface operations {
             };
         };
     };
+    agentMessageWithdraw: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Message id. */
+                message_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InputWithdrawal"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     agentMessagesBatchGet: {
         parameters: {
             query?: never;
@@ -10654,6 +10814,95 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConversationActivityResponse"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentTurnContentDelete: {
+        parameters: {
+            query?: {
+                /** @description Optional turn summary revision captured at confirmation time. Deletion re-validates it and fails closed on drift, so content added after confirmation is never deleted silently. */
+                expected_revision?: number;
+            };
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Native turn id. */
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnContentDeletion"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    agentTurnDeletionPreview: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Agent id. */
+                agent_id: string;
+                /** @description Native turn id. */
+                turn_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TurnContentDeletionPreview"];
                 };
             };
             /** @description Client error JSON response. */

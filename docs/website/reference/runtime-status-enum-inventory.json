@@ -86,7 +86,8 @@
         "aborted",
         "dropped",
         "quarantined",
-        "interrupted"
+        "interrupted",
+        "withdrawn"
       ],
       "source": "crates/holon-domain/src/message.rs"
     },

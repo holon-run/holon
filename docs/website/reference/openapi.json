@@ -12103,6 +12103,31 @@
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
         "type": "object"
       },
+      "InputWithdrawal": {
+        "description": "Successful withdrawal outcome. `first_withdrawal` is false for idempotent\n retries that found the terminal marker.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "first_withdrawal": {
+            "type": "boolean"
+          },
+          "message_id": {
+            "type": "string"
+          },
+          "withdrawn_at": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "agent_id",
+          "message_id",
+          "withdrawn_at",
+          "first_withdrawal"
+        ],
+        "title": "InputWithdrawal",
+        "type": "object"
+      },
       "InstallSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -21428,6 +21453,126 @@
         "title": "ToolExecutionRecord",
         "type": "object"
       },
+      "TurnContentDeletion": {
+        "description": "Successful deletion outcome. `already_deleted` retries keep the first\n timestamp and bump no revision.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "already_deleted": {
+            "type": "boolean"
+          },
+          "content_deleted_at": {
+            "type": "string"
+          },
+          "invalidated_episodes": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "removed_evidence": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "turn_index": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "turn_id",
+          "turn_index",
+          "content_deleted_at",
+          "revision",
+          "already_deleted",
+          "removed_evidence",
+          "invalidated_episodes"
+        ],
+        "title": "TurnContentDeletion",
+        "type": "object"
+      },
+      "TurnContentDeletionPreview": {
+        "description": "Confirmation impact scope for a turn deletion. Never carries bodies.",
+        "properties": {
+          "agent_id": {
+            "type": "string"
+          },
+          "already_deleted": {
+            "type": "boolean"
+          },
+          "brief_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "content_deleted_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "derived_handling": {
+            "description": "Human-readable handling notes for derived content (episodes,\n compression, search index, artifacts). No bodies.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "input_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "revision": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "tool_execution_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "transcript_count": {
+            "format": "uint",
+            "minimum": 0,
+            "type": "integer"
+          },
+          "turn_id": {
+            "type": "string"
+          },
+          "turn_index": {
+            "format": "uint64",
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "agent_id",
+          "turn_id",
+          "turn_index",
+          "revision",
+          "input_count",
+          "brief_count",
+          "tool_execution_count",
+          "transcript_count",
+          "already_deleted",
+          "derived_handling"
+        ],
+        "title": "TurnContentDeletionPreview",
+        "type": "object"
+      },
       "UninstallSkillRequest": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -23225,6 +23370,73 @@
         ]
       }
     },
+    "/api/agents/{agent_id}/messages/{message_id}/withdraw": {
+      "post": {
+        "description": "Atomically withdraw one operator-submitted input that execution has not claimed yet; the input never enters model context or triggers execution. Competes with claim and interject admission via compare-and-set; idempotent retries keep the first withdrawal timestamp.",
+        "operationId": "agentMessageWithdraw",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Message id.",
+            "in": "path",
+            "name": "message_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InputWithdrawal"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Withdraw unexecuted operator input",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
     "/api/agents/{agent_id}/messages:batchGet": {
       "post": {
         "description": "Return persisted message envelopes for the selected agent. Missing or cross-agent ids are reported in missing_message_ids.",
@@ -24449,6 +24661,150 @@
           }
         ],
         "summary": "Conversation turn activity snapshot",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/turns/{turn_id}/content": {
+      "delete": {
+        "description": "Delete one turn's conversation content in one transaction: set the first content_deleted_at, remove turn-exclusive evidence, erase embedded body copies in retained tables, and invalidate derived context. Turn identity, timing, ownership, and settlement references survive. Idempotent retries keep the first timestamp. Active, unsettled, shared, or sealed turns are rejected with typed body-free conflicts. See RFC conversation-turn-deletion.",
+        "operationId": "agentTurnContentDelete",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Native turn id.",
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Optional turn summary revision captured at confirmation time. Deletion re-validates it and fails closed on drift, so content added after confirmation is never deleted silently.",
+            "in": "query",
+            "name": "expected_revision",
+            "required": false,
+            "schema": {
+              "minimum": 0,
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnContentDeletion"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Delete turn conversation content",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/agents/{agent_id}/turns/{turn_id}/deletion-preview": {
+      "get": {
+        "description": "Body-free confirmation impact scope for deleting one turn's conversation content: input, Brief, tool-call, and transcript counts, whether the turn is already deleted, and derived-content handling notes. Served only while agents.conversation-turn-deletion.v1 is advertised.",
+        "operationId": "agentTurnDeletionPreview",
+        "parameters": [
+          {
+            "description": "Agent id.",
+            "in": "path",
+            "name": "agent_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Native turn id.",
+            "in": "path",
+            "name": "turn_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnContentDeletionPreview"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Turn deletion impact preview",
         "tags": [
           "agents"
         ]
