@@ -3371,3 +3371,67 @@ async fn auto_mode_never_dispatches_native_providers() {
     assert!(dispatcher.dispatched().is_empty());
     assert_eq!(response.winning_provider.as_deref(), Some("managed"));
 }
+
+#[tokio::test]
+async fn derived_provider_stays_out_of_default_order_and_dispatches_only_by_name() {
+    // A discovered DeepSeek entry is configured and callable by name, but the
+    // default/`auto`/`aggregate` chain must not pick it up by discovery alone.
+    // Listing stays a local check and only an explicit name reaches the
+    // upstream fixture, exactly once.
+    let calls = RoutingCalls::default();
+    let route_calls = Arc::clone(&calls);
+    let router = axum::Router::new().route(
+        "/v1/tools/search",
+        axum::routing::post(move || {
+            let calls = Arc::clone(&route_calls);
+            async move {
+                calls.lock().unwrap().push("deepseek");
+                axum::Json(json!({
+                    "results": [
+                        {
+                            "title": "Derived DeepSeek",
+                            "url": "https://example.com/derived",
+                            "summary": "fixture summary"
+                        }
+                    ]
+                }))
+            }
+        }),
+    );
+    let base_url = deepseek_mock_server(router).await;
+    let mut config = test_search_config(
+        vec![(
+            "deepseek",
+            test_provider(WebProviderKind::DeepSeek, &base_url),
+        )],
+        vec![],
+        WebSearchMode::Single,
+    );
+    assert!(default_provider_order(&config)
+        .iter()
+        .any(|id| id == "deepseek"));
+
+    // Marking the entry as discovery-derived keeps it listed and callable but
+    // removes it from the default candidate chain.
+    config
+        .search
+        .derived_providers
+        .insert("deepseek".to_string());
+    assert!(list_search_providers(&config)
+        .iter()
+        .any(|id| id == "deepseek"));
+    assert!(!default_provider_order(&config)
+        .iter()
+        .any(|id| id == "deepseek"));
+    assert!(take_routing_calls(&calls).is_empty());
+
+    // Naming the provider explicitly dispatches exactly one request.
+    let response = search(routing_request(Some("deepseek")), &config)
+        .await
+        .unwrap();
+    assert_eq!(attempted_ids(&response), ["deepseek"]);
+    assert_eq!(take_routing_calls(&calls), ["deepseek"]);
+    assert_eq!(response.mode, WebSearchMode::Single);
+    assert_eq!(response.provider, "deepseek");
+    assert_eq!(response.results[0].url, "https://example.com/derived");
+}
