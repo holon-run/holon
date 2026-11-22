@@ -2213,9 +2213,13 @@ impl RuntimeHost {
             };
             match outcome {
                 Ok(()) => {
-                    if let Err(error) = crate::runtime_db::turn_content_deletion::remove_pending_artifact_deletion(
-                        &db, &item.agent_id, &item.relative_path,
-                    ) {
+                    if let Err(error) =
+                        crate::runtime_db::turn_content_deletion::remove_pending_artifact_deletion(
+                            &db,
+                            &item.agent_id,
+                            &item.relative_path,
+                        )
+                    {
                         tracing::warn!(
                             agent_id = %item.agent_id,
                             relative_path = %item.relative_path,

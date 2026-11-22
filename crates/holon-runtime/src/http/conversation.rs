@@ -804,9 +804,12 @@ pub async fn locate(
     )
 }
 
-fn deletion_control_error(error: crate::runtime_db::turn_content_deletion::TurnContentDeletionError)
--> (StatusCode, Json<Value>) {
-    use crate::runtime_db::turn_content_deletion::{TurnContentDeletionConflict, TurnContentDeletionError};
+fn deletion_control_error(
+    error: crate::runtime_db::turn_content_deletion::TurnContentDeletionError,
+) -> (StatusCode, Json<Value>) {
+    use crate::runtime_db::turn_content_deletion::{
+        TurnContentDeletionConflict, TurnContentDeletionError,
+    };
     match error {
         TurnContentDeletionError::NotFound => http_error(
             StatusCode::NOT_FOUND,
@@ -942,8 +945,11 @@ pub async fn withdraw_message(
         Ok(withdrawal) => Json(withdrawal).into_response(),
         Err(InputWithdrawalError::NotFound) => http_error(
             StatusCode::NOT_FOUND,
-            HttpErrorEnvelope::new("message_not_found", "The message does not exist for this agent.")
-                .retryable(false),
+            HttpErrorEnvelope::new(
+                "message_not_found",
+                "The message does not exist for this agent.",
+            )
+            .retryable(false),
         )
         .into_response(),
         Err(InputWithdrawalError::NotOperatorInput) => http_error(

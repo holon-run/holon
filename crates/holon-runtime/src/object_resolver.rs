@@ -180,9 +180,7 @@ impl<'a> RuntimeObjectResolver<'a> {
         };
         db.with_read(|connection| {
             let exists: bool = connection.query_row(
-                &format!(
-                    "SELECT EXISTS(SELECT 1 FROM {table} WHERE evidence_id = ?1)"
-                ),
+                &format!("SELECT EXISTS(SELECT 1 FROM {table} WHERE evidence_id = ?1)"),
                 rusqlite::params![rest],
                 |row| row.get(0),
             )?;

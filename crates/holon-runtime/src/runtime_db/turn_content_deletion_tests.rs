@@ -55,7 +55,11 @@ fn turn_payload(input: &str, terminal_reason: &str, turn_index: i64) -> String {
 }
 
 fn seed_turn(db: &RuntimeDb, turn_id: &str, turn_index: i64) -> Result<()> {
-    let payload = turn_payload(&turn_id.replace("turn-", ""), "reducer_only/fixture", turn_index);
+    let payload = turn_payload(
+        &turn_id.replace("turn-", ""),
+        "reducer_only/fixture",
+        turn_index,
+    );
     db.transaction(|tx| {
         tx.execute(
             "INSERT INTO turn_records
@@ -170,7 +174,7 @@ fn count_all(db: &RuntimeDb, sql: &str) -> i64 {
             .query_row(sql, [], |row| row.get(0))
             .map_err(anyhow::Error::from)
     })
-        .unwrap()
+    .unwrap()
 }
 
 #[test]
@@ -188,32 +192,75 @@ fn delete_turn_removes_exclusive_content_and_is_idempotent() -> Result<()> {
     assert!(!preview.already_deleted);
 
     let now = Utc::now();
-    let deletion = delete_turn_content(&db, "agent-a", "turn-b", Some(1), now)?
-        .expect("deletion succeeds");
+    let deletion =
+        delete_turn_content(&db, "agent-a", "turn-b", Some(1), now)?.expect("deletion succeeds");
     assert!(!deletion.already_deleted);
     assert_eq!(deletion.removed_evidence, 3);
 
     // Exclusive rows are gone; neighbors untouched.
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM messages WHERE turn_id = ?1", "turn-b"), 0);
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM briefs WHERE turn_id = ?1", "turn-b"), 0);
     assert_eq!(
-        count(&db, "SELECT COUNT(*) FROM tool_executions WHERE turn_id = ?1", "turn-b"),
+        count(
+            &db,
+            "SELECT COUNT(*) FROM messages WHERE turn_id = ?1",
+            "turn-b"
+        ),
         0
     );
     assert_eq!(
-        count(&db, "SELECT COUNT(*) FROM conversation_source_revisions WHERE turn_id = ?1", "turn-b"),
+        count(
+            &db,
+            "SELECT COUNT(*) FROM briefs WHERE turn_id = ?1",
+            "turn-b"
+        ),
         0
     );
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM messages WHERE turn_id = ?1", "turn-a"), 1);
-    assert_eq!(count(&db, "SELECT COUNT(*) FROM messages WHERE turn_id = ?1", "turn-c"), 1);
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM tool_executions WHERE turn_id = ?1",
+            "turn-b"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM conversation_source_revisions WHERE turn_id = ?1",
+            "turn-b"
+        ),
+        0
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM messages WHERE turn_id = ?1",
+            "turn-a"
+        ),
+        1
+    );
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM messages WHERE turn_id = ?1",
+            "turn-c"
+        ),
+        1
+    );
 
     // Marker + erased payload keep identity, activation ids, and timing.
     let (deleted_at, payload) = turn_row(&db, "turn-b");
     let deleted_at = deleted_at.expect("marker set");
     let record: holon_domain::TurnRecord = serde_json::from_str(&payload).unwrap();
-    assert!(record.idle_input_batch.as_ref().unwrap().items[0].rendered.is_empty());
+    assert!(record.idle_input_batch.as_ref().unwrap().items[0]
+        .rendered
+        .is_empty());
     assert_eq!(
-        record.idle_input_batch.as_ref().unwrap().activation_id.as_deref(),
+        record
+            .idle_input_batch
+            .as_ref()
+            .unwrap()
+            .activation_id
+            .as_deref(),
         Some("act-b")
     );
     assert!(record.terminal.as_ref().unwrap().reason.is_none());
@@ -238,11 +285,13 @@ fn delete_turn_removes_exclusive_content_and_is_idempotent() -> Result<()> {
         ),
         1
     );
-    assert!(count_all(
-        &db,
-        "SELECT COUNT(*) FROM runtime_index_outbox WHERE operation = 'delete' \
+    assert!(
+        count_all(
+            &db,
+            "SELECT COUNT(*) FROM runtime_index_outbox WHERE operation = 'delete' \
          AND reason = 'turn_content_deleted'",
-    ) >= 3);
+        ) >= 3
+    );
     assert_eq!(
         count_all(
             &db,
@@ -268,8 +317,8 @@ fn delete_turn_removes_exclusive_content_and_is_idempotent() -> Result<()> {
     assert!(builder.is_none());
 
     // Idempotent retry keeps the first timestamp.
-    let retry = delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?
-        .expect("retry succeeds");
+    let retry =
+        delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("retry succeeds");
     assert!(retry.already_deleted);
     assert_eq!(retry.content_deleted_at, deleted_at);
     Ok(())
@@ -351,14 +400,17 @@ fn delete_turn_rejects_active_shared_and_sealed() -> Result<()> {
 
     // Rejections deleted nothing.
     assert_eq!(
-        count(&db, "SELECT COUNT(*) FROM messages WHERE turn_id = ?1", "turn-x"),
+        count(
+            &db,
+            "SELECT COUNT(*) FROM messages WHERE turn_id = ?1",
+            "turn-x"
+        ),
         1
     );
     assert!(turn_row(&db, "turn-x").0.is_none());
 
     // Revision mismatch rejects before mutation.
-    let error =
-        delete_turn_content(&db, "agent-a", "turn-y", Some(99), Utc::now())?.unwrap_err();
+    let error = delete_turn_content(&db, "agent-a", "turn-y", Some(99), Utc::now())?.unwrap_err();
     assert_eq!(
         error,
         TurnContentDeletionError::Conflict(TurnContentDeletionConflict::RevisionConflict)
@@ -457,7 +509,12 @@ fn seed_queue(db: &RuntimeDb, message_id: &str, status: &str, origin_kind: &str)
             "INSERT INTO queue_entries
                (message_id, agent_id, priority, status, created_at, updated_at, payload_json)
              VALUES (?1, 'agent-a', 'normal', ?2, ?3, ?3, ?4)",
-            rusqlite::params![message_id, status, TIME, queue_entry(message_id, status, origin_kind)],
+            rusqlite::params![
+                message_id,
+                status,
+                TIME,
+                queue_entry(message_id, status, origin_kind)
+            ],
         )?;
         tx.execute(
             "INSERT INTO messages
@@ -513,10 +570,7 @@ fn withdraw_input_cas_idempotency_and_conflicts() -> Result<()> {
 
     // Claimed input conflicts instead of racing the claim.
     let error = withdraw_input(&db, "agent-a", "m-claimed", Utc::now())?.unwrap_err();
-    assert!(matches!(
-        error,
-        InputWithdrawalError::AlreadyClaimed { .. }
-    ));
+    assert!(matches!(error, InputWithdrawalError::AlreadyClaimed { .. }));
 
     // Non-operator input is out of scope.
     let error = withdraw_input(&db, "agent-a", "m-system", Utc::now())?.unwrap_err();
@@ -526,5 +580,72 @@ fn withdraw_input_cas_idempotency_and_conflicts() -> Result<()> {
     let error = withdraw_input(&db, "agent-a", "m-missing", Utc::now())?.unwrap_err();
     assert_eq!(error, InputWithdrawalError::NotFound);
     let _ = Priority::Normal;
+    Ok(())
+}
+
+#[test]
+fn deleted_turn_reads_keep_placeholder_without_bodies() -> Result<()> {
+    let (_dir, db) = database()?;
+    seed_agent_state(&db)?;
+    seed_turn(&db, "turn-a", 1)?;
+    seed_turn(&db, "turn-b", 2)?;
+
+    let before = db.with_read(|connection| {
+        holon_storage::conversation::summary_page_in(connection, "agent-a", 10, None, None)
+    })?;
+    let before_turn_b = before
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-b")
+        .expect("turn-b present before deletion");
+    assert!(!before_turn_b.content_deleted);
+    assert_eq!(before_turn_b.inputs.len(), 1);
+    assert_eq!(before_turn_b.brief_ids.len(), 1);
+
+    delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("deletes");
+
+    let after = db.with_read(|connection| {
+        holon_storage::conversation::summary_page_in(connection, "agent-a", 10, None, None)
+    })?;
+    let placeholder = after
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-b")
+        .expect("deleted turn keeps its summary slot");
+    assert!(placeholder.content_deleted);
+    assert!(placeholder.inputs.is_empty());
+    assert!(placeholder.brief_ids.is_empty());
+    assert_eq!(
+        placeholder.result,
+        holon_domain::conversation::ResultState::Deleted
+    );
+    assert_eq!(
+        placeholder.detail_coverage,
+        holon_domain::conversation::DetailCoverage::Unavailable {
+            reason: holon_domain::conversation::DetailCoverageReason::ContentDeleted
+        }
+    );
+    assert!(placeholder.settled);
+    // The neighbor keeps hydrated bodies.
+    let neighbor = after
+        .turns
+        .iter()
+        .find(|turn| turn.turn_id == "turn-a")
+        .expect("turn-a present");
+    assert!(!neighbor.content_deleted);
+    assert_eq!(neighbor.inputs.len(), 1);
+
+    // Activity reads for the deleted turn return an empty body-free page.
+    let activities = db.with_read(|connection| {
+        holon_storage::conversation::activities_in(connection, "agent-a", "turn-b", 10, None, None)
+    })?;
+    let activities = activities.expect("activity page resolves");
+    assert!(activities.activities.is_empty());
+    assert_eq!(
+        activities.coverage,
+        holon_domain::conversation::DetailCoverage::Unavailable {
+            reason: holon_domain::conversation::DetailCoverageReason::ContentDeleted
+        }
+    );
     Ok(())
 }

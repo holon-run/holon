@@ -688,12 +688,11 @@ fn main_database_existence_sql(kind: &str) -> Option<String> {
             Some("SELECT 1 FROM work_items WHERE agent_id = ?1 AND work_item_id = ?2".into())
         }
         "context_episode" => Some(
-            "SELECT 1 FROM context_episode_anchors WHERE agent_id = ?1 AND episode_id = ?2"
-                .into(),
+            "SELECT 1 FROM context_episode_anchors WHERE agent_id = ?1 AND episode_id = ?2".into(),
         ),
-        "tool_command_receipt" => Some(
-            "SELECT 1 FROM tool_executions WHERE agent_id = ?1 AND evidence_id = ?2".into(),
-        ),
+        "tool_command_receipt" => {
+            Some("SELECT 1 FROM tool_executions WHERE agent_id = ?1 AND evidence_id = ?2".into())
+        }
         _ => None,
     }
 }

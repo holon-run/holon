@@ -31,10 +31,6 @@ pub(crate) mod current_read_writes;
 pub(crate) mod current_run_abort;
 pub mod destructive_operations;
 pub(crate) mod dispatch_memory;
-pub mod turn_content_deletion;
-pub mod input_withdrawal;
-#[cfg(test)]
-mod turn_content_deletion_tests;
 pub(crate) mod episode_memory;
 pub(crate) mod episode_snapshot;
 pub mod evidence;
@@ -44,6 +40,7 @@ pub(crate) mod input_evidence_writes;
 pub(crate) mod input_mutation_receipts;
 pub(crate) mod input_preparation;
 pub(crate) mod input_recovery_install;
+pub mod input_withdrawal;
 mod legacy_scheduler_wire;
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 mod migration_data_tests;
@@ -69,6 +66,9 @@ pub(crate) mod subagents;
 pub(crate) mod task_result_queue;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
+pub mod turn_content_deletion;
+#[cfg(test)]
+mod turn_content_deletion_tests;
 pub mod turn_settlement_repair;
 mod turn_start;
 pub use input_evidence_snapshot::maintenance::{

@@ -254,7 +254,12 @@ pub fn delete_turn_content(
                 SET content_deleted_at = ?3,
                     payload_json = ?4
               WHERE agent_id = ?1 AND turn_id = ?2 AND content_deleted_at IS NULL",
-            params![agent_id, turn_id, deleted_at, erased_payload_json(&target.record)?],
+            params![
+                agent_id,
+                turn_id,
+                deleted_at,
+                erased_payload_json(&target.record)?
+            ],
         )?;
         append_deletion_audit_event(tx, agent_id, turn_id, &deleted_at)?;
         Ok(Ok(TurnContentDeletion {
@@ -344,7 +349,10 @@ fn collect_turn_evidence(
 }
 
 fn placeholders(count: usize) -> String {
-    std::iter::repeat("?").take(count).collect::<Vec<_>>().join(",")
+    std::iter::repeat("?")
+        .take(count)
+        .collect::<Vec<_>>()
+        .join(",")
 }
 
 /// Safety checks that reject the whole deletion. Runs before any mutation.
@@ -494,9 +502,8 @@ fn tool_execution_payloads(
     agent_id: &str,
     target: &TargetTurn,
 ) -> Result<Vec<Value>> {
-    let mut statement = tx.prepare(
-        "SELECT payload_json FROM tool_executions WHERE agent_id = ?1 AND turn_id = ?2",
-    )?;
+    let mut statement = tx
+        .prepare("SELECT payload_json FROM tool_executions WHERE agent_id = ?1 AND turn_id = ?2")?;
     let payloads = statement
         .query_map(params![agent_id, target.turn_id], |row| {
             row.get::<_, String>(0)
@@ -835,10 +842,7 @@ pub fn remove_pending_artifact_deletion(
 
 /// True when the pending queue currently fences this agent-home-relative
 /// path. Reads block from deletion-commit time, not from unlink time.
-pub fn pending_artifact_deletion_exists(
-    db: &RuntimeDb,
-    relative_path: &str,
-) -> Result<bool> {
+pub fn pending_artifact_deletion_exists(db: &RuntimeDb, relative_path: &str) -> Result<bool> {
     db.with_read(|connection| {
         let exists: bool = connection.query_row(
             "SELECT EXISTS(SELECT 1 FROM pending_artifact_deletions
