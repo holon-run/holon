@@ -22,6 +22,12 @@ fn database() -> Result<(tempfile::TempDir, RuntimeDb)> {
 
 const TIME: &str = "2026-11-22T00:00:00.000Z";
 
+/// The WorkItem whose formal completion report lives in the deleted turn.
+const WORK_ITEM_ID: &str = "work-completion-1";
+/// The report body carried by both the turn's result Brief and the WorkItem
+/// `result_summary` deliverable copy.
+const COMPLETION_REPORT: &str = "formal completion report body";
+
 fn turn_payload(input: &str, terminal_reason: &str, turn_index: i64) -> String {
     let record = holon_domain::TurnRecord {
         idle_input_batch: Some(holon_domain::IdleInputBatchRecord {
@@ -156,6 +162,77 @@ fn seed_agent_identity(db: &RuntimeDb) -> Result<()> {
         )?;
         Ok(())
     })
+}
+
+fn fixture_time() -> chrono::DateTime<Utc> {
+    TIME.parse().expect("fixture timestamp parses")
+}
+
+fn work_item(state: holon_domain::WorkItemState, turn_id: &str) -> holon_domain::WorkItemRecord {
+    let mut record = holon_domain::WorkItemRecord::new("agent-a", "fixture objective", state);
+    record.id = WORK_ITEM_ID.to_owned();
+    record.created_at = fixture_time();
+    record.updated_at = fixture_time();
+    record.turn_id = Some(turn_id.to_owned());
+    record
+}
+
+/// Seeds a completed WorkItem whose formal completion report is the result
+/// Brief of `turn_id` (RFC conversation-turn-deletion §2.2): the WorkItem's
+/// `result_brief_id` points at the Brief, the Brief row points back through
+/// `work_item_id`, and `result_summary` carries the report text.
+fn seed_completion_report(
+    db: &RuntimeDb,
+    turn_id: &str,
+    turn_index: u64,
+) -> Result<holon_domain::WorkItemRecord> {
+    let brief_id = format!("b-{turn_id}");
+    let mut brief = holon_domain::BriefRecord::new(
+        "agent-a",
+        holon_domain::BriefKind::Result,
+        COMPLETION_REPORT,
+        None,
+        None,
+    );
+    brief.id = brief_id.clone();
+    brief.work_item_id = Some(WORK_ITEM_ID.to_owned());
+    brief.turn_id = Some(turn_id.to_owned());
+    brief.turn_index = Some(turn_index);
+    brief.created_at = fixture_time();
+    db.transaction(|tx| {
+        tx.execute(
+            "UPDATE briefs
+                SET kind = 'result', work_item_id = ?2, payload_json = ?3
+              WHERE evidence_id = ?1",
+            rusqlite::params![brief_id, WORK_ITEM_ID, serde_json::to_string(&brief)?],
+        )?;
+        Ok(())
+    })?;
+    let mut record = work_item(holon_domain::WorkItemState::Completed, turn_id);
+    record.result_brief_id = Some(brief_id);
+    record.result_summary = Some(COMPLETION_REPORT.to_owned());
+    db.work_items().insert_new(&record)?;
+    Ok(record)
+}
+
+/// Every column of one row, so before/after comparisons are column-complete.
+fn row(db: &RuntimeDb, sql: &str, id: &str) -> Vec<rusqlite::types::Value> {
+    db.with_read(|connection| {
+        let mut statement = connection.prepare(sql)?;
+        let columns = statement.column_count();
+        let values = statement
+            .query_row(rusqlite::params![id], |row| {
+                (0..columns).map(|index| row.get(index)).collect()
+            })
+            .map_err(anyhow::Error::from)?;
+        Ok(values)
+    })
+    .unwrap()
+}
+
+/// Direct read of the old Brief reference (`briefs.evidence_id`).
+fn report_brief_in(db: &RuntimeDb) -> Result<Option<holon_domain::BriefRecord>> {
+    db.transaction(|tx| holon_storage::conversation::brief_in(tx, "agent-a", "b-turn-b"))
 }
 
 fn turn_row(db: &RuntimeDb, turn_id: &str) -> (Option<String>, String) {
@@ -726,6 +803,210 @@ fn shared_artifact_paths_stay_until_last_referencing_turn() -> Result<()> {
         ),
         1
     );
+    Ok(())
+}
+
+/// RFC test-matrix item 5: deleting the turn that produced a WorkItem's
+/// formal completion report succeeds; the WorkItem stays `Completed`, keeps
+/// its provenance markers, and still re-renders the report after a restart.
+#[test]
+fn delete_turn_of_completion_report_keeps_work_item_deliverable() -> Result<()> {
+    use holon_domain::WorkItemState;
+
+    let (directory, db) = database()?;
+    seed_agent_state(&db)?;
+    seed_turn(&db, "turn-a", 1)?;
+    seed_turn(&db, "turn-b", 2)?;
+    seed_turn(&db, "turn-c", 3)?;
+    let work_item = seed_completion_report(&db, "turn-b", 2)?;
+
+    let before = row(
+        &db,
+        "SELECT * FROM work_items WHERE work_item_id = ?1",
+        WORK_ITEM_ID,
+    );
+    let report = report_brief_in(&db)?.expect("result Brief readable before deletion");
+    assert_eq!(report.text, COMPLETION_REPORT);
+
+    let preview = preview_turn_content_deletion(&db, "agent-a", "turn-b")?.unwrap();
+    assert_eq!(preview.brief_count, 1);
+    let now = Utc::now();
+    let deletion = delete_turn_content(&db, "agent-a", "turn-b", Some(1), now)?
+        .expect("a completion-report turn is deletable");
+    assert_eq!(deletion.removed_evidence, 3);
+
+    // The original Brief is pruned as turn content; the old reference must
+    // not return a report copy.
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM briefs WHERE turn_id = ?1",
+            "turn-b"
+        ),
+        0
+    );
+    assert!(report_brief_in(&db)?.is_none());
+
+    // The deliverable is untouched column by column: `Completed`, the
+    // `result_brief_id` provenance marker, and `result_summary` all stay.
+    assert_eq!(
+        row(
+            &db,
+            "SELECT * FROM work_items WHERE work_item_id = ?1",
+            WORK_ITEM_ID
+        ),
+        before
+    );
+    assert_eq!(
+        db.work_items().latest(WORK_ITEM_ID)?,
+        Some(work_item.clone())
+    );
+
+    // Restart: the WorkItem still renders its report from `result_summary`
+    // without re-reading the pruned Brief.
+    drop(db);
+    let path = directory.path().join("runtime.sqlite");
+    let lock = directory.path().join("runtime.lock");
+    let db = RuntimeDb::open_and_migrate(&path, &lock)?;
+    let reopened = db
+        .work_items()
+        .latest(WORK_ITEM_ID)?
+        .expect("completed WorkItem survives restart");
+    assert_eq!(reopened, work_item);
+    assert_eq!(reopened.state, WorkItemState::Completed);
+    assert_eq!(reopened.result_summary.as_deref(), Some(COMPLETION_REPORT));
+    assert_eq!(reopened.result_brief_id.as_deref(), Some("b-turn-b"));
+    assert!(report_brief_in(&db)?.is_none());
+
+    // Idempotent retry keeps the first timestamp and leaves the row alone.
+    let retry =
+        delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("retry succeeds");
+    assert!(retry.already_deleted);
+    assert_eq!(retry.content_deleted_at, deletion.content_deleted_at);
+    assert_eq!(
+        row(
+            &db,
+            "SELECT * FROM work_items WHERE work_item_id = ?1",
+            WORK_ITEM_ID
+        ),
+        before
+    );
+    Ok(())
+}
+
+/// RFC test-matrix item 4 (WorkItem activity side): the same WorkItem ran
+/// tool calls in A/B/C; deleting B removes only B's calls from the WorkItem's
+/// activity history, while A/C's calls and the WorkItem's business state stay.
+#[test]
+fn delete_turn_keeps_sibling_tool_calls_of_same_work_item() -> Result<()> {
+    use holon_domain::WorkItemState;
+
+    let (_dir, db) = database()?;
+    seed_agent_state(&db)?;
+    seed_turn(&db, "turn-a", 1)?;
+    seed_turn(&db, "turn-b", 2)?;
+    seed_turn(&db, "turn-c", 3)?;
+    db.work_items()
+        .insert_new(&work_item(WorkItemState::Open, "turn-b"))?;
+    db.transaction(|tx| {
+        tx.execute(
+            "UPDATE tool_executions SET work_item_id = ?1
+              WHERE turn_id IN ('turn-a', 'turn-b', 'turn-c')",
+            rusqlite::params![WORK_ITEM_ID],
+        )?;
+        Ok(())
+    })?;
+    let before = row(
+        &db,
+        "SELECT * FROM work_items WHERE work_item_id = ?1",
+        WORK_ITEM_ID,
+    );
+
+    delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("deletes");
+
+    // Only turn-b's call left the WorkItem's activity history.
+    assert_eq!(
+        count(
+            &db,
+            "SELECT COUNT(*) FROM tool_executions WHERE turn_id = ?1",
+            "turn-b"
+        ),
+        0
+    );
+    let remaining: Vec<String> = db.with_read(|connection| {
+        let mut statement = connection.prepare(
+            "SELECT evidence_id FROM tool_executions
+              WHERE work_item_id = ?1 ORDER BY evidence_id",
+        )?;
+        let rows = statement
+            .query_map(rusqlite::params![WORK_ITEM_ID], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        Ok(rows)
+    })?;
+    assert_eq!(remaining, ["t-turn-a", "t-turn-c"]);
+    // A/C keep their association with the WorkItem.
+    assert_eq!(
+        count_all(
+            &db,
+            "SELECT COUNT(*) FROM tool_executions WHERE work_item_id IS NULL"
+        ),
+        0
+    );
+    assert_eq!(
+        row(
+            &db,
+            "SELECT * FROM work_items WHERE work_item_id = ?1",
+            WORK_ITEM_ID
+        ),
+        before
+    );
+    assert_eq!(
+        db.work_items().latest(WORK_ITEM_ID)?.unwrap().state,
+        WorkItemState::Open
+    );
+    Ok(())
+}
+
+/// RFC test-matrix item 12: deleting a turn never cancels timers or any
+/// other background-task lifecycle state; timers keep their own lifecycle.
+#[test]
+fn delete_turn_leaves_timers_untouched() -> Result<()> {
+    let (_dir, db) = database()?;
+    seed_agent_state(&db)?;
+    seed_turn(&db, "turn-a", 1)?;
+    seed_turn(&db, "turn-b", 2)?;
+    let timer = holon_domain::TimerRecord {
+        id: "timer-1".to_owned(),
+        agent_id: "agent-a".to_owned(),
+        created_at: fixture_time(),
+        duration_ms: 60_000,
+        interval_ms: None,
+        repeat: false,
+        status: holon_domain::TimerStatus::Active,
+        summary: Some("recheck the merge".to_owned()),
+        next_fire_at: Some(fixture_time() + chrono::Duration::milliseconds(60_000)),
+        last_fired_at: None,
+        fire_count: 0,
+        paused_remaining_ms: None,
+        schedule_generation: 0,
+        calendar: None,
+    };
+    db.transaction(|tx| super::repositories::upsert_timer_tx(tx, &timer))?;
+    let before = row(&db, "SELECT * FROM timers WHERE timer_id = ?1", "timer-1");
+
+    delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("deletes");
+
+    // Column-complete: status, next_fire_at, and payload stay exactly as
+    // seeded; the timer was not cancelled, paused, or consumed.
+    assert_eq!(
+        row(&db, "SELECT * FROM timers WHERE timer_id = ?1", "timer-1"),
+        before
+    );
+    let after = db
+        .transaction(|tx| super::repositories::timer_tx(tx, "timer-1"))?
+        .expect("timer stays readable");
+    assert_eq!(after.status, holon_domain::TimerStatus::Active);
+    assert_eq!(after.next_fire_at, timer.next_fire_at);
     Ok(())
 }
 
