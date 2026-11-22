@@ -26,12 +26,15 @@ import {
   type DetailCoverage,
   type DetailCoverageReason,
   type ExecutionState,
+  type InputWithdrawal,
   type NoBriefReason,
   type PendingInput,
   type PresentationClass,
   type ResultState,
   type ResultUnavailableReason,
   type TerminalOutcome,
+  type TurnContentDeletion,
+  type TurnContentDeletionPreview,
   type TurnKey,
 } from "./types.js";
 
@@ -55,6 +58,7 @@ const detailCoverageReasons = new Set<DetailCoverageReason>([
   "legacy_ownership",
   "unknown_activity_type",
   "missing_canonical_linkage",
+  "content_deleted",
 ]);
 const presentationClasses = new Set<PresentationClass>([
   "operator",
@@ -228,6 +232,7 @@ function decodeResultState(value: unknown, path: string): ResultState {
   switch (kind) {
     case "pending":
     case "available":
+    case "deleted":
       return { kind };
     case "none":
       return {
@@ -292,6 +297,85 @@ export function decodeDetailCoverage(
     default:
       return fail(`${path}.kind`, `unsupported value ${JSON.stringify(kind)}`);
   }
+}
+
+export function decodeTurnContentDeletionPreview(
+  value: unknown,
+  path = "$",
+): TurnContentDeletionPreview {
+  const source = record(value, path);
+  return {
+    agent_id: nonEmptyString(source.agent_id, `${path}.agent_id`),
+    turn_id: nonEmptyString(source.turn_id, `${path}.turn_id`),
+    turn_index: safeInteger(source.turn_index, `${path}.turn_index`),
+    revision: safeInteger(source.revision, `${path}.revision`),
+    input_count: safeInteger(source.input_count, `${path}.input_count`),
+    brief_count: safeInteger(source.brief_count, `${path}.brief_count`),
+    tool_execution_count: safeInteger(
+      source.tool_execution_count,
+      `${path}.tool_execution_count`,
+    ),
+    transcript_count: safeInteger(
+      source.transcript_count,
+      `${path}.transcript_count`,
+    ),
+    already_deleted: booleanValue(source.already_deleted, `${path}.already_deleted`),
+    content_deleted_at:
+      source.content_deleted_at == null
+        ? null
+        : nonEmptyString(
+            source.content_deleted_at,
+            `${path}.content_deleted_at`,
+          ),
+    derived_handling: arrayValue(
+      source.derived_handling,
+      `${path}.derived_handling`,
+    ).map((note, index) =>
+      nonEmptyString(note, `${path}.derived_handling[${index}]`),
+    ),
+  };
+}
+
+export function decodeTurnContentDeletion(
+  value: unknown,
+  path = "$",
+): TurnContentDeletion {
+  const source = record(value, path);
+  return {
+    agent_id: nonEmptyString(source.agent_id, `${path}.agent_id`),
+    turn_id: nonEmptyString(source.turn_id, `${path}.turn_id`),
+    turn_index: safeInteger(source.turn_index, `${path}.turn_index`),
+    revision: safeInteger(source.revision, `${path}.revision`),
+    content_deleted_at: nonEmptyString(
+      source.content_deleted_at,
+      `${path}.content_deleted_at`,
+    ),
+    already_deleted: booleanValue(source.already_deleted, `${path}.already_deleted`),
+    removed_evidence: safeInteger(
+      source.removed_evidence,
+      `${path}.removed_evidence`,
+    ),
+    invalidated_episodes: safeInteger(
+      source.invalidated_episodes,
+      `${path}.invalidated_episodes`,
+    ),
+  };
+}
+
+export function decodeInputWithdrawal(
+  value: unknown,
+  path = "$",
+): InputWithdrawal {
+  const source = record(value, path);
+  return {
+    agent_id: nonEmptyString(source.agent_id, `${path}.agent_id`),
+    message_id: nonEmptyString(source.message_id, `${path}.message_id`),
+    withdrawn_at: nonEmptyString(source.withdrawn_at, `${path}.withdrawn_at`),
+    first_withdrawal: booleanValue(
+      source.first_withdrawal,
+      `${path}.first_withdrawal`,
+    ),
+  };
 }
 
 function decodeTaskResultPresentation(value: unknown, path: string): TaskResultPresentation {
@@ -381,6 +465,9 @@ export function decodeTurnSummary(
       presentationClasses,
       `${path}.presentation_class`,
     ),
+    ...(source.content_deleted === undefined
+      ? {}
+      : { content_deleted: booleanValue(source.content_deleted, `${path}.content_deleted`) }),
     inputs: arrayValue(source.inputs, `${path}.inputs`).map(
       (input, index) => decodeTurnInputSummary(input, `${path}.inputs[${index}]`),
     ),

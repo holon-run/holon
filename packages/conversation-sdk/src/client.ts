@@ -14,6 +14,9 @@ import {
   decodeConversationHttpError,
   decodeConversationSummaryResponse,
   decodeConversationLocateResponse,
+  decodeInputWithdrawal,
+  decodeTurnContentDeletion,
+  decodeTurnContentDeletionPreview,
   isConversationResetReason,
 } from "./decode.js";
 import { ConversationBatchAssembler, parseSseStream } from "./sse.js";
@@ -35,6 +38,9 @@ import {
   type ConversationStreamItem,
   type ConversationSummaryResult,
   type ConversationSummaryResponse,
+  type InputWithdrawal,
+  type TurnContentDeletion,
+  type TurnContentDeletionPreview,
 } from "./types.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
@@ -292,6 +298,52 @@ export class ConversationClient {
     );
   }
 
+  /** Body-free impact preview for deleting one turn's content. */
+  async turnDeletionPreview(
+    agentId: string,
+    turnId: string,
+    signal?: AbortSignal,
+  ): Promise<TurnContentDeletionPreview> {
+    return this.#getJson(
+      this.#agentPath(agentId, `/turns/${encodeURIComponent(turnId)}/deletion-preview`),
+      signal,
+      decodeTurnContentDeletionPreview,
+    );
+  }
+
+  /** Delete one turn's conversation content. Idempotent. */
+  async deleteTurnContent(
+    agentId: string,
+    turnId: string,
+    expectedRevision?: number,
+    signal?: AbortSignal,
+  ): Promise<TurnContentDeletion> {
+    const query =
+      expectedRevision === undefined
+        ? ""
+        : `?expected_revision=${encodeURIComponent(String(expectedRevision))}`;
+    return this.#requestJson(
+      "DELETE",
+      this.#agentPath(agentId, `/turns/${encodeURIComponent(turnId)}/content${query}`),
+      signal,
+      decodeTurnContentDeletion,
+    );
+  }
+
+  /** Withdraw one unexecuted operator input. Idempotent. */
+  async withdrawMessage(
+    agentId: string,
+    messageId: string,
+    signal?: AbortSignal,
+  ): Promise<InputWithdrawal> {
+    return this.#requestJson(
+      "POST",
+      this.#agentPath(agentId, `/messages/${encodeURIComponent(messageId)}/withdraw`),
+      signal,
+      decodeInputWithdrawal,
+    );
+  }
+
   async *stream(
     agentId: string,
     options: ConversationStreamOptions = {},
@@ -399,11 +451,21 @@ export class ConversationClient {
     signal: AbortSignal | undefined,
     decode: (value: unknown) => T,
   ): Promise<T> {
+    return this.#requestJson("GET", path, signal, decode);
+  }
+
+  /** Method-explicit JSON request + decode with a bounded lifetime. */
+  async #requestJson<T>(
+    method: string,
+    path: string,
+    signal: AbortSignal | undefined,
+    decode: (value: unknown) => T,
+  ): Promise<T> {
     if (path !== "/handshake") await this.#ensureBindingCapability(signal);
     const headers = await this.#requestHeaders();
     headers.set("accept", "application/json");
     return await this.#withRequestTimeout(signal, (inner) =>
-      this.#readJson(path, headers, inner, decode),
+      this.#readJson(method, path, headers, inner, decode),
     );
   }
 
@@ -465,13 +527,14 @@ export class ConversationClient {
   }
 
   async #readJson<T>(
+    method: string,
     path: string,
     headers: Headers,
     signal: AbortSignal | undefined,
     decode: (value: unknown) => T,
   ): Promise<T> {
     const response = await this.#fetch(this.#url(path), {
-      method: "GET",
+      method,
       headers,
       ...(signal === undefined ? {} : { signal }),
     });
