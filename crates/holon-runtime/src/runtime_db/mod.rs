@@ -44,6 +44,7 @@ mod legacy_scheduler_wire;
 #[cfg(all(test, holon_lib_test_shard = "b"))]
 mod migration_data_tests;
 pub mod migrations;
+pub(crate) mod notifications;
 pub mod persistence;
 pub(crate) mod prepared_input_evidence;
 pub mod provider_admission;

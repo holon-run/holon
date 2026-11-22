@@ -483,7 +483,8 @@ pub async fn create_work_item(
     headers: HeaderMap,
     ApiJson(request): ApiJson<CreateWorkItemRequest>,
 ) -> Result<impl IntoResponse, (StatusCode, Json<Value>)> {
-    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let recipient =
+        super::notifications::recipient(&headers, &state).map_err(authentication_error_response)?;
     let admission_context = control_admission_context(&state);
     let provided_trust = request.authority_class;
     validate_invocation_context(request.invocation_context.as_ref(), provided_trust)?;
@@ -493,7 +494,7 @@ pub async fn create_work_item(
     }
     let (runtime, record) = state
         .host
-        .enqueue_public_work_item(&agent_id, objective)
+        .enqueue_public_work_item(&agent_id, objective, recipient.principal_id)
         .await
         .map_err(agent_access_error)?;
     let boundary = current_boundary_metadata(&runtime)

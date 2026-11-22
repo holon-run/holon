@@ -82,6 +82,7 @@ mod conversation;
 mod events;
 mod ingress;
 mod jobs;
+mod notifications;
 mod tailscale_serve;
 // S0 contract skeleton: DTOs/fixtures/capability evaluator are exercised by
 // unit tests now and wired into handlers by the S2/S4/S5 slices.
@@ -426,6 +427,8 @@ pub fn router(state: AppState) -> Router {
             get(state::agent_state).layer(map_response(prevent_agent_read_caching)),
         )
         .route("/events/stream", get(events::global_events_stream))
+        .route("/notifications/pending", get(notifications::pending))
+        .route("/notifications/recent", get(notifications::recent))
         .route("/jobs", post(jobs::create_job))
         .route("/jobs/{job_id}", get(jobs::job_status))
         .route(

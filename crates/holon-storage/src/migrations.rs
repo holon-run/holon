@@ -4527,6 +4527,36 @@ CREATE TABLE IF NOT EXISTS agent_message_chain_budgets (
 );
 "#,
     },
+    Migration {
+        version: 118,
+        name: "operator_inbox",
+        sql: r#"
+CREATE TABLE operator_inbox_work_owners (
+  work_item_id TEXT PRIMARY KEY REFERENCES work_items(work_item_id) ON DELETE CASCADE,
+  principal_id TEXT NOT NULL
+);
+CREATE TABLE operator_inbox_recent (
+  principal_id TEXT NOT NULL,
+  brief_id TEXT NOT NULL REFERENCES briefs(evidence_id) ON DELETE CASCADE,
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT,
+  priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 3),
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (principal_id, brief_id)
+);
+CREATE INDEX idx_operator_inbox_recent ON operator_inbox_recent(principal_id, created_at DESC, brief_id);
+CREATE TABLE operator_inbox_causes (
+  principal_id TEXT NOT NULL,
+  priority INTEGER NOT NULL,
+  cause_id TEXT NOT NULL,
+  brief_id TEXT NOT NULL,
+  PRIMARY KEY (principal_id, priority, cause_id),
+  FOREIGN KEY (principal_id, brief_id)
+    REFERENCES operator_inbox_recent(principal_id, brief_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_operator_inbox_causes_brief ON operator_inbox_causes(principal_id, brief_id);
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {

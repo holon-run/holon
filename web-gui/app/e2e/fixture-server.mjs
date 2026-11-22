@@ -50,6 +50,7 @@ function sessionFor(req, url) {
       briefReadAdvanceSeqs: [],
       conversationStreams: new Set(),
       rosterHintStreams: new Set(),
+      notifications: { pending: [], recent: [], status: 404 },
       conversationData: new Map(),
       visibleAgentIds: tour ? tourAgents.map((agent) => agent.id) : ["bootstrap-agent"],
       ledgerEnabledAgentIds: new Set(),
@@ -418,6 +419,21 @@ async function handleControl(req, res, url) {
     });
     return true;
   }
+  if (url.pathname === "/__e2e__/notifications" && req.method === "POST") {
+    const session = sessionFor(req, url);
+    const { pending, recent, status, signal } = await requestBody(req);
+    if (Array.isArray(pending)) session.notifications.pending = pending;
+    if (Array.isArray(recent)) session.notifications.recent = recent;
+    if (Number.isInteger(status)) session.notifications.status = status;
+    if (signal === "changed") {
+      for (const stream of session.rosterHintStreams) stream.write('event: notifications.changed\ndata: {"v":1}\n\n');
+    } else if (signal === "disconnect") {
+      for (const stream of session.rosterHintStreams) stream.end();
+      session.rosterHintStreams.clear();
+    }
+    json(res, { streams: session.rosterHintStreams.size });
+    return true;
+  }
   if (url.pathname === "/__e2e__/disconnect-streams" && req.method === "POST") {
     const session = sessionFor(req, url);
     // Per-agent raw event streams are retired (#3808); only the
@@ -624,9 +640,14 @@ async function handleApi(req, res, url) {
     return true;
   }
   if (url.pathname === "/api/events/stream" && req.method === "GET") {
-    // Global roster hint stream (#4310): idle until the control plane emits
-    // an agent event; frames carry no payload beyond the agent id.
+    // One global stream carries both roster and notifications hints.
     openEventStream(req, res, session.rosterHintStreams);
+    return true;
+  }
+  const notificationList = url.pathname.match(/^\/api\/notifications\/(pending|recent)$/);
+  if (notificationList && req.method === "GET") {
+    const { status } = session.notifications;
+    json(res, status === 200 ? { items: session.notifications[notificationList[1]] } : { error: `notifications ${status}` }, status);
     return true;
   }
   if (url.pathname === "/api/agents/list") {

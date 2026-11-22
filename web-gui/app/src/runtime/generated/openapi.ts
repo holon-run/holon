@@ -2333,8 +2333,8 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Global roster hint stream
-         * @description Return Server-Sent Events carrying only agent_roster_hint discovery records with an agent_id. This live stream has no cursor and never carries agent event payloads; recoverable events are delivered only by the per-agent stream. Clients use each hint to refresh the authoritative roster and backfill the agent stream.
+         * Global refresh hints
+         * @description Return SSE agent_roster_hint discovery records and notifications.changed ({"v":1}) only when the authenticated control recipient's inbox changes. This live stream carries no cursor, brief text, or replay. Re-read the authoritative snapshots on connect or reconnect.
          */
         get: operations["eventsStream"];
         put?: never;
@@ -2479,6 +2479,46 @@ export interface paths {
          * @description Discover models for providers with missing or expired caches, then return the model catalog and runtime availability.
          */
         post: operations["refreshModels"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/pending": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Pending operator input
+         * @description Return the complete actionable wait snapshot for the authenticated control recipient. Opening or reading a target does not resolve the wait. Cache-Control: no-store.
+         */
+        get: operations["pendingNotifications"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/notifications/recent": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Recent operator notifications
+         * @description Return at most 100 notifications from the last 30 days for the authenticated control recipient, newest first. One entry per brief and recipient. Cache-Control: no-store.
+         */
+        get: operations["recentNotifications"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -6072,6 +6112,20 @@ export interface components {
             home_dir: string;
             listen: string;
             workspace_dir: string;
+        };
+        /** InboxNotificationList */
+        InboxNotificationList: {
+            items: {
+                /** Format: date-time */
+                created_at: string;
+                id: string;
+                /** @enum {string} */
+                kind: "operator_first_brief" | "work_item_completed" | "operator_input_required";
+                target: {
+                    agent_id: string;
+                    work_item_id?: string | null;
+                };
+            }[];
         };
         /** @description Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize. */
         IncomingOrigin: {
@@ -14442,6 +14496,82 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["JsonValue"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    pendingNotifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxNotificationList"];
+                };
+            };
+            /** @description Client error JSON response. */
+            "4XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Server error JSON response. */
+            "5XX": {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    recentNotifications: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful JSON response using a stable DTO schema. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["InboxNotificationList"];
                 };
             };
             /** @description Client error JSON response. */

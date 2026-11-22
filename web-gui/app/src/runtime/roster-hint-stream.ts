@@ -2,8 +2,8 @@ import { parseSseStream } from "@holon/conversation-sdk";
 
 import { backfillRetryDelayMs } from "./global-sync-coordinator";
 
-/** The global stream carries only this discovery event kind (#4310). */
 const ROSTER_HINT_EVENT = "agent_roster_hint";
+const NOTIFICATIONS_HINT_EVENT = "notifications.changed";
 
 export interface RosterHintStreamDependencies {
   /**
@@ -13,6 +13,9 @@ export interface RosterHintStreamDependencies {
   openStream: (signal: AbortSignal) => Promise<Response>;
   /** One agent_roster_hint frame arrived while the page was visible. */
   onHint: () => void;
+  onNotificationHint?: () => void;
+  onConnected?: () => void;
+  onDisconnected?: (status?: number) => void;
   /** Visibility gate override for tests; defaults to document state. */
   isHidden?: () => boolean;
   /** Reconnect backoff override for tests; defaults to the roster curve. */
@@ -86,6 +89,7 @@ export function createRosterHintStream(
             // Rejected credentials or a runtime without the global stream:
             // stop instead of retrying; the next healthy bootstrap (for
             // example after a client switch or resume) starts a fresh one.
+            dependencies.onDisconnected?.(response.status);
             stop();
             return;
           }
@@ -97,15 +101,17 @@ export function createRosterHintStream(
           emitHint();
         }
         retryAttempt = 0;
+        dependencies.onConnected?.();
         for await (const frame of parseSseStream(response.body)) {
           if (!active || token !== generation) return;
-          if (frame.event !== ROSTER_HINT_EVENT) continue;
-          emitHint();
+          if (frame.event === ROSTER_HINT_EVENT) emitHint();
+          if (frame.event === NOTIFICATIONS_HINT_EVENT) dependencies.onNotificationHint?.();
         }
         // The server closes the stream on receiver lag; reconnect below.
         throw new Error("roster hint stream closed by server");
       } catch {
         if (!active || token !== generation) return;
+        dependencies.onDisconnected?.();
         retryAttempt += 1;
         clearRetryTimer();
         retryTimer = setTimeout(() => {

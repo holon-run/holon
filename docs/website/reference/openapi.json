@@ -11921,6 +11921,61 @@
         ],
         "type": "object"
       },
+      "InboxNotificationList": {
+        "properties": {
+          "items": {
+            "items": {
+              "properties": {
+                "created_at": {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                },
+                "kind": {
+                  "enum": [
+                    "operator_first_brief",
+                    "work_item_completed",
+                    "operator_input_required"
+                  ],
+                  "type": "string"
+                },
+                "target": {
+                  "properties": {
+                    "agent_id": {
+                      "type": "string"
+                    },
+                    "work_item_id": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "agent_id"
+                  ],
+                  "type": "object"
+                }
+              },
+              "required": [
+                "id",
+                "kind",
+                "created_at",
+                "target"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "InboxNotificationList",
+        "type": "object"
+      },
       "IncomingOrigin": {
         "additionalProperties": true,
         "description": "Baseline request DTO schema. Per-field schemas will be tightened as HTTP envelope and DTO contracts stabilize.",
@@ -29399,7 +29454,7 @@
     },
     "/api/events/stream": {
       "get": {
-        "description": "Return Server-Sent Events carrying only agent_roster_hint discovery records with an agent_id. This live stream has no cursor and never carries agent event payloads; recoverable events are delivered only by the per-agent stream. Clients use each hint to refresh the authoritative roster and backfill the agent stream.",
+        "description": "Return SSE agent_roster_hint discovery records and notifications.changed ({\"v\":1}) only when the authenticated control recipient's inbox changes. This live stream carries no cursor, brief text, or replay. Re-read the authoritative snapshots on connect or reconnect.",
         "operationId": "eventsStream",
         "parameters": [],
         "responses": {
@@ -29429,7 +29484,7 @@
             "BearerAuth": []
           }
         ],
-        "summary": "Global roster hint stream",
+        "summary": "Global refresh hints",
         "tags": [
           "events"
         ]
@@ -29798,6 +29853,102 @@
         "summary": "Refresh available models",
         "tags": [
           "discovery"
+        ]
+      }
+    },
+    "/api/notifications/pending": {
+      "get": {
+        "description": "Return the complete actionable wait snapshot for the authenticated control recipient. Opening or reading a target does not resolve the wait. Cache-Control: no-store.",
+        "operationId": "pendingNotifications",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxNotificationList"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Pending operator input",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/api/notifications/recent": {
+      "get": {
+        "description": "Return at most 100 notifications from the last 30 days for the authenticated control recipient, newest first. One entry per brief and recipient. Cache-Control: no-store.",
+        "operationId": "recentNotifications",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/InboxNotificationList"
+                }
+              }
+            },
+            "description": "Successful JSON response using a stable DTO schema."
+          },
+          "4XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Client error JSON response."
+          },
+          "5XX": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Server error JSON response."
+          }
+        },
+        "security": [
+          {
+            "BearerAuth": []
+          }
+        ],
+        "summary": "Recent operator notifications",
+        "tags": [
+          "events"
         ]
       }
     },

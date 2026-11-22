@@ -153,6 +153,8 @@ const PRIVATE_TABLES: &[(&str, &str)] = &[
     ("brief_created_linkage_uncertain", "agent_id"),
     ("agent_brief_read_cursors", "agent_id"),
     ("operator_notifications", "agent_id"),
+    // The notification's deduplication keys cascade with its recent row.
+    ("operator_inbox_recent", "agent_id"),
     ("operator_delivery_records", "agent_id"),
     ("operator_transport_bindings", "target_agent_id"),
     ("agent_message_deliveries", "target_agent_id"),
@@ -1932,6 +1934,46 @@ mod tests {
             .iter()
             .any(|step| step.contains("SCAN input_mutation_receipts")));
         Ok(())
+    }
+
+    #[test]
+    fn agent_deletion_clears_recent_notifications_and_their_causes() -> Result<()> {
+        let (_dir, db) = fixture()?;
+        for agent in ["a", "b"] {
+            let mut brief = BriefRecord::new(agent, BriefKind::Result, "reply", None, None);
+            brief.id = format!("brief-{agent}");
+            db.evidence().append_brief(&brief)?;
+            db.transaction(|tx| {
+                tx.execute(
+                    "INSERT INTO operator_inbox_recent
+                        (principal_id, brief_id, agent_id, priority, created_at)
+                     VALUES ('recipient', ?1, ?2, 1, ?3)",
+                    params![brief.id, agent, brief.created_at.to_rfc3339()],
+                )?;
+                tx.execute(
+                    "INSERT INTO operator_inbox_causes (principal_id, priority, cause_id, brief_id)
+                     VALUES ('recipient', 1, ?1, ?2)",
+                    params![format!("input-{agent}"), brief.id],
+                )?;
+                Ok(())
+            })?;
+        }
+
+        fence(&db)?;
+        settle_execution(&db, "a", 1, Utc::now())?;
+        purge_private_history(&db, "a", 1, Utc::now())?;
+        assert_private_history_cleared(&db, "a")?;
+
+        db.transaction(|tx| {
+            for table in ["operator_inbox_recent", "operator_inbox_causes"] {
+                let mut stmt = tx.prepare(&format!("SELECT brief_id FROM {table}"))?;
+                let brief_ids = stmt
+                    .query_map([], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                assert_eq!(brief_ids, ["brief-b"], "{table}");
+            }
+            Ok(())
+        })
     }
 
     #[test]

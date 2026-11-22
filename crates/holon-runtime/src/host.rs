@@ -5632,10 +5632,11 @@ impl RuntimeHost {
         &self,
         agent_id: &str,
         objective: String,
+        principal_id: String,
     ) -> std::result::Result<(RuntimeHandle, crate::types::WorkItemRecord), PublicAgentError> {
         let runtime = self.get_public_agent(agent_id).await?;
         let record = runtime
-            .create_work_item(objective, None, None, Vec::new())
+            .create_operator_work_item(objective, principal_id)
             .await
             .map_err(PublicAgentError::Runtime)?;
         Ok((runtime, record))

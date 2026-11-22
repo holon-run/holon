@@ -204,7 +204,10 @@ fn backfill_report_does_not_migrate_and_apply_can_record_pre_migration_backup() 
             None,
         ))?;
         db.connection()?.execute_batch(
-            "DROP TABLE source_revision_repair_block_publications;
+            "DROP TABLE operator_inbox_causes;
+             DROP TABLE operator_inbox_recent;
+             DROP TABLE operator_inbox_work_owners;
+             DROP TABLE source_revision_repair_block_publications;
              DROP TABLE source_revision_repair_block_sources;
              DROP TABLE source_revision_repair_blocks;
              DROP TABLE command_task_creation_sources;
