@@ -5,8 +5,8 @@ use anyhow::Result;
 use chrono::Utc;
 
 use super::turn_content_deletion::{
-    delete_turn_content, preview_turn_content_deletion, TurnContentDeletionConflict,
-    TurnContentDeletionError,
+    delete_turn_content, pending_artifact_deletion_exists, preview_turn_content_deletion,
+    TurnContentDeletionConflict, TurnContentDeletionError,
 };
 use super::RuntimeDb;
 use crate::types::Priority;
@@ -97,7 +97,7 @@ fn seed_turn(db: &RuntimeDb, turn_id: &str, turn_index: i64) -> Result<()> {
                 serde_json::json!({
                     "id": format!("t-{turn_id}"),
                     "tool_name": "exec_command",
-                    "input": {"cmd": "echo secret", "path": "tool-artifacts/x.log"}
+                    "input": {"cmd": "echo secret", "path": format!("tool-artifacts/{turn_id}.log")}
                 })
                 .to_string()
             ],
@@ -141,6 +141,18 @@ fn seed_agent_state(db: &RuntimeDb) -> Result<()> {
                 })
                 .to_string()
             ],
+        )?;
+        Ok(())
+    })
+}
+
+fn seed_agent_identity(db: &RuntimeDb) -> Result<()> {
+    db.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO agent_identities
+               (agent_id, kind, visibility, status, created_at, updated_at, payload_json)
+             VALUES ('agent-a', 'agent', 'private', 'active', ?1, ?1, '{}')",
+            rusqlite::params![TIME],
         )?;
         Ok(())
     })
@@ -295,7 +307,7 @@ fn delete_turn_removes_exclusive_content_and_is_idempotent() -> Result<()> {
     assert_eq!(
         count_all(
             &db,
-            "SELECT COUNT(*) FROM pending_artifact_deletions WHERE relative_path = 'tool-artifacts/x.log'",
+            "SELECT COUNT(*) FROM pending_artifact_deletions WHERE relative_path = 'tool-artifacts/turn-b.log'",
         ),
         1
     );
@@ -580,6 +592,140 @@ fn withdraw_input_cas_idempotency_and_conflicts() -> Result<()> {
     let error = withdraw_input(&db, "agent-a", "m-missing", Utc::now())?.unwrap_err();
     assert_eq!(error, InputWithdrawalError::NotFound);
     let _ = Priority::Normal;
+    Ok(())
+}
+
+#[test]
+fn deletion_and_withdrawal_reach_change_stream() -> Result<()> {
+    use holon_domain::conversation::ConversationChange;
+
+    let (_dir, db) = database()?;
+    seed_agent_identity(&db)?;
+    seed_agent_state(&db)?;
+    seed_turn(&db, "turn-a", 1)?;
+    seed_turn(&db, "turn-b", 2)?;
+    seed_queue(&db, "m-w", "queued", "operator")?;
+
+    // Baseline cursor: the head seq before any deletion event exists.
+    let before = db
+        .conversation()
+        .change_batch("agent-a", None, 50, 50, "operator", "operator")?
+        .expect("agent identity resolves");
+    let cursor = before.checkpoint.clone();
+
+    delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("deletes");
+    super::input_withdrawal::withdraw_input(&db, "agent-a", "m-w", Utc::now())?.expect("withdraws");
+
+    // Another client's incremental read from the old cursor must observe
+    // both facts: the audit events carry allocated sequence numbers.
+    let batch = db
+        .conversation()
+        .change_batch("agent-a", Some(&cursor), 50, 50, "operator", "operator")?
+        .expect("agent identity resolves");
+    let placeholder = batch
+        .changes
+        .iter()
+        .find_map(|change| match change {
+            ConversationChange::TurnSummaryUpsert { turn } if turn.turn_id == "turn-b" => {
+                Some(turn)
+            }
+            _ => None,
+        })
+        .expect("deletion reaches the change stream as a placeholder upsert");
+    assert!(placeholder.content_deleted);
+    assert!(placeholder.inputs.is_empty());
+    assert!(
+        batch.changes.iter().any(
+            |change| matches!(change, ConversationChange::OperatorRemove { message_id, .. }
+                if message_id == "m-w")
+        ),
+        "withdrawal reaches the change stream as an OperatorRemove"
+    );
+    Ok(())
+}
+
+#[test]
+fn pending_artifact_fence_is_agent_scoped() -> Result<()> {
+    let (_dir, db) = database()?;
+    db.transaction(|tx| {
+        tx.execute(
+            "INSERT INTO pending_artifact_deletions (agent_id, relative_path, created_at)
+             VALUES ('agent-b', 'tool-artifacts/shared.log', ?1)",
+            rusqlite::params![TIME],
+        )?;
+        Ok(())
+    })?;
+    // The queue key is (agent_id, relative_path): another agent's pending
+    // deletion of the same relative path must not fence this agent's file.
+    assert!(!pending_artifact_deletion_exists(
+        &db,
+        Some("agent-a"),
+        "tool-artifacts/shared.log"
+    )?);
+    assert!(pending_artifact_deletion_exists(
+        &db,
+        Some("agent-b"),
+        "tool-artifacts/shared.log"
+    )?);
+    // An unattributable legacy alias keeps the fail-closed cross-agent check.
+    assert!(pending_artifact_deletion_exists(
+        &db,
+        None,
+        "tool-artifacts/shared.log"
+    )?);
+    Ok(())
+}
+
+#[test]
+fn shared_artifact_paths_stay_until_last_referencing_turn() -> Result<()> {
+    let (_dir, db) = database()?;
+    seed_agent_state(&db)?;
+    seed_turn(&db, "turn-a", 1)?;
+    seed_turn(&db, "turn-b", 2)?;
+    // turn-a's tool payload references the artifact produced by turn-b.
+    // Keep turn-a's own artifact as its output so both paths stay referenced
+    // by this payload: a replaced reference would orphan turn-a's own file.
+    db.transaction(|tx| {
+        tx.execute(
+            "UPDATE tool_executions
+                SET payload_json = json_set(payload_json,
+                                            '$.input.path', 'tool-artifacts/turn-b.log',
+                                            '$.output.path', 'tool-artifacts/turn-a.log')
+              WHERE turn_id = 'turn-a'",
+            [],
+        )?;
+        Ok(())
+    })?;
+
+    delete_turn_content(&db, "agent-a", "turn-b", None, Utc::now())?.expect("deletes");
+    assert_eq!(
+        count_all(
+            &db,
+            "SELECT COUNT(*) FROM pending_artifact_deletions
+              WHERE relative_path = 'tool-artifacts/turn-b.log'"
+        ),
+        0,
+        "a path still referenced by a surviving turn is not enqueued"
+    );
+
+    // Deleting the last referencing turn unlinks the shared file.
+    delete_turn_content(&db, "agent-a", "turn-a", None, Utc::now())?.expect("deletes");
+    assert_eq!(
+        count_all(
+            &db,
+            "SELECT COUNT(*) FROM pending_artifact_deletions
+              WHERE relative_path = 'tool-artifacts/turn-b.log'"
+        ),
+        1
+    );
+    assert_eq!(
+        count_all(
+            &db,
+            "SELECT COUNT(*) FROM pending_artifact_deletions
+              WHERE relative_path = 'tool-artifacts/turn-a.log'"
+        ),
+        1
+    );
     Ok(())
 }
 

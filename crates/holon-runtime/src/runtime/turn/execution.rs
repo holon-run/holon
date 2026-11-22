@@ -4564,9 +4564,17 @@ impl RuntimeHandle {
                     }
                 }
             }
+            // The promoted-report audit event must correlate with the turn
+            // so turn-content deletion can scrub its text preview; the agent
+            // state is the authoritative source while the turn is current.
+            let completion_turn_id = {
+                let guard = runtime.inner.agent.lock().await;
+                guard.state.current_turn_id.clone()
+            };
             let _completion_promotions = runtime
                 .promote_round_completion_report_if_present(
                     agent_id,
+                    completion_turn_id.as_deref().unwrap_or_default(),
                     round,
                     turn_index,
                     &completed_round_assistant_blocks,

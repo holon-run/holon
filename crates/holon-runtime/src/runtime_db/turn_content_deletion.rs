@@ -237,7 +237,11 @@ pub fn delete_turn_content(
 
         // Collect derived inputs before removing the source rows.
         let tool_payloads = tool_execution_payloads(tx, agent_id, &target)?;
-        let artifact_paths = managed_artifact_paths(&tool_payloads);
+        let shared_paths = shared_artifact_paths(tx, agent_id, &target)?;
+        let artifact_paths: Vec<String> = managed_artifact_paths(&tool_payloads)
+            .into_iter()
+            .filter(|path| !shared_paths.contains(path))
+            .collect();
 
         let removed_evidence =
             remove_exclusive_evidence(tx, agent_id, &target, &evidence, &tool_payloads, now)?;
@@ -528,6 +532,34 @@ fn managed_artifact_paths(tool_payloads: &[Value]) -> Vec<String> {
     paths.into_iter().collect()
 }
 
+/// Managed artifact paths referenced by any other turn of this agent. A
+/// path shared with a surviving turn is neither unlinked nor fenced: later
+/// turns may legitimately reference media or tool artifacts produced by an
+/// earlier turn, so the file only becomes deletable with the last
+/// referencing turn.
+fn shared_artifact_paths(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+    target: &TargetTurn,
+) -> Result<std::collections::BTreeSet<String>> {
+    let mut statement = tx.prepare(
+        "SELECT payload_json FROM tool_executions
+          WHERE agent_id = ?1 AND turn_id <> ?2",
+    )?;
+    let payloads = statement
+        .query_map(params![agent_id, target.turn_id], |row| {
+            row.get::<_, String>(0)
+        })?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(statement);
+    let mut shared = std::collections::BTreeSet::new();
+    for payload in payloads {
+        let value: Value = serde_json::from_str(&payload).unwrap_or(Value::Null);
+        collect_artifact_paths(&value, &mut shared);
+    }
+    Ok(shared)
+}
+
 fn collect_artifact_paths(value: &Value, paths: &mut std::collections::BTreeSet<String>) {
     match value {
         Value::Object(map) => {
@@ -679,7 +711,9 @@ fn scrub_retained_payloads(
     tx.execute(
         "UPDATE audit_events
             SET data_json = json_remove(data_json,
-                  '$.data.input', '$.data.text_preview', '$.data.last_assistant_preview')
+                  '$.data.input', '$.data.text_preview', '$.data.last_assistant_preview',
+                  '$.data.exec_command_cmd', '$.data.exec_command_display',
+                  '$.data.exec_command_batch_items', '$.data.summary', '$.data.error')
           WHERE agent_id = ?1
             AND kind = 'tool_executed'
             AND (json_extract(data_json, '$.data.turn_id') = ?2
@@ -689,12 +723,16 @@ fn scrub_retained_payloads(
     tx.execute(
         "UPDATE audit_events
             SET data_json = json_remove(data_json,
-                  '$.data.text_preview', '$.data.last_assistant_preview')
+                  '$.data.text_preview', '$.data.last_assistant_preview',
+                  '$.data.operator_message')
           WHERE agent_id = ?1
             AND kind IN ('operator_interjection_admitted',
                          'text_only_round_observed',
                          'turn_local_checkpoint_recorded',
-                         'lineage_retry_exhausted')
+                         'lineage_retry_exhausted',
+                         'provider_failed_needs_recovery',
+                         'deferred_to_fallback',
+                         'work_item_completion_report_candidate_promoted')
             AND (json_extract(data_json, '$.data.turn_id') = ?2
                  OR json_extract(data_json, '$.turn_id') = ?2)",
         params![agent_id, target.turn_id],
@@ -843,14 +881,31 @@ pub fn remove_pending_artifact_deletion(
 
 /// True when the pending queue currently fences this agent-home-relative
 /// path. Reads block from deletion-commit time, not from unlink time.
-pub fn pending_artifact_deletion_exists(db: &RuntimeDb, relative_path: &str) -> Result<bool> {
+///
+/// Agent-scoped: the queue's primary key is `(agent_id, relative_path)`, so
+/// another agent's pending deletion of the same relative path must not fence
+/// this agent's file. `None` keeps the fail-closed cross-agent check for
+/// callers that cannot attribute a legacy alias to one agent.
+pub fn pending_artifact_deletion_exists(
+    db: &RuntimeDb,
+    agent_id: Option<&str>,
+    relative_path: &str,
+) -> Result<bool> {
     db.with_read(|connection| {
-        let exists: bool = connection.query_row(
-            "SELECT EXISTS(SELECT 1 FROM pending_artifact_deletions
-              WHERE relative_path = ?1)",
-            params![relative_path],
-            |row| row.get(0),
-        )?;
+        let exists: bool = match agent_id {
+            Some(agent_id) => connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pending_artifact_deletions
+                  WHERE agent_id = ?1 AND relative_path = ?2)",
+                params![agent_id, relative_path],
+                |row| row.get(0),
+            )?,
+            None => connection.query_row(
+                "SELECT EXISTS(SELECT 1 FROM pending_artifact_deletions
+                  WHERE relative_path = ?1)",
+                params![relative_path],
+                |row| row.get(0),
+            )?,
+        };
         Ok(exists)
     })
 }
@@ -926,16 +981,9 @@ fn append_deletion_audit_event(
             "content_deleted_at": deleted_at,
         }),
     );
-    tx.execute(
-        "INSERT INTO audit_events (audit_event_id, agent_id, kind, created_at, data_json)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            event.id,
-            agent_id,
-            "turn_content_deleted",
-            event.created_at.to_rfc3339(),
-            serde_json::to_string(&event)?,
-        ],
-    )?;
+    // Canonical append path: allocates `event_seq` and the audit write-queue
+    // notification so the conversation change stream delivers the deletion
+    // to every client, not just the caller of this transaction.
+    super::evidence::append_audit_event_tx(tx, Some(agent_id), &event)?;
     Ok(())
 }

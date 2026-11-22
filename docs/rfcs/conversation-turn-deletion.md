@@ -160,8 +160,10 @@ For an accepted turn, one transaction performs all of the following:
    `messages`, `transcript_entries`, `tool_executions`, `model_requests`,
    `model_responses`, `briefs`, `delivery_summaries`, `artifact_metadata`,
    and the turn's `conversation_source_revisions`,
-   `conversation_input_assignments`, and `turn_activation_attachments` rows
-   that belong exclusively to the turn.
+   and `conversation_input_assignments` rows that belong exclusively to the
+   turn. `turn_activation_attachments` rows are **retained**: the trigger
+   path re-extracts `activation_id` from the erased payload, and the
+   attachment row itself carries no bodies.
 2. **`turn_records.payload_json` erase.** Remove body text from
    `idle_input_batch.items[].rendered`, `live_input_batches[].items[].rendered`,
    and `terminal.reason`, keeping activation ids, item message ids,
@@ -173,12 +175,19 @@ For an accepted turn, one transaction performs all of the following:
    clear `input_projection.rendered`; in `task_result_settlements.payload_json`
    clear `source_projection` / `reply_projection` bodies. Ids and states stay.
 4. **Audit projection scrub.** For `audit_events` rows of the turn
-   (`tool_executed` full `input`, `operator_interjection_admitted`,
+   (`tool_executed` `input` / `text_preview` / `last_assistant_preview` /
+   `exec_command_cmd` / `exec_command_display` / `exec_command_batch_items` /
+   `summary` / `error`, and the `text_preview` / `last_assistant_preview` /
+   `operator_message` copies on `operator_interjection_admitted`,
    `text_only_round_observed`, `turn_local_checkpoint_recorded`,
-   `lineage_retry_exhausted` `text_preview` / `last_assistant_preview`),
+   `lineage_retry_exhausted`, `provider_failed_needs_recovery`,
+   `deferred_to_fallback`, and `work_item_completion_report_candidate_promoted`),
    strip the body-bearing fields in the same transaction. The event stream
    projection (`PublicEventPayload`) treats those fields as absent for a
    deleted turn regardless of row age, so replay never leaks bodies.
+   Events that only correlate by `turn_index` carry a `turn_id` so the scrub
+   can attribute them; unattributable events are left intact rather than
+   over-scrubbed.
 5. **WorkItem provenance.** Leave `work_items.result_brief_id`,
    `result_summary`, state, and bindings untouched (§2.2).
 6. **Resident/read-model state.** Set `input_evidence_current.availability =
@@ -197,10 +206,13 @@ For an accepted turn, one transaction performs all of the following:
 8. **Marker and index outbox.** Set `content_deleted_at` (first write only;
    retries must not overwrite it), bump the turn's
    `conversation_turn_revisions.summary_revision`/`detail_revision`, emit a
-   `turn_content_deleted` audit event with minimal ids, enqueue
-   `runtime_index_outbox` delete changes for every removed evidence id, and
-   enqueue `pending_artifact_deletions` rows for turn-exclusive artifact
-   paths.
+   `turn_content_deleted` audit event with minimal ids through the canonical
+   audit append path (allocated `event_seq`, so every client's change stream
+   observes the deletion), enqueue `runtime_index_outbox` delete changes for
+   every removed evidence id, and enqueue `pending_artifact_deletions` rows
+   for turn-exclusive artifact paths. A managed path referenced by any other
+   surviving turn's tool payload is neither enqueued nor fenced; the file
+   becomes deletable with the last turn that references it.
 
 The commit boundary is the authority: content fetched before commit but not
 yet delivered must not be delivered afterwards; already-delivered content is
@@ -252,10 +264,15 @@ Every consumption path must honor it:
   candidates by main-database primary-key existence per `(source_kind,
   source_id)`; non-existent sources are dropped before ranking is returned.
   This is fail-closed: no snippet or body from a deleted turn can surface.
+  Runtime databases are per agent, so the existence check arbitrates only the
+  searching agent's own documents: cross-agent scope hits keep the existing
+  evidence-only contract (their rows live in the origin agent's database,
+  which is unreachable from the caller) and are fenced by the origin side's
+  deletion transaction and its index cleanup.
 - **`POST /memory/get` index fallback.** The `IndexStore` fallback for
   non-standard `RuntimeRef`s verifies the source still exists in the main
   database; otherwise it returns not-found. The fallback never returns
-  deleted-turn content.
+  deleted-turn content. The check shares the per-agent scoping above.
 - **Disk artifacts.** `/tool-executions/{id}/artifacts/{idx}` rejects once
   `tool_executions` rows are gone. Generic agent-home file serving
   (`/workspaces/agent_home:<id>/files/*`, `workspace_files.rs`) and stream
@@ -312,11 +329,16 @@ responses include only minimal identity and a `content_deleted` marker.
 
 The conversation change stream carries a minimal
 `turn_content_deleted` message: agent id, turn id, turn key, deletion
-timestamp, and the bumped turn revision. Clients use it to invalidate
+timestamp, and the bumped turn revision. The event is appended through the
+canonical audit path with an allocated `event_seq` (advancing the audit
+sequence head and notifying the writer queue), so cursor-based incremental
+reads deliver it as the deleted turn's placeholder `turn_summary_upsert`.
+Clients use it to invalidate
 summary/detail/Brief caches and replace the turn in place with the
 placeholder. Raw event facts stay durable; ordinary content interfaces never
-replay deleted bodies. Withdrawal emits `pending_input_removed` with message
-id and revision. Old-version events or responses must never overwrite the
+replay deleted bodies. Withdrawal emits `input_withdrawn` with the message
+id; incremental reads surface it as an `operator_remove` for that input.
+Old-version events or responses must never overwrite the
 placeholder with stale bodies.
 
 ## 10. Client contract (first release)
@@ -335,7 +357,10 @@ placeholder with stale bodies.
   expanded or replayed, and diagnostic surfaces reuse the same body-free
   placeholder.
 - UI offers "delete conversation record" on finished turn groups and
-  "withdraw" on unexecuted inputs. Confirmation shows the real impact scope
+  "withdraw" on unexecuted inputs. First release ships the server contract
+  and placeholder rendering; the web client's action entry points land in a
+  follow-up, and API clients may drive the endpoints directly.
+  Confirmation shows the real impact scope
   (multi-input/multi-result turns included), states that later context stops
   reading the deleted content, that formal WorkItem completion reports are
   retained, that physical erase is not guaranteed, and that performed actions

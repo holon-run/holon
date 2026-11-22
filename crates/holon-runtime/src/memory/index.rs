@@ -539,6 +539,7 @@ fn read_snapshot_stream_artifact(storage: &AppStorage, path: &str) -> Result<Str
             anyhow::ensure!(
                 !crate::runtime_db::turn_content_deletion::pending_artifact_deletion_exists(
                     &runtime_db,
+                    Some(storage_agent_id(storage).as_str()),
                     &relative
                 )?,
                 "stream artifact is pending deletion"
@@ -622,6 +623,15 @@ fn main_database_source_exists<T: MainDatabaseSourceRef>(
     let Some(sql) = main_database_existence_sql(&kind) else {
         return Ok(true);
     };
+    // Runtime databases are per agent: this storage holds only the owner's
+    // rows, so it can arbitrate existence only for the owner's own documents.
+    // Foreign-agent hits are cross-agent evidence whose rows live in the
+    // origin agent's database, which is not reachable from this storage; they
+    // stay under the cross-agent evidence contract and are fenced by the
+    // origin side's deletion transaction and index cleanup.
+    if agent_id != storage_agent_id(storage) {
+        return Ok(true);
+    }
     let Some(runtime_db) = storage.runtime_db()? else {
         // No main database means nothing was ever deleted from one.
         return Ok(true);

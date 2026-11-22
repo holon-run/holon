@@ -206,16 +206,8 @@ fn append_withdrawal_audit_event(
             "withdrawn_at": withdrawn_at,
         }),
     );
-    tx.execute(
-        "INSERT INTO audit_events (audit_event_id, agent_id, kind, created_at, data_json)
-         VALUES (?1, ?2, ?3, ?4, ?5)",
-        params![
-            event.id,
-            agent_id,
-            "input_withdrawn",
-            event.created_at.to_rfc3339(),
-            serde_json::to_string(&event)?,
-        ],
-    )?;
+    // Canonical append path: the allocated `event_seq` carries the
+    // `message_id` into every client's change stream as an OperatorRemove.
+    super::evidence::append_audit_event_tx(tx, Some(agent_id), &event)?;
     Ok(())
 }
