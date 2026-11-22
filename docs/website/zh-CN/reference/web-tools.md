@@ -126,8 +126,10 @@ Search 支持 `site:`、`-site:`、`lang:`、`after:`、`before:` 等查询运�
 调用会失败，需改名或省略 `provider`。
 
 调用无参的 `ListWebSearchProviders` 可根据本地配置列出排序后的唯一可用搜索提供商
-ID，直接传给 `WebSearch(provider="<ID>")`。路由选择器（`auto`、`aggregate`）以及仅限
-对话轮次的原生搜索不会出现在列表中。
+ID，直接传给 `WebSearch(provider="<ID>")`。每个条目带 `source` 来源标记：`configured`
+（显式 `web.providers` 条目）、`builtin`（内置免 key 路由）或 `derived`（由具备
+可独立派发原生搜索能力的已认证模型提供商自动派生）。路由选择器（`auto`、`aggregate`）
+以及仅限对话轮次的原生搜索不会出现在列表中。
 
 ### 搜索提供商
 
@@ -160,8 +162,10 @@ Holon 使用基于提供商的搜索模型，有多种提供商可选。未配�
   `holon config set web.providers.firecrawl.credential_profile <profile>`。
 - **模型原生搜索**：部分模型提供商（OpenAI、Anthropic）通过自家 API 支持原生网络搜索。
   在 "Auto" 模式下，对话轮次会优先使用它们。独立的 `WebSearch` 原生提供商是另一回事：
-  只有通过 `WebSearch.provider` 显式点名才会运行，且需要绑定
-  `web.providers.<id>.model_route`。
+  只有通过 `WebSearch.provider` 显式点名才会运行。具备可用凭证且声明可独立派发原生
+  搜索能力的模型提供商（目前为 `openai` 与 `openai-codex`）会自动派生原生条目并绑定
+  模型目录 preferred route；同 id 的显式 `web.providers.<id>.model_route` 条目优先于
+  派生路由。
 - **DeepSeek**：独立 Search / Fetch API，通过 `kind=deepseek` 引用 API key profile，
   任意对话模型均可使用。
 - **SearXNG（自托管）**：开源元搜索引擎后端，无需 API 凭据，适合自托管与本地私密网络环境。配置方式：`holon config set web.providers.searxng.kind searxng` 与 `holon config set web.providers.searxng.base_url <url>`。详细部署与排错请参阅[用自托管 SearXNG 配置搜索后端指南](/zh-CN/guides/searxng-websearch-provider.md)。

@@ -154,7 +154,7 @@ fn web_search_config_trims_primary_provider() {
         ..Default::default()
     };
 
-    let config = WebSearchConfig::from(&file);
+    let config = WebSearchConfig::from_file(&file).unwrap();
 
     assert_eq!(config.provider, "openai-native");
 }
@@ -487,4 +487,154 @@ fn deepseek_reuses_llm_credential_profile_without_serializing_key() {
     assert!(!serde_json::to_string(&config)
         .unwrap()
         .contains("secret-fixture"));
+}
+
+fn model_provider_registry(authenticated: &[&str]) -> crate::ProviderRegistry {
+    let built_ins = crate::builtin_providers::built_in_provider_registry_with_settings(
+        &std::collections::HashMap::new(),
+    )
+    .unwrap();
+    let mut registry = crate::ProviderRegistry::new();
+    for id in authenticated {
+        let provider_id = crate::ProviderId::parse(id).unwrap();
+        let mut provider = built_ins
+            .get(&provider_id)
+            .cloned()
+            .unwrap_or_else(|| panic!("builtin registry must contain {id}"));
+        provider.credential = Some("test-credential".into());
+        registry.insert(provider_id, provider);
+    }
+    registry
+}
+
+fn expected_preferred_route(provider: &str) -> String {
+    BuiltInModelCatalog::default()
+        .preferred_route_for_provider(&crate::ProviderId::parse(provider).unwrap())
+        .unwrap()
+        .as_string()
+}
+
+#[test]
+fn native_search_default_parses_override_values() {
+    assert_eq!(
+        NativeSearchDefault::parse(None).unwrap(),
+        NativeSearchDefault::Auto
+    );
+    assert_eq!(
+        NativeSearchDefault::parse(Some("  ")).unwrap(),
+        NativeSearchDefault::Auto
+    );
+    assert_eq!(
+        NativeSearchDefault::parse(Some("auto")).unwrap(),
+        NativeSearchDefault::Auto
+    );
+    assert_eq!(
+        NativeSearchDefault::parse(Some("OFF")).unwrap(),
+        NativeSearchDefault::Off
+    );
+    assert_eq!(
+        NativeSearchDefault::parse(Some("openai-codex")).unwrap(),
+        NativeSearchDefault::Provider("openai-codex".into())
+    );
+    let error = NativeSearchDefault::parse(Some("not a provider id!")).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("web.search.native_default must be auto, off, or a valid provider id"));
+}
+
+#[test]
+fn derived_native_search_providers_cover_only_dispatchable_authenticated_kinds() {
+    let mut web_config = WebConfig::default();
+    // openai-codex declares the OpenAI native kind (standalone dispatchable);
+    // deepseek declares the DeepSeek native kind (conversation-only today).
+    let providers = model_provider_registry(&["openai-codex", "deepseek"]);
+    let derived =
+        derived_native_search_providers(&web_config, &providers, &std::collections::HashMap::new());
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0].0, "openai-codex");
+    assert_eq!(derived[0].1.kind, WebProviderKind::OpenAiNative);
+    assert_eq!(
+        derived[0].1.model_route.as_deref(),
+        Some(expected_preferred_route("openai-codex").as_str())
+    );
+
+    // Unauthenticated providers never derive entries.
+    let mut providers = model_provider_registry(&["openai-codex"]);
+    let id = crate::ProviderId::parse("openai-codex").unwrap();
+    let provider = providers.get_mut(&id).unwrap();
+    // Simulate a host without a codex CLI login: keep the builtin
+    // AuthProfile shape, drop the materialized credential, and point
+    // `codex_home` at a directory that cannot contain an auth file.
+    provider.credential = None;
+    provider.codex_home = Some(std::path::PathBuf::from(
+        "/nonexistent/holon-test-codex-home",
+    ));
+    assert!(derived_native_search_providers(
+        &web_config,
+        &providers,
+        &std::collections::HashMap::new()
+    )
+    .is_empty());
+
+    // Disabled search disables derivation.
+    web_config.search.enabled = false;
+    let providers = model_provider_registry(&["openai-codex"]);
+    assert!(derived_native_search_providers(
+        &web_config,
+        &providers,
+        &std::collections::HashMap::new()
+    )
+    .is_empty());
+}
+
+#[test]
+fn derived_native_search_providers_respect_explicit_entries_and_override() {
+    let providers = model_provider_registry(&["openai", "openai-codex"]);
+
+    // Explicit web.providers entries win over derived entries.
+    let mut web_config = WebConfig::default();
+    web_config.providers.insert(
+        "openai-codex".into(),
+        WebProviderConfig {
+            kind: WebProviderKind::OpenAiNative,
+            base_url: None,
+            engine_id: None,
+            api_key: String::new(),
+            model_route: Some("openai-codex@default/explicit-route".into()),
+            command: None,
+            output: None,
+            limits: Default::default(),
+        },
+    );
+    let derived =
+        derived_native_search_providers(&web_config, &providers, &std::collections::HashMap::new());
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0].0, "openai");
+
+    // `off` disables derivation entirely.
+    let mut web_config = WebConfig::default();
+    web_config.search.native_search_default = NativeSearchDefault::Off;
+    assert!(derived_native_search_providers(
+        &web_config,
+        &providers,
+        &std::collections::HashMap::new()
+    )
+    .is_empty());
+
+    // An explicit provider pin derives only that provider, and pinning a
+    // provider without a dispatchable native kind derives nothing.
+    let mut web_config = WebConfig::default();
+    web_config.search.native_search_default = NativeSearchDefault::Provider("openai".into());
+    let derived =
+        derived_native_search_providers(&web_config, &providers, &std::collections::HashMap::new());
+    assert_eq!(derived.len(), 1);
+    assert_eq!(derived[0].0, "openai");
+    web_config.search.native_search_default = NativeSearchDefault::Provider("deepseek".into());
+    let deepseek_only = model_provider_registry(&["openai", "openai-codex", "deepseek"]);
+    assert!(derived_native_search_providers(
+        &web_config,
+        &deepseek_only,
+        &std::collections::HashMap::new()
+    )
+    .is_empty());
 }

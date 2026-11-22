@@ -1,8 +1,14 @@
+use crate::models::{
+    authenticated_provider_ids, preferred_override_model_for_provider, ModelRef, ModelRouteRef,
+};
 use crate::CredentialStoreFile;
+use crate::{ProviderId, ProviderRegistry, ProviderRuntimeConfig};
 
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, Result};
+use holon_model_catalog::{BuiltInModelCatalog, ModelRuntimeOverride};
+use holon_provider::provider::ProviderNativeWebSearchKind;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -126,7 +132,7 @@ impl TryFrom<&crate::WebConfigFile> for WebConfig {
     fn try_from(value: &crate::WebConfigFile) -> Result<Self> {
         Ok(Self {
             fetch: WebFetchConfig::from(&value.fetch),
-            search: WebSearchConfig::from(&value.search),
+            search: WebSearchConfig::from_file(&value.search)?,
             providers: value
                 .providers
                 .iter()
@@ -186,6 +192,7 @@ pub struct WebSearchConfig {
     pub enabled: bool,
     pub builtin_provider_enabled: bool,
     pub provider: String,
+    pub native_search_default: NativeSearchDefault,
     pub mode: WebSearchMode,
     pub providers: Vec<String>,
     pub max_results: usize,
@@ -198,6 +205,7 @@ impl Default for WebSearchConfig {
             enabled: true,
             builtin_provider_enabled: true,
             provider: "auto".into(),
+            native_search_default: NativeSearchDefault::default(),
             mode: WebSearchMode::Fallback,
             providers: Vec::new(),
             max_results: 5,
@@ -206,10 +214,56 @@ impl Default for WebSearchConfig {
     }
 }
 
-impl From<&crate::WebSearchConfigFile> for WebSearchConfig {
-    fn from(value: &crate::WebSearchConfigFile) -> Self {
+/// Explicit override for deriving standalone native WebSearch entries from
+/// authenticated model providers (see `derived_native_search_providers`).
+///
+/// Mirrors `vision.default`: an explicit value pins the selection and `auto`
+/// clears the override back to automatic derivation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeSearchDefault {
+    /// Derive one native entry per eligible authenticated model provider.
+    Auto,
+    /// Disable derivation entirely.
+    Off,
+    /// Derive only the named model provider.
+    Provider(String),
+}
+
+impl Default for NativeSearchDefault {
+    fn default() -> Self {
+        Self::Auto
+    }
+}
+
+impl NativeSearchDefault {
+    /// Parse the `web.search.native_default` value: unset, empty, or `auto`
+    /// clears the override, `off` disables derivation, and any other value
+    /// must be a valid model provider id.
+    pub fn parse(raw: Option<&str>) -> Result<Self> {
+        let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+            return Ok(Self::Auto);
+        };
+        if raw.eq_ignore_ascii_case("auto") {
+            return Ok(Self::Auto);
+        }
+        if raw.eq_ignore_ascii_case("off") {
+            return Ok(Self::Off);
+        }
+        ProviderId::parse(raw)
+            .map(|_| Self::Provider(raw.to_string()))
+            .map_err(|error| {
+                anyhow!(
+                    "web.search.native_default must be auto, off, or a valid provider id: {error}"
+                )
+            })
+    }
+}
+
+impl WebSearchConfig {
+    fn from_file(value: &crate::WebSearchConfigFile) -> Result<Self> {
         let fallback = Self::default();
-        Self {
+        Ok(Self {
             enabled: value.enabled.unwrap_or(fallback.enabled),
             builtin_provider_enabled: value
                 .builtin_provider
@@ -222,6 +276,7 @@ impl From<&crate::WebSearchConfigFile> for WebSearchConfig {
                 .filter(|provider| !provider.is_empty())
                 .map(ToOwned::to_owned)
                 .unwrap_or(fallback.provider),
+            native_search_default: NativeSearchDefault::parse(value.native_default.as_deref())?,
             mode: value.mode.unwrap_or(fallback.mode),
             providers: value
                 .providers
@@ -234,7 +289,7 @@ impl From<&crate::WebSearchConfigFile> for WebSearchConfig {
                 .max_provider_attempts
                 .unwrap_or(fallback.max_provider_attempts)
                 .max(1),
-        }
+        })
     }
 }
 
@@ -436,9 +491,92 @@ pub fn materialize_web_config(
 
     Ok(WebConfig {
         fetch: WebFetchConfig::from(&file.fetch),
-        search: WebSearchConfig::from(&file.search),
+        search: WebSearchConfig::from_file(&file.search)?,
         providers,
     })
+}
+
+/// Derive standalone native WebSearch provider entries for authenticated
+/// model providers, mirroring the ViewImage vision selection layers: explicit
+/// `web.providers` entries win over derived entries, an explicit
+/// `web.search.native_default` value pins or disables derivation, and the
+/// default derives one entry per eligible provider whose model route comes
+/// from the model catalog preferred route (the same source of truth as the
+/// model chain `auto` expansion).
+///
+/// Only providers whose declared builtin web search uses the native search
+/// kind with standalone dispatch support are derivable; other declared kinds
+/// stay conversation-only so every derived entry is actually callable, and
+/// the reserved native web kinds are never materialized here.
+pub fn derived_native_search_providers(
+    web_config: &WebConfig,
+    providers: &ProviderRegistry,
+    model_overrides: &std::collections::HashMap<ModelRef, ModelRuntimeOverride>,
+) -> Vec<(String, WebProviderConfig)> {
+    if !web_config.search.enabled {
+        return Vec::new();
+    }
+    let candidates = match &web_config.search.native_search_default {
+        NativeSearchDefault::Off => return Vec::new(),
+        NativeSearchDefault::Provider(pinned) => {
+            let Some(provider_id) = ProviderId::parse(pinned).ok() else {
+                return Vec::new();
+            };
+            vec![provider_id]
+        }
+        NativeSearchDefault::Auto => authenticated_provider_ids(providers),
+    };
+    let catalog = BuiltInModelCatalog::default();
+    let mut derived = Vec::new();
+    for provider_id in candidates {
+        let Some(provider) = providers.get(&provider_id) else {
+            continue;
+        };
+        if !crate::models::provider_has_usable_auth(provider)
+            || !native_search_derivation_eligible(provider)
+        {
+            continue;
+        }
+        let id = provider_id.as_str().to_string();
+        if matches!(id.as_str(), "auto" | "aggregate") || web_config.providers.contains_key(&id) {
+            continue;
+        }
+        let Some(route) = catalog
+            .preferred_route_for_provider(&provider_id)
+            .or_else(|| {
+                preferred_override_model_for_provider(&provider_id, model_overrides)
+                    .map(|model_ref| ModelRouteRef::from_legacy_model_ref(&model_ref))
+            })
+        else {
+            continue;
+        };
+        derived.push((
+            id,
+            WebProviderConfig {
+                kind: WebProviderKind::OpenAiNative,
+                base_url: None,
+                engine_id: None,
+                api_key: String::new(),
+                model_route: Some(route.as_string()),
+                command: None,
+                output: None,
+                limits: Default::default(),
+            },
+        ));
+    }
+    derived
+}
+
+/// A model provider is derivable when its declared builtin web search is
+/// enabled and uses a native search kind with standalone dispatch support in
+/// this Holon version.
+fn native_search_derivation_eligible(provider: &ProviderRuntimeConfig) -> bool {
+    provider
+        .builtin_web_search
+        .as_ref()
+        .is_some_and(|capability| {
+            capability.enabled && capability.kind == ProviderNativeWebSearchKind::OpenAi
+        })
 }
 
 fn validate_provider_config(id: &str, provider: &crate::WebProviderConfigFile) -> Result<()> {

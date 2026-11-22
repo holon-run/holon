@@ -142,7 +142,10 @@ with either name, calling it by that name fails; rename the provider or omit `pr
 
 Call `ListWebSearchProviders` (takes no arguments) to list the sorted, unique
 provider IDs you can pass to `WebSearch(provider="<ID>")` based on local
-configuration. Routing selectors (`auto`, `aggregate`) and conversation-only
+configuration. Each entry carries a `source` marker: `configured` (explicit
+`web.providers` entry), `builtin` (built-in keyless route), or `derived`
+(auto-derived from an authenticated model provider with standalone-dispatchable
+native search). Routing selectors (`auto`, `aggregate`) and conversation-only
 native search are not included in the list.
 
 ### Search providers
@@ -185,7 +188,11 @@ take precedence over this chain.
   native web search through their own APIs. In "Auto" mode, Holon prefers
   these for conversation turns when available. Standalone `WebSearch` native
   providers are separate: they run only when explicitly named via
-  `WebSearch.provider` and require a bound `web.providers.<id>.model_route`.
+  `WebSearch.provider`. A model provider with usable credentials and a
+  standalone-dispatchable native search capability (today `openai` and
+  `openai-codex`) derives its native entry automatically with the model
+  catalog preferred route; an explicit `web.providers.<id>.model_route` entry
+  with the same id overrides the derived route.
 - **SearXNG (self-hosted)** — an open-source meta-search engine backend requiring
   no external API credentials, ideal for self-hosted and privacy-conscious environments.
   Configure with `holon config set web.providers.searxng.kind searxng` and `holon config set web.providers.searxng.base_url <url>`.

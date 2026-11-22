@@ -39,10 +39,26 @@ pub(crate) async fn list_providers(
     use holon_tools::builtins::list_web_search_providers as tool;
 
     let _: tool::ListWebSearchProvidersArgs = parse_tool_args(tool::NAME, input)?;
+    let (web_config, derived_ids) = runtime.web_search_tool_config();
     serialize_success(
         tool::NAME,
         &tool::ListWebSearchProvidersResult {
-            providers: holon_web_retrieval::search::list_search_providers(&runtime.web_config()),
+            providers: holon_web_retrieval::search::list_search_providers(&web_config)
+                .into_iter()
+                .map(|provider_id| {
+                    let source = if derived_ids.contains(&provider_id) {
+                        "derived"
+                    } else if web_config.providers.contains_key(&provider_id) {
+                        "configured"
+                    } else {
+                        "builtin"
+                    };
+                    tool::WebSearchProviderEntry {
+                        provider_id,
+                        source: source.to_string(),
+                    }
+                })
+                .collect(),
         },
     )
 }
@@ -55,7 +71,7 @@ pub(crate) async fn execute(
 ) -> Result<crate::tool::ToolResult> {
     let args: WebSearchArgs = parse_tool_args(NAME, input)?;
     let query = validate_non_empty(args.query, NAME, "query")?;
-    let web_config = runtime.web_config();
+    let (web_config, _derived_ids) = runtime.web_search_tool_config();
     let dispatcher = RuntimeNativeSearchDispatcher { runtime };
     let result = search_with_native_dispatch(
         WebSearchRequest {

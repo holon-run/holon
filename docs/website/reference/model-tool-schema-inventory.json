@@ -6437,7 +6437,7 @@
       "stability": "experimental"
     },
     {
-      "description": "List the provider IDs you can pass unchanged to `WebSearch(provider=\"<ID>\")`. Takes no arguments. Returns `{\"providers\":[...]}` with sorted, unique IDs, or an empty array when WebSearch is disabled or no provider qualifies. Uses local configuration only; it does not search, send requests, start commands, or check provider health. Routing selectors and conversation-only native search are not listed as provider IDs.\n",
+      "description": "List the provider IDs you can pass unchanged to `WebSearch(provider=\"<ID>\")`. Takes no arguments. Returns `{\"providers\":[{\"provider_id\":\"<ID>\",\"source\":\"configured|builtin|derived\"}]}` with sorted, unique IDs, or an empty array when WebSearch is disabled or no provider qualifies. `source` marks where each entry comes from: `configured` (explicit `web.providers` entry), `builtin` (built-in keyless route), or `derived` (auto-derived from an authenticated model provider with standalone-dispatchable native search). Uses local configuration only; it does not search, send requests, start commands, or check provider health. Routing selectors and conversation-only native search are not listed as provider IDs.\n",
       "family": "web",
       "freeform_grammar": null,
       "input_schema": {
@@ -6457,7 +6457,21 @@
           "properties": {
             "providers": {
               "items": {
-                "type": "string"
+                "description": "One provider ID the caller can pass unchanged to `WebSearch(provider=...)`,\n plus where the entry comes from.",
+                "properties": {
+                  "provider_id": {
+                    "type": "string"
+                  },
+                  "source": {
+                    "description": "`configured` (explicit `web.providers` entry), `builtin` (built-in\n keyless route), or `derived` (auto-derived from an authenticated model\n provider with native search capability).",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider_id",
+                  "source"
+                ],
+                "type": "object"
               },
               "type": "array"
             }

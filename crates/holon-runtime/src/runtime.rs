@@ -3842,6 +3842,32 @@ impl RuntimeHandle {
         self.inner.config_snapshot.load().web_config.clone()
     }
 
+    /// Effective WebSearch tool configuration: the snapshot web config plus
+    /// standalone native search entries derived from authenticated model
+    /// providers. Explicit `web.providers` entries win over derived entries,
+    /// and the returned id set marks which entries were derived. Only the
+    /// WebSearch tool surface uses this view; session builtin search and
+    /// WebFetch keep the raw web config.
+    pub(crate) fn web_search_tool_config(&self) -> (WebConfig, std::collections::BTreeSet<String>) {
+        let snap = self.inner.config_snapshot.load();
+        let mut web_config = snap.web_config.clone();
+        let mut derived_ids = std::collections::BTreeSet::new();
+        if let Some(reconfig) = snap.provider_reconfig.as_ref() {
+            for (id, provider) in crate::web::derived_native_search_providers(
+                &web_config,
+                &reconfig.config.providers,
+                &reconfig.config.validated_model_overrides,
+            ) {
+                if web_config.providers.contains_key(&id) {
+                    continue;
+                }
+                derived_ids.insert(id.clone());
+                web_config.providers.insert(id, provider);
+            }
+        }
+        (web_config, derived_ids)
+    }
+
     /// Dispatch one standalone native web search through the model route
     /// bound to a native WebSearch provider. The route is resolved per call;
     /// no candidate or credential state is cached here.

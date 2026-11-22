@@ -14,7 +14,18 @@ pub struct ListWebSearchProvidersArgs {}
 
 #[derive(Serialize, JsonSchema)]
 pub struct ListWebSearchProvidersResult {
-    pub providers: Vec<String>,
+    pub providers: Vec<WebSearchProviderEntry>,
+}
+
+/// One provider ID the caller can pass unchanged to `WebSearch(provider=...)`,
+/// plus where the entry comes from.
+#[derive(Serialize, JsonSchema)]
+pub struct WebSearchProviderEntry {
+    pub provider_id: String,
+    /// `configured` (explicit `web.providers` entry), `builtin` (built-in
+    /// keyless route), or `derived` (auto-derived from an authenticated model
+    /// provider with native search capability).
+    pub source: String,
 }
 
 pub fn definition() -> Result<BuiltinToolDefinition> {

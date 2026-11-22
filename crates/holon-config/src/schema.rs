@@ -888,6 +888,14 @@ pub fn config_schema() -> Vec<ConfigSchemaEntry> {
             allowed_values: vec![],
         },
         ConfigSchemaEntry {
+            key: "web.search.native_default",
+            kind: "provider_id_or_auto",
+            description:
+                "Explicit override for derived native WebSearch providers: auto (default) derives one standalone native entry per authenticated model provider with a dispatchable native search capability, off disables derivation, and a concrete model provider id derives only that provider. Derived entries use the model catalog preferred route, stay out of the auto chain, and lose to explicit web.providers entries with the same id.",
+            default: Value::Null,
+            allowed_values: vec!["auto", "off"],
+        },
+        ConfigSchemaEntry {
             key: "web.search.mode",
             kind: "enum",
             description: "WebSearch routing mode: single, fallback, or aggregate.",
@@ -1539,6 +1547,13 @@ pub fn get_config_key(config: &HolonConfigFile, key: &str) -> Result<Value> {
             .as_ref()
             .map(|value| Value::String(value.clone()))
             .unwrap_or(Value::Null)),
+        "web.search.native_default" => Ok(config
+            .web
+            .search
+            .native_default
+            .as_ref()
+            .map(|value| Value::String(value.clone()))
+            .unwrap_or(Value::Null)),
         "web.search.mode" => Ok(config
             .web
             .search
@@ -2099,6 +2114,16 @@ pub fn set_config_key(config: &mut HolonConfigFile, key: &str, raw_value: &str) 
             }
             config.web.search.provider = Some(provider.to_string());
         }
+        "web.search.native_default" => {
+            // Validate through the same parser as config load; `auto` clears
+            // the override exactly like vision.default.
+            crate::web_config::NativeSearchDefault::parse(Some(raw_value))?;
+            if raw_value.trim().eq_ignore_ascii_case("auto") {
+                config.web.search.native_default = None;
+            } else {
+                config.web.search.native_default = Some(raw_value.trim().to_string());
+            }
+        }
         "web.search.mode" => {
             config.web.search.mode = Some(
                 serde_json::from_value(serde_json::Value::String(raw_value.trim().to_string()))
@@ -2480,6 +2505,7 @@ pub fn unset_config_key(config: &mut HolonConfigFile, key: &str) -> Result<()> {
         "web.search.enabled" => config.web.search.enabled = None,
         "web.search.builtin_provider.enabled" => config.web.search.builtin_provider.enabled = None,
         "web.search.provider" => config.web.search.provider = None,
+        "web.search.native_default" => config.web.search.native_default = None,
         "web.search.mode" => config.web.search.mode = None,
         "web.search.providers" => config.web.search.providers.clear(),
         "web.search.max_results" => config.web.search.max_results = None,

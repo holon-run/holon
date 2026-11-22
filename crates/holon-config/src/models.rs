@@ -1460,7 +1460,7 @@ pub fn resolve_vision_model(stored_config: &HolonConfigFile) -> Result<Option<Mo
     Ok(None)
 }
 
-fn authenticated_provider_ids(providers: &ProviderRegistry) -> Vec<ProviderId> {
+pub(crate) fn authenticated_provider_ids(providers: &ProviderRegistry) -> Vec<ProviderId> {
     let mut provider_ids = providers
         .values()
         .filter(|provider| provider_has_usable_auth(provider))

@@ -755,6 +755,12 @@ pub struct WebSearchConfigFile {
     pub builtin_provider: WebSearchBuiltinProviderConfigFile,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    /// Explicit override for derived native search providers: `auto` (default)
+    /// derives one entry per eligible authenticated model provider, `off`
+    /// disables derivation, and a concrete model provider id restricts
+    /// derivation to that provider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub native_default: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mode: Option<WebSearchMode>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
