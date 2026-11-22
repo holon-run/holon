@@ -1,5 +1,6 @@
 use crate::models::{
-    authenticated_provider_ids, preferred_override_model_for_provider, ModelRef, ModelRouteRef,
+    authenticated_provider_ids, preferred_override_model_for_provider, provider_has_usable_auth,
+    ModelRef, ModelRouteRef,
 };
 use crate::CredentialStoreFile;
 use crate::{ProviderId, ProviderRegistry, ProviderRuntimeConfig};
@@ -195,6 +196,11 @@ pub struct WebSearchConfig {
     pub native_search_default: NativeSearchDefault,
     pub mode: WebSearchMode,
     pub providers: Vec<String>,
+    /// Ids of providers derived from credential discovery rather than declared
+    /// in `web.providers`. They stay listable and callable by explicit name but
+    /// never join the default, `auto`, or `aggregate` candidate chain.
+    #[serde(skip)]
+    pub derived_providers: std::collections::BTreeSet<String>,
     pub max_results: usize,
     pub max_provider_attempts: usize,
 }
@@ -208,6 +214,7 @@ impl Default for WebSearchConfig {
             native_search_default: NativeSearchDefault::default(),
             mode: WebSearchMode::Fallback,
             providers: Vec::new(),
+            derived_providers: std::collections::BTreeSet::new(),
             max_results: 5,
             max_provider_attempts: 3,
         }
@@ -284,6 +291,9 @@ impl WebSearchConfig {
                 .map(|provider| provider.trim().to_string())
                 .filter(|provider| !provider.is_empty())
                 .collect(),
+            // Derived entries are discovered at runtime and never come from
+            // the file config.
+            derived_providers: std::collections::BTreeSet::new(),
             max_results: value.max_results.unwrap_or(fallback.max_results),
             max_provider_attempts: value
                 .max_provider_attempts
@@ -584,6 +594,79 @@ fn native_search_derivation_kind(provider: &ProviderRuntimeConfig) -> Option<Web
             | ProviderNativeWebSearchKind::DeepSeek
             | ProviderNativeWebSearchKind::Xai => None,
         })
+}
+
+/// Stable WebSearch provider id derived from an official DeepSeek model
+/// credential.
+pub const DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID: &str = "deepseek";
+
+/// Official DeepSeek API host. A discovered credential is pinned to this host;
+/// keys resolved for proxies or compatible-protocol endpoints never derive a
+/// standalone search entry.
+const DEEPSEEK_OFFICIAL_HOST: &str = "api.deepseek.com";
+
+/// Derive a standalone `deepseek` WebSearch entry from an official DeepSeek
+/// model credential, so an existing official key is callable without a
+/// separate `web.providers` declaration.
+///
+/// The derived entry never carries the discovered endpoint: it pins the
+/// official search endpoint, so a discovered key is never sent to a custom
+/// address. It is explicit-only — callers hold it out of the default, `auto`,
+/// and `aggregate` chains — and explicit `web.providers` entries win, so
+/// callers must skip an id that is already configured.
+pub fn derived_standalone_search_providers(
+    web_config: &WebConfig,
+    providers: &ProviderRegistry,
+) -> Vec<(String, WebProviderConfig)> {
+    if !web_config.search.enabled {
+        return Vec::new();
+    }
+    for provider in providers.values() {
+        if provider.id.as_str() != DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID
+            && provider.route_provider.as_str() != DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID
+        {
+            continue;
+        }
+        if !provider_has_usable_auth(provider) || !is_official_deepseek_endpoint(&provider.base_url)
+        {
+            continue;
+        }
+        let Some(api_key) = provider
+            .credential
+            .as_deref()
+            .map(str::trim)
+            .filter(|key| !key.is_empty())
+        else {
+            continue;
+        };
+        return vec![(
+            DERIVED_DEEPSEEK_SEARCH_PROVIDER_ID.to_string(),
+            WebProviderConfig {
+                kind: WebProviderKind::DeepSeek,
+                // Pinned to the official endpoint: never the discovered base URL.
+                base_url: None,
+                engine_id: None,
+                api_key: api_key.to_string(),
+                model_route: None,
+                command: None,
+                output: None,
+                limits: Default::default(),
+            },
+        )];
+    }
+    Vec::new()
+}
+
+/// True only for the official DeepSeek API host, so proxy or compatible-
+/// protocol endpoints cannot borrow the derivation. Plain-`http` endpoints are
+/// rejected too: the discovered key must never travel in cleartext.
+fn is_official_deepseek_endpoint(base_url: &str) -> bool {
+    url::Url::parse(base_url).ok().is_some_and(|url| {
+        url.scheme() == "https"
+            && url
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(DEEPSEEK_OFFICIAL_HOST))
+    })
 }
 
 fn validate_provider_config(id: &str, provider: &crate::WebProviderConfigFile) -> Result<()> {

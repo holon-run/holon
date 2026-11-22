@@ -92,3 +92,21 @@ default provider selection, and reserved native kinds stay undiscoverable.
 alongside `configured` and `builtin` entries. Only the WebSearch tool surface
 sees derived entries; conversation builtin search and WebFetch keep the raw
 web configuration.
+
+### Derived standalone DeepSeek search provider
+
+An official DeepSeek model credential also discovers a standalone search
+entry, so an existing key is callable as `WebSearch(provider="deepseek")`
+without a `web.providers` declaration. The existing credential resolver must
+return a non-empty key for the `deepseek` model provider, and that provider
+must resolve to the official API host over HTTPS (`api.deepseek.com`).
+Third-party proxies, compatible-protocol endpoints, plain-HTTP endpoints, and
+similarly named models never qualify.
+
+The derived entry is pinned to the official endpoint: it never carries the
+discovered base URL, so a discovered key cannot be sent to a custom address.
+An explicit `web.providers.deepseek` entry wins and is never duplicated or
+rewritten. Like the native derivation above, the discovered entry is
+explicit-only: it is listed with the `derived` source marker but stays out of
+the default, `auto`, and `aggregate` chains, and only naming it dispatches a
+request.

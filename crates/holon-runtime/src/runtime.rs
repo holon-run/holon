@@ -3852,6 +3852,20 @@ impl RuntimeHandle {
                 derived_ids.insert(id.clone());
                 web_config.providers.insert(id, provider);
             }
+            for (id, provider) in crate::web::derived_standalone_search_providers(
+                &web_config,
+                &reconfig.config.providers,
+            ) {
+                if web_config.providers.contains_key(&id) {
+                    continue;
+                }
+                derived_ids.insert(id.clone());
+                // Discovery is explicit-only: keep the derived id out of the
+                // default, `auto`, and `aggregate` candidate chain while it
+                // stays listable and callable by name.
+                web_config.search.derived_providers.insert(id.clone());
+                web_config.providers.insert(id, provider);
+            }
         }
         (web_config, derived_ids)
     }
