@@ -131,7 +131,8 @@ pub const CONVERSATION_HISTORY_FIRST_SQL: &str = "
 SELECT turns.payload_json,
        COALESCE(revisions.summary_revision, 1),
        COALESCE(revisions.detail_revision, 1),
-       COALESCE(revisions.result_settled, 0)
+       COALESCE(revisions.result_settled, 0),
+       turns.content_deleted_at IS NOT NULL
 FROM turn_records AS turns
 LEFT JOIN conversation_turn_revisions AS revisions
   ON revisions.agent_id = turns.agent_id
@@ -148,7 +149,8 @@ pub const CONVERSATION_HISTORY_BEFORE_SQL: &str = "
 SELECT turns.payload_json,
        COALESCE(revisions.summary_revision, 1),
        COALESCE(revisions.detail_revision, 1),
-       COALESCE(revisions.result_settled, 0)
+       COALESCE(revisions.result_settled, 0),
+       turns.content_deleted_at IS NOT NULL
 FROM turn_records AS turns
 LEFT JOIN conversation_turn_revisions AS revisions
   ON revisions.agent_id = turns.agent_id
@@ -1241,7 +1243,8 @@ pub fn active_turn_rows(
         "SELECT turns.payload_json,
                 COALESCE(revisions.summary_revision, 1),
                 COALESCE(revisions.detail_revision, 1),
-                COALESCE(revisions.result_settled, 0)
+                COALESCE(revisions.result_settled, 0),
+                turns.content_deleted_at IS NOT NULL
          FROM turn_records AS turns
          LEFT JOIN conversation_turn_revisions AS revisions
            ON revisions.agent_id = turns.agent_id
@@ -1382,7 +1385,8 @@ fn turn_summary_by_id_with_input(
             "SELECT turns.payload_json,
                     COALESCE(revisions.summary_revision, 1),
                     COALESCE(revisions.detail_revision, 1),
-                    COALESCE(revisions.result_settled, 0)
+                    COALESCE(revisions.result_settled, 0),
+                    turns.content_deleted_at IS NOT NULL
              FROM turn_records AS turns
              LEFT JOIN conversation_turn_revisions AS revisions
                ON revisions.agent_id = turns.agent_id
@@ -1414,6 +1418,7 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
     let summary_revision = u64::try_from(row.get::<_, i64>(1)?).map_err(sql_integer_error)?;
     let detail_revision = u64::try_from(row.get::<_, i64>(2)?).map_err(sql_integer_error)?;
     let result_settled = row.get(3)?;
+    let content_deleted = row.get(4)?;
     let presentation_class = record
         .trigger
         .as_ref()
@@ -1436,6 +1441,7 @@ fn decode_turn_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<TurnSummaryRow> 
             },
             revision: summary_revision,
             presentation_class,
+            content_deleted,
             inputs: Vec::new(),
             inputs_truncated: false,
             execution,
@@ -1469,6 +1475,21 @@ fn hydrate_turn_summary_with_input(
     row: &mut TurnSummaryRow,
     target_message_id: Option<&str>,
 ) -> Result<()> {
+    if row.summary.content_deleted {
+        // Deleted turns keep identity, timing, execution outcome, and
+        // settlement facts only. Inputs, brief ids, attention, previews, and
+        // detail rows must never be rehydrated from any source.
+        row.summary.inputs = Vec::new();
+        row.summary.inputs_truncated = false;
+        row.summary.brief_ids = Vec::new();
+        row.summary.result = holon_domain::conversation::ResultState::Deleted;
+        row.summary.settled = row.result_settled;
+        row.summary.attention = None;
+        row.summary.detail_coverage = DetailCoverage::Unavailable {
+            reason: DetailCoverageReason::ContentDeleted,
+        };
+        return Ok(());
+    }
     row.summary.brief_ids = brief_ids(connection, &row.record.agent_id, &row.record.turn_id)?;
     row.summary.inputs =
         turn_input_previews(connection, &row.record.agent_id, &row.record.turn_id)?;
@@ -1944,7 +1965,7 @@ pub fn change_batch_in(
 }
 
 pub const HISTORY_AFTER_SQL: &str =
-    "SELECT turns.payload_json, COALESCE(revisions.summary_revision, 1), COALESCE(revisions.detail_revision, 1), COALESCE(revisions.result_settled, 0)
+    "SELECT turns.payload_json, COALESCE(revisions.summary_revision, 1), COALESCE(revisions.detail_revision, 1), COALESCE(revisions.result_settled, 0), turns.content_deleted_at IS NOT NULL
      FROM turn_records AS turns LEFT JOIN conversation_turn_revisions AS revisions ON revisions.agent_id = turns.agent_id AND revisions.turn_id = turns.turn_id
      WHERE turns.agent_id = ?1 AND (turns.turn_index, turns.turn_id) > (?2, ?3) AND (turns.turn_index, turns.turn_id) <= (?4, ?5)
      ORDER BY turns.turn_index ASC, turns.turn_id ASC LIMIT ?6";

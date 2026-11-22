@@ -88,6 +88,7 @@ export type ResultUnavailableReason =
 export type ResultState =
   | { readonly kind: "pending" }
   | { readonly kind: "available" }
+  | { readonly kind: "deleted" }
   | {
       readonly kind: "none";
       readonly reason: NoBriefReason;
@@ -110,7 +111,8 @@ export type DetailCoverageReason =
   | "retention_gap"
   | "legacy_ownership"
   | "unknown_activity_type"
-  | "missing_canonical_linkage";
+  | "missing_canonical_linkage"
+  | "content_deleted";
 
 export type DetailCoverage =
   | { readonly kind: "complete" }
@@ -150,6 +152,9 @@ export interface ConversationTurnSummary {
   readonly key: TurnKey;
   readonly revision: number;
   readonly presentation_class: PresentationClass;
+  /** True when the turn's conversation content was deleted; bodies must not
+   *  be rehydrated from any local cache. */
+  readonly content_deleted?: boolean;
   readonly inputs: readonly TurnInputSummary[];
   readonly inputs_truncated?: boolean;
   readonly execution: ExecutionState;
@@ -163,6 +168,41 @@ export interface ConversationTurnSummary {
   readonly attention: Attention | null;
   readonly detail_coverage: DetailCoverage;
   readonly brief_ids: readonly string[];
+}
+
+/** Impact scope preview for deleting one turn's content. Body-free. */
+export interface TurnContentDeletionPreview {
+  readonly agent_id: string;
+  readonly turn_id: string;
+  readonly turn_index: number;
+  readonly revision: number;
+  readonly input_count: number;
+  readonly brief_count: number;
+  readonly tool_execution_count: number;
+  readonly transcript_count: number;
+  readonly already_deleted: boolean;
+  readonly content_deleted_at: string | null;
+  readonly derived_handling: readonly string[];
+}
+
+/** Deletion outcome; idempotent retries keep the first timestamp. */
+export interface TurnContentDeletion {
+  readonly agent_id: string;
+  readonly turn_id: string;
+  readonly turn_index: number;
+  readonly revision: number;
+  readonly content_deleted_at: string;
+  readonly already_deleted: boolean;
+  readonly removed_evidence: number;
+  readonly invalidated_episodes: number;
+}
+
+/** Withdrawal outcome for unexecuted operator input; retries are terminal. */
+export interface InputWithdrawal {
+  readonly agent_id: string;
+  readonly message_id: string;
+  readonly withdrawn_at: string;
+  readonly first_withdrawal: boolean;
 }
 
 export interface ActivityItem {

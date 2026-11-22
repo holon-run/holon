@@ -4631,6 +4631,14 @@ SELECT agent_id, work_item_id, source_revision, next_generation,
 FROM normalized;
 "#,
     },
+    Migration {
+        version: 120,
+        name: "turn_content_deletion",
+        // `content_deleted_at` and the pending deletion queue live in
+        // `ensure_turn_content_deletion_schema` so compacted baselines that
+        // never materialized `turn_records` stay upgrade-safe.
+        sql: "",
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -5040,6 +5048,9 @@ fn apply_migration_transaction(
     }
     if migration.name == "turn_owner_identity" {
         ensure_turn_owner_identity_schema(transaction)?;
+    }
+    if migration.name == "turn_content_deletion" {
+        ensure_turn_content_deletion_schema(transaction)?;
     }
     if migration.name == "conversation_read_model_phase1" {
         ensure_conversation_read_model_phase1_schema(transaction)?;
@@ -5764,6 +5775,38 @@ fn ensure_turn_owner_identity_schema(transaction: &Transaction<'_>) -> Result<()
     transaction.execute_batch(
         "CREATE INDEX IF NOT EXISTS idx_turn_records_owner
            ON turn_records(agent_id, owner_kind, owner_id, turn_index, created_at);",
+    )?;
+    Ok(())
+}
+
+fn ensure_turn_content_deletion_schema(transaction: &Transaction<'_>) -> Result<()> {
+    // `content_deleted_at` is the authoritative read boundary for deleted
+    // turn content: NULL keeps ordinary history queries untouched, and a
+    // non-null timestamp marks the first successful deletion. The pending
+    // queue fences turn-exclusive artifact paths from commit time until
+    // the async unlink succeeds; see docs/rfcs/conversation-turn-deletion.md.
+    if table_exists_tx(transaction, "turn_records")? {
+        let columns = transaction
+            .prepare("PRAGMA table_info(turn_records)")?
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if !columns
+            .iter()
+            .any(|existing| existing == "content_deleted_at")
+        {
+            transaction
+                .execute_batch("ALTER TABLE turn_records ADD COLUMN content_deleted_at TEXT;")?;
+        }
+    }
+    transaction.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS pending_artifact_deletions (
+  agent_id TEXT NOT NULL,
+  relative_path TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  PRIMARY KEY (agent_id, relative_path)
+);
+"#,
     )?;
     Ok(())
 }

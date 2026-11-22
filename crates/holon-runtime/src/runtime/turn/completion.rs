@@ -22,6 +22,7 @@ impl RuntimeHandle {
     pub(super) async fn promote_round_completion_report_if_present(
         &self,
         agent_id: &str,
+        turn_id: &str,
         round: usize,
         turn_index: u64,
         assistant_blocks: &[ModelBlock],
@@ -123,6 +124,7 @@ impl RuntimeHandle {
                 "work_item_completion_report_candidate_promoted",
                 serde_json::json!({
                     "agent_id": agent_id,
+                    "turn_id": turn_id,
                     "work_item_id": work_item_id,
                     "turn_index": turn_index,
                     "round": round,

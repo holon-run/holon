@@ -1,6 +1,38 @@
 [
   {
     "method": "delete",
+    "path": "/api/agents/{agent_id}/turns/{turn_id}/content",
+    "handler": "delete_turn_content",
+    "operation_id": "agentTurnContentDelete",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "turn_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "expected_revision",
+        "location": "query",
+        "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "delete",
     "path": "/api/control/agents/{agent_id}",
     "handler": "delete_agent",
     "operation_id": "deleteAgent",
@@ -838,6 +870,33 @@
         "name": "limit",
         "location": "query",
         "required": false
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "get",
+    "path": "/api/agents/{agent_id}/turns/{turn_id}/deletion-preview",
+    "handler": "turn_deletion_preview",
+    "operation_id": "agentTurnDeletionPreview",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "turn_id",
+        "location": "path",
+        "required": true
       }
     ],
     "request_schema": null,
@@ -1747,6 +1806,33 @@
     ],
     "request_schema": "EnqueueRequest",
     "request_strict": false,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "post",
+    "path": "/api/agents/{agent_id}/messages/{message_id}/withdraw",
+    "handler": "withdraw_message",
+    "operation_id": "agentMessageWithdraw",
+    "tag": "agents",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "message_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": null,
+    "request_strict": null,
     "response_content_types": [
       "application/json"
     ],

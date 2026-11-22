@@ -594,6 +594,12 @@ function mergeTurn(
     }
   }
   state.turns.set(incoming.turn_id, incoming);
+  // Deleted turns keep identity only; cached activity bodies must not
+  // resurface from the local detail cache.
+  if (incoming.content_deleted) {
+    state.details.delete(incoming.turn_id);
+    state.detailOrder = state.detailOrder.filter((id) => id !== incoming.turn_id);
+  }
   if (!state.loadedTurnIds.has(incoming.turn_id)) {
     addLiveTurn(state, incoming.turn_id, limits);
   }

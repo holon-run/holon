@@ -654,6 +654,7 @@ const zh: Record<string, any> = {
       provider_failed_needs_recovery: "提供方失败待恢复",
     },
     turnResultUnavailable: "结果不可用（超出保留期或缺少关联）。",
+    turnContentDeleted: "此轮对话内容已删除。",
     hideExecutionProcess: "收起执行过程",
     turnElapsed: "耗时 {{duration}}",
     conversationSyncing: "正在核对会话的最新状态…",

@@ -653,6 +653,7 @@ const en = {
       provider_failed_needs_recovery: "provider failed, needs recovery",
     },
     turnResultUnavailable: "Result unavailable (outside retention or missing linkage).",
+    turnContentDeleted: "This turn's conversation content was deleted.",
     hideExecutionProcess: "Hide execution process",
     turnElapsed: "Took {{duration}}",
     conversationSyncing: "Checking the latest conversation state…",

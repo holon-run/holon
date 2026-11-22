@@ -69,6 +69,9 @@ const ROUTES: &[RouteSpec] = &[
     route_with_response("post", "/agents/{agent_id}/conversation/locate", "agentConversationLocate", "agents", "Locate a canonical conversation source", "Resolve exact message or Brief ownership and a bounded bidirectional history window without mutating read markers. Non-conversation and pending sources are explicit.", Some("ConversationLocateRequest"), "ConversationLocateResponse", AuthKind::RemoteAccess),
     event_stream_route("get", "/agents/{agent_id}/conversation/stream", "agentConversationStream", "agents", "Conversation change stream", "Return bounded, coalesced conversation projection batches over Server-Sent Events. Resume with the opaque after query parameter or Last-Event-ID. Only checkpoint events carry an SSE id; clients persist it only after consuming the complete batch. Retention, epoch, schema, and query-version mismatches require a fresh snapshot. Served only while agents.conversation-read.v1 is advertised.", None, AuthKind::RemoteAccess),
     route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/activities", "agentConversationActivities", "agents", "Conversation turn activity snapshot", "Bounded activity records for one turn, including typed detail coverage, coverage boundary, and event head from one committed read transaction. Query parameters: limit and opaque before cursor. Served only while agents.conversation-read.v1 is advertised.", None, "ConversationActivityResponse", AuthKind::RemoteAccess),
+    route_with_response("get", "/agents/{agent_id}/turns/{turn_id}/deletion-preview", "agentTurnDeletionPreview", "agents", "Turn deletion impact preview", "Body-free confirmation impact scope for deleting one turn's conversation content: input, Brief, tool-call, and transcript counts, whether the turn is already deleted, and derived-content handling notes. Served only while agents.conversation-turn-deletion.v1 is advertised.", None, "TurnContentDeletionPreview", AuthKind::Control),
+    route_with_response("delete", "/agents/{agent_id}/turns/{turn_id}/content", "agentTurnContentDelete", "agents", "Delete turn conversation content", "Delete one turn's conversation content in one transaction: set the first content_deleted_at, remove turn-exclusive evidence, erase embedded body copies in retained tables, and invalidate derived context. Turn identity, timing, ownership, and settlement references survive. Idempotent retries keep the first timestamp. Active, unsettled, shared, or sealed turns are rejected with typed body-free conflicts. See RFC conversation-turn-deletion.", None, "TurnContentDeletion", AuthKind::Control),
+    route_with_response("post", "/agents/{agent_id}/messages/{message_id}/withdraw", "agentMessageWithdraw", "agents", "Withdraw unexecuted operator input", "Atomically withdraw one operator-submitted input that execution has not claimed yet; the input never enters model context or triggers execution. Competes with claim and interject admission via compare-and-set; idempotent retries keep the first withdrawal timestamp.", None, "InputWithdrawal", AuthKind::Control),
     route_with_response("get", "/control/agents/{agent_id}/conversation/shadow-diagnostics", "agentConversationShadowDiagnostics", "runtime", "Conversation shadow diagnostics", "Control-authenticated, metadata-only bounded comparison of canonical turn/source metadata and the conversation projection from one deferred read transaction. It never returns Brief bodies, transcript/tool payloads, or a second event ledger. Query parameter: turn_limit.", None, "ConversationShadowDiagnostics", AuthKind::Control),
     aide_route("get", "/agents/{agent_id}", "getAgent", "agents", "Get agent", "Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.", None, AuthKind::RemoteAccess),
     aide_route("get", "/agents/{agent_id}/status", "agentStatus", "agents", "Agent status", "Return the compact public agent status projection by default; pass detail=full for the complete AgentSummary read model.", None, AuthKind::RemoteAccess),
@@ -639,6 +642,15 @@ fn operation(spec: &RouteSpec, shadow_limits: ConversationShadowLimits) -> Value
                 "maximum": shadow_limits.maximum,
                 "default": shadow_limits.default
             }
+        }));
+    }
+    if spec.operation_id == "agentTurnContentDelete" {
+        parameters.push(json!({
+            "name": "expected_revision",
+            "in": "query",
+            "required": false,
+            "description": "Optional turn summary revision captured at confirmation time. Deletion re-validates it and fails closed on drift, so content added after confirmation is never deleted silently.",
+            "schema": { "type": "integer", "minimum": 0 }
         }));
     }
     if spec.operation_id == "agentAvatar" {

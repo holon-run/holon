@@ -2101,6 +2101,7 @@ impl RuntimeHost {
             if now >= next_wal_checkpoint {
                 next_wal_checkpoint = now + Self::RUNTIME_DB_WAL_CHECKPOINT_INTERVAL;
                 self.run_runtime_db_wal_checkpoint().await;
+                self.drain_pending_artifact_deletions().await;
             }
             let policy = match self.config().runtime_db_retention_policy() {
                 Ok(policy) => policy,
@@ -2155,6 +2156,86 @@ impl RuntimeHost {
             }
             if self.wait_daemon_retention_round(wait).await {
                 break;
+            }
+        }
+    }
+
+    /// Drains queued turn-artifact deletions: each committed row unlinks one
+    /// managed file under the owning agent's home and then removes its queue
+    /// row. Reads are fenced from commit time (not unlink time), so failures
+    /// only delay disk reclaim, never content visibility. See
+    /// docs/rfcs/conversation-turn-deletion.md §6.
+    async fn drain_pending_artifact_deletions(&self) {
+        let db = self.inner.runtime_db.clone();
+        let pending = match tokio::task::spawn_blocking({
+            let db = db.clone();
+            move || crate::runtime_db::turn_content_deletion::pending_artifact_deletions(&db)
+        })
+        .await
+        {
+            Ok(Ok(pending)) => pending,
+            Ok(Err(error)) => {
+                tracing::warn!(error = %error, "pending artifact deletion listing failed");
+                return;
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "pending artifact deletion worker panicked");
+                return;
+            }
+        };
+        for item in pending {
+            let home = match self.agent_storage(&item.agent_id) {
+                Ok(storage) => storage.data_dir().to_path_buf(),
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id = %item.agent_id,
+                        error = %error,
+                        "pending artifact deletion skipped: agent storage unavailable"
+                    );
+                    continue;
+                }
+            };
+            // Paths are evidence, not authority: only managed prefixes under
+            // the agent home qualify and traversal is rejected outright.
+            if item.relative_path.contains("..") {
+                tracing::warn!(
+                    agent_id = %item.agent_id,
+                    relative_path = %item.relative_path,
+                    "pending artifact deletion rejected: path escapes the agent home"
+                );
+                continue;
+            }
+            let target = home.join(&item.relative_path);
+            let outcome = if target.is_file() {
+                std::fs::remove_file(&target)
+            } else {
+                Ok(())
+            };
+            match outcome {
+                Ok(()) => {
+                    if let Err(error) =
+                        crate::runtime_db::turn_content_deletion::remove_pending_artifact_deletion(
+                            &db,
+                            &item.agent_id,
+                            &item.relative_path,
+                        )
+                    {
+                        tracing::warn!(
+                            agent_id = %item.agent_id,
+                            relative_path = %item.relative_path,
+                            error = %error,
+                            "pending artifact deletion row removal failed; will retry"
+                        );
+                    }
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        agent_id = %item.agent_id,
+                        relative_path = %item.relative_path,
+                        error = %error,
+                        "pending artifact deletion unlink failed; will retry"
+                    );
+                }
             }
         }
     }

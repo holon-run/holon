@@ -27,6 +27,8 @@ use crate::{
     model_config_migration::ModelConfigMigrationReport,
     observability::{RecentTrace, RecentTraceSummary},
     runtime::{SchedulerRepairInspection, SchedulerRepairRequest, SchedulerRepairResult},
+    runtime_db::input_withdrawal::InputWithdrawal,
+    runtime_db::turn_content_deletion::{TurnContentDeletion, TurnContentDeletionPreview},
     types::{
         AddSkillRequest, AgentListEntry, BriefRecord, CheckSkillRequest, ReconcileSkillRequest,
         RefreshCatalogRequest, SyncTemplateRemoteSourcesRequest, TaskInputResult, TaskOutputResult,
@@ -201,6 +203,18 @@ fn component_schemas() -> Map<String, Value> {
     schemas.insert(
         "ConversationActivityResponse".into(),
         component_schema::<ConversationActivityResponse>(),
+    );
+    schemas.insert(
+        "TurnContentDeletionPreview".into(),
+        component_schema::<TurnContentDeletionPreview>(),
+    );
+    schemas.insert(
+        "TurnContentDeletion".into(),
+        component_schema::<TurnContentDeletion>(),
+    );
+    schemas.insert(
+        "InputWithdrawal".into(),
+        component_schema::<InputWithdrawal>(),
     );
     schemas.insert(
         "ConversationStreamMessage".into(),

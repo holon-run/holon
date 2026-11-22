@@ -422,10 +422,11 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
   }, [expanded]);
   useEffect(() => {
     if (!syncing && expanded && (turn.detail === null || turn.detail.invalidated)
+      && presentation.kind !== "deleted"
       && detailState.kind !== "loading" && detailState.kind !== "error") {
       actions.onLoadDetail(turn.turnId);
     }
-  }, [syncing, expanded, turn.detail, detailState.kind, turn.turnId, actions.onLoadDetail]);
+  }, [syncing, expanded, turn.detail, detailState.kind, turn.turnId, presentation.kind, actions.onLoadDetail]);
   useEffect(() => {
     const updateReading = () => {
       const node = detailRef.current;
@@ -506,6 +507,9 @@ const ConversationTurnCard = memo(function ConversationTurnCard({
           <div className="conversation-turn-notice is-error" role="note">{t("agentCreation.budgetFailure")}</div>
         ) : null}
         {responseBriefIds.map((briefId) => <ConversationBriefCard key={briefId} briefId={briefId} actions={actions} />)}
+        {presentation.kind === "deleted" ? (
+          <div className="conversation-turn-notice" role="note">{t("agentPage.turnContentDeleted")}</div>
+        ) : null}
         {presentation.kind === "unavailable" ? (
           <div className="conversation-turn-notice is-error" role="note">{t("agentPage.turnResultUnavailable")}</div>
         ) : null}

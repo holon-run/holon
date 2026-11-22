@@ -409,6 +409,18 @@ pub fn router(state: AppState) -> Router {
             get(conversation::activities),
         )
         .route(
+            "/agents/{agent_id}/turns/{turn_id}/deletion-preview",
+            get(conversation::turn_deletion_preview),
+        )
+        .route(
+            "/agents/{agent_id}/turns/{turn_id}/content",
+            delete(conversation::delete_turn_content),
+        )
+        .route(
+            "/agents/{agent_id}/messages/{message_id}/withdraw",
+            post(conversation::withdraw_message),
+        )
+        .route(
             "/control/agents/{agent_id}/conversation/shadow-diagnostics",
             get(conversation::shadow_diagnostics),
         )

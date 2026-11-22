@@ -556,6 +556,31 @@ async fn workspace_files_inner(
     let full_path = resolve_and_validate_path(&root.filesystem_path, &path)?;
 
     let relative = path.trim_start_matches('/');
+    // Turn-content deletion fence: from deletion-commit time the queue blocks
+    // downloads of turn-exclusive artifacts even before the async unlink
+    // lands. Applies to agent-home workspaces where managed artifacts live.
+    // The queue is keyed by (agent_id, relative_path): a canonical
+    // `agent_home:<id>` workspace scopes the fence to its own agent, so
+    // another agent's pending deletion of the same relative path does not
+    // turn this download into a false 410. The legacy un-attributable
+    // `agent_home` alias keeps the fail-closed cross-agent check.
+    if workspace_id.starts_with("agent_home")
+        && crate::runtime_db::turn_content_deletion::pending_artifact_deletion_exists(
+            state.host.runtime_db(),
+            workspace_id.strip_prefix("agent_home:"),
+            relative,
+        )
+        .map_err(error_response)?
+    {
+        return Err((
+            StatusCode::GONE,
+            Json(json!({
+                "error": "file pending deletion",
+                "location": workspace_id,
+            })),
+        ));
+    }
+
     let location = crate::system::location_for_relative_path(&root, relative)
         .map_err(file_location_error_response)?;
 

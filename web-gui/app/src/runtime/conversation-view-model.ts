@@ -27,6 +27,8 @@ export interface ConversationTurnGroup {
   readonly turnIndex: number;
   readonly revision: number;
   readonly presentationClass: PresentationClass;
+  /** True when the turn's conversation content was deleted server-side. */
+  readonly contentDeleted?: boolean;
   readonly inputs: readonly TurnInputSummary[];
   readonly inputsTruncated?: boolean;
   readonly execution: ExecutionState;
@@ -97,6 +99,7 @@ export function buildConversationSessionModel(
       turnIndex: turn.key.turn_index,
       revision: turn.revision,
       presentationClass: turn.presentation_class,
+      contentDeleted: turn.content_deleted,
       inputs: turn.inputs,
       inputsTruncated: turn.inputs_truncated,
       execution: turn.execution,
@@ -165,6 +168,7 @@ export function buildConversationSessionModel(
  */
 export type TurnResultPresentation =
   | { readonly kind: "pending" }
+  | { readonly kind: "deleted" }
   | { readonly kind: "available"; readonly briefIds: readonly string[] }
   | {
       readonly kind: "terminal_without_result";
@@ -180,6 +184,9 @@ export type TurnResultPresentation =
 export function turnResultPresentation(
   turn: ConversationTurnGroup,
 ): TurnResultPresentation {
+  if (turn.contentDeleted === true || turn.result.kind === "deleted") {
+    return { kind: "deleted" };
+  }
   if (turn.briefIds.length > 0) {
     return { kind: "available", briefIds: turn.briefIds };
   }

@@ -521,6 +521,9 @@ pub enum QueueEntryStatus {
     Aborted,
     Dropped,
     Quarantined,
+    /// Operator withdrew the unexecuted input before claim. Terminal marker:
+    /// the message body is gone and no execution may run from this entry.
+    Withdrawn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -534,6 +537,8 @@ pub enum OperatorMessageStatus {
     Failed,
     Dropped,
     Quarantined,
+    /// Operator withdrew the input before execution; body is gone.
+    Withdrawn,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

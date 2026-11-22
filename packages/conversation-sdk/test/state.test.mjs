@@ -211,6 +211,57 @@ test("bounds live activity, invalidates detail, and rejects stale refetch", () =
   assert.equal(state.view().details[0].invalidated, true);
 });
 
+test("deletion marker keeps the turn placeholder and drops cached bodies", () => {
+  const state = new ConversationProtocolState();
+  state.bootstrap(
+    identity,
+    summary({ turns: [turn("turn-10", 10)] }),
+  );
+  state.applyBatch(
+    identity,
+    batch({
+      mutations: [
+        {
+          type: "activity_upsert",
+          event_log_epoch: "epoch-a",
+          visibility_scope_id: "scope-a",
+          turn_id: "turn-10",
+          activity: activity("activity-1", 1),
+        },
+      ],
+    }),
+  );
+  assert.equal(state.view().details[0].activities.length, 1);
+
+  state.applyBatch(
+    identity,
+    batch({
+      from: 11,
+      through: 12,
+      mutations: [
+        {
+          type: "turn_summary_upsert",
+          event_log_epoch: "epoch-a",
+          visibility_scope_id: "scope-a",
+          turn: turn("turn-10", 10, 2, {
+            content_deleted: true,
+            execution: { kind: "terminal", outcome: "completed" },
+            result: { kind: "deleted" },
+            settled: true,
+            detail_coverage: { kind: "unavailable", reason: "content_deleted" },
+          }),
+        },
+      ],
+    }),
+  );
+  const view = state.view();
+  const placeholder = view.turns.find((item) => item.turn_id === "turn-10");
+  assert.equal(placeholder.content_deleted, true);
+  assert.deepEqual(placeholder.inputs, []);
+  assert.deepEqual(placeholder.brief_ids, []);
+  assert.deepEqual(view.details, []);
+});
+
 test("rejects late pages after stream advances even when revision guards were evicted", () => {
   const terminal = {
     execution: { kind: "terminal", outcome: "completed" },
