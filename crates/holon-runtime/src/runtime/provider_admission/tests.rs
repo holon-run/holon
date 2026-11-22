@@ -1181,6 +1181,7 @@ async fn continuation_dispatch_scenario(
                 &source_id,
                 &original_attempt.attempt_id,
                 &waiter.id,
+                wait_id.is_some(),
             );
             assert_eq!(admission.episode().unwrap().total_requests, 0);
             assert_eq!(admission.episode().unwrap().request_count, 0);
@@ -1254,6 +1255,7 @@ async fn continuation_dispatch_scenario(
                 &source_id,
                 &original_attempt.attempt_id,
                 &waiter.id,
+                wait_id.is_some(),
             );
             let parking = restored
                 .runtime_db()
@@ -1327,6 +1329,7 @@ async fn continuation_dispatch_scenario(
                 &source_id,
                 &original_attempt.attempt_id,
                 &waiter.id,
+                wait_id.is_some(),
             );
         }
         clock.advance(
@@ -1921,16 +1924,17 @@ async fn continuation_dispatch_scenario(
                 );
                 assert_eq!(unexpected.message.task_id, None);
                 assert_eq!(unexpected.message.kind, MessageKind::SystemTick);
-                assert_eq!(
-                    unexpected
-                        .message
-                        .metadata
-                        .as_ref()
-                        .and_then(|metadata| metadata.get("work_queue"))
-                        .and_then(|work_queue| work_queue.get("work_item_id"))
-                        .and_then(serde_json::Value::as_str),
-                    settlement.work_item_id.as_deref(),
-                    "only the unrelated captured-owner work-queue tick may run"
+                let work_item_id = unexpected
+                    .message
+                    .metadata
+                    .as_ref()
+                    .and_then(|metadata| metadata.get("work_queue"))
+                    .and_then(|work_queue| work_queue.get("work_item_id"))
+                    .and_then(serde_json::Value::as_str);
+                assert!(
+                    work_item_id == settlement.work_item_id.as_deref()
+                        || work_item_id == Some(waiter.id.as_str()),
+                    "only ordinary work-queue ticks may run, got {work_item_id:?}"
                 );
             }
         }

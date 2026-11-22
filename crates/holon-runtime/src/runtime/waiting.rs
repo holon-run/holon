@@ -26,21 +26,6 @@ pub(crate) struct TimerCancellationOutcome {
     pub blocked_work_item_ids: Vec<String>,
 }
 
-/// Preserve independent business blockers in both task-wait registration
-/// paths. Replaced task waits only own a scheduling blocker. This bookkeeping
-/// does not decide whether an exact wait continuation may enter the model.
-fn task_wait_preserves_blocker(
-    existing: &WorkItemRecord,
-    replaced: &[WaitConditionRecord],
-) -> bool {
-    existing.blocked_by.is_some()
-        && !existing.blocked_by_wait_id.as_deref().is_some_and(|id| {
-            replaced
-                .iter()
-                .any(|wait| wait.id == id && wait.kind == WaitConditionKind::Task)
-        })
-}
-
 impl PreparedWaitForSettlement {
     pub(crate) fn outcome(&self) -> WaitForRegistrationOutcome {
         if let Some(admission) = self.command.task_result_admission.as_ref() {
@@ -298,39 +283,6 @@ impl RuntimeHandle {
         let merged_wait_conditions =
             merged_lifecycle_waits_for_timer_fire(&unresolved, condition, message, now);
 
-        let mut work_item = None;
-        let mut index_changes = Vec::new();
-        if let Some(work_item_id) = resolved.work_item_id.as_deref() {
-            if let Some(existing) = work.work_item(work_item_id)? {
-                // The blocker is cleared only when this wait derived it
-                // (`blocked_by_wait_id`), never by display-text equality: a
-                // same-text independent blocker stays authoritative together
-                // with its recheck deadline.
-                if existing.state == WorkItemState::Open
-                    && existing.blocked_by_wait_id.as_deref() == Some(resolved.id.as_str())
-                {
-                    let mut record = WorkItemRecord {
-                        revision: existing.revision + 1,
-                        blocked_by: None,
-                        blocked_by_wait_id: None,
-                        recheck_at: None,
-                        recheck_consumed_at: None,
-                        updated_at: now,
-                        ..existing.clone()
-                    };
-                    crate::work_item_plan::refresh_plan_artifact_metadata(
-                        self.agent_home().as_path(),
-                        &mut record,
-                    )?;
-                    index_changes.extend(self.inner.storage.index_changes_for_work_item(&record)?);
-                    work_item = Some(crate::runtime_db::transitions::WorkItemMutation::Update {
-                        record,
-                        expected_revision: existing.revision,
-                    });
-                }
-            }
-        }
-
         Ok(Some(crate::runtime_db::transitions::QueueWaitTransition {
             expected: crate::runtime_db::transitions::WaitConditionExpectation {
                 id: condition.id.clone(),
@@ -340,8 +292,8 @@ impl RuntimeHandle {
             },
             record: resolved,
             merged_wait_conditions,
-            work_item,
-            index_changes,
+            work_item: None,
+            index_changes: Vec::new(),
         }))
     }
 
@@ -700,30 +652,8 @@ impl RuntimeHandle {
                 .with_safe_context("work_item_id", work_item_id)
                 .into());
             }
-            let preserve_blocker = wake == WaitForWakeKind::TaskResult
-                && task_wait_preserves_blocker(&existing, &wait_conditions);
             let mut updated = WorkItemRecord {
                 revision: existing.revision + 1,
-                blocked_by: if preserve_blocker {
-                    existing.blocked_by.clone()
-                } else {
-                    Some(reason.clone())
-                },
-                blocked_by_wait_id: if preserve_blocker {
-                    existing.blocked_by_wait_id.clone()
-                } else {
-                    Some(condition.id.clone())
-                },
-                recheck_at: if preserve_blocker {
-                    existing.recheck_at
-                } else {
-                    recheck_at
-                },
-                recheck_consumed_at: if preserve_blocker {
-                    existing.recheck_consumed_at
-                } else {
-                    None
-                },
                 updated_at: now,
                 ..existing.clone()
             };
@@ -1359,28 +1289,14 @@ impl RuntimeHandle {
                 "work_item_id": waiter_work_item_id,
             }),
         ));
-        // Like ordinary registration, the execution waits on this exact
-        // condition while an independent business blocker stays unchanged.
+        // Like ordinary registration, the execution waits on this exact condition.
         let mut work_items = Vec::new();
         let mut index_changes = Vec::new();
         let mut work_item = None;
         let mut blocked_readiness = Value::Null;
         if let Some(existing) = existing_waiter_work_item.as_ref() {
-            let (blocked_by, blocked_by_wait_id) = match existing.blocked_by.clone() {
-                Some(blocker) if task_wait_preserves_blocker(existing, &wait_conditions) => {
-                    (Some(blocker), existing.blocked_by_wait_id.clone())
-                }
-                _ => (
-                    Some(condition.waiting_for.clone()),
-                    Some(condition.id.clone()),
-                ),
-            };
             let mut updated = WorkItemRecord {
                 revision: existing.revision + 1,
-                blocked_by,
-                blocked_by_wait_id,
-                recheck_at: existing.recheck_at,
-                recheck_consumed_at: existing.recheck_consumed_at,
                 updated_at: now,
                 ..existing.clone()
             };
@@ -1549,11 +1465,45 @@ impl RuntimeHandle {
         else {
             return Ok(Default::default());
         };
-        let Some(attempt) = state.open_attempt() else {
-            return Ok(Default::default());
-        };
         let wait = WaitReference {
             wait_id: condition.id.clone(),
+        };
+        let Some(attempt) = state.open_attempt() else {
+            // A new detached wait supersedes the hold left when its previous
+            // timer was cancelled; it must not clear an unrelated pause.
+            let Some((work_item, previous)) = work_item
+                .and_then(|work_item| state.work_items.get(&work_item.id).map(|r| (work_item, r)))
+                .filter(|(_, previous)| {
+                    matches!(
+                        &previous.state,
+                        WorkItemExecutionState::Paused { reason, .. } if reason == "timer_cancelled"
+                    )
+                })
+            else {
+                return Ok(Default::default());
+            };
+            return Ok(
+                crate::runtime_db::transitions::ExecutionProtocolTransition {
+                    bootstrap: None,
+                    commands: vec![ExecutionProtocolCommand::SetWorkItemWaiting(Box::new(
+                        SetWorkItemWaiting {
+                            command_id: format!("replace_cancelled_timer_wait:{}", condition.id),
+                            work_item_id: work_item.id.clone(),
+                            expected: Some(previous.clone()),
+                            record: WorkItemExecutionRecord {
+                                source_revision: work_item.revision,
+                                state: WorkItemExecutionState::Waiting {
+                                    generation: previous
+                                        .generation()
+                                        .checked_add(1)
+                                        .context("WorkItem scheduling generation overflow")?,
+                                    wait,
+                                },
+                            },
+                        },
+                    ))],
+                },
+            );
         };
         let mut commands = Vec::with_capacity(2);
         let outcome = match &attempt.binding {
@@ -3560,12 +3510,19 @@ mod mutation_tests {
             .unwrap();
         assert_eq!(wait.status, WaitConditionStatus::Cancelled);
         let work = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-        assert!(work
-            .blocked_by
-            .as_deref()
-            .unwrap()
-            .starts_with("timer_cancelled:"));
+        assert!(work.blocked_by.is_none());
         assert!(work.blocked_by_wait_id.is_none());
+        let execution = runtime
+            .runtime_db()
+            .transitions()
+            .load_execution_protocol_state_if_initialized("default")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            &execution.work_items[&work.id].state,
+            crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
+                if reason == "timer_cancelled"
+        ));
         assert!(runtime.inner.mutation_owner.capture().unwrap().is_some());
         let events = runtime.storage().read_recent_events(100).unwrap();
         assert!(events.iter().any(|event| event.id

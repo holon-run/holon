@@ -239,11 +239,23 @@ pub struct UpdateWorkItemRequest {
     pub plan_status: Option<WorkItemPlanStatus>,
     pub todo_list: Option<Vec<TodoItem>>,
     pub blocked_by: Option<Value>,
-    #[schemars(range(min = 1))]
-    pub recheck_after: Option<u64>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_recheck_after",
+        skip_serializing_if = "Option::is_none"
+    )]
+    #[schemars(with = "Option<u64>", range(min = 1))]
+    pub recheck_after: Option<Option<u64>>,
     pub authority_class: Option<AuthorityClass>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub invocation_context: Option<crate::types::AgentInvocationContext>,
+}
+
+// Keep explicit null distinct from omission so the handler can reject it too.
+fn deserialize_recheck_after<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<u64>>, D::Error> {
+    Option::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Deserialize, Serialize, JsonSchema)]

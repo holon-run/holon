@@ -232,8 +232,11 @@ impl RuntimeHandle {
                 .map(Some),
             _ => Ok(None),
         };
-        let mut continuation_trigger =
-            ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref));
+        let mut continuation_trigger = if scheduler::is_retired_work_item_recheck(message) {
+            None
+        } else {
+            ContinuationTrigger::from_message(message, task.as_ref().ok().and_then(Option::as_ref))
+        };
         if let Some(trigger) = continuation_trigger.as_mut() {
             if trigger.kind == crate::types::ContinuationTriggerKind::SystemTick {
                 trigger.exact_wait_recheck = exact_dispatch_wait_recheck(waits, message);
@@ -902,7 +905,7 @@ fn exact_dispatch_wait_recheck(waits: &[&WaitConditionRecord], message: &Message
         .iter()
         .filter(|wait| {
             wait.id == *id
-                && wait.work_item_id.is_none()
+                && wait.work_item_id == message.work_item_id
                 && matches!(
                     wait.status,
                     WaitConditionStatus::Triggered | WaitConditionStatus::Resolved

@@ -1157,15 +1157,19 @@ async fn explicit_task_result_waiter_decouples_from_task_owner() {
             .is_none(),
         "the task owner work item is not blocked by the waiter's wait"
     );
-    assert_eq!(
+    assert!(
         after
             .work_items
             .iter()
             .find(|record| record.id == waiter.id)
             .expect("waiter work item")
             .blocked_by
-            .as_deref(),
-        Some("dependency on another work item's task")
+            .is_none(),
+        "WaitFor must not write the waiter's blocker description"
+    );
+    assert_eq!(
+        registration.condition.waiting_for,
+        "dependency on another work item's task"
     );
 }
 
@@ -1796,10 +1800,8 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .unwrap();
     assert_eq!(triggered.status, WaitConditionStatus::Triggered);
     assert_eq!(triggered.trigger_message_id(), Some(message.id.as_str()));
-    assert_eq!(
-        repaired.work_items[0].blocked_by.as_deref(),
-        Some("waiting for task-replay")
-    );
+    assert_eq!(triggered.waiting_for, "waiting for task-replay");
+    assert!(repaired.work_items[0].blocked_by.is_none());
     harness.restart();
     harness
         .runtime()
@@ -1829,8 +1831,8 @@ async fn terminal_task_replay_repairs_wait_once_across_restart() {
         .expect("replayed TaskResult should plan exact wait settlement");
     assert_eq!(wait_transition.record.status, WaitConditionStatus::Resolved);
     assert!(
-        wait_transition.work_item.is_some(),
-        "exact wait settlement should clear the matching WorkItem blocker"
+        wait_transition.work_item.is_none(),
+        "exact wait settlement must not mutate the WorkItem description"
     );
     let poll =
         super::super::super::scheduler_executor::SchedulerDecisionExecutor::new(harness.runtime())

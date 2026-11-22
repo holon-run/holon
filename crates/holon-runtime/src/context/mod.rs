@@ -7182,12 +7182,14 @@ mod tests {
                     .expect("the sole focused item should remain visible as background");
                 assert!(background.content.contains("focused lifecycle work"));
                 assert!(background.content.contains("background lifecycle todo"));
-                let view = if blocked_by.is_some() {
-                    "[blocked]"
-                } else {
-                    "[current_runnable]"
-                };
-                assert!(background.content.contains(view));
+                assert!(background.content.contains("[current_runnable]"));
+                assert_eq!(
+                    background
+                        .content
+                        .contains("focused background waits for CI"),
+                    blocked_by.is_some(),
+                    "the note remains visible without changing scheduling"
+                );
             }
         }
 

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    domain::execution_protocol::WorkItemExecutionRecord,
+    domain::execution_protocol::{WorkItemExecutionRecord, WorkItemExecutionState},
     runtime::{
         resident_input_evidence::{
             InputEvidenceFamily as Family, InputEvidenceKey as Key, PreparedInputEvidence,
@@ -156,6 +156,22 @@ fn protocol_counts(runtime: &RuntimeHandle) -> Result<(u64, u64)> {
     })
 }
 
+fn assert_cancelled_timer_hold(runtime: &RuntimeHandle, work: &WorkItemRecord) -> Result<()> {
+    assert!(matches!(
+        canonical_execution(runtime, &work.id)?.state,
+        WorkItemExecutionState::Paused { reason, .. } if reason == "timer_cancelled"
+    ));
+    assert_eq!(
+        runtime
+            .storage()
+            .latest_work_item(&work.id)?
+            .unwrap()
+            .blocked_by,
+        work.blocked_by
+    );
+    Ok(())
+}
+
 pub(super) fn execution_qualifications(
     runtime: &RuntimeHandle,
 ) -> Result<Vec<(String, u64, String, String)>> {
@@ -192,11 +208,7 @@ async fn timer_cancel_input_observed_fresh_work_execution_remains_qualified() ->
     );
     let cancelled_work = runtime.latest_work_item(&work.id).await?.unwrap();
     assert_eq!(cancelled_work.revision, work.revision + 1);
-    assert!(cancelled_work
-        .blocked_by
-        .as_deref()
-        .unwrap()
-        .starts_with("timer_cancelled:"));
+    assert_cancelled_timer_hold(&runtime, &work)?;
     assert!(cancelled_work.blocked_by_wait_id.is_none());
     let cancelled_wait = runtime
         .runtime_db()
@@ -242,12 +254,7 @@ async fn timer_cancel_input_observed_fresh_work_execution_remains_qualified() ->
     assert!(runtime.storage().read_recent_events(100)?.len() > before_events.len());
 
     // The independent operator input must not unblock the cancelled Work.
-    assert!(runtime
-        .latest_work_item(&work.id)
-        .await?
-        .unwrap()
-        .blocked_by
-        .is_some());
+    assert_cancelled_timer_hold(&runtime, &work)?;
     Ok(())
 }
 
@@ -279,14 +286,7 @@ async fn timer_cancel_input_unobserved_execution_does_not_create_authority() -> 
     // another execution or qualification. The ACK has to match canonical SQL.
     observe_execution(&runtime, &work.id).await?;
     assert_eq!(runtime.agent_state().await?.pending, before_pending);
-    assert!(runtime
-        .latest_work_item(&work.id)
-        .await?
-        .unwrap()
-        .blocked_by
-        .as_deref()
-        .unwrap()
-        .starts_with("timer_cancelled:"));
+    assert_cancelled_timer_hold(&runtime, &work)?;
     let message = runtime.enqueue(operator_input()).await?;
     runtime
         .begin_interactive_turn_with_provenance(Some(&message), None, None, None)
@@ -646,13 +646,6 @@ async fn timer_cancel_input_observed_legacy_work_execution_remains_qualified() -
             .as_ref(),
         before.as_ref()
     );
-    assert!(runtime
-        .latest_work_item(&work.id)
-        .await?
-        .unwrap()
-        .blocked_by
-        .as_deref()
-        .unwrap()
-        .starts_with("timer_cancelled:"));
+    assert_cancelled_timer_hold(&runtime, &work)?;
     Ok(())
 }

@@ -941,9 +941,17 @@ impl RuntimeReadModelView<'_> {
         let projection = self.work_queue()?;
         Ok(projection.current.or_else(|| {
             projection
-                .queued_blocked
+                .items
                 .into_iter()
-                .filter(|item| item.blocked_by.is_some())
+                .filter(|item| {
+                    matches!(
+                        item.candidate_class,
+                        WorkItemCandidateClass::TriggeredBlocked
+                            | WorkItemCandidateClass::WaitingForOperator
+                            | WorkItemCandidateClass::Blocked
+                    ) && item.scheduling_state != WorkItemSchedulingState::WaitingTask
+                })
+                .map(|item| item.work_item)
                 .max_by(|left, right| {
                     left.updated_at
                         .cmp(&right.updated_at)

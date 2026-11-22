@@ -54,12 +54,6 @@ const TASK_OUTPUT_POLL_INTERVAL_MS: u64 = 100;
 const TASK_OUTPUT_PREVIEW_CHAR_BUDGET: usize = 8_000;
 const SPAWN_AGENT_TASK_LABEL_CHAR_BUDGET: usize = 120;
 
-#[derive(Debug, Clone)]
-enum WorkItemReadinessMutation {
-    Pause(String),
-    Resume,
-}
-
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 enum ChildInvocationRecoveryState {
@@ -3474,12 +3468,10 @@ impl RuntimeHandle {
     fn plan_work_item_execution_update(
         &self,
         record: &WorkItemRecord,
-        readiness_mutation: Option<WorkItemReadinessMutation>,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
         use crate::domain::execution_protocol::{
             AdvanceWorkItemSourceRevision, ExecutionProtocolCommand, ExecutionProtocolState,
-            RegisterWorkItemExecution, SetWorkItemReadiness, WorkItemExecutionRecord,
-            WorkItemExecutionState,
+            RegisterWorkItemExecution, WorkItemExecutionRecord, WorkItemExecutionState,
         };
 
         let existing = self
@@ -3491,15 +3483,9 @@ impl RuntimeHandle {
             .as_ref()
             .and_then(|state| state.work_items.get(&record.id));
         let Some(authoritative) = authoritative else {
-            let state = match readiness_mutation {
-                Some(WorkItemReadinessMutation::Pause(reason)) => WorkItemExecutionState::Paused {
-                    generation: record.revision,
-                    reason,
-                },
-                _ => WorkItemExecutionState::Runnable {
-                    generation: record.revision,
-                    recovery_ref: None,
-                },
+            let state = WorkItemExecutionState::Runnable {
+                generation: record.revision,
+                recovery_ref: None,
             };
             return Ok(
                 crate::runtime_db::transitions::ExecutionProtocolTransition {
@@ -3518,82 +3504,14 @@ impl RuntimeHandle {
                 },
             );
         };
-        if readiness_mutation.is_some()
-            && matches!(
-                authoritative.state,
-                WorkItemExecutionState::InFlight { .. } | WorkItemExecutionState::Waiting { .. }
-            )
-        {
-            return Err(anyhow!(
-                "cannot change WorkItem readiness while canonical execution state is active"
-            ));
-        }
-        let next_state = match (&authoritative.state, readiness_mutation) {
-            (WorkItemExecutionState::InFlight { .. }, _)
-            | (WorkItemExecutionState::Waiting { .. }, None)
-            | (WorkItemExecutionState::Waiting { .. }, Some(WorkItemReadinessMutation::Pause(_)))
-            | (WorkItemExecutionState::Waiting { .. }, Some(WorkItemReadinessMutation::Resume))
-            | (_, None) => None,
-            (
-                WorkItemExecutionState::Runnable { generation, .. },
-                Some(WorkItemReadinessMutation::Pause(reason)),
-            )
-            | (
-                WorkItemExecutionState::Paused { generation, .. },
-                Some(WorkItemReadinessMutation::Pause(reason)),
-            ) => Some(WorkItemExecutionState::Paused {
-                generation: if matches!(
-                    authoritative.state,
-                    WorkItemExecutionState::Runnable { .. }
-                ) {
-                    generation
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))?
-                } else {
-                    *generation
-                },
-                reason,
-            }),
-            (
-                WorkItemExecutionState::Runnable { generation, .. },
-                Some(WorkItemReadinessMutation::Resume),
-            )
-            | (
-                WorkItemExecutionState::Paused { generation, .. },
-                Some(WorkItemReadinessMutation::Resume),
-            ) => Some(WorkItemExecutionState::Runnable {
-                generation: if matches!(authoritative.state, WorkItemExecutionState::Paused { .. })
-                {
-                    generation
-                        .checked_add(1)
-                        .ok_or_else(|| anyhow!("WorkItem scheduling generation overflow"))?
-                } else {
-                    *generation
-                },
-                recovery_ref: None,
-            }),
-            (WorkItemExecutionState::Terminal { .. }, _) => {
-                return Err(anyhow!("cannot update terminal WorkItem execution state"));
-            }
-        };
-        let command = if let Some(state) = next_state {
-            ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
-                command_id: format!("work_item:update:{}:{}", record.id, record.revision),
-                work_item_id: record.id.clone(),
-                expected: authoritative.clone(),
-                record: WorkItemExecutionRecord {
-                    source_revision: record.revision,
-                    state,
-                },
-            }))
-        } else {
-            ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(AdvanceWorkItemSourceRevision {
+        let command = ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
+            AdvanceWorkItemSourceRevision {
                 command_id: format!("work_item:update:{}:{}", record.id, record.revision),
                 work_item_id: record.id.clone(),
                 expected_source_revision: authoritative.source_revision,
                 source_revision: record.revision,
-            })
-        };
+            },
+        );
         Ok(
             crate::runtime_db::transitions::ExecutionProtocolTransition {
                 bootstrap: None,
@@ -3605,7 +3523,6 @@ impl RuntimeHandle {
     fn plan_work_item_execution_clear_blocker(
         &self,
         record: &WorkItemRecord,
-        wait_conditions: &[crate::types::WaitConditionRecord],
         read: &WorkCommandRead,
         readiness_owned_by_continuation_resume: bool,
     ) -> Result<crate::runtime_db::transitions::ExecutionProtocolTransition> {
@@ -3674,24 +3591,9 @@ impl RuntimeHandle {
                     )))
                 }
             }
-            WorkItemExecutionState::Runnable { generation, .. } if revision_changed => Some(
-                ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
-                    command_id: format!(
-                        "work_item:clear_blocker:{}:{}",
-                        record.id, record.revision
-                    ),
-                    work_item_id: record.id.clone(),
-                    expected: authoritative.clone(),
-                    record: WorkItemExecutionRecord {
-                        source_revision: record.revision,
-                        state: WorkItemExecutionState::Runnable {
-                            generation: *generation,
-                            recovery_ref: None,
-                        },
-                    },
-                })),
-            ),
-            WorkItemExecutionState::InFlight { .. } if revision_changed => {
+            WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::InFlight { .. }
+                if revision_changed =>
+            {
                 Some(ExecutionProtocolCommand::AdvanceWorkItemSourceRevision(
                     AdvanceWorkItemSourceRevision {
                         command_id: format!(
@@ -3709,17 +3611,8 @@ impl RuntimeHandle {
             }
             _ => None,
         };
-        if command.is_none()
-            && !wait_conditions.is_empty()
-            && !readiness_owned_by_continuation_resume
-        {
-            // When the continuation resume owns this WorkItem's canonical
-            // transition, its source fence re-derives the cancelled waits
-            // within the same transaction.
-            return Err(anyhow!(
-                "cancelled WorkItem waits require a canonical readiness transition"
-            ));
-        }
+        // An unbound wait can block the queue projection without changing the
+        // execution state. Its cancellation needs no synthetic readiness write.
         Ok(
             crate::runtime_db::transitions::ExecutionProtocolTransition {
                 bootstrap: None,
@@ -4205,10 +4098,9 @@ impl RuntimeHandle {
                         )
                     })
         });
-        let mut execution_protocol = if blocker_cleared {
+        let mut execution_protocol = if clear_blocker {
             self.plan_work_item_execution_clear_blocker(
                 &record,
-                &wait_conditions,
                 &read,
                 readiness_owned_by_continuation_resume,
             )?
@@ -4361,28 +4253,6 @@ impl RuntimeHandle {
         todo_list: Option<Vec<TodoItem>>,
         blocked_by: Option<Option<String>>,
     ) -> Result<WorkItemRecord> {
-        self.update_work_item_fields_with_recheck(
-            work_item_id,
-            objective,
-            plan_status,
-            _plan,
-            todo_list,
-            blocked_by,
-            None,
-        )
-        .await
-    }
-
-    pub async fn update_work_item_fields_with_recheck(
-        &self,
-        work_item_id: String,
-        objective: Option<String>,
-        plan_status: Option<WorkItemPlanStatus>,
-        _plan: Option<Option<String>>,
-        todo_list: Option<Vec<TodoItem>>,
-        blocked_by: Option<Option<String>>,
-        recheck_after_ms: Option<u64>,
-    ) -> Result<WorkItemRecord> {
         let _admission = self.execution_admission_lease()?;
         let agent_id = self.agent_id().await?;
         let existing = self.validate_owned_work_item(&agent_id, &work_item_id)?;
@@ -4397,11 +4267,6 @@ impl RuntimeHandle {
         let mut record = existing.clone();
         let mut wrote_item = false;
         let previous_objective = record.objective.clone();
-        let clear_blocker = blocked_by.as_ref().is_some_and(Option::is_none);
-        let focus_release_reason = blocked_by
-            .as_ref()
-            .is_some_and(Option::is_some)
-            .then_some("work_item_blocked");
         if let Some(objective) = objective {
             record.objective = objective;
             record.updated_at = Utc::now();
@@ -4417,30 +4282,9 @@ impl RuntimeHandle {
             record.updated_at = Utc::now();
             wrote_item = true;
         }
-        let readiness_mutation = blocked_by.as_ref().map(|blocked_by| match blocked_by {
-            Some(reason) => WorkItemReadinessMutation::Pause(reason.clone()),
-            None => WorkItemReadinessMutation::Resume,
-        });
         if let Some(blocked_by) = blocked_by {
-            let now = self.now();
             record.blocked_by = blocked_by;
-            // An explicit operator/agent blocker is never wait-derived.
-            record.blocked_by_wait_id = None;
-            match record.blocked_by {
-                Some(_) => {
-                    let recheck_after_ms = recheck_after_ms.unwrap_or(60 * 60 * 1000);
-                    let recheck_after_ms = i64::try_from(recheck_after_ms).unwrap_or(i64::MAX);
-                    let recheck_after = chrono::Duration::try_milliseconds(recheck_after_ms)
-                        .unwrap_or(chrono::Duration::MAX);
-                    record.recheck_at = Some(now + recheck_after);
-                    record.recheck_consumed_at = None;
-                }
-                None => {
-                    record.recheck_at = None;
-                    record.recheck_consumed_at = None;
-                }
-            }
-            record.updated_at = now;
+            record.updated_at = self.now();
             wrote_item = true;
         }
         if wrote_item {
@@ -4464,39 +4308,7 @@ impl RuntimeHandle {
                     "objective_changed": previous_objective != record.objective,
                 }),
             ));
-            let mut state = self.agent_state().await?;
-            let expected_state = state.clone();
-            let mut agent_state = None;
-            if let Some(reason) = focus_release_reason {
-                let release_current =
-                    state.current_work_item_id.as_deref() == Some(record.id.as_str());
-                let release_turn =
-                    state.current_turn_work_item_id.as_deref() == Some(record.id.as_str());
-                if release_current {
-                    state.current_work_item_id = None;
-                }
-                if release_turn {
-                    state.current_turn_work_item_id = None;
-                }
-                if release_current || release_turn {
-                    audit_events.push(AuditEvent::legacy(
-                        "work_item_focus_released",
-                        serde_json::json!({
-                            "agent_id": agent_id,
-                            "work_item_id": record.id.as_str(),
-                            "reason": reason,
-                            "readiness": record.readiness(),
-                            "revision": record.revision,
-                        }),
-                    ));
-                    agent_state = Some(crate::runtime_db::transitions::AgentStateMutation {
-                        expected: Some(Box::new(expected_state)),
-                        record: Box::new(state),
-                    });
-                }
-            }
-            let execution_protocol =
-                self.plan_work_item_execution_update(&record, readiness_mutation)?;
+            let execution_protocol = self.plan_work_item_execution_update(&record)?;
             let commit = {
                 let mut mutation = self.begin_mutation().await?;
                 mutation.attach_plan_preparation(plan_preparation)?;
@@ -4509,7 +4321,7 @@ impl RuntimeHandle {
                                 record: record.clone(),
                                 expected_revision: existing.revision,
                             },
-                            agent_state,
+                            agent_state: None,
                             brief_evidence: Vec::new(),
                             audit_events,
                             index_changes: self
@@ -4525,93 +4337,8 @@ impl RuntimeHandle {
                     .await
             }?;
             self.apply_transition_commit(commit).await;
-            if clear_blocker {
-                let wake_at = self.now();
-                self.apply_task_result_operation((&record.id, wake_at), || {
-                    crate::runtime_db::transitions::TaskResultOperation::Wake {
-                        work_item_id: record.id.clone(),
-                        at: wake_at,
-                    }
-                })
-                .await?
-                .count()?;
-            }
         }
         Ok(record)
-    }
-
-    pub async fn consume_work_item_recheck(
-        &self,
-        work_item_id: &str,
-    ) -> Result<Option<WorkItemRecord>> {
-        let agent_id = self.agent_id().await?;
-        let existing = match self.validate_owned_work_item(&agent_id, work_item_id) {
-            Ok(record) => record,
-            Err(_) => return Ok(None),
-        };
-        if existing.state != WorkItemState::Open || existing.blocked_by.is_none() {
-            return Ok(None);
-        }
-        let Some(recheck_at) = existing.recheck_at else {
-            return Ok(None);
-        };
-        if existing
-            .recheck_consumed_at
-            .is_some_and(|consumed_at| consumed_at >= recheck_at)
-        {
-            return Ok(Some(existing));
-        }
-
-        let consumed_at = self.now();
-        let mut record = WorkItemRecord {
-            revision: existing.revision + 1,
-            recheck_consumed_at: Some(consumed_at),
-            updated_at: consumed_at,
-            ..existing
-        };
-        let (plan_artifact_changed, plan_preparation) =
-            self.prepare_work_plan_file(&mut record, None).await?;
-        let mut audit_events = Vec::new();
-        if plan_artifact_changed {
-            if let Some(event) = self.work_item_plan_artifact_refreshed_event(&record) {
-                audit_events.push(event);
-            }
-        }
-        audit_events.push(AuditEvent::legacy(
-            "work_item_recheck_consumed",
-            serde_json::json!({
-                "work_item_id": record.id.clone(),
-                "revision": record.revision,
-                "recheck_at": record.recheck_at,
-                "recheck_consumed_at": record.recheck_consumed_at,
-            }),
-        ));
-        let commit = {
-            let mut mutation = self.begin_mutation().await?;
-            mutation.attach_plan_preparation(plan_preparation)?;
-            mutation
-                .commit_work_transition(
-                    crate::ids::audit_event_id(),
-                    crate::runtime_db::transitions::WorkItemTransitionCommand {
-                        agent_id,
-                        mutation: crate::runtime_db::transitions::WorkItemMutation::Update {
-                            record: record.clone(),
-                            expected_revision: existing.revision,
-                        },
-                        agent_state: None,
-                        brief_evidence: Vec::new(),
-                        audit_events,
-                        index_changes: self.inner.storage.index_changes_for_work_item(&record)?,
-                        notify_scheduler: true,
-                        fault: self.take_transition_fault(),
-                    },
-                    crate::runtime_db::transitions::ExecutionProtocolTransition::default(),
-                    true,
-                )
-                .await
-        }?;
-        self.apply_transition_commit(commit).await;
-        Ok(Some(record))
     }
 
     pub async fn complete_work_item(
@@ -5556,13 +5283,6 @@ impl RuntimeHandle {
                 let generation = existing.revision.max(1);
                 let active_waits = read.active_waits_for(&existing.id)?;
                 let state = match active_waits.as_slice() {
-                    [] if existing.blocked_by.is_some() => WorkItemExecutionState::Paused {
-                        generation,
-                        reason: existing
-                            .blocked_by
-                            .clone()
-                            .expect("manual blocker checked above"),
-                    },
                     [] => WorkItemExecutionState::Runnable {
                         generation,
                         recovery_ref: None,

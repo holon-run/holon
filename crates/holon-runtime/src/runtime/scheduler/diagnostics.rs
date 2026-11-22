@@ -94,34 +94,16 @@ pub(crate) fn scheduling_advisories_for_facts(
     agent: &AgentState,
     projection: &SchedulerProjection,
     posture: &AgentPostureProjection,
-    work_queue: &WorkQueueReadModel,
+    _work_queue: &WorkQueueReadModel,
     wait_conditions: &[WaitConditionRecord],
 ) -> Vec<SchedulingAdvisory> {
-    scheduling_advisories_for_selected_facts(
-        agent,
-        projection,
-        posture,
-        work_queue
-            .items
-            .iter()
-            .filter(|item| {
-                item.scheduling_state == WorkItemSchedulingState::Blocked
-                    && item.work_item.agent_id == agent.id
-                    && item.work_item.blocked_by.is_some()
-                    && item.work_item.recheck_at.is_none()
-                    && !item.has_active_waits
-                    && !item.has_active_task_waits
-            })
-            .map(|item| &item.work_item),
-        wait_conditions,
-    )
+    scheduling_advisories_for_selected_facts(agent, projection, posture, wait_conditions)
 }
 
-pub(crate) fn scheduling_advisories_for_selected_facts<'a>(
+pub(crate) fn scheduling_advisories_for_selected_facts(
     agent: &AgentState,
     projection: &SchedulerProjection,
     posture: &AgentPostureProjection,
-    blocked_work: impl Iterator<Item = &'a WorkItemRecord>,
     wait_conditions: &[WaitConditionRecord],
 ) -> Vec<SchedulingAdvisory> {
     let mut diagnostics = Vec::new();
@@ -181,20 +163,6 @@ pub(crate) fn scheduling_advisories_for_selected_facts<'a>(
             }
             Some(ExternalWaitRecoverability::Recoverable) | None => {}
         }
-    }
-
-    for item in blocked_work {
-        diagnostics.push(
-            SchedulingAdvisory::warning(
-                "blocked_work_item_without_recheck_or_wait",
-                "blocked WorkItem has no recheck deadline or active wait condition",
-            )
-            .work_item_id(item.id.clone())
-            .evidence("scheduling_state=Blocked")
-            .evidence("blocked_by_present=true")
-            .evidence("recheck_at=None")
-            .evidence("has_active_waits=false"),
-        );
     }
 
     diagnostics

@@ -725,6 +725,8 @@ pub struct ResumeWorkItemContinuation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkItemContinuationResumeSource {
     pub work_item_revision: u64,
+    /// Retained for historical command decoding; not used to derive an outcome.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blocked_by: Option<String>,
     pub active_wait_ids: Vec<String>,
     /// The most recently admitted active wait, by (created_at, id) order.
@@ -769,12 +771,6 @@ pub fn continuation_resume_outcome(
                 },
             }
         }
-        [] if source.blocked_by.is_some() => WorkItemOutcome::Pause {
-            reason: source
-                .blocked_by
-                .clone()
-                .expect("continuation resume blocker checked above"),
-        },
         [] => WorkItemOutcome::Continue,
         _ => WorkItemOutcome::Pause {
             reason: format!("work_item_waits_ambiguous:{work_item_id}"),
@@ -1078,6 +1074,9 @@ pub fn set_work_item_readiness(
         | (
             WorkItemExecutionState::Waiting { .. },
             WorkItemExecutionState::Runnable {
+                generation: next, ..
+            }
+            | WorkItemExecutionState::Paused {
                 generation: next, ..
             },
         ) => {

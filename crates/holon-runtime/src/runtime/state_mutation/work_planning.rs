@@ -42,7 +42,6 @@ pub(crate) struct PreparedSchedulerRead {
     pub tasks: super::super::resident_task::CapturedTasks,
     /// Original consumed-reply/owner predicate, acquired under this reservation.
     pub recovered_replies: BTreeSet<String>,
-    pub due_rechecks: Vec<WorkItemRecord>,
     pub scheduling_posture: crate::types::AgentPostureProjection,
     pub active_waits: Vec<WaitConditionRecord>,
     pub advisories: Vec<super::super::scheduler::SchedulingAdvisory>,
@@ -1216,9 +1215,6 @@ pub(crate) fn derive_scheduler_read(
         latest_error.is_some_and(|at| latest_success.is_none_or(|success| at > success));
     let ranked_work = work.queue_work_ranks(&state, &triggers.records)?;
     let work_selection = work.scheduler_work_selection(&state, &ranked_work)?;
-    let recheck_refs = work.due_work_rechecks(now)?;
-    crate::diagnostics::resource_io::admit_cloned_value(&recheck_refs)?;
-    let due_rechecks = recheck_refs.into_iter().cloned().collect::<Vec<_>>();
     let execution_snapshot = inputs.execution_state_if_initialized()?;
     crate::diagnostics::resource_io::charge_owned_metadata(
         u64::try_from(activation_waits.len())?
@@ -1233,7 +1229,6 @@ pub(crate) fn derive_scheduler_read(
         &work_selection,
         &active_waits,
         &activation_waits,
-        &due_rechecks,
         &execution_snapshot,
     )?;
     let scheduling_posture =
@@ -1259,7 +1254,6 @@ pub(crate) fn derive_scheduler_read(
         &state,
         &projection,
         &scheduling_posture,
-        work.scheduler_blocked_work(&ranked_work),
         &active_waits,
     );
     // Keep the retained Active Wait Vec and derived owned DTOs visible;
@@ -1296,7 +1290,6 @@ pub(crate) fn derive_scheduler_read(
         scheduling,
         tasks,
         recovered_replies: BTreeSet::new(),
-        due_rechecks,
         scheduling_posture,
         active_waits,
         advisories,
@@ -1313,13 +1306,12 @@ fn scheduler_owned_bytes(
     selection: &SchedulerWorkSelection,
     active_waits: &[WaitConditionRecord],
     waits: &[WaitConditionRecord],
-    due: &[WorkItemRecord],
     execution: &Option<crate::domain::execution_protocol::ExecutionProtocolState>,
 ) -> Result<OwnedBytesEstimate> {
     let queue_bytes = serialized_bytes(selection)?;
     // The scheduler consumes the selection and retains these Work bodies once.
     let payload_bytes =
-        queue_bytes.saturating_add(serialized_bytes(&(active_waits, waits, due, execution))?);
+        queue_bytes.saturating_add(serialized_bytes(&(active_waits, waits, execution))?);
     Ok(OwnedBytesEstimate {
         payload_bytes,
         metadata_estimate_bytes: (std::mem::size_of::<PreparedSchedulerRead>() as u64)

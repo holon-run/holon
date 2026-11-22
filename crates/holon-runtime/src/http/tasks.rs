@@ -586,18 +586,15 @@ pub async fn update_work_item(
             }
         })
         .transpose()?;
+    if request.recheck_after.is_some() {
+        return Err(bad_request(
+            "blocked_by recheck_after is deprecated; use WaitFor with recheck_after_ms",
+        ));
+    }
     let blocked_by = request
         .blocked_by
         .map(parse_blocked_by_mutation)
         .transpose()?;
-    if request.recheck_after == Some(0) {
-        return Err(bad_request("recheck_after must be greater than 0"));
-    }
-    if request.recheck_after.is_some() && blocked_by.as_ref().is_none_or(Option::is_none) {
-        return Err(bad_request(
-            "recheck_after requires a non-empty blocked_by value",
-        ));
-    }
     if objective.is_none()
         && request.plan_status.is_none()
         && request.todo_list.is_none()
@@ -616,14 +613,13 @@ pub async fn update_work_item(
         .await
         .map_err(error_response)?;
     let record = runtime
-        .update_work_item_fields_with_recheck(
+        .update_work_item_fields(
             work_item_id,
             objective,
             request.plan_status,
             None,
             request.todo_list,
             blocked_by,
-            request.recheck_after,
         )
         .await
         .map_err(work_item_lifecycle_error)?;

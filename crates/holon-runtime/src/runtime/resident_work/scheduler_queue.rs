@@ -67,23 +67,6 @@ impl CapturedWork {
             .map(|rank| self.materialize_queue_work(state, triggers, rank.work_item))
             .transpose()
     }
-
-    pub(crate) fn scheduler_blocked_work<'a>(
-        &'a self,
-        ranked: &'a [QueueWorkRank<'a>],
-    ) -> impl Iterator<Item = &'a WorkItemRecord> {
-        ranked.iter().filter_map(|rank| {
-            let work = rank.work_item;
-            (rank.scheduling_state == WorkItemSchedulingState::Blocked
-                && work.agent_id == self.scope.agent_id
-                && work.blocked_by.is_some()
-                && work.recheck_at.is_none()
-                && !self
-                    .queue_active_waits()
-                    .any(|wait| wait.work_item_id.as_deref() == Some(work.id.as_str())))
-            .then_some(work)
-        })
-    }
 }
 
 fn is_current(state: &AgentState, rank: &QueueWorkRank<'_>) -> bool {

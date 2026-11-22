@@ -82,6 +82,7 @@ fn ids(rows: &[WorkItemSchedulingProjection]) -> Vec<&str> {
 #[test]
 fn queue_sort_large_equal_timestamps_preserve_full_order_current_and_windows() -> Result<()> {
     let mut latest = QueueLatestWork::new();
+    let mut waits = Vec::new();
     for index in (0..65).rev() {
         for (prefix, state) in [
             ("r", WorkItemState::Open),
@@ -95,11 +96,12 @@ fn queue_sort_large_equal_timestamps_preserve_full_order_current_and_windows() -
                 record.plan_status = WorkItemPlanStatus::NeedsInput;
             } else if prefix == "b" {
                 record.blocked_by = Some("manual".into());
+                waits.push(crate::storage::test_system_work_wait(&record));
             }
             latest.insert(record.id.clone(), record);
         }
     }
-    let queue = derive_context_work_queue(Some("r-032"), latest, vec![], vec![], vec![])?;
+    let queue = derive_context_work_queue(Some("r-032"), latest, vec![], waits, vec![])?;
     let expected = std::iter::once("r-032".to_owned())
         .chain(
             (0..65)

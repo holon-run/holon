@@ -162,7 +162,13 @@ pub(crate) fn validate_execution_commands_tx(
             validate_recover_unadvanced_task_result_claim(tx, agent_id, command)?;
         }
         if let ExecutionProtocolCommand::SetWorkItemReadiness(command) = command {
-            validate_set_work_item_readiness(command, work_item_mutations, wait_conditions)?;
+            validate_set_work_item_readiness(
+                tx,
+                agent_id,
+                command,
+                work_item_mutations,
+                wait_conditions,
+            )?;
         }
         if let ExecutionProtocolCommand::RecheckContextBudgetStop(command) = command {
             validate_context_budget_stop_recheck(tx, agent_id, command)?;
@@ -428,13 +434,6 @@ pub(super) fn synchronize_work_item_revisions_opt(
                     })?
                     .collect::<std::result::Result<Vec<_>, _>>()?;
                 let execution_state = match wait_ids.as_slice() {
-                    [] if record.blocked_by.is_some() => WorkItemExecutionState::Paused {
-                        generation: record.revision.max(1),
-                        reason: record
-                            .blocked_by
-                            .clone()
-                            .expect("manual blocker checked above"),
-                    },
                     [] => WorkItemExecutionState::Runnable {
                         generation: record.revision.max(1),
                         recovery_ref: None,
@@ -651,7 +650,7 @@ pub(crate) fn persist_execution_commands_with_touched_facts_tx(
 
 /// Persists the already validated commands, then qualifies only the WorkExecution
 /// rows this transaction actually changed. The readback is one row per ID.
-pub(super) fn acknowledge_persisted_work_executions_tx(
+pub(in crate::runtime_db) fn acknowledge_persisted_work_executions_tx(
     tx: &Transaction<'_>,
     prepared: Option<PreparedExecutionProtocolCommands>,
     scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
@@ -1176,6 +1175,8 @@ pub(crate) fn missing_revision_attribution_tx(
 }
 
 fn validate_set_work_item_readiness(
+    tx: &Transaction<'_>,
+    agent_id: &str,
     command: &execution_protocol::SetWorkItemReadiness,
     mutations: &[WorkItemMutation],
     wait_conditions: &[crate::types::WaitConditionRecord],
@@ -1193,22 +1194,46 @@ fn validate_set_work_item_readiness(
     } else if command.record.source_revision != command.expected.source_revision {
         bail!("WorkItem readiness revision advance requires an atomic WorkItem update");
     }
-    match &command.record.state {
-        WorkItemExecutionState::Paused { .. } => {
-            if mutation.is_none_or(|record| record.blocked_by.is_none()) {
-                bail!("WorkItem pause transition requires an atomic blocker update");
+    match (&command.expected.state, &command.record.state) {
+        (
+            WorkItemExecutionState::Waiting { wait, .. },
+            WorkItemExecutionState::Paused { reason, .. },
+        ) => {
+            if reason != "timer_cancelled"
+                || !wait_conditions.iter().any(|condition| {
+                    condition.id == wait.wait_id
+                        && condition.agent_id == agent_id
+                        && condition.work_item_id.as_deref() == Some(command.work_item_id.as_str())
+                        && condition.kind == crate::types::WaitConditionKind::Timer
+                        && condition.status == crate::types::WaitConditionStatus::Cancelled
+                        && condition
+                            .continuation
+                            .as_ref()
+                            .is_some_and(|value| value["terminal_reason"] == "timer_cancelled")
+                })
+            {
+                bail!("WorkItem pause requires cancellation of its exact timer wait");
             }
         }
-        WorkItemExecutionState::Runnable { .. } => {
-            let clears_blocker = mutation.is_some_and(|record| record.blocked_by.is_none());
+        (WorkItemExecutionState::Waiting { wait, .. }, WorkItemExecutionState::Runnable { .. }) => {
             let cancels_wait = wait_conditions.iter().any(|condition| {
-                condition.work_item_id.as_deref() == Some(command.work_item_id.as_str())
+                condition.id == wait.wait_id
+                    && condition.agent_id == agent_id
+                    && condition.work_item_id.as_deref() == Some(command.work_item_id.as_str())
                     && condition.status == crate::types::WaitConditionStatus::Cancelled
             });
-            if !clears_blocker && !cancels_wait {
-                bail!("WorkItem runnable transition requires blocker or wait clearance");
+            let already_cancelled = !cancels_wait
+                && tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM wait_conditions WHERE wait_condition_id = ?1
+                 AND agent_id = ?2 AND work_item_id = ?3 AND status = 'cancelled')",
+                    params![wait.wait_id, agent_id, command.work_item_id],
+                    |row| row.get::<_, bool>(0),
+                )?;
+            if !cancels_wait && !already_cancelled {
+                bail!("WorkItem runnable transition requires clearance of its exact wait");
             }
         }
+        (_, WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::Paused { .. }) => {}
         _ => bail!("WorkItem readiness transition must target Runnable or Paused"),
     }
     Ok(())
@@ -1235,7 +1260,6 @@ fn validate_context_budget_stop_recheck(
     if work.revision != command.expected.source_revision
         || work.state != crate::types::WorkItemState::Open
         || work.plan_status != crate::types::WorkItemPlanStatus::Ready
-        || work.blocked_by.is_some()
         || has_wait
     {
         bail!("context budget recheck source is not eligible");
@@ -1342,7 +1366,7 @@ fn validate_resume_work_item_continuation(
         .map(|(id, _)| id.clone());
     let source = execution_protocol::WorkItemContinuationResumeSource {
         work_item_revision: parent.revision,
-        blocked_by: parent.blocked_by.clone(),
+        blocked_by: None,
         active_wait_ids: active_waits.into_keys().collect(),
         latest_admitted_wait_id,
     };

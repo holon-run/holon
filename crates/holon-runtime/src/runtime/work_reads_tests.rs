@@ -116,77 +116,6 @@ fn database(directory: &tempfile::TempDir) -> RuntimeDb {
     .unwrap()
 }
 
-#[test]
-fn resident_work_rechecks_match_sql_normalized_millisecond_predicates() {
-    let directory = tempfile::tempdir().unwrap();
-    let db = database(&directory);
-    let mut due = work("due", WorkItemState::Open);
-    due.blocked_by = Some("external dependency".into());
-    due.recheck_at = Some(at(2000) + chrono::Duration::nanoseconds(900_000));
-    let mut future = work("future", WorkItemState::Open);
-    future.blocked_by = Some("later dependency".into());
-    future.recheck_at = Some(at(4000));
-    let mut consumed_same_millis = work("already-consumed", WorkItemState::Open);
-    consumed_same_millis.blocked_by = Some("same millisecond".into());
-    consumed_same_millis.recheck_at = due.recheck_at;
-    consumed_same_millis.recheck_consumed_at =
-        Some(at(2000) + chrono::Duration::nanoseconds(100_000));
-    let mut completing = work("completing", WorkItemState::Completing);
-    completing.blocked_by = Some("terminal candidate".into());
-    completing.recheck_at = Some(at(1500));
-    let mut unblocked = work("unblocked", WorkItemState::Open);
-    unblocked.recheck_at = Some(at(1500));
-    for record in [
-        &due,
-        &future,
-        &consumed_same_millis,
-        &completing,
-        &unblocked,
-    ] {
-        assert!(db.work_items().insert_new(record).unwrap());
-    }
-    let records = [
-        &due,
-        &future,
-        &consumed_same_millis,
-        &completing,
-        &unblocked,
-    ]
-    .into_iter()
-    .map(|record| CanonicalWorkRecord::Work(db.work_items().latest(&record.id).unwrap().unwrap()))
-    .collect();
-    let observation = captured(records);
-    let now = at(2000);
-    let expected = db
-        .work_items()
-        .due_blocked_rechecks(&scope().agent_id, now)
-        .unwrap();
-    assert_eq!(expected, vec![due]);
-    assert_eq!(
-        observation
-            .due_work_rechecks(now)
-            .unwrap()
-            .into_iter()
-            .cloned()
-            .collect::<Vec<_>>(),
-        expected
-    );
-    assert_eq!(
-        observation.next_work_recheck_at().unwrap(),
-        db.work_items().next_recheck_at(&scope().agent_id).unwrap()
-    );
-    assert_eq!(observation.next_work_recheck_at().unwrap(), Some(at(2000)));
-    assert_eq!(
-        observation
-            .due_work_rechecks(at(4000))
-            .unwrap()
-            .iter()
-            .map(|work| work.id.as_str())
-            .collect::<Vec<_>>(),
-        vec!["due", "future"]
-    );
-}
-
 fn wait(id: &str, owner: Option<&str>, millis: i64) -> WaitConditionRecord {
     serde_json::from_value(serde_json::json!({
         "id":id,"agent_id":scope().agent_id,"work_item_id":owner,
@@ -197,7 +126,7 @@ fn wait(id: &str, owner: Option<&str>, millis: i64) -> WaitConditionRecord {
     .unwrap()
 }
 #[test]
-fn resident_agent_wait_recheck_preserves_active_triggered_resolved_sql_parity() {
+fn resident_wait_recheck_preserves_active_triggered_resolved_sql_parity() {
     let directory = tempfile::tempdir().unwrap();
     let db = database(&directory);
     let owner = work("owned-work", WorkItemState::Open);
@@ -238,34 +167,28 @@ fn resident_agent_wait_recheck_preserves_active_triggered_resolved_sql_parity() 
         );
         let expected_next = durable
             .iter()
-            .filter(|wait| {
-                wait.work_item_id.is_none() && wait.status == WaitConditionStatus::Active
-            })
+            .filter(|wait| wait.status == WaitConditionStatus::Active)
             .filter_map(WaitConditionRecord::recheck_at)
             .min();
         let expected_due = durable
             .iter()
             .filter(|wait| {
-                wait.work_item_id.is_none()
-                    && wait.status == WaitConditionStatus::Active
+                wait.status == WaitConditionStatus::Active
                     && wait
                         .recheck_at()
                         .is_some_and(|deadline| deadline <= at(6000))
             })
             .min_by_key(|wait| wait.recheck_at());
+        assert_eq!(observation.next_wait_recheck_at().unwrap(), expected_next);
         assert_eq!(
-            observation.next_agent_wait_recheck_at().unwrap(),
-            expected_next
-        );
-        assert_eq!(
-            observation.due_agent_wait_recheck(at(6000)).unwrap(),
+            observation.due_wait_recheck(at(6000)).unwrap(),
             expected_due
         );
-        assert_eq!(
-            expected_next.is_some(),
-            status == WaitConditionStatus::Active,
-            "Triggered stays resident but cannot emit another agent-wait deadline"
-        );
+        let due = expected_due.expect("the WorkItem wait stays active");
+        assert!(due.id == agent_wait.id || due.id == owned_wait.id);
+        if status != WaitConditionStatus::Active {
+            assert_eq!(due.id, owned_wait.id);
+        }
     }
 }
 
@@ -283,14 +206,14 @@ fn an_unprepared_named_work_is_never_an_absent_or_empty_live_observation() {
     partial.live_complete = false;
     assert!(matches!(
         partial
-            .next_work_recheck_at()
+            .live_work_items()
             .unwrap_err()
             .downcast_ref::<WorkReadError>(),
         Some(WorkReadError::IncompleteLive)
     ));
     assert!(matches!(
         partial
-            .next_agent_wait_recheck_at()
+            .next_wait_recheck_at()
             .unwrap_err()
             .downcast_ref::<WorkReadError>(),
         Some(WorkReadError::IncompleteLive)

@@ -59,10 +59,6 @@ pub(crate) enum CanonicalActivationScenario {
         expected_work_item_revision: u64,
         expected_work_item_generation: Option<u64>,
     },
-    BlockedRecheck {
-        work_item_id: String,
-        expected_work_item_revision: u64,
-    },
     ProviderRecovery {
         work_item_id: String,
     },
@@ -98,10 +94,6 @@ pub(crate) enum CanonicalActivationCandidate {
         expected_work_item_revision: u64,
         expected_work_item_generation: Option<u64>,
     },
-    BlockedRecheck {
-        work_item_id: String,
-        expected_work_item_revision: u64,
-    },
     ProviderRecovery {
         work_item_id: String,
     },
@@ -128,7 +120,6 @@ impl CanonicalActivationScenario {
     pub(crate) fn work_item_id(&self) -> Option<&str> {
         match self {
             Self::WorkItemAutonomousContinuation { work_item_id, .. }
-            | Self::BlockedRecheck { work_item_id, .. }
             | Self::ProviderRecovery { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
@@ -144,7 +135,6 @@ impl CanonicalActivationCandidate {
         match self {
             Self::UnboundTaskResultWaitOrReduce => EXACT_WAIT_RESUME_SCENARIO,
             Self::WorkItemAutonomousContinuation { .. }
-            | Self::BlockedRecheck { .. }
             | Self::ProviderRecovery { .. }
             | Self::InternalFollowup { .. } => WORK_ITEM_AUTONOMOUS_CONTINUATION_SCENARIO,
             Self::ExactTaskRejoin { .. } => EXACT_TASK_REJOIN_SCENARIO,
@@ -159,7 +149,6 @@ impl CanonicalActivationCandidate {
         match self {
             Self::UnboundTaskResultWaitOrReduce => None,
             Self::WorkItemAutonomousContinuation { work_item_id, .. }
-            | Self::BlockedRecheck { work_item_id, .. }
             | Self::ProviderRecovery { work_item_id }
             | Self::InternalFollowup { work_item_id }
             | Self::ExactTaskRejoin { work_item_id, .. }
@@ -757,6 +746,14 @@ pub(crate) fn authority_scenarios_for_message_claim(
     scenarios
 }
 
+pub(super) fn is_retired_work_item_recheck(message: &MessageEnvelope) -> bool {
+    matches!(
+        (&message.kind, &message.origin),
+        (MessageKind::SystemTick, MessageOrigin::System { subsystem })
+            if subsystem == "work_item_recheck"
+    )
+}
+
 pub(crate) fn canonical_activation_candidate(
     message: &MessageEnvelope,
     _continuation_resolution: Option<&ContinuationResolution>,
@@ -809,33 +806,10 @@ pub(crate) fn canonical_activation_candidate(
             },
         );
     }
-    if matches!(
-        (&message.kind, &message.origin),
-        (MessageKind::SystemTick, MessageOrigin::System { subsystem })
-            if subsystem == "work_item_recheck"
-    ) {
-        let metadata = message
-            .metadata
-            .as_ref()
-            .and_then(|metadata| metadata.get("work_item_recheck"));
-        let primary_work_item_id = metadata
-            .and_then(|metadata| metadata.get("primary_work_item_id"))
-            .and_then(serde_json::Value::as_str)
-            .or(message.work_item_id.as_deref());
-        let expected_work_item_revision = metadata
-            .and_then(|metadata| metadata.get("primary_work_item_revision"))
-            .and_then(serde_json::Value::as_u64)
-            .filter(|revision| *revision > 0);
-        if let (Some(work_item_id), Some(expected_work_item_revision)) =
-            (primary_work_item_id, expected_work_item_revision)
-        {
-            return Ok(Some(CanonicalActivationCandidate::BlockedRecheck {
-                work_item_id: work_item_id.to_string(),
-                expected_work_item_revision,
-            }));
-        }
-        // A recheck without a resolvable primary target stays a lifecycle
-        // nudge rather than being rejected as an unclassified model re-entry.
+    if is_retired_work_item_recheck(message) {
+        // Retired ticks may still be queued after an upgrade. Do not give
+        // them either WorkItem or lifecycle activation authority.
+        return Ok(None);
     }
     if message.kind == MessageKind::InternalFollowup {
         if super::turn::TurnModelSelection::message_has_provider_recovery_provenance(message) {
@@ -994,16 +968,6 @@ pub(crate) fn resolve_canonical_activation_scenario(
                 expected_work_item_generation,
             },
         ));
-    }
-    if let CanonicalActivationCandidate::BlockedRecheck {
-        work_item_id,
-        expected_work_item_revision,
-    } = candidate
-    {
-        return Ok(Some(CanonicalActivationScenario::BlockedRecheck {
-            work_item_id,
-            expected_work_item_revision,
-        }));
     }
     if let CanonicalActivationCandidate::ProviderRecovery { work_item_id } = candidate {
         return Ok(Some(CanonicalActivationScenario::ProviderRecovery {
@@ -1370,7 +1334,7 @@ pub(super) fn message_matches_wait_condition(
     ) && message.authority_class == AuthorityClass::RuntimeInstruction
         && message.delivery_surface == Some(MessageDeliverySurface::RuntimeSystem)
         && message.admission_context == Some(AdmissionContext::RuntimeOwned)
-        && condition.work_item_id.is_none()
+        && condition.work_item_id == message.work_item_id
         && message.source_refs.get("wait_id") == Some(&condition.id)
     {
         return true;
@@ -1687,7 +1651,7 @@ mod tests {
     use crate::types::{AdmissionContext, AgentState, MessageBody, MessageDeliverySurface};
 
     #[test]
-    fn blocked_recheck_candidate_binds_primary_target_with_revision_fence() {
+    fn legacy_blocked_recheck_tick_has_no_activation_candidate() {
         let mut message = MessageEnvelope::new(
             "default",
             MessageKind::SystemTick,
@@ -1711,25 +1675,12 @@ mod tests {
         }));
         assert_eq!(
             canonical_activation_candidate(&message, None, None).unwrap(),
-            Some(CanonicalActivationCandidate::BlockedRecheck {
-                work_item_id: "wi-target".into(),
-                expected_work_item_revision: 7,
-            })
+            None
         );
-
-        // Without a resolvable primary revision the recheck degrades to a
-        // lifecycle nudge instead of being rejected as unclassified.
-        message.metadata = Some(serde_json::json!({
-            "work_item_recheck": {
-                "count": 1,
-                "items": [{"work_item_id": "wi-target"}]
-            }
-        }));
+        message.metadata = None;
         assert_eq!(
             canonical_activation_candidate(&message, None, None).unwrap(),
-            Some(CanonicalActivationCandidate::LifecycleExternalNudge {
-                agent_id: "default".into(),
-            })
+            None
         );
     }
 

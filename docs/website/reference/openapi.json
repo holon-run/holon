@@ -13892,13 +13892,14 @@
                 "type": "string"
               },
               "blocked_by": {
+                "description": "Descriptive note; never used as a scheduling gate.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "blocked_by_wait_id": {
-                "description": "The wait condition whose registration derived the current `blocked_by`.\n `None` when the blocker was set independently (operator update, turn\n closure, scheduler) or predates blocker provenance. Blocker ownership\n is decided by this identity, never by display-text equality.",
+                "description": "Historical wait-derived blocker metadata. New waits do not write it.",
                 "type": [
                   "string",
                   "null"
@@ -14048,6 +14049,7 @@
                 "type": "string"
               },
               "recheck_at": {
+                "description": "Historical blocker recheck deadline; no longer scheduled.",
                 "format": "date-time",
                 "type": [
                   "string",
@@ -14210,13 +14212,14 @@
                 "type": "string"
               },
               "blocked_by": {
+                "description": "Descriptive note; never used as a scheduling gate.",
                 "type": [
                   "string",
                   "null"
                 ]
               },
               "blocked_by_wait_id": {
-                "description": "The wait condition whose registration derived the current `blocked_by`.\n `None` when the blocker was set independently (operator update, turn\n closure, scheduler) or predates blocker provenance. Blocker ownership\n is decided by this identity, never by display-text equality.",
+                "description": "Historical wait-derived blocker metadata. New waits do not write it.",
                 "type": [
                   "string",
                   "null"
@@ -14366,6 +14369,7 @@
                 "type": "string"
               },
               "recheck_at": {
+                "description": "Historical blocker recheck deadline; no longer scheduled.",
                 "format": "date-time",
                 "type": [
                   "string",
@@ -21394,13 +21398,14 @@
             "type": "string"
           },
           "blocked_by": {
+            "description": "Descriptive note; never used as a scheduling gate.",
             "type": [
               "string",
               "null"
             ]
           },
           "blocked_by_wait_id": {
-            "description": "The wait condition whose registration derived the current `blocked_by`.\n `None` when the blocker was set independently (operator update, turn\n closure, scheduler) or predates blocker provenance. Blocker ownership\n is decided by this identity, never by display-text equality.",
+            "description": "Historical wait-derived blocker metadata. New waits do not write it.",
             "type": [
               "string",
               "null"
@@ -21550,6 +21555,7 @@
             "type": "string"
           },
           "recheck_at": {
+            "description": "Historical blocker recheck deadline; no longer scheduled.",
             "format": "date-time",
             "type": [
               "string",

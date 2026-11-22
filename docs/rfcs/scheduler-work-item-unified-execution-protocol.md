@@ -527,6 +527,13 @@ admission facts.
 
 ## Persistence And Compatibility
 
+`WorkItemRecord.blocked_by` is an editable description, not an execution
+transition. Updating it does not pause, resume, or schedule a recheck.
+Explicit pauses remain protocol state. `WaitFor` keeps the wait reason and
+optional fallback on the wait condition without mirroring into WorkItem
+fields. Historical blocker and recheck fields remain readable; legacy
+`work_item_recheck` ticks do not activate an execution.
+
 The runtime database remains the transactional store. The target normalized
 facts are:
 

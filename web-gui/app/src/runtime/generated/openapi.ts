@@ -6871,13 +6871,9 @@ export interface components {
         PickWorkItemResponse: {
             current_work_item: {
                 agent_id: string;
+                /** @description Descriptive note; never used as a scheduling gate. */
                 blocked_by?: string | null;
-                /**
-                 * @description The wait condition whose registration derived the current `blocked_by`.
-                 *      `None` when the blocker was set independently (operator update, turn
-                 *      closure, scheduler) or predates blocker provenance. Blocker ownership
-                 *      is decided by this identity, never by display-text equality.
-                 */
+                /** @description Historical wait-derived blocker metadata. New waits do not write it. */
                 blocked_by_wait_id?: string | null;
                 completion_intent?: {
                     /** Format: date-time */
@@ -6919,7 +6915,10 @@ export interface components {
                 } | null;
                 /** @enum {string} */
                 plan_status: "draft" | "ready" | "needs_input";
-                /** Format: date-time */
+                /**
+                 * Format: date-time
+                 * @description Historical blocker recheck deadline; no longer scheduled.
+                 */
                 recheck_at?: string | null;
                 /** Format: date-time */
                 recheck_consumed_at?: string | null;
@@ -6961,13 +6960,9 @@ export interface components {
             current_work_item_id: string;
             previous_work_item?: {
                 agent_id: string;
+                /** @description Descriptive note; never used as a scheduling gate. */
                 blocked_by?: string | null;
-                /**
-                 * @description The wait condition whose registration derived the current `blocked_by`.
-                 *      `None` when the blocker was set independently (operator update, turn
-                 *      closure, scheduler) or predates blocker provenance. Blocker ownership
-                 *      is decided by this identity, never by display-text equality.
-                 */
+                /** @description Historical wait-derived blocker metadata. New waits do not write it. */
                 blocked_by_wait_id?: string | null;
                 completion_intent?: {
                     /** Format: date-time */
@@ -7009,7 +7004,10 @@ export interface components {
                 } | null;
                 /** @enum {string} */
                 plan_status: "draft" | "ready" | "needs_input";
-                /** Format: date-time */
+                /**
+                 * Format: date-time
+                 * @description Historical blocker recheck deadline; no longer scheduled.
+                 */
                 recheck_at?: string | null;
                 /** Format: date-time */
                 recheck_consumed_at?: string | null;
@@ -8885,13 +8883,9 @@ export interface components {
         /** WorkItemRecord */
         WorkItemRecord: {
             agent_id: string;
+            /** @description Descriptive note; never used as a scheduling gate. */
             blocked_by?: string | null;
-            /**
-             * @description The wait condition whose registration derived the current `blocked_by`.
-             *      `None` when the blocker was set independently (operator update, turn
-             *      closure, scheduler) or predates blocker provenance. Blocker ownership
-             *      is decided by this identity, never by display-text equality.
-             */
+            /** @description Historical wait-derived blocker metadata. New waits do not write it. */
             blocked_by_wait_id?: string | null;
             completion_intent?: {
                 /** Format: date-time */
@@ -8933,7 +8927,10 @@ export interface components {
             } | null;
             /** @enum {string} */
             plan_status: "draft" | "ready" | "needs_input";
-            /** Format: date-time */
+            /**
+             * Format: date-time
+             * @description Historical blocker recheck deadline; no longer scheduled.
+             */
             recheck_at?: string | null;
             /** Format: date-time */
             recheck_consumed_at?: string | null;

@@ -47,8 +47,9 @@ use crate::runtime_db::conversation::{
 use crate::runtime_db::evidence::*;
 use crate::runtime_db::index_outbox::RuntimeIndexChange;
 use crate::runtime_db::transitions::{
-    apply_work_item_mutation_with_source_revision_tx, inject_fault, trigger_wait_and_enqueue_tx,
-    PostCommitEffects, WorkItemMutation,
+    apply_work_item_mutation_tx, execution_protocol_repository, inject_fault,
+    trigger_wait_and_enqueue_tx, validate_work_item_mutation_tx, PostCommitEffects,
+    WorkItemMutation,
 };
 use crate::runtime_db::types::*;
 use crate::runtime_db::workspace_context::WorkspaceContextChange;
@@ -3231,6 +3232,50 @@ impl TaskRepository<'_> {
 }
 
 impl WaitConditionRepository<'_> {
+    #[cfg(all(test, holon_lib_test_shard = "d"))]
+    pub(crate) fn upsert_qualified_for_fixture(
+        &self,
+        record: &WaitConditionRecord,
+        identity_incarnation: u64,
+    ) -> Result<()> {
+        use super::work_snapshot::{
+            prepare_work_write_tx, register_work_writes_tx, work_wait_write_keys_tx,
+            WorkDomainLoadRequest,
+        };
+        use crate::runtime::resident_work::{WorkCaptureRequest, WorkFamily, WorkKey};
+
+        self.db.transaction(|tx| {
+            let scope = crate::runtime::resident_input_evidence::InputEvidenceScope {
+                agent_id: record.agent_id.clone(),
+                identity_incarnation,
+            };
+            let keys = work_wait_write_keys_tx(tx, std::slice::from_ref(record))?;
+            let proof = prepare_work_write_tx(tx, &scope, &keys)?;
+            let actual = upsert_wait_condition_with_writes_tx(tx, record)?
+                .wait_ids
+                .into_iter()
+                .map(|id| WorkKey::new(WorkFamily::Wait, id))
+                .collect();
+            let state = super::context_inputs::ContextDurableRead::new(tx, &record.agent_id)
+                .scope_facts()?
+                .state
+                .context("Wait fixture requires State")?;
+            register_work_writes_tx(
+                tx,
+                &proof,
+                &actual,
+                &BTreeSet::new(),
+                &state,
+                &WorkDomainLoadRequest {
+                    capture: WorkCaptureRequest::current(),
+                    record_limit: 4096,
+                    byte_limit: 16 * 1024 * 1024,
+                },
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn upsert(&self, record: &WaitConditionRecord) -> Result<()> {
         self.db
             .transaction(|tx| upsert_wait_condition_tx(tx, record).map(|_| ()))
@@ -4142,8 +4187,24 @@ fn settle_recovered_timer_waits_tx(
     recovered_at: DateTime<Utc>,
     result: &mut TimerWakeRecoveryResult,
 ) -> Result<()> {
+    // A genuine pre-protocol wait still owns its hold. Do not repair a
+    // missing registration in an already initialized partition here.
+    let before_execution_partition = match timers.first() {
+        Some(timer) => !tx.query_row(
+            "SELECT EXISTS(SELECT 1 FROM execution_protocol_partitions WHERE agent_id=?1)",
+            [&timer.agent_id],
+            |row| row.get::<_, bool>(0),
+        )?,
+        None => false,
+    };
     for timer in timers {
-        let settlement = settle_cancelled_timer_waits_tx(tx, timer, recovered_at, None)?;
+        let settlement = settle_cancelled_timer_waits_tx(
+            tx,
+            timer,
+            recovered_at,
+            None,
+            before_execution_partition,
+        )?;
         result
             .settled_wait_conditions
             .extend(settlement.wait_conditions);
@@ -4806,8 +4867,13 @@ impl TimerRepository<'_> {
         if let Some((_, record)) = command.agent_state.as_ref() {
             upsert_agent_state_tx(tx, record)?;
         }
-        let mut settlement =
-            settle_cancelled_timer_waits_tx(tx, &command.record, command.cancelled_at, scope)?;
+        let mut settlement = settle_cancelled_timer_waits_tx(
+            tx,
+            &command.record,
+            command.cancelled_at,
+            scope,
+            false,
+        )?;
         if command.expected.status.is_live() {
             let mut event = AuditEvent::legacy(
                 "timer_cancelled",
@@ -5001,6 +5067,23 @@ fn timer_work_cancellation_event_id(work_id: &str, revision: u64) -> Result<Stri
     ))
 }
 
+// Run the same ownership predicate for native input/audit preflight and commit.
+// A bound wait must match the canonical exact wait. An unbound wait may own a
+// runnable WorkItem only if it is the sole unresolved dependency.
+const TIMER_CANCELLATION_WORK_JOIN: &str = "JOIN work_items work ON work.agent_id=?1
+       AND work.work_item_id=json_extract(selected.payload_json,'$.work_item_id')
+     LEFT JOIN execution_protocol_work_items execution
+       ON execution.agent_id=work.agent_id AND execution.work_item_id=work.work_item_id
+     WHERE work.state='open' AND (
+       (execution.lifecycle_state='waiting' AND
+         json_extract(execution.payload_json,'$.state.wait.wait_id')=selected.wait_condition_id)
+       OR ((execution.lifecycle_state='runnable' OR (?3 AND execution.work_item_id IS NULL))
+         AND NOT EXISTS (
+           SELECT 1 FROM wait_conditions other
+           WHERE other.agent_id=work.agent_id AND other.work_item_id=work.work_item_id
+             AND other.status IN ('active','triggered')
+             AND other.wait_condition_id<>selected.wait_condition_id)))";
+
 pub(in crate::runtime_db) fn visit_timer_cancellation_work_event_ids_tx(
     tx: &Transaction<'_>,
     timer: &TimerRecord,
@@ -5009,13 +5092,10 @@ pub(in crate::runtime_db) fn visit_timer_cancellation_work_event_ids_tx(
     let sql = format!(
         "SELECT work.work_item_id, work.revision
          FROM ({TIMER_CANCELLATION_WAITS_SQL}) selected
-         JOIN work_items work ON work.agent_id=?1
-           AND work.work_item_id=json_extract(selected.payload_json,'$.work_item_id')
-         WHERE work.state='open'
-           AND json_extract(work.payload_json,'$.blocked_by_wait_id')=selected.wait_condition_id"
+         {TIMER_CANCELLATION_WORK_JOIN}"
     );
     let mut statement = tx.prepare(&sql)?;
-    let mut rows = statement.query(params![timer.agent_id, timer.id])?;
+    let mut rows = statement.query(params![timer.agent_id, timer.id, false])?;
     while let Some(row) = rows.next()? {
         let revision = row
             .get::<_, u64>(1)?
@@ -5035,14 +5115,11 @@ pub(in crate::runtime_db) fn visit_timer_cancellation_work_ids_tx(
     let sql = format!(
         "SELECT DISTINCT work.work_item_id
          FROM ({TIMER_CANCELLATION_WAITS_SQL}) selected
-         JOIN work_items work ON work.agent_id=?1
-           AND work.work_item_id=json_extract(selected.payload_json,'$.work_item_id')
-         WHERE work.state='open'
-           AND json_extract(work.payload_json,'$.blocked_by_wait_id')=selected.wait_condition_id
+         {TIMER_CANCELLATION_WORK_JOIN}
          ORDER BY work.work_item_id"
     );
     let mut statement = tx.prepare(&sql)?;
-    let mut rows = statement.query(params![timer.agent_id, timer.id])?;
+    let mut rows = statement.query(params![timer.agent_id, timer.id, false])?;
     while let Some(row) = rows.next()? {
         visit(row.get_ref(0)?.as_str()?)?;
     }
@@ -5092,8 +5169,44 @@ fn settle_cancelled_timer_waits_tx(
     timer: &TimerRecord,
     cancelled_at: DateTime<Utc>,
     scope: Option<&crate::runtime::resident_input_evidence::InputEvidenceScope>,
+    before_execution_partition: bool,
 ) -> Result<TimerWaitCancellationSettlement> {
+    use crate::domain::execution_protocol::{
+        ExecutionProtocolCommand, ExecutionProtocolState, RegisterWorkItemExecution,
+        SetWorkItemReadiness, WorkItemExecutionRecord, WorkItemExecutionState,
+    };
+
     let conditions = timer_cancellation_waits_tx(tx, timer)?;
+    let sql = format!(
+        "SELECT selected.wait_condition_id, work.payload_json, execution.payload_json
+         FROM ({TIMER_CANCELLATION_WAITS_SQL}) selected {TIMER_CANCELLATION_WORK_JOIN}"
+    );
+    let mut statement = tx.prepare(&sql)?;
+    let mut rows = statement.query(params![
+        timer.agent_id,
+        timer.id,
+        before_execution_partition
+    ])?;
+    let mut affected = std::collections::BTreeMap::new();
+    while let Some(row) = rows.next()? {
+        let work = serde_json::from_str::<WorkItemRecord>(row.get_ref(1)?.as_str()?)?;
+        let execution = match row.get_ref(2)? {
+            rusqlite::types::ValueRef::Null => None,
+            payload => Some(serde_json::from_str::<WorkItemExecutionRecord>(
+                payload.as_str()?,
+            )?),
+        };
+        if let Some(execution) = &execution {
+            anyhow::ensure!(
+                execution.source_revision == work.revision,
+                "WorkItem execution source revision {} does not match durable revision {} for {}",
+                execution.source_revision,
+                work.revision,
+                work.id
+            );
+        }
+        affected.insert(row.get::<_, String>(0)?, (work, execution));
+    }
     let mut result = TimerWaitCancellationSettlement::default();
     for mut condition in conditions {
         let previous_status = condition.status.clone();
@@ -5123,69 +5236,87 @@ fn settle_cancelled_timer_waits_tx(
 
         result.wait_writes.extend(writes)?;
 
-        if let Some(work_item_id) = condition.work_item_id.as_deref() {
-            let work_item = tx
-                .query_row(
-                    "SELECT payload_json FROM work_items
-                     WHERE work_item_id = ?1 AND agent_id = ?2 AND state = 'open'",
-                    params![work_item_id, timer.agent_id],
-                    |row| row.get::<_, String>(0),
-                )
-                .optional()?
-                .map(|payload| serde_json::from_str::<WorkItemRecord>(&payload))
-                .transpose()?;
-            if let Some(mut work_item) = work_item
-                .filter(|work| work.blocked_by_wait_id.as_deref() == Some(condition.id.as_str()))
-            {
-                let revision = work_item.revision;
-                work_item.revision = revision
-                    .checked_add(1)
-                    .context("work item revision overflow")?;
-                work_item.blocked_by = Some(format!("timer_cancelled: {}", timer.id));
-                work_item.blocked_by_wait_id = None;
-                work_item.recheck_at = None;
-                work_item.recheck_consumed_at = None;
-                work_item.updated_at = work_item.updated_at.max(cancelled_at);
-                let delta = apply_work_item_mutation_with_source_revision_tx(
-                    tx,
-                    &WorkItemMutation::Update {
-                        record: work_item.clone(),
-                        expected_revision: revision,
-                    },
-                    scope,
-                )?;
-                crate::runtime_db::input_evidence_writes::merge_input_evidence_delta(
-                    &mut result.input_delta,
-                    delta,
-                )?;
-                let mut event = AuditEvent::typed(
-                    RuntimeEventKind::WorkItemWritten,
-                    &WorkItemLifecycleAuditEvent::from_work_item("timer_cancelled", &work_item),
-                )?;
-                event.id = timer_work_cancellation_event_id(&work_item.id, work_item.revision)?;
-                event.created_at = cancelled_at;
-                event.data["timer_id"] = serde_json::json!(timer.id);
-                event.data["wait_condition_id"] = serde_json::json!(condition.id);
-                event.data["expected_revision"] = serde_json::json!(revision);
-                result.audit_events.push(append_original_timer_audit_tx(
-                    tx,
-                    &timer.agent_id,
-                    &event,
-                )?);
-                insert_runtime_index_changes_tx(
-                    tx,
-                    &[RuntimeIndexChange {
-                        agent_id: work_item.agent_id.clone(),
-                        source_kind: "work_item".into(),
-                        source_id: work_item.id.clone(),
-                        source_ref: format!("work_item:{}", work_item.id),
-                        operation: crate::runtime_db::RuntimeIndexOperation::Upsert,
-                        source_updated_at: Some(cancelled_at),
-                        reason: "timer_cancelled".into(),
-                    }],
-                )?;
-                result.work_items.push(work_item);
-            }
+        if let Some((mut work_item, execution)) = affected.remove(&condition.id) {
+            let revision = work_item.revision;
+            work_item.revision = revision
+                .checked_add(1)
+                .context("work item revision overflow")?;
+            work_item.updated_at = work_item.updated_at.max(cancelled_at);
+            let mutation = WorkItemMutation::Update {
+                record: work_item.clone(),
+                expected_revision: revision,
+            };
+            validate_work_item_mutation_tx(tx, &mutation)?;
+            let generation = execution
+                .as_ref()
+                .map_or(revision, WorkItemExecutionRecord::generation)
+                .checked_add(1)
+                .context("work item generation overflow")?;
+            let record = WorkItemExecutionRecord {
+                source_revision: work_item.revision,
+                state: WorkItemExecutionState::Paused {
+                    generation,
+                    reason: "timer_cancelled".into(),
+                },
+            };
+            let bootstrap = execution
+                .is_none()
+                .then(|| ExecutionProtocolState::empty(&work_item.agent_id));
+            let command = if let Some(execution) = execution {
+                ExecutionProtocolCommand::SetWorkItemReadiness(Box::new(SetWorkItemReadiness {
+                    command_id: format!("timer_cancel:{}", condition.id),
+                    work_item_id: work_item.id.clone(),
+                    expected: execution,
+                    record,
+                }))
+            } else {
+                ExecutionProtocolCommand::RegisterWorkItem(Box::new(RegisterWorkItemExecution {
+                    work_item_id: work_item.id.clone(),
+                    record,
+                }))
+            };
+            let prepared = execution_protocol_repository::validate_execution_commands_tx(
+                tx,
+                &work_item.agent_id,
+                bootstrap.as_ref(),
+                std::slice::from_ref(&command),
+                std::slice::from_ref(&mutation),
+                std::slice::from_ref(&condition),
+                &[],
+            )?;
+            apply_work_item_mutation_tx(tx, &mutation)?;
+            let delta = execution_protocol_repository::acknowledge_persisted_work_executions_tx(
+                tx, prepared, scope,
+            )?;
+            crate::runtime_db::input_evidence_writes::merge_input_evidence_delta(
+                &mut result.input_delta,
+                delta,
+            )?;
+            let mut event = AuditEvent::typed(
+                RuntimeEventKind::WorkItemWritten,
+                &WorkItemLifecycleAuditEvent::from_work_item("timer_cancelled", &work_item),
+            )?;
+            event.id = timer_work_cancellation_event_id(&work_item.id, work_item.revision)?;
+            event.created_at = cancelled_at;
+            event.data["timer_id"] = serde_json::json!(timer.id);
+            event.data["wait_condition_id"] = serde_json::json!(condition.id);
+            event.data["expected_revision"] = serde_json::json!(revision);
+            result
+                .audit_events
+                .push(append_original_timer_audit_tx(tx, &timer.agent_id, &event)?);
+            insert_runtime_index_changes_tx(
+                tx,
+                &[RuntimeIndexChange {
+                    agent_id: work_item.agent_id.clone(),
+                    source_kind: "work_item".into(),
+                    source_id: work_item.id.clone(),
+                    source_ref: format!("work_item:{}", work_item.id),
+                    operation: crate::runtime_db::RuntimeIndexOperation::Upsert,
+                    source_updated_at: Some(cancelled_at),
+                    reason: "timer_cancelled".into(),
+                }],
+            )?;
+            result.work_items.push(work_item);
         }
         let mut event = AuditEvent::legacy(
             "wait_condition_cancelled",

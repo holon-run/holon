@@ -236,7 +236,10 @@ fn context_queue_moves_every_record_and_preserves_display_order_and_class_window
                     "web", &item.id, "current", None,
                 )),
                 "o" => item.plan_status = WorkItemPlanStatus::NeedsInput,
-                "b" => item.blocked_by = Some("manual".into()),
+                "b" => {
+                    item.blocked_by = Some("manual".into());
+                    waits.push(wait(&item, WaitConditionKind::System));
+                }
                 "t" => waits.push(wait(&item, WaitConditionKind::Task)),
                 "z" => {
                     item.blocked_by = Some("triggered".into());

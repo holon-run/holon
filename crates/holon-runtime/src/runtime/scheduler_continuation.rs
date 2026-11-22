@@ -31,7 +31,6 @@ struct QueuedAvailableRetryAttempt {
 enum IdleTickTrigger {
     WorkQueueActive(crate::types::WorkItemRecord, Option<u64>),
     WorkQueueQueued(crate::types::WorkItemRecord, Option<u64>),
-    BlockedRecheck(Vec<crate::types::WorkItemRecord>),
     WakeHint(PendingWakeHint),
 }
 
@@ -42,27 +41,18 @@ fn idle_tick_trigger_from_state(
         crate::types::WorkReactivationMode,
         Option<u64>,
     )>,
-    due_rechecks: Vec<crate::types::WorkItemRecord>,
 ) -> Option<IdleTickTrigger> {
     if let Some(pending) = pending_wake_hint {
         Some(IdleTickTrigger::WakeHint(pending))
     } else {
-        work_reactivation
-            .map(|(work_item, mode, generation)| match mode {
-                crate::types::WorkReactivationMode::ContinueActive => {
-                    IdleTickTrigger::WorkQueueActive(work_item, generation)
-                }
-                crate::types::WorkReactivationMode::ActivateQueued => {
-                    IdleTickTrigger::WorkQueueQueued(work_item, generation)
-                }
-            })
-            .or_else(|| {
-                if due_rechecks.is_empty() {
-                    None
-                } else {
-                    Some(IdleTickTrigger::BlockedRecheck(due_rechecks))
-                }
-            })
+        work_reactivation.map(|(work_item, mode, generation)| match mode {
+            crate::types::WorkReactivationMode::ContinueActive => {
+                IdleTickTrigger::WorkQueueActive(work_item, generation)
+            }
+            crate::types::WorkReactivationMode::ActivateQueued => {
+                IdleTickTrigger::WorkQueueQueued(work_item, generation)
+            }
+        })
     }
 }
 
@@ -169,13 +159,7 @@ impl RuntimeHandle {
             AgentStatus::Booting | AgentStatus::AwakeIdle | AgentStatus::Asleep
         ) && mutation.state.current_run_id.is_none()
             && !has_input;
-        let consume_rechecks = mutation.state.status == AgentStatus::AwakeRunning || has_input;
-        let agent_id = mutation.state.id.clone();
         if !eligible {
-            drop(mutation);
-            if consume_rechecks {
-                self.consume_due_work_item_rechecks(&agent_id).await?;
-            }
             return Ok(false);
         }
         let mut read = mutation
@@ -190,7 +174,6 @@ impl RuntimeHandle {
         // never the owner reservation, survive its await.
         drop(mutation);
         let mut scheduler_projection = read.projection;
-        let mut due_rechecks = read.due_rechecks;
         let mut queued_retry_statuses = self
             .filter_suppressed_queued_available_work_items(&mut scheduler_projection)
             .await?;
@@ -233,13 +216,13 @@ impl RuntimeHandle {
             drop(mutation);
             pending_wake_hint = read.state.pending_wake_hint.clone();
             scheduler_projection = read.projection;
-            due_rechecks = read.due_rechecks;
             queued_retry_statuses = self
                 .filter_suppressed_queued_available_work_items(&mut scheduler_projection)
                 .await?;
         }
         if let Some(selection) = selection.as_ref() {
             if let Some(reason) = selection.fallback_reason() {
+                let agent_id = self.agent_id().await?;
                 let event = AuditEvent::legacy(
                     "autonomous_continuation_selection_fallback",
                     serde_json::json!({
@@ -262,11 +245,7 @@ impl RuntimeHandle {
                 )
             })
             .map(|(work_item, mode, generation)| (work_item.clone(), mode, generation));
-        let trigger = idle_tick_trigger_from_state(
-            pending_wake_hint,
-            work_reactivation,
-            due_rechecks.clone(),
-        );
+        let trigger = idle_tick_trigger_from_state(pending_wake_hint, work_reactivation);
 
         let suppress_continue_active = triggering_continuation
             .is_some_and(|continuation| continuation.model_reentry)
@@ -281,19 +260,9 @@ impl RuntimeHandle {
 
         match trigger {
             Some(IdleTickTrigger::WorkQueueActive(active, generation)) => {
-                let has_due_recheck = due_rechecks
-                    .iter()
-                    .any(|work_item| work_item.id == active.id);
-                let duplicate = if has_due_recheck {
-                    None
-                } else {
-                    self.duplicate_continue_active_result_brief_id(
-                        &active,
-                        generation,
-                        &read.tasks,
-                    )?
-                    .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief)
-                };
+                let duplicate = self
+                    .duplicate_continue_active_result_brief_id(&active, generation, &read.tasks)?
+                    .map(scheduler::SchedulerDuplicateEvidence::ContinueActiveBrief);
                 let decision = scheduler::decide_next_action(
                     &scheduler_projection,
                     scheduler::SchedulerBoundary::IdleTick,
@@ -301,8 +270,7 @@ impl RuntimeHandle {
                         scheduler::SchedulerIdleSignal::ContinueActive {
                             work_item: &active,
                             work_item_generation: generation,
-                            suppressed_after_model_reentry_continuation: suppress_continue_active
-                                && !has_due_recheck,
+                            suppressed_after_model_reentry_continuation: suppress_continue_active,
                             duplicate: duplicate.clone(),
                         },
                     ),
@@ -329,7 +297,6 @@ impl RuntimeHandle {
                             return Ok(false);
                         }
                     }
-                    self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
                 if !self
@@ -344,7 +311,6 @@ impl RuntimeHandle {
                 {
                     return Ok(false);
                 }
-                self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
             Some(IdleTickTrigger::WorkQueueQueued(queued, generation)) => {
@@ -375,7 +341,6 @@ impl RuntimeHandle {
                     scheduler::SchedulerDecisionKind::EmitSystemTick
                 ) {
                     self.append_scheduler_decision(&decision).await?;
-                    self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
                 if !self
@@ -390,7 +355,6 @@ impl RuntimeHandle {
                 {
                     return Ok(false);
                 }
-                self.consume_work_item_rechecks(&due_rechecks).await?;
                 Ok(true)
             }
             Some(IdleTickTrigger::WakeHint(pending)) => {
@@ -418,7 +382,6 @@ impl RuntimeHandle {
                         guard.persist_state(&self.inner.storage).await?;
                     }
                     drop(guard);
-                    self.consume_work_item_rechecks(&due_rechecks).await?;
                     return Ok(false);
                 }
                 if waiting.ids.is_empty() {
@@ -449,19 +412,6 @@ impl RuntimeHandle {
                     guard.persist_state(&self.inner.storage).await?;
                 }
                 drop(guard);
-                self.consume_work_item_rechecks(&due_rechecks).await?;
-                Ok(true)
-            }
-            Some(IdleTickTrigger::BlockedRecheck(items)) => {
-                if !self
-                    .emit_system_tick_from_blocked_recheck(&items, waiting)
-                    .await?
-                {
-                    return Ok(false);
-                }
-                for item in items {
-                    let _ = self.consume_work_item_recheck(&item.id).await?;
-                }
                 Ok(true)
             }
             None => {
@@ -496,38 +446,6 @@ impl RuntimeHandle {
         Ok(true)
     }
 
-    async fn consume_due_work_item_rechecks(&self, agent_id: &str) -> Result<()> {
-        let due_rechecks = {
-            let observation = self
-                .capture_work_read(&super::work_reads::live_work_request())
-                .await?;
-            anyhow::ensure!(
-                observation.state.id == agent_id,
-                "Work recheck requested for another agent"
-            );
-            observation
-                .work
-                .due_work_rechecks(self.now())?
-                .into_iter()
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        self.consume_work_item_rechecks(&due_rechecks).await
-    }
-
-    async fn consume_work_item_rechecks(
-        &self,
-        work_items: &[crate::types::WorkItemRecord],
-    ) -> Result<()> {
-        if work_items.is_empty() {
-            return Ok(());
-        }
-        for item in work_items {
-            let _ = self.consume_work_item_recheck(&item.id).await?;
-        }
-        Ok(())
-    }
-
     pub(super) fn next_queued_available_retry_at<'a>(
         &self,
         work_items: impl IntoIterator<Item = &'a crate::types::WorkItemRecord>,
@@ -553,7 +471,7 @@ impl RuntimeHandle {
         Ok(next_retry_at)
     }
 
-    pub(super) async fn emit_due_agent_wait_recheck(&self) -> Result<bool> {
+    pub(super) async fn emit_due_wait_recheck(&self) -> Result<bool> {
         if self.inner.agent.lock().await.state.status == AgentStatus::Stopped {
             return Ok(false);
         }
@@ -566,7 +484,7 @@ impl RuntimeHandle {
             }
             mutation.prepare_owner_work_request(&request).await?;
             let observation = mutation.capture_work_read(&request)?;
-            let due = observation.work.due_agent_wait_recheck(now)?.cloned();
+            let due = observation.work.due_wait_recheck(now)?.cloned();
             (observation.state.id.clone(), due)
         };
         let Some(condition) = due else {
@@ -574,7 +492,7 @@ impl RuntimeHandle {
         };
         let recheck_at = condition
             .recheck_at()
-            .expect("due agent wait must have a recheck deadline");
+            .expect("due wait must have a recheck deadline");
         let recheck_at_key = recheck_at.to_rfc3339();
         let wake = condition
             .continuation
@@ -606,6 +524,7 @@ impl RuntimeHandle {
             AdmissionContext::RuntimeOwned,
         );
         message.id = crate::ids::wait_recheck_message_id(&condition.id, &recheck_at_key);
+        message.work_item_id.clone_from(&condition.work_item_id);
         message
             .source_refs
             .insert("wait_id".into(), condition.id.clone());
@@ -1331,104 +1250,6 @@ impl RuntimeHandle {
         Ok(true)
     }
 
-    async fn emit_system_tick_from_blocked_recheck(
-        &self,
-        work_items: &[crate::types::WorkItemRecord],
-        waiting: &scheduler_executor::WaitingReplyQueue,
-    ) -> Result<bool> {
-        // Stable primary selection: earliest due recheck, then WorkItem id.
-        let mut ordered: Vec<&crate::types::WorkItemRecord> = work_items.iter().collect();
-        ordered.sort_by(|left, right| {
-            left.recheck_at
-                .cmp(&right.recheck_at)
-                .then_with(|| left.id.cmp(&right.id))
-        });
-        let items = ordered
-            .iter()
-            .map(|item| {
-                serde_json::json!({
-                    "work_item_id": item.id,
-                    "work_item_revision": item.revision,
-                    "objective": item.objective,
-                    "blocked_by": item.blocked_by,
-                    "recheck_at": item.recheck_at
-                })
-            })
-            .collect::<Vec<_>>();
-        let idempotency_key = work_items
-            .iter()
-            .filter_map(|item| item.recheck_at.map(|recheck_at| (item, recheck_at)))
-            .map(|(item, recheck_at)| format!("{}@{}", item.id, recheck_at.to_rfc3339()))
-            .collect::<Vec<_>>()
-            .join(",");
-        let primary = ordered.first().copied();
-        let primary_work_item_id = primary.map(|item| item.id.clone());
-        let primary_work_item_revision = primary.map(|item| item.revision);
-        let recheck_lines = ordered
-            .iter()
-            .map(|item| {
-                format!(
-                    "- work_item={} objective={} blocked_by={} recheck_at={}",
-                    item.id,
-                    item.objective,
-                    item.blocked_by.as_deref().unwrap_or("unset"),
-                    item.recheck_at
-                        .map(|recheck_at| recheck_at.to_rfc3339())
-                        .unwrap_or_else(|| "unscheduled".to_string()),
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut message = MessageEnvelope::new(
-            self.agent_id().await?,
-            MessageKind::SystemTick,
-            MessageOrigin::System {
-                subsystem: "work_item_recheck".into()
-            },
-            AuthorityClass::RuntimeInstruction,
-            Priority::Background,
-            MessageBody::Text {
-                text: format!(
-                    "{} blocked WorkItem recheck{} due; inspect the blocker and refresh or clear blocked_by when ready.\n{}",
-                    work_items.len(),
-                    if work_items.len() == 1 { " is" } else { "s are" },
-                    recheck_lines,
-                )
-            },
-        )
-        .with_admission(
-            MessageDeliverySurface::RuntimeSystem,
-            AdmissionContext::RuntimeOwned,
-        );
-        message.metadata = Some(serde_json::json!({
-            "work_item_recheck": {
-                "idempotency_key": idempotency_key,
-                "count": work_items.len(),
-                "primary_work_item_id": primary_work_item_id.clone(),
-                "primary_work_item_revision": primary_work_item_revision,
-                "items": items
-            }
-        }));
-        message.work_item_id = primary_work_item_id;
-        message.normalize_admission_fields();
-        message.turn_id = normalized_turn_id(message.turn_id.as_deref());
-        if message.turn_id.is_none() {
-            message.turn_id = Some(crate::ids::turn_id());
-        }
-        let event = AuditEvent::legacy(
-            "system_tick_emitted",
-            serde_json::json!({
-                "subsystem": "work_item_recheck",
-                "work_item_recheck": message
-                    .metadata
-                    .as_ref()
-                    .and_then(|value| value.get("work_item_recheck"))
-                    .cloned()
-            }),
-        );
-        self.emit_idle_tick(message, event, waiting).await
-    }
-
     async fn emit_idle_tick(
         &self,
         message: MessageEnvelope,
@@ -1703,10 +1524,10 @@ mod tests {
         );
 
         assert!(rt
-            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .block_on(test_runtime.runtime.emit_due_wait_recheck())
             .unwrap());
         assert!(!rt
-            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .block_on(test_runtime.runtime.emit_due_wait_recheck())
             .unwrap());
 
         let triggered = test_runtime
@@ -1784,7 +1605,7 @@ mod tests {
 
         assert!(recheck_at > test_runtime.runtime.now());
         assert!(!rt
-            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .block_on(test_runtime.runtime.emit_due_wait_recheck())
             .unwrap());
         assert_eq!(
             test_runtime
@@ -1801,10 +1622,10 @@ mod tests {
 
         clock.advance(std::time::Duration::from_secs(60));
         assert!(rt
-            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .block_on(test_runtime.runtime.emit_due_wait_recheck())
             .unwrap());
         assert!(!rt
-            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .block_on(test_runtime.runtime.emit_due_wait_recheck())
             .unwrap());
 
         let expected_message_id =
@@ -1856,7 +1677,7 @@ mod tests {
         set_agent_status(&test_runtime, AgentStatus::Stopped);
 
         assert!(!rt
-            .block_on(test_runtime.runtime.emit_due_agent_wait_recheck())
+            .block_on(test_runtime.runtime.emit_due_wait_recheck())
             .unwrap());
         let condition = test_runtime
             .runtime
@@ -2156,32 +1977,6 @@ mod tests {
         updated
     }
 
-    fn block_work_item_with_due_recheck(
-        test_runtime: &TestRuntime,
-        record: &WorkItemRecord,
-        blocked_by: &str,
-    ) -> WorkItemRecord {
-        let mut updated = record.clone();
-        updated.revision += 1;
-        updated.blocked_by = Some(blocked_by.to_string());
-        updated.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(1));
-        updated.recheck_consumed_at = None;
-        updated.updated_at = chrono::Utc::now();
-        persist_test_work_item(test_runtime, &updated);
-        updated
-    }
-
-    fn latest_work_item(test_runtime: &TestRuntime, id: &str) -> WorkItemRecord {
-        test_runtime
-            .runtime
-            .inner
-            .runtime_db
-            .work_items()
-            .latest(id)
-            .unwrap()
-            .expect("work item should exist")
-    }
-
     fn append_result_brief_for_work_item(
         test_runtime: &TestRuntime,
         work_item_id: &str,
@@ -2304,76 +2099,6 @@ mod tests {
     }
 
     #[test]
-    fn queue_nonempty_consumes_due_blocked_recheck_without_tick() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
-
-        let message = MessageEnvelope::new(
-            "default",
-            MessageKind::OperatorPrompt,
-            MessageOrigin::Operator {
-                actor_id: None,
-                actor_display_name: None,
-            },
-            AuthorityClass::OperatorInstruction,
-            Priority::Normal,
-            MessageBody::Text {
-                text: "queued input".to_string(),
-            },
-        );
-        fixture_block_on(test_runtime.runtime.enqueue(message)).unwrap();
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(
-            !emitted,
-            "queued input should suppress system tick emission"
-        );
-        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
-
-        let latest = latest_work_item(&test_runtime, "wi-blocked");
-        assert!(
-            latest
-                .recheck_consumed_at
-                .zip(latest.recheck_at)
-                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
-            "due recheck should be consumed while queued input will wake the agent"
-        );
-    }
-
-    #[test]
-    fn running_agent_consumes_due_blocked_recheck_without_tick() {
-        let test_runtime = test_runtime();
-        set_agent_live_running(&test_runtime, "run-live");
-
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(!emitted, "running agent should not receive a recheck tick");
-        assert!(get_emitted_system_ticks(&test_runtime).is_empty());
-
-        let latest = latest_work_item(&test_runtime, "wi-blocked");
-        assert!(
-            latest
-                .recheck_consumed_at
-                .zip(latest.recheck_at)
-                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
-            "due recheck should be consumed while the active turn can inspect work state"
-        );
-    }
-
-    #[test]
     fn sleeping_dispatch_preserves_pending_wake_until_original_settlement() {
         let test_runtime = test_runtime();
         set_agent_live_running(&test_runtime, "run-finishing");
@@ -2453,160 +2178,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_agent_emits_due_blocked_recheck_tick() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(emitted, "idle agent should still receive due recheck tick");
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(ticks[0].0, "work_item_recheck");
-        assert_eq!(ticks[0].1["count"].as_u64(), Some(1));
-    }
-
-    #[test]
-    fn blocked_recheck_tick_names_target_work_item() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        let blocked =
-            block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        assert!(rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap());
-
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(ticks[0].0, "work_item_recheck");
-        assert_eq!(
-            ticks[0].1["primary_work_item_id"].as_str(),
-            Some(blocked.id.as_str())
-        );
-        assert_eq!(
-            ticks[0].1["primary_work_item_revision"].as_u64(),
-            Some(blocked.revision)
-        );
-
-        let message = test_runtime
-            .runtime
-            .inner
-            .storage
-            .read_recent_messages(10)
-            .unwrap()
-            .into_iter()
-            .find(|message| {
-                matches!(
-                    message.origin,
-                    MessageOrigin::System { ref subsystem } if subsystem == "work_item_recheck"
-                )
-            })
-            .expect("recheck tick message should be durable");
-        assert_eq!(message.work_item_id.as_deref(), Some(blocked.id.as_str()));
-        let MessageBody::Text { text } = &message.body else {
-            panic!("recheck tick should carry a text body");
-        };
-        assert!(
-            text.contains(&blocked.id),
-            "body should name the target WorkItem: {text}"
-        );
-        assert!(
-            text.contains("blocked-target"),
-            "body should carry the target objective: {text}"
-        );
-        assert!(
-            text.contains("waiting for timer"),
-            "body should carry the blocker: {text}"
-        );
-
-        let guard = test_runtime.runtime.inner.agent.blocking_lock();
-        assert!(
-            guard.state.current_work_item_id.is_none(),
-            "emitting a recheck must not switch the persistent current WorkItem"
-        );
-    }
-
-    #[test]
-    fn multiple_due_blocked_rechecks_choose_stable_primary_target() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        let later = add_queued_work_item(&test_runtime, "wi-later", "later-target");
-        let mut later = block_work_item_with_due_recheck(&test_runtime, &later, "later blocker");
-        later.revision += 1;
-        later.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(2));
-        later.updated_at = chrono::Utc::now();
-        persist_test_work_item(&test_runtime, &later);
-
-        let earlier = add_queued_work_item(&test_runtime, "wi-earlier", "earlier-target");
-        let mut earlier =
-            block_work_item_with_due_recheck(&test_runtime, &earlier, "earlier blocker");
-        earlier.revision += 1;
-        earlier.recheck_at = Some(chrono::Utc::now() - chrono::Duration::seconds(10));
-        earlier.updated_at = chrono::Utc::now();
-        persist_test_work_item(&test_runtime, &earlier);
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        assert!(rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap());
-
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(ticks[0].0, "work_item_recheck");
-        assert_eq!(ticks[0].1["count"].as_u64(), Some(2));
-        assert_eq!(
-            ticks[0].1["primary_work_item_id"].as_str(),
-            Some("wi-earlier"),
-            "the earliest due recheck is the stable primary target"
-        );
-        let items = ticks[0].1["items"]
-            .as_array()
-            .expect("recheck items should be structured");
-        let ids = items
-            .iter()
-            .filter_map(|item| item["work_item_id"].as_str())
-            .collect::<Vec<_>>();
-        assert!(
-            ids.contains(&"wi-earlier"),
-            "items should list every target"
-        );
-        assert!(ids.contains(&"wi-later"), "items should list every target");
-
-        let message = test_runtime
-            .runtime
-            .inner
-            .storage
-            .read_recent_messages(10)
-            .unwrap()
-            .into_iter()
-            .find(|message| {
-                matches!(
-                    message.origin,
-                    MessageOrigin::System { ref subsystem } if subsystem == "work_item_recheck"
-                )
-            })
-            .expect("recheck tick message should be durable");
-        let MessageBody::Text { text } = &message.body else {
-            panic!("recheck tick should carry a text body");
-        };
-        assert!(
-            text.contains("earlier-target") && text.contains("later-target"),
-            "body should carry every target objective: {text}"
-        );
-    }
-
-    #[test]
     fn pending_wake_hint_takes_precedence_over_current_work_item() {
         let test_runtime = test_runtime();
         set_agent_idle(&test_runtime);
@@ -2632,100 +2203,6 @@ mod tests {
         assert!(
             guard.state.pending_wake_hint.is_none(),
             "Wake hint should be cleared after emission"
-        );
-    }
-
-    #[test]
-    fn pending_wake_hint_consumes_due_blocked_recheck_without_recheck_tick() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        set_wake_hint(&test_runtime, "wake-test");
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for wake");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(emitted, "wake hint should still emit a system tick");
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(
-            ticks[0].0, "wake_hint",
-            "wake hint should provide the execution opportunity"
-        );
-
-        let latest = latest_work_item(&test_runtime, "wi-blocked");
-        assert!(
-            latest
-                .recheck_consumed_at
-                .zip(latest.recheck_at)
-                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
-            "due recheck should be consumed because wake hint already woke the agent"
-        );
-    }
-
-    #[test]
-    fn current_work_item_takes_precedence_over_due_blocked_recheck() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        add_current_work_item(&test_runtime, "wi-active", "active-target");
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(emitted, "current runnable work should emit a system tick");
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(ticks[0].0, "work_queue");
-        assert_eq!(ticks[0].1["reason"].as_str(), Some("continue_active"));
-        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-active"));
-
-        let latest = latest_work_item(&test_runtime, "wi-blocked");
-        assert!(
-            latest
-                .recheck_consumed_at
-                .zip(latest.recheck_at)
-                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
-            "the execution opportunity should consume the due recheck"
-        );
-    }
-
-    #[test]
-    fn queued_work_item_takes_precedence_over_due_blocked_recheck() {
-        let test_runtime = test_runtime();
-        set_agent_idle(&test_runtime);
-
-        add_queued_work_item(&test_runtime, "wi-queued", "queued-target");
-        let blocked = add_queued_work_item(&test_runtime, "wi-blocked", "blocked-target");
-        block_work_item_with_due_recheck(&test_runtime, &blocked, "waiting for timer");
-
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let emitted = rt
-            .block_on(test_runtime.runtime.maybe_emit_pending_system_tick(None))
-            .unwrap();
-
-        assert!(emitted, "queued runnable work should emit a system tick");
-        let ticks = get_emitted_system_ticks(&test_runtime);
-        assert_eq!(ticks.len(), 1);
-        assert_eq!(ticks[0].0, "work_queue");
-        assert_eq!(ticks[0].1["reason"].as_str(), Some("queued_available"));
-        assert_eq!(ticks[0].1["work_item_id"].as_str(), Some("wi-queued"));
-
-        let latest = latest_work_item(&test_runtime, "wi-blocked");
-        assert!(
-            latest
-                .recheck_consumed_at
-                .zip(latest.recheck_at)
-                .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
-            "the execution opportunity should consume the due recheck"
         );
     }
 

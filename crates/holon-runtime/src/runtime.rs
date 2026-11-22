@@ -1594,17 +1594,11 @@ fn execution_protocol_settlement_transition_from_facts(
                                         &terminal_turn,
                                         work_item_id,
                                     )?;
-                                    ExecutionOutcome::WorkItem(
-                                        match (failed_exact_wait, work_item.blocked_by.as_ref()) {
-                                            // The provider hop has not fulfilled this exact
-                                            // source; a business blocker cannot consume it.
-                                            (Some(wait), _) => WorkItemOutcome::Wait { wait },
-                                            (None, Some(reason)) => WorkItemOutcome::Pause {
-                                                reason: reason.clone(),
-                                            },
-                                            (None, None) => WorkItemOutcome::Continue,
-                                        },
-                                    )
+                                    ExecutionOutcome::WorkItem(match failed_exact_wait {
+                                        // The provider hop has not fulfilled this exact source.
+                                        Some(wait) => WorkItemOutcome::Wait { wait },
+                                        None => WorkItemOutcome::Continue,
+                                    })
                                 }
                                 ([_], [wait]) => {
                                     ExecutionOutcome::WorkItem(WorkItemOutcome::Wait {
@@ -7123,7 +7117,7 @@ impl RuntimeHandle {
             if self.emit_due_task_result_recovery().await? {
                 continue;
             }
-            if self.emit_due_agent_wait_recheck().await? {
+            if self.emit_due_wait_recheck().await? {
                 continue;
             }
             let mut waiting_replies = scheduler_executor::WaitingReplyQueue::default();
@@ -7208,8 +7202,7 @@ impl RuntimeHandle {
                         self.inner
                             .runtime_db
                             .next_provider_queue_recheck_at(&idle_read.state.id)?,
-                        idle_read.work.next_work_recheck_at()?,
-                        idle_read.work.next_agent_wait_recheck_at()?,
+                        idle_read.work.next_wait_recheck_at()?,
                         self.next_queued_available_retry_at(
                             idle_read.projection.queued_runnable_work_items.iter(),
                         )?,

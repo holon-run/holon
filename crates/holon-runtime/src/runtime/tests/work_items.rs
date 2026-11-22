@@ -1499,65 +1499,6 @@ fn work_item_record_revision_defaults_for_old_records() {
 }
 
 #[tokio::test]
-async fn update_work_item_sets_and_preserves_blocked_recheck_deadline() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let clock = controlled_clock();
-    let runtime = RuntimeHandle::new_with_clock(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("done")),
-        "default".into(),
-        context_config(),
-        clock.clone(),
-    )
-    .unwrap();
-
-    let work = runtime
-        .create_work_item("wait with fallback".into(), None, None, Vec::new())
-        .await
-        .unwrap();
-    let blocked = runtime
-        .update_work_item_fields_with_recheck(
-            work.id.clone(),
-            None,
-            None,
-            None,
-            None,
-            Some(Some("waiting for CI".into())),
-            Some(25),
-        )
-        .await
-        .unwrap();
-    let recheck_at = blocked.recheck_at.expect("blocked item has recheck_at");
-    assert_eq!(recheck_at, clock.now() + chrono::Duration::milliseconds(25));
-    assert!(blocked.recheck_consumed_at.is_none());
-
-    let updated = runtime
-        .update_work_item_fields(
-            work.id.clone(),
-            Some("wait with unchanged fallback".into()),
-            None,
-            None,
-            None,
-            None,
-        )
-        .await
-        .unwrap();
-    assert_eq!(updated.recheck_at, Some(recheck_at));
-
-    let cleared = runtime
-        .update_work_item_fields(work.id.clone(), None, None, None, None, Some(None))
-        .await
-        .unwrap();
-    assert!(cleared.blocked_by.is_none());
-    assert!(cleared.recheck_at.is_none());
-    assert!(cleared.recheck_consumed_at.is_none());
-}
-
-#[tokio::test]
 async fn work_item_mutations_atomically_track_execution_readiness() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
@@ -1640,27 +1581,7 @@ async fn work_item_mutations_atomically_track_execution_readiness() {
     assert_eq!(registered.source_revision, blocked.revision);
     assert!(matches!(
         &registered.state,
-        crate::domain::execution_protocol::WorkItemExecutionState::Paused { reason, .. }
-            if reason == "manual hold"
-    ));
-
-    let consumed_recheck = runtime
-        .consume_work_item_recheck(&work.id)
-        .await
-        .unwrap()
-        .expect("blocked recheck is consumed");
-    let execution = runtime
-        .inner
-        .runtime_db
-        .transitions()
-        .load_execution_protocol_state_if_initialized("default")
-        .unwrap()
-        .unwrap();
-    let registered = execution.work_items.get(&work.id).unwrap();
-    assert_eq!(registered.source_revision, consumed_recheck.revision);
-    assert!(matches!(
-        registered.state,
-        crate::domain::execution_protocol::WorkItemExecutionState::Paused { .. }
+        crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
 
     let cleared = runtime
@@ -1686,7 +1607,7 @@ async fn work_item_mutations_atomically_track_execution_readiness() {
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. }
     ));
 
-    let before_rejected_block = cleared.clone();
+    assert!(blocked.recheck_at.is_none());
     let mut waiting_execution = execution;
     let waiting_record = waiting_execution.work_items.get_mut(&work.id).unwrap();
     waiting_record.state = crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
@@ -1735,324 +1656,32 @@ async fn work_item_mutations_atomically_track_execution_readiness() {
             .await
             .unwrap();
     }
-    let error = runtime
+    let before = waiting_execution.work_items[&work.id].state.clone();
+    let updated = runtime
         .update_work_item_fields(
             work.id.clone(),
             None,
             None,
             None,
             None,
-            Some(Some("different manual blocker".into())),
-        )
-        .await
-        .unwrap_err();
-    assert!(error
-        .to_string()
-        .contains("cannot change WorkItem readiness"));
-    assert_eq!(
-        runtime.latest_work_item(&work.id).await.unwrap().unwrap(),
-        before_rejected_block
-    );
-}
-
-#[tokio::test(start_paused = true)]
-async fn runtime_wakes_itself_for_blocked_work_item_recheck_deadline() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let clock = controlled_clock();
-    let runtime = RuntimeHandle::new_with_clock(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("recheck observed")),
-        "default".into(),
-        context_config(),
-        clock.clone(),
-    )
-    .unwrap();
-    let blocked = runtime
-        .create_work_item(
-            "blocked work with fallback recheck".into(),
-            None,
-            None,
-            Vec::new(),
+            Some(Some("CI annotation".into())),
         )
         .await
         .unwrap();
-    let blocked = runtime
-        .update_work_item_fields_with_recheck(
-            blocked.id,
-            None,
-            None,
-            None,
-            None,
-            Some(Some("waiting for external wake".into())),
-            Some(50),
-        )
-        .await
+    assert_eq!(updated.blocked_by.as_deref(), Some("CI annotation"));
+    assert!(updated.recheck_at.is_none());
+    let execution = runtime
+        .inner
+        .runtime_db
+        .transitions()
+        .load_execution_protocol_state_if_initialized("default")
+        .unwrap()
         .unwrap();
-    let runtime_task = tokio::spawn(runtime.clone().run());
-    advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
-    wait_for_audit_events(
-        &runtime,
-        200,
-        |events| {
-            events.iter().any(|event| {
-                event.kind == "system_tick_emitted"
-                    && event.data.get("subsystem").and_then(|value| value.as_str())
-                        == Some("work_item_recheck")
-            }) && events.iter().any(|event| {
-                event.kind == "work_item_recheck_consumed"
-                    && event
-                        .data
-                        .get("work_item_id")
-                        .and_then(|value| value.as_str())
-                        == Some(blocked.id.as_str())
-            })
-        },
-        "work item recheck tick",
-    )
-    .await;
-
-    let events = runtime.storage().read_recent_events(usize::MAX).unwrap();
-    assert!(
-        events.iter().any(|event| {
-            event.kind == "system_tick_emitted"
-                && event.data.get("subsystem").and_then(|value| value.as_str())
-                    == Some("work_item_recheck")
-        }),
-        "runtime should emit a work_item_recheck tick without external input"
-    );
-    let latest = runtime
-        .storage()
-        .latest_work_item(&blocked.id)
-        .unwrap()
-        .expect("blocked work item exists");
-    assert!(
-        latest
-            .recheck_consumed_at
-            .zip(latest.recheck_at)
-            .is_some_and(|(consumed_at, recheck_at)| consumed_at >= recheck_at),
-        "deadline wake should consume the due blocked recheck"
-    );
-    runtime_task.abort();
-}
-
-fn describe_recheck_wait_state(
-    runtime: &RuntimeHandle,
-    work_item_id: &str,
-    runtime_task_finished: bool,
-) -> String {
-    let target = runtime
-        .storage()
-        .latest_work_item(work_item_id)
-        .unwrap()
-        .map(|item| {
-            format!(
-                "state={:?} blocked_by={:?} recheck_at={:?} recheck_consumed_at={:?}",
-                item.state, item.blocked_by, item.recheck_at, item.recheck_consumed_at
-            )
-        })
-        .unwrap_or_else(|| "missing".to_string());
-    let turns = runtime
-        .storage()
-        .read_recent_turns(10)
-        .unwrap()
-        .iter()
-        .map(|turn| {
-            format!(
-                "turn {} work_item={:?} terminal={:?}",
-                turn.turn_id,
-                turn.current_work_item_id,
-                turn.terminal.as_ref().map(|terminal| terminal.kind)
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("; ");
-    format!(
-        "work item [{work_item_id}]: {target}; runtime task finished={runtime_task_finished}; \
-         recent turns: [{turns}]"
-    )
-}
-
-#[tokio::test(start_paused = true)]
-async fn blocked_recheck_turn_binds_target_work_item_without_switching_focus() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let clock = controlled_clock();
-    // This case covers the pre-protocol fallback, whose original Work has no
-    // execution registration. Seed it before the real v81->current cutover.
-    let mut blocked = WorkItemRecord::new(
-        "default",
-        "blocked work awaiting recheck",
-        WorkItemState::Open,
-    );
-    blocked.blocked_by = Some("waiting for external wake".into());
-    blocked.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
-    let mut focus =
-        WorkItemRecord::new("default", "existing persistent focus", WorkItemState::Open);
-    focus.blocked_by = Some("focus blocker".into());
-    focus.recheck_at = Some(clock.now() + chrono::Duration::hours(1));
-    let state = AgentState::new("default");
-    write_original_v81_work_wait_fixture(
-        dir.path(),
-        &[blocked.clone(), focus.clone()],
-        &[],
-        &state,
-    );
-    let runtime = RuntimeHandle::new_with_clock(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("recheck observed")),
-        "default".into(),
-        context_config(),
-        clock.clone(),
-    )
-    .unwrap();
-    // Match the original fixture timing: the old unregistered Work rows are
-    // imported before focus is published through the current State owner.
-    {
-        let mut mutation = runtime.begin_mutation().await.unwrap();
-        mutation.state.current_work_item_id = Some(focus.id.clone());
-        mutation
-            .persist_state(&runtime.inner.storage)
-            .await
-            .unwrap();
-    }
-    let runtime_task = tokio::spawn(runtime.clone().run());
-    advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
-
-    // The due recheck should open a turn bound to the target WorkItem: the
-    // turn record carries it as the turn's WorkItem while the agent's
-    // persistent current WorkItem stays untouched.
-    wait_for_lifecycle_condition(
-        &clock,
-        "a blocked recheck should run a turn bound to the target WorkItem",
-        || {
-            runtime
-                .storage()
-                .read_recent_turns(10)
-                .unwrap()
-                .iter()
-                .any(|turn| {
-                    turn.current_work_item_id.as_deref() == Some(blocked.id.as_str())
-                        && turn.terminal.is_some()
-                })
-        },
-        || describe_recheck_wait_state(&runtime, &blocked.id, runtime_task.is_finished()),
-    )
-    .await;
-
-    let state = runtime.agent_state().await.unwrap();
+    assert_eq!(execution.work_items[&work.id].state, before);
     assert_eq!(
-        state.current_work_item_id.as_deref(),
-        Some(focus.id.as_str()),
-        "a recheck turn must not switch or clear the agent's persistent current WorkItem"
+        execution.work_items[&work.id].source_revision,
+        updated.revision
     );
-
-    let latest = runtime
-        .storage()
-        .latest_work_item(&blocked.id)
-        .unwrap()
-        .expect("blocked work item exists");
-    assert_eq!(latest.state, WorkItemState::Open);
-    assert_eq!(
-        latest.blocked_by.as_deref(),
-        Some("waiting for external wake"),
-        "a recheck turn must not implicitly clear the blocker"
-    );
-    runtime_task.abort();
-}
-
-#[tokio::test(start_paused = true)]
-async fn wait_bound_blocked_recheck_turn_runs_without_switching_focus() {
-    let dir = tempdir().unwrap();
-    let workspace = tempdir().unwrap();
-    let clock = controlled_clock();
-    // The old fallback wait and unregistered Work are genuine pre-cutover facts.
-    let mut waiting = WorkItemRecord::new(
-        "default",
-        "operator wait awaiting fallback recheck",
-        WorkItemState::Open,
-    );
-    waiting.blocked_by = Some("waiting for operator input".into());
-    waiting.recheck_at = Some(clock.now() + chrono::Duration::milliseconds(50));
-    let mut wait = WaitConditionRecord {
-        id: "wait-bound-recheck".into(),
-        agent_id: "default".into(),
-        work_item_id: Some(waiting.id.clone()),
-        status: WaitConditionStatus::Active,
-        kind: WaitConditionKind::Operator,
-        source: None,
-        subject_ref: None,
-        waiting_for: "operator input".into(),
-        wake_sources: vec![],
-        continuation: None,
-        created_at: clock.now(),
-        updated_at: clock.now(),
-        expires_at: None,
-        resolved_at: None,
-        cancelled_at: None,
-        turn_id: None,
-        trigger_message_id: None,
-        triggered_at: None,
-    };
-    wait.created_at =
-        chrono::DateTime::from_timestamp_millis(wait.created_at.timestamp_millis()).unwrap();
-    wait.updated_at = wait.created_at;
-    write_original_v81_work_wait_fixture(
-        dir.path(),
-        std::slice::from_ref(&waiting),
-        &[wait],
-        &AgentState::new("default"),
-    );
-    let runtime = RuntimeHandle::new_with_clock(
-        "default",
-        dir.path().to_path_buf(),
-        workspace.path().to_path_buf(),
-        "http://127.0.0.1:7878".into(),
-        Arc::new(StubProvider::new("wait-bound recheck observed")),
-        "default".into(),
-        context_config(),
-        clock.clone(),
-    )
-    .unwrap();
-    let runtime_task = tokio::spawn(runtime.clone().run());
-    advance_lifecycle_time(&clock, std::time::Duration::from_millis(50)).await;
-
-    wait_for_lifecycle_condition(
-        &clock,
-        "a wait-bound blocked recheck should run a turn bound to the target WorkItem",
-        || {
-            runtime
-                .storage()
-                .read_recent_turns(10)
-                .unwrap()
-                .iter()
-                .any(|turn| {
-                    turn.current_work_item_id.as_deref() == Some(waiting.id.as_str())
-                        && turn.terminal.is_some()
-                })
-        },
-        || describe_recheck_wait_state(&runtime, &waiting.id, runtime_task.is_finished()),
-    )
-    .await;
-
-    let latest = runtime
-        .storage()
-        .latest_work_item(&waiting.id)
-        .unwrap()
-        .expect("waiting work item exists");
-    assert_eq!(latest.state, WorkItemState::Open);
-    assert_eq!(
-        latest.blocked_by.as_deref(),
-        Some("waiting for operator input"),
-        "a recheck turn must not implicitly clear the blocker"
-    );
-    runtime_task.abort();
 }
 
 #[tokio::test(start_paused = true)]
@@ -2777,15 +2406,16 @@ async fn work_item_query_tools_return_readiness_views() {
     };
 
     let runnable_payload = list("runnable").await;
-    assert_eq!(runnable_payload["total_matching"].as_u64(), Some(1));
-    assert_eq!(
-        runnable_payload["work_items"][0]["id"].as_str(),
-        Some(runnable.id.as_str())
-    );
-    assert_eq!(
-        runnable_payload["work_items"][0]["readiness"].as_str(),
-        Some("runnable")
-    );
+    assert_eq!(runnable_payload["total_matching"].as_u64(), Some(2));
+    for id in [&runnable.id, &blocked.id] {
+        assert!(runnable_payload["work_items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item["id"].as_str() == Some(id.as_str()) && item["readiness"] == "runnable"
+            }));
+    }
 
     let waiting_payload = list("waiting_for_operator").await;
     assert_eq!(waiting_payload["total_matching"].as_u64(), Some(1));
@@ -2803,7 +2433,7 @@ async fn work_item_query_tools_return_readiness_views() {
     );
 
     let queued_payload = list("queued").await;
-    assert_eq!(queued_payload["total_matching"].as_u64(), Some(1));
+    assert_eq!(queued_payload["total_matching"].as_u64(), Some(2));
     let queued_ids = queued_payload["work_items"]
         .as_array()
         .unwrap()
@@ -2811,18 +2441,13 @@ async fn work_item_query_tools_return_readiness_views() {
         .filter_map(|item| item["id"].as_str())
         .collect::<Vec<_>>();
     assert!(queued_ids.contains(&runnable.id.as_str()));
+    assert!(queued_ids.contains(&blocked.id.as_str()));
     assert!(!queued_ids.contains(&waiting.id.as_str()));
     assert!(!queued_ids.contains(&wait_condition_blocked.id.as_str()));
 
     let blocked_payload = list("blocked").await;
-    assert_eq!(blocked_payload["total_matching"].as_u64(), Some(2));
+    assert_eq!(blocked_payload["total_matching"].as_u64(), Some(1));
     let blocked_items = blocked_payload["work_items"].as_array().unwrap();
-    let blocked_ids = blocked_items
-        .iter()
-        .filter_map(|item| item["id"].as_str())
-        .collect::<Vec<_>>();
-    assert!(blocked_ids.contains(&blocked.id.as_str()));
-    assert!(blocked_ids.contains(&wait_condition_blocked.id.as_str()));
     let wait_condition_view = blocked_items
         .iter()
         .find(|item| item["id"].as_str() == Some(wait_condition_blocked.id.as_str()))
@@ -9019,7 +8644,7 @@ async fn queued_notification_keeps_working_memory_unfocused_before_pick() {
 }
 
 #[tokio::test]
-async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick() {
+async fn editing_current_work_item_description_does_not_release_focus() {
     let dir = tempdir().unwrap();
     let workspace = tempdir().unwrap();
     let runtime = RuntimeHandle::new(
@@ -9051,12 +8676,14 @@ async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick()
         .await
         .unwrap();
 
-    assert_eq!(blocked.readiness(), WorkItemReadiness::Blocked);
+    assert_eq!(blocked.readiness(), WorkItemReadiness::Runnable);
     let state = runtime.agent_state().await.unwrap();
-    assert!(state.current_work_item_id.is_none());
-    assert!(state.current_turn_work_item_id.is_none());
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
     let events = runtime.storage().read_recent_events(10).unwrap();
-    assert!(events.iter().any(|event| {
+    assert!(!events.iter().any(|event| {
         event.kind == "work_item_focus_released"
             && event.data["reason"] == "work_item_blocked"
             && event.data["work_item_id"].as_str() == Some(work.id.as_str())
@@ -9069,8 +8696,10 @@ async fn blocking_current_work_item_releases_focus_and_unblock_does_not_repick()
 
     assert_eq!(unblocked.readiness(), WorkItemReadiness::Runnable);
     let state = runtime.agent_state().await.unwrap();
-    assert!(state.current_work_item_id.is_none());
-    assert!(state.current_turn_work_item_id.is_none());
+    assert_eq!(
+        state.current_work_item_id.as_deref(),
+        Some(work.id.as_str())
+    );
 }
 
 async fn commit_prepared_wait_for(runtime: &RuntimeHandle, result: &crate::tool::ToolResult) {
@@ -9362,11 +8991,10 @@ async fn wait_for_tool_uses_bound_turn_work_item_without_durable_focus() {
         .unwrap();
     assert_eq!(waits.len(), 1);
     assert_eq!(waits[0].work_item_id.as_deref(), Some(work.id.as_str()));
+    assert_eq!(waits[0].waiting_for, "wait from explicitly bound turn");
     let updated = runtime.latest_work_item(&work.id).await.unwrap().unwrap();
-    assert_eq!(
-        updated.blocked_by.as_deref(),
-        Some("wait from explicitly bound turn")
-    );
+    assert!(updated.blocked_by.is_none());
+    assert!(updated.blocked_by_wait_id.is_none());
     let state = runtime.agent_state().await.unwrap();
     assert!(state.current_work_item_id.is_none());
     assert!(state.current_turn_work_item_id.is_none());
@@ -9498,13 +9126,13 @@ async fn pick_blocked_work_item_reports_inspection_focus() {
         .await
         .unwrap();
     runtime
-        .update_work_item_fields(
-            work.id.clone(),
+        .register_wait_for(
+            "default",
+            Some(work.id.clone()),
+            WaitForWakeKind::External,
+            Some("test:inspect-blocker".into()),
+            "blocked on external signal".into(),
             None,
-            None,
-            None,
-            None,
-            Some(Some("blocked on external signal".into())),
         )
         .await
         .unwrap();
@@ -9516,7 +9144,7 @@ async fn pick_blocked_work_item_reports_inspection_focus() {
 
     assert_eq!(
         picked.current_work_item.readiness(),
-        WorkItemReadiness::Blocked
+        WorkItemReadiness::Runnable
     );
     assert_eq!(
         picked.transition.current_readiness,
@@ -9585,7 +9213,7 @@ async fn pick_blocked_work_item_with_clear_blocker_resumes_runnable_focus() {
         .unwrap();
     assert_eq!(
         wait.work_item.as_ref().unwrap().readiness(),
-        WorkItemReadiness::Blocked
+        WorkItemReadiness::Runnable
     );
 
     let picked = runtime
@@ -9975,7 +9603,7 @@ async fn pick_clear_blocker_resumes_yielded_parent_with_retained_operator_wait()
         .unwrap();
     assert_eq!(
         wait.work_item.as_ref().unwrap().readiness(),
-        WorkItemReadiness::Blocked
+        WorkItemReadiness::Runnable
     );
     let execution_before = runtime
         .inner
@@ -10063,9 +9691,9 @@ async fn pick_clear_blocker_resumes_yielded_parent_with_retained_operator_wait()
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable { generation, .. }
             if *generation == paused_generation + 1
     ));
-    assert!(
-        execution_parent.source_revision > paused_before.source_revision,
-        "resuming with a cleared blocker must advance the canonical source revision"
+    assert_eq!(
+        execution_parent.source_revision, paused_before.source_revision,
+        "cancelling an explicit wait must not rewrite an unchanged WorkItem"
     );
 
     // The resumed state survives persistence reload.

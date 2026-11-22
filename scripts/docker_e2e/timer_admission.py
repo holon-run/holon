@@ -75,7 +75,22 @@ def owned_wait(
     return row
 
 
-def wait_rearmed(harness: Any, marker: str, previous_wait_id: str) -> dict[str, Any]:
+def active_timer_wait_id(
+    value: dict[str, Any], agent_id: str, work_item_id: str, timer_id: str,
+) -> str:
+    rows = [
+        row for row in value["execution_protocol_work_items"]
+        if row["agent_id"] == agent_id and row["work_item_id"] == work_item_id
+    ]
+    require(len(rows) == 1, f"missing or duplicate execution owner: {rows}")
+    state = payload(rows[0])["state"]
+    require(state["state"] == "waiting", f"execution owner is not waiting: {state}")
+    wait_id = state["wait"]["wait_id"]
+    owned_wait(value, agent_id, work_item_id, timer_id, wait_id, "active")
+    return wait_id
+
+
+def wait_rearmed(harness: Any, marker: str) -> dict[str, Any]:
     deadline = time.monotonic() + harness.timeout_seconds
     while time.monotonic() < deadline:
         matches = [
@@ -86,16 +101,10 @@ def wait_rearmed(harness: Any, marker: str, previous_wait_id: str) -> dict[str, 
         require(len(matches) == 1, f"timer WorkItem identity changed: {matches}")
         item = matches[0]
         require(item["state"] != "completed", "timer WorkItem skipped rearm barrier")
-        wait_id = item.get("blocked_by_wait_id")
         if (
-            item.get("scheduling_state") == "waiting_timer" and wait_id
-            and wait_id != previous_wait_id
+            item.get("scheduling_state") == "waiting_timer"
+            and [todo["state"] for todo in item["todo_list"]] == ["completed", "pending"]
         ):
-            require(
-                [todo["state"] for todo in item["todo_list"]]
-                == ["completed", "pending"],
-                f"first timer dispatch did not advance exactly one todo: {item}",
-            )
             write_json(harness.evidence / "timer-rearmed-work-item.json", item)
             return item
         # Condition-based polling; no fixed delay is used to manufacture a fire.
@@ -145,14 +154,20 @@ def require_dispatch(
     ]
     require(len(prior_work) == len(prior_protocol) == 1, "missing waiting owner fences")
     fences = attempt["admitted_fences"]
+    expected_revision = prior_protocol[0]["source_revision"]
+    expected_generation = prior_protocol[0]["generation"]
+    # Resolving the wait no longer writes a blocker mirror to the WorkItem.
     require(
-        fences.get("work_item_source_revision") == prior_work[0]["revision"] + 1
-        and fences.get("work_item_generation") == prior_protocol[0]["generation"]
+        fences.get("work_item_source_revision") == expected_revision == prior_work[0]["revision"]
+        and fences.get("work_item_generation") == expected_generation
         and fences.get("source_revision") == attempt["source"]["generation"]
         == message["message_seq"]
         and fences.get("agent_control_revision", 0) > 0
         and fences.get("host_registry_revision", 0) > 0,
-        f"timer admission retained stale/mismatched fences: {attempt}",
+        f"timer admission retained stale/mismatched fences: {fences}; "
+        f"expected WorkItem revision {expected_revision} "
+        f"(projection {prior_work[0]['revision']}), generation {expected_generation}, "
+        f"and source revision {message['message_seq']}",
     )
     outcomes = [
         payload(outcome) for outcome in after["execution_protocol_outcomes"]
@@ -209,8 +224,7 @@ def run_case(
         and timer["interval_ms"] == 30000 and timer["fire_count"] == 0,
         f"first exact wait missed the pre-fire barrier: {timer}",
     )
-    timer_id, wid, wait1 = timer["id"], first["id"], first.get("blocked_by_wait_id")
-    require(bool(wait1), f"first timer wait omitted blocker ownership: {first}")
+    timer_id, wid = timer["id"], first["id"]
     started_at = None
     if restart_before_first_dispatch:
         # A fire during shutdown cannot count as the post-restart dispatch.
@@ -227,19 +241,19 @@ def run_case(
         len(stopped_timers) == 1 and stopped_timers[0]["fire_count"] == 0,
         "timer fired before the daemon reached the first-dispatch barrier",
     )
-    owned_wait(initial, harness.agent_id, wid, timer_id, wait1, "active")
+    wait1 = active_timer_wait_id(initial, harness.agent_id, wid, timer_id)
     require(
         len([row for row in initial["work_items"] if row["agent_id"] == harness.agent_id]) == 1,
         "timer scenario created more than one WorkItem",
     )
     if restart_before_first_dispatch:
         harness.start(wait_idle=False)
-    second = wait_rearmed(harness, marker, wait1)
+    second = wait_rearmed(harness, marker)
     require(second["id"] == wid, "timer dispatch changed WorkItem owner")
     harness.wait_agent_idle()
     middle = snapshot(harness, "timer-after-dispatch-1")
-    wait2 = second["blocked_by_wait_id"]
-    owned_wait(middle, harness.agent_id, wid, timer_id, wait2, "active")
+    wait2 = active_timer_wait_id(middle, harness.agent_id, wid, timer_id)
+    require(wait2 != wait1, "timer dispatch did not register a new exact timer wait")
     dispatch1 = require_dispatch(
         initial, middle, agent_id=harness.agent_id, work_item_id=wid,
         timer_id=timer_id, wait_id=wait1,

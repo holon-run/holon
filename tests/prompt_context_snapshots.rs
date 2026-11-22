@@ -974,9 +974,9 @@ Agent id: default
 Current work item:
 - Id: work_prompt
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: Ship prompt snapshot coverage
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_prompt/plan.md
@@ -1432,9 +1432,9 @@ Agent id: default
 Current work item:
 - Id: work_active
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: Complete snapshot coverage expansion
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_active/plan.md
@@ -1446,8 +1446,8 @@ Current work item:
 
 ## queued_blocked_work_items
 Work item candidates by scheduler ranking:
-Blocked work items:
-- [blocked] work_queued :: Review and merge PR #485 :: current_todo=Review expanded snapshot coverage changes :: blocked_by=blocked on active work completion
+Queued runnable work items:
+- [queued_runnable] work_queued :: Review and merge PR #485 :: current_todo=Review expanded snapshot coverage changes :: blocked_by=blocked on active work completion
   - Plan ref: $AGENT_HOME/work-items/work_queued/plan.md
 
 ## context_contract
@@ -1524,9 +1524,9 @@ Agent id: default
 Current work item:
 - Id: work_no_delta
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: Test delta absence
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_no_delta/plan.md
@@ -1626,9 +1626,9 @@ Agent id: default
 Current work item:
 - Id: work_ci
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: Handle CI callback
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_ci/plan.md
@@ -1744,9 +1744,9 @@ Agent id: default
 Current work item:
 - Id: work_waiting
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: External service integration
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_waiting/plan.md
@@ -1865,9 +1865,9 @@ Agent id: default
 Current work item:
 - Id: work_compaction
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: Long-running task with compaction
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_compaction/plan.md
@@ -1990,9 +1990,9 @@ Agent id: default
 Current work item:
 - Id: work_test
 - State: Open
-- Scheduling state: Blocked
-- Readiness: Blocked
-- Reason: ManualBlocker
+- Scheduling state: Runnable
+- Readiness: Runnable
+- Reason: Runnable
 - Objective: Test execution and verification
 - Plan status: draft
 - Plan artifact: $AGENT_HOME/work-items/work_test/plan.md

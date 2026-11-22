@@ -2842,28 +2842,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 });
             }
         }
-        if let scheduler::CanonicalActivationScenario::BlockedRecheck {
-            expected_work_item_revision,
-            ..
-        } = &scenario
-        {
-            // The due recheck is consumed (bumping the revision) right after the
-            // tick is emitted, so the emitted revision is a lower bound rather
-            // than an exact fence. A record behind it means this activation is
-            // replaying stale state.
-            if work_item.revision < *expected_work_item_revision {
-                return Ok(CanonicalClaimOutcome::RejectQueued {
-                    scenario_class,
-                    reason: "canonical_blocked_recheck_work_item_revision_stale",
-                });
-            }
-            if work_item.blocked_by.is_none() {
-                return Ok(CanonicalClaimOutcome::RejectQueued {
-                    scenario_class,
-                    reason: "canonical_blocked_recheck_blocker_cleared",
-                });
-            }
-        }
         let Some(work_projection) =
             captured_work.scheduler_work_projection(state, triggers, &work_item.id)?
         else {
@@ -2892,7 +2870,14 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     reason: "canonical_provider_recovery_directive_invalid",
                 });
             }
-            if !matches!(
+            // A runnable projection alone cannot authorize replaying an exact wait.
+            let exact_authority = self.provider_recovery_exact_wait_authority(
+                message,
+                existing_execution.as_ref(),
+                &work_item,
+                inputs,
+            )?;
+            let recoverable_projection = matches!(
                 work_projection.scheduling_state,
                 crate::types::WorkItemSchedulingState::Runnable
                     | crate::types::WorkItemSchedulingState::WaitingOperator
@@ -2900,14 +2885,10 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                     | crate::types::WorkItemSchedulingState::WaitingExternal
                     | crate::types::WorkItemSchedulingState::WaitingTimer
                     | crate::types::WorkItemSchedulingState::WaitingSystem
-            ) && !(work_projection.scheduling_state
+            ) || (work_projection.scheduling_state
                 == crate::types::WorkItemSchedulingState::Blocked
-                && self.provider_recovery_resumes_exact_wait(
-                    message,
-                    existing_execution.as_ref(),
-                    &work_item,
-                )?)
-            {
+                && exact_authority == Some(true));
+            if exact_authority == Some(false) || !recoverable_projection {
                 return Ok(CanonicalClaimOutcome::RejectQueued {
                     scenario_class,
                     reason: "canonical_provider_recovery_work_item_not_recoverable",
@@ -3074,8 +3055,7 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             }
             scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
             | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
-            | scheduler::CanonicalActivationScenario::InternalFollowup { .. }
-            | scheduler::CanonicalActivationScenario::BlockedRecheck { .. } => None,
+            | scheduler::CanonicalActivationScenario::InternalFollowup { .. } => None,
             scheduler::CanonicalActivationScenario::LifecycleExternalNudge { .. } => {
                 unreachable!("lifecycle scenario is planned before WorkItem lookup")
             }
@@ -3117,7 +3097,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         } else if !matches!(
             scenario,
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
-                | scheduler::CanonicalActivationScenario::BlockedRecheck { .. }
         ) && !interrupted_task_result_replay
             && authoritative_work.is_some_and(|record| {
                 !matches!(
@@ -3189,15 +3168,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::Runnable(
                     work_item.clone(),
                 ),
-            ),
-            scheduler::CanonicalActivationScenario::BlockedRecheck {
-                expected_work_item_revision,
-                ..
-            } => Some(
-                crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::BlockedRecheck {
-                    record: work_item.clone(),
-                    minimum_revision: expected_work_item_revision,
-                },
             ),
             _ => Some(
                 crate::runtime_db::transitions::SchedulerClaimWorkItemExpectation::Snapshot(
@@ -3873,7 +3843,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
                 scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation {
                     ..
                 } => "WorkItemAutonomousContinuation",
-                scheduler::CanonicalActivationScenario::BlockedRecheck { .. } => "BlockedRecheck",
                 scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
                     "ProviderRecovery"
                 }
@@ -4160,11 +4129,6 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             } => ExecutionSourceIdentity::WorkItemContinuation {
                 work_item_id: work_item_id.clone(),
             },
-            scheduler::CanonicalActivationScenario::BlockedRecheck { work_item_id, .. } => {
-                ExecutionSourceIdentity::WorkItemContinuation {
-                    work_item_id: work_item_id.clone(),
-                }
-            }
             scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
                 ExecutionSourceIdentity::RuntimeRecovery {
                     recovery_id: message.id.clone(),
@@ -4389,29 +4353,34 @@ impl<'a> SchedulerDecisionExecutor<'a> {
         )
     }
 
-    fn provider_recovery_resumes_exact_wait(
+    /// `None` delegates to the normal provider recovery source validation.
+    fn provider_recovery_exact_wait_authority(
         &self,
         message: &MessageEnvelope,
         execution: Option<&crate::domain::execution_protocol::ExecutionProtocolState>,
         work_item: &crate::types::WorkItemRecord,
-    ) -> Result<bool> {
+        inputs: &super::resident_input_evidence::CapturedInputEvidence,
+    ) -> Result<Option<bool>> {
         use crate::domain::execution_protocol::WorkItemExecutionState;
         let Some(execution) = execution else {
-            return Ok(false);
+            return Ok(None);
         };
-        let Ok(source) =
-            super::provider_recovery::resolve(&self.runtime.inner.storage, message, execution)
-        else {
-            return Ok(false);
-        };
+        let source =
+            match super::provider_recovery::resolve_from_captured(inputs, message, execution) {
+                Ok(source) => source,
+                Err(error) if super::provider_recovery::is_preparation_error(&error) => {
+                    return Err(error)
+                }
+                Err(_) => return Ok(None),
+            };
         let Some(wait_id) = source.exact_wait_id() else {
-            return Ok(false);
+            return Ok(None);
         };
         let Some(record) = execution.work_items.get(&work_item.id) else {
-            return Ok(false);
+            return Ok(Some(false));
         };
         if record.source_revision != work_item.revision {
-            return Ok(false);
+            return Ok(Some(false));
         }
         let waiting_generation = source
             .predecessor
@@ -4457,17 +4426,18 @@ impl<'a> SchedulerDecisionExecutor<'a> {
             _ => false,
         };
         if !exact_authority {
-            return Ok(false);
+            return Ok(Some(false));
         }
-        // Only the failed exact continuation is recoverable. This neither
-        // clears the business blocker nor authorizes ordinary WorkItem work.
-        Ok(super::provider_recovery::resolved_exact_wait(
-            &self.runtime.inner.storage,
-            &source.root_message,
-            &work_item.id,
-            wait_id,
-        )?
-        .is_some())
+        // Only the failed exact continuation is recoverable, not ordinary work.
+        Ok(Some(
+            super::provider_recovery::resolved_exact_wait(
+                &self.runtime.inner.storage,
+                &source.root_message,
+                &work_item.id,
+                wait_id,
+            )?
+            .is_some(),
+        ))
     }
 
     fn provider_recovery_source_attempt_id(
@@ -4751,16 +4721,6 @@ fn execution_attempt_matches_scenario(
             },
         ) => source_work_item_id == expected && work_item_id == expected,
         (
-            ExecutionSourceIdentity::WorkItemContinuation {
-                work_item_id: source_work_item_id,
-            },
-            ExecutionBinding::WorkItem { work_item_id },
-            scheduler::CanonicalActivationScenario::BlockedRecheck {
-                work_item_id: expected,
-                ..
-            },
-        ) => source_work_item_id == expected && work_item_id == expected,
-        (
             ExecutionSourceIdentity::RuntimeRecovery { recovery_id },
             ExecutionBinding::WorkItem { work_item_id },
             scheduler::CanonicalActivationScenario::ProviderRecovery {
@@ -5035,7 +4995,6 @@ fn canonical_execution_origin_for_scenario(
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. } => {
             ExecutionOrigin::System
         }
-        scheduler::CanonicalActivationScenario::BlockedRecheck { .. } => ExecutionOrigin::System,
         scheduler::CanonicalActivationScenario::ProviderRecovery { .. } => {
             ExecutionOrigin::RuntimeRecovery
         }
@@ -5066,7 +5025,6 @@ fn canonical_execution_trust_for_scenario(
     use crate::domain::execution_protocol::ExecutionTrust;
     match scenario {
         scheduler::CanonicalActivationScenario::WorkItemAutonomousContinuation { .. }
-        | scheduler::CanonicalActivationScenario::BlockedRecheck { .. }
         | scheduler::CanonicalActivationScenario::ProviderRecovery { .. }
         | scheduler::CanonicalActivationScenario::UnboundProviderRecovery { .. }
         | scheduler::CanonicalActivationScenario::ExactTaskRejoin { .. } => {

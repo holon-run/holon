@@ -21,7 +21,7 @@ const AGENT_ID: &str = "benchmark-agent";
 const DEFAULT_SAMPLES: usize = 10;
 const WARMUP_SAMPLES: usize = 1;
 const RUNNABLE_ITEMS: usize = 100;
-const BLOCKED_ITEMS: usize = 50;
+const LEGACY_RECHECK_ITEMS: usize = 50;
 const WAITING_ITEMS: usize = 50;
 const CONCURRENT_READERS: usize = 8;
 const READS_PER_READER: usize = 25;
@@ -55,7 +55,7 @@ struct BenchmarkConfig {
     warmup_repetitions: usize,
     measured_repetitions: usize,
     runnable_work_items: usize,
-    blocked_work_items: usize,
+    legacy_recheck_work_items: usize,
     waiting_work_items: usize,
     concurrency: usize,
     operations_per_concurrent_sample: usize,
@@ -106,14 +106,14 @@ fn main() -> Result<()> {
     let artifact = BenchmarkArtifact {
         schema_version: "holon.performance.v0",
         benchmark_suite: "scheduler",
-        workload_version: "v1",
+        workload_version: "v2",
         started_at: Utc::now().to_rfc3339(),
         environment: environment(),
         config: BenchmarkConfig {
             warmup_repetitions: WARMUP_SAMPLES,
             measured_repetitions: samples,
-            runnable_work_items: RUNNABLE_ITEMS,
-            blocked_work_items: BLOCKED_ITEMS,
+            runnable_work_items: RUNNABLE_ITEMS + LEGACY_RECHECK_ITEMS,
+            legacy_recheck_work_items: LEGACY_RECHECK_ITEMS,
             waiting_work_items: WAITING_ITEMS,
             concurrency: CONCURRENT_READERS,
             operations_per_concurrent_sample: CONCURRENT_READERS * READS_PER_READER,
@@ -166,7 +166,10 @@ fn run_benchmarks(samples: usize, filter: &[String]) -> Result<Vec<BenchmarkResu
     if benchmark_selected(filter, "scheduler.due_rechecks.50") {
         results.push(measure("scheduler.due_rechecks.50", samples, 1, || {
             let due = storage.due_blocked_work_item_rechecks(AGENT_ID, now)?;
-            anyhow::ensure!(due.len() == BLOCKED_ITEMS, "expected 50 due rechecks");
+            anyhow::ensure!(
+                due.len() == LEGACY_RECHECK_ITEMS,
+                "expected 50 due rechecks"
+            );
             black_box(due);
             Ok(())
         })?);
@@ -212,7 +215,7 @@ fn run_benchmarks(samples: usize, filter: &[String]) -> Result<Vec<BenchmarkResu
 
 fn seed_scheduler_state(storage: &AppStorage, now: chrono::DateTime<Utc>) -> Result<Vec<String>> {
     let mut agent = AgentState::new(AGENT_ID);
-    let mut runnable_ids = Vec::with_capacity(RUNNABLE_ITEMS);
+    let mut runnable_ids = Vec::with_capacity(RUNNABLE_ITEMS + LEGACY_RECHECK_ITEMS - 1);
 
     for index in 0..RUNNABLE_ITEMS {
         let mut item = WorkItemRecord::new(
@@ -232,16 +235,21 @@ fn seed_scheduler_state(storage: &AppStorage, now: chrono::DateTime<Utc>) -> Res
         storage.append_work_item(&item)?;
     }
 
-    for index in 0..BLOCKED_ITEMS {
+    // Legacy recheck rows still exercise the storage query, but are ordinary FIFO
+    // candidates in the scheduler projection.
+    for index in 0..LEGACY_RECHECK_ITEMS {
         let mut item = WorkItemRecord::new(
             AGENT_ID,
-            format!("blocked benchmark work item {index}"),
+            format!("legacy recheck benchmark work item {index}"),
             WorkItemState::Open,
         );
-        item.id = format!("work_blocked_{index:03}");
+        item.id = format!("work_legacy_recheck_{index:03}");
         item.plan_status = WorkItemPlanStatus::Ready;
+        item.created_at = now + ChronoDuration::milliseconds(index as i64);
+        item.updated_at = item.created_at;
         item.blocked_by = Some("benchmark_recheck".into());
         item.recheck_at = Some(now - ChronoDuration::seconds(1));
+        runnable_ids.push(item.id.clone());
         storage.append_work_item(&item)?;
     }
 
@@ -284,7 +292,7 @@ fn seed_scheduler_state(storage: &AppStorage, now: chrono::DateTime<Utc>) -> Res
 fn verify_fifo_projection(storage: &AppStorage, expected_ids: &[String]) -> Result<()> {
     let projection = storage.work_queue_read_model()?;
     anyhow::ensure!(
-        projection.items.len() == RUNNABLE_ITEMS + BLOCKED_ITEMS + WAITING_ITEMS,
+        projection.items.len() == RUNNABLE_ITEMS + LEGACY_RECHECK_ITEMS + WAITING_ITEMS,
         "scheduler projection lost work items"
     );
     let actual_ids = projection

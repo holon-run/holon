@@ -224,18 +224,22 @@ async fn cancel_excluding_changed_work(completed: bool) -> Result<()> {
             )
             .await?;
     } else {
-        // Keep the same display text: exact wait identity, not text, owns it.
-        let mut other_timer = timer.clone();
-        other_timer.id = crate::ids::timer_id();
-        crate::runtime::tests::support::persist_timer_creation_for_restart(&runtime, &other_timer)
-            .await?;
-        let (_, other_wait) = waiting_work(&runtime, &other_timer).await?;
+        // A stale legacy link must not make the timer own an unrelated pause.
         let expected_revision = work.revision;
         work.revision += 1;
-        work.blocked_by_wait_id = Some(other_wait.id);
+        work.blocked_by_wait_id = Some(wait.id.clone());
         runtime
             .update_work_item_record_expected(&work, expected_revision)
             .await?;
+        crate::runtime::tests::support::seed_live_work_execution(
+            &runtime,
+            &work,
+            crate::domain::execution_protocol::WorkItemExecutionState::Paused {
+                generation: work.revision,
+                reason: "independent pause".into(),
+            },
+        )
+        .await;
     }
     let work = runtime.latest_work_item(&work.id).await?.unwrap();
     let observed = observe_execution(&runtime, &work.id).await?;
