@@ -66,13 +66,14 @@ pub(crate) fn prepare_tx(
             _ => {}
         }
     }
-    let mut original = prepare_offline_input_repair_tx(
+    let mut original = prepare_offline_input_repair_with_retired_work_tx(
         tx,
         db,
         agent,
         &keys.into_iter().collect::<Vec<_>>(),
         &[],
         authority,
+        Some(&state.work_items),
     )?;
     outcomes.retain(|_, attempt| {
         original

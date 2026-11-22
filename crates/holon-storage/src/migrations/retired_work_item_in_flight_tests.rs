@@ -78,7 +78,7 @@ fn opening_legacy_database_normalizes_work_item_in_flight_once() -> Result<()> {
     }
     for _ in 0..2 {
         let mut db = Connection::open(&path)?;
-        apply_migration(&mut db, migration(118), unexpected_runtime_backfill)?;
+        apply_migration(&mut db, migration(119), unexpected_runtime_backfill)?;
         for (work, generation, state, wait_id) in [
             ("w1", 7, "runnable", None),
             ("w2", 7, "waiting", Some("resolved")),

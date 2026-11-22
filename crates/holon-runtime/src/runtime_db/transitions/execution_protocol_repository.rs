@@ -1992,7 +1992,7 @@ pub(crate) fn load_retired_scheduler_state_tx(
         "SELECT work_item_id,
                 CASE WHEN lifecycle_state = 'in_flight'
                      THEN json_set(payload_json, '$.state', json_object(
-                          'kind', 'runnable', 'generation', generation))
+                          'state', 'runnable', 'generation', generation))
                      ELSE payload_json END,
                 source_revision||':'||generation||':'||lifecycle_state
          FROM execution_protocol_work_items WHERE agent_id = ?1",
@@ -2374,7 +2374,7 @@ mod tests {
                         outcome: ExecutionOutcomeRecord {
                             outcome_id: "outcome-model-claim".into(),
                             attempt_id: attempt.attempt_id.clone(),
-                            outcome: ExecutionOutcome::WorkItem(outcome),
+                            outcome: ExecutionOutcome::WorkItem(outcome.clone()),
                             created_at: Utc::now().to_rfc3339(),
                         },
                     }),
@@ -2407,10 +2407,26 @@ mod tests {
                     ExecutionAttemptState::Settled
                 );
                 assert!(state.open_attempt().is_none());
-                assert!(matches!(
-                    state.work_items[&work.id].state,
-                    WorkItemExecutionState::Runnable { .. }
-                ));
+                let generation = bootstrap.work_items[&work.id].generation() + 1;
+                let expected = match outcome {
+                    WorkItemOutcome::Continue => WorkItemExecutionState::Runnable {
+                        generation,
+                        recovery_ref: None,
+                    },
+                    WorkItemOutcome::Wait { wait } => {
+                        WorkItemExecutionState::Waiting { generation, wait }
+                    }
+                    WorkItemOutcome::Complete { completion } => WorkItemExecutionState::Terminal {
+                        generation,
+                        completion,
+                    },
+                    WorkItemOutcome::Reentry { recovery_ref } => WorkItemExecutionState::Runnable {
+                        generation,
+                        recovery_ref: Some(recovery_ref),
+                    },
+                    _ => unreachable!(),
+                };
+                assert_eq!(state.work_items[&work.id].state, expected);
             }
         }
         Ok(())

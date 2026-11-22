@@ -407,10 +407,11 @@ async fn bootstrap_recovers_open_external_wake_claim_and_releases_execution_lane
     ));
     assert!(matches!(
         &execution.work_items[&fixture.work_item_id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::Runnable {
-            recovery_ref: Some(recovery_ref),
-            ..
-        } if recovery_ref == "interrupted"
+        crate::domain::execution_protocol::WorkItemExecutionState::Waiting {
+            generation,
+            wait,
+        } if wait.wait_id == fixture.wait_id
+            && generation.checked_sub(1) == attempt.admitted_fences.work_item_generation
     ));
     assert_eq!(
         runtime
@@ -11343,10 +11344,17 @@ async fn interrupted_activation_releases_admitted_task_result_to_next_scheduler_
             .map(|attempt| attempt.attempt_id.as_str()),
         Some(second_activation_id.as_str())
     );
-    assert!(matches!(
-        &reclaimed.work_items[&work_item_id].state,
-        crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. }
-    ));
+    let work_after_interruption = &recovered.work_items[&work_item_id];
+    assert_eq!(
+        &reclaimed.work_items[&work_item_id],
+        work_after_interruption
+    );
+    assert_eq!(
+        reclaimed.attempts[second_activation_id]
+            .admitted_fences
+            .work_item_generation,
+        Some(work_after_interruption.generation())
+    );
     assert_eq!(
         rebound.activation_id.as_deref(),
         Some(second_activation_id.as_str())

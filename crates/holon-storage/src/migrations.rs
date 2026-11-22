@@ -4599,14 +4599,14 @@ WITH legacy_owner AS (
          END AS next_generation,
          CASE WHEN open_attempt_id IS NOT NULL THEN COALESCE((
            SELECT c.wait_condition_id
-             FROM wait_conditions c
+             FROM temp.work_item_in_flight_migration_waits c
             WHERE c.wait_condition_id = legacy_owner.exact_wait_id
               AND c.agent_id = legacy_owner.agent_id
               AND c.work_item_id = legacy_owner.work_item_id
               AND c.status IN ('active', 'triggered', 'resolved')
          ), (
            SELECT c.wait_condition_id
-             FROM wait_conditions c
+             FROM temp.work_item_in_flight_migration_waits c
             WHERE c.agent_id = legacy_owner.agent_id
               AND c.work_item_id = legacy_owner.work_item_id
               AND c.status IN ('active', 'triggered')
@@ -5014,6 +5014,19 @@ fn apply_migration_transaction(
     migration: &Migration,
     runtime_backfill: ApplyRuntimeBackfill,
 ) -> Result<()> {
+    if migration.name == "retire_work_item_in_flight" {
+        // Some historical layouts have no wait table. Treat that as no wait
+        // evidence without creating a partial wait schema in the database.
+        let waits = if table_exists_tx(transaction, "wait_conditions")? {
+            "SELECT wait_condition_id, agent_id, work_item_id, status, created_at FROM main.wait_conditions"
+        } else {
+            "SELECT NULL AS wait_condition_id, NULL AS agent_id, NULL AS work_item_id,
+                    NULL AS status, NULL AS created_at WHERE 0"
+        };
+        transaction.execute_batch(&format!(
+            "CREATE TEMP VIEW work_item_in_flight_migration_waits AS {waits};"
+        ))?;
+    }
     if migration.name == "strict_runtime_sequences" {
         repair_runtime_sequence_duplicates(transaction)?;
     }
@@ -5059,6 +5072,9 @@ fn apply_migration_transaction(
         ensure_destructive_operation_command_digest_schema(transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "retire_work_item_in_flight" {
+        transaction.execute_batch("DROP VIEW temp.work_item_in_flight_migration_waits;")?;
+    }
     let backfill = match migration.name {
         "explicit_episode_continuity" => Some(RuntimeBackfill::EpisodeContinuity),
         "qualified_input_evidence" => Some(RuntimeBackfill::InputEvidence),

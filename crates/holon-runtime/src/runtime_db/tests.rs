@@ -449,7 +449,8 @@ mod tests {
                         "work_execution" => tx.execute(
                             "INSERT INTO execution_protocol_work_items
                              (agent_id,work_item_id,source_revision,generation,lifecycle_state,payload_json)
-                             VALUES('closed-attempt-owner','live-work',1,1,'in_flight','{}')",
+                             VALUES('closed-attempt-owner','live-work',1,1,'runnable',
+                               '{\"source_revision\":1,\"state\":{\"state\":\"runnable\",\"generation\":1}}')",
                             [],
                         )?,
                         "checkpoint" => tx.execute(
@@ -3509,6 +3510,26 @@ INSERT INTO scheduler_rollout_command_results (
         Ok(())
     }
 
+    // The current execution backfill no longer writes InFlight. Construct the
+    // reciprocal v46/v47 pair a released binary would have stored.
+    fn seed_legacy_in_flight(
+        connection: &rusqlite::Connection,
+        agent_id: &str,
+        work_item_id: &str,
+        attempt_id: &str,
+    ) -> Result<()> {
+        let changed = connection.execute(
+            "UPDATE execution_protocol_work_items
+             SET lifecycle_state = 'in_flight',
+                 payload_json = json_set(payload_json, '$.state',
+                    json_object('state', 'in_flight', 'generation', generation, 'attempt_id', ?3))
+             WHERE agent_id = ?1 AND work_item_id = ?2",
+            (agent_id, work_item_id, attempt_id),
+        )?;
+        assert_eq!(changed, 1);
+        Ok(())
+    }
+
     #[test]
     fn schema_47_scheduler_cleanup_fallback_preserves_input_and_reaches_fixed_point() -> Result<()>
     {
@@ -3549,9 +3570,6 @@ INSERT INTO scheduler_rollout_command_results (
                 "UPDATE execution_protocol_attempts
                  SET lifecycle_state = 'open'
                  WHERE agent_id = 'agent-a' AND attempt_id = 'activation-a';
-                 UPDATE execution_protocol_work_items
-                 SET lifecycle_state = 'in_flight'
-                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a';
                  UPDATE queue_entries
                  SET status = 'dequeued'
                  WHERE agent_id = 'agent-a' AND message_id = 'message-a';
@@ -3560,6 +3578,7 @@ INSERT INTO scheduler_rollout_command_results (
                  DROP TABLE observer_sync_capability_verifications;
                  DROP TABLE agent_identity_reservations;",
             )?;
+            seed_legacy_in_flight(&connection, "agent-a", "work-a", "activation-a")?;
         }
 
         let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
@@ -3724,6 +3743,7 @@ INSERT INTO scheduler_rollout_command_results (
             {
                 let mut connection = open_connection(&db_path)?;
                 migrate_through(&mut connection, 46)?;
+                seed_legacy_in_flight(&connection, "agent-a", "work-a", "activation-a")?;
                 connection.execute_batch(damage_sql)?;
             }
 
@@ -3775,21 +3795,7 @@ INSERT INTO scheduler_rollout_command_results (
         {
             let mut connection = open_connection(&db_path)?;
             migrate_through(&mut connection, 46)?;
-            let payload = connection.query_row(
-                "SELECT payload_json
-                 FROM execution_protocol_work_items
-                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
-                [],
-                |row| row.get::<_, String>(0),
-            )?;
-            let mut record: serde_json::Value = serde_json::from_str(&payload)?;
-            record["state"]["attempt_id"] = serde_json::json!("missing-attempt");
-            connection.execute(
-                "UPDATE execution_protocol_work_items
-                 SET payload_json = ?1
-                 WHERE agent_id = 'agent-a' AND work_item_id = 'work-a'",
-                [serde_json::to_string(&record)?],
-            )?;
+            seed_legacy_in_flight(&connection, "agent-a", "work-a", "missing-attempt")?;
         }
 
         let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
@@ -3839,6 +3845,8 @@ INSERT INTO scheduler_rollout_command_results (
         {
             let mut connection = open_connection(&db_path)?;
             migrate_through(&mut connection, 46)?;
+            seed_legacy_in_flight(&connection, "agent-a", "work-a", "activation-a")?;
+            seed_legacy_in_flight(&connection, "agent-b", "work-b", "activation-b")?;
         }
 
         let db = RuntimeDb::open_for_scheduler_recovery(&db_path, &lock_path)?;
