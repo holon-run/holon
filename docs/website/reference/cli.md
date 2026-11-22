@@ -101,9 +101,11 @@ holon (v0.61.0)
 │   ├── pick     Pick a WorkItem as current focus
 │   ├── update   Update a WorkItem
 │   └── complete Complete a WorkItem
-├── timer        Create, list, or cancel timers
+├── timer        Create, list, pause, resume, or cancel timers
 │   ├── create   Create a delayed or recurring timer
 │   ├── list     List active timers
+│   ├── pause    Pause a timer
+│   ├── resume   Resume a paused timer
 │   └── cancel   Cancel an active timer
 ├── control      [deprecated] use `holon agent start|stop|abort`
 ├── agent        Agent management
@@ -496,11 +498,20 @@ control-plane response.
 ```bash
 holon timer create --after-ms 60000 --summary "Heartbeat check"
 holon timer list
+holon timer pause <TIMER_ID>
+holon timer resume <TIMER_ID>
 holon timer cancel <TIMER_ID>
 ```
 
-`holon timer` schedules delayed or recurring timers for an agent (defaults to
-the default agent, or pass `--agent <AGENT>`).
+`holon timer` manages delayed or recurring timers for an agent. Commands use
+the configured default agent unless you pass `--agent <AGENT>`.
+
+`pause` and `resume` print a `TimerRecord` as JSON, just like `cancel`. Pausing
+sets the status to `paused` and clears `next_fire_at`. Resuming sets the status
+to `active` and restores `next_fire_at`. Pausing an already paused timer
+preserves its frozen delay; resuming an already active timer preserves its
+schedule. Both commands fail with a conflict and a nonzero exit code for
+cancelled or completed timers.
 
 ### Events
 

@@ -6904,6 +6904,18 @@ async fn handle_timer_command(config: &AppConfig, command: TimerCommands) -> Res
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(client.timers(&agent, limit).await?)?)
         }
+        TimerCommands::Pause { timer_id, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.pause_timer(&agent, &timer_id).await?,
+            )?)
+        }
+        TimerCommands::Resume { timer_id, agent } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client.resume_timer(&agent, &timer_id).await?,
+            )?)
+        }
         TimerCommands::Cancel { timer_id, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(

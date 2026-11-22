@@ -1096,6 +1096,100 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
 }
 
 #[test]
+fn timer_pause_and_resume_preserve_json_and_schedule() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [
+        ("HOLON_HTTP_ADDR", addr.as_str()),
+        ("HOLON_AGENT_ID", "timer-cli-default"),
+    ];
+    let run = |args: &[&str]| run_json_with_env(&home, args, &envs);
+    run(&["agent", "create", "main"]);
+    run(&["agent", "create", "timer-cli-default"]);
+    run(&["agent", "create", "timer-cli-other"]);
+
+    let assert_terminal_conflict = |id: &str, agent_args: &[&str]| {
+        for operation in ["pause", "resume"] {
+            let mut args = vec!["timer", operation, id];
+            args.extend_from_slice(agent_args);
+            let (stdout, stderr) = run_failure_with_env(&home, &args, &envs);
+            assert!(stdout.is_empty(), "failed {operation} should not emit JSON");
+            assert!(
+                stderr.contains(&format!("cannot {operation} terminal timer {id}")),
+                "expected the control-plane conflict diagnostic, got: {stderr}"
+            );
+        }
+    };
+
+    for (agent_id, agent_args) in [
+        ("timer-cli-default", &[][..]),
+        ("timer-cli-other", &["--agent", "timer-cli-other"][..]),
+    ] {
+        let mut create_args = vec!["timer", "create", "--after-ms", "120000"];
+        create_args.extend_from_slice(agent_args);
+        let created = run(&create_args);
+        let id = created["id"].as_str().expect("timer ID");
+        let change = |operation| {
+            let mut args = vec!["timer", operation, id];
+            args.extend_from_slice(agent_args);
+            run(&args)
+        };
+
+        let paused = change("pause");
+        assert_eq!(paused["id"], id);
+        assert_eq!(paused["agent_id"], agent_id);
+        assert_eq!(paused["status"], "paused");
+        assert_eq!(paused.get("next_fire_at"), Some(&Value::Null));
+        let frozen = paused["paused_remaining_ms"]
+            .as_u64()
+            .expect("paused timer has a frozen delay");
+        assert!(frozen > 0 && frozen <= 120_000);
+        let paused_again = change("pause");
+        assert_eq!(paused_again["status"], "paused");
+        assert_eq!(paused_again["paused_remaining_ms"], frozen);
+        assert_eq!(paused_again.get("next_fire_at"), Some(&Value::Null));
+
+        let resumed = change("resume");
+        assert_eq!(resumed["id"], id);
+        assert_eq!(resumed["agent_id"], agent_id);
+        assert_eq!(resumed["status"], "active");
+        assert!(resumed["next_fire_at"].is_string());
+        assert!(resumed.get("paused_remaining_ms").is_none());
+        let resumed_again = change("resume");
+        assert_eq!(resumed_again["status"], "active");
+        assert_eq!(resumed_again["next_fire_at"], resumed["next_fire_at"]);
+
+        assert_eq!(change("cancel")["status"], "cancelled");
+        assert_terminal_conflict(id, agent_args);
+    }
+
+    let one_shot = run(&["timer", "create", "--after-ms", "150"]);
+    let id = one_shot["id"].as_str().expect("one-shot timer ID");
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let timers = run(&["timer", "list"]);
+        let timer = timers
+            .as_array()
+            .expect("timer list")
+            .iter()
+            .find(|timer| timer["id"] == id)
+            .expect("one-shot timer is listed");
+        if timer["status"] == "completed" {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "one-shot timer did not complete: {timer}"
+        );
+        thread::sleep(Duration::from_millis(100));
+    }
+    assert_terminal_conflict(id, &[]);
+}
+
+#[test]
 fn agent_delete_then_recreate_reports_incarnation_json() {
     let _serve_guard = serve_test_lock()
         .lock()
