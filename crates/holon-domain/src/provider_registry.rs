@@ -32,6 +32,7 @@ pub enum ProviderWebSearch {
     Zai,
     BigModel,
     DeepSeek,
+    Gemini,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -198,7 +199,7 @@ const PROVIDER_DEFINITIONS: &[ProviderDefinition] = &[
     provider!(
         "gemini" => "gemini" @ "default",
         GeminiGenerateContent, "https://generativelanguage.googleapis.com/v1beta",
-        ["GEMINI_API_KEY"], Gemini, Default, None, None, None, StaticOnly
+        ["GEMINI_API_KEY"], Gemini, Default, Gemini, None, None, StaticOnly
     ),
     provider!(
         "github-copilot" => "github-copilot" @ "default",

@@ -822,9 +822,8 @@ fn validate_builtin_web_search_capability(
         | (ProviderNativeWebSearchKind::DeepSeek, "openai_responses", "web_search")
         | (ProviderNativeWebSearchKind::DeepSeek, "openai_responses", "web_search_2025_08_26")
         | (ProviderNativeWebSearchKind::DeepSeek, "anthropic_messages", "web_search_20250305")
-        | (ProviderNativeWebSearchKind::Anthropic, "anthropic_messages", "web_search_20250305") => {
-            true
-        }
+        | (ProviderNativeWebSearchKind::Anthropic, "anthropic_messages", "web_search_20250305")
+        | (ProviderNativeWebSearchKind::Gemini, "gemini_generate_content", "google_search") => true,
         _ => false,
     };
 
@@ -1070,6 +1069,53 @@ mod tests {
         let request = selection.request.expect("static capability should select");
         assert_eq!(request.kind, ProviderNativeWebSearchKind::OpenAi);
         assert_eq!(request.advertised_tool_type, "web_search_preview");
+    }
+
+    #[test]
+    fn native_web_search_request_accepts_gemini_google_search_capability() {
+        let native_provider = ("gemini-native".to_string(), WebProviderKind::GeminiNative);
+        let selection = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::Gemini,
+                "gemini",
+                "gemini/gemini-test",
+                "gemini_generate_content",
+                "google_search",
+                "gemini_web_search",
+            )),
+            Some(&native_provider),
+            &search_config(),
+        );
+
+        let request = selection
+            .request
+            .expect("gemini google_search capability should select");
+        assert_eq!(request.kind, ProviderNativeWebSearchKind::Gemini);
+        assert_eq!(request.advertised_tool_type, "google_search");
+        assert_eq!(request.backend_kind, "gemini_web_search");
+    }
+
+    #[test]
+    fn native_web_search_request_rejects_gemini_capability_on_other_transports() {
+        let native_provider = ("gemini-native".to_string(), WebProviderKind::GeminiNative);
+        let selection = native_web_search_request_for_config(
+            Some(capability(
+                ProviderNativeWebSearchKind::Gemini,
+                "gemini",
+                "gemini/gemini-test",
+                "openai_responses",
+                "web_search_preview",
+                "gemini_web_search",
+            )),
+            Some(&native_provider),
+            &search_config(),
+        );
+
+        assert!(selection.request.is_none());
+        assert_eq!(
+            selection.diagnostics.status,
+            BuiltinWebSearchSelectionStatus::Unsupported
+        );
     }
 
     #[test]

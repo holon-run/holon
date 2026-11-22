@@ -173,9 +173,9 @@ fn discovery_lists_native_providers_only_with_bound_model_route() {
     let mut reserved_anthropic =
         test_provider(WebProviderKind::AnthropicNative, "https://reserved.example");
     reserved_anthropic.model_route = Some("anthropic@default/claude-test".into());
-    let mut reserved_gemini =
+    let mut gemini_native =
         test_provider(WebProviderKind::GeminiNative, "https://reserved.example");
-    reserved_gemini.model_route = Some("gemini@default/gemini-test".into());
+    gemini_native.model_route = Some("gemini@default/gemini-test".into());
     let config = test_search_config(
         vec![
             (
@@ -184,14 +184,14 @@ fn discovery_lists_native_providers_only_with_bound_model_route() {
             ),
             ("unrouted-native", native_provider_config(None)),
             ("reserved-anthropic", reserved_anthropic),
-            ("reserved-gemini", reserved_gemini),
+            ("gemini-native", gemini_native),
         ],
         vec![],
         WebSearchMode::Single,
     );
     assert_eq!(
         list_search_providers(&config),
-        ["duckduckgo", "openai-search"]
+        ["duckduckgo", "gemini-native", "openai-search"]
     );
 }
 
@@ -3252,6 +3252,41 @@ async fn explicit_native_provider_dispatches_and_maps_results() {
     assert_eq!(
         dispatcher.dispatched(),
         vec!["openai-search|openai@default/gpt-test|fixture query|2".to_string()]
+    );
+}
+
+#[tokio::test]
+async fn explicit_gemini_native_provider_dispatches_and_maps_results() {
+    let mut provider = native_provider_config(Some("gemini@default/gemini-test"));
+    provider.kind = WebProviderKind::GeminiNative;
+    let config = test_search_config(
+        vec![("gemini-search", provider)],
+        vec![],
+        WebSearchMode::Fallback,
+    );
+    let dispatcher = RecordingNativeDispatcher::ok(vec![
+        native_search_result("https://example.test/gemini-first"),
+        native_search_result("https://example.test/gemini-second"),
+    ]);
+    let response = super::search_with_native(
+        test_tool_error,
+        routing_request(Some("gemini-search")),
+        &config,
+        Some(&dispatcher),
+    )
+    .await
+    .unwrap();
+    assert_eq!(response.provider, "gemini-search");
+    assert_eq!(response.results.len(), 2);
+    assert_eq!(response.results[0].url, "https://example.test/gemini-first");
+    assert_eq!(
+        response.provider_attempts[0].status,
+        WebSearchProviderAttemptStatus::Success
+    );
+    assert_eq!(response.winning_provider.as_deref(), Some("gemini-search"));
+    assert_eq!(
+        dispatcher.dispatched(),
+        vec!["gemini-search|gemini@default/gemini-test|fixture query|2".to_string()]
     );
 }
 

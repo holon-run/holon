@@ -43,13 +43,15 @@ They never join the omitted-provider inheritance, `auto` candidates,
 `web.providers.<id>.model_route`; the bound route decides transport, endpoint,
 model, and credentials (an OpenAI route uses the Responses API web search
 tool, a Codex route reuses the Codex transport with its OAuth credential and
-native search request shape).
+native search request shape, and a Gemini route uses the GenerateContent API
+`google_search` grounding tool).
 
 The standalone request boundary carries only the query and the native search
 parameters: no conversation history, workspace data, or other tools. Results
-come only from structured provider citations (`url_citation` annotations),
-deduplicated by URL and truncated to `max_results`; missing optional fields
-stay empty and `source` keeps the provider attribution. A completed search
+come only from structured provider citations (`url_citation` annotations for
+OpenAI routes, `groundingMetadata` chunks for Gemini routes), deduplicated by
+URL and truncated to `max_results`; missing optional fields stay empty and
+`source` keeps the provider attribution. A completed search
 with no mappable sources is a success with empty `results`; a response with
 no search-tool evidence is an explicit failure, as are unparseable or
 unresolvable routes, missing capability, auth, rate-limit, and timeout
@@ -73,9 +75,10 @@ the canonical URL so one page cited with different fragments occupies one slot.
 Writing a `web.providers.<id>.model_route` by hand is no longer required for
 the standalone native path. Holon derives one native entry per model provider
 that has usable credentials and declares a builtin native search capability
-with standalone dispatch support (today the OpenAI native kind, covering
-`openai` and `openai-codex`). Derivation is on by default and mirrors the
-`vision.default` three-layer structure: an explicit `web.providers` entry with
+with standalone dispatch support (today the OpenAI native kind covering
+`openai` and `openai-codex`, and the Gemini native kind covering `gemini`).
+Derivation is on by default and mirrors the `vision.default` three-layer
+structure: an explicit `web.providers` entry with
 the same id wins over the derived entry, `web.search.native_default` pins a
 single provider (`<provider-id>`), disables derivation (`off`), or restores
 the default (`auto`, also what setting the key to `auto` writes back).
