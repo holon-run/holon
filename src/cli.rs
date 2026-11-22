@@ -79,6 +79,18 @@ pub enum TimerCommands {
         #[arg(long)]
         agent: Option<String>,
     },
+    #[command(about = "Pause a timer")]
+    Pause {
+        timer_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    #[command(about = "Resume a paused timer")]
+    Resume {
+        timer_id: String,
+        #[arg(long)]
+        agent: Option<String>,
+    },
     Cancel {
         timer_id: String,
         #[arg(long)]
@@ -199,7 +211,10 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryIndexCommands,
     },
-    #[command(args_conflicts_with_subcommands = true)]
+    #[command(
+        about = "Create, list, pause, resume, or cancel timers",
+        args_conflicts_with_subcommands = true
+    )]
     Timer {
         #[command(subcommand)]
         command: Option<TimerCommands>,

@@ -127,6 +127,8 @@ These commands require a reachable local control plane unless noted otherwise.
 | `holon timer` | none | legacy create syntax: required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Backward-compatible alias for `holon timer create`. |
 | `holon timer create` | none | required `--after-ms <MS>`; `--every-ms <MS>`; `--summary <SUMMARY>`; `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Creates a one-shot or repeating timer through the control plane. |
 | `holon timer list` | none | `--limit <LIMIT>` default `50`; `--agent <AGENT>` | pretty JSON array of `TimerRecord` | `experimental` | Reads recent timers through the agent timer API. |
+| `holon timer pause` | `<TIMER_ID>` | `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Freezes the timer; repeating the command preserves the frozen delay. Conflicts for cancelled or completed timers. |
+| `holon timer resume` | `<TIMER_ID>` | `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Resumes the timer; repeating the command preserves the schedule. Conflicts for cancelled or completed timers. |
 | `holon timer cancel` | `<TIMER_ID>` | `--agent <AGENT>` | pretty JSON `TimerRecord` | `experimental` | Cancels an active timer; already-cancelled timers are idempotent. |
 
 ### Agent lifecycle and model selection
