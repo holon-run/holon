@@ -14,6 +14,7 @@ pub const CREATE_TIMER: &str = "CreateTimer";
 pub const CREATE_WORK_ITEM: &str = "CreateWorkItem";
 pub const CREATE_WORKTREE: &str = "CreateWorktree";
 pub const DETACH_WORKSPACE: &str = "DetachWorkspace";
+pub const EDIT_TIMER_CONTENT: &str = "EditTimerContent";
 pub const ENQUEUE: &str = "Enqueue";
 pub const EXEC_COMMAND: &str = "ExecCommand";
 pub const EXEC_COMMAND_BATCH: &str = "ExecCommandBatch";

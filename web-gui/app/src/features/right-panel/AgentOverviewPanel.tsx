@@ -23,6 +23,7 @@ import { ObjectDetailRefreshFeedback } from "./ObjectDetailRefreshFeedback";
 import { compactModelRouteDisplay } from "../../lib/model-route-ref";
 import { ToolExecutionContent } from "./ToolExecutionRenderers";
 import { AgentTasksPanel } from "./AgentTasksPanel";
+import { TimerContentEditor, timerContentValues, timerDisplayName, type TimerContentPatch } from "./TimerContentEditor";
 import { AgentWorkItemsPanel } from "./AgentWorkItemsPanel";
 import { RuntimeHttpError } from "../../runtime/client";
 import { useRuntimeStore } from "../../runtime/runtime-store";
@@ -146,13 +147,16 @@ function TimerRow({
   disabled,
   pendingAction,
   onAction,
+  onSave,
 }: {
   timer: TimerRecord;
   disabled: boolean;
-  pendingAction?: TimerAction;
+  pendingAction?: TimerAction | "edit";
   onAction: (action: TimerAction) => void;
+  onSave?: (patch: TimerContentPatch) => Promise<boolean>;
 }) {
   const { t } = useTranslation();
+  const [editing, setEditing] = useState(false);
   const paused = timer.status === "paused";
   const primaryAction = timer.status === "active" ? "pause" : paused ? "resume" : undefined;
   const calendar = timer.calendar;
@@ -169,12 +173,14 @@ function TimerRow({
   const ScheduleIcon = calendar ? CalendarClock : timer.interval_ms ? Repeat2 : Timer;
   const nextFire = paused ? null : formatTimerDate(timer.next_fire_at, calendar?.timezone);
   const lastFired = formatTimerDate(timer.last_fired_at, calendar?.timezone);
+  const displayName = timerDisplayName(timer);
+  const { instruction } = timerContentValues(timer);
 
   return (
     <article className={`agent-timer-row${primaryAction ? "" : " is-history"}`} aria-busy={pendingAction ? true : undefined}>
       <div className="agent-timer-summary">
         <div className="agent-timer-heading">
-          <strong title={timer.summary || timer.id}>{timer.summary || timer.id}</strong>
+          <strong title={displayName}>{displayName}</strong>
           <span className="agent-timer-type" title={timerType} aria-label={timerType}>
             {calendar ? <CalendarClock size={14} aria-hidden="true" /> : timer.interval_ms ? <Repeat2 size={14} aria-hidden="true" /> : <Timer size={14} aria-hidden="true" />}
             <span className="sr-only">{timerType}</span>
@@ -220,15 +226,43 @@ function TimerRow({
               : t("rightPanel.timerResumeRemaining", { value: formatTimerDuration(timer.paused_remaining_ms) })}
         </p>
       ) : null}
-      {primaryAction ? (
-        <div className="agent-timer-actions">
-          {([primaryAction, "cancel"] as const).map((action) => (
-            <button key={action} type="button" className="secondary-button" disabled={disabled} onClick={() => onAction(action)}>
-              {t(timerActionLabels[action][pendingAction === action ? "pending" : "idle"])}
-            </button>
-          ))}
-        </div>
-      ) : null}
+      {editing && onSave ? (
+        <TimerContentEditor
+          timer={timer}
+          disabled={disabled}
+          labels={{
+            title: t("rightPanel.timerTitle"),
+            instruction: t("rightPanel.timerInstruction"),
+            hint: t("rightPanel.timerEditHint"),
+            blank: t("rightPanel.timerEditBlank"),
+            save: t(pendingAction === "edit" ? "rightPanel.savingTimer" : "common.save"),
+            cancel: t("common.cancel"),
+          }}
+          onSave={async (patch) => { if (await onSave(patch)) setEditing(false); }}
+          onCancel={() => setEditing(false)}
+        />
+      ) : (
+        <>
+          {instruction ? (
+            <details>
+              <summary>{t("rightPanel.timerInstruction")}</summary>
+              <p className="agent-timer-instruction">{instruction}</p>
+            </details>
+          ) : null}
+          <div className="agent-timer-actions">
+            {onSave ? (
+              <button type="button" className="secondary-button" disabled={disabled} onClick={() => setEditing(true)}>
+                {t("rightPanel.editTimer")}
+              </button>
+            ) : null}
+            {primaryAction && ([primaryAction, "cancel"] as const).map((action) => (
+              <button key={action} type="button" className="secondary-button" disabled={disabled} onClick={() => onAction(action)}>
+                {t(timerActionLabels[action][pendingAction === action ? "pending" : "idle"])}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
     </article>
   );
 }
@@ -236,26 +270,30 @@ function TimerRow({
 function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; stateIsCurrent: boolean }) {
   const { t } = useTranslation();
   const controlAgentTimer = useRuntimeStore((state) => state.controlAgentTimer);
+  const editAgentTimerContent = useRuntimeStore((state) => state.editAgentTimerContent);
   const refreshAgentState = useRuntimeStore((state) => state.refreshAgentState);
   const refreshState = useRuntimeStore((state) => state.sessionsByAgentId[agent.id]?.resourceRefresh?.state);
-  const [pending, setPending] = useState<{ timerId: string; action: TimerAction }>();
+  const [pending, setPending] = useState<{ timerId: string; action: TimerAction | "edit" }>();
   const [error, setError] = useState<{ message: string; conflict: boolean }>();
+  const incarnation = agent.incarnation;
   const timers = agent.timers ?? [];
   const shownActive = timers.filter((timer) => timer.status === "active").length;
   const activeTimerCount = agent.activeTimerCount ?? shownActive;
   const disabled = Boolean(!stateIsCurrent || pending || refreshState?.stale);
 
-  async function handleAction(timerId: string, action: TimerAction) {
-    if (disabled) return;
+  async function handleAction(timerId: string, action: TimerAction | "edit", mutate: () => Promise<void>) {
+    if (disabled) return false;
     setPending({ timerId, action });
     setError(undefined);
     try {
-      await controlAgentTimer(agent.id, timerId, action, agent.incarnation);
+      await mutate();
+      return true;
     } catch (error) {
       setError({
         message: error instanceof Error ? error.message : String(error),
         conflict: error instanceof RuntimeHttpError && error.status === 409,
       });
+      return false;
     } finally {
       setPending(undefined);
     }
@@ -290,7 +328,10 @@ function AgentTimersCard({ agent, stateIsCurrent }: { agent: AgentSummary; state
               timer={timer}
               disabled={disabled}
               pendingAction={pending?.timerId === timer.id ? pending.action : undefined}
-              onAction={(action) => void handleAction(timer.id, action)}
+              onAction={(action) => void handleAction(timer.id, action, () =>
+                controlAgentTimer(agent.id, timer.id, action, agent.incarnation))}
+              onSave={incarnation === undefined ? undefined : (patch) => handleAction(timer.id, "edit", () =>
+                editAgentTimerContent(agent.id, timer.id, patch, incarnation))}
             />
           ))}
         </div>

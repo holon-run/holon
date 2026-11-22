@@ -221,7 +221,7 @@ impl Fixture {
             interval_ms: Some(1000),
             repeat: true,
             status: TimerStatus::Active,
-            summary: None,
+            content: holon_domain::TimerContent::default(),
             next_fire_at: Some(self.time + chrono::Duration::hours(1)),
             last_fired_at: Some(self.time),
             fire_count: 3,
@@ -1604,7 +1604,7 @@ fn stop_cancels_a_real_completed_one_shot_pending_wake_without_loop_obligation()
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: Some(f.time),
         last_fired_at: None,
         fire_count: 0,
@@ -1703,7 +1703,8 @@ fn stop_reports_changed_for_only_a_remaining_completed_timer_pending_wake() {
     schedule_generation: 0,
     calendar: None, id:"legacy-one-shot".into(), agent_id:f.key.agent_id.clone(),
             created_at:f.time, duration_ms:1, interval_ms:None, repeat:false, status:TimerStatus::Completed,
-            summary:None, next_fire_at:None, last_fired_at:Some(f.time), fire_count:1 };
+            content:holon_domain::TimerContent::default(), next_fire_at:None,
+            last_fired_at:Some(f.time), fire_count:1 };
         upsert_timer_tx(tx,&timer)?;
         tx.execute("INSERT INTO timer_wakes(timer_id,message_id,fire_count,status,created_at,updated_at) VALUES('legacy-one-shot','old-wake',1,'pending',?1,?1)", [f.time.to_rfc3339()])?;
         Ok(())

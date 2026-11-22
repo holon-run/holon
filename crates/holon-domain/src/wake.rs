@@ -5,6 +5,9 @@ use schemars::JsonSchema;
 use serde::{de, Deserialize, Serialize};
 use serde_json::Value;
 
+mod timer_content;
+pub use timer_content::{TimerContent, TimerContentError, TimerContentPatch};
+
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CallbackDeliveryMode {
@@ -407,7 +410,8 @@ pub struct TimerRecord {
     pub repeat: bool,
     #[serde(default)]
     pub status: TimerStatus,
-    pub summary: Option<String>,
+    #[serde(flatten)]
+    pub content: TimerContent,
     #[serde(default)]
     pub next_fire_at: Option<DateTime<Utc>>,
     #[serde(default)]
@@ -422,6 +426,15 @@ pub struct TimerRecord {
     pub schedule_generation: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub calendar: Option<CalendarSchedule>,
+}
+
+impl TimerRecord {
+    pub fn trigger_text(&self) -> String {
+        self.content
+            .instruction
+            .clone()
+            .unwrap_or_else(|| format!("timer {} fired", self.id))
+    }
 }
 
 /// Selection for explicit active/history list reads, applied before the limit.

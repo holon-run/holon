@@ -31927,7 +31927,9 @@ mod tests {
             interval_ms,
             repeat: interval_ms.is_some(),
             status,
-            summary: Some("startup timer summary".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some(
+                "startup timer summary".into(),
+            )),
             next_fire_at,
             last_fired_at: None,
             fire_count: 0,

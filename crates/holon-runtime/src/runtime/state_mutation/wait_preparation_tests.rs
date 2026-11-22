@@ -216,7 +216,7 @@ async fn ordinary_timer_wait_never_adopts_raw_late_or_decodes_a_foreign_body() -
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: Some(at + chrono::Duration::hours(1)),
         last_fired_at: None,
         fire_count: 0,

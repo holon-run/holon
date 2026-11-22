@@ -171,7 +171,7 @@ fn expected_projection(fact: &CanonicalSchedulingFact, sort_at: &str) -> Result<
             // Cancellation owns an independent update time; it need not equal
             // a fire time derivable from TimerRecord. The projection digest
             // still fences changes to this canonical column.
-            json!({"timer_id":x.id,"agent_id":x.agent_id,"status":x.status,"summary":x.summary,"created_at":repositories::timestamp(x.created_at),"duration_ms":x.duration_ms,"interval_ms":x.interval_ms,"repeat":i64::from(x.repeat),"next_fire_at":x.next_fire_at.map(repositories::timestamp),"last_fired_at":x.last_fired_at.map(repositories::timestamp),"fire_count":x.fire_count,"updated_at":repositories::timestamp(sort_at.parse()?)}),
+            json!({"timer_id":x.id,"agent_id":x.agent_id,"status":x.status,"summary":x.content.instruction,"created_at":repositories::timestamp(x.created_at),"duration_ms":x.duration_ms,"interval_ms":x.interval_ms,"repeat":i64::from(x.repeat),"next_fire_at":x.next_fire_at.map(repositories::timestamp),"last_fired_at":x.last_fired_at.map(repositories::timestamp),"fire_count":x.fire_count,"updated_at":repositories::timestamp(sort_at.parse()?)}),
         ),
         CanonicalSchedulingFact::ExternalTrigger(x) => Some(
             json!({"external_trigger_id":x.external_trigger_id,"target_agent_id":x.target_agent_id,"trigger_url":x.token,"token_hash":x.token_hash,"status":x.status,"created_at":repositories::timestamp(x.created_at),"revoked_at":x.revoked_at.map(repositories::timestamp),"last_delivered_at":x.last_delivered_at.map(repositories::timestamp),"delivery_count":x.delivery_count}),

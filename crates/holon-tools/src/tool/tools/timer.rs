@@ -1,8 +1,8 @@
 use super::BuiltinToolDefinition;
 use crate::tool::helpers::invalid_tool_input;
 use crate::tool::spec::typed_spec;
-use crate::types::TimerRecord;
 use crate::types::ToolCapabilityFamily;
+use crate::types::{TimerContentPatch, TimerRecord};
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -14,6 +14,8 @@ pub const CREATE_NAME: &str = crate::tool::names::CREATE_TIMER;
 pub const LIST_NAME: &str = crate::tool::names::LIST_TIMERS;
 
 pub const GET_NAME: &str = crate::tool::names::GET_TIMER;
+
+pub const EDIT_NAME: &str = crate::tool::names::EDIT_TIMER_CONTENT;
 
 pub const CANCEL_NAME: &str = crate::tool::names::CANCEL_TIMER;
 
@@ -30,6 +32,11 @@ pub struct CreateTimerArgs {
     pub interval_ms: Option<u64>,
     pub calendar_expression: Option<String>,
     pub timezone: Option<String>,
+    /// Optional display title; not used in the trigger message.
+    pub title: Option<String>,
+    /// Text for each new timer wake. Do not combine with `summary`.
+    pub instruction: Option<String>,
+    /// Legacy alias for `instruction`.
     pub summary: Option<String>,
 }
 
@@ -44,6 +51,13 @@ pub struct ListTimersArgs {
 #[serde(deny_unknown_fields)]
 pub struct TimerIdArgs {
     pub timer_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct EditTimerArgs {
+    pub timer_id: String,
+    pub patch: TimerContentPatch,
 }
 
 #[derive(Debug, Serialize, JsonSchema)]
@@ -69,6 +83,13 @@ pub fn list_definition() -> Result<BuiltinToolDefinition> {
 
 pub fn get_definition() -> Result<BuiltinToolDefinition> {
     definition::<TimerIdArgs>(GET_NAME, include_str!("../tool_descriptions/get_timer.md"))
+}
+
+pub fn edit_definition() -> Result<BuiltinToolDefinition> {
+    definition::<EditTimerArgs>(
+        EDIT_NAME,
+        include_str!("../tool_descriptions/edit_timer_content.md"),
+    )
 }
 
 pub fn cancel_definition() -> Result<BuiltinToolDefinition> {

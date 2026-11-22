@@ -8319,7 +8319,7 @@ async fn current_closure_ignores_other_agent_timers() {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
-            summary: None,
+            content: holon_domain::TimerContent::default(),
             next_fire_at: Some(Utc::now()),
             last_fired_at: None,
             fire_count: 0,

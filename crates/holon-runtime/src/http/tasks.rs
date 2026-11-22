@@ -889,20 +889,27 @@ pub async fn create_timer(
             .into(),
         ));
     }
+    let content =
+        crate::types::TimerContent::for_create(request.title, request.instruction, request.summary)
+            .map_err(|error| {
+                error_response(
+                    RuntimeError::validation("invalid_timer_content", error.to_string()).into(),
+                )
+            })?;
     let timer = match (request.calendar_expression, request.timezone) {
         (Some(expression), Some(timezone)) => runtime
-            .schedule_calendar_timer(expression, timezone, request.summary)
+            .schedule_calendar_timer_with_content(expression, timezone, content)
             .await
             .map_err(error_response)?,
         (None, None) => runtime
-            .schedule_timer(
+            .schedule_timer_with_content(
                 request.duration_ms.ok_or_else(|| {
                     error_response(anyhow::anyhow!(
                         "duration_ms is required when calendar_expression is absent"
                     ))
                 })?,
                 request.interval_ms,
-                request.summary,
+                content,
             )
             .await
             .map_err(error_response)?,
@@ -920,6 +927,40 @@ pub async fn create_timer(
                 "target_agent_id": agent_id,
                 "admission_context": admission_context,
                 "provided_trust": provided_trust,
+                "boundary": boundary,
+            }),
+        )
+        .await
+        .map_err(error_response)?;
+    Ok(Json(timer))
+}
+
+pub async fn edit_timer_content(
+    Path((agent_id, timer_id)): Path<(String, String)>,
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    ApiJson(patch): ApiJson<crate::types::TimerContentPatch>,
+) -> Result<Json<crate::types::TimerRecord>, (StatusCode, Json<Value>)> {
+    authorize_control(&headers, &state).map_err(authentication_error_response)?;
+    let runtime = state
+        .host
+        .get_operator_agent(&agent_id)
+        .await
+        .map_err(agent_access_error)?;
+    let boundary = current_boundary_metadata(&runtime)
+        .await
+        .map_err(error_response)?;
+    let timer = runtime
+        .edit_timer_content(&timer_id, patch)
+        .await
+        .map_err(timer_lifecycle_error)?;
+    runtime
+        .append_audit_event(
+            "timer_content_edit_requested",
+            json!({
+                "timer_id": timer.id,
+                "target_agent_id": agent_id,
+                "admission_context": control_admission_context(&state),
                 "boundary": boundary,
             }),
         )

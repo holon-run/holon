@@ -189,6 +189,13 @@ pub struct CreateTimerRequest {
     pub calendar_expression: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub timezone: Option<String>,
+    /// Display-only title.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Trigger message. Do not combine with the legacy `summary` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instruction: Option<String>,
+    /// Legacy alias for `instruction`.
     pub summary: Option<String>,
     pub authority_class: Option<AuthorityClass>,
 }

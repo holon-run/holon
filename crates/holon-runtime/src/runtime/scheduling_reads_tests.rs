@@ -447,11 +447,15 @@ async fn exec_command_batch_preserves_prior_item_when_scheduling_preparation_fai
         .await?;
         publish_active_metadata_ack(&runtime).await?;
         let mut changed = timer.clone();
-        changed.summary = Some("unqualified body change".into());
+        changed.content.instruction = Some("unqualified body change".into());
         runtime.runtime_db().transaction(|tx| {
             tx.execute(
                 "UPDATE timers SET payload_json=?2,summary=?3 WHERE timer_id=?1",
-                rusqlite::params![timer.id, serde_json::to_string(&changed)?, changed.summary],
+                rusqlite::params![
+                    timer.id,
+                    serde_json::to_string(&changed)?,
+                    changed.content.instruction
+                ],
             )?;
             Ok(())
         })?;
@@ -553,7 +557,7 @@ async fn summary_query_after_active_metadata_ack_rejects_unqualified_canonical_d
     publish_active_metadata_ack(&runtime).await?;
     let before = runtime.inner.mutation_owner.capture()?.unwrap();
     let mut changed = timer.clone();
-    changed.summary = Some("unowned canonical drift".into());
+    changed.content.instruction = Some("unowned canonical drift".into());
     runtime.inner.runtime_db.transaction(|tx| {
         tx.execute(
             "UPDATE timers SET payload_json=?2 WHERE timer_id=?1",

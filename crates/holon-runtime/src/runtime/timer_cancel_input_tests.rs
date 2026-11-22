@@ -37,7 +37,7 @@ pub(super) async fn fixture() -> Result<(TempDir, TempDir, RuntimeHandle, TimerR
         interval_ms: Some(3_600_000),
         repeat: true,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: Some(now + chrono::Duration::hours(1)),
         last_fired_at: None,
         fire_count: 0,

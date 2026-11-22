@@ -5,7 +5,8 @@ use crate::runtime::{
     input_evidence_budget::InputEvidenceBudgetLedger, resident_input_evidence::InputEvidenceScope,
 };
 
-const BODY: &str = r#"{"id":"sql-timer","agent_id":"scheduling-agent","created_at":"2026-10-01T00:00:00.123456789Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"completed","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:00.123456789Z","last_fired_at":"2026-10-01T00:00:00.123456789Z","fire_count":5}"#;
+const LEGACY_BODY: &str = r#"{"id":"sql-timer","agent_id":"scheduling-agent","created_at":"2026-10-01T00:00:00.123456789Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"completed","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:00.123456789Z","last_fired_at":"2026-10-01T00:00:00.123456789Z","fire_count":5}"#;
+const BODY: &str = r#"{"id":"sql-timer","agent_id":"scheduling-agent","created_at":"2026-10-01T00:00:00.123456789Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"completed","title":null,"instruction":"{,:} \"x\" \\ 路","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:00.123456789Z","last_fired_at":"2026-10-01T00:00:00.123456789Z","fire_count":5}"#;
 const DATE: &str = r#""2026-10-01T00:00:00.123456789Z""#;
 
 fn scope() -> InputEvidenceScope {
@@ -31,10 +32,10 @@ fn add(a: (u64, usize), b: (u64, usize)) -> (u64, usize) {
     (a.0 + b.0, a.1 + b.1)
 }
 fn costs() -> [(u64, usize); 5] {
-    // Eleven keys/colons, ten commas, two braces and seven string values.
-    // Escaped quotes and punctuation inside summary add no structural slots.
+    // Thirteen keys/colons, twelve commas, two braces and eight string values.
+    // Escaped quotes and punctuation inside either alias add no structural slots.
     [
-        cost(BODY.len(), 41),
+        cost(BODY.len(), 48),
         cost(DATE.len(), 1),
         cost(DATE.len(), 1),
         cost(DATE.len(), 1),
@@ -159,10 +160,10 @@ fn every_output_gate_rejects_before_write_and_preserves_failed_original_allowanc
 fn borrowed_transaction_read_has_one_envelope_and_never_refreshes_original_remainder() -> Result<()>
 {
     let (_home, db) = fixture()?;
-    seed(&db, BODY)?;
+    seed(&db, LEGACY_BODY)?;
     let budget = ledger()?;
     // One object and its eleven field values, not serialization shape slots.
-    let exact = add(header(), decode_cost(BODY.len(), 41, 12));
+    let exact = add(header(), decode_cost(LEGACY_BODY.len(), 41, 12));
     let phase = ResourceReadMaterial::with_test_limits(&budget, &scope(), exact.0, exact.1)?;
     let record = {
         let _entry = phase.enter();

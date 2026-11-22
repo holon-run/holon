@@ -7746,6 +7746,25 @@ pub(crate) fn upsert_timer_tx(tx: &Transaction<'_>, record: &TimerRecord) -> Res
     upsert_timer_with_write_tx(tx, record).map(|_| ())
 }
 
+/// Content-only edit after the prepared transition proves the exact old record.
+pub(in crate::runtime_db) fn edit_timer_content_tx(
+    tx: &Transaction<'_>,
+    record: &TimerRecord,
+) -> Result<()> {
+    crate::diagnostics::resource_io::admit_serialized_value(record)?;
+    let changed = tx.execute(
+        "UPDATE timers SET summary=?3, payload_json=?4 WHERE timer_id=?1 AND agent_id=?2",
+        params![
+            record.id,
+            record.agent_id,
+            record.content.instruction,
+            serde_json::to_string(record)?,
+        ],
+    )?;
+    anyhow::ensure!(changed == 1, "Timer content edit lost its target");
+    Ok(())
+}
+
 /// Called only after the prepared Timer transition proves the exact old record.
 pub(in crate::runtime_db) fn reschedule_timer_tx(
     tx: &Transaction<'_>,
@@ -7857,7 +7876,7 @@ fn upsert_timer_updated_at_with_write_tx(
             record.id,
             record.agent_id,
             status,
-            record.summary,
+            record.content.instruction,
             created_at,
             record.duration_ms as i64,
             record.interval_ms.map(|value| value as i64),

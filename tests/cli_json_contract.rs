@@ -1096,6 +1096,56 @@ fn onboard_json_contract_is_secret_safe_and_actionable() {
 }
 
 #[test]
+fn timer_edit_preserves_schedule_and_supports_clear_and_legacy_alias() {
+    let _serve_guard = serve_test_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let home = tempfile::tempdir().expect("create isolated HOLON_HOME");
+    let (_serve, addr) = spawn_local_serve(&home);
+    let envs = [
+        ("HOLON_HTTP_ADDR", addr.as_str()),
+        ("HOLON_AGENT_ID", "main"),
+    ];
+    let run = |args: &[&str]| run_json_with_env(&home, args, &envs);
+    run(&["agent", "create", "main"]);
+    let original = run(&[
+        "timer",
+        "create",
+        "--after-ms",
+        "120000",
+        "--title",
+        "Display",
+        "--instruction",
+        "Before",
+    ]);
+    let id = original["id"].as_str().expect("timer ID");
+    assert_eq!(original["summary"], "Before");
+    let edited = run(&["timer", "edit", id, "--clear-title", "--summary", "After"]);
+    let mut expected = original.clone();
+    expected["title"] = Value::Null;
+    expected["instruction"] = Value::String("After".into());
+    expected["summary"] = Value::String("After".into());
+    assert_eq!(edited, expected);
+    let (stdout, stderr) =
+        run_failure_with_env(&home, &["timer", "edit", id, "--title", " \t "], &envs);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("timer title must not be blank"), "{stderr}");
+    let cleared = run(&["timer", "edit", id, "--clear-instruction"]);
+    expected["instruction"] = Value::Null;
+    expected["summary"] = Value::Null;
+    assert_eq!(cleared, expected);
+    let timers = run(&["timer", "list"]);
+    assert_eq!(
+        timers
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|timer| timer["id"] == id),
+        Some(&expected)
+    );
+}
+
+#[test]
 fn timer_pause_and_resume_preserve_json_and_schedule() {
     let _serve_guard = serve_test_lock()
         .lock()

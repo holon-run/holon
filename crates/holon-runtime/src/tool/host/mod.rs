@@ -133,6 +133,9 @@ pub(super) fn execute_builtin_tool_route<'a>(
             holon_tools::builtins::BuiltinTool::GetTimer => {
                 Box::pin(timer::get(runtime, &call.input))
             }
+            holon_tools::builtins::BuiltinTool::EditTimerContent => {
+                Box::pin(timer::edit(runtime, &call.input))
+            }
             holon_tools::builtins::BuiltinTool::CancelTimer => {
                 Box::pin(timer::cancel(runtime, &call.input))
             }

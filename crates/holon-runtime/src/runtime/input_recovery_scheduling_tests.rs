@@ -23,7 +23,7 @@ fn positive_original_receipt_installs_fresh_scheduling_and_never_replays_old_tim
         interval_ms: None,
         repeat: false,
         status: TimerStatus::Active,
-        summary: None,
+        content: holon_domain::TimerContent::default(),
         next_fire_at: Some(at + chrono::Duration::hours(1)),
         last_fired_at: None,
         fire_count: 0,

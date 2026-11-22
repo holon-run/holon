@@ -403,6 +403,7 @@ export interface RuntimeStoreState {
   queryAgentTimers: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<import("./generated/openapi").components["schemas"]["TimerRecord"][]>;
   queryAgentCompletedWorkItems: (agentId: string, options?: AgentResourceRefreshOptions) => Promise<WorkItemSummary[]>;
   controlAgentTimer: (agentId: string, timerId: string, action: Parameters<RuntimeClient["controlAgentTimer"]>[2], incarnation?: number) => Promise<void>;
+  editAgentTimerContent: (agentId: string, timerId: string, patch: Parameters<RuntimeClient["editAgentTimerContent"]>[2], incarnation: number) => Promise<void>;
   reconcileAfterResume: () => Promise<void>;
   refreshModelCatalog: (options?: { refresh: boolean }) => Promise<void>;
   refreshRuntimeConfig: () => Promise<void>;
@@ -873,6 +874,28 @@ type ObjectDetailKind = "workItem" | "task" | "toolExecution";
 type ObjectDetailState = WorkItemDetailState & TaskDetailState & ToolExecutionDetailState;
 
 /** All entry points share one scoped read, including forced reads during loading. */
+async function mutateAgentTimer(
+  set: StoreSet,
+  get: () => RuntimeStoreState,
+  agentId: string,
+  incarnation: number | undefined,
+  mutate: (client: RuntimeClient) => Promise<unknown>,
+): Promise<void> {
+  const request = captureClientRequest();
+  const contextKey = agentResourceContext(get());
+  const identityMatches = () => incarnation === undefined
+    || get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation === incarnation;
+  if (!identityMatches()) throw new AgentResourceSupersededError(agentId, "timers");
+  try {
+    await mutate(request.client);
+  } finally {
+    // A conflict or timeout can leave the displayed state outdated too.
+    if (isCurrentClientRequest(request) && agentResourceContext(get()) === contextKey && identityMatches()) {
+      await refreshAgentResource(set, get, agentId, "state", { incarnation, startNew: true });
+    }
+  }
+}
+
 function refreshAgentObjectDetail(
   set: StoreSet,
   get: () => RuntimeStoreState,
@@ -3375,19 +3398,10 @@ export const useRuntimeStore = create<RuntimeStoreState>((set, get) => {
     }
     return timers;
   },
-  controlAgentTimer: async (agentId, timerId, action, incarnation) => {
-    const request = captureClientRequest();
-    const contextKey = agentResourceContext(get());
-    try {
-      await request.client.controlAgentTimer(agentId, timerId, action);
-    } finally {
-      // A conflict or timeout can leave the displayed state outdated too.
-      if (isCurrentClientRequest(request) && agentResourceContext(get()) === contextKey
-        && (incarnation === undefined || get().bootstrap.agents.find((agent) => agent.id === agentId)?.incarnation === incarnation)) {
-        await refreshAgentResource(set, get, agentId, "state", { incarnation, startNew: true });
-      }
-    }
-  },
+  controlAgentTimer: (agentId, timerId, action, incarnation) =>
+    mutateAgentTimer(set, get, agentId, incarnation, (client) => client.controlAgentTimer(agentId, timerId, action)),
+  editAgentTimerContent: (agentId, timerId, patch, incarnation) =>
+    mutateAgentTimer(set, get, agentId, incarnation, (client) => client.editAgentTimerContent(agentId, timerId, patch)),
 
   refreshAgentState: async (agentId, options = {}) => {
     if (!agentId) return;

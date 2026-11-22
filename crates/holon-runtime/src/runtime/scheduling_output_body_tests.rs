@@ -220,7 +220,7 @@ fn cold_top_k_does_not_copy_discarded_large_timer_but_keeps_its_source() -> Resu
     let CanonicalSchedulingFact::Timer(timer) = &mut row.fact else {
         unreachable!()
     };
-    timer.summary = Some("unselected payload 汉🦀".repeat(4096));
+    timer.content.instruction = Some("unselected payload 汉🦀".repeat(4096));
     row.resident_bytes = serde_json::to_vec(&row.fact)?.len();
     let omitted_source = Arc::downgrade(omitted);
     let mut body = body_cost(&selected, 3, true)?;
@@ -263,7 +263,7 @@ fn cold_body_shares_large_history_text_and_admits_only_output_handles() -> Resul
             let row = Arc::get_mut(row).context("unique fixture body")?;
             match &mut row.fact {
                 CanonicalSchedulingFact::Timer(timer) => {
-                    timer.summary = Some("{[,:\\\" 汉🦀".repeat(2000));
+                    timer.content.instruction = Some("{[,:\\\" 汉🦀".repeat(2000));
                 }
                 CanonicalSchedulingFact::ExternalTrigger(trigger) => {
                     trigger.token = Some("{[,:\\\" 汉🦀".repeat(2000));
@@ -296,7 +296,12 @@ fn cold_body_shares_large_history_text_and_admits_only_output_handles() -> Resul
         );
         assert_eq!(phase.finish()?, body);
         if include_history {
-            assert!(timers[0].summary.as_ref().unwrap().contains("汉🦀"));
+            assert!(timers[0]
+                .content
+                .instruction
+                .as_ref()
+                .unwrap()
+                .contains("汉🦀"));
             assert!(triggers[0].token.as_ref().unwrap().contains("汉🦀"));
         }
         drop((timers, triggers, material, phase));

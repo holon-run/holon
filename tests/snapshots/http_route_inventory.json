@@ -1684,6 +1684,33 @@
   },
   {
     "method": "patch",
+    "path": "/api/control/agents/{agent_id}/timers/{timer_id}",
+    "handler": "edit_timer_content",
+    "operation_id": "editTimerContent",
+    "tag": "control",
+    "parameters": [
+      {
+        "name": "agent_id",
+        "location": "path",
+        "required": true
+      },
+      {
+        "name": "timer_id",
+        "location": "path",
+        "required": true
+      }
+    ],
+    "request_schema": "TimerContentPatch",
+    "request_strict": true,
+    "response_content_types": [
+      "application/json"
+    ],
+    "security": [
+      "BearerAuth"
+    ]
+  },
+  {
+    "method": "patch",
     "path": "/api/control/agents/{agent_id}/work-items/{work_item_id}",
     "handler": "update_work_item",
     "operation_id": "updateWorkItem",

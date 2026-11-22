@@ -62,6 +62,7 @@ pub fn tool_sections_with_context(
     if names.contains(&tn::CREATE_TIMER)
         || names.contains(&tn::LIST_TIMERS)
         || names.contains(&tn::GET_TIMER)
+        || names.contains(&tn::EDIT_TIMER_CONTENT)
         || names.contains(&tn::CANCEL_TIMER)
     {
         sections.push(section(

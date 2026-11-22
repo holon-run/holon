@@ -126,7 +126,7 @@
       "stability": "stable"
     },
     {
-      "description": "Create a persistent timer for the current agent. Use this for independent or repeating scheduling, not ordinary turn delays or fallback rechecks. The timer does not pause the current turn; call WaitFor with wake=timer and resource=<timer_id> when the current work must wait for it.\n",
+      "description": "Create a persistent timer for the current agent. Use this for independent or repeating scheduling, not ordinary turn delays or fallback rechecks. The timer does not pause the current turn; call WaitFor with wake=timer and resource=<timer_id> when the current work must wait for it.\n\nUse `instruction` for the trigger message and optional `title` for display only. Legacy `summary` still supplies the instruction when used instead of `instruction`. If neither name is provided, the scheduler uses its default timer message.\n",
       "family": "core_agent",
       "freeform_grammar": null,
       "input_schema": {
@@ -146,6 +146,13 @@
               "null"
             ]
           },
+          "instruction": {
+            "description": "Text for each new timer wake. Do not combine with `summary`.",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "interval_ms": {
             "format": "uint64",
             "minimum": 1.0,
@@ -155,12 +162,20 @@
             ]
           },
           "summary": {
+            "description": "Legacy alias for `instruction`.",
             "type": [
               "string",
               "null"
             ]
           },
           "timezone": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "title": {
+            "description": "Optional display title; not used in the trigger message.",
             "type": [
               "string",
               "null"
@@ -223,6 +238,12 @@
             "id": {
               "type": "string"
             },
+            "instruction": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "interval_ms": {
               "format": "uint64",
               "minimum": 0.0,
@@ -276,6 +297,13 @@
               "type": "string"
             },
             "summary": {
+              "description": "Legacy alias for `instruction`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
               "type": [
                 "string",
                 "null"
@@ -380,6 +408,12 @@
                   "id": {
                     "type": "string"
                   },
+                  "instruction": {
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
                   "interval_ms": {
                     "format": "uint64",
                     "minimum": 0.0,
@@ -433,6 +467,13 @@
                     "type": "string"
                   },
                   "summary": {
+                    "description": "Legacy alias for `instruction`.",
+                    "type": [
+                      "string",
+                      "null"
+                    ]
+                  },
+                  "title": {
                     "type": [
                       "string",
                       "null"
@@ -530,6 +571,12 @@
             "id": {
               "type": "string"
             },
+            "instruction": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "interval_ms": {
               "format": "uint64",
               "minimum": 0.0,
@@ -583,6 +630,200 @@
               "type": "string"
             },
             "summary": {
+              "description": "Legacy alias for `instruction`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "id",
+            "agent_id",
+            "created_at",
+            "duration_ms",
+            "repeat"
+          ],
+          "type": "object"
+        }
+      },
+      "stability": "stable"
+    },
+    {
+      "description": "Update the display title or trigger instruction of a timer owned by the current agent. Supply its `timer_id` and a `patch` with `title` or `instruction`. Omit a field to preserve it, or pass `null` to clear it. Whitespace-only values are rejected. Use `summary` only as a legacy alias for `instruction`, never together with it. Scheduling, trigger counts, and already queued wakes are unchanged.\n",
+      "family": "core_agent",
+      "freeform_grammar": null,
+      "input_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "patch": {
+            "additionalProperties": false,
+            "description": "Omitted fields are unchanged; an explicit null clears the value.",
+            "not": {
+              "required": [
+                "instruction",
+                "summary"
+              ]
+            },
+            "properties": {
+              "instruction": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "summary": {
+                "description": "Legacy alias for instruction; do not send both.",
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "title": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            },
+            "required": [],
+            "type": "object"
+          },
+          "timer_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "timer_id",
+          "patch"
+        ],
+        "type": "object"
+      },
+      "name": "EditTimerContent",
+      "related_surfaces": [
+        "runtime agent lifecycle APIs"
+      ],
+      "result_envelope": {
+        "canonical": "ToolResultEnvelope",
+        "error_result": "ToolError",
+        "model_rendering": "canonical_json_envelope",
+        "success_result": "TimerRecord",
+        "success_result_schema": {
+          "properties": {
+            "agent_id": {
+              "type": "string"
+            },
+            "calendar": {
+              "additionalProperties": false,
+              "properties": {
+                "expression": {
+                  "description": "A standard five-field cron expression.",
+                  "type": "string"
+                },
+                "timezone": {
+                  "description": "An IANA timezone name, for example `America/Los_Angeles`.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "expression",
+                "timezone"
+              ],
+              "type": [
+                "object",
+                "null"
+              ]
+            },
+            "created_at": {
+              "format": "date-time",
+              "type": "string"
+            },
+            "duration_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "fire_count": {
+              "default": 0,
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "id": {
+              "type": "string"
+            },
+            "instruction": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "interval_ms": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "last_fired_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "next_fire_at": {
+              "default": null,
+              "format": "date-time",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "paused_remaining_ms": {
+              "description": "Frozen time until the next non-calendar trigger, in milliseconds.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": [
+                "integer",
+                "null"
+              ]
+            },
+            "repeat": {
+              "type": "boolean"
+            },
+            "schedule_generation": {
+              "description": "Fences scheduler producers across a pause, even if resumed at the same instant.",
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "status": {
+              "default": "active",
+              "enum": [
+                "active",
+                "paused",
+                "completed",
+                "cancelled"
+              ],
+              "type": "string"
+            },
+            "summary": {
+              "description": "Legacy alias for `instruction`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
               "type": [
                 "string",
                 "null"
@@ -670,6 +911,12 @@
             "id": {
               "type": "string"
             },
+            "instruction": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
             "interval_ms": {
               "format": "uint64",
               "minimum": 0.0,
@@ -723,6 +970,13 @@
               "type": "string"
             },
             "summary": {
+              "description": "Legacy alias for `instruction`.",
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "title": {
               "type": [
                 "string",
                 "null"

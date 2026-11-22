@@ -1655,7 +1655,9 @@ mod tests {
                     interval_ms: None,
                     repeat: false,
                     status: TimerStatus::Completed,
-                    summary: Some(format!("legacy private timer of {agent}")),
+                    content: holon_domain::TimerContent::from_legacy_summary(Some(format!(
+                        "legacy private timer of {agent}"
+                    ))),
                     next_fire_at: None,
                     last_fired_at: None,
                     fire_count: 1,

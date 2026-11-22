@@ -5,7 +5,7 @@ use crate::runtime::{
     input_evidence_budget::InputEvidenceBudgetLedger, resident_input_evidence::InputEvidenceScope,
 };
 
-const BODY: &str = r#"{"id":"sql-timer-1","agent_id":"scheduling-agent","created_at":"2026-10-01T00:00:00Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"completed","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:01Z","last_fired_at":"2026-10-01T00:00:00Z","fire_count":5}"#;
+const BODY: &str = r#"{"id":"sql-timer-1","agent_id":"scheduling-agent","created_at":"2026-10-01T00:00:00Z","duration_ms":1000,"interval_ms":1000,"repeat":true,"status":"completed","title":null,"instruction":"{,:} \"x\" \\ 路","summary":"{,:} \"x\" \\ 路","next_fire_at":"2026-10-01T00:00:01Z","last_fired_at":"2026-10-01T00:00:00Z","fire_count":5}"#;
 
 fn scope() -> InputEvidenceScope {
     InputEvidenceScope {
@@ -17,10 +17,10 @@ fn header() -> (u64, usize) {
     ((scope().agent_id.len() as u64 + 256) * 8, 64)
 }
 fn body_cost() -> (u64, usize) {
-    // Eleven keys/colons, ten commas, two braces, seven string values;
-    // one object and eleven field values are twelve typed-decode cells.
-    // Escaped quotes, punctuation and UTF-8 within summary add no shape slots.
-    ((BODY.len() as u64 * 4 + 41 * 128 + 512) * 8, 12 * 8)
+    // Thirteen keys/colons, twelve commas, two braces, eight string values;
+    // one object and thirteen field values are fourteen typed-decode cells.
+    // Escaped quotes, punctuation and UTF-8 in the content add no shape slots.
+    ((BODY.len() as u64 * 4 + 48 * 128 + 512) * 8, 14 * 8)
 }
 fn cell() -> (u64, usize) {
     (std::mem::size_of::<TimerRecord>() as u64 * 8, 8)

@@ -307,6 +307,8 @@ async fn run_runtime_command(command: Commands) -> Result<()> {
                         every_ms: legacy.every_ms,
                         calendar_expression: legacy.calendar_expression,
                         timezone: legacy.timezone,
+                        title: None,
+                        instruction: None,
                         summary: legacy.summary,
                         agent: legacy.agent,
                     },
@@ -2777,6 +2779,41 @@ mod tests {
         };
         assert_eq!(after_ms, Some(100));
         assert_eq!(agent.as_deref(), Some("runner"));
+
+        let cli = Cli::parse_from([
+            "holon",
+            "timer",
+            "edit",
+            "timer-1",
+            "--summary",
+            "Take notes",
+            "--clear-title",
+        ]);
+        let Commands::Timer {
+            command: Some(TimerCommands::Edit {
+                timer_id, content, ..
+            }),
+            ..
+        } = cli.command
+        else {
+            panic!("expected timer edit command");
+        };
+        assert_eq!(timer_id, "timer-1");
+        assert_eq!(
+            serde_json::to_value(content.into_patch()).unwrap(),
+            serde_json::json!({"instruction": "Take notes", "title": null})
+        );
+        assert!(Cli::try_parse_from(["holon", "timer", "edit", "timer-1"]).is_err());
+        assert!(Cli::try_parse_from([
+            "holon",
+            "timer",
+            "edit",
+            "timer-1",
+            "--instruction",
+            "Take notes",
+            "--clear-instruction",
+        ])
+        .is_err());
 
         let cli = Cli::parse_from(["holon", "timer", "list", "--limit", "10"]);
         assert!(matches!(
@@ -6889,13 +6926,18 @@ async fn handle_timer_command(config: &AppConfig, command: TimerCommands) -> Res
                 .unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(
                 client
-                    .create_timer_schedule(
+                    .create_timer_with_request(
                         &agent,
-                        options.after_ms,
-                        options.every_ms,
-                        options.calendar_expression,
-                        options.timezone,
-                        options.summary,
+                        &holon::client::wire::CreateTimerRequest {
+                            duration_ms: options.after_ms,
+                            interval_ms: options.every_ms,
+                            calendar_expression: options.calendar_expression,
+                            timezone: options.timezone,
+                            title: options.title,
+                            instruction: options.instruction,
+                            summary: options.summary,
+                            authority_class: Some(AuthorityClass::OperatorInstruction),
+                        },
                     )
                     .await?,
             )?)
@@ -6903,6 +6945,18 @@ async fn handle_timer_command(config: &AppConfig, command: TimerCommands) -> Res
         TimerCommands::List { limit, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
             print_json(&serde_json::to_value(client.timers(&agent, limit).await?)?)
+        }
+        TimerCommands::Edit {
+            timer_id,
+            agent,
+            content,
+        } => {
+            let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());
+            print_json(&serde_json::to_value(
+                client
+                    .edit_timer_content(&agent, &timer_id, &content.into_patch())
+                    .await?,
+            )?)
         }
         TimerCommands::Pause { timer_id, agent } => {
             let agent = agent.unwrap_or_else(|| config.default_agent_id.clone());

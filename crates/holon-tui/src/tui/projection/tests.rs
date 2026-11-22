@@ -1616,7 +1616,7 @@ fn sample_snapshot() -> AgentStateSnapshot {
             interval_ms: None,
             repeat: false,
             status: TimerStatus::Active,
-            summary: Some("timer".into()),
+            content: holon_domain::TimerContent::from_legacy_summary(Some("timer".into())),
             next_fire_at: Some(Utc::now()),
             last_fired_at: None,
             fire_count: 0,
