@@ -87,10 +87,20 @@ together and cannot be combined with `duration_ms` or `interval_ms`.
 | `POST /api/control/agents/:id/timers` | Create with either `duration_ms`/`interval_ms` or `calendar_expression`/`timezone`, plus `summary` and control `authority_class` metadata |
 | `GET /api/agents/:id/timers` | List recent timer records |
 | `GET /api/agents/:id/timers/:timer_id` | Read an owned timer or return a not-found error |
+| `POST /api/control/agents/:id/timers/:timer_id/pause` | Pause an active timer, preserving its ID, schedule, history, and waits; idempotent when already paused |
+| `POST /api/control/agents/:id/timers/:timer_id/resume` | Resume a paused timer; idempotent when already active |
 | `POST /api/control/agents/:id/timers/:timer_id/cancel` | Cancel the timer; optional control `authority_class` metadata |
 
 Control metadata does not elevate a caller's authority. Use the
 [HTTP reference](http-control-plane.md) for authentication and admission rules.
+
+Pausing stops a timer's countdown without discarding its schedule, firing
+history, or explicit waits. A paused timer does not fire until resumed, and
+missed occurrences during the pause are never replayed. On resume, a calendar
+timer schedules the next match strictly after the resume time, while a one-shot
+or fixed-interval timer resumes with its frozen remaining delay (`0` if already
+due). Pausing or resuming an already-completed or cancelled timer returns `409
+Conflict`; pausing does not retract wakes already queued or claimed.
 
 ### Timer record fields
 
@@ -101,9 +111,10 @@ Control metadata does not elevate a caller's authority. Use the
 | `duration_ms` | Initial delay |
 | `interval_ms` | Optional recurrence interval |
 | `repeat` | Whether the timer repeats |
-| `status` | `active`, `completed`, or `cancelled`; legacy `scheduled` deserializes as `active` |
+| `status` | `active`, `paused`, `completed`, or `cancelled`; legacy `scheduled` deserializes as `active` |
 | `summary` | Optional reminder description |
 | `next_fire_at`, `last_fired_at` | Next scheduled and most recent firing timestamps |
+| `paused_remaining_ms` | Frozen remaining delay in milliseconds while paused for relative or fixed-interval timers |
 | `calendar` | Optional normalized five-field expression and IANA timezone for calendar timers |
 | `fire_count` | Number of recorded firings |
 

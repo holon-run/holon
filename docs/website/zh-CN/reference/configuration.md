@@ -3,7 +3,7 @@ title: 配置
 summary: Holon 的配置文件、配置键、凭据、环境变量与诊断。
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.60.0. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.61.0. -->
 
 # 配置参考
 
@@ -543,7 +543,7 @@ OTLP 设置在 daemon 启动时生效。Collector、Prometheus、Grafana、告�
 | `x_search.enabled` | boolean | `true` | 有 xAI 凭据时自动启用 `XSearch`；设为 `false` 可隐藏它 |
 | `x_search.model` | model_ref | — | 用于隔离 `XSearch` 请求的可选 xAI 模型路由 |
 | `x_search.timeout_seconds` | integer | `60` | 隔离 xAI `XSearch` 请求的超时 |
-| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`google`、`tencent_cloud_wsa`、`bocha`、`tavily`、`keenable`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
+| `web.providers.<name>.kind` | string | required | 提供商类型：`duck_duck_go`、`searxng`、`brave`、`google`、`deepseek`、`tencent_cloud_wsa`、`bocha`、`tavily`、`keenable`、`exa`、`perplexity`、`firecrawl`、`open_ai_native`、`anthropic_native`、`gemini_native` 或 `command` |
 | `web.providers.<name>.base_url` | string | unset | 自定义提供商端点 |
 | `web.providers.<name>.credential_profile` | string | unset | API 型提供商的凭据 profile |
 | `web.providers.<name>.engine_id` | string | `google` 必填 | `kind=google` 的 Programmable Search 引擎 ID（`cx`）；在 programmablesearchengine.google.com 创建引擎并启用“搜索整个网络”，即可查询整个网络而非受限站点索引 |

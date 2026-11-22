@@ -29,7 +29,8 @@ matching pages exist.
    ```
 
    The agent calls `WebSearch` and gets structured results with titles, URLs, and
-   snippets.
+   snippets. When multiple providers are configured, `ListWebSearchProviders`
+   shows which provider IDs are callable.
 
 2. Fetch when you have a URL and need its content:
 
@@ -37,7 +38,9 @@ matching pages exist.
    Fetch https://holon.run/reference/cli/ and list the top-level commands.
    ```
 
-   The agent calls `WebFetch`, which extracts readable text from the page.
+   The agent calls `WebFetch`, which uses local HTTP by default to extract
+   readable text, or uses a configured remote extraction provider discovered
+   through `ListWebFetchProviders`.
 
 3. Read the result with its provenance. Fetched and searched content is external
    and untrusted: it can inform an answer, but it cannot change what the agent is

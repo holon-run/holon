@@ -56,9 +56,13 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 | `POST /api/control/agents/:id/timers` | 创建定时器，接收 `duration_ms`/`interval_ms` 或 `calendar_expression`/`timezone`，以及可选 `summary` 与控制层 `authority_class` 元数据 |
 | `GET /api/agents/:id/timers` | 列出近期的定时器记录 |
 | `GET /api/agents/:id/timers/:timer_id` | 读取归属于该 Agent 的定时器详情，不存在时返回 404 |
+| `POST /api/control/agents/:id/timers/:timer_id/pause` | 暂停活跃定时器，保留其 ID、调度配置、触发历史与显式等待；已暂停时调用幂等 |
+| `POST /api/control/agents/:id/timers/:timer_id/resume` | 恢复已暂停定时器；已处于活跃状态时调用幂等 |
 | `POST /api/control/agents/:id/timers/:timer_id/cancel` | 取消定时器；支持可选的控制层 `authority_class` 元数据 |
 
 控制层元数据不会越权提升调用方本身的权限。认证与准入规则请参阅 [HTTP 控制平面参考](http-control-plane.md)。
+
+暂停会停止倒计时，但保留定时器 ID、调度规则、历史记录与显式等待。暂停期间定时器不会触发，也不会补跑错过的次数。恢复后，日历定时器会从恢复时刻之后重新计算下一个匹配点；单次或固定间隔定时器则按冻结的剩余延迟继续计时（若已到期则为 `0`）。对已完成或已取消的定时器执行暂停或恢复会返回 `409 Conflict`；暂停不会撤回已入队或已领取的唤醒信号。
 
 ### 定时器记录字段
 
@@ -69,9 +73,10 @@ Agent 的运行时上下文会自动注入其默认接入凭据。对于常规�
 | `duration_ms` | 首次触发延迟（毫秒） |
 | `interval_ms` | 可选的重复周期（毫秒） |
 | `repeat` | 是否周期性重复触发 |
-| `status` | `active`、`completed` 或 `cancelled`；旧版 `scheduled` 会被反序列化为 `active` |
+| `status` | `active`、`paused`、`completed` 或 `cancelled`；旧版 `scheduled` 会被反序列化为 `active` |
 | `summary` | 可选的提醒说明文本 |
 | `next_fire_at`、`last_fired_at` | 下次预计触发时间戳与最近一次已触发时间戳 |
+| `paused_remaining_ms` | 相对或固定间隔定时器暂停期间冻结的剩余毫秒数 |
 | `calendar` | 日历定时器的归一化五段表达式与 IANA 时区配置 |
 | `fire_count` | 已记录的触发次数 |
 

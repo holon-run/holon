@@ -3,7 +3,7 @@ title: Configuration
 summary: Holon configuration files, keys, credentials, environment variables, and diagnostics.
 order: 15
 ---
-<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.60.0. -->
+<!-- maintenance: hand-written; verify against `holon config schema` and `holon config list` when config keys change. Last verified against v0.61.0. -->
 
 # Configuration Reference
 
@@ -579,7 +579,7 @@ Prometheus, Grafana, alerting, and troubleshooting examples.
 | `x_search.enabled` | boolean | `true` | Enable `XSearch` automatically when xAI credentials are available; set `false` to hide it |
 | `x_search.model` | model_ref | — | Optional xAI model route for isolated `XSearch` requests |
 | `x_search.timeout_seconds` | integer | `60` | Timeout for isolated xAI `XSearch` requests |
-| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
+| `web.providers.<name>.kind` | string | required | Provider kind: `duck_duck_go`, `searxng`, `brave`, `google`, `deepseek`, `tencent_cloud_wsa`, `bocha`, `tavily`, `keenable`, `exa`, `perplexity`, `firecrawl`, `open_ai_native`, `anthropic_native`, `gemini_native`, or `command` |
 | `web.providers.<name>.base_url` | string | unset | Custom provider endpoint |
 | `web.providers.<name>.credential_profile` | string | unset | Credential profile for API-backed providers |
 | `web.providers.<name>.engine_id` | string | required for `google` | Programmable Search engine id (`cx`) for `kind=google`; create the engine at programmablesearchengine.google.com with "Search the entire web" enabled to query the whole web rather than a site-restricted index |

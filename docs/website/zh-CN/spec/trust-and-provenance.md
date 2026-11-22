@@ -180,6 +180,7 @@ Holon 的来源契约：
   **永远不会**被模型重新赋值。
 - 当运行时生成内部消息（system tick、task result、timer fire、continuation
   follow-up）时，它会赋予运行时拥有的 origin 和 `RuntimeInstruction` 权威。
+- 通过 `Enqueue` 自入队的跟进消息属于 Agent 自身生成的续接内容，而非新的操作者指令。它保留来源、优先级与 WorkItem 绑定，但会把 `OperatorInstruction` 封顶为 `RuntimeInstruction`，其他权威类别保持不变。
 - Agent 间投递（`SendAgentMessage`、面向已有 Agent 的 `InvokeAgent`、回复与转发）
   会为投递出的消息派生 `RuntimeInstruction`，同时单独保留调用方的原始权威；这类
   投递不授予操作者队列准入权限。

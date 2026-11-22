@@ -3,7 +3,7 @@ title: HTTP control plane
 summary: How to think about Holon's headless integration surface.
 order: 20
 ---
-<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.60.0. -->
+<!-- maintenance: hand-written; verify endpoints against `openapi.json` and the Axum route tree when routes change. Last reviewed against v0.61.0. -->
 
 # HTTP control plane
 
@@ -489,6 +489,14 @@ Creates a persistent delayed or recurring timer for the agent.
 { "after_ms": 60000, "every_ms": null, "summary": "Health check" }
 ```
 
+**`POST /api/control/agents/:id/timers/:timer_id/pause`** — Pause timer
+
+Pauses an active timer by id without removing its schedule or waits.
+
+**`POST /api/control/agents/:id/timers/:timer_id/resume`** — Resume timer
+
+Resumes a paused timer by id.
+
 **`POST /api/control/agents/:id/timers/:timer_id/cancel`** — Cancel timer
 
 Cancels an active timer by id.
@@ -594,12 +602,28 @@ Creates a timer that will deliver a `TimerTick` to the agent.
 }
 ```
 
+**`POST /api/control/agents/:id/timers/:timer_id/pause`** — Pause timer
+
+Pauses an active timer and returns the updated `TimerRecord` (`status: "paused"`,
+`next_fire_at: null`, and `paused_remaining_ms` frozen for non-calendar timers).
+Idempotent for an already-paused timer. Missing timers return `404`; completed
+or cancelled timers return `409 Conflict`. Pausing does not stop wakes already
+queued or claimed.
+
+**`POST /api/control/agents/:id/timers/:timer_id/resume`** — Resume timer
+
+Resumes a paused timer and returns the updated `TimerRecord` (`status: "active"`).
+Calendar timers pick the next valid occurrence after resume time; relative and
+interval timers continue from `paused_remaining_ms`. Missed runs are not
+replayed. Idempotent for an already-active timer; completed or cancelled timers
+return `409 Conflict`.
+
 **`POST /api/control/agents/:id/timers/:timer_id/cancel`** — Cancel timer
 
-Cancels an active timer and returns the updated `TimerRecord`. Cancellation is
-idempotent for an already-cancelled timer. A missing timer returns a shared
-404 error envelope; a completed timer returns a shared 400 lifecycle error
-because it already fired. Cancellation immediately updates timer list/detail
+Cancels an active or paused timer and returns the updated `TimerRecord`.
+Cancellation is idempotent for an already-cancelled timer. A missing timer returns
+a shared 404 error envelope; a completed timer returns a shared 400 lifecycle
+error because it already fired. Cancellation immediately updates timer list/detail
 projections and emits `timer_cancelled`.
 
 ```json
