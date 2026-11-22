@@ -67,7 +67,7 @@ pub(crate) mod task_result_queue;
 pub(crate) mod task_result_settlement;
 pub(crate) mod transitions;
 pub mod turn_content_deletion;
-#[cfg(test)]
+#[cfg(all(test, holon_lib_test_shard = "b"))]
 mod turn_content_deletion_tests;
 pub mod turn_settlement_repair;
 mod turn_start;
