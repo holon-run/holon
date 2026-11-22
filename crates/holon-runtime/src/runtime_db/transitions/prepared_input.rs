@@ -444,6 +444,65 @@ impl PreparedTaskBaseline {
     }
 }
 
+#[derive(Debug)]
+pub(crate) enum WorkCommandLane {
+    Idle,
+    Turn { turn_id: String, message_id: String },
+}
+
+impl WorkCommandLane {
+    pub(crate) fn from_tool_context(context: &crate::tool::spec::ToolExecutionContext) -> Self {
+        match (&context.turn_id, &context.message_id) {
+            (Some(turn_id), Some(message_id)) => Self::Turn {
+                turn_id: turn_id.clone(),
+                message_id: message_id.clone(),
+            },
+            _ => Self::Idle,
+        }
+    }
+
+    fn validate(&self, tx: &Transaction<'_>, agent_id: &str) -> Result<()> {
+        let (valid, kind, message) = match self {
+            Self::Idle => (
+                !crate::runtime_db::work_item_source_revision_repair::agent_has_open_attempt(
+                    tx, agent_id,
+                )?,
+                "work_item_execution_active",
+                "work command requires the agent execution lane to be idle",
+            ),
+            Self::Turn {
+                turn_id,
+                message_id,
+            } => (
+                tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts
+                     WHERE agent_id = ?1 AND lifecycle_state = 'open'
+                       AND json_extract(payload_json, '$.turn_id') = ?2
+                       AND json_extract(payload_json, '$.source_message_id') = ?3)",
+                    params![agent_id, turn_id, message_id],
+                    |row| row.get(0),
+                )? && agent_state_tx(tx, agent_id)?
+                    .and_then(|state| state.current_execution_binding)
+                    .is_some_and(|binding| {
+                        binding.turn_id == *turn_id && binding.source_message_id == *message_id
+                    }),
+                "work_item_execution_binding_stale",
+                "work command no longer belongs to the agent's active turn",
+            ),
+        };
+        if !valid {
+            return Err(crate::runtime_error::RuntimeError::new(
+                crate::runtime_error::RuntimeErrorDomain::Conflict,
+                kind,
+                message,
+            )
+            .with_safe_context("agent_id", agent_id)
+            .into());
+        }
+        Ok(())
+    }
+}
+
 /// Deliberately not Clone: the owned command is not copied into its receipt or
 /// witness. The witness retains only descriptor + original-attempt completion.
 #[derive(Debug)]
@@ -456,8 +515,13 @@ pub(crate) struct PreparedInputTransition {
     original_dispatch_claim: Option<crate::runtime::started_dispatch::OriginalDispatchClaim>,
     auto_base_descriptor: Option<PreparedInputMutation>,
     task_bases: Vec<PreparedTaskBaseline>,
+    work_command_lane: Option<WorkCommandLane>,
 }
 impl PreparedInputTransition {
+    pub(crate) fn with_work_command_lane(mut self, lane: Option<WorkCommandLane>) -> Self {
+        self.work_command_lane = lane;
+        self
+    }
     /// Only the original typed Queue ACK can carry this read-only observation.
     pub(crate) fn stopped_provider_pause_ack(&self) -> Option<StoppedProviderPauseAck<'_>> {
         match self.command.as_ref() {
@@ -885,6 +949,7 @@ impl PreparedInputTransition {
             original_dispatch_claim: None,
             auto_base_descriptor: None,
             task_bases: Vec::new(),
+            work_command_lane: None,
         })
     }
     pub(crate) fn with_original_dispatch_claim(
@@ -3399,6 +3464,9 @@ impl RuntimeTransitionRepository<'_> {
                     });
                 }
             };
+            if let Some(lane) = &prepared.work_command_lane {
+                lane.validate(tx, &scope.agent_id)?;
+            }
             let facts = preflight.scope_read.facts();
             let mut supervised_parent_applied = false;
             let mut inserted_stop = None;

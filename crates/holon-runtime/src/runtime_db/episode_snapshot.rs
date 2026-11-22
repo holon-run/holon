@@ -1581,25 +1581,32 @@ fn collect_live_episode_roots_with_schema(
         Ok(())
     })?;
     if root_table_available(tables, "execution_protocol_work_items") {
-        let mut statement = connection.prepare("SELECT work_item_id, payload_json FROM execution_protocol_work_items WHERE agent_id = ?1 AND lifecycle_state != 'terminal'")?;
+        let mut statement = connection.prepare("SELECT work_item_id, lifecycle_state, payload_json FROM execution_protocol_work_items WHERE agent_id = ?1 AND lifecycle_state != 'terminal'")?;
         let records = statement.query_map([agent_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
         })?;
         for row in records {
-            let (id, payload) = row?;
-            let record: crate::domain::execution_protocol::WorkItemExecutionRecord =
-                serde_json::from_str(&payload)?;
+            let (id, lifecycle_state, payload) = row?;
             collector.digest("work_execution", &id, &payload)?;
             collector.work_item(Some(&id));
+            // Historical snapshot migrations run before migration 118.
+            if tables.is_some() && lifecycle_state == "in_flight" {
+                let legacy: serde_json::Value = serde_json::from_str(&payload)?;
+                collector.optional_ref("attempt", legacy["state"]["attempt_id"].as_str());
+                continue;
+            }
+            let record: crate::domain::execution_protocol::WorkItemExecutionRecord =
+                serde_json::from_str(&payload)?;
             use crate::domain::execution_protocol::WorkItemExecutionState;
             match record.state {
                 WorkItemExecutionState::Runnable { recovery_ref, .. } => {
                     if let Some(source_ref) = recovery_ref {
                         collector.source_ref(&source_ref);
                     }
-                }
-                WorkItemExecutionState::InFlight { attempt_id, .. } => {
-                    collector.reference("attempt", &attempt_id)
                 }
                 WorkItemExecutionState::Waiting { wait, .. } => {
                     collector.reference("wait", &wait.wait_id)

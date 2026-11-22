@@ -1,7 +1,7 @@
 //! Offline repairs refresh only the finite evidence already qualified before
 //! their original SQL transaction. The borrowed lock excludes resident owners.
 use super::*;
-use crate::domain::execution_protocol::ExecutionProtocolCommand;
+use crate::domain::execution_protocol::{ExecutionProtocolCommand, WorkItemExecutionRecord};
 use crate::runtime_db::{RuntimeDb, RuntimeDbLock};
 use std::path::{Path, PathBuf};
 
@@ -62,6 +62,20 @@ pub(crate) fn prepare_offline_input_repair_tx(
     commands: &[ExecutionProtocolCommand],
     authority: Option<&OfflineInputMaintenance<'_>>,
 ) -> Result<PreparedOfflineInputRepair> {
+    prepare_offline_input_repair_with_retired_work_tx(
+        tx, db, agent, keys, commands, authority, None,
+    )
+}
+
+fn prepare_offline_input_repair_with_retired_work_tx(
+    tx: &Transaction<'_>,
+    db: &RuntimeDb,
+    agent: &str,
+    keys: &[Key],
+    commands: &[ExecutionProtocolCommand],
+    authority: Option<&OfflineInputMaintenance<'_>>,
+    retired_work: Option<&BTreeMap<String, WorkItemExecutionRecord>>,
+) -> Result<PreparedOfflineInputRepair> {
     if let Some(authority) = authority {
         authority.validate_database(db)?;
     }
@@ -80,10 +94,24 @@ pub(crate) fn prepare_offline_input_repair_tx(
     }
     let existing_records = selected
         .iter()
-        .filter_map(|key| match payload_on(tx, agent, key) {
-            Ok(Some(payload)) => Some(decode_canonical_on(tx, agent, key, &payload)),
-            Ok(None) => None,
-            Err(error) => Some(Err(error)),
+        .filter_map(|key| {
+            // The retired fallback has already loaded the WorkExecution before-image
+            // in this transaction. Use that projection only for relationship discovery;
+            // qualification below still verifies the raw stored evidence.
+            if let Some(record) = retired_work
+                .filter(|_| key.family == Family::WorkExecution)
+                .and_then(|work| work.get(&key.id))
+            {
+                return Some(Ok(CanonicalInputEvidence::WorkExecution {
+                    work_item_id: key.id.clone(),
+                    record: record.clone(),
+                }));
+            }
+            match payload_on(tx, agent, key) {
+                Ok(Some(payload)) => Some(decode_canonical_on(tx, agent, key, &payload)),
+                Ok(None) => None,
+                Err(error) => Some(Err(error)),
+            }
         })
         .collect::<Result<Vec<_>>>()?;
     let related = affected_projection_keys_for_agent_tx(tx, agent, &existing_records)?;

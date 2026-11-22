@@ -463,11 +463,7 @@ impl RuntimeHandle {
                 return Ok(false);
             };
             if owner.state != WorkItemState::Open
-                || matches!(
-                    expected.state,
-                    WorkItemExecutionState::InFlight { .. }
-                        | WorkItemExecutionState::Terminal { .. }
-                )
+                || matches!(expected.state, WorkItemExecutionState::Terminal { .. })
             {
                 return Ok(false);
             }

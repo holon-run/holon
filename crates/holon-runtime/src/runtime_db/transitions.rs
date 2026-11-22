@@ -53,7 +53,7 @@ pub(crate) use prepared_input::{
     ExternalTriggerMutationOutcome, InputMutationExecution, OriginalChildStatusSelection,
     OriginalTaskCleanupView, PreparedExternalTriggerTransition, PreparedInputTransition,
     PreparedQueueTransition, PreparedSupervisedInvocationAdmission, PreparedTaskBaselines,
-    PreparedTaskTransition, PreparedTimerTransition, TimerMutationOutcome,
+    PreparedTaskTransition, PreparedTimerTransition, TimerMutationOutcome, WorkCommandLane,
 };
 pub(in crate::runtime_db) use prepared_task_result::receipt_budget_with_material_tx as task_status_receipt_budget_with_material_tx;
 pub(crate) use prepared_task_result::{
@@ -10301,9 +10301,9 @@ mod tests {
                         "work-execution".into(),
                         WorkItemExecutionRecord {
                             source_revision: 1,
-                            state: WorkItemExecutionState::InFlight {
+                            state: WorkItemExecutionState::Runnable {
                                 generation: 1,
-                                attempt_id: id.clone(),
+                                recovery_ref: None,
                             },
                         },
                     );

@@ -208,10 +208,12 @@ pub fn complete_work_item_execution(
     if state.work_items.get(&command.work_item_id) != Some(&command.expected) {
         return Err("WorkItem completion fence is stale".into());
     }
-    if matches!(
-        command.expected.state,
-        WorkItemExecutionState::InFlight { .. } | WorkItemExecutionState::Terminal { .. }
-    ) {
+    if state.open_attempt().is_some()
+        || matches!(
+            command.expected.state,
+            WorkItemExecutionState::Terminal { .. }
+        )
+    {
         return Err("WorkItem is not eligible for lifecycle completion".into());
     }
     let mut next = state.clone();
@@ -518,10 +520,6 @@ pub enum WorkItemExecutionState {
         #[serde(default)]
         recovery_ref: Option<String>,
     },
-    InFlight {
-        generation: u64,
-        attempt_id: String,
-    },
     Waiting {
         generation: u64,
         wait: WaitReference,
@@ -540,7 +538,6 @@ impl WorkItemExecutionState {
     pub fn generation(&self) -> u64 {
         match self {
             Self::Runnable { generation, .. }
-            | Self::InFlight { generation, .. }
             | Self::Waiting { generation, .. }
             | Self::Paused { generation, .. }
             | Self::Terminal { generation, .. } => *generation,
@@ -888,11 +885,12 @@ pub fn set_work_item_waiting(
     if state.work_items.get(&command.work_item_id) != command.expected.as_ref() {
         return Err("WorkItem waiting transition fence is stale".into());
     }
-    if command.expected.as_ref().is_some_and(|record| {
-        matches!(
-            record.state,
-            WorkItemExecutionState::InFlight { .. } | WorkItemExecutionState::Terminal { .. }
-        ) || command.record.generation() <= record.generation()
+    if state.open_attempt().is_some_and(|attempt| {
+        matches!(&attempt.binding, ExecutionBinding::WorkItem { work_item_id }
+            if work_item_id == &command.work_item_id)
+    }) || command.expected.as_ref().is_some_and(|record| {
+        matches!(record.state, WorkItemExecutionState::Terminal { .. })
+            || command.record.generation() <= record.generation()
     }) {
         return Err("WorkItem is not eligible for lifecycle wait handoff".into());
     }
@@ -966,10 +964,9 @@ pub fn reconcile_work_item_source_revision(
     if record.source_revision != command.expected_source_revision {
         return Err("WorkItem source revision reconcile fence is stale".into());
     }
-    if matches!(
-        record.state,
-        WorkItemExecutionState::Terminal { .. } | WorkItemExecutionState::InFlight { .. }
-    ) {
+    if state.open_attempt().is_some()
+        || matches!(record.state, WorkItemExecutionState::Terminal { .. })
+    {
         return Err(
             "WorkItem source revision reconcile requires a non-executing registration".into(),
         );
@@ -1112,12 +1109,6 @@ pub fn register_work_item_execution(
         return Err(
             "WorkItem registration requires identity, source revision, and generation".into(),
         );
-    }
-    if matches!(
-        command.record.state,
-        WorkItemExecutionState::InFlight { .. }
-    ) {
-        return Err("WorkItem registration cannot import an InFlight state".into());
     }
     if let Some(existing) = state.work_items.get(&command.work_item_id) {
         if existing == &command.record {
@@ -1324,24 +1315,15 @@ pub fn admit_execution(
             .admitted_fences
             .work_item_generation
             .ok_or_else(|| "WorkItem admission requires a generation fence".to_string())?;
-        let work_record = next
+        let work_record = state
             .work_items
-            .get_mut(work_item_id)
+            .get(work_item_id)
             .ok_or_else(|| "WorkItem admission requires registered execution state".to_string())?;
         if work_record.source_revision != expected_source_revision {
             return Err("WorkItem admission source revision fence is stale".into());
         }
-        match &mut work_record.state {
-            WorkItemExecutionState::Runnable { generation, .. }
-            | WorkItemExecutionState::Waiting { generation, .. }
-                if *generation == expected_generation =>
-            {
-                work_record.state = WorkItemExecutionState::InFlight {
-                    generation: expected_generation,
-                    attempt_id: attempt.attempt_id.clone(),
-                };
-            }
-            _ => return Err("WorkItem is not eligible at the admitted generation".into()),
+        if !eligible_work_item_at_generation(work_record, Some(expected_generation)) {
+            return Err("WorkItem is not eligible at the admitted generation".into());
         }
     } else if attempt.admitted_fences.work_item_source_revision.is_some()
         || attempt.admitted_fences.work_item_generation.is_some()
@@ -1382,17 +1364,35 @@ pub fn settle_execution(
             .work_items
             .get_mut(work_item_id)
             .ok_or_else(|| "attempt references an unknown WorkItem state".to_string())?;
-        let generation = match &work_record.state {
-            WorkItemExecutionState::InFlight {
-                generation,
-                attempt_id,
-            } if attempt_id == &attempt.attempt_id => *generation,
-            _ => return Err("WorkItem does not reference the settling attempt".into()),
-        };
+        if !eligible_work_item_at_generation(
+            work_record,
+            attempt.admitted_fences.work_item_generation,
+        ) {
+            return Err("WorkItem generation does not match the settling attempt".into());
+        }
         let ExecutionOutcome::WorkItem(work_item_outcome) = &outcome.outcome else {
             unreachable!("WorkItem binding validated above");
         };
-        work_record.state = plan_work_item_outcome(generation, work_item_outcome)?;
+        let generation = work_record.generation();
+        work_record.state = match (
+            &work_record.state,
+            &attempt.source.identity,
+            work_item_outcome,
+        ) {
+            (
+                WorkItemExecutionState::Waiting { .. },
+                ExecutionSourceIdentity::TriggeredWait { wait_id, .. },
+                WorkItemOutcome::Interrupted { .. },
+            ) => plan_work_item_outcome(
+                generation,
+                &WorkItemOutcome::Wait {
+                    wait: WaitReference {
+                        wait_id: wait_id.clone(),
+                    },
+                },
+            )?,
+            _ => plan_work_item_outcome(generation, work_item_outcome)?,
+        };
     }
 
     attempt.state = ExecutionAttemptState::Settled;
@@ -1532,12 +1532,8 @@ pub fn recover_interrupted_task_result_claim(
         revision
             if revision == command.expected_source_revision
                 || revision == command.source_revision
-    ) || !matches!(
-        &work.state,
-        WorkItemExecutionState::InFlight { attempt_id, generation }
-            if attempt_id == &command.attempt_id
-                && Some(*generation) == attempt.admitted_fences.work_item_generation
-    ) {
+    ) || !eligible_work_item_at_generation(work, attempt.admitted_fences.work_item_generation)
+    {
         return Err("TaskResult claim recovery WorkItem fence is stale".into());
     }
     let mut transition = interrupt_execution(
@@ -1611,12 +1607,7 @@ pub fn recover_unadvanced_task_result_claim(
         "Unadvanced TaskResult claim recovery WorkItem authority is missing".to_string()
     })?;
     if work.source_revision != command.expected_source_revision
-        || !matches!(
-            &work.state,
-            WorkItemExecutionState::InFlight { attempt_id, generation }
-                if attempt_id == &command.attempt_id
-                    && Some(*generation) == attempt.admitted_fences.work_item_generation
-        )
+        || !eligible_work_item_at_generation(work, attempt.admitted_fences.work_item_generation)
     {
         return Err("Unadvanced TaskResult claim recovery WorkItem fence is stale".into());
     }
@@ -1733,11 +1724,7 @@ pub fn assert_invariants(state: &ExecutionProtocolState) -> Result<(), String> {
         )?;
     }
     for record in state.work_items.values() {
-        let attempt = match &record.state {
-            WorkItemExecutionState::InFlight { attempt_id, .. } => state.attempts.get(attempt_id),
-            _ => None,
-        };
-        validate_work_invariants(record, attempt)?;
+        validate_work_invariants(record)?;
     }
     for (id, outcome) in &state.outcomes {
         validate_outcome_invariants(id, outcome, state.attempts.get(&outcome.attempt_id))?;
@@ -1772,35 +1759,33 @@ pub fn validate_attempt_invariants(
     }
     if let ExecutionBinding::WorkItem { work_item_id } = &attempt.binding {
         if attempt.state == ExecutionAttemptState::Open
-            && !matches!(
-                works.get(work_item_id).map(|record| &record.state),
-                Some(WorkItemExecutionState::InFlight { attempt_id, .. }) if attempt_id == id
-            )
+            && !works.get(work_item_id).is_some_and(|record| {
+                eligible_work_item_at_generation(
+                    record,
+                    attempt.admitted_fences.work_item_generation,
+                )
+            })
         {
-            return Err("open WorkItem attempt lacks reciprocal InFlight state".into());
+            return Err("open WorkItem attempt lacks an eligible WorkItem generation".into());
         }
     }
     Ok(())
 }
 
-pub fn validate_work_invariants(
+pub fn eligible_work_item_at_generation(
     record: &WorkItemExecutionRecord,
-    attempt: Option<&ExecutionAttempt>,
-) -> Result<(), String> {
+    generation: Option<u64>,
+) -> bool {
+    generation == Some(record.generation())
+        && matches!(
+            record.state,
+            WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::Waiting { .. }
+        )
+}
+
+pub fn validate_work_invariants(record: &WorkItemExecutionRecord) -> Result<(), String> {
     if record.source_revision == 0 || record.generation() == 0 {
         return Err("WorkItem execution record contains a zero revision or generation".into());
-    }
-    if matches!(&record.state, WorkItemExecutionState::InFlight { .. })
-        && !matches!(
-            attempt,
-            Some(ExecutionAttempt {
-                state: ExecutionAttemptState::Open,
-                binding: ExecutionBinding::WorkItem { .. },
-                ..
-            })
-        )
-    {
-        return Err("InFlight WorkItem lacks reciprocal open attempt".into());
     }
     Ok(())
 }

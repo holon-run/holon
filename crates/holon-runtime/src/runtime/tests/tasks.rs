@@ -700,8 +700,8 @@ async fn execution_bound_pick_then_control_completion_succeeds() {
         .unwrap();
     assert!(picked.transition.terminal_transition);
 
-    let completed = runtime
-        .complete_work_item_with_report(
+    let complete = || {
+        runtime.complete_work_item_with_report(
             second.id.clone(),
             crate::runtime::WorkItemCompletionAuthority::Control,
             "Completed through the control plane.".into(),
@@ -714,8 +714,29 @@ async fn execution_bound_pick_then_control_completion_succeeds() {
             None,
             Vec::new(),
         )
+    };
+    let conflict = complete().await.err().expect("the attempt is still open");
+    assert!(conflict.to_string().contains("agent lane is busy"));
+
+    finish_claimed_test_run(&runtime).await;
+    let terminal = terminal_transition_from_started_turn(&runtime, &scheduled.message);
+    runtime
+        .commit_queue_terminal_settlement(
+            QueueEntryRecord {
+                message_id: scheduled.message.id.clone(),
+                agent_id: scheduled.message.agent_id.clone(),
+                priority: scheduled.message.priority.clone(),
+                status: QueueEntryStatus::Processed,
+                created_at: scheduled.message.created_at,
+                updated_at: runtime.now(),
+            },
+            Vec::new(),
+            true,
+            Some(&terminal),
+        )
         .await
         .unwrap();
+    let completed = complete().await.unwrap();
     assert_eq!(completed.into_record().state, WorkItemState::Completed);
     drop(scheduled);
 }

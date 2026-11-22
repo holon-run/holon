@@ -1427,9 +1427,11 @@ fn canonical_exact_task_wait_matches<'a>(
     waits: impl Iterator<Item = &'a WaitConditionRecord> + Clone,
 ) -> bool {
     use crate::domain::execution_protocol::{
-        ExecutionAttemptState, ExecutionBinding, ExecutionSourceIdentity, WorkItemExecutionState,
+        eligible_work_item_at_generation, ExecutionAttemptState, ExecutionBinding,
+        ExecutionSourceIdentity,
     };
     if attempt.state != ExecutionAttemptState::Open
+        || attempt.attempt_id != activation_id
         || attempt.agent_id != message.agent_id
         || attempt.source_message_id.as_deref() != Some(message.id.as_str())
         || task.agent_id != message.agent_id
@@ -1442,7 +1444,7 @@ fn canonical_exact_task_wait_matches<'a>(
     let owner = match &attempt.binding {
         ExecutionBinding::WorkItem { work_item_id } => {
             if !owner_work.is_some_and(|work| {
-                matches!(&work.state, WorkItemExecutionState::InFlight { attempt_id, .. } if attempt_id == activation_id)
+                eligible_work_item_at_generation(work, attempt.admitted_fences.work_item_generation)
             }) {
                 return false;
             }
@@ -1662,9 +1664,9 @@ mod tests {
                 owner.into(),
                 WorkItemExecutionRecord {
                     source_revision: 1,
-                    state: WorkItemExecutionState::InFlight {
+                    state: WorkItemExecutionState::Runnable {
                         generation: 1,
-                        attempt_id: "activation-exact".into(),
+                        recovery_ref: None,
                     },
                 },
             );

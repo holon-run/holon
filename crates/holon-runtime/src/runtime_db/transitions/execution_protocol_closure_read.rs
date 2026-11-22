@@ -20,7 +20,7 @@ impl ValidatedClosureProtocol {
 }
 
 /// SQL sizes precede every decode. History remains subject to the original
-/// inventory bound; only the Work map and current/reciprocal rows are owned.
+/// inventory bound; only the Work map and individually validated rows are owned.
 pub(in crate::runtime_db) fn closure_protocol_material_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -159,13 +159,7 @@ fn read_protocol_rows_tx(tx: &Transaction<'_>, agent_id: &str) -> Result<Validat
     }
     drop(rows);
     for work in work_items.values() {
-        let attempt: Option<ExecutionAttempt> = match &work.state {
-            WorkItemExecutionState::InFlight { attempt_id, .. } => related(tx,
-                "SELECT payload_json FROM execution_protocol_attempts WHERE agent_id=?1 AND attempt_id=?2", agent_id, attempt_id)?,
-            _ => None,
-        };
-        execution_protocol::validate_work_invariants(work, attempt.as_ref())
-            .map_err(anyhow::Error::msg)?;
+        execution_protocol::validate_work_invariants(work).map_err(anyhow::Error::msg)?;
     }
     let mut outcomes = tx.prepare(
         "SELECT outcome_id,payload_json FROM execution_protocol_outcomes WHERE agent_id=?1",
@@ -316,11 +310,14 @@ mod tests {
                         }
                 }
                 9 => {
-                    bad.work_items.get_mut("work").unwrap().state =
-                        WorkItemExecutionState::InFlight {
-                            generation: 1,
-                            attempt_id: "absent".into(),
-                        }
+                    attempt.state = ExecutionAttemptState::Open;
+                    attempt.terminal_at = None;
+                    attempt.terminal_outcome_id = None;
+                    attempt.binding = ExecutionBinding::WorkItem {
+                        work_item_id: "work".into(),
+                    };
+                    attempt.admitted_fences.work_item_generation = Some(2);
+                    bad.outcomes.clear();
                 }
                 10 => attempt.state = ExecutionAttemptState::Open,
                 11 => {

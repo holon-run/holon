@@ -353,15 +353,6 @@ impl PreparedInputEvidence {
                 }
             }
             Self::Outcome(x) => add(InputEvidenceFamily::Attempt, &x.attempt_id),
-            Self::WorkExecution { record, .. } => {
-                if let crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-                    attempt_id,
-                    ..
-                } = &record.state
-                {
-                    add(InputEvidenceFamily::Attempt, attempt_id)
-                }
-            }
             _ => {}
         }
         refs

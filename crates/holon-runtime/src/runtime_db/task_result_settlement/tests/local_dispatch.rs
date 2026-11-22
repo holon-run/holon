@@ -288,9 +288,9 @@ fn exact_root_fixture_with_source(
         "work-b".into(),
         WorkItemExecutionRecord {
             source_revision: 1,
-            state: WorkItemExecutionState::InFlight {
+            state: WorkItemExecutionState::Runnable {
                 generation: 1,
-                attempt_id: "rejected-attempt".into(),
+                recovery_ref: None,
             },
         },
     );

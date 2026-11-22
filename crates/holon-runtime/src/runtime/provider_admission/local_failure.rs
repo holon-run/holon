@@ -2,8 +2,9 @@
 
 use super::*;
 use crate::domain::execution_protocol::{
-    CommandResult, ConversationOutcome, ExecutionBinding, ExecutionOutcome, ExecutionOutcomeRecord,
-    ExecutionProtocolCommand, SettleExecution, WorkItemExecutionState, WorkItemOutcome,
+    eligible_work_item_at_generation, CommandResult, ConversationOutcome, ExecutionBinding,
+    ExecutionOutcome, ExecutionOutcomeRecord, ExecutionProtocolCommand, SettleExecution,
+    WorkItemOutcome,
 };
 use crate::runtime_db::transitions::ExecutionProtocolTransition;
 use crate::types::{QueueEntryRecord, TurnOwner, TurnRecord};
@@ -65,14 +66,15 @@ pub(in crate::runtime) fn local_dispatch_failure_settlement(
                 .load_execution_protocol_state_if_initialized(&attempt.agent_id)?
                 .context("local dispatch stop requires canonical execution state")?;
             ensure!(
-                protocol.work_items.get(work_item_id).is_some_and(|work| {
-                    matches!(
-                        &work.state,
-                        WorkItemExecutionState::InFlight { generation, attempt_id }
-                            if attempt_id == &attempt.attempt_id
-                                && Some(*generation) == attempt.admitted_fences.work_item_generation
-                    )
-                }),
+                protocol
+                    .open_attempt()
+                    .is_some_and(|open| open.attempt_id == attempt.attempt_id)
+                    && protocol.work_items.get(work_item_id).is_some_and(|work| {
+                        eligible_work_item_at_generation(
+                            work,
+                            attempt.admitted_fences.work_item_generation,
+                        )
+                    }),
                 "local dispatch stop cannot settle a replacement owner"
             );
             ExecutionOutcome::WorkItem(dispatch_rejection_work_item_outcome(

@@ -17,6 +17,7 @@ pub(crate) async fn execute(
     _agent_id: &str,
     _authority_class: &AuthorityClass,
     input: &Value,
+    context: &crate::tool::spec::ToolExecutionContext,
 ) -> Result<crate::tool::ToolResult> {
     let args: UpdateWorkItemArgs = parse_work_item_action_args(NAME, input)?;
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
@@ -29,13 +30,13 @@ pub(crate) async fn execute(
         .map(|items| convert_todo_list(NAME, items))
         .transpose()?;
     let work_item = runtime
-        .update_work_item_fields(
+        .update_work_item_fields_in_lane(
             work_item_id,
             objective,
             args.plan_status.map(Into::into),
-            None,
             todo_list,
             None,
+            Some(crate::runtime_db::transitions::WorkCommandLane::from_tool_context(context)),
         )
         .await?;
     let context = query_context(runtime).await?;

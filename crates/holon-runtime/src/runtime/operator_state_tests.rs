@@ -342,13 +342,12 @@ async fn operator_state_keeps_scheduler_window_after_narrow_owner_preparation() 
             attempt.state == ExecutionAttemptState::Open
                 && attempt.source_message_id.as_deref() == Some(source.id.as_str())
         }));
-        for (id, expected) in work_ids.iter().zip(["in_flight", "runnable", "waiting"]) {
+        for (id, expected) in work_ids.iter().zip(["runnable", "runnable", "waiting"]) {
             let state = &execution.work_items[id].state;
             assert!(
                 matches!(
                     (expected, state),
-                    ("in_flight", WorkItemExecutionState::InFlight { .. })
-                        | ("runnable", WorkItemExecutionState::Runnable { .. })
+                    ("runnable", WorkItemExecutionState::Runnable { .. })
                         | ("waiting", WorkItemExecutionState::Waiting { .. })
                 ),
                 "the fixture must exercise {expected}: {state:?}"

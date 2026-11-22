@@ -113,7 +113,6 @@ previous validation rules.
 
 ```text
 Runnable(g)
-InFlight(g, attempt_id)
 Waiting(g, wait_id)
 Paused(g, reason)
 Terminal(g, completion)
@@ -122,21 +121,22 @@ Terminal(g, completion)
 Allowed transitions are:
 
 ```text
-Runnable(g) -> InFlight(g, attempt)
-Waiting(g, exact triggered wait) -> InFlight(g, attempt)
-Waiting(g, trusted provider lineage recovery) -> InFlight(g, attempt)
-
-InFlight(g, attempt) -> Runnable(g + 1)
-InFlight(g, attempt) -> Runnable(g + 1, recovery_ref)
-InFlight(g, attempt) -> Waiting(g + 1, wait_id)
-InFlight(g, attempt) -> Paused(g + 1, reason)
-InFlight(g, attempt) -> Terminal(g + 1, completion)
+Runnable(g) or Waiting(g, wait_id) + open attempt
+  -> Runnable(g + 1[, recovery_ref])
+  -> Waiting(g + 1, wait_id)
+  -> Paused(g + 1, reason)
+  -> Terminal(g + 1, completion)
 
 Paused(g) -> Runnable(g + 1)
 ```
 
-An `InFlight` state and its same-agent open attempt must reference each other.
-Creating a new eligibility epoch increments the scheduling generation.
+Only the agent's open `ExecutionAttempt` represents execution. Admission
+checks and captures the exact WorkItem generation without changing its state
+or generation. Updating the WorkItem's scheduling state on settlement checks
+that captured generation and advances it. If the owning turn clears a blocker
+with `PickWorkItem`, the command may advance the source revision and cancel
+waits, but it leaves the scheduling generation to settlement. The read model
+derives `Executing` from the open attempt and WorkItem attribution or focus.
 Terminal transition resolves owned waits and continuation obligations and
 removes scheduler eligibility. Focus may be cleared or restored in the same
 transaction, but it does not grant eligibility.
@@ -165,10 +165,10 @@ terminal execution attempt; the new attempt records that identity in
 `recovery_of_attempt_id`. Admission preserves the WorkItem source revision and
 generation fences, records `RuntimeRecovery(recovery_id)` as the execution
 source, and leaves the `WaitCondition` unresolved. Settlement projects the
-WorkItem back to `Waiting` when that wait remains Active or was Triggered while
+WorkItem as `Waiting` when that wait remains Active or was Triggered while
 recovery owned the lane, so the exact queued wake can consume it next. Provider
-recovery does not admit `Paused`, `Terminal`, or already
-`InFlight` WorkItems, and it does not clear blockers or waits.
+recovery does not admit `Paused` or `Terminal` WorkItems, or an agent that
+already has an open attempt. It does not clear blockers or waits.
 
 Task-result handling obligations do not weaken these admission gates. A valid
 terminal result is retained for its immutable agent-lifecycle or WorkItem
@@ -231,10 +231,10 @@ execution.
 | task result | exact live rejoin, unbound reduce-only, or stale | compatible outcome or `ReduceOnly` | consume exact result; stale does not reenter model |
 | child result | exact caller continuation or unbound notification | caller outcome or `ReduceOnly` | consume exact result/continuation |
 | triggered wait | exact wait owner | owner-compatible outcome | consume exact `wait_id` and trigger message |
-| WorkItem continuation | exact runnable generation | WorkItem outcome | `Runnable -> InFlight` |
+| WorkItem continuation | exact runnable generation | WorkItem outcome | remains `Runnable` until settlement |
 | targeted yield/continuation | exact continuation frame | target-compatible outcome | consume exact continuation |
 | internal contentful follow-up | declared interaction or WorkItem binding | binding-compatible outcome | exact claim to terminal |
-| provider lineage recovery | exact Runnable or Waiting WorkItem generation, runtime-owned typed recovery provenance | WorkItem outcome | `Runnable/Waiting -> InFlight`; preserve an existing wait |
+| provider lineage recovery | exact Runnable or Waiting WorkItem generation, runtime-owned typed recovery provenance | WorkItem outcome | preserve WorkItem state and existing wait during admission |
 | startup recovery, repair, stale reduction | command-owned, no model binding | typed `CommandResult` | deterministic state repair |
 | shutdown or closed host | none | reject or defer | no execution |
 
@@ -250,7 +250,7 @@ owner, generation, host, and agent-control gates pass.
 2. verify there is no open attempt for the agent;
 3. compare-and-swap the source authority:
    - claim an exact queue entry;
-   - move an exact WorkItem generation to `InFlight`;
+   - verify and capture the exact WorkItem generation;
    - consume an exact triggered wait;
    - bind an exact live task/child rejoin or continuation;
 4. create the open attempt with provenance and admitted fences;
@@ -335,12 +335,12 @@ terminal receipt is the only authority for success. A standalone Turn writer
 must reject a prepared completion, and replay of the same command must not
 duplicate Turn, queue, audit, brief, tool, or index-outbox facts.
 
-Detached completion still atomically binds the result brief, completes the
-target WorkItem, updates its canonical execution record, cancels target-owned
-waits, and applies any safe continuation return. It must preserve unrelated
-queue claims, open attempts, Run/Turn ownership, and focus. Control completion
-of a target with an open in-flight attempt returns conflict with no partial
-terminalization.
+When the agent execution lane is idle, detached completion atomically binds the
+result brief, completes the target WorkItem, updates its canonical execution
+record, cancels target-owned waits, and applies any safe continuation return.
+An open attempt anywhere on the agent blocks detached and control completion,
+even when the target is not the attempt's owner. The conflict must not partially
+terminalize the target or end the current Turn.
 
 `WaitFor(task_result)` reads the task and rejoin authority inside the same
 transaction:
@@ -383,7 +383,7 @@ At startup, an open attempt without live host execution is recovered in one
 transaction:
 
 1. mark the old attempt `Interrupted`;
-2. release its source claim or in-flight reservation;
+2. release its source claim or execution reservation;
 3. create a new recovery eligibility epoch;
 4. preserve prior transcript, tool, task, brief, WorkItem, and workspace
    evidence for the next model turn.
@@ -399,8 +399,8 @@ Source recovery is fixed by source kind:
 | Interrupted source | Recovery transition |
 | --- | --- |
 | queued message | `Dequeued -> Interrupted`, same message remains claimable |
-| autonomous WorkItem | `InFlight(g) -> Runnable(g + 1, recovery_ref)` |
-| wait resume | release resume claim; preserve exact triggered obligation |
+| autonomous WorkItem | `Runnable(g) -> Runnable(g + 1, recovery_ref)` |
+| wait resume | `Waiting(g, wait_id) -> Waiting(g + 1, wait_id)`; preserve the exact wait from the attempt's triggered-wait source even if admission resolved it |
 | task/child result | release rejoin claim; preserve exact live result identity |
 | attached interjection | keep durable input evidence in recovery context |
 

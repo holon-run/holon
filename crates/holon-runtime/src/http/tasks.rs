@@ -541,7 +541,12 @@ pub async fn pick_work_item(
         ));
     }
     let picked = runtime
-        .pick_work_item_with_reason_and_clear_blocker(work_item_id, reason, request.clear_blocker)
+        .pick_work_item_in_lane(
+            work_item_id,
+            reason,
+            request.clear_blocker,
+            Some(crate::runtime_db::transitions::WorkCommandLane::Idle),
+        )
         .await
         .map_err(work_item_lifecycle_error)?;
     runtime
@@ -614,13 +619,13 @@ pub async fn update_work_item(
         .await
         .map_err(error_response)?;
     let record = runtime
-        .update_work_item_fields(
+        .update_work_item_fields_in_lane(
             work_item_id,
             objective,
             request.plan_status,
-            None,
             request.todo_list,
             blocked_by,
+            Some(crate::runtime_db::transitions::WorkCommandLane::Idle),
         )
         .await
         .map_err(work_item_lifecycle_error)?;

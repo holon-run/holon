@@ -15,6 +15,7 @@ pub(crate) async fn execute(
     _agent_id: &str,
     _authority_class: &AuthorityClass,
     input: &Value,
+    context: &crate::tool::spec::ToolExecutionContext,
 ) -> Result<crate::tool::ToolResult> {
     let args: PickWorkItemArgs = parse_tool_args(NAME, input)?;
     let work_item_id = validate_non_empty(args.work_item_id, NAME, "work_item_id")?;
@@ -32,7 +33,12 @@ pub(crate) async fn execute(
         ));
     }
     let picked = runtime
-        .pick_work_item_with_reason_and_clear_blocker(work_item_id, reason, args.clear_blocker)
+        .pick_work_item_in_lane(
+            work_item_id,
+            reason,
+            args.clear_blocker,
+            Some(crate::runtime_db::transitions::WorkCommandLane::from_tool_context(context)),
+        )
         .await?;
     let previous_work_item = picked.previous_work_item;
     let current_work_item = picked.current_work_item;

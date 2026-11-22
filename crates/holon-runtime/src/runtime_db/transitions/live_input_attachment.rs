@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::domain::execution_protocol::{
-    ExecutionAttempt, ExecutionAttemptState, ExecutionBinding, ExecutionProtocolState,
-    WorkItemExecutionState,
+    eligible_work_item_at_generation, ExecutionAttempt, ExecutionAttemptState, ExecutionBinding,
+    ExecutionProtocolState,
 };
 use crate::types::{
     AgentMessageDeliveryOutcome, AgentMessagePrincipalKind, AgentState, AgentStatus,
@@ -1075,9 +1075,7 @@ fn canonical_input_binding_matches_loaded_state_tx(
     }
     if let ExecutionBinding::WorkItem { work_item_id } = &expected.binding {
         if !state.work_items.get(work_item_id).is_some_and(|owner| {
-            matches!(&owner.state, WorkItemExecutionState::InFlight { attempt_id, .. }
-                if attempt_id == &expected.attempt_id)
-                && Some(owner.generation()) == expected.admitted_fences.work_item_generation
+            eligible_work_item_at_generation(owner, expected.admitted_fences.work_item_generation)
         }) {
             return Ok(false);
         }

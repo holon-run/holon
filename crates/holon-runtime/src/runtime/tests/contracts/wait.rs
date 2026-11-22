@@ -124,9 +124,9 @@ async fn persist_open_work_execution(
         work_item.id.clone(),
         WorkItemExecutionRecord {
             source_revision: generation,
-            state: WorkItemExecutionState::InFlight {
+            state: WorkItemExecutionState::Runnable {
                 generation,
-                attempt_id: attempt_id.into(),
+                recovery_ref: None,
             },
         },
     );

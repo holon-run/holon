@@ -2,7 +2,10 @@
 //! provenance is tied to this original transaction, not an Interrupt receipt.
 use super::*;
 use crate::domain::execution_protocol::{
-    ExecutionAttempt, ExecutionAttemptState, ExecutionProtocolState, WorkItemExecutionState,
+    ExecutionAttempt, ExecutionAttemptState, ExecutionProtocolState,
+};
+use crate::runtime_db::retired_scheduler_cleanup::{
+    RetiredSchedulerCleanupBlocker, RetiredSchedulerCleanupBlockerKind,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,7 +32,7 @@ pub(crate) fn prepare_tx(
     db: &RuntimeDb,
     agent: &str,
     state: &ExecutionProtocolState,
-    dequeued_messages: &[String],
+    blockers: &[RetiredSchedulerCleanupBlocker],
     recovery_message_id: &str,
     authority: Option<&OfflineInputMaintenance<'_>>,
 ) -> Result<PreparedFallbackInputs> {
@@ -52,25 +55,25 @@ pub(crate) fn prepare_tx(
             attempt.clone(),
         );
     }
-    for (id, _) in state
-        .work_items
-        .iter()
-        .filter(|(_, w)| matches!(w.state, WorkItemExecutionState::InFlight { .. }))
-    {
-        keys.insert(Key::new(Family::WorkExecution, id));
+    for blocker in blockers {
+        match blocker.kind {
+            RetiredSchedulerCleanupBlockerKind::InFlightExecutionWorkItem => {
+                keys.insert(Key::new(Family::WorkExecution, &blocker.record_id));
+            }
+            RetiredSchedulerCleanupBlockerKind::DequeuedQueueEntry => {
+                keys.insert(Key::new(Family::Message, &blocker.record_id));
+            }
+            _ => {}
+        }
     }
-    keys.extend(
-        dequeued_messages
-            .iter()
-            .map(|id| Key::new(Family::Message, id)),
-    );
-    let mut original = prepare_offline_input_repair_tx(
+    let mut original = prepare_offline_input_repair_with_retired_work_tx(
         tx,
         db,
         agent,
         &keys.into_iter().collect::<Vec<_>>(),
         &[],
         authority,
+        Some(&state.work_items),
     )?;
     outcomes.retain(|_, attempt| {
         original

@@ -10864,10 +10864,18 @@ impl RuntimeHost {
                     let Some(work_item) = execution.work_items.get(&work_item_id) else {
                         return Err(ChildInvocationReason::MissingCanonicalTerminal.into());
                     };
+                    if let Some(attempt) = execution.open_attempt().filter(|candidate| {
+                        matches!(
+                            &candidate.binding,
+                            ExecutionBinding::WorkItem { work_item_id: owner }
+                                if owner == &work_item_id
+                        ) && candidate.admitted_fences.work_item_generation
+                            == Some(work_item.generation())
+                    }) {
+                        cursor = InvocationSettlementCursor::Attempt(attempt.attempt_id.clone());
+                        continue;
+                    }
                     match &work_item.state {
-                        WorkItemExecutionState::InFlight { attempt_id, .. } => {
-                            cursor = InvocationSettlementCursor::Attempt(attempt_id.clone());
-                        }
                         WorkItemExecutionState::Waiting { wait, .. } => {
                             let Some(next) = unique_invocation_continuation(
                                 execution.attempts.values().filter(|candidate| {
@@ -12799,9 +12807,9 @@ mod tests {
                     work_item.id.clone(),
                     WorkItemExecutionRecord {
                         source_revision: work_item.revision,
-                        state: WorkItemExecutionState::InFlight {
+                        state: WorkItemExecutionState::Runnable {
                             generation: 1,
-                            attempt_id: attempt_id.clone(),
+                            recovery_ref: None,
                         },
                     },
                 );
@@ -29899,10 +29907,10 @@ mod tests {
                 .load_execution_protocol_state_if_initialized(agent_id)
                 .unwrap()
                 .unwrap();
-            assert!(retired.work_items.values().all(|record| !matches!(
-                record.state,
-                WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::InFlight { .. }
-            )));
+            assert!(retired
+                .work_items
+                .values()
+                .all(|record| !matches!(record.state, WorkItemExecutionState::Runnable { .. })));
             assert_eq!(
                 retired.work_items[&legacy[0].id],
                 execution.work_items[&legacy[0].id]

@@ -43,6 +43,21 @@ pub(crate) async fn execute(
                 "CompleteWorkItem requires an active agent execution binding",
             )
         })?;
+    if context
+        .turn_id
+        .as_ref()
+        .is_some_and(|turn_id| turn_id != &execution_binding.turn_id)
+        || context
+            .message_id
+            .as_ref()
+            .is_some_and(|message_id| message_id != &execution_binding.source_message_id)
+    {
+        return Err(RuntimeError::policy(
+            "work_item_execution_binding_stale",
+            "CompleteWorkItem no longer belongs to the agent's active turn",
+        )
+        .into());
+    }
     let authority = WorkItemCompletionAuthority::AgentExecution {
         binding: execution_binding,
         effective_work_item_id: context.effective_work_item_id.clone(),

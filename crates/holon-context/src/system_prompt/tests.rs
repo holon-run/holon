@@ -1255,7 +1255,7 @@ fn system_prompt_includes_runtime_scheduling_contract() {
         .contains("Completing the execution-bound WorkItem also ends the turn"));
     assert!(section
         .content
-        .contains("detached completion of another owned WorkItem preserves"));
+        .contains("detached completion requires an idle agent execution lane"));
     assert!(section
         .content
         .contains("persist required recovery state and arrange any successor"));

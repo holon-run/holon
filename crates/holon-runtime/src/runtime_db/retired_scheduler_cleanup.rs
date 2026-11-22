@@ -13,7 +13,7 @@ use crate::ids;
 use crate::runtime_db::evidence::{append_audit_event_tx, append_message_tx};
 use crate::runtime_db::repositories::upsert_queue_entry_tx;
 use crate::runtime_db::transitions::execution_protocol_repository::{
-    load_state_unchecked_tx, persist_repaired_state_tx,
+    load_retired_scheduler_state_tx, persist_repaired_state_tx,
 };
 use crate::types::{
     AuditEvent, AuthorityClass, MessageBody, MessageEnvelope, MessageKind, MessageOrigin, Priority,
@@ -71,7 +71,7 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
         });
     }
 
-    let mut state = load_state_unchecked_tx(tx, agent_id)
+    let mut state = load_retired_scheduler_state_tx(tx, agent_id)
         .with_context(|| format!("loading damaged execution partition for agent {agent_id}"))?;
     let previous = state.clone();
     let now = Utc::now();
@@ -103,20 +103,19 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
         db,
         agent_id,
         &state,
-        &blockers
-            .iter()
-            .filter(|b| b.kind == RetiredSchedulerCleanupBlockerKind::DequeuedQueueEntry)
-            .map(|b| b.record_id.clone())
-            .collect::<Vec<_>>(),
+        &blockers,
         &recovery_message_id,
         maintenance,
     )?;
 
-    for work_item in state
-        .work_items
-        .values_mut()
-        .filter(|record| matches!(record.state, WorkItemExecutionState::InFlight { .. }))
-    {
+    // This inventory comes from the retired schema, not the runtime state model.
+    for blocker in blockers.iter().filter(|blocker| {
+        blocker.kind == RetiredSchedulerCleanupBlockerKind::InFlightExecutionWorkItem
+    }) {
+        let work_item = state
+            .work_items
+            .get_mut(&blocker.record_id)
+            .context("missing legacy WorkItem execution row during offline release")?;
         let generation = work_item
             .generation()
             .checked_add(1)
@@ -125,10 +124,6 @@ pub(crate) fn apply_retired_scheduler_cleanup_fallback(
             generation,
             recovery_ref: Some(recovery_message_id.clone()),
         };
-    }
-    for blocker in blockers.iter().filter(|blocker| {
-        blocker.kind == RetiredSchedulerCleanupBlockerKind::InFlightExecutionWorkItem
-    }) {
         actions.push(RetiredSchedulerFallbackAction {
             kind: RetiredSchedulerFallbackActionKind::ResumeInFlightExecutionWorkItem,
             record_id: blocker.record_id.clone(),

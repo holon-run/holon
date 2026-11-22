@@ -1033,6 +1033,11 @@ fn execution_protocol_completion_transition_from_prepared(
         "completion commit intent does not match the admitted execution"
     );
     anyhow::ensure!(
+        intent.expected_work_revision.checked_add(1) == Some(prepared.record.revision)
+            && intent.expected_work_revision == authoritative.source_revision,
+        "completion commit WorkItem revision changed before settlement"
+    );
+    anyhow::ensure!(
         prepared.brief.kind.is_success()
             && prepared.brief.work_item_id.as_deref() == Some(prepared.record.id.as_str())
             && prepared.brief.turn_id.as_deref() == Some(terminal_turn.turn_id.as_str())
@@ -1048,15 +1053,10 @@ fn execution_protocol_completion_transition_from_prepared(
                 "completion commit WorkItem binding mismatch"
             );
             anyhow::ensure!(
-                matches!(
-                    &authoritative.state,
-                    WorkItemExecutionState::InFlight {
-                        attempt_id,
-                        generation,
-                    } if attempt_id == &attempt.attempt_id
-                        && Some(*generation) == attempt.admitted_fences.work_item_generation
-                ) && Some(intent.expected_work_revision)
-                    == attempt.admitted_fences.work_item_source_revision,
+                crate::domain::execution_protocol::eligible_work_item_at_generation(
+                    &authoritative,
+                    attempt.admitted_fences.work_item_generation,
+                ),
                 "completion commit execution attempt fence is stale"
             );
             vec![ExecutionProtocolCommand::Settle(SettleExecution {
@@ -1073,12 +1073,7 @@ fn execution_protocol_completion_transition_from_prepared(
         ExecutionBinding::AgentLifecycle { agent_id } => {
             anyhow::ensure!(
                 agent_id == &record.agent_id
-                    && authoritative.source_revision == intent.expected_work_revision
-                    && !matches!(
-                        authoritative.state,
-                        WorkItemExecutionState::InFlight { .. }
-                            | WorkItemExecutionState::Terminal { .. }
-                    ),
+                    && !matches!(authoritative.state, WorkItemExecutionState::Terminal { .. }),
                 "completion commit lifecycle WorkItem fence is stale"
             );
             let mut commands = Vec::with_capacity(3);
@@ -1111,12 +1106,7 @@ fn execution_protocol_completion_transition_from_prepared(
         ExecutionBinding::Conversation { .. } => {
             anyhow::ensure!(
                 attempt.agent_id == record.agent_id
-                    && authoritative.source_revision == intent.expected_work_revision
-                    && !matches!(
-                        authoritative.state,
-                        WorkItemExecutionState::InFlight { .. }
-                            | WorkItemExecutionState::Terminal { .. }
-                    ),
+                    && !matches!(authoritative.state, WorkItemExecutionState::Terminal { .. }),
                 "completion commit conversation WorkItem fence is stale"
             );
             let mut commands = Vec::with_capacity(3);
@@ -1451,16 +1441,10 @@ fn execution_protocol_settlement_transition_from_facts(
             let Some(authoritative_work) = state.work_items.get(work_item_id) else {
                 return Ok(interrupted("work_item_execution_missing"));
             };
-            let crate::domain::execution_protocol::WorkItemExecutionState::InFlight {
-                generation,
-                attempt_id,
-            } = &authoritative_work.state
-            else {
-                return Ok(interrupted("work_item_execution_not_in_flight"));
-            };
-            if attempt_id != &attempt.attempt_id
-                || attempt.admitted_fences.work_item_generation != Some(*generation)
-            {
+            if !crate::domain::execution_protocol::eligible_work_item_at_generation(
+                authoritative_work,
+                attempt.admitted_fences.work_item_generation,
+            ) {
                 return Ok(interrupted("work_item_execution_attempt_mismatch"));
             }
             let matching_continuations = runtime_db
@@ -1507,8 +1491,12 @@ fn execution_protocol_settlement_transition_from_facts(
                                 != Some(record.message_id.as_str())
                             || intent.source_turn_id.as_deref()
                                 != Some(terminal_turn.turn_id.as_str())
-                            || Some(intent.expected_work_revision)
-                                != attempt.admitted_fences.work_item_source_revision
+                            // A direct completion writes one revision; the legacy
+                            // intent/bind path writes Completing then Completed.
+                            || !matches!(
+                                work_item.revision.checked_sub(intent.expected_work_revision),
+                                Some(1 | 2)
+                            )
                         {
                             return Ok(interrupted("completion_intent_mismatch"));
                         }

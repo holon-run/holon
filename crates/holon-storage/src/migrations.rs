@@ -4557,6 +4557,80 @@ CREATE TABLE operator_inbox_causes (
 CREATE INDEX idx_operator_inbox_causes_brief ON operator_inbox_causes(principal_id, brief_id);
 "#,
     },
+    Migration {
+        version: 119,
+        name: "retire_work_item_in_flight",
+        // Preserve the admission generation for a matching open attempt; the
+        // normal interruption path will advance it. Exact resumes may already
+        // have resolved their wait, unlike other admissions on Waiting work.
+        sql: r#"
+CREATE TABLE execution_protocol_work_items_agent_owned (
+  agent_id TEXT NOT NULL,
+  work_item_id TEXT NOT NULL,
+  source_revision INTEGER NOT NULL CHECK (source_revision > 0),
+  generation INTEGER NOT NULL CHECK (generation >= 0),
+  lifecycle_state TEXT NOT NULL CHECK (
+    lifecycle_state IN ('runnable', 'waiting', 'paused', 'terminal')
+  ),
+  payload_json TEXT NOT NULL,
+  PRIMARY KEY (agent_id, work_item_id)
+);
+
+WITH legacy_owner AS (
+  SELECT w.*,
+         a.attempt_id AS open_attempt_id,
+         CASE json_extract(a.source_identity_json, '$.kind')
+           WHEN 'triggered_wait' THEN json_extract(a.source_identity_json, '$.wait_id')
+         END AS exact_wait_id
+  FROM execution_protocol_work_items w
+  LEFT JOIN execution_protocol_attempts a
+    ON w.lifecycle_state = 'in_flight'
+    AND a.agent_id = w.agent_id
+    AND a.attempt_id = json_extract(w.payload_json, '$.state.attempt_id')
+    AND a.lifecycle_state = 'open'
+    AND json_extract(a.payload_json, '$.binding.kind') = 'work_item'
+    AND json_extract(a.payload_json, '$.binding.work_item_id') = w.work_item_id
+    AND json_extract(a.payload_json, '$.admitted_fences.work_item_generation') = w.generation
+), normalized AS (
+  SELECT legacy_owner.*,
+         CASE WHEN lifecycle_state = 'in_flight' AND open_attempt_id IS NULL
+           THEN CASE WHEN generation < 9223372036854775807 THEN generation + 1 END
+           ELSE generation
+         END AS next_generation,
+         CASE WHEN open_attempt_id IS NOT NULL THEN COALESCE((
+           SELECT c.wait_condition_id
+             FROM temp.work_item_in_flight_migration_waits c
+            WHERE c.wait_condition_id = legacy_owner.exact_wait_id
+              AND c.agent_id = legacy_owner.agent_id
+              AND c.work_item_id = legacy_owner.work_item_id
+              AND c.status IN ('active', 'triggered', 'resolved')
+         ), (
+           SELECT c.wait_condition_id
+             FROM temp.work_item_in_flight_migration_waits c
+            WHERE c.agent_id = legacy_owner.agent_id
+              AND c.work_item_id = legacy_owner.work_item_id
+              AND c.status IN ('active', 'triggered')
+            ORDER BY c.created_at DESC, c.wait_condition_id DESC
+            LIMIT 1
+         )) END AS wait_id
+  FROM legacy_owner
+)
+INSERT INTO execution_protocol_work_items_agent_owned (
+  agent_id, work_item_id, source_revision, generation, lifecycle_state, payload_json
+)
+SELECT agent_id, work_item_id, source_revision, next_generation,
+       CASE WHEN lifecycle_state <> 'in_flight' THEN lifecycle_state
+            WHEN wait_id IS NOT NULL THEN 'waiting'
+            ELSE 'runnable' END,
+       CASE WHEN lifecycle_state <> 'in_flight' THEN payload_json
+            WHEN wait_id IS NOT NULL THEN json_set(payload_json, '$.state',
+              json_object('state', 'waiting', 'generation', next_generation,
+                          'wait', json_object('wait_id', wait_id)))
+            ELSE json_set(payload_json, '$.state',
+              json_object('state', 'runnable', 'generation', next_generation)) END
+FROM normalized;
+"#,
+    },
 ];
 
 pub fn ensure_migration_table(connection: &Connection) -> Result<()> {
@@ -4935,6 +5009,19 @@ fn apply_migration_transaction(
     migration: &Migration,
     runtime_backfill: ApplyRuntimeBackfill,
 ) -> Result<()> {
+    if migration.name == "retire_work_item_in_flight" {
+        // Some historical layouts have no wait table. Treat that as no wait
+        // evidence without creating a partial wait schema in the database.
+        let waits = if table_exists_tx(transaction, "wait_conditions")? {
+            "SELECT wait_condition_id, agent_id, work_item_id, status, created_at FROM main.wait_conditions"
+        } else {
+            "SELECT NULL AS wait_condition_id, NULL AS agent_id, NULL AS work_item_id,
+                    NULL AS status, NULL AS created_at WHERE 0"
+        };
+        transaction.execute_batch(&format!(
+            "CREATE TEMP VIEW work_item_in_flight_migration_waits AS {waits};"
+        ))?;
+    }
     if migration.name == "strict_runtime_sequences" {
         repair_runtime_sequence_duplicates(transaction)?;
     }
@@ -4980,6 +5067,15 @@ fn apply_migration_transaction(
         ensure_destructive_operation_command_digest_schema(transaction)?;
     }
     transaction.execute_batch(migration.sql)?;
+    if migration.name == "retire_work_item_in_flight" {
+        refresh_retired_work_item_input_evidence(transaction)?;
+        transaction.execute_batch(
+            "DROP TABLE execution_protocol_work_items;
+             ALTER TABLE execution_protocol_work_items_agent_owned
+               RENAME TO execution_protocol_work_items;
+             DROP VIEW temp.work_item_in_flight_migration_waits;",
+        )?;
+    }
     let backfill = match migration.name {
         "explicit_episode_continuity" => Some(RuntimeBackfill::EpisodeContinuity),
         "qualified_input_evidence" => Some(RuntimeBackfill::InputEvidence),
@@ -5055,6 +5151,121 @@ fn apply_migration_transaction(
             Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         ),
     )?;
+    Ok(())
+}
+
+/// Rebind only proofs that matched the exact pre-migration WorkExecution row.
+fn refresh_retired_work_item_input_evidence(transaction: &Transaction<'_>) -> Result<()> {
+    use serde_json::{json, Value};
+
+    let current_exists = table_exists_tx(transaction, "input_evidence_current")?;
+    let seed_tables = [
+        "input_evidence_eligibility",
+        "input_evidence_seed_recovery_current",
+    ]
+    .into_iter()
+    .map(|table| Ok((table, table_exists_tx(transaction, table)?)))
+    .collect::<Result<Vec<_>>>()?;
+    let seeds_exist = table_exists_tx(transaction, "episode_continuity_seeds")?;
+    if !current_exists && (!seeds_exist || !seed_tables.iter().any(|(_, exists)| *exists)) {
+        return Ok(());
+    }
+
+    // Mirrors RuntimeDb's WorkExecution fingerprint. Only the fixed proofs
+    // include the body digest in this JSON; Current stores it separately.
+    let fingerprint = |revision, generation, lifecycle: &str, payload: &str| {
+        json!({
+            "content_hash": null,
+            "sequence": null,
+            "turn_index": null,
+            "created_at": "",
+            "owner_kind": null,
+            "owner_id": null,
+            "revision_marker": format!("{revision}:{generation}:{lifecycle}"),
+            "payload_bytes": payload.len(),
+            "related_turn_id": null,
+        })
+    };
+    let mut pairs = transaction.prepare(
+        "SELECT old.agent_id, old.work_item_id, old.source_revision,
+                old.generation, old.payload_json, new.generation, new.lifecycle_state,
+                new.payload_json
+         FROM execution_protocol_work_items old
+         JOIN execution_protocol_work_items_agent_owned new USING (agent_id, work_item_id)
+         WHERE old.lifecycle_state = 'in_flight'",
+    )?;
+    let mut pairs = pairs.query([])?;
+    while let Some(pair) = pairs.next()? {
+        let agent: String = pair.get(0)?;
+        let work: String = pair.get(1)?;
+        let revision: i64 = pair.get(2)?;
+        let old_payload: String = pair.get(4)?;
+        let new_lifecycle: String = pair.get(6)?;
+        let new_payload: String = pair.get(7)?;
+        let mut old = fingerprint(revision, pair.get::<_, i64>(3)?, "in_flight", &old_payload);
+        let mut new = fingerprint(
+            revision,
+            pair.get::<_, i64>(5)?,
+            new_lifecycle.as_str(),
+            &new_payload,
+        );
+        let old_digest = bytes_sha256_hex(old_payload.as_bytes());
+        let new_digest = bytes_sha256_hex(new_payload.as_bytes());
+        if current_exists {
+            let mut select = transaction.prepare_cached(
+                "SELECT DISTINCT fingerprint_json FROM input_evidence_current
+                 WHERE agent_id = ?1 AND family = 'work_execution' AND record_id = ?2
+                   AND availability = 'present' AND content_digest = ?3",
+            )?;
+            let mut update = transaction.prepare_cached(
+                "UPDATE input_evidence_current SET fingerprint_json = ?5, content_digest = ?6
+                 WHERE agent_id = ?1 AND family = 'work_execution' AND record_id = ?2
+                   AND availability = 'present' AND content_digest = ?3 AND fingerprint_json = ?4",
+            )?;
+            let proofs = select
+                .query_map(params![agent, work, old_digest], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            for proof in proofs {
+                if serde_json::from_str::<Value>(&proof).is_ok_and(|value| value == old) {
+                    update.execute(params![
+                        agent,
+                        work,
+                        old_digest,
+                        proof,
+                        new.to_string(),
+                        new_digest
+                    ])?;
+                }
+            }
+        }
+        if seeds_exist {
+            old["frozen_payload_digest"] = json!(old_digest);
+            new["frozen_payload_digest"] = json!(new_digest);
+            for (table, _) in seed_tables.iter().filter(|(_, exists)| *exists) {
+                let scope = "family = 'work_execution' AND record_id = ?2
+                             AND seed_id IN (
+                                SELECT seed_id FROM episode_continuity_seeds WHERE agent_id = ?1
+                             )";
+                let mut select = transaction.prepare_cached(&format!(
+                    "SELECT DISTINCT fingerprint_json FROM {table} WHERE {scope}"
+                ))?;
+                let mut update = transaction.prepare_cached(&format!(
+                    "UPDATE {table} SET fingerprint_json = ?4
+                     WHERE {scope} AND fingerprint_json = ?3"
+                ))?;
+                let proofs = select
+                    .query_map(params![agent, work], |row| row.get::<_, String>(0))?
+                    .collect::<rusqlite::Result<Vec<_>>>()?;
+                for proof in proofs {
+                    if serde_json::from_str::<Value>(&proof).is_ok_and(|value| value == old) {
+                        update.execute(params![agent, work, proof, new.to_string()])?;
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -6977,9 +7188,9 @@ fn execution_protocol_state_from_canonical_claim(
                 work_item_id.to_string(),
                 WorkItemExecutionRecord {
                     source_revision: demand.metadata_revision,
-                    state: WorkItemExecutionState::InFlight {
+                    state: WorkItemExecutionState::Runnable {
                         generation: admitted_generation,
-                        attempt_id: activation_id.to_string(),
+                        recovery_ref: None,
                     },
                 },
             );
@@ -7909,3 +8120,5 @@ mod runtime_backfill_tests;
 
 #[cfg(test)]
 mod retired_outcome_migration_tests;
+#[cfg(test)]
+mod retired_work_item_in_flight_tests;

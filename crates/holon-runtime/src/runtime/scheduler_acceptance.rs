@@ -762,7 +762,6 @@ fn execution_work_status_name(
 ) -> String {
     match status {
         crate::domain::execution_protocol::WorkItemExecutionState::Runnable { .. } => "runnable",
-        crate::domain::execution_protocol::WorkItemExecutionState::InFlight { .. } => "in_flight",
         crate::domain::execution_protocol::WorkItemExecutionState::Waiting { .. } => "waiting",
         crate::domain::execution_protocol::WorkItemExecutionState::Paused { .. } => "paused",
         crate::domain::execution_protocol::WorkItemExecutionState::Terminal { .. } => "terminal",

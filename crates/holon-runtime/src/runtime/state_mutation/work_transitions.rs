@@ -3,7 +3,7 @@
 use super::*;
 use crate::runtime_db::transitions::{
     ExecutionProtocolTransition, PreparedInputTransition, TaskExpectation, WaitTransitionCommand,
-    WorkItemFocusTransitionCommand, WorkItemTransitionCommand,
+    WorkCommandLane, WorkItemFocusTransitionCommand, WorkItemTransitionCommand,
 };
 
 impl RuntimeMutation {
@@ -16,20 +16,22 @@ impl RuntimeMutation {
         synchronize_execution_protocol: bool,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TransitionCommit>> + Send + 'a>>
     {
-        Box::pin(self.commit_work_transition_inner(
+        Box::pin(self.commit_work_transition_in_lane(
             operation_id,
             command,
             execution_protocol,
             synchronize_execution_protocol,
+            None,
         ))
     }
 
-    async fn commit_work_transition_inner(
+    pub(in crate::runtime) async fn commit_work_transition_in_lane(
         &mut self,
         operation_id: String,
         command: WorkItemTransitionCommand,
         execution_protocol: ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
+        lane: Option<WorkCommandLane>,
     ) -> Result<TransitionCommit> {
         let prepared = PreparedInputTransition::work(
             self.input_evidence_scope(),
@@ -38,7 +40,8 @@ impl RuntimeMutation {
             command,
             execution_protocol,
             synchronize_execution_protocol,
-        )?;
+        )?
+        .with_work_command_lane(lane);
         self.commit_prepared_input_transition(prepared).await
     }
 
@@ -50,6 +53,7 @@ impl RuntimeMutation {
         execution_protocol: ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
         completion_tool_execution: Option<ToolExecutionRecord>,
+        lane: Option<WorkCommandLane>,
     ) -> std::pin::Pin<Box<impl std::future::Future<Output = Result<TransitionCommit>> + Send + 'a>>
     {
         Box::pin(self.commit_focus_transition_inner(
@@ -58,6 +62,7 @@ impl RuntimeMutation {
             execution_protocol,
             synchronize_execution_protocol,
             completion_tool_execution,
+            lane,
         ))
     }
 
@@ -68,6 +73,7 @@ impl RuntimeMutation {
         execution_protocol: ExecutionProtocolTransition,
         synchronize_execution_protocol: bool,
         completion_tool_execution: Option<ToolExecutionRecord>,
+        lane: Option<WorkCommandLane>,
     ) -> Result<TransitionCommit> {
         let prepared = PreparedInputTransition::focus(
             self.input_evidence_scope(),
@@ -77,7 +83,8 @@ impl RuntimeMutation {
             execution_protocol,
             synchronize_execution_protocol,
             completion_tool_execution,
-        )?;
+        )?
+        .with_work_command_lane(lane);
         self.commit_prepared_input_transition(prepared).await
     }
 

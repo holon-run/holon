@@ -353,12 +353,12 @@ pub(super) fn validate_model_queue_claim_tx(
             attempt.admitted_fences.work_item_source_revision
         );
     }
-    if !matches!(
-        &execution.state,
-        WorkItemExecutionState::InFlight { generation, attempt_id }
-            if attempt_id == &attempt.attempt_id
-                && Some(*generation) == attempt.admitted_fences.work_item_generation
-    ) {
+    if Some(execution.generation()) != attempt.admitted_fences.work_item_generation
+        || !matches!(
+            execution.state,
+            WorkItemExecutionState::Runnable { .. } | WorkItemExecutionState::Waiting { .. }
+        )
+    {
         bail!("WorkItem admission does not own its final execution generation");
     }
     Ok(())
@@ -1979,6 +1979,26 @@ pub(crate) fn load_state_unchecked_tx(
     load_state_unchecked_on(tx, agent_id)
 }
 
+/// The pre-v47 offline fallback can open a database before schema migrations.
+/// Project its retired rows as Runnable only for the repair's before-image;
+/// the fallback itself advances those generations when it writes the repair.
+pub(crate) fn load_retired_scheduler_state_tx(
+    tx: &Transaction<'_>,
+    agent_id: &str,
+) -> Result<ExecutionProtocolState> {
+    load_state_unchecked_with_work_items_on(
+        tx,
+        agent_id,
+        "SELECT work_item_id,
+                CASE WHEN lifecycle_state = 'in_flight'
+                     THEN json_set(payload_json, '$.state', json_object(
+                          'state', 'runnable', 'generation', generation))
+                     ELSE payload_json END,
+                source_revision||':'||generation||':'||lifecycle_state
+         FROM execution_protocol_work_items WHERE agent_id = ?1",
+    )
+}
+
 pub(crate) fn load_state_tx(
     tx: &Transaction<'_>,
     agent_id: &str,
@@ -2354,7 +2374,7 @@ mod tests {
                         outcome: ExecutionOutcomeRecord {
                             outcome_id: "outcome-model-claim".into(),
                             attempt_id: attempt.attempt_id.clone(),
-                            outcome: ExecutionOutcome::WorkItem(outcome),
+                            outcome: ExecutionOutcome::WorkItem(outcome.clone()),
                             created_at: Utc::now().to_rfc3339(),
                         },
                     }),
@@ -2387,10 +2407,26 @@ mod tests {
                     ExecutionAttemptState::Settled
                 );
                 assert!(state.open_attempt().is_none());
-                assert!(!matches!(
-                    state.work_items[&work.id].state,
-                    WorkItemExecutionState::InFlight { .. }
-                ));
+                let generation = bootstrap.work_items[&work.id].generation() + 1;
+                let expected = match outcome {
+                    WorkItemOutcome::Continue => WorkItemExecutionState::Runnable {
+                        generation,
+                        recovery_ref: None,
+                    },
+                    WorkItemOutcome::Wait { wait } => {
+                        WorkItemExecutionState::Waiting { generation, wait }
+                    }
+                    WorkItemOutcome::Complete { completion } => WorkItemExecutionState::Terminal {
+                        generation,
+                        completion,
+                    },
+                    WorkItemOutcome::Reentry { recovery_ref } => WorkItemExecutionState::Runnable {
+                        generation,
+                        recovery_ref: Some(recovery_ref),
+                    },
+                    _ => unreachable!(),
+                };
+                assert_eq!(state.work_items[&work.id].state, expected);
             }
         }
         Ok(())
@@ -2908,6 +2944,19 @@ fn load_state_unchecked_on(
     connection: &Connection,
     agent_id: &str,
 ) -> Result<ExecutionProtocolState> {
+    load_state_unchecked_with_work_items_on(
+        connection,
+        agent_id,
+        "SELECT work_item_id, payload_json, source_revision||':'||generation||':'||lifecycle_state
+         FROM execution_protocol_work_items WHERE agent_id = ?1",
+    )
+}
+
+fn load_state_unchecked_with_work_items_on(
+    connection: &Connection,
+    agent_id: &str,
+    work_items_sql: &str,
+) -> Result<ExecutionProtocolState> {
     Ok(ExecutionProtocolState {
         agent_id: agent_id.to_owned(),
         attempts: load_payload_map(
@@ -2916,12 +2965,7 @@ fn load_state_unchecked_on(
              FROM execution_protocol_attempts WHERE agent_id = ?1",
             agent_id,
         )?,
-        work_items: load_work_items_with_migration(
-            connection,
-            agent_id,
-            "SELECT work_item_id, payload_json, source_revision||':'||generation||':'||lifecycle_state
-             FROM execution_protocol_work_items WHERE agent_id = ?1",
-        )?,
+        work_items: load_work_items_with_migration(connection, agent_id, work_items_sql)?,
         outcomes: load_outcomes_with_migration(connection, agent_id)?,
     })
 }

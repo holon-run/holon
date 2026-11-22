@@ -4,7 +4,7 @@
 //! source revision trails its durable revision, together with the
 //! per-revision attribution evidence verdict. Apply adopts a drifted
 //! registration back to the durable revision only when the WorkItem is
-//! open, not executing, and every intermediate revision has a
+//! open, its agent has no open execution attempt, and every intermediate revision has a
 //! `work_item_written` attribution event. The repair never rewrites
 //! admitted fences, generations, wait state, or attempt history, and it is
 //! idempotent: a consistent registration is reported and left untouched.
@@ -269,11 +269,11 @@ fn inspect_entry(
         entry.verdict = "blocked_registration_ahead";
         return Ok(entry);
     }
-    if matches!(execution.state, WorkItemExecutionState::InFlight { .. }) {
+    let tx = connection.transaction()?;
+    if agent_has_open_attempt(&tx, agent_id)? {
         entry.verdict = "blocked_in_flight";
         return Ok(entry);
     }
-    let tx = connection.transaction()?;
     let missing = missing_revision_attribution_tx(
         &tx,
         agent_id,
@@ -291,11 +291,19 @@ fn inspect_entry(
     Ok(entry)
 }
 
+pub(super) fn agent_has_open_attempt(connection: &Connection, agent_id: &str) -> Result<bool> {
+    Ok(connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM execution_protocol_attempts
+         WHERE agent_id = ?1 AND lifecycle_state = 'open')",
+        [agent_id],
+        |row| row.get(0),
+    )?)
+}
+
 fn registration_state_label(state: &WorkItemExecutionState) -> String {
     match state {
         WorkItemExecutionState::Runnable { .. } => "runnable".into(),
         WorkItemExecutionState::Waiting { .. } => "waiting".into(),
-        WorkItemExecutionState::InFlight { .. } => "in_flight".into(),
         WorkItemExecutionState::Paused { .. } => "paused".into(),
         WorkItemExecutionState::Terminal { .. } => "terminal".into(),
     }
@@ -380,7 +388,7 @@ fn inspect_entry_tx(
         entry.verdict = "blocked_registration_ahead";
         return Ok(entry);
     }
-    if matches!(execution.state, WorkItemExecutionState::InFlight { .. }) {
+    if agent_has_open_attempt(tx, agent_id)? {
         entry.verdict = "blocked_in_flight";
         return Ok(entry);
     }
@@ -594,6 +602,79 @@ mod tests {
                     ),
                 )?;
             }
+            Ok(())
+        })?;
+        Ok(())
+    }
+
+    #[test]
+    fn an_open_conversation_attempt_blocks_unrelated_work_item_revision_repair() -> Result<()> {
+        use crate::domain::execution_protocol::{
+            AdmitExecution, AdmittedFences, ExecutionAttempt, ExecutionAttemptState,
+            ExecutionBinding, ExecutionOrigin, ExecutionPriority, ExecutionProvenance,
+            ExecutionSource, ExecutionSourceIdentity, ExecutionTrust,
+        };
+
+        let (_dir, db) = runtime_db()?;
+        drifted_fixture(&db, "work-repairable", true)?;
+        db.transaction(|tx| {
+            let baseline = load_state_unchecked_tx(tx, "agent-a")?;
+            let admitted = execution_protocol::admit_execution(
+                &baseline,
+                &AdmitExecution {
+                    attempt: ExecutionAttempt {
+                        attempt_id: "attempt-a".into(),
+                        agent_id: "agent-a".into(),
+                        source_message_id: Some("message-a".into()),
+                        input_projection: None,
+                        source: ExecutionSource {
+                            identity: ExecutionSourceIdentity::QueueMessage {
+                                message_id: "message-a".into(),
+                            },
+                            generation: 1,
+                        },
+                        binding: ExecutionBinding::Conversation {
+                            interaction_id: "interaction-a".into(),
+                        },
+                        provenance: ExecutionProvenance {
+                            origin: ExecutionOrigin::System,
+                            trust: ExecutionTrust::RuntimeInstruction,
+                            priority: ExecutionPriority::Normal,
+                            correlation_id: None,
+                            causation_id: None,
+                        },
+                        admitted_fences: AdmittedFences {
+                            source_revision: 1,
+                            work_item_source_revision: None,
+                            work_item_generation: None,
+                            rejoin: None,
+                            agent_control_revision: 1,
+                            host_registry_revision: 1,
+                        },
+                        state: ExecutionAttemptState::Open,
+                        run_id: None,
+                        turn_id: None,
+                        recovery_of_attempt_id: None,
+                        terminal_outcome_id: None,
+                        admitted_at: "2026-08-01T00:00:00Z".into(),
+                        terminal_at: None,
+                    },
+                },
+            )
+            .map_err(anyhow::Error::msg)?;
+            persist_state_tx(tx, &admitted.state)
+        })?;
+
+        let audit = db.transaction(|tx| audit_tx(tx, Some("agent-a"), Some("work-repairable")))?;
+        assert_eq!(audit.entries[0].verdict, "blocked_in_flight");
+        let applied =
+            db.apply_work_item_source_revision_repair("agent-a", "work-repairable", None)?;
+        assert_eq!(applied.repaired, 0);
+        assert_eq!(applied.entries[0].verdict, "blocked_in_flight");
+        db.transaction(|tx| {
+            let state = load_state_unchecked_tx(tx, "agent-a")?;
+            assert_eq!(state.work_items["work-repairable"].source_revision, 1);
+            assert_eq!(state.open_attempt().unwrap().attempt_id, "attempt-a");
             Ok(())
         })?;
         Ok(())
